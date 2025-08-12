@@ -1,0 +1,161 @@
+import std/[strutils, os, json, times, strformat, osproc]
+import ../types/tools
+
+const
+  USER_ABORTED_ERROR_MESSAGE* = "Aborted by user"
+  MAX_FILE_SIZE* = 1024 * 1024 * 10  # 10MB default max file size
+  DEFAULT_TIMEOUT* = 30000  # 30 seconds default timeout
+
+proc attempt*[T](errMessage: string, callback: proc(): T): T =
+  ## Helper to wrap operations with consistent error handling
+  try:
+    return callback()
+  except:
+    raise newToolError("unknown", errMessage)
+
+proc attemptUntrackedStat*(path: string): FileInfo =
+  ## Attempt to stat a file without tracking it
+  return attempt(fmt"Could not stat({path}): does the file exist?", proc(): FileInfo =
+    getFileInfo(path)
+  )
+
+proc attemptUntrackedRead*(path: string): string =
+  ## Attempt to read a file without tracking it
+  return attempt(fmt"{path} couldn't be read", proc(): string =
+    readFile(path)
+  )
+
+proc validateFileExists*(path: string) =
+  ## Validate that a file exists and is readable
+  if not fileExists(path):
+    raise newToolValidationError("unknown", "filePath", "existing file", path)
+  
+  let info = attemptUntrackedStat(path)
+  if info.kind != pcFile and info.kind != pcLinkToFile:
+    raise newToolValidationError("unknown", "filePath", "regular file", path)
+
+proc validateFileNotExists*(path: string) =
+  ## Validate that a file does not exist
+  if fileExists(path):
+    raise newToolValidationError("unknown", "filePath", "non-existent path", path)
+
+proc validateDirectoryExists*(path: string) =
+  ## Validate that a directory exists
+  if not dirExists(path):
+    raise newToolValidationError("unknown", "path", "existing directory", path)
+
+proc validateFileReadable*(path: string) =
+  ## Validate that a file is readable
+  try:
+    discard readFile(path)
+  except IOError:
+    raise newToolPermissionError("unknown", path)
+
+proc validateFileWritable*(path: string) =
+  ## Validate that a file is writable
+  try:
+    let file = open(path, fmWrite)
+    file.close()
+  except IOError:
+    raise newToolPermissionError("unknown", path)
+
+proc validateFileSize*(path: string, maxSize: int = MAX_FILE_SIZE) =
+  ## Validate that a file is within size limits
+  let info = attemptUntrackedStat(path)
+  if info.size > maxSize:
+    raise newToolValidationError("unknown", "filePath", fmt"file under {maxSize} bytes", fmt"{info.size} bytes")
+
+proc validateTimeout*(timeout: int) =
+  ## Validate that timeout is reasonable
+  if timeout <= 0:
+    raise newToolValidationError("unknown", "timeout", "positive integer", $timeout)
+  if timeout > 300000:  # 5 minutes max
+    raise newToolValidationError("unknown", "timeout", "timeout under 300000ms", $timeout)
+
+proc getCurrentDirectory*(): string =
+  ## Get the current working directory
+  return getCurrentDir()
+
+proc sanitizePath*(path: string): string =
+  ## Sanitize a file path to prevent directory traversal
+  let normalized = normalizedPath(path)
+  if normalized.startsWith("..") or normalized.contains("/../") or normalized.contains("\\..\\"):
+    raise newToolValidationError("unknown", "path", "safe path", path)
+  return normalized
+
+proc joinPaths*(base, path: string): string =
+  ## Safely join two paths
+  let sanitized = sanitizePath(path)
+  return joinPath(base, sanitized)
+
+proc getFileExtension*(path: string): string =
+  ## Get the file extension from a path
+  let parts = splitFile(path)
+  return parts.ext
+
+proc isTextFile*(path: string): bool =
+  ## Check if a file is likely a text file
+  let ext = getFileExtension(path).toLower()
+  let textExtensions = [".txt", ".md", ".nim", ".js", ".ts", ".py", ".json", ".yaml", ".yml", 
+                       ".xml", ".html", ".css", ".sh", ".bash", ".zsh", ".fish", ".cfg", ".conf",
+                       ".ini", ".toml", ".csv", ".log", ".gitignore", ".dockerignore"]
+  return ext in textExtensions
+
+proc formatFileSize*(size: int64): string =
+  ## Format file size in human readable format
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  var size = float(size)
+  var unitIndex = 0
+  
+  while size >= 1024.0 and unitIndex < units.len - 1:
+    size /= 1024.0
+    inc unitIndex
+  
+  return fmt"{size:.1f} {units[unitIndex]}"
+
+proc formatTimestamp*(time: Time): string =
+  ## Format timestamp in a readable format
+  return time.format("yyyy-MM-dd HH:mm:ss")
+
+proc createBackupPath*(originalPath: string): string =
+  ## Create a backup file path
+  let (dir, name, ext) = splitFile(originalPath)
+  let timestamp = now().format("yyyyMMdd_HHmmss")
+  return joinPath(dir, fmt"{name}.backup_{timestamp}{ext}")
+
+proc safeCreateDir*(path: string) =
+  ## Safely create a directory and its parents
+  try:
+    createDir(path)
+  except OSError:
+    raise newToolPermissionError("unknown", path)
+
+proc checkCommandExists*(command: string): bool =
+  ## Check if a command exists in PATH
+  try:
+    when defined(windows):
+      let result = execCmdEx("where " & command)
+    else:
+      let result = execCmdEx("which " & command)
+    return result.exitCode == 0
+  except:
+    return false
+
+proc getCommandOutput*(command: string, args: seq[string] = @[], timeout: int = DEFAULT_TIMEOUT): string =
+  ## Execute a command and get its output with timeout
+  let fullCmd = if args.len > 0: command & " " & args.join(" ") else: command
+  
+  try:
+    when defined(windows):
+      let result = execCmdEx("cmd /c " & fullCmd)
+    else:
+      let result = execCmdEx("bash -c " & fullCmd)
+    
+    if result.exitCode != 0:
+      raise newToolExecutionError("bash", "Command failed with exit code " & $result.exitCode, result.exitCode, result.output)
+    
+    return result.output
+  except CatchableError:
+    raise newToolTimeoutError("bash", timeout)
+  except OSError as e:
+    raise newToolExecutionError("bash", "Command execution failed: " & e.msg, -1, "")
