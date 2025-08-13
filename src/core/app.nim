@@ -1,22 +1,34 @@
-import std/[options, os, strutils, strformat]
-import channels, logging, history, config
+import std/[options, os, strformat]
+import std/logging
+import channels, history, config
 import ../types/[messages, history as historyTypes, config as configTypes]
 import ../api/worker
+import ../tools/implementations/index
+import ../tools/worker
 
 var apiWorker: APIWorker
+var toolWorker: ToolWorker
 
 proc startApp*() =
   echo "Starting Niffler..."
   
   # Initialize subsystems
-  initLogger(llInfo)
+  # Set up console logging  
+  let consoleLogger = newConsoleLogger()
+  addHandler(consoleLogger)
+  setLogFilter(lvlInfo)
   initThreadSafeChannels()
   initHistoryManager()
   
+  # Register all tools
+  registerAllTools()
+  
   let channels = getChannels()
   
-  info("Starting API worker thread...")
+  debug("Starting API worker thread...")
   apiWorker = startAPIWorker(channels)
+  debug("Starting tool worker thread...")
+  toolWorker = startToolWorker(channels)
   
   echo "Niffler is ready!"
   echo "Press Ctrl+C to exit..."
@@ -49,6 +61,7 @@ proc startApp*() =
   echo "\nApplication shutting down..."
   signalShutdown(channels)
   stopAPIWorker(apiWorker)
+  stopToolWorker(toolWorker)
   closeChannels(channels[])
 
 proc sendSinglePromptInteractive*(text: string, modelConfig: configTypes.ModelConfig): bool =
@@ -85,6 +98,10 @@ proc sendSinglePromptAsync*(text: string, model: string = ""): bool =
     echo fmt"Error: No API key found for {selectedModel.baseUrl}"
     echo "Set environment variable or configure API key"
     return false
+  
+  # Debug: Log the API key being used (without the full key for security)
+  let keyPreview = if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey
+  echo fmt"Using API key: {keyPreview} for {selectedModel.baseUrl}"
     
   # Add user message to history
   let userMsg = addUserMessage(text)
@@ -96,3 +113,20 @@ proc sendSinglePromptAsync*(text: string, model: string = ""): bool =
   echo fmt"Sending prompt to {selectedModel.nickname}..."
   
   return sendChatRequestAsync(channels, messages, selectedModel, requestId, apiKey)
+
+proc configureAPIWorker*(modelConfig: configTypes.ModelConfig): bool =
+  ## Configure the API worker with a new model configuration
+  let channels = getChannels()
+  let apiKey = readKeyForModel(modelConfig)
+  
+  if apiKey.len == 0:
+    return false
+  
+  let configRequest = APIRequest(
+    kind: arkConfigure,
+    configBaseUrl: modelConfig.baseUrl,
+    configApiKey: apiKey,
+    configModelName: modelConfig.model
+  )
+  
+  return trySendAPIRequest(channels, configRequest)

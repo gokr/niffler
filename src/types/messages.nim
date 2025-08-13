@@ -1,4 +1,4 @@
-import std/options
+import std/[options, json]
 
 type
   # Core message types for LLM conversations
@@ -8,20 +8,36 @@ type
     mrSystem = "system"
     mrTool = "tool"
 
-  ToolCall* = object
-    id*: string
+  # OpenAI-compatible tool calling types
+  FunctionCall* = object
     name*: string
     arguments*: string
+
+  LLMToolCall* = object
+    id*: string
+    `type`*: string  # Always "function" for OpenAI - backticks escape the keyword
+    function*: FunctionCall
 
   ToolResult* = object
     id*: string
     output*: string
     error*: Option[string]
 
+  # Legacy tool call type (for existing tool system)
+  ToolCall* = object
+    id*: string
+    name*: string
+    arguments*: string
+
   Message* = object
     role*: MessageRole
     content*: string
-    toolCalls*: Option[seq[ToolCall]]
+    # OpenAI format tool calls (for LLM communication)
+    toolCalls*: Option[seq[LLMToolCall]]
+    # Tool call ID for tool messages
+    toolCallId*: Option[string]
+    # Legacy fields for backward compatibility
+    legacyToolCalls*: Option[seq[ToolCall]]
     toolResults*: Option[seq[ToolResult]]
 
   # API Thread Communication
@@ -41,6 +57,9 @@ type
       temperature*: float
       baseUrl*: string
       apiKey*: string
+      # Tool calling support
+      enableTools*: bool
+      tools*: Option[seq[ToolDefinition]]
     of arkStreamCancel:
       cancelRequestId*: string
     of arkShutdown:
@@ -61,12 +80,32 @@ type
     completionTokens*: int
     totalTokens*: int
 
+  # Tool definition for API requests (OpenAI format)
+  ToolParameter* = object
+    `type`*: string
+    description*: Option[string]
+    `enum`*: Option[seq[string]]
+    items*: Option[JsonNode]
+    properties*: Option[JsonNode]
+    required*: Option[seq[string]]
+
+  ToolFunction* = object
+    name*: string
+    description*: string
+    parameters*: JsonNode
+
+  ToolDefinition* = object
+    `type`*: string  # Always "function" for OpenAI - backticks escape the keyword
+    function*: ToolFunction
+
   APIResponse* = object
     requestId*: string
     case kind*: APIResponseKind
     of arkStreamChunk:
       content*: string
       done*: bool
+      # Tool calling in stream chunks
+      toolCalls*: Option[seq[LLMToolCall]]
     of arkStreamComplete:
       usage*: TokenUsage
       finishReason*: string

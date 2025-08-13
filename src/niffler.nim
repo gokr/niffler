@@ -1,8 +1,8 @@
 import std/[strutils, os]
 import cligen
 
-import core/[config, logging]
-import core/app
+import core/config
+import std/logging
 import ui/cli
 
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
@@ -26,12 +26,12 @@ proc list() =
 proc prompt(text: string = "", model: string = "", debug: bool = false) =
   ## Start interactive session or send single prompt
   if debug:
-    setLogLevel(llDebug)
+    setLogFilter(lvlDebug)
     echo "Debug logging enabled"
   
   if text.len == 0:
     # Start interactive UI
-    startInteractiveUI()
+    startInteractiveUI(model)
   else:
     # Send single prompt
     sendSinglePrompt(text, model)

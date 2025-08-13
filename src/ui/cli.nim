@@ -1,31 +1,62 @@
 import std/[os, strutils, strformat]
-import ../core/[app, logging, channels, history, config]
+import std/logging
+import ../core/[app, channels, history, config]
 import ../types/[messages, config as configTypes]
 import ../api/worker
+import ../tools/worker
+import ../tools/implementations/index
 
-proc startInteractiveUI*() =
+proc initializeAppSystems*() =
+  ## Initialize common app systems
+  let consoleLogger = newConsoleLogger()
+  addHandler(consoleLogger)
+  setLogFilter(lvlInfo)
+  initThreadSafeChannels()
+  initHistoryManager()
+  
+  # Register all tools
+  registerAllTools()
+
+proc startInteractiveUI*(model: string = "") =
   ## Start the interactive terminal UI
   echo "Starting Niffler interactive mode..."
-  echo "Type your messages and press Enter to send. Type 'exit' or 'quit' to leave."
+  echo "Type your messages and press Enter to send. Type '/exit' or '/quit' to leave."
   echo "Use '/model <name>' to switch models. Type '/help' for more commands."
   echo ""
   
   # Initialize the app systems
   
-  initLogger(llInfo)  # Default to INFO level unless debug is enabled
-  initThreadSafeChannels()
-  initHistoryManager()
+  initializeAppSystems()
   
   let channels = getChannels()
   let config = loadConfig()
-  var currentModel = if config.models.len > 0: config.models[0] else: 
-    quit("No models configured. Please run 'niffler init' first.")
+  
+  # Select initial model based on parameter or default
+  var currentModel = if model.len > 0:
+    block:
+      var found = false
+      var selectedModel = config.models[0]  # fallback
+      for m in config.models:
+        if m.nickname == model:
+          selectedModel = m
+          found = true
+          break
+      if not found:
+        echo fmt"Warning: Model '{model}' not found, using default: {config.models[0].nickname}"
+      selectedModel
+  else:
+    if config.models.len > 0: config.models[0] else: 
+      quit("No models configured. Please run 'niffler init' first.")
   
   echo fmt"Using model: {currentModel.nickname} ({currentModel.model})"
   echo ""
   
   # Start API worker
   var apiWorker = startAPIWorker(channels)
+  
+  # Configure API worker with initial model
+  if not configureAPIWorker(currentModel):
+    echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
   
   # Interactive loop
   var running = true
@@ -75,7 +106,11 @@ proc startInteractiveUI*() =
             if model.nickname == modelName:
               currentModel = model
               found = true
-              echo fmt"Switched to model: {currentModel.nickname} ({currentModel.model})"
+              # Configure API worker with new model
+              if configureAPIWorker(currentModel):
+                echo fmt"Switched to model: {currentModel.nickname} ({currentModel.model})"
+              else:
+                echo fmt"Error: Failed to configure model {currentModel.nickname}. Check API key."
               echo ""
               break
           if not found:
@@ -156,14 +191,15 @@ proc sendSinglePrompt*(text: string, model: string) =
     
   # Initialize the app systems but don't start the full UI loop
   
-  initLogger(llInfo)
-  initThreadSafeChannels()
-  initHistoryManager()
+  initializeAppSystems()
   
   let channels = getChannels()
   
   # Start API worker
   var apiWorker = startAPIWorker(channels)
+  
+  # Start tool worker
+  var toolWorker = startToolWorker(channels)
   
   echo "Sending prompt..."
   if sendSinglePromptAsync(text, model):
@@ -204,4 +240,5 @@ proc sendSinglePrompt*(text: string, model: string) =
   # Cleanup
   signalShutdown(channels)
   stopAPIWorker(apiWorker)
+  stopToolWorker(toolWorker)
   closeChannels(channels[])

@@ -1,6 +1,6 @@
-import std/[options, strformat, locks]
+import std/[strformat, locks]
 import ../types/[messages, history]
-import logging
+import std/logging
 
 type
   HistoryManager* = object
@@ -24,7 +24,7 @@ proc addUserMessage*(content: string): Message =
       content: content
     )
     
-    logDebug("history", fmt"Added user message: {content[0..min(50, content.len-1)]}...")
+    debug(fmt"Added user message: {content[0..min(50, content.len-1)]}...")
   finally:
     release(globalHistory.lock)
 
@@ -39,7 +39,7 @@ proc addAssistantMessage*(content: string): Message =
       content: content
     )
     
-    logDebug("history", fmt"Added assistant message: {content[0..min(50, content.len-1)]}...")
+    debug(fmt"Added assistant message: {content[0..min(50, content.len-1)]}...")
   finally:
     release(globalHistory.lock)
 
@@ -61,7 +61,7 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
       else:
         discard  # Skip other types for now
         
-    logDebug("history", fmt"Retrieved {result.len} recent messages")
+    debug(fmt"Retrieved {result.len} recent messages")
   finally:
     release(globalHistory.lock)
 
@@ -69,7 +69,7 @@ proc clearHistory*() =
   acquire(globalHistory.lock)
   try:
     globalHistory.history.setLen(0)
-    logInfo("history", "History cleared")
+    info("History cleared")
   finally:
     release(globalHistory.lock)
 

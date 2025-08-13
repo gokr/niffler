@@ -1,4 +1,4 @@
-import std/[json, options, strutils, tables]
+import std/[json, options, tables]
 import validation
 
 type
