@@ -1,4 +1,4 @@
-import std/[unittest, os, json, options, times, strutils]
+import std/[unittest, os, json, options, times, strutils, logging]
 import ../src/types/tools
 import ../src/types/messages except ToolCall
 import ../src/core/channels
@@ -16,7 +16,7 @@ suite "Tool System Integration":
   
   setup:
     channels = initializeChannels()
-    toolWorker = startToolWorker(addr channels)
+    toolWorker = startToolWorker(addr channels, lvlDebug)
     
     testDir = getTempDir() / "niffler_integration_" & $getTime().toUnix()
     testFile = testDir / "test.txt"
