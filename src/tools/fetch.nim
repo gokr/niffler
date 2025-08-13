@@ -1,4 +1,5 @@
-import std/[strutils, json, httpclient, uri, htmlparser, xmltree]
+import std/[strutils, json, httpclient, uri, xmltree]
+import htmlparser
 import ../types/tools
 
 type

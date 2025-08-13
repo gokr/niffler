@@ -12,6 +12,7 @@ requires "nim >= 2.2.4"
 requires "illwill >= 0.3.0"
 requires "cligen"
 requires "sunny"
+requires "htmlparser"
 requires "https://github.com/Vindaar/JsonSchemaValidator.git >= 0.1.0"
 
 task test, "Run all tests":
