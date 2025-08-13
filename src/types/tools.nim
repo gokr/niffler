@@ -1,4 +1,4 @@
-import std/[options, json, tables, strutils]
+import std/[options, json, tables]
 import ../types/messages
 
 type

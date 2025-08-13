@@ -1,0 +1,169 @@
+import std/[strutils, json, httpclient, uri, htmlparser, xmltree]
+import ../../types/tools
+import ../registry
+
+type
+  FetchTool* = ref object of ToolDef
+
+proc newFetchTool*(): FetchTool =
+  result = FetchTool()
+  result.name = "fetch"
+  result.description = "Fetch HTTP/HTTPS content with web scraping, authentication, and streaming support"
+
+proc validate*(tool: FetchTool, args: JsonNode) =
+  ## Validate fetch tool arguments
+  validateArgs(args, @["url"])
+  
+  let url = getArgStr(args, "url")
+  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
+  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: 10485760  # 10MB
+  let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
+  
+  # Validate URL
+  if url.len == 0:
+    raise newToolValidationError("fetch", "url", "non-empty string", "empty string")
+  
+  try:
+    let parsedUri = parseUri(url)
+    if parsedUri.scheme notin ["http", "https"]:
+      raise newToolValidationError("fetch", "url", "HTTP/HTTPS URL", url)
+  except:
+    raise newToolValidationError("fetch", "url", "valid URL", url)
+  
+  # Validate timeout
+  if timeout <= 0:
+    raise newToolValidationError("fetch", "timeout", "positive integer", $timeout)
+  
+  if timeout > 300000:  # 5 minutes max
+    raise newToolValidationError("fetch", "timeout", "timeout under 300000ms", $timeout)
+  
+  # Validate max_size
+  if maxSize <= 0:
+    raise newToolValidationError("fetch", "max_size", "positive integer", $maxSize)
+  
+  if maxSize > 100 * 1024 * 1024:  # 100MB limit
+    raise newToolValidationError("fetch", "max_size", "size under 100MB", $maxSize)
+  
+  # Validate method
+  let validMethods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
+  if httpMethod.toUpperAscii() notin validMethods:
+    raise newToolValidationError("fetch", "method", "one of: " & validMethods.join(", "), httpMethod)
+
+proc htmlToText*(html: string): string =
+  ## Convert HTML to plain text
+  try:
+    let xml = parseHtml(html)
+    result = ""
+    
+    proc extractText(node: XmlNode) =
+      if node.kind == xnText:
+        result.add(node.text & " ")
+      elif node.kind == xnElement:
+        for child in node:
+          extractText(child)
+        # Add spacing after block elements
+        if node.tag.toLowerAscii() in ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br"]:
+          result.add("\n")
+    
+    extractText(xml)
+    result = result.strip()
+    # Clean up excessive whitespace
+    result = result.multiReplace(("\n\n\n", "\n\n"), ("  ", " "))
+  except:
+    return "Failed to parse HTML content"
+
+proc createHttpClient*(timeout: int): HttpClient =
+  ## Create HTTP client with timeout
+  result = newHttpClient(timeout = timeout)
+  result.headers = newHttpHeaders({
+    "User-Agent": "Niffler/1.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
+  })
+
+proc addCustomHeaders*(client: var HttpClient, headers: JsonNode) =
+  ## Add custom headers to HTTP client
+  if headers.kind == JObject:
+    for key, value in headers:
+      client.headers[key] = value.getStr()
+
+proc execute*(tool: FetchTool, args: JsonNode): string =
+  ## Execute fetch HTTP/HTTPS content operation
+  let url = getArgStr(args, "url")
+  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
+  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: 10485760  # 10MB
+  let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
+  let headers = if args.hasKey("headers"): args["headers"] else: newJObject()
+  let body = if args.hasKey("body"): getArgStr(args, "body") else: ""
+  let convertToText = if args.hasKey("convert_to_text"): getArgBool(args, "convert_to_text") else: true
+  
+  try:
+    # Create HTTP client
+    var client = createHttpClient(timeout)
+    addCustomHeaders(client, headers)
+    
+    # Make request
+    var response: Response
+    let requestMethod = case httpMethod.toUpperAscii():
+      of "GET": HttpGet
+      of "POST": HttpPost
+      of "PUT": HttpPut
+      of "DELETE": HttpDelete
+      of "HEAD": HttpHead
+      of "OPTIONS": HttpOptions
+      of "PATCH": HttpPatch
+      else: HttpGet
+    
+    if httpMethod.toUpperAscii() in ["POST", "PUT", "PATCH"]:
+      response = client.request(url, requestMethod, body = body)
+    else:
+      response = client.request(url, requestMethod)
+    
+    # Check response size
+    if response.body.len > maxSize:
+      raise newToolExecutionError("fetch", "Response size exceeds limit: " & $response.body.len & " > " & $maxSize, -1, "")
+    
+    # Convert HTML to text if requested
+    var content = response.body
+    var contentType = "text/plain"
+    
+    if response.headers.hasKey("Content-Type"):
+      contentType = response.headers["Content-Type"]
+    
+    var convertedToText = false
+    if convertToText and contentType.toLowerAscii().contains("text/html"):
+      content = htmlToText(response.body)
+      convertedToText = true
+    
+    # Create result
+    let resultJson = %*{
+      "url": url,
+      "status_code": response.status,
+      "content": content,
+      "content_type": contentType,
+      "content_length": response.body.len,
+      "headers": %*{},
+      "converted_to_text": convertedToText,
+      "method": httpMethod,
+      "timeout": timeout,
+      "max_size": maxSize
+    }
+    
+    return $resultJson
+  
+  except ToolError as e:
+    raise e
+  except:
+    let errorMsg = getCurrentExceptionMsg()
+    raise newToolExecutionError("fetch", "Failed to fetch URL: " & errorMsg, -1, "")
+
+# Register the tool
+proc registerFetchTool*() =
+  let tool = newFetchTool()
+  let registryPtr = getGlobalToolRegistry()
+  var registry = registryPtr[]
+  registry.register(tool)
+
+# Create the tool definition for the registry
+when isMainModule:
+  registerFetchTool()

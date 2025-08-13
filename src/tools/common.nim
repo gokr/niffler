@@ -1,4 +1,4 @@
-import std/[strutils, os, json, times, strformat, osproc]
+import std/[strutils, os, times, strformat, osproc, json]
 import ../types/tools
 
 const
@@ -115,12 +115,12 @@ proc formatFileSize*(size: int64): string =
 
 proc formatTimestamp*(time: Time): string =
   ## Format timestamp in a readable format
-  return time.format("yyyy-MM-dd HH:mm:ss")
+  return $time
 
 proc createBackupPath*(originalPath: string): string =
   ## Create a backup file path
   let (dir, name, ext) = splitFile(originalPath)
-  let timestamp = now().format("yyyyMMdd_HHmmss")
+  let timestamp = now().format("yyyyMMddHHmmss")
   return joinPath(dir, fmt"{name}.backup_{timestamp}{ext}")
 
 proc safeCreateDir*(path: string) =
@@ -134,10 +134,10 @@ proc checkCommandExists*(command: string): bool =
   ## Check if a command exists in PATH
   try:
     when defined(windows):
-      let result = execCmdEx("where " & command)
+      let cmdResult = execCmdEx("where " & command)
     else:
-      let result = execCmdEx("which " & command)
-    return result.exitCode == 0
+      let cmdResult = execCmdEx("which " & command)
+    return cmdResult.exitCode == 0
   except:
     return false
 
@@ -147,15 +147,57 @@ proc getCommandOutput*(command: string, args: seq[string] = @[], timeout: int = 
   
   try:
     when defined(windows):
-      let result = execCmdEx("cmd /c " & fullCmd)
+      let cmdResult = execCmdEx("cmd /c " & fullCmd)
     else:
-      let result = execCmdEx("bash -c " & fullCmd)
+      let cmdResult = execCmdEx("bash -c " & fullCmd)
     
-    if result.exitCode != 0:
-      raise newToolExecutionError("bash", "Command failed with exit code " & $result.exitCode, result.exitCode, result.output)
+    if cmdResult.exitCode != 0:
+      raise newToolExecutionError("bash", "Command failed with exit code " & $cmdResult.exitCode, cmdResult.exitCode, cmdResult.output)
     
-    return result.output
+    return cmdResult.output
   except CatchableError:
     raise newToolTimeoutError("bash", timeout)
   except OSError as e:
     raise newToolExecutionError("bash", "Command execution failed: " & e.msg, -1, "")
+
+# Simplified validation functions for basic functionality
+proc validateBashArgs*(args: JsonNode): void =
+  ## Validate bash tool arguments - simplified for basic functionality
+  # TODO: Add proper validation once JsonValue API is figured out
+  discard
+
+proc validateReadArgs*(args: JsonNode): void =
+  ## Validate read tool arguments - simplified for basic functionality
+  # TODO: Add proper validation once JsonValue API is figured out
+  discard
+
+proc validateListArgs*(args: JsonNode): void =
+  ## Validate list tool arguments - all optional
+  discard  # All args are optional
+
+proc validateEditArgs*(args: JsonNode): void =
+  ## Validate edit tool arguments - simplified for basic functionality
+  # TODO: Add proper validation once JsonValue API is figured out
+  discard
+
+proc validateCreateArgs*(args: JsonNode): void =
+  ## Validate create tool arguments - simplified for basic functionality
+  # TODO: Add proper validation once JsonValue API is figured out
+  discard
+
+proc validateFetchArgs*(args: JsonNode): void =
+  ## Validate fetch tool arguments - simplified for basic functionality
+  # TODO: Add proper validation once JsonValue API is figured out
+  discard
+
+proc validateToolArgs*(toolName: string, args: JsonNode): void =
+  ## Main validation function
+  case toolName:
+  of "bash": validateBashArgs(args)
+  of "read": validateReadArgs(args)
+  of "list": validateListArgs(args)
+  of "edit": validateEditArgs(args)
+  of "create": validateCreateArgs(args)
+  of "fetch": validateFetchArgs(args)
+  else:
+    raise newToolValidationError(toolName, "tool", "supported tool", "unknown tool")

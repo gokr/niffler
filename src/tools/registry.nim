@@ -1,5 +1,5 @@
 import std/[tables, options, json]
-import ../types/[tools, messages]
+import ../types/tools
 
 type
   ToolRegistry* = object
@@ -10,6 +10,9 @@ proc newToolRegistry*(): ToolRegistry =
 
 proc register*(registry: var ToolRegistry, tool: ToolDef) =
   registry.tools[tool.name] = tool
+
+proc register*(registry: var ToolRegistry, tool: ref ToolDef) =
+  registry.tools[tool.name] = tool[]
 
 proc getTool*(registry: ToolRegistry, name: string): Option[ToolDef] =
   if name in registry.tools:
@@ -46,13 +49,24 @@ proc validateToolCall*(registry: ToolRegistry, toolCall: tools.ToolCall): void =
   if toolCall.arguments.kind != JObject:
     raise newToolValidationError(toolCall.name, "arguments", "object", $toolCall.arguments.kind)
 
-# Global registry instance
-var globalToolRegistry* {.threadvar.}: ToolRegistry
+# Global registry instance - thread-local to avoid GC issues
+var
+  globalToolRegistry* {.threadvar.}: ToolRegistry
+  registryInitialized* {.threadvar.}: bool
+
+proc initGlobalToolRegistry*() =
+  ## Initialize the global tool registry for this thread
+  if not registryInitialized:
+    globalToolRegistry = newToolRegistry()
+    registryInitialized = true
 
 proc getGlobalToolRegistry*(): ptr ToolRegistry =
-  if globalToolRegistry.tools.len == 0:
-    globalToolRegistry = newToolRegistry()
-  return addr globalToolRegistry
+  ## Get pointer to global tool registry for this thread
+  if not registryInitialized:
+    initGlobalToolRegistry()
+  result = addr globalToolRegistry
 
 proc initializeGlobalToolRegistry*() =
-  globalToolRegistry = newToolRegistry()
+  ## Legacy compatibility
+  if not registryInitialized:
+    initGlobalToolRegistry()

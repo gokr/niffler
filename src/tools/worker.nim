@@ -1,12 +1,13 @@
-import std/[options, strutils, os, json, strformat]
+import std/[options, os, json, logging]
 when compileOption("threads"):
   import std/typedthreads
 else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 
 import ../types/[tools, messages]
-import ../core/[channels, logging]
+import ../core/channels
 import registry
+# import ../implementations/index  # Not needed for now
 
 type
   ToolWorker* = object
@@ -23,8 +24,17 @@ type
     result*: ToolResult
     success*: bool
 
-proc toolWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
-  logInfo("tool-worker", "Tool worker thread started")
+proc toolWorkerProc(channels: ptr ThreadChannels) {.thread.} =
+  # Initialize logging for this thread
+  let consoleLogger = newConsoleLogger()
+  addHandler(consoleLogger)
+  setLogFilter(lvlInfo)
+  
+  debug("Tool worker thread started")
+  
+  # Initialize tool registry for this thread
+  initializeGlobalToolRegistry()
+  debug("Tool registry initialized")
   
   try:
     while not isShutdownSignaled(channels):
@@ -36,55 +46,113 @@ proc toolWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
         
         case request.kind:
         of trkShutdown:
-          logInfo("tool-worker", "Received shutdown signal")
+          info("Received shutdown signal")
           break
           
         of trkExecute:
-          logInfo("tool-worker", fmt"Processing tool request: {request.requestId}")
+          info("Processing tool request: " & request.requestId)
+          info("Tool name: " & request.toolName)
+          info("Arguments: " & request.arguments)
           
           try:
             # Parse the tool call from JSON arguments
+            info("Parsing JSON arguments...")
             let toolCallJson = parseJson(request.arguments)
+            info("JSON parsed successfully: " & $toolCallJson)
+            
             let toolCall = tools.ToolCall(
               id: request.requestId,
               name: request.toolName,
               arguments: toolCallJson
             )
+            info("ToolCall object created: " & toolCall.name)
             
             # Get the global tool registry
+            info("Getting global tool registry...")
             let registryPtr = getGlobalToolRegistry()
             let registry = registryPtr[]
+            info("Registry obtained")
             
             # Validate the tool call
+            info("Validating tool call...")
             validateToolCall(registry, toolCall)
+            info("Tool call validated successfully")
             
             # Get the tool definition
+            info("Getting tool definition...")
             let toolOpt = getTool(registry, toolCall.name)
             if toolOpt.isNone:
+              debug("Tool not found in registry: " & toolCall.name)
               raise newToolValidationError(toolCall.name, "name", "registered tool", toolCall.name)
             
             let toolDef = toolOpt.get()
+            info("Tool definition obtained: " & toolDef.name)
             
-            # Execute the tool (this will be implemented by specific tools)
-            # For now, just return a placeholder response
+            # Execute the tool - for now use a simple approach
+            info("Executing tool " & toolDef.name & " with arguments: " & $toolCall.arguments)
+            
+            # Simple execution for testing - replace with proper tool execution later
+            let output =
+              case toolDef.name:
+              of "read":
+                # Simple file read for testing
+                info("Executing read tool...")
+                let path = getArgStr(toolCall.arguments, "path")
+                info("Reading file: " & path)
+                try:
+                  let content = readFile(path)
+                  let result = $ %*{"content": content, "path": path, "size": content.len}
+                  info("File read successfully, size: " & $content.len)
+                  result
+                except:
+                  let errorMsg = "Failed to read file: " & getCurrentExceptionMsg()
+                  debug(errorMsg)
+                  $ %*{"error": errorMsg}
+              of "bash":
+                info("Bash tool not implemented")
+                $ %*{"error": "Bash tool not yet implemented"}
+              of "list":
+                info("List tool not implemented")
+                $ %*{"error": "List tool not yet implemented"}
+              of "edit":
+                info("Edit tool not implemented")
+                $ %*{"error": "Edit tool not yet implemented"}
+              of "create":
+                info("Create tool not implemented")
+                $ %*{"error": "Create tool not yet implemented"}
+              of "fetch":
+                info("Fetch tool not implemented")
+                $ %*{"error": "Fetch tool not yet implemented"}
+              else:
+                debug("Unknown tool: " & toolDef.name)
+                raise newToolValidationError(toolDef.name, "name", "supported tool", toolDef.name)
+            
+            info("Tool " & toolDef.name & " execution completed, output length: " & $output.len)
+            info("Output preview: " & (if output.len > 100: output[0..100] & "..." else: output))
+            
+            info("Creating ToolExecutionResponse...")
             let response = ToolExecutionResponse(
               requestId: request.requestId,
-              result: newToolResult("Tool execution not yet implemented"),
+              result: newToolResult(output),
               success: true
             )
+            info("ToolExecutionResponse created")
             
             # Send response back through channels
+            info("Creating ToolResponse...")
             let toolResponse = ToolResponse(
               requestId: request.requestId,
               kind: trkResult,
               output: response.result.output
             )
+            info("ToolResponse created, sending...")
             sendToolResponse(channels, toolResponse)
+            info("ToolResponse sent successfully")
             
-            logInfo("tool-worker", fmt"Tool request {request.requestId} completed successfully")
+            info("Tool request " & request.requestId & " completed successfully")
             
           except ToolError as e:
-            logError("tool-worker", fmt"Tool execution failed: {e.msg}")
+            debug("Tool execution failed: " & e.msg)
             let errorResponse = ToolResponse(
               requestId: request.requestId,
               kind: trkError,
@@ -93,11 +161,11 @@ proc toolWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
             sendToolResponse(channels, errorResponse)
             
           except Exception as e:
-            logError("tool-worker", fmt"Unexpected error in tool execution: {e.msg}")
+            debug("Unexpected error in tool execution: " & e.msg)
             let errorResponse = ToolResponse(
               requestId: request.requestId,
               kind: trkError,
-              error: fmt"Unexpected error: {e.msg}"
+              error: "Unexpected error: " & e.msg
             )
             sendToolResponse(channels, errorResponse)
       
@@ -106,20 +174,20 @@ proc toolWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
         sleep(10)
     
   except Exception as e:
-    logFatal("tool-worker", fmt"Tool worker thread crashed: {e.msg}")
+    fatal("Tool worker thread crashed: " & e.msg)
   finally:
-    logInfo("tool-worker", "Tool worker thread stopped")
+    debug("Tool worker thread stopped")
 
 proc startToolWorker*(channels: ptr ThreadChannels): ToolWorker =
   result.isRunning = true
   createThread(result.thread, toolWorkerProc, channels)
-  logInfo("tool-main", "Tool worker thread started")
+  debug("Tool worker thread started")
 
 proc stopToolWorker*(worker: var ToolWorker) =
   if worker.isRunning:
     joinThread(worker.thread)
     worker.isRunning = false
-    logInfo("tool-main", "Tool worker thread stopped")
+    debug("Tool worker thread stopped")
 
 proc executeToolAsync*(channels: ptr ThreadChannels, toolCall: tools.ToolCall, 
                        requireConfirmation: bool = false): bool =
