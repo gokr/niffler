@@ -1,4 +1,4 @@
-import std/[strutils, os, times, strformat, osproc, json, streams]
+import std/[strutils, os, times, strformat, osproc, json, streams, logging]
 import ../types/tools
 
 const
@@ -165,7 +165,7 @@ proc getCommandOutput*(command: string, args: seq[string] = @[], timeout: int = 
     let output = process.outputStream.readAll()
     process.close()
     
-    echo "RESULT: " & $(output: output, exitCode: exitCode)
+    debug "Tool result: " & $(output: output, exitCode: exitCode)
     if exitCode != 0:
       raise newToolExecutionError("bash", "Command failed with exit code " & $exitCode, exitCode, output)
     

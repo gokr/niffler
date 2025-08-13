@@ -9,11 +9,7 @@ import ../core/channels
 import bash, create, edit, fetch, list, read
 
 
-type
-  ThreadParams = ref object
-    channels: ptr ThreadChannels
-    debug: bool
-    
+type    
   ToolWorker* = object
     thread: Thread[ThreadParams]
     isRunning: bool
@@ -32,7 +28,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(if params.debug: lvlDebug else: lvlInfo)
+  setLogFilter(params.level)
   
   let channels = params.channels
   
@@ -44,7 +40,6 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
       let maybeRequest = tryReceiveToolRequest(channels)
       if maybeRequest.isSome():
         let request = maybeRequest.get()
-        echo $request
         case request.kind:
         of trkShutdown:
           debug("Received shutdown signal")
@@ -67,7 +62,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               arguments: toolCallJson
             )
 
-            # Execute the tool using registry
+            # Execute the tool call
             debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)
             
             let output = 
@@ -151,9 +146,9 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   finally:
     debug("Tool worker thread stopped")
 
-proc startToolWorker*(channels: ptr ThreadChannels, debug: bool = false): ToolWorker =
+proc startToolWorker*(channels: ptr ThreadChannels, level: Level): ToolWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, debug: debug)
+  let params = ThreadParams(channels: channels, level: level)
   createThread(result.thread, toolWorkerProc, params)
   debug("Tool worker thread started")
 

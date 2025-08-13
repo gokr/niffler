@@ -1,8 +1,12 @@
-import std/[locks, atomics, options]
+import std/[locks, atomics, options, logging]
 import ../types/messages
 import queue
 
 type
+  ThreadParams* = ref object
+    channels*: ptr ThreadChannels
+    level*: Level
+
   ThreadChannels* = object
     # API Thread Communication
     apiRequestChan*: ThreadSafeQueue[APIRequest]

@@ -5,15 +5,15 @@ import ../types/[messages, config as configTypes]
 import ../api/api
 import ../tools/worker
 
-proc initializeAppSystems*(debug: bool = false) =
+proc initializeAppSystems*(level: Level) =
   ## Initialize common app systems
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(if debug: lvlDebug else: lvlInfo)
+  setLogFilter(level)
   initThreadSafeChannels()
   initHistoryManager()
 
-proc startInteractiveUI*(model: string = "", debug: bool = false) =
+proc startInteractiveUI*(model: string = "", level: Level) =
   ## Start the interactive terminal UI
   echo "Starting Niffler interactive mode..."
   echo "Type your messages and press Enter to send. Type '/exit' or '/quit' to leave."
@@ -22,7 +22,7 @@ proc startInteractiveUI*(model: string = "", debug: bool = false) =
   
   # Initialize the app systems
   
-  initializeAppSystems(debug)
+  initializeAppSystems(level)
   
   let channels = getChannels()
   let config = loadConfig()
@@ -48,7 +48,7 @@ proc startInteractiveUI*(model: string = "", debug: bool = false) =
   echo ""
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels, debug)
+  var apiWorker = startAPIWorker(channels, level)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -179,7 +179,7 @@ proc startInteractiveUI*(model: string = "", debug: bool = false) =
   stopAPIWorker(apiWorker)
   closeChannels(channels[])
 
-proc sendSinglePrompt*(text: string, model: string, debug: bool = false) =
+proc sendSinglePrompt*(text: string, model: string, level: Level) =
   ## Send a single prompt and return response
   if text.len == 0:
     echo "Error: No prompt text provided"
@@ -187,19 +187,18 @@ proc sendSinglePrompt*(text: string, model: string, debug: bool = false) =
     
   # Initialize the app systems but don't start the full UI loop
   
-  initializeAppSystems(debug)
+  initializeAppSystems(level)
   
   let channels = getChannels()
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels, debug)
+  var apiWorker = startAPIWorker(channels, level)
   
   # Start tool worker
-  var toolWorker = startToolWorker(channels, debug)
+  var toolWorker = startToolWorker(channels, level)
   
-  echo "Sending prompt..."
   if sendSinglePromptAsync(text, model):
-    echo "Request sent, waiting for response..."
+    debug "Request sent, waiting for response..."
     
     # Wait for response with timeout
     var responseReceived = false
