@@ -4,6 +4,8 @@ import std/logging
 
 proc isDebugEnabled*(): bool =
   ## Check if debug logging is enabled
+  # In Nim, getLogFilter() should return the thread-local filter when called
+  # from within a thread that has had setLogFilter() called on it
   getLogFilter() <= lvlDebug
 
 type
@@ -50,16 +52,16 @@ type
     finishReason*: Option[string]
 
   StreamChunk* = object
-    id: string
-    `object`: string
-    created: int64
-    model: string
-    choices: seq[StreamChoice]
+    id*: string
+    `object`*: string
+    created*: int64
+    model*: string
+    choices*: seq[StreamChoice]
 
   StreamChoice* = object
-    index: int
-    delta: ChatMessage
-    finishReason: Option[string]
+    index*: int
+    delta*: ChatMessage
+    finishReason*: Option[string]
 
 proc newOpenAICompatibleClient*(baseUrl: string, apiKey: string, model: string): OpenAICompatibleClient =
   result.client = newHttpClient(timeout = 60000)  # 60 second timeout
@@ -75,12 +77,13 @@ proc newOpenAICompatibleClient*(baseUrl: string, apiKey: string, model: string):
   
   # Add OpenRouter-specific headers if using OpenRouter
   if baseUrl.contains("openrouter.ai"):
-    result.client.headers["HTTP-Referer"] = "https://niffler.chat"
+    result.client.headers["HTTP-Referer"] = "https://niffler.ai"
     result.client.headers["X-Title"] = "Niffler"
   
   # Debug: Log the authorization header (without the full key for security)
   let authHeader = "Bearer " & (if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey)
-  debug(fmt"Authorization header: {authHeader}")
+  if isDebugEnabled():
+    debug(fmt"Authorization header: {authHeader}")
 
 proc close*(client: var OpenAICompatibleClient) =
   client.client.close()
@@ -319,23 +322,47 @@ proc sendChatRequest*(client: var OpenAICompatibleClient, request: ChatRequest):
     raise newException(IOError, errorMsg)
 
 proc sendStreamingChatRequest*(client: var OpenAICompatibleClient, request: ChatRequest, 
-                              onChunk: proc(chunk: StreamChunk)): string =
+                              onChunk: proc(chunk: StreamChunk) {.gcsafe.}): string {.gcsafe.} =
+  ## Current implementation: simulated streaming from pre-received response
+  ## 
+  ## LIMITATION: Nim's httpclient doesn't support true real-time streaming.
+  ## The response.body contains the complete response that was already received.
+  ## 
+  ## What you're seeing is:
+  ## 1. HTTP request is sent
+  ## 2. Complete response is received and buffered by httpclient  
+  ## 3. We parse the SSE chunks from the buffered response
+  ## 4. We call onChunk() for each parsed chunk (simulating streaming)
+  ## 
+  ## For TRUE real-time streaming, we'd need:
+  ## - Custom socket implementation with SSL/TLS support
+  ## - Incremental response body reading
+  ## - Real-time SSE parsing as bytes arrive
+  
   var streamRequest = request
   streamRequest.stream = true
   
   let url = client.baseUrl & "/chat/completions"
   let jsonBody = $streamRequest.toJson()
   
-  debug(fmt"Sending streaming request to {url}")
+  debug(fmt"Sending streaming request to {url} (simulated streaming)")
   
   try:
+    # This call blocks until the COMPLETE response is received
     let response = client.client.request(url, httpMethod = HttpPost, body = jsonBody)
     
     if not response.status.startsWith("2"):
       let errorMsg = fmt"API request failed with status {response.status}: {response.body}"
       raise newException(IOError, errorMsg)
     
-    # Parse Server-Sent Events (SSE) stream
+    # At this point, response.body contains the COMPLETE streaming response
+    # Now we simulate streaming by parsing it chunk by chunk
+    debug(fmt"Processing simulated stream from {response.body.len} character response")
+    
+    echo "=================================="
+    echo response.body
+    echo "=================================="
+
     var fullContent = ""
     let lines = response.body.splitLines()
     
@@ -344,7 +371,7 @@ proc sendStreamingChatRequest*(client: var OpenAICompatibleClient, request: Chat
         let dataLine = line[6..^1].strip()
         
         if dataLine == "[DONE]":
-          debug("Stream completed")
+          debug("Simulated stream completed")
           break
         
         if dataLine.len > 0:
@@ -355,11 +382,13 @@ proc sendStreamingChatRequest*(client: var OpenAICompatibleClient, request: Chat
             if chunk.choices.len > 0 and chunk.choices[0].delta.content.len > 0:
               fullContent.add(chunk.choices[0].delta.content)
             
+            # This happens immediately after parsing, not as data arrives from network
             onChunk(chunk)
+            
           except JsonParsingError:
-            warn(fmt"Failed to parse chunk: {dataLine}")
+            warn(fmt"Failed to parse simulated chunk: {dataLine}")
           except Exception as e:
-            warn(fmt"Error processing chunk: {e.msg}")
+            warn(fmt"Error processing simulated chunk: {e.msg}")
     
     return fullContent
     

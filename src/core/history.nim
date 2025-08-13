@@ -24,7 +24,7 @@ proc addUserMessage*(content: string): Message =
       content: content
     )
     
-    debug(fmt"Added user message: {content[0..min(50, content.len-1)]}...")
+    debug(fmt"Added user message: {content[0..min(50, content.len-1)]}")
   finally:
     release(globalHistory.lock)
 

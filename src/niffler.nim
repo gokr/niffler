@@ -7,6 +7,8 @@ import ui/cli
 
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
 
+## 
+
 proc version() =
   ## Show current version of Niffler
   echo "Niffler " & VERSION

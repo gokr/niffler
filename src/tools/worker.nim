@@ -1,4 +1,4 @@
-import std/[options, os, json, logging]
+import std/[options, os, json, logging, strformat]
 when compileOption("threads"):
   import std/typedthreads
 else:
@@ -46,13 +46,9 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           break
           
         of trkExecute:
-          debug("Processing tool request: " & request.requestId)
-          debug("Tool name: " & request.toolName)
-          debug("Arguments: " & request.arguments)
-          
+          debug(fmt"Processing tool request '{request.toolName}' ({request.requestId}) with arguments: {request.arguments}")
           try:
             # Parse the tool call from JSON arguments
-            debug("Parsing JSON arguments...")
             let toolCallJson = parseJson(request.arguments)
             debug("JSON parsed successfully: " & $toolCallJson)
             
@@ -104,7 +100,6 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               result: newToolResult(output),
               success: true
             )
-            debug("ToolExecutionResponse created")
             
             # Send response back through channels
             debug("Creating ToolResponse...")
@@ -150,7 +145,6 @@ proc startToolWorker*(channels: ptr ThreadChannels, level: Level): ToolWorker =
   result.isRunning = true
   let params = ThreadParams(channels: channels, level: level)
   createThread(result.thread, toolWorkerProc, params)
-  debug("Tool worker thread started")
 
 proc stopToolWorker*(worker: var ToolWorker) =
   if worker.isRunning:

@@ -215,7 +215,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level) =
             stdout.flushFile()
         of arkStreamComplete:
           echo "\n"
-          echo fmt"[Tokens: {response.usage.totalTokens}]"
+          info fmt"Tokens used: {response.usage.totalTokens}"
           responseReceived = true
         of arkStreamError:
           echo fmt"Error: {response.error}"

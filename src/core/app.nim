@@ -49,7 +49,7 @@ proc sendSinglePromptAsync*(text: string, model: string = ""): bool =
   # Generate request ID
   let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
   
-  info fmt"Sending prompt to {selectedModel.nickname}..."
+  info fmt"Sending prompt to {selectedModel.nickname}"
   
   return sendChatRequestAsync(channels, messages, selectedModel, requestId, apiKey)
 
