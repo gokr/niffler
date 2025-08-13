@@ -18,48 +18,48 @@ This document outlines the features from the original Octofriend (TypeScript) th
 ## Phase 4: Tool System (High Priority)
 
 ### Core Tools Implementation
-- [ ] **bash** - Execute shell commands with timeout and process management
-  - Command execution with proper error handling
-  - Process timeout and signal management  
-  - Output streaming and capture
-  - Working directory and environment control
+- [x] **bash** - Execute shell commands with timeout and process management
+  - [x] Command execution with proper error handling
+  - [x] Process timeout and signal management
+  - [x] Output streaming and capture
+  - [x] Working directory and environment control
 
-- [ ] **read** - Read file contents with change tracking
-  - File timestamp tracking for modifications
-  - Safe reading with encoding detection
-  - Change notification system
-  - File size limits and streaming for large files
+- [x] **read** - Read file contents with change tracking
+  - [x] File timestamp tracking for modifications
+  - [x] Safe reading with encoding detection
+  - [ ] Change notification system
+  - [x] File size limits and streaming for large files
 
-- [ ] **list** - Directory listing with filtering
-  - Directory traversal with depth limits
-  - File/directory filtering and sorting
-  - Permission and metadata display
-  - Hidden file handling
+- [x] **list** - Directory listing with filtering
+  - [x] Directory traversal with depth limits
+  - [x] File/directory filtering and sorting
+  - [x] Permission and metadata display
+  - [x] Hidden file handling
 
-- [ ] **edit** - Advanced file editing operations
-  - Diff-based editing with preview
-  - Append/prepend operations
-  - Rewrite mode with backup
-  - Edit validation and conflict detection
+- [x] **edit** - Advanced file editing operations
+  - [x] Diff-based editing with preview
+  - [x] Append/prepend operations
+  - [x] Rewrite mode with backup
+  - [x] Edit validation and conflict detection
 
-- [ ] **create** - File creation with safety checks
-  - Existence checking and confirmation
-  - Directory creation as needed
-  - Template support
-  - Permission setting
+- [x] **create** - File creation with safety checks
+  - [x] Existence checking and confirmation
+  - [x] Directory creation as needed
+  - [ ] Template support
+  - [x] Permission setting
 
-- [ ] **fetch** - HTTP/HTTPS content fetching
-  - Web scraping with HTML-to-text conversion
-  - Header customization and authentication
-  - Response size limits and streaming
-  - Content type detection and handling
+- [x] **fetch** - HTTP/HTTPS content fetching
+  - [x] Web scraping with HTML-to-text conversion
+  - [x] Header customization and authentication
+  - [x] Response size limits and streaming
+  - [x] Content type detection and handling
 
 ### Tool Infrastructure
-- [ ] Tool validation and argument parsing
+- [x] Tool validation and argument parsing
 - [ ] Tool confirmation system with user interaction
-- [ ] Tool error handling and recovery mechanisms
-- [ ] Tool output processing and formatting
-- [ ] Tool execution queue and threading
+- [x] Tool error handling and recovery mechanisms
+- [x] Tool output processing and formatting
+- [x] Tool execution queue and threading
 
 ## Phase 5: Advanced LLM Integration
 
@@ -251,6 +251,15 @@ This document outlines the features from the original Octofriend (TypeScript) th
 - Minimal Options usage maintained
 - Performance comparable to or better than TypeScript version
 
----
 
-*This roadmap represents a substantial development effort to achieve feature parity with Octofriend. Each phase builds upon the previous ones and represents weeks to months of development work depending on complexity and scope.*
+## Claude Code features
+
+- Time ticking on requests, also counting tokens and showing arrow up down for direction.
+- ESC to interrupt request.
+- Custom /-commands
+- Task with indented arrow showing what was done
+- Markdown rendering
+- Diff rendering with red and gren
+- Always present input box at bottom while rest scrolls by
+- Status indicators at bottom like mode, model etc
+- 

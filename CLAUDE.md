@@ -109,3 +109,44 @@ The tool calling system follows OpenAI's function calling specification:
 - Tool implementations must validate arguments against their schemas
 - Security is paramount - all file paths are sanitized and validated
 - The codebase follows Nim naming conventions and coding style
+
+## Nim Coding Guidelines
+
+### Code Style and Conventions
+- Use camelCase, not snake_case (avoid `_` in naming)
+- Do not shadow the local `result` variable (Nim built-in)
+- Doc comments: `##` below proc signature
+- Prefer generics or object variants over methods and type inheritance
+- Use `return expression` for early exits
+- Prefer direct field access over getters/setters
+- **NO `asyncdispatch`** - use threads or taskpools for concurrency
+- Remove old code during refactoring
+- Import full modules, not selected symbols
+- Use `*` to export fields that should be publicly accessible
+- If something is not exported, export it instead of doing workarounds
+- Do not be afraid to break backwards compatibility
+
+### Function and Return Style
+- **Single-line functions**: Use direct expression without `result =` assignment or `return` statement
+- **Multi-line functions**: Use `result =` assignment and `return` statement for clarity
+- **Early exits**: Use `return value` instead of `result = value; return`
+- **Exception handlers**: Use `return expression` for error cases
+
+### JSON and Data Handling
+- **JSON Object Construction**: Prefer the `%*{}` syntax for clean, readable JSON creation
+- **Content Serialization**: Use centralized utilities for consistent formatting
+- **Error Response Creation**: Use standardized error utilities across all transport layers
+
+### Comments and Documentation
+- Do not add comments talking about how good something is, it is just noise. Be brief.
+- Do not add comments that reflect what has changed, we use git for change tracking, only describe current code
+- Do not add unnecessary commentary or explain code that is self-explanatory
+
+### Refactoring and Code Cleanup
+- **Remove old unused code during refactoring** - We prioritize clean, maintainable code over backwards compatibility
+- When implementing new architecture patterns, completely remove the old implementation patterns
+- Delete deprecated methods, unused types, and obsolete code paths immediately
+- Keep the codebase lean and focused on the current architectural approach
+
+### Testing Best Practices
+- Always end todolists by running all the tests at the end to verify everything compiles and works
