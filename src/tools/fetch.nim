@@ -1,23 +1,65 @@
 import std/[strutils, json, httpclient, uri, htmlparser, xmltree]
-import ../../types/tools
-import ../registry
+import ../types/tools
 
 type
-  FetchTool* = ref object of ToolDef
+  FetchTool* = ref object of InternalTool
 
 proc newFetchTool*(): FetchTool =
   result = FetchTool()
   result.name = "fetch"
   result.description = "Fetch HTTP/HTTPS content with web scraping, authentication, and streaming support"
 
-proc validate*(tool: FetchTool, args: JsonNode) =
-  ## Validate fetch tool arguments
+
+proc htmlToText*(html: string): string =
+  ## Convert HTML to plain text
+  try:
+    let xml = parseHtml(html)
+    var textResult = ""
+    
+    proc extractText(node: XmlNode, text: var string) =
+      if node.kind == xnText:
+        text.add(node.text & " ")
+      elif node.kind == xnElement:
+        for child in node:
+          extractText(child, text)
+        # Add spacing after block elements
+        if node.tag.toLowerAscii() in ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br"]:
+          text.add("\n")
+    
+    extractText(xml, textResult)
+    result = textResult.strip()
+    # Clean up excessive whitespace
+    result = result.multiReplace(("\n\n\n", "\n\n"), ("  ", " "))
+  except:
+    return "Failed to parse HTML content"
+
+proc createHttpClient*(timeout: int): HttpClient =
+  ## Create HTTP client with timeout
+  result = newHttpClient(timeout = timeout)
+  result.headers = newHttpHeaders({
+    "User-Agent": "Niffler/1.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
+  })
+
+proc addCustomHeaders*(client: var HttpClient, headers: JsonNode) =
+  ## Add custom headers to HTTP client
+  if headers.kind == JObject:
+    for key, value in headers:
+      client.headers[key] = value.getStr()
+
+proc execute*(tool: FetchTool, args: JsonNode): string {.gcsafe.} =
+  ## Execute fetch HTTP/HTTPS content operation
+  # Validate arguments
   validateArgs(args, @["url"])
   
   let url = getArgStr(args, "url")
   let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
   let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: 10485760  # 10MB
   let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
+  let headers = if args.hasKey("headers"): args["headers"] else: newJObject()
+  let body = if args.hasKey("body"): getArgStr(args, "body") else: ""
+  let convertToText = if args.hasKey("convert_to_text"): getArgBool(args, "convert_to_text") else: true
   
   # Validate URL
   if url.len == 0:
@@ -48,54 +90,6 @@ proc validate*(tool: FetchTool, args: JsonNode) =
   let validMethods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
   if httpMethod.toUpperAscii() notin validMethods:
     raise newToolValidationError("fetch", "method", "one of: " & validMethods.join(", "), httpMethod)
-
-proc htmlToText*(html: string): string =
-  ## Convert HTML to plain text
-  try:
-    let xml = parseHtml(html)
-    result = ""
-    
-    proc extractText(node: XmlNode) =
-      if node.kind == xnText:
-        result.add(node.text & " ")
-      elif node.kind == xnElement:
-        for child in node:
-          extractText(child)
-        # Add spacing after block elements
-        if node.tag.toLowerAscii() in ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br"]:
-          result.add("\n")
-    
-    extractText(xml)
-    result = result.strip()
-    # Clean up excessive whitespace
-    result = result.multiReplace(("\n\n\n", "\n\n"), ("  ", " "))
-  except:
-    return "Failed to parse HTML content"
-
-proc createHttpClient*(timeout: int): HttpClient =
-  ## Create HTTP client with timeout
-  result = newHttpClient(timeout = timeout)
-  result.headers = newHttpHeaders({
-    "User-Agent": "Niffler/1.0",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5"
-  })
-
-proc addCustomHeaders*(client: var HttpClient, headers: JsonNode) =
-  ## Add custom headers to HTTP client
-  if headers.kind == JObject:
-    for key, value in headers:
-      client.headers[key] = value.getStr()
-
-proc execute*(tool: FetchTool, args: JsonNode): string =
-  ## Execute fetch HTTP/HTTPS content operation
-  let url = getArgStr(args, "url")
-  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
-  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: 10485760  # 10MB
-  let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
-  let headers = if args.hasKey("headers"): args["headers"] else: newJObject()
-  let body = if args.hasKey("body"): getArgStr(args, "body") else: ""
-  let convertToText = if args.hasKey("convert_to_text"): getArgBool(args, "convert_to_text") else: true
   
   try:
     # Create HTTP client
@@ -156,14 +150,3 @@ proc execute*(tool: FetchTool, args: JsonNode): string =
   except:
     let errorMsg = getCurrentExceptionMsg()
     raise newToolExecutionError("fetch", "Failed to fetch URL: " & errorMsg, -1, "")
-
-# Register the tool
-proc registerFetchTool*() =
-  let tool = newFetchTool()
-  let registryPtr = getGlobalToolRegistry()
-  var registry = registryPtr[]
-  registry.register(tool)
-
-# Create the tool definition for the registry
-when isMainModule:
-  registerFetchTool()

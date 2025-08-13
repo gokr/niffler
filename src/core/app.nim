@@ -2,8 +2,7 @@ import std/[options, os, strformat]
 import std/logging
 import channels, history, config
 import ../types/[messages, history as historyTypes, config as configTypes]
-import ../api/worker
-import ../tools/implementations/index
+import ../api/api
 import ../tools/worker
 
 var apiWorker: APIWorker
@@ -19,10 +18,7 @@ proc startApp*() =
   setLogFilter(lvlInfo)
   initThreadSafeChannels()
   initHistoryManager()
-  
-  # Register all tools
-  registerAllTools()
-  
+    
   let channels = getChannels()
   
   debug("Starting API worker thread...")

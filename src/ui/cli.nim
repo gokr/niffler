@@ -2,22 +2,18 @@ import std/[os, strutils, strformat]
 import std/logging
 import ../core/[app, channels, history, config]
 import ../types/[messages, config as configTypes]
-import ../api/worker
+import ../api/api
 import ../tools/worker
-import ../tools/implementations/index
 
-proc initializeAppSystems*() =
+proc initializeAppSystems*(debug: bool = false) =
   ## Initialize common app systems
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(lvlInfo)
+  setLogFilter(if debug: lvlDebug else: lvlInfo)
   initThreadSafeChannels()
   initHistoryManager()
-  
-  # Register all tools
-  registerAllTools()
 
-proc startInteractiveUI*(model: string = "") =
+proc startInteractiveUI*(model: string = "", debug: bool = false) =
   ## Start the interactive terminal UI
   echo "Starting Niffler interactive mode..."
   echo "Type your messages and press Enter to send. Type '/exit' or '/quit' to leave."
@@ -26,7 +22,7 @@ proc startInteractiveUI*(model: string = "") =
   
   # Initialize the app systems
   
-  initializeAppSystems()
+  initializeAppSystems(debug)
   
   let channels = getChannels()
   let config = loadConfig()
@@ -52,7 +48,7 @@ proc startInteractiveUI*(model: string = "") =
   echo ""
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels)
+  var apiWorker = startAPIWorker(channels, debug)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -183,7 +179,7 @@ proc startInteractiveUI*(model: string = "") =
   stopAPIWorker(apiWorker)
   closeChannels(channels[])
 
-proc sendSinglePrompt*(text: string, model: string) =
+proc sendSinglePrompt*(text: string, model: string, debug: bool = false) =
   ## Send a single prompt and return response
   if text.len == 0:
     echo "Error: No prompt text provided"
@@ -191,15 +187,15 @@ proc sendSinglePrompt*(text: string, model: string) =
     
   # Initialize the app systems but don't start the full UI loop
   
-  initializeAppSystems()
+  initializeAppSystems(debug)
   
   let channels = getChannels()
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels)
+  var apiWorker = startAPIWorker(channels, debug)
   
   # Start tool worker
-  var toolWorker = startToolWorker(channels)
+  var toolWorker = startToolWorker(channels, debug)
   
   echo "Sending prompt..."
   if sendSinglePromptAsync(text, model):

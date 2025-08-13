@@ -31,10 +31,10 @@ proc prompt(text: string = "", model: string = "", debug: bool = false) =
   
   if text.len == 0:
     # Start interactive UI
-    startInteractiveUI(model)
+    startInteractiveUI(model, debug)
   else:
     # Send single prompt
-    sendSinglePrompt(text, model)
+    sendSinglePrompt(text, model, debug)
 
 when isMainModule:
   dispatchMulti([version], [init], [list], [prompt])

@@ -88,11 +88,11 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to replicat
 - [ ] Multi-turn conversation with tool results
 - [ ] Error recovery for failed tool calls
 
-#### 5.3: Provider Support
-- [ ] Anthropic API client with tool use format
-- [ ] Thinking/reasoning content parsing
-- [ ] Provider auto-detection and routing
-- [ ] Custom endpoint configuration
+#### 5.3: Enhanced Tool Integration  
+- [ ] Real-time streaming during tool execution
+- [ ] Tool confirmation UI with user prompts
+- [ ] Tool result formatting and display
+- [ ] Concurrent tool execution optimization
 
 #### 5.4: Context Management
 - [ ] Token counting per model

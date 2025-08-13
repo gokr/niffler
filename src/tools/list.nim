@@ -1,10 +1,9 @@
 import std/[os, strutils, times, json, algorithm]
-import ../../types/tools
-import ../common
-import ../registry
+import ../types/tools
+import common
 
 type
-  ListTool* = ref object of ToolDef
+  ListTool* = ref object of InternalTool
 
   ListEntry = object
     name: string
@@ -22,42 +21,6 @@ proc newListTool*(): ListTool =
   result.name = "list"
   result.description = "List directory contents with filtering, sorting, and metadata"
 
-proc validate*(tool: ListTool, args: JsonNode) =
-  ## Validate list tool arguments
-  validateArgs(args, @["path"])
-  
-  let path = getArgStr(args, "path")
-  let recursive = if args.hasKey("recursive"): getArgBool(args, "recursive") else: false
-  let maxDepth = if args.hasKey("max_depth"): getArgInt(args, "max_depth") else: 10
-  let includeHidden = if args.hasKey("include_hidden"): getArgBool(args, "include_hidden") else: false
-  let sortBy = if args.hasKey("sort_by"): getArgStr(args, "sort_by") else: "name"
-  let sortOrder = if args.hasKey("sort_order"): getArgStr(args, "sort_order") else: "asc"
-  
-  # Validate path
-  if path.len == 0:
-    raise newToolValidationError("list", "path", "non-empty string", "empty string")
-  
-  let sanitizedPath = sanitizePath(path)
-  
-  # Check if directory exists
-  validateDirectoryExists(sanitizedPath)
-  
-  # Validate max_depth
-  if maxDepth <= 0:
-    raise newToolValidationError("list", "max_depth", "positive integer", $maxDepth)
-  
-  if maxDepth > 100:
-    raise newToolValidationError("list", "max_depth", "depth under 100", $maxDepth)
-  
-  # Validate sort_by
-  let validSortBy = ["name", "size", "modified", "type"]
-  if sortBy notin validSortBy:
-    raise newToolValidationError("list", "sort_by", "one of: " & validSortBy.join(", "), sortBy)
-  
-  # Validate sort_order
-  let validSortOrder = ["asc", "desc"]
-  if sortOrder notin validSortOrder:
-    raise newToolValidationError("list", "sort_order", "one of: " & validSortOrder.join(", "), sortOrder)
 
 proc getPermissions*(path: string): string =
   ## Get file permissions as a string (rwx format)
@@ -153,8 +116,11 @@ proc sortEntries*(entries: var seq[ListEntry], sortBy: string, sortOrder: string
   
   entries.sort(compare)
 
-proc execute*(tool: ListTool, args: JsonNode): string =
+proc execute*(tool: ListTool, args: JsonNode): string {.gcsafe.} =
   ## Execute list directory operation
+  # Validate arguments
+  validateArgs(args, @["path"])
+  
   let path = getArgStr(args, "path")
   let recursive = if args.hasKey("recursive"): getArgBool(args, "recursive") else: false
   let maxDepth = if args.hasKey("max_depth"): getArgInt(args, "max_depth") else: 10
@@ -163,7 +129,31 @@ proc execute*(tool: ListTool, args: JsonNode): string =
   let sortOrder = if args.hasKey("sort_order"): getArgStr(args, "sort_order") else: "asc"
   let filterType = if args.hasKey("filter_type"): getArgStr(args, "filter_type") else: ""
   
+  # Validate path
+  if path.len == 0:
+    raise newToolValidationError("list", "path", "non-empty string", "empty string")
+  
+  # Validate max_depth
+  if maxDepth <= 0:
+    raise newToolValidationError("list", "max_depth", "positive integer", $maxDepth)
+  
+  if maxDepth > 100:
+    raise newToolValidationError("list", "max_depth", "depth under 100", $maxDepth)
+  
+  # Validate sort_by
+  let validSortBy = ["name", "size", "modified", "type"]
+  if sortBy notin validSortBy:
+    raise newToolValidationError("list", "sort_by", "one of: " & validSortBy.join(", "), sortBy)
+  
+  # Validate sort_order
+  let validSortOrder = ["asc", "desc"]
+  if sortOrder notin validSortOrder:
+    raise newToolValidationError("list", "sort_order", "one of: " & validSortOrder.join(", "), sortOrder)
+  
   let sanitizedPath = sanitizePath(path)
+  
+  # Check if directory exists
+  validateDirectoryExists(sanitizedPath)
   
   try:
     # Get directory entries
@@ -219,14 +209,3 @@ proc execute*(tool: ListTool, args: JsonNode): string =
     raise e
   except Exception as e:
     raise newToolExecutionError("list", "Failed to list directory: " & e.msg, -1, "")
-
-# Register the tool
-proc registerListTool*() =
-  let tool = newListTool()
-  let registryPtr = getGlobalToolRegistry()
-  var registry = registryPtr[]
-  registry.register(tool)
-
-# Create the tool definition for the registry
-when isMainModule:
-  registerListTool()

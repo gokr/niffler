@@ -10,8 +10,12 @@ import http_client
 import ../tools/schemas
 
 type
+  ThreadParams = ref object
+    channels: ptr ThreadChannels
+    debug: bool
+    
   APIWorker* = object
-    thread: Thread[ptr ThreadChannels]
+    thread: Thread[ThreadParams]
     client: OpenAICompatibleClient
     isRunning: bool
 
@@ -28,11 +32,13 @@ proc convertToLLMToolCalls*(chatToolCalls: seq[ChatToolCall]): seq[LLMToolCall] 
       )
     ))
 
-proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
+proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(lvlInfo)
+  setLogFilter(if params.debug: lvlDebug else: lvlInfo)
+  
+  let channels = params.channels
   
   debug("API worker thread started")
   incrementActiveThreads(channels)
@@ -152,19 +158,24 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
                     toolName: toolCall.function.name,
                     arguments: toolCall.function.arguments
                   )
+                  debug("TOOL REQUEST: " & $toolRequest)
                   
                   if trySendToolRequest(channels, toolRequest):
                     # Wait for tool response
                     var attempts = 0
-                    while attempts < 100:  # Timeout after ~10 seconds
+                    while attempts < 300:  # Timeout after ~30 seconds
                       let maybeResponse = tryReceiveToolResponse(channels)
                       if maybeResponse.isSome():
                         let toolResponse = maybeResponse.get()
+                        debug("TOOL RESPONSE: " & $toolResponse)
                         if toolResponse.requestId == toolCall.id:
                           # Create tool result message
+                          let toolContent = if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}"
+                          debug(fmt"Tool result received for {toolCall.function.name}: {toolContent[0..min(200, toolContent.len-1)]}...")
+                          
                           let toolResultMsg = Message(
                             role: mrTool,
-                            content: if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}",
+                            content: toolContent,
                             toolCallId: some(toolCall.id)
                           )
                           allToolResults.add(toolResultMsg)
@@ -172,7 +183,7 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
                       sleep(100)
                       attempts += 1
                     
-                    if attempts >= 100:
+                    if attempts >= 300:
                       # Tool execution timed out
                       let errorMsg = Message(
                         role: mrTool,
@@ -202,12 +213,11 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
                     content: message.content,
                     toolCalls: some(convertToLLMToolCalls(message.toolCalls.get()))
                   ))
-                  
                   # Add all tool result messages
                   for toolResult in allToolResults:
                     updatedMessages.add(toolResult)
-                  
                   # Create follow-up request to continue conversation
+                  debug(fmt"Creating follow-up request with {updatedMessages.len} messages")
                   let followUpRequest = createChatRequest(
                     request.model,
                     updatedMessages,
@@ -217,7 +227,9 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
                     tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
                   )
                   
+                  debug("Sending follow-up request to LLM with tool results...")
                   let followUpResponse = client.sendChatRequest(followUpRequest)
+                  debug(fmt"Follow-up response received, {followUpResponse.choices.len} choices")
                   if followUpResponse.choices.len > 0:
                     let finalContent = followUpResponse.choices[0].message.content
                     
@@ -244,6 +256,7 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
                     sendAPIResponse(channels, completeResponse)
                     
                     debug(fmt"Tool calling conversation completed for request {request.requestId}")
+                    debug("Successfully sent final response back to user")
                 else:
                   # No valid tool results, send error
                   let errorResponse = APIResponse(
@@ -312,9 +325,10 @@ proc apiWorkerProc(channels: ptr ThreadChannels) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, debug: bool = false): APIWorker =
   result.isRunning = true
-  createThread(result.thread, apiWorkerProc, channels)
+  let params = ThreadParams(channels: channels, debug: debug)
+  createThread(result.thread, apiWorkerProc, params)
   debug("API worker thread started")
 
 proc stopAPIWorker*(worker: var APIWorker) =

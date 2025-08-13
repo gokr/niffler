@@ -62,7 +62,7 @@ type
     finishReason: Option[string]
 
 proc newOpenAICompatibleClient*(baseUrl: string, apiKey: string, model: string): OpenAICompatibleClient =
-  result.client = newHttpClient()
+  result.client = newHttpClient(timeout = 60000)  # 60 second timeout
   result.baseUrl = baseUrl
   result.apiKey = apiKey
   result.model = model

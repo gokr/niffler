@@ -6,12 +6,16 @@ else:
 
 import ../types/[tools, messages]
 import ../core/channels
-import registry
-# import ../implementations/index  # Not needed for now
+import bash, create, edit, fetch, list, read
+
 
 type
+  ThreadParams = ref object
+    channels: ptr ThreadChannels
+    debug: bool
+    
   ToolWorker* = object
-    thread: Thread[ptr ThreadChannels]
+    thread: Thread[ThreadParams]
     isRunning: bool
 
   ToolExecutionRequest* = object
@@ -24,132 +28,101 @@ type
     result*: ToolResult
     success*: bool
 
-proc toolWorkerProc(channels: ptr ThreadChannels) {.thread.} =
+proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(lvlInfo)
+  setLogFilter(if params.debug: lvlDebug else: lvlInfo)
+  
+  let channels = params.channels
   
   debug("Tool worker thread started")
-  
-  # Initialize tool registry for this thread
-  initializeGlobalToolRegistry()
-  debug("Tool registry initialized")
-  
+    
   try:
     while not isShutdownSignaled(channels):
       # Check for tool requests
       let maybeRequest = tryReceiveToolRequest(channels)
-      
       if maybeRequest.isSome():
         let request = maybeRequest.get()
-        
+        echo $request
         case request.kind:
         of trkShutdown:
-          info("Received shutdown signal")
+          debug("Received shutdown signal")
           break
           
         of trkExecute:
-          info("Processing tool request: " & request.requestId)
-          info("Tool name: " & request.toolName)
-          info("Arguments: " & request.arguments)
+          debug("Processing tool request: " & request.requestId)
+          debug("Tool name: " & request.toolName)
+          debug("Arguments: " & request.arguments)
           
           try:
             # Parse the tool call from JSON arguments
-            info("Parsing JSON arguments...")
+            debug("Parsing JSON arguments...")
             let toolCallJson = parseJson(request.arguments)
-            info("JSON parsed successfully: " & $toolCallJson)
+            debug("JSON parsed successfully: " & $toolCallJson)
             
             let toolCall = tools.ToolCall(
               id: request.requestId,
               name: request.toolName,
               arguments: toolCallJson
             )
-            info("ToolCall object created: " & toolCall.name)
+
+            # Execute the tool using registry
+            debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)
             
-            # Get the global tool registry
-            info("Getting global tool registry...")
-            let registryPtr = getGlobalToolRegistry()
-            let registry = registryPtr[]
-            info("Registry obtained")
+            let output = 
+              try:
+                # Execute the tool using direct implementation lookup
+                let result = case toolCall.name:
+                  of "bash":
+                    newBashTool().execute(toolCall.arguments)
+                  of "read":
+                    newReadTool().execute(toolCall.arguments)
+                  of "list":
+                    newListTool().execute(toolCall.arguments)
+                  of "edit":
+                    newEditTool().execute(toolCall.arguments)
+                  of "create":
+                    newCreateTool().execute(toolCall.arguments)
+                  of "fetch":
+                    newFetchTool().execute(toolCall.arguments)
+                  else:
+                    raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
+                
+                debug("Tool execution successful, result length: " & $result.len)
+                result
+              except ToolError as e:
+                let errorMsg = "Tool execution error: " & e.msg
+                warn(errorMsg)
+                $ %*{"error": errorMsg, "tool": toolCall.name}
+              except Exception as e:
+                let errorMsg = "Unexpected error executing tool " & toolCall.name & ": " & e.msg
+                error(errorMsg)
+                $ %*{"error": errorMsg, "tool": toolCall.name}
             
-            # Validate the tool call
-            info("Validating tool call...")
-            validateToolCall(registry, toolCall)
-            info("Tool call validated successfully")
+            debug("Tool " & toolCall.name & " execution completed, output length: " & $output.len)
+            debug("Output preview: " & (if output.len > 100: output[0..100] & "..." else: output))
             
-            # Get the tool definition
-            info("Getting tool definition...")
-            let toolOpt = getTool(registry, toolCall.name)
-            if toolOpt.isNone:
-              debug("Tool not found in registry: " & toolCall.name)
-              raise newToolValidationError(toolCall.name, "name", "registered tool", toolCall.name)
-            
-            let toolDef = toolOpt.get()
-            info("Tool definition obtained: " & toolDef.name)
-            
-            # Execute the tool - for now use a simple approach
-            info("Executing tool " & toolDef.name & " with arguments: " & $toolCall.arguments)
-            
-            # Simple execution for testing - replace with proper tool execution later
-            let output =
-              case toolDef.name:
-              of "read":
-                # Simple file read for testing
-                info("Executing read tool...")
-                let path = getArgStr(toolCall.arguments, "path")
-                info("Reading file: " & path)
-                try:
-                  let content = readFile(path)
-                  let result = $ %*{"content": content, "path": path, "size": content.len}
-                  info("File read successfully, size: " & $content.len)
-                  result
-                except:
-                  let errorMsg = "Failed to read file: " & getCurrentExceptionMsg()
-                  debug(errorMsg)
-                  $ %*{"error": errorMsg}
-              of "bash":
-                info("Bash tool not implemented")
-                $ %*{"error": "Bash tool not yet implemented"}
-              of "list":
-                info("List tool not implemented")
-                $ %*{"error": "List tool not yet implemented"}
-              of "edit":
-                info("Edit tool not implemented")
-                $ %*{"error": "Edit tool not yet implemented"}
-              of "create":
-                info("Create tool not implemented")
-                $ %*{"error": "Create tool not yet implemented"}
-              of "fetch":
-                info("Fetch tool not implemented")
-                $ %*{"error": "Fetch tool not yet implemented"}
-              else:
-                debug("Unknown tool: " & toolDef.name)
-                raise newToolValidationError(toolDef.name, "name", "supported tool", toolDef.name)
-            
-            info("Tool " & toolDef.name & " execution completed, output length: " & $output.len)
-            info("Output preview: " & (if output.len > 100: output[0..100] & "..." else: output))
-            
-            info("Creating ToolExecutionResponse...")
+            debug("Creating ToolExecutionResponse...")
             let response = ToolExecutionResponse(
               requestId: request.requestId,
               result: newToolResult(output),
               success: true
             )
-            info("ToolExecutionResponse created")
+            debug("ToolExecutionResponse created")
             
             # Send response back through channels
-            info("Creating ToolResponse...")
+            debug("Creating ToolResponse...")
             let toolResponse = ToolResponse(
               requestId: request.requestId,
               kind: trkResult,
               output: response.result.output
             )
-            info("ToolResponse created, sending...")
+            debug("ToolResponse created, sending...")
             sendToolResponse(channels, toolResponse)
-            info("ToolResponse sent successfully")
+            debug("ToolResponse sent successfully")
             
-            info("Tool request " & request.requestId & " completed successfully")
+            debug("Tool request " & request.requestId & " completed successfully")
             
           except ToolError as e:
             debug("Tool execution failed: " & e.msg)
@@ -178,9 +151,10 @@ proc toolWorkerProc(channels: ptr ThreadChannels) {.thread.} =
   finally:
     debug("Tool worker thread stopped")
 
-proc startToolWorker*(channels: ptr ThreadChannels): ToolWorker =
+proc startToolWorker*(channels: ptr ThreadChannels, debug: bool = false): ToolWorker =
   result.isRunning = true
-  createThread(result.thread, toolWorkerProc, channels)
+  let params = ThreadParams(channels: channels, debug: debug)
+  createThread(result.thread, toolWorkerProc, params)
   debug("Tool worker thread started")
 
 proc stopToolWorker*(worker: var ToolWorker) =

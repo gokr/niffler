@@ -1,4 +1,4 @@
-import std/[strutils, os, times, strformat, osproc, json]
+import std/[strutils, os, times, strformat, osproc, json, streams]
 import ../types/tools
 
 const
@@ -6,20 +6,20 @@ const
   MAX_FILE_SIZE* = 1024 * 1024 * 10  # 10MB default max file size
   DEFAULT_TIMEOUT* = 30000  # 30 seconds default timeout
 
-proc attempt*[T](errMessage: string, callback: proc(): T): T =
+proc attempt*[T](errMessage: string, callback: proc(): T {.gcsafe.}): T {.gcsafe.} =
   ## Helper to wrap operations with consistent error handling
   try:
     return callback()
   except:
     raise newToolError("unknown", errMessage)
 
-proc attemptUntrackedStat*(path: string): FileInfo =
+proc attemptUntrackedStat*(path: string): FileInfo {.gcsafe.} =
   ## Attempt to stat a file without tracking it
   return attempt(fmt"Could not stat({path}): does the file exist?", proc(): FileInfo =
     getFileInfo(path)
   )
 
-proc attemptUntrackedRead*(path: string): string =
+proc attemptUntrackedRead*(path: string): string {.gcsafe.} =
   ## Attempt to read a file without tracking it
   return attempt(fmt"{path} couldn't be read", proc(): string =
     readFile(path)
@@ -146,19 +146,36 @@ proc getCommandOutput*(command: string, args: seq[string] = @[], timeout: int = 
   let fullCmd = if args.len > 0: command & " " & args.join(" ") else: command
   
   try:
-    when defined(windows):
-      let cmdResult = execCmdEx("cmd /c " & fullCmd)
+    let process = when defined(windows):
+      startProcess("cmd", workingDir = getCurrentDir(), args = ["/c", fullCmd], options = {poUsePath, poStdErrToStdOut})
     else:
-      let cmdResult = execCmdEx("bash -c " & fullCmd)
+      startProcess("bash", workingDir = getCurrentDir(), args = ["-c", fullCmd], options = {poUsePath, poStdErrToStdOut})
     
-    if cmdResult.exitCode != 0:
-      raise newToolExecutionError("bash", "Command failed with exit code " & $cmdResult.exitCode, cmdResult.exitCode, cmdResult.output)
+    # waitForExit returns the exit code and takes timeout in milliseconds
+    let exitCode = process.waitForExit(timeout)
     
-    return cmdResult.output
-  except CatchableError:
-    raise newToolTimeoutError("bash", timeout)
+    if exitCode == -1:
+      # Timeout occurred (process was still running)
+      process.terminate()
+      let _ = process.waitForExit(1000)  # Wait up to 1s for termination
+      process.close()
+      raise newToolTimeoutError("bash", timeout)
+    
+    # Read the output
+    let output = process.outputStream.readAll()
+    process.close()
+    
+    echo "RESULT: " & $(output: output, exitCode: exitCode)
+    if exitCode != 0:
+      raise newToolExecutionError("bash", "Command failed with exit code " & $exitCode, exitCode, output)
+    
+    return output
+  except ToolError:
+    raise  # Re-raise tool errors as-is
   except OSError as e:
     raise newToolExecutionError("bash", "Command execution failed: " & e.msg, -1, "")
+  except Exception as e:
+    raise newToolExecutionError("bash", "Unexpected error: " & e.msg, -1, "")
 
 # Simplified validation functions for basic functionality
 proc validateBashArgs*(args: JsonNode): void =

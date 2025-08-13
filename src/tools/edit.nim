@@ -1,10 +1,9 @@
 import std/[strutils, json]
-import ../../types/tools
-import ../common
-import ../registry
+import ../types/tools
+import common
 
 type
-  EditTool* = ref object of ToolDef
+  EditTool* = ref object of InternalTool
 
   EditOperation = enum
     Replace, Insert, Delete, Append, Prepend, Rewrite
@@ -23,68 +22,8 @@ proc newEditTool*(): EditTool =
   result.name = "edit"
   result.description = "Edit file content with diff-based editing, append/prepend operations, and backup functionality"
 
-proc validate*(tool: EditTool, args: JsonNode) =
-  ## Validate edit tool arguments
-  validateArgs(args, @["path", "operation"])
-  
-  let path = getArgStr(args, "path")
-  let operation = getArgStr(args, "operation")
-  let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: true
-  let confirmChanges = if args.hasKey("confirm_changes"): getArgBool(args, "confirm_changes") else: true
-  
-  # Validate path
-  if path.len == 0:
-    raise newToolValidationError("edit", "path", "non-empty string", "empty string")
-  
-  let sanitizedPath = sanitizePath(path)
-  
-  # Check if file exists (except for create operation)
-  if operation.toLowerAscii() != "create":
-    validateFileExists(sanitizedPath)
-    validateFileReadable(sanitizedPath)
-    validateFileWritable(sanitizedPath)
-  
-  # Validate operation
-  let validOperations = ["replace", "insert", "delete", "append", "prepend", "rewrite"]
-  if operation.toLowerAscii() notin validOperations:
-    raise newToolValidationError("edit", "operation", "one of: " & validOperations.join(", "), operation)
-  
-  # Validate operation-specific arguments
-  case operation.toLowerAscii():
-    of "replace":
-      if not args.hasKey("old_text") or not args.hasKey("new_text"):
-        raise newToolValidationError("edit", "old_text/new_text", "required for replace operation", "missing")
-    of "insert":
-      if not args.hasKey("new_text"):
-        raise newToolValidationError("edit", "new_text", "required for insert operation", "missing")
-      if not args.hasKey("line_range"):
-        raise newToolValidationError("edit", "line_range", "required for insert operation", "missing")
-    of "delete":
-      if not args.hasKey("old_text"):
-        raise newToolValidationError("edit", "old_text", "required for delete operation", "missing")
-    of "append", "prepend":
-      if not args.hasKey("new_text"):
-        raise newToolValidationError("edit", "new_text", "required for append/prepend operation", "missing")
-    of "rewrite":
-      if not args.hasKey("new_text"):
-        raise newToolValidationError("edit", "new_text", "required for rewrite operation", "missing")
-  
-  # Validate line_range if present
-  if args.hasKey("line_range"):
-    let lineRange = args["line_range"]
-    if lineRange.kind != JArray or lineRange.len != 2:
-      raise newToolValidationError("edit", "line_range", "array of 2 integers", "invalid format")
-    
-    let startLine = lineRange[0].getInt()
-    let endLine = lineRange[1].getInt()
-    
-    if startLine <= 0 or endLine <= 0:
-      raise newToolValidationError("edit", "line_range", "positive integers", "invalid values")
-    
-    if startLine > endLine:
-      raise newToolValidationError("edit", "line_range", "start <= end", "invalid range")
 
-proc createBackup*(originalPath: string): string =
+proc createBackup*(originalPath: string): string {.gcsafe.} =
   ## Create a backup of the original file
   let backupPath = createBackupPath(originalPath)
   let content = attemptUntrackedRead(originalPath)
@@ -95,7 +34,7 @@ proc createBackup*(originalPath: string): string =
   except IOError as e:
     raise newToolExecutionError("edit", "Failed to create backup: " & e.msg, -1, "")
 
-proc findTextInFile*(path: string, searchText: string): tuple[found: bool, lineRange: tuple[start: int, `end`: int]] =
+proc findTextInFile*(path: string, searchText: string): tuple[found: bool, lineRange: tuple[start: int, `end`: int]] {.gcsafe.} =
   ## Find text in file and return its line range
   let content = attemptUntrackedRead(path)
   let lines = content.splitLines()
@@ -167,8 +106,11 @@ proc rewriteFile*(path: string, newText: string): string =
   ## Rewrite entire file with new content
   return newText
 
-proc execute*(tool: EditTool, args: JsonNode): string =
+proc execute*(tool: EditTool, args: JsonNode): string {.gcsafe.} =
   ## Execute edit file operation
+  # Validate arguments
+  validateArgs(args, @["path", "operation"])
+  
   let path = getArgStr(args, "path")
   let operation = getArgStr(args, "operation")
   let oldText = if args.hasKey("old_text"): getArgStr(args, "old_text") else: ""
@@ -176,12 +118,62 @@ proc execute*(tool: EditTool, args: JsonNode): string =
   let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: true
   let confirmChanges = if args.hasKey("confirm_changes"): getArgBool(args, "confirm_changes") else: true
   
+  # Validate path
+  if path.len == 0:
+    raise newToolValidationError("edit", "path", "non-empty string", "empty string")
+  
+  # Validate operation
+  let validOperations = ["replace", "insert", "delete", "append", "prepend", "rewrite"]
+  if operation.toLowerAscii() notin validOperations:
+    raise newToolValidationError("edit", "operation", "one of: " & validOperations.join(", "), operation)
+  
+  # Validate operation-specific arguments
+  case operation.toLowerAscii():
+    of "replace":
+      if not args.hasKey("old_text") or not args.hasKey("new_text"):
+        raise newToolValidationError("edit", "old_text/new_text", "required for replace operation", "missing")
+    of "insert":
+      if not args.hasKey("new_text"):
+        raise newToolValidationError("edit", "new_text", "required for insert operation", "missing")
+      if not args.hasKey("line_range"):
+        raise newToolValidationError("edit", "line_range", "required for insert operation", "missing")
+    of "delete":
+      if not args.hasKey("old_text"):
+        raise newToolValidationError("edit", "old_text", "required for delete operation", "missing")
+    of "append", "prepend":
+      if not args.hasKey("new_text"):
+        raise newToolValidationError("edit", "new_text", "required for append/prepend operation", "missing")
+    of "rewrite":
+      if not args.hasKey("new_text"):
+        raise newToolValidationError("edit", "new_text", "required for rewrite operation", "missing")
+  
+  # Validate line_range if present
+  if args.hasKey("line_range"):
+    let lineRange = args["line_range"]
+    if lineRange.kind != JArray or lineRange.len != 2:
+      raise newToolValidationError("edit", "line_range", "array of 2 integers", "invalid format")
+    
+    let startLine = lineRange[0].getInt()
+    let endLine = lineRange[1].getInt()
+    
+    if startLine <= 0 or endLine <= 0:
+      raise newToolValidationError("edit", "line_range", "positive integers", "invalid values")
+    
+    if startLine > endLine:
+      raise newToolValidationError("edit", "line_range", "start <= end", "invalid range")
+  
   var lineRange: tuple[start: int, `end`: int] = (0, 0)
   if args.hasKey("line_range"):
     let lr = args["line_range"]
     lineRange = (start: lr[0].getInt(), `end`: lr[1].getInt())
   
   let sanitizedPath = sanitizePath(path)
+  
+  # Check if file exists (except for create operation)
+  if operation.toLowerAscii() != "create":
+    validateFileExists(sanitizedPath)
+    validateFileReadable(sanitizedPath)
+    validateFileWritable(sanitizedPath)
   
   try:
     # Read original content
@@ -273,14 +265,3 @@ proc execute*(tool: EditTool, args: JsonNode): string =
     raise e
   except Exception as e:
     raise newToolExecutionError("edit", "Failed to edit file: " & e.msg, -1, "")
-
-# Register the tool
-proc registerEditTool*() =
-  let tool = newEditTool()
-  let registryPtr = getGlobalToolRegistry()
-  var registry = registryPtr[]
-  registry.register(tool)
-
-# Create the tool definition for the registry
-when isMainModule:
-  registerEditTool()

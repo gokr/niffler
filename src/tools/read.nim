@@ -1,44 +1,15 @@
 import std/[os, streams, times, strutils, json]
-import ../../types/tools
-import ../common
-import ../registry
+import ../types/tools
+import common
 
 type
-  ReadTool* = ref object of ToolDef
+  ReadTool* = ref object of InternalTool
 
 proc newReadTool*(): ReadTool =
   result = ReadTool()
   result.name = "read"
   result.description = "Read file content with encoding detection and size limits"
 
-proc validate*(tool: ReadTool, args: JsonNode) =
-  ## Validate read tool arguments
-  validateArgs(args, @["path"])
-  
-  let path = getArgStr(args, "path")
-  let encoding = getOptArgStr(args, "encoding", "auto")
-  let maxSize = getOptArgInt(args, "max_size", 10485760)  # 10MB default
-  
-  # Validate path
-  if path.len == 0:
-    raise newToolValidationError("read", "path", "non-empty string", "empty string")
-  
-  # Sanitize path
-  let sanitizedPath = sanitizePath(path)
-  
-  # Check if file exists
-  validateFileExists(sanitizedPath)
-  
-  # Validate max_size
-  if maxSize <= 0:
-    raise newToolValidationError("read", "max_size", "positive integer", $maxSize)
-  
-  if maxSize > 100 * 1024 * 1024:  # 100MB limit
-    raise newToolValidationError("read", "max_size", "size under 100MB", $maxSize)
-  
-  # Validate encoding
-  if encoding != "auto" and encoding notin ["utf-8", "utf-16", "utf-32", "ascii", "latin1"]:
-    raise newToolValidationError("read", "encoding", "valid encoding", encoding)
 
 proc detectFileEncoding*(path: string): string =
   ## Simple file encoding detection
@@ -71,13 +42,34 @@ proc detectFileEncoding*(path: string): string =
   # Default to utf-8
   return "utf-8"
 
-proc execute*(tool: ReadTool, args: JsonNode): string =
+proc execute*(tool: ReadTool, args: JsonNode): string {.gcsafe.} =
   ## Execute read file operation
+  # Validate arguments
+  validateArgs(args, @["path"])
+  
   let path = getArgStr(args, "path")
   let encoding = getOptArgStr(args, "encoding", "auto")
   let maxSize = getOptArgInt(args, "max_size", 10485760)  # 10MB default
   
+  # Validate path
+  if path.len == 0:
+    raise newToolValidationError("read", "path", "non-empty string", "empty string")
+  
+  # Validate max_size
+  if maxSize <= 0:
+    raise newToolValidationError("read", "max_size", "positive integer", $maxSize)
+  
+  if maxSize > 100 * 1024 * 1024:  # 100MB limit
+    raise newToolValidationError("read", "max_size", "size under 100MB", $maxSize)
+  
+  # Validate encoding
+  if encoding != "auto" and encoding notin ["utf-8", "utf-16", "utf-32", "ascii", "latin1"]:
+    raise newToolValidationError("read", "encoding", "valid encoding", encoding)
+  
   let sanitizedPath = sanitizePath(path)
+  
+  # Check if file exists
+  validateFileExists(sanitizedPath)
   
   try:
     # Get file info for metadata
@@ -131,14 +123,3 @@ proc execute*(tool: ReadTool, args: JsonNode): string =
     raise e
   except Exception as e:
     raise newToolExecutionError("read", "Failed to read file: " & e.msg, -1, "")
-
-# Register the tool
-proc registerReadTool*() =
-  let tool = newReadTool()
-  let registryPtr = getGlobalToolRegistry()
-  var registry = registryPtr[]
-  registry.register(tool)
-
-# Create the tool definition for the registry
-when isMainModule:
-  registerReadTool()
