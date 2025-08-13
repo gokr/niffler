@@ -6,14 +6,10 @@ else:
 import ../types/[messages, config]
 import std/logging
 import ../core/channels
-import http_client
+import httpClient
 import ../tools/schemas
 
-type
-  ThreadParams = ref object
-    channels: ptr ThreadChannels
-    debug: bool
-    
+type    
   APIWorker* = object
     thread: Thread[ThreadParams]
     client: OpenAICompatibleClient
@@ -36,7 +32,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
-  setLogFilter(if params.debug: lvlDebug else: lvlInfo)
+  setLogFilter(params.level)
   
   let channels = params.channels
   
@@ -325,9 +321,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, debug: bool = false): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level): APIWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, debug: debug)
+  let params = ThreadParams(channels: channels, level: level)
   createThread(result.thread, apiWorkerProc, params)
   debug("API worker thread started")
 

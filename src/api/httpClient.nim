@@ -113,10 +113,6 @@ proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
     
     result.add(chatMsg)
 
-# GC-safe helper for JSON conversion - cast to bypass GC safety for JSON string conversion
-proc jsonValueToString(value: JsonNode): string {.gcsafe.} =
-  {.cast(gcsafe).}:
-    return $value
 
 proc createChatRequest*(model: string, messages: seq[Message], maxTokens: Option[int] = none(int), 
                        temperature: Option[float] = none(float), stream: bool = false, 
@@ -128,58 +124,59 @@ proc createChatRequest*(model: string, messages: seq[Message], maxTokens: Option
   result.stream = stream
   result.tools = tools
 
-proc toJson*(req: ChatRequest): JsonNode =
-  {.cast(gcsafe).}:
-    result = newJObject()
-    result["model"] = newJString(req.model)
+proc toJson*(req: ChatRequest): JsonNode {.gcsafe.} =
+  var messages: seq[JsonNode] = @[]
+  
+  for msg in req.messages:
+    var msgJson = %*{
+      "role": msg.role,
+      "content": msg.content
+    }
     
-    var messagesArray = newJArray()
-    for msg in req.messages:
-      var msgObj = newJObject()
-      msgObj["role"] = newJString(msg.role)
-      msgObj["content"] = newJString(msg.content)
-      
-      # Add tool calls if present
-      if msg.toolCalls.isSome():
-        var toolCallsArray = newJArray()
-        for toolCall in msg.toolCalls.get():
-          var toolCallObj = newJObject()
-          toolCallObj["id"] = newJString(toolCall.id)
-          toolCallObj["type"] = newJString(toolCall.`type`)
-          var functionObj = newJObject()
-          functionObj["name"] = newJString(toolCall.function.name)
-          functionObj["arguments"] = newJString(toolCall.function.arguments)
-          toolCallObj["function"] = functionObj
-          toolCallsArray.add(toolCallObj)
-        msgObj["tool_calls"] = toolCallsArray
-      
-      # Add tool call ID if present
-      if msg.toolCallId.isSome():
-        msgObj["tool_call_id"] = newJString(msg.toolCallId.get())
-      
-      messagesArray.add(msgObj)
-    result["messages"] = messagesArray
+    # Add tool calls if present
+    if msg.toolCalls.isSome():
+      var toolCalls: seq[JsonNode] = @[]
+      for toolCall in msg.toolCalls.get():
+        toolCalls.add(%*{
+          "id": toolCall.id,
+          "type": toolCall.`type`,
+          "function": {
+            "name": toolCall.function.name,
+            "arguments": toolCall.function.arguments
+          }
+        })
+      msgJson["tool_calls"] = %toolCalls
     
-    if req.maxTokens.isSome():
-      result["max_tokens"] = newJInt(req.maxTokens.get())
-    if req.temperature.isSome():
-      result["temperature"] = newJFloat(req.temperature.get())
+    # Add tool call ID if present
+    if msg.toolCallId.isSome():
+      msgJson["tool_call_id"] = %msg.toolCallId.get()
     
-    # Add tools if present
-    if req.tools.isSome():
-      var toolsArray = newJArray()
-      for tool in req.tools.get():
-        var toolObj = newJObject()
-        toolObj["type"] = newJString(tool.`type`)
-        var functionObj = newJObject()
-        functionObj["name"] = newJString(tool.function.name)
-        functionObj["description"] = newJString(tool.function.description)
-        functionObj["parameters"] = parseJson($tool.function.parameters)
-        toolObj["function"] = functionObj
-        toolsArray.add(toolObj)
-      result["tools"] = toolsArray
-    
-    result["stream"] = newJBool(req.stream)
+    messages.add(msgJson)
+  
+  result = %*{
+    "model": req.model,
+    "messages": messages,
+    "stream": req.stream
+  }
+  
+  if req.maxTokens.isSome():
+    result["max_tokens"] = %req.maxTokens.get()
+  if req.temperature.isSome():
+    result["temperature"] = %req.temperature.get()
+  
+  # Add tools if present
+  if req.tools.isSome():
+    var tools: seq[JsonNode] = @[]
+    for tool in req.tools.get():
+      tools.add(%*{
+        "type": tool.`type`,
+        "function": {
+          "name": tool.function.name,
+          "description": tool.function.description,
+          "parameters": tool.function.parameters
+        }
+      })
+    result["tools"] = %tools
 
 proc fromJson*(node: JsonNode, T: typedesc[ChatResponse]): ChatResponse =
   result.id = node["id"].getStr()
