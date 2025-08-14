@@ -1,3 +1,25 @@
+## Message Type Definitions
+##
+## This module defines all message-related types used throughout Niffler for
+## LLM communication, tool calling, and streaming responses.
+##
+## Key Type Categories:
+## - Message types (user, assistant, system, tool messages)
+## - OpenAI-compatible tool calling types (function calls, tool results)
+## - Streaming response types (chunks, deltas)
+## - API request/response types for thread communication
+##
+## OpenAI Compatibility:
+## - Follows OpenAI API specification for message formatting
+## - Compatible with tool calling protocol
+## - Supports streaming response format with proper chunk handling
+##
+## Design Decisions:
+## - Uses enum for message roles to ensure type safety
+## - Separate types for LLM tool calls vs internal tool execution
+## - Optional fields using Option[T] for flexibility
+## - Streaming-first approach with chunk-based processing
+
 import std/[options, json]
 
 type
@@ -176,3 +198,42 @@ type
       toolName*: string
       toolArgs*: string
       requestId*: string
+
+  # Streaming response types for OpenAI-compatible APIs
+  StreamChunk* = object
+    id*: string
+    `object`*: string
+    created*: int64
+    model*: string
+    choices*: seq[StreamChoice]
+    usage*: Option[TokenUsage]
+    done*: bool  # Additional field to indicate end of stream
+
+  StreamChoice* = object
+    index*: int
+    delta*: ChatMessage
+    finishReason*: Option[string]
+
+  # OpenAI-compatible request/response types
+  ChatRequest* = object
+    model*: string
+    messages*: seq[ChatMessage]
+    maxTokens*: Option[int]
+    temperature*: Option[float]
+    stream*: bool
+    tools*: Option[seq[ToolDefinition]]
+
+  ChatMessage* = object
+    role*: string
+    content*: string
+    toolCalls*: Option[seq[ChatToolCall]]
+    toolCallId*: Option[string]
+
+  ChatToolCall* = object
+    id*: string
+    `type`*: string
+    function*: ChatFunction
+
+  ChatFunction* = object
+    name*: string
+    arguments*: string

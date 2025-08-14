@@ -1,3 +1,22 @@
+## Core Application Logic
+##
+## This module provides the main application orchestration for Niffler.
+## It coordinates between the UI layer, API workers, and tool workers through
+## the thread-safe channel communication system.
+##
+## Key Responsibilities:
+## - Single prompt execution for CLI usage
+## - Interactive session management
+## - Message history integration
+## - API key management and validation
+## - Request orchestration between different workers
+##
+## Design Decisions:
+## - Uses thread-safe channels for worker communication
+## - Integrates with history system for conversation persistence
+## - Handles API key retrieval from configuration and environment
+## - Provides both interactive and single-shot execution modes
+
 import std/[strformat, logging]
 import channels, history, config
 import ../types/[messages, history as historyTypes, config as configTypes]

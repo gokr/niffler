@@ -37,6 +37,7 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **Configuration Management**: Flexible configuration system with environment variable support
 - **History Tracking**: Conversation history with message persistence
 - **Debug Logging**: Extended logging with info or debug levels
+- **HTTP Request/Response Dumping**: Complete HTTP transaction visibility for debugging API issues
 
 ## 📦 Installation
 
@@ -73,7 +74,8 @@ Edit the configuration file to add (or enable) at least one AI model and API key
       "nickname": "gpt-4",
       "baseUrl": "https://api.openai.com/v1",
       "model": "gpt-4",
-      "apiKey": "your-api-key-here"
+      "apiKey": "your-api-key-here",
+      "enabled": true
     }
   ]
 }
@@ -103,6 +105,12 @@ niffler --debug
 
 # Enable info logging
 niffler --info
+
+# Enable HTTP request/response dumping for debugging
+niffler --dump
+
+# Combine debug and dump for maximum visibility
+niffler --debug --dump
 ```
 
 ### Available Commands in Interactive Mode
@@ -132,23 +140,47 @@ niffler init --config-path /path/to/config.json
 {
   "models": [
     {
-      "nickname": "gpt5",
+      "nickname": "gpt4o",
       "baseUrl": "https://api.openai.com/v1",
-      "model": "gpt-5",
-      "apiEnvVar": "OPENAI_API_KEY"
+      "model": "gpt-4o",
+      "apiEnvVar": "OPENAI_API_KEY",
+      "enabled": true
     },
     {
       "nickname": "claude",
       "baseUrl": "https://api.anthropic.com/v1",
       "model": "claude-3-sonnet-20240229",
-      "apiEnvVar": "ANTHROPIC_API_KEY"
+      "apiKey": "sk-ant-api03-...",
+      "enabled": true
+    },
+    {
+      "nickname": "local-llm",
+      "baseUrl": "http://localhost:1234/v1",
+      "model": "llama-3.2-3b-instruct",
+      "apiKey": "not-needed",
+      "enabled": false
     }
   ]
 }
 ```
 
+### Model Configuration Options
+
+Each model in the configuration supports the following fields:
+
+- **nickname**: Friendly name to identify the model
+- **baseUrl**: API base URL for the model provider
+- **model**: Specific model identifier 
+- **context**: Maximum context window size (optional, defaults based on model)
+- **apiEnvVar**: Environment variable containing the API key (optional)
+- **apiKey**: Direct API key specification (optional)
+- **enabled**: Whether this model is available for use (defaults to true)
+
+### API Key Priority
+When both `apiEnvVar` and `apiKey` are specified, the environment variable takes precedence. This allows you to override hardcoded keys with environment variables for security.
+
 ### Environment Variables
-You can also configure API keys using environment variables:
+You can configure API keys using environment variables:
 ```bash
 export OPENAI_API_KEY="your-openai-key"
 export ANTHROPIC_API_KEY="your-anthropic-key"
@@ -295,6 +327,27 @@ nim c src/niffler.nim
 # Release build
 nimble build
 ```
+
+### Debugging API Issues
+
+The `--dump` flag provides complete HTTP request and response logging for debugging API communication:
+
+```bash
+# See full HTTP transactions
+niffler -p "Hello" --dump
+
+# Example output shows:
+# - Complete request headers (Authorization masked for security)
+# - Full JSON request body with tools, messages, and parameters
+# - Real-time streaming response with individual SSE chunks
+# - Token usage information in final response chunk
+```
+
+This is invaluable for:
+- Debugging API connectivity issues
+- Understanding request formatting
+- Monitoring token usage patterns
+- Verifying streaming response handling
 
 See [TODO.md](TODO.md) for detailed development roadmap and [STATUS.md](STATUS.md) for current implementation status.
 

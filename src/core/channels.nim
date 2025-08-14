@@ -6,6 +6,7 @@ type
   ThreadParams* = ref object
     channels*: ptr ThreadChannels
     level*: Level
+    dump*: bool
 
   ThreadChannels* = object
     # API Thread Communication

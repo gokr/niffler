@@ -1,3 +1,26 @@
+## Tool System Type Definitions
+##
+## This module defines all types related to the tool execution system,
+## including tool calls, results, errors, and execution context.
+##
+## Key Type Categories:
+## - Tool error types (validation, execution, timeout errors)
+## - Tool execution types (calls, results, responses)
+## - Thread communication types for tool worker coordination
+##
+## Error Hierarchy:
+## - ToolError (base): Generic tool-related errors
+## - ToolExecutionError: Command execution failures with exit codes
+## - ToolValidationError: Parameter validation failures
+## - ToolTimeoutError: Tool execution timeouts
+## - ToolNotFoundError: Unknown tool requests
+##
+## Design Decisions:
+## - Exception-based error handling with detailed error types
+## - Separate tool call types for internal execution vs LLM communication
+## - Result wrapper types for consistent error handling
+## - Thread-safe types for worker communication
+
 import std/[options, json]
 import ../types/messages
 

@@ -1,6 +1,6 @@
 # Niffler Project Status & Roadmap
 
-*Consolidated status and todo document - Last updated: August 2025*
+*Consolidated status and todo document - Last updated: August 2025 (MAJOR UPDATE)*
 
 ## Project Overview
 
@@ -34,23 +34,46 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to replicat
 - **create** - File creation with safety checks
 - **fetch** - HTTP/HTTPS content fetching with scraping
 
+### ✅ **Phase 5: Advanced LLM Integration (LARGELY COMPLETED)**
+
+**✅ Tool Calling Infrastructure - FULLY IMPLEMENTED:**
+- ✅ **Tool Calling** - Complete OpenAI-compatible tool calling with execution pipeline
+- ✅ **JSON Schema Validation** - All tools have schema validation and parameter checking
+- ✅ **Multi-turn Conversations** - Tool results integrated back into conversation flow
+- ✅ **Tool Call Buffering** - Sophisticated fragment buffering for partial tool calls during streaming
+- ✅ **Error Recovery** - Comprehensive error handling and timeout management
+- ✅ **Tool Confirmation** - Implemented in individual tools (bash, edit, create require confirmation)
+
+**✅ Streaming Infrastructure - IMPLEMENTED (but simulated):**
+- ✅ **Server-Sent Events** - SSE parsing and chunk processing (simulated streaming)
+- ✅ **Streaming Message Handler** - Real-time chunk processing with callbacks
+- ✅ **Tool Execution During Streaming** - Tools execute during streaming responses
+- ⚠️ **Real Network Streaming** - Currently simulated (receives full response then processes chunks)
+
+**✅ Context Management:**
+- ✅ **Message History** - Complete conversation history tracking
+- ✅ **Tool Result Integration** - Tool results properly formatted and included in context
+
 ## Gap Analysis: Niffler vs Octofriend
 
 ### **Major Missing Features**
 
 #### **LLM Integration (High Priority)**
-- ❌ **Real-time Streaming** - SSE parsing and typewriter effects
-- ❌ **Tool Calling** - JSON schema validation and execution  
-- ❌ **Multiple Providers** - Anthropic, OpenAI, custom endpoints
-- ❌ **Thinking Tokens** - Reasoning content parsing
-- ❌ **Context Management** - Intelligent message truncation
+- ⚠️ **Real-time Streaming** - SSE parsing implemented but simulated (needs real network streaming)
+- ✅ **Tool Calling** - Complete OpenAI-compatible tool calling system implemented
+- ❌ **Multiple Providers** - Only OpenAI-compatible APIs (needs dedicated Anthropic client)
+- ❌ **Thinking Tokens** - Reasoning content parsing not implemented
+- ✅ **Context Management** - Basic message history and tool result integration working
 
 #### **Rich Terminal UI (High Priority)**
-- ❌ **React/Ink Interface** - Colored output, progress bars, panels
-- ❌ **Streaming Display** - Real-time response rendering
-- ❌ **Diff Visualization** - Colored diff rendering with syntax highlighting
-- ❌ **Menu System** - ESC-triggered navigation and settings
-- ❌ **Status Bar** - Model, mode, token count, time indicators
+- ❌ **Enhanced Interface** - Prompt box at bottom with status indicators
+- ✅ **Streaming Display** - Real-time response rendering working (with simulated streaming)
+- ❌ **Colored Output** - No syntax highlighting or colored diffs yet
+- ❌ **Command System** - Uses `/` commands, not ESC menus (by design)
+- ❌ **Status Indicators** - No model, token count, or status display
+- ❌ **History Navigation** - No arrow key navigation through prompt history
+- ❌ **@ Referencing** - No context referencing system (@file.txt, @folder/)
+- ❌ **Markdown Rendering** - No markdown parsing and display
 
 #### **Auto-fix System (Octofriend's Key Differentiator)**
 - ❌ **Diff Apply** - ML models for fixing edit mistakes
@@ -59,10 +82,10 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to replicat
 
 #### **Advanced Features**
 - ❌ **MCP Integration** - Model Context Protocol for external tools
-- ❌ **File Tracking** - Change detection and safe editing
-- ❌ **Session Management** - Save/restore conversations
-- ❌ **Reasoning Effort** - Low/medium/high reasoning control
-- ❌ **Tool Confirmation** - Interactive user confirmations
+- ✅ **File Safety** - Path validation and safety checks implemented in tools
+- ❌ **Session Management** - No save/restore conversations
+- ❌ **Reasoning Effort** - No low/medium/high reasoning control
+- ✅ **Tool Confirmation** - Interactive confirmations for dangerous operations (bash, edit, create)
 
 ### **Minor Missing Features**
 - Web tool for browsing (vs just fetch)
@@ -75,80 +98,61 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to replicat
 
 ## Next Phase Priorities
 
-### **Phase 5: Advanced LLM Integration (IMMEDIATE PRIORITY)**
+### **Phase 5: Real SSE Streaming (IMMEDIATE PRIORITY)**
 
-#### 5.1: Streaming Infrastructure
-- [ ] Server-Sent Events (SSE) parser for real-time responses
-- [ ] Streaming message handler integration
-- [ ] Response chunking and buffer management
+#### 5.1: Real Network Streaming
+- [ ] Investigate alternative HTTP clients (Harpoon, etc.) for real SSE streaming
+- [ ] Replace simulated streaming with true server-sent events parsing
+- [ ] Maintain thread-based architecture (no async dispatch)
+- [ ] Ensure tool calling integration works with new HTTP client
 
-#### 5.2: Tool Calling Infrastructure  
-- [ ] JSON schema validation for tool parameters
-- [ ] Tool call detection and parsing
-- [ ] Multi-turn conversation with tool results
-- [ ] Error recovery for failed tool calls
+#### 5.2: CLI Interface Updates
+- [ ] Remove `prompt` subcommand, add `--prompt/-p` option for one-liners
+- [ ] Rename `list` command to `models` command
+- [ ] Update help and documentation for new CLI interface
 
-#### 5.3: Enhanced Tool Integration  
-- [ ] Real-time streaming during tool execution
-- [ ] Tool confirmation UI with user prompts
-- [ ] Tool result formatting and display
-- [ ] Concurrent tool execution optimization
+### **Phase 6: Enhanced Terminal UI (HIGH PRIORITY)**
 
-#### 5.4: Context Management
-- [ ] Token counting per model
-- [ ] Intelligent message truncation
-- [ ] Context window optimization
-- [ ] History compression
+#### 6.1: Prompt-Centric Interface
+- [ ] Implement prompt box at bottom of screen
+- [ ] Add fixed status indicators below prompt (model, token counts, connection status)
+- [ ] Arrow key history navigation (up/down through previous prompts)
+- [ ] @ referencing system for context (@file.txt, @folder/, etc.)
 
-### **Phase 6: Rich Terminal UI (HIGH PRIORITY)**
+#### 6.2: Visual Enhancements
+- [ ] Rudimentary markdown rendering via illwill library
+- [ ] Colored output and syntax highlighting for responses
+- [ ] Progress indicators during tool execution
+- [ ] Diff visualization for file changes with colors
 
-#### 6.1: Terminal Framework
-- [ ] Evaluate illwill vs custom solution
-- [ ] Colored output and syntax highlighting
-- [ ] Progress bars and loading indicators
-- [ ] Panel layouts and text wrapping
+#### 6.3: Command System
+- [ ] Enhanced `/` command system (not ESC menus)
+- [ ] Model selection via `/model` command
+- [ ] Help system improvements
 
-#### 6.2: Interactive Components
-- [ ] Streaming typewriter effect
-- [ ] Diff visualization with colors
-- [ ] Tool output formatting
-- [ ] Status indicators (model, tokens, time)
+### **Phase 7: Multiple Provider Support (MEDIUM PRIORITY)**
 
-#### 6.3: Menu System
-- [ ] ESC-triggered main menu
-- [ ] Model selection interface
-- [ ] Settings configuration UI
-- [ ] Help system navigation
+#### 7.1: Anthropic Integration
+- [ ] Add dedicated Anthropic Claude API client
+- [ ] Implement provider-specific optimizations
+- [ ] Provider switching via `/model` command
 
-### **Phase 7: Auto-fix System (MEDIUM PRIORITY)**
+#### 7.2: Provider Features
+- [ ] Thinking tokens support for Claude
+- [ ] Provider-specific parameter handling
+- [ ] Unified provider interface
 
-#### 7.1: Diff Apply
-- [ ] Integration with specialized diff-fix models
-- [ ] Smart diff parsing and correction
-- [ ] Confidence scoring and user confirmation
+### **Phase 8: Advanced Features (LOWER PRIORITY)**
 
-#### 7.2: JSON Fix
-- [ ] Tool call JSON repair
-- [ ] Schema validation and fixing
-- [ ] Fallback to manual correction
+#### 8.1: Session Management
+- [ ] Save/restore conversation sessions
+- [ ] Export functionality (markdown, JSON)
+- [ ] Workspace management
 
-#### 7.3: Error Recovery
-- [ ] Context-aware error analysis
-- [ ] Automatic prompt refinement
-- [ ] Progressive fallback strategies
-
-### **Phase 8: File Management & Safety (MEDIUM PRIORITY)**
-
-#### 8.1: File Tracking
-- [ ] Timestamp-based change detection
-- [ ] Safe editing prevention for modified files
-- [ ] File locking for multi-process safety
-- [ ] Automatic backup system
-
-#### 8.2: Tool Confirmation System
-- [ ] Interactive user confirmations for dangerous operations
-- [ ] Confirmation UI integration
-- [ ] Bypass options for trusted operations
+#### 8.2: File Enhancement
+- [ ] Advanced file tracking and change detection
+- [ ] Git integration
+- [ ] Enhanced backup systems
 
 ### **Phase 9: MCP Integration (LOWER PRIORITY)**
 
@@ -195,52 +199,53 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to replicat
 ### **Feature Parity Goal**
 Target: 80%+ of Octofriend's core functionality working in Niffler by end of Phase 6.
 
-**Current Progress: ~40%**
+**Current Progress: ~75%** (Major Status Update)
 - ✅ Foundation: 100%
-- ✅ Tool System: 85% (missing confirmations, MCP)
-- ❌ LLM Integration: 20% (basic HTTP only)
-- ❌ Terminal UI: 5% (basic CLI only)
-- ❌ Auto-fix: 0%
-- ❌ File Management: 30% (basic file ops only)
+- ✅ Tool System: 95% (only MCP missing)
+- ✅ **LLM Integration: 85%** (streaming + tool calling working, needs real SSE)
+- ❌ Terminal UI: 15% (basic CLI, needs prompt box and enhancements)
+- ❌ Provider Support: 40% (OpenAI-compatible only, needs Anthropic)
+- ✅ File Management: 70% (safety features implemented in tools)
 
 ## Immediate Next Steps
 
-1. **Start Phase 5.1**: Implement SSE streaming infrastructure
-2. **Tool Calling**: Add JSON schema validation and tool execution
-3. **Provider Support**: Add Anthropic API client
-4. **Basic UI Enhancements**: Add colored output and progress indicators
+1. **Fix Real SSE Streaming**: Replace simulated streaming with real network SSE parsing
+2. **CLI Interface Update**: Remove prompt subcommand, add --prompt/-p option, rename list to models
+3. **Enhanced Terminal UI**: Implement prompt box with status indicators and history navigation
+4. **Anthropic Support**: Add dedicated Claude API client
 
 ## File Structure Status
 
 ### **Completed Implementation Files**
 ```
 src/
-├── types/tools.nim          # Tool system types and interfaces
+├── types/
+│   ├── tools.nim            # Tool system types and interfaces  
+│   └── messages.nim         # LLM message types with tool calling support
 ├── tools/
 │   ├── registry.nim         # Tool registry and discovery
 │   ├── worker.nim           # Tool worker thread
-│   ├── common.nim           # Common utilities
-│   └── implementations/
-│       ├── bash.nim         # Command execution
-│       ├── read.nim         # File reading
-│       ├── list.nim         # Directory listing
-│       ├── edit.nim         # File editing
-│       ├── create.nim       # File creation
-│       ├── fetch.nim        # HTTP fetching
-│       └── index.nim        # Tool registration
+│   ├── schemas.nim          # JSON schema definitions
+│   ├── bash.nim             # Command execution
+│   ├── read.nim             # File reading
+│   ├── list.nim             # Directory listing
+│   ├── edit.nim             # File editing
+│   ├── create.nim           # File creation
+│   └── fetch.nim            # HTTP fetching
 ├── api/
-│   ├── http_client.nim      # HTTP client
-│   └── worker.nim           # API worker thread
+│   ├── httpClient.nim       # HTTP client with simulated SSE
+│   └── api.nim              # API worker with full tool calling
 ├── core/
-│   └── app.nim              # Application lifecycle
+│   ├── app.nim              # Application lifecycle
+│   └── channels.nim         # Thread communication
 └── ui/
     └── cli.nim              # Basic CLI interface
 ```
 
-### **Files Requiring Major Updates**
-- `src/api/worker.nim` - Add streaming and tool calling
-- `src/ui/cli.nim` - Rich terminal interface
-- `src/core/app.nim` - Enhanced coordination
-- `src/types/messages.nim` - Streaming message types
+### **Files Requiring Updates**
+- `src/api/httpClient.nim` - Replace simulated streaming with real SSE parsing
+- `src/ui/cli.nim` - Enhanced terminal interface with prompt box and status indicators
+- `src/niffler.nim` - Update CLI interface (remove prompt subcommand, add --prompt/-p)
+- CLI help system - Update documentation for new interface
 
 This document replaces both STATUS.md and TODO.md as the single source of truth for project progress and planning.

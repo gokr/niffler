@@ -1,0 +1,77 @@
+{
+  "yourName": "Goran",
+  "models": [
+    {
+      "nickname": "oss",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "openai/gpt-oss-20b:free",
+      "context": 128000,
+      "type": "standard",
+      "apiEnvVar": "OPENROUTER_API_KEY"
+    },
+    {
+      "nickname": "kimi",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "moonshotai/kimi-k2:free",
+      "context": 128000,
+      "type": "standard",
+      "apiEnvVar": "OPENROUTER_API_KEY"
+    },
+    {
+      "nickname": "qwen3",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "qwen/qwen3-coder:free",
+      "context": 128000,
+      "type": "standard",
+      "apiEnvVar": "OPENROUTER_API_KEY"
+    },
+    {
+      "nickname": "glm-air",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "z-ai/glm-4.5-air:free",
+      "context": 128000,
+      "type": "standard",
+      "apiEnvVar": "OPENROUTER_API_KEY"
+    },
+    {
+      "nickname": "coder",
+      "baseUrl": "https://router.requesty.ai/v1",
+      "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "context": 262144,
+      "type": "standard",
+      "apiEnvVar": "REQUESTY_API_KEY"
+    },
+    {
+      "nickname": "glm",
+      "baseUrl": "https://router.requesty.ai/v1",
+      "model": "deepinfra/zai-org/GLM-4.5",
+      "context": 131072,
+      "type": "standard",
+      "apiEnvVar": "REQUESTY_API_KEY"
+    },
+    {
+      "nickname": "deepseek",
+      "baseUrl": "https://router.requesty.ai/v1",
+      "model": "nebius/deepseek-ai/DeepSeek-R1-0528",
+      "context": 164000,
+      "type": "standard",
+      "apiEnvVar": "REQUESTY_API_KEY"
+    },
+    {
+      "nickname": "stable-code",
+      "baseUrl": "http://localhost:11434/v1",
+      "model": "stable-code:3b",
+      "context": 8192,
+      "type": "standard",
+      "apiEnvVar": "OLLAMA_API_KEY"
+    },
+    {
+      "nickname": "qwen2.5",
+      "baseUrl": "http://localhost:11434/v1",
+      "model": "qwen2.5-coder:3b",
+      "context": 8192,
+      "type": "standard",
+      "apiEnvVar": "OLLAMA_API_KEY"
+    }
+  ]
+}

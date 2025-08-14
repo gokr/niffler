@@ -1,28 +1,68 @@
+## CLI User Interface
+##
+## This module provides the command-line user interface for Niffler, handling
+## both interactive mode and single prompt execution.
+##
+## Key Features:
+## - Interactive chat mode with real-time streaming display
+## - Command system with `/` prefix for meta operations
+## - Single prompt execution for CLI scripting
+## - Model switching and configuration
+## - History management and conversation context
+##
+## Interactive Commands:
+## - `/help` - Show available commands
+## - `/models` - List available models  
+## - `/model <name>` - Switch to different model
+## - `/clear` - Clear conversation history
+## - `/exit`, `/quit` - Exit application
+##
+## Design Decisions:
+## - Simple terminal-based interface using basic I/O
+## - Command prefix system to avoid conflicts with natural language
+## - System initialization shared between interactive and single-shot modes
+## - Real-time streaming display for immediate feedback
+
 import std/[os, strutils, strformat]
 import std/logging
 import ../core/[app, channels, history, config]
 import ../types/[messages, config as configTypes]
 import ../api/api
+import ../api/curlyStreaming
 import ../tools/worker
+import enhanced
 
-proc initializeAppSystems*(level: Level) =
+proc initializeAppSystems*(level: Level, dump: bool = false) =
   ## Initialize common app systems
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
   setLogFilter(level)
   initThreadSafeChannels()
   initHistoryManager()
+  # Store dump setting for later use by HTTP clients
+  initDumpFlag()
+  setDumpEnabled(dump)
 
-proc startInteractiveUI*(model: string = "", level: Level) =
-  ## Start the interactive terminal UI
+proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, illwill: bool = false) =
+  ## Start the interactive terminal UI (enhanced or basic fallback)
+  
+  # Try to start enhanced UI first
+  if illwill:
+    try:
+      startEnhancedInteractiveUI(model, level, dump)
+      return
+    except Exception as e:
+      error(fmt"Enhanced UI failed to start: {e.msg}")
+      echo "Falling back to basic CLI..."
+  
+  # Fallback to basic CLI
   echo "Starting Niffler interactive mode..."
   echo "Type your messages and press Enter to send. Type '/exit' or '/quit' to leave."
   echo "Use '/model <name>' to switch models. Type '/help' for more commands."
   echo ""
   
   # Initialize the app systems
-  
-  initializeAppSystems(level)
+  initializeAppSystems(level, dump)
   
   let channels = getChannels()
   let config = loadConfig()
@@ -48,7 +88,7 @@ proc startInteractiveUI*(model: string = "", level: Level) =
   echo ""
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels, level)
+  var apiWorker = startAPIWorker(channels, level, dump)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -179,7 +219,7 @@ proc startInteractiveUI*(model: string = "", level: Level) =
   stopAPIWorker(apiWorker)
   closeChannels(channels[])
 
-proc sendSinglePrompt*(text: string, model: string, level: Level) =
+proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false) =
   ## Send a single prompt and return response
   if text.len == 0:
     echo "Error: No prompt text provided"
@@ -187,15 +227,15 @@ proc sendSinglePrompt*(text: string, model: string, level: Level) =
     
   # Initialize the app systems but don't start the full UI loop
   
-  initializeAppSystems(level)
+  initializeAppSystems(level, dump)
   
   let channels = getChannels()
   
   # Start API worker
-  var apiWorker = startAPIWorker(channels, level)
+  var apiWorker = startAPIWorker(channels, level, dump)
   
   # Start tool worker
-  var toolWorker = startToolWorker(channels, level)
+  var toolWorker = startToolWorker(channels, level, dump)
   
   if sendSinglePromptAsync(text, model):
     debug "Request sent, waiting for response..."

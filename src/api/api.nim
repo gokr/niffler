@@ -1,3 +1,31 @@
+## API Worker Thread
+##
+## This module implements the core API worker that handles all LLM communication
+## and tool calling orchestration. It runs in a dedicated thread and communicates
+## with the main thread and tool worker through thread-safe channels.
+##
+## Key Features:
+## - Complete OpenAI-compatible tool calling implementation
+## - Real-time streaming with tool call buffering during streaming
+## - Sophisticated tool call fragment buffering for partial responses
+## - Multi-turn conversations with tool results integration
+## - Error recovery and timeout management
+## - Support for concurrent tool execution
+##
+## Tool Calling Flow:
+## 1. Sends tool schemas to LLM with each request
+## 2. Detects tool calls in streaming response chunks
+## 3. Buffers partial tool call fragments until complete
+## 4. Executes tools via tool worker thread
+## 5. Integrates tool results back into conversation
+## 6. Continues conversation with LLM
+##
+## Design Decisions:
+## - Thread-based architecture (no async) for deterministic behavior
+## - Streaming-first approach with real-time chunk processing
+## - Sophisticated buffering for handling partial tool calls during streaming
+## - Exception-based error handling with comprehensive recovery
+
 import std/[options, strformat, os, json, strutils, times, tables]
 when compileOption("threads"):
   import std/typedthreads
@@ -6,7 +34,7 @@ else:
 import ../types/[messages, config]
 import std/logging
 import ../core/channels
-import httpClient
+import curlyStreaming
 import ../tools/schemas
 
 type
@@ -19,7 +47,7 @@ type
 
   APIWorker* = object
     thread: Thread[ThreadParams]
-    client: OpenAICompatibleClient
+    client: CurlyStreamingClient
     isRunning: bool
 
 # Helper function to convert ChatToolCall to LLMToolCall
@@ -228,12 +256,15 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   addHandler(consoleLogger)
   setLogFilter(params.level)
   
+  # Initialize dump flag for this thread
+  setDumpEnabled(params.dump)
+  
   let channels = params.channels
   
   debug("API worker thread started")
   incrementActiveThreads(channels)
   
-  var currentClient: Option[OpenAICompatibleClient] = none(OpenAICompatibleClient)
+  var currentClient: Option[CurlyStreamingClient] = none(CurlyStreamingClient)
   var activeRequests: seq[string] = @[]  # Track active request IDs for cancellation
   var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()  # Buffer incomplete tool calls
   
@@ -252,7 +283,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           
         of arkConfigure:
           try:
-            currentClient = some(newOpenAICompatibleClient(
+            currentClient = some(newCurlyStreamingClient(
               request.configBaseUrl,
               request.configApiKey,
               request.configModelName
@@ -275,13 +306,12 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var client = currentClient.get()
             if client.baseUrl != request.baseUrl or client.model != request.model:
               needsNewClient = true
-              # Close existing client
-              client.close()
-              currentClient = none(OpenAICompatibleClient)
+              # Create new client for different configuration
+              currentClient = none(CurlyStreamingClient)
           
           if needsNewClient:
             try:
-              currentClient = some(newOpenAICompatibleClient(
+              currentClient = some(newCurlyStreamingClient(
                 request.baseUrl,
                 request.apiKey,
                 request.model
@@ -364,7 +394,13 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     # Clean up stale buffers periodically
                     cleanupStaleBuffers(toolCallBuffers)
             
-            discard client.sendStreamingChatRequest(chatRequest, onChunkReceived)
+            let (streamSuccess, streamUsage) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
+            
+            # Use extracted usage data from streaming response if available
+            var finalUsage = if streamUsage.isSome(): 
+              streamUsage.get() 
+            else: 
+              TokenUsage(promptTokens: 0, completionTokens: 0, totalTokens: 0)
             
             # After streaming completes, check for any remaining completed tool calls in buffers
             let remainingCompletedCalls = getCompletedToolCalls(toolCallBuffers)
@@ -527,7 +563,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                           # Clean up stale buffers periodically
                           cleanupStaleBuffers(toolCallBuffers)
                   
-                  discard client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+                  let (followUpSuccess, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+                  
+                  # Update usage data with follow-up request usage if available
+                  if followUpUsage.isSome():
+                    finalUsage = followUpUsage.get()
                   
                   # After follow-up streaming completes, check for any remaining completed tool calls in buffers
                   let followUpCompletedCalls = getCompletedToolCalls(toolCallBuffers)
@@ -550,11 +590,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   )
                   sendAPIResponse(channels, finalChunkResponse)
                   
-                  # Send completion (note: streaming requests don't provide usage data)
+                  # Send completion with extracted usage data
                   let completeResponse = APIResponse(
                     requestId: request.requestId,
                     kind: arkStreamComplete,
-                    usage: TokenUsage(promptTokens: 0, completionTokens: 0, totalTokens: 0),
+                    usage: finalUsage,
                     finishReason: "stop"
                   )
                   sendAPIResponse(channels, completeResponse)
@@ -586,11 +626,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               )
               sendAPIResponse(channels, finalChunkResponse)
               
-              # Send completion response (streaming requests don't provide usage data)
+              # Send completion response with extracted usage data
               let completeResponse = APIResponse(
                 requestId: request.requestId,
                 kind: arkStreamComplete,
-                usage: TokenUsage(promptTokens: 0, completionTokens: 0, totalTokens: 0),
+                usage: finalUsage,
                 finishReason: "stop"
               )
               sendAPIResponse(channels, completeResponse)
@@ -641,21 +681,19 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   except Exception as e:
     fatal(fmt"API worker thread crashed: {e.msg}")
   finally:
-    if currentClient.isSome():
-      currentClient.get().close()
+    # Curly handles cleanup automatically, no need to explicitly close
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, level: Level): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false): APIWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level)
+  let params = ThreadParams(channels: channels, level: level, dump: dump)
   createThread(result.thread, apiWorkerProc, params)
 
 proc stopAPIWorker*(worker: var APIWorker) =
   if worker.isRunning:
     joinThread(worker.thread)
     worker.isRunning = false
-    debug("API worker thread stopped")
 
 proc initializeAPIClient*(worker: var APIWorker, config: ModelConfig) =
   # This will be called when we have configuration loaded

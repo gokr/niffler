@@ -16,14 +16,18 @@ type
     nickname*: string
     baseUrl*: string
     apiEnvVar*: Option[string]
+    apiKey*: Option[string]
     model*: string
     context*: int
     reasoning*: Option[ReasoningLevel]
+    enabled*: bool
 
   SpecialModelConfig* = object
     baseUrl*: string
-    apiEnvVar*: Option[string] 
+    apiEnvVar*: Option[string]
+    apiKey*: Option[string]
     model*: string
+    enabled*: bool
 
   McpServerConfig* = object
     command*: string

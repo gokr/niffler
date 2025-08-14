@@ -23,6 +23,7 @@ proc parseModelConfig(node: JsonNode): ModelConfig =
   result.baseUrl = node["baseUrl"].getStr() 
   result.model = node["model"].getStr()
   result.context = node["context"].getInt()
+  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
   
   if node.hasKey("type"):
     case node["type"].getStr():
@@ -33,6 +34,9 @@ proc parseModelConfig(node: JsonNode): ModelConfig =
   if node.hasKey("apiEnvVar"):
     result.apiEnvVar = some(node["apiEnvVar"].getStr())
     
+  if node.hasKey("apiKey"):
+    result.apiKey = some(node["apiKey"].getStr())
+    
   if node.hasKey("reasoning"):
     case node["reasoning"].getStr():
     of "low": result.reasoning = some(rlLow)
@@ -42,8 +46,11 @@ proc parseModelConfig(node: JsonNode): ModelConfig =
 proc parseSpecialModelConfig(node: JsonNode): SpecialModelConfig =
   result.baseUrl = node["baseUrl"].getStr()
   result.model = node["model"].getStr()
+  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
   if node.hasKey("apiEnvVar"):
     result.apiEnvVar = some(node["apiEnvVar"].getStr())
+  if node.hasKey("apiKey"):
+    result.apiKey = some(node["apiKey"].getStr())
 
 proc parseMcpServerConfig(node: JsonNode): McpServerConfig =
   result.command = node["command"].getStr()
@@ -57,7 +64,9 @@ proc parseConfig(configJson: JsonNode): Config =
   result.yourName = configJson["yourName"].getStr()
   
   for modelNode in configJson["models"]:
-    result.models.add(parseModelConfig(modelNode))
+    let model = parseModelConfig(modelNode)
+    if model.enabled:
+      result.models.add(model)
   
   if configJson.hasKey("diffApply"):
     result.diffApply = some(parseSpecialModelConfig(configJson["diffApply"]))
@@ -94,11 +103,14 @@ proc writeConfig*(config: Config, path: string) =
     modelObj["baseUrl"] = newJString(model.baseUrl)
     modelObj["model"] = newJString(model.model)
     modelObj["context"] = newJInt(model.context)
+    modelObj["enabled"] = newJBool(model.enabled)
     
     if model.`type`.isSome():
       modelObj["type"] = newJString($model.`type`.get())
     if model.apiEnvVar.isSome():
       modelObj["apiEnvVar"] = newJString(model.apiEnvVar.get())
+    if model.apiKey.isSome():
+      modelObj["apiKey"] = newJString(model.apiKey.get())
     if model.reasoning.isSome():
       modelObj["reasoning"] = newJString($model.reasoning.get())
       
@@ -144,7 +156,24 @@ proc initializeConfig*(path: string) =
         baseUrl: "https://api.openai.com/v1",
         model: "gpt-4o",
         context: 128000,
-        `type`: some(mtStandard)
+        `type`: some(mtStandard),
+        enabled: true
+      ),
+      ModelConfig(
+        nickname: "claude-3.5-sonnet",
+        baseUrl: "https://api.anthropic.com/v1",
+        model: "claude-3-5-sonnet-20241022",
+        context: 200000,
+        `type`: some(mtAnthropic),
+        enabled: false
+      ),
+      ModelConfig(
+        nickname: "local-llm",
+        baseUrl: "http://localhost:1234/v1",
+        model: "llama-3.2-3b-instruct",
+        context: 8000,
+        `type`: some(mtStandard),
+        enabled: false
       )
     ]
   )
@@ -180,6 +209,9 @@ proc readKeyForModel*(model: ModelConfig): string =
     let envKey = getEnv(model.apiEnvVar.get())
     if envKey.len > 0:
       return envKey
+      
+  if model.apiKey.isSome():
+    return model.apiKey.get()
       
   let keys = readKeys()
   return keys.getOrDefault(model.baseUrl, "")

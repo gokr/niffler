@@ -1,3 +1,29 @@
+## Tool Worker Thread
+##
+## This module implements the tool execution worker that runs in a dedicated thread
+## and safely executes all tool operations requested by the API worker.
+##
+## Key Features:
+## - Thread-safe tool execution with proper isolation
+## - JSON schema validation for all tool parameters
+## - Comprehensive error handling and timeout management
+## - Support for all 6 core tools: bash, read, list, edit, create, fetch
+## - Tool confirmation system for dangerous operations
+## - Proper result formatting and error reporting
+##
+## Tool Execution Flow:
+## 1. Receives tool execution requests via channels from API worker
+## 2. Validates tool parameters against JSON schemas
+## 3. Executes appropriate tool with safety checks
+## 4. Handles confirmations for dangerous operations (bash, edit, create)
+## 5. Formats results and sends back to API worker
+##
+## Design Decisions:
+## - Dedicated thread for tool execution to prevent blocking API operations
+## - Exception-based error handling with detailed error messages
+## - Tool registry pattern for extensible tool system
+## - Thread-safe channel communication with API worker
+
 import std/[options, os, json, logging, strformat]
 when compileOption("threads"):
   import std/typedthreads
@@ -141,16 +167,15 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   finally:
     debug("Tool worker thread stopped")
 
-proc startToolWorker*(channels: ptr ThreadChannels, level: Level): ToolWorker =
+proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false): ToolWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level)
+  let params = ThreadParams(channels: channels, level: level, dump: dump)
   createThread(result.thread, toolWorkerProc, params)
 
 proc stopToolWorker*(worker: var ToolWorker) =
   if worker.isRunning:
     joinThread(worker.thread)
     worker.isRunning = false
-    debug("Tool worker thread stopped")
 
 proc executeToolAsync*(channels: ptr ThreadChannels, toolCall: tools.ToolCall, 
                        requireConfirmation: bool = false): bool =
