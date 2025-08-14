@@ -17,7 +17,7 @@
 ## - Separates input handling from response display
 ## - Thread-safe UI updates for streaming responses
 
-import std/[strutils, strformat, os, logging, deques, re]
+import std/[strutils, strformat, os, logging, deques, re, terminal]
 when defined(posix):
   import posix
 import illwill
@@ -47,6 +47,10 @@ type
 var ui: EnhancedUI
 var globalChannels: ptr ThreadChannels = nil
 var globalModel: configTypes.ModelConfig
+
+proc getUserName(): string =
+  ## Get the current user's name
+  result = getEnv("USER", getEnv("USERNAME", "User"))
 
 proc initializeAppSystems(level: Level, dump: bool) =
   ## Initialize common app systems
@@ -103,8 +107,8 @@ proc updateStatusBar() =
   let autoAcceptText = if ui.autoAcceptEdits: ">> auto-accept edits on" else: ">> auto-accept edits off"
   let toggleHint = " (tab to cycle)"
   ui.terminalBuffer.write(0, statusY, autoAcceptText, 
-    if ui.autoAcceptEdits: fgGreen else: fgYellow)
-  ui.terminalBuffer.write(autoAcceptText.len, statusY, toggleHint, fgWhite, styleDim)
+    if ui.autoAcceptEdits: illwill.fgGreen else: illwill.fgYellow)
+  ui.terminalBuffer.write(autoAcceptText.len, statusY, toggleHint, illwill.fgWhite, styleDim)
   
   # Right side: usage information and model
   let usageInfo = fmt"Tokens: {ui.tokenCount}"
@@ -112,7 +116,7 @@ proc updateStatusBar() =
   let rightText = fmt"{usageInfo} | {modelInfo}"
   let rightStartX = ui.width - rightText.len - 2
   if rightStartX > autoAcceptText.len + toggleHint.len + 5:
-    ui.terminalBuffer.write(rightStartX, statusY, rightText, fgCyan)
+    ui.terminalBuffer.write(rightStartX, statusY, rightText, illwill.fgCyan)
 
 proc updateEditBox() =
   ## Update the multi-line edit box
@@ -123,20 +127,20 @@ proc updateEditBox() =
   
   # Draw top border
   ui.terminalBuffer.fill(0, editBoxStartY, ui.width-1, editBoxStartY, "─")
-  ui.terminalBuffer.write(0, editBoxStartY, "┌", fgWhite)
-  ui.terminalBuffer.write(ui.width-1, editBoxStartY, "┐", fgWhite)
+  ui.terminalBuffer.write(0, editBoxStartY, "┌", illwill.fgWhite)
+  ui.terminalBuffer.write(ui.width-1, editBoxStartY, "┐", illwill.fgWhite)
   
   # Draw side borders and content
   for i in 0..<ui.editBoxHeight:
     let y = editBoxStartY + 1 + i
-    ui.terminalBuffer.write(0, y, "│", fgWhite)
-    ui.terminalBuffer.write(ui.width-1, y, "│", fgWhite)
+    ui.terminalBuffer.write(0, y, "│", illwill.fgWhite)
+    ui.terminalBuffer.write(ui.width-1, y, "│", illwill.fgWhite)
     
     # Display prompt line if it exists
     if i < ui.promptLines.len:
       let line = ui.promptLines[i]
       let prefix = if i == 0: "> " else: "  "
-      let prefixColor = if i == 0: fgGreen else: fgWhite
+      let prefixColor = if i == 0: illwill.fgGreen else: illwill.fgWhite
       let maxLineWidth = ui.width - 6  # Account for borders, prefix, and padding
       let displayLine = if line.len > maxLineWidth: 
         line[0..<maxLineWidth] & "…"
@@ -144,17 +148,17 @@ proc updateEditBox() =
         line
       
       ui.terminalBuffer.write(2, y, prefix, prefixColor, styleBright)
-      ui.terminalBuffer.write(2 + prefix.len, y, displayLine, fgWhite)
+      ui.terminalBuffer.write(2 + prefix.len, y, displayLine, illwill.fgWhite)
       
       # Show line continuation indicator for long lines
       if line.len > maxLineWidth:
-        ui.terminalBuffer.write(ui.width - 3, y, "…", fgYellow, styleDim)
+        ui.terminalBuffer.write(ui.width - 3, y, "…", illwill.fgYellow, styleDim)
   
   # Draw bottom border
   let bottomY = editBoxStartY + ui.editBoxHeight + 1
   ui.terminalBuffer.fill(0, bottomY, ui.width-1, bottomY, "─")
-  ui.terminalBuffer.write(0, bottomY, "└", fgWhite)
-  ui.terminalBuffer.write(ui.width-1, bottomY, "┘", fgWhite)
+  ui.terminalBuffer.write(0, bottomY, "└", illwill.fgWhite)
+  ui.terminalBuffer.write(ui.width-1, bottomY, "┘", illwill.fgWhite)
   
   # Position cursor
   let cursorYPos = editBoxStartY + 1 + ui.cursorY
@@ -183,7 +187,7 @@ proc renderInlineMarkdown(line: string, x: int, y: int) =
       let endPos = line.find("**", i + 2)
       if endPos != -1:
         let boldText = line[i+2..<endPos]
-        ui.terminalBuffer.write(currentX, y, boldText, fgWhite, styleBright)
+        ui.terminalBuffer.write(currentX, y, boldText, illwill.fgWhite, styleBright)
         currentX += boldText.len
         i = endPos + 2
         continue
@@ -192,7 +196,7 @@ proc renderInlineMarkdown(line: string, x: int, y: int) =
       let endPos = line.find("*", i + 1)
       if endPos != -1:
         let italicText = line[i+1..<endPos]
-        ui.terminalBuffer.write(currentX, y, italicText, fgCyan)
+        ui.terminalBuffer.write(currentX, y, italicText, illwill.fgCyan)
         currentX += italicText.len  
         i = endPos + 1
         continue
@@ -201,7 +205,7 @@ proc renderInlineMarkdown(line: string, x: int, y: int) =
       let endPos = line.find("`", i + 1)
       if endPos != -1:
         let codeText = line[i+1..<endPos]
-        ui.terminalBuffer.write(currentX, y, codeText, fgGreen, styleDim)
+        ui.terminalBuffer.write(currentX, y, codeText, illwill.fgGreen, styleDim)
         currentX += codeText.len
         i = endPos + 1
         continue
@@ -212,14 +216,14 @@ proc renderInlineMarkdown(line: string, x: int, y: int) =
         let urlEnd = line.find(")", closePos + 2)
         if urlEnd != -1:
           let linkText = line[i+1..<closePos]
-          ui.terminalBuffer.write(currentX, y, linkText, fgBlue)
+          ui.terminalBuffer.write(currentX, y, linkText, illwill.fgBlue)
           currentX += linkText.len
           i = urlEnd + 1
           continue
     
     # Regular character
     if currentX < maxX:
-      ui.terminalBuffer.write(currentX, y, $line[i], fgWhite)
+      ui.terminalBuffer.write(currentX, y, $line[i], illwill.fgWhite)
       currentX += 1
     i += 1
 
@@ -234,22 +238,22 @@ proc renderMarkdownLine(line: string, x: int, y: int) =
   # Handle different markdown elements
   if line.startsWith("# "):
     # H1 - Large yellow header
-    ui.terminalBuffer.write(currentX, y, "█ " & line[2..^1], fgYellow, styleBright)
+    ui.terminalBuffer.write(currentX, y, "█ " & line[2..^1], illwill.fgYellow, styleBright)
   elif line.startsWith("## "):
     # H2 - Medium yellow header  
-    ui.terminalBuffer.write(currentX, y, "▐ " & line[3..^1], fgYellow)
+    ui.terminalBuffer.write(currentX, y, "▐ " & line[3..^1], illwill.fgYellow)
   elif line.startsWith("### "):
     # H3 - Small yellow header
-    ui.terminalBuffer.write(currentX, y, "▌ " & line[4..^1], fgYellow, styleDim)
+    ui.terminalBuffer.write(currentX, y, "▌ " & line[4..^1], illwill.fgYellow, styleDim)
   elif line.startsWith("```"):
     # Code block delimiter
-    ui.terminalBuffer.write(currentX, y, line, fgCyan, styleDim)
+    ui.terminalBuffer.write(currentX, y, line, illwill.fgCyan, styleDim)
   elif line.startsWith("- ") or line.startsWith("* "):
     # Bullet lists
-    ui.terminalBuffer.write(currentX, y, "• " & line[2..^1], fgWhite)
+    ui.terminalBuffer.write(currentX, y, "• " & line[2..^1], illwill.fgWhite)
   elif line.contains(re"^\d+\. "):
     # Numbered lists  
-    ui.terminalBuffer.write(currentX, y, line, fgWhite)
+    ui.terminalBuffer.write(currentX, y, line, illwill.fgWhite)
   else:
     # Regular text with inline formatting
     renderInlineMarkdown(line, currentX, y)
@@ -282,12 +286,12 @@ proc redrawScreen() =
   ui.terminalBuffer.fill(0, 0, ui.width-1, 0, "─")
   let title = fmt" Niffler - AI Assistant "
   let titleX = (ui.width - title.len) div 2
-  ui.terminalBuffer.write(titleX, 0, title, fgWhite, styleBright)
+  ui.terminalBuffer.write(titleX, 0, title, illwill.fgWhite, styleBright)
   
   # Add helpful hints on the right side of title bar
   let hint = " Ctrl+C=exit "
   if ui.width > title.len + hint.len + 10:
-    ui.terminalBuffer.write(ui.width - hint.len - 1, 0, hint, fgYellow, styleDim)
+    ui.terminalBuffer.write(ui.width - hint.len - 1, 0, hint, illwill.fgYellow, styleDim)
   
   updateResponseArea()
   updateEditBox()
@@ -327,7 +331,7 @@ proc sendPromptToAPI(promptText: string) =
   
   # Send the prompt using the same logic as in app.nim
   if sendSinglePromptInteractive(promptText, globalModel):
-    addResponseLine("Assistant: (Processing...)")
+    addResponseLine(fmt"{globalModel.nickname}: (Processing...)")
     ui.connectionStatus = "Receiving..."
     
     # Check for streaming responses
@@ -362,8 +366,9 @@ proc handleKeypress(key: illwill.Key): bool =
         if ui.promptHistory.len > 100:  # Limit history size
           ui.promptHistory.popFirst()
         
-        # Process the prompt
-        addResponseLine(fmt"You: {promptText}")
+        # Process the prompt with user name
+        let userName = getUserName()
+        addResponseLine(fmt"{userName}: {promptText}")
         
         # Clear prompt first for better UX
         clearPrompt()

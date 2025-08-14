@@ -23,7 +23,7 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat]
+import std/[os, strutils, strformat, terminal]
 import std/logging
 import ../core/[app, channels, history, config]
 import ../types/[messages, config as configTypes]
@@ -31,6 +31,15 @@ import ../api/api
 import ../api/curlyStreaming
 import ../tools/worker
 import enhanced
+
+proc getUserName*(): string =
+  ## Get the current user's name
+  result = getEnv("USER", getEnv("USERNAME", "User"))
+
+proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBright) =
+  ## Write colored text to stdout
+  stdout.styledWrite(color, style, text)
+  stdout.flushFile()
 
 proc initializeAppSystems*(level: Level, dump: bool = false) =
   ## Initialize common app systems
@@ -94,11 +103,14 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, i
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
   
+  # Get user name for prompts
+  let userName = getUserName()
+  
   # Interactive loop
   var running = true
   while running:
-    # Show prompt
-    stdout.write("You: ")
+    # Show colored user prompt
+    writeColored(fmt"{userName}: ", fgCyan)
     stdout.flushFile()
     
     # Read user input
@@ -174,7 +186,7 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, i
       var attempts = 0
       const maxAttempts = 600  # 60 seconds with 100ms sleep
       
-      stdout.write("Niffler: ")
+      writeColored(fmt"{currentModel.nickname}: ", fgGreen)
       stdout.flushFile()
       
       while not responseReceived and attempts < maxAttempts:
