@@ -52,11 +52,11 @@ proc initializeAppSystems*(level: Level, dump: bool = false) =
   initDumpFlag()
   setDumpEnabled(dump)
 
-proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, illwill: bool = false) =
+proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, simple: bool = false) =
   ## Start the interactive terminal UI (enhanced or basic fallback)
   
   # Try to start enhanced UI first
-  if illwill:
+  if not simple:
     try:
       startEnhancedInteractiveUI(model, level, dump)
       return
@@ -65,9 +65,7 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, i
       echo "Falling back to basic CLI..."
   
   # Fallback to basic CLI
-  echo "Starting Niffler interactive mode..."
-  echo "Type your messages and press Enter to send. Type '/exit' or '/quit' to leave."
-  echo "Use '/model <name>' to switch models. Type '/help' for more commands."
+  echo "Type '/help' for help and '/exit' or '/quit' to leave."
   echo ""
   
   # Initialize the app systems
@@ -98,6 +96,9 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, i
   
   # Start API worker
   var apiWorker = startAPIWorker(channels, level, dump)
+  
+  # Start tool worker
+  var toolWorker = startToolWorker(channels, level, dump)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -229,6 +230,7 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, i
   # Cleanup
   signalShutdown(channels)
   stopAPIWorker(apiWorker)
+  stopToolWorker(toolWorker)
   closeChannels(channels[])
 
 proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false) =

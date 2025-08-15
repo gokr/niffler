@@ -1,15 +1,15 @@
-import std/[os, json, tables, options, locks, strformat]
+import std/[os, appdirs, json, tables, options, locks, strformat]
 import ../types/config
 
-const DEFAULT_CONFIG_DIR = ".config/niffler"
+const DEFAULT_CONFIG_DIR = "niffler"
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.json"
 
 proc getDefaultConfigPath*(): string =
-  joinPath(getHomeDir(), DEFAULT_CONFIG_DIR, CONFIG_FILE_NAME)
+  joinPath(appdirs.getConfigDir().string, DEFAULT_CONFIG_DIR, CONFIG_FILE_NAME)
 
 proc getDefaultKeyPath*(): string = 
-  joinPath(getHomeDir(), DEFAULT_CONFIG_DIR, KEY_FILE_NAME)
+  joinPath(appdirs.getConfigDir().string, DEFAULT_CONFIG_DIR, KEY_FILE_NAME)
 
 # Global config manager
 var globalConfigManager: ConfigManager
@@ -145,7 +145,7 @@ proc writeKeys*(keys: KeyConfig) =
 
 proc initializeConfig*(path: string) =
   if fileExists(path):
-    echo "Configuration already exists at: ", path
+    echo "Configuration file already exists: ", path
     return
     
   let defaultConfig = Config(

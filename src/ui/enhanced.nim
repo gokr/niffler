@@ -22,8 +22,9 @@ when defined(posix):
   import posix
 import illwill
 import ../core/[app, channels, history, config]
-import ../types/[config as configTypes]
+import ../types/[config as configTypes, messages]
 import ../api/api
+import ../tools/worker
 
 type
   EnhancedUI* = object
@@ -43,10 +44,14 @@ type
     scrollOffset: int
     editBoxHeight: int  # Height of the edit box
     autoAcceptEdits: bool  # Toggle for auto-accept mode
+    waitingForResponse: bool  # Track if we're waiting for API response
+    currentResponseText: string  # Accumulate response text
 
 var ui: EnhancedUI
 var globalChannels: ptr ThreadChannels = nil
 var globalModel: configTypes.ModelConfig
+var globalAPIWorker: APIWorker
+var globalToolWorker: ToolWorker
 
 proc getUserName(): string =
   ## Get the current user's name
@@ -83,6 +88,8 @@ proc initEnhancedUI*() =
   ui.scrollOffset = 0
   ui.editBoxHeight = 4  # Default height for edit box (similar to Claude Code)
   ui.autoAcceptEdits = false
+  ui.waitingForResponse = false
+  ui.currentResponseText = ""
 
   # Set up signal handlers for clean exit
   proc exitProc() {.noconv.} =
@@ -321,6 +328,51 @@ proc ensureCursorValid() =
   if ui.cursorX < 0:
     ui.cursorX = 0
 
+proc handleAPIResponses() =
+  ## Check for and handle streaming API responses
+  if not ui.waitingForResponse or globalChannels == nil:
+    return
+  
+  var response: APIResponse
+  if tryReceiveAPIResponse(globalChannels, response):
+    case response.kind:
+    of arkStreamChunk:
+      if response.content.len > 0:
+        # Split content into lines and add to response display
+        let lines = response.content.split('\n')
+        if lines.len > 0:
+          # Update the last line (append to current line)
+          if ui.responseLines.len > 0 and not ui.responseLines[^1].endsWith('\n'):
+            ui.responseLines[^1].add(lines[0])
+          else:
+            ui.responseLines.add(lines[0])
+          
+          # Add any additional lines
+          for i in 1..<lines.len:
+            ui.responseLines.add(lines[i])
+        
+        ui.currentResponseText.add(response.content)
+    of arkStreamComplete:
+      ui.connectionStatus = "Connected"
+      ui.waitingForResponse = false
+      ui.tokenCount = response.usage.totalTokens
+      
+      # Add assistant response to history
+      if ui.currentResponseText.len > 0:
+        discard addAssistantMessage(ui.currentResponseText)
+      
+      # Add token usage info
+      addResponseLine("")
+      addResponseLine(fmt"[{response.usage.totalTokens} tokens]")
+      addResponseLine("")
+    of arkStreamError:
+      addResponseLine(fmt"Error: {response.error}")
+      addResponseLine("")
+      ui.connectionStatus = "Error"
+      ui.waitingForResponse = false
+    of arkReady:
+      discard  # Just ignore ready responses
+
 proc sendPromptToAPI(promptText: string) =
   ## Send a prompt to the API worker and handle streaming response
   if globalChannels == nil:
@@ -331,13 +383,10 @@ proc sendPromptToAPI(promptText: string) =
   
   # Send the prompt using the same logic as in app.nim
   if sendSinglePromptInteractive(promptText, globalModel):
-    addResponseLine(fmt"{globalModel.nickname}: (Processing...)")
+    addResponseLine(fmt"{globalModel.nickname}: ")
     ui.connectionStatus = "Receiving..."
-    
-    # Check for streaming responses
-    # This is a simplified version - in a real implementation we'd need
-    # proper threading to handle streaming responses
-    ui.connectionStatus = "Connected"
+    ui.waitingForResponse = true
+    ui.currentResponseText = ""
   else:
     addResponseLine("Error: Failed to send prompt")
     ui.connectionStatus = "Error"
@@ -529,7 +578,10 @@ proc startEnhancedInteractiveUI*(model: string = "", level: Level, dump: bool = 
     updateConnectionStatus("Connecting...")
     
     # Start API worker
-    var apiWorker = startAPIWorker(channels, level, dump)
+    globalAPIWorker = startAPIWorker(channels, level, dump)
+    
+    # Start tool worker
+    globalToolWorker = startToolWorker(channels, level, dump)
     
     # Configure API worker with initial model
     if configureAPIWorker(currentModel):
@@ -547,6 +599,9 @@ proc startEnhancedInteractiveUI*(model: string = "", level: Level, dump: bool = 
     var running = true
     while running:
       try:
+        # Handle any pending API responses first
+        handleAPIResponses()
+        
         redrawScreen()
         
         let key = getKey()
@@ -560,4 +615,10 @@ proc startEnhancedInteractiveUI*(model: string = "", level: Level, dump: bool = 
         raise e
       
   finally:
+    # Cleanup workers
+    signalShutdown(globalChannels)
+    stopAPIWorker(globalAPIWorker)
+    stopToolWorker(globalToolWorker)
+    if globalChannels != nil:
+      closeChannels(globalChannels[])
     cleanupEnhancedUI()

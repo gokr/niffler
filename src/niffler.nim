@@ -19,7 +19,7 @@
 ## - `niffler version` - Show version
 
 import std/[strutils, os]
-import cligen
+import clim
 
 import core/config
 import std/logging
@@ -27,7 +27,7 @@ import ui/cli
 
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2") 
 
-proc version() =
+proc showVersion() =
   ## Show current version of Niffler
   echo "Niffler " & VERSION
 
@@ -37,22 +37,68 @@ proc init(configPath: string = "") =
   initializeConfig(path)
   echo "Configuration initialized at: ", path
 
-proc models() = 
+proc showModels() = 
   ## List available models and configurations
   let config = loadConfig()
   echo "Available models:"
   for model in config.models:
     echo "  ", model.nickname, " (", model.baseUrl, ")"
 
-proc niffler(prompt: string = "", p: string = "", model: string = "", debug: bool = false, info: bool = false, dump: bool = false, illwill: bool = false) =
-  ## Start interactive session or send single prompt
-  ## 
-  ## Args:
-  ##   prompt, p: Single prompt text to send (--prompt or -p)
-  ##   model: Model to use for the session
-  ##   debug: Enable debug logging
-  ##   info: Enable info logging
-  ##   dump: Enable HTTP request/response dumping
+proc showHelp() =
+  echo """
+This is Niffler, your cuddly friendly coder pal.
+
+  niffler [options]
+
+Options:
+  --help, -h               Show this help message
+  --version, -v            Show version of Niffler
+
+  --model, -m:<nickname>   Select model
+  --prompt, -p:<text>      Perform single prompt and exit
+  --models                 List available models
+  --init                   Initialize a default config at ~/.config/niffler/config.json
+  --init:<filepath>        Initialize a default configuration in given filepath
+
+  --simple, -s             Use a simpler terminal UI
+  --info, -i               Show info level logging
+  --debug, -d              Show debug level logging
+  --dump                   Show HTTP requests & responses
+"""
+
+when isMainModule:
+  # Command line options using clim
+  proc undefinedOptionHook(name, part: string) =
+    echo "Undefined option: " & part
+    quit(0)
+  template parseErrorHook(name, value: string, typ: typedesc) =
+    echo "Parse error: " & name & " " & value
+    quit(0)  
+  opt(help, bool, ["--help", "-h"])
+  opt(version, bool, ["--version", "-v"])
+  opt(model, string, ["--model", "-m"])
+  opt(prompt, string, ["--prompt", "-p"], "")
+  opt(models, bool, ["--models"])
+  opt(initConfig, string, ["--init"], "false")
+  opt(simple, bool, ["--simple", "-s"])
+  opt(info, bool, ["--info", "-i"])
+  opt(debug, bool, ["--debug", "-d"])
+  opt(dump, bool, ["--dump"])
+  getOpt(commandLineParams())
+
+  if help:
+    showHelp()
+    quit(0)
+  elif version:
+    showVersion()
+    quit(0)
+  elif models:
+    showModels()
+    quit(0)
+  elif initConfig != "false":
+    init(if initConfig == "true": "" else: initConfig)
+    quit(0)
+  
   var level = lvlNotice
   if debug:
     level = lvlDebug
@@ -62,27 +108,10 @@ proc niffler(prompt: string = "", p: string = "", model: string = "", debug: boo
     debug "Info logging enabled"
   setLogFilter(level)
 
-  # Use either --prompt or -p for single prompt text
-  let promptText = if prompt.len > 0: prompt elif p.len > 0: p else: ""
-  
-  if promptText.len == 0:
-    # Start interactive UI
-    startInteractiveUI(model, level, dump, illwill)
+  if prompt.len == 0:
+    # Start interactive UI if no prompt given
+    startInteractiveUI(model, level, dump, simple)
   else:
     # Send single prompt
-    sendSinglePrompt(promptText, model, level, dump)
+    sendSinglePrompt(prompt, model, level, dump)
 
-when isMainModule:
-  # Check if any subcommands were provided
-  var subcommandGiven = false
-  for arg in commandLineParams():
-    if not arg.startsWith("-") and arg in ["version", "init", "models"]:
-      subcommandGiven = true
-      break
-  
-  if subcommandGiven:
-    # Use dispatchMulti for subcommands
-    dispatchMulti([version], [init], [models], [niffler])
-  else:
-    # Use dispatch for main command (default behavior)
-    dispatch(niffler)
