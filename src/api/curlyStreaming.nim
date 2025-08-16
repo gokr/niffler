@@ -24,7 +24,7 @@
 
 import std/[json, strutils, options, strformat, logging, tables]
 import curly
-import ../types/messages
+import ../types/[messages, config]
 
 # Single long-lived Curly instance for the entire application
 let curl* = newCurly()
@@ -120,7 +120,7 @@ proc parseSSELine(line: string): Option[StreamChunk] =
       # Parse usage data if present (often sent in final streaming chunk)
       if json.hasKey("usage"):
         let usageJson = json["usage"]
-        chunk.usage = some(TokenUsage(
+        chunk.usage = some(messages.TokenUsage(
           promptTokens: usageJson{"prompt_tokens"}.getInt(0),
           completionTokens: usageJson{"completion_tokens"}.getInt(0),
           totalTokens: usageJson{"total_tokens"}.getInt(0)
@@ -198,6 +198,26 @@ proc toJson*(req: ChatRequest): JsonNode {.gcsafe.} =
     result["max_tokens"] = %req.maxTokens.get()
   if req.temperature.isSome():
     result["temperature"] = %req.temperature.get()
+  if req.topP.isSome():
+    result["top_p"] = %req.topP.get()
+  if req.topK.isSome():
+    result["top_k"] = %req.topK.get()
+  if req.stop.isSome():
+    var stopArray = newJArray()
+    for stopItem in req.stop.get():
+      stopArray.add(%stopItem)
+    result["stop"] = %stopArray
+  if req.presencePenalty.isSome():
+    result["presence_penalty"] = %req.presencePenalty.get()
+  if req.frequencyPenalty.isSome():
+    result["frequency_penalty"] = %req.frequencyPenalty.get()
+  if req.logitBias.isSome():
+    var biasObj = newJObject()
+    for key, val in pairs(req.logitBias.get()):
+      biasObj[$key] = %val
+    result["logit_bias"] = %biasObj
+  if req.seed.isSome():
+    result["seed"] = %req.seed.get()
   
   # Add tools if present
   if req.tools.isSome():
@@ -367,14 +387,21 @@ proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
     result.add(chatMsg)
 
 # Helper function to create ChatRequest (compatibility with existing API)
-proc createChatRequest*(model: string, messages: seq[Message], maxTokens: Option[int], 
-                       temperature: Option[float], stream: bool, tools: Option[seq[ToolDefinition]]): ChatRequest =
-  ## Create a ChatRequest from the internal message types
+proc createChatRequest*(modelConfig: ModelConfig, messages: seq[Message],
+                       stream: bool, tools: Option[seq[ToolDefinition]]): ChatRequest =
+  ## Create a ChatRequest from the internal message types using model configuration
   return ChatRequest(
-    model: model,
+    model: modelConfig.model,
     messages: convertMessages(messages),
-    maxTokens: maxTokens,
-    temperature: temperature,
+    maxTokens: modelConfig.maxTokens,
+    temperature: modelConfig.temperature,
+    topP: modelConfig.topP,
+    topK: modelConfig.topK,
+    stop: modelConfig.stop,
+    presencePenalty: modelConfig.presencePenalty,
+    frequencyPenalty: modelConfig.frequencyPenalty,
+    logitBias: modelConfig.logitBias,
+    seed: modelConfig.seed,
     stream: stream,
     tools: tools
   )

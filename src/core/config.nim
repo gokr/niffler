@@ -1,15 +1,27 @@
-import std/[os, appdirs, json, tables, options, locks, strformat]
+import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
 import ../types/config
 
-const DEFAULT_CONFIG_DIR = "niffler"
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.json"
+const SQLITE_FILE_NAME = "niffler.db"
+
+proc getConfigDir*(): string =
+  ## Get platform-appropriate config directory for niffler
+  when defined(windows):
+    # Windows: Use %APPDATA%\niffler
+    joinPath(appdirs.getConfigDir().string, "niffler")
+  else:
+    # Unix: Use ~/.niffler (traditional dot-prefix)
+    joinPath(appdirs.getHomeDir().string, ".niffler")
 
 proc getDefaultConfigPath*(): string =
-  joinPath(appdirs.getConfigDir().string, DEFAULT_CONFIG_DIR, CONFIG_FILE_NAME)
+  joinPath(getConfigDir(), CONFIG_FILE_NAME)
+
+proc getDefaultSqlitePath*(): string =
+  joinPath(getConfigDir(), SQLITE_FILE_NAME)
 
 proc getDefaultKeyPath*(): string = 
-  joinPath(appdirs.getConfigDir().string, DEFAULT_CONFIG_DIR, KEY_FILE_NAME)
+  joinPath(getConfigDir(), KEY_FILE_NAME)
 
 # Global config manager
 var globalConfigManager: ConfigManager
@@ -20,7 +32,7 @@ proc initializeConfigManager() =
 
 proc parseModelConfig(node: JsonNode): ModelConfig =
   result.nickname = node["nickname"].getStr()
-  result.baseUrl = node["baseUrl"].getStr() 
+  result.baseUrl = node["baseUrl"].getStr()
   result.model = node["model"].getStr()
   result.context = node["context"].getInt()
   result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
@@ -42,6 +54,47 @@ proc parseModelConfig(node: JsonNode): ModelConfig =
     of "low": result.reasoning = some(rlLow)
     of "medium": result.reasoning = some(rlMedium)
     of "high": result.reasoning = some(rlHigh)
+    
+  # OpenAI protocol parameters
+  if node.hasKey("temperature"):
+    result.temperature = some(node["temperature"].getFloat())
+    
+  if node.hasKey("topP"):
+    result.topP = some(node["topP"].getFloat())
+    
+  if node.hasKey("topK"):
+    result.topK = some(node["topK"].getInt())
+    
+  if node.hasKey("maxTokens"):
+    result.maxTokens = some(node["maxTokens"].getInt())
+    
+  if node.hasKey("stop"):
+    var stopSeq: seq[string] = @[]
+    for stopItem in node["stop"]:
+      stopSeq.add(stopItem.getStr())
+    result.stop = some(stopSeq)
+    
+  if node.hasKey("presencePenalty"):
+    result.presencePenalty = some(node["presencePenalty"].getFloat())
+    
+  if node.hasKey("frequencyPenalty"):
+    result.frequencyPenalty = some(node["frequencyPenalty"].getFloat())
+    
+  if node.hasKey("logitBias"):
+    var biasTable = initTable[int, float]()
+    for key, val in node["logitBias"]:
+      biasTable[parseInt(key)] = val.getFloat()
+    result.logitBias = some(biasTable)
+    
+  if node.hasKey("seed"):
+    result.seed = some(node["seed"].getInt())
+    
+  # Cost tracking parameters
+  if node.hasKey("inputCostPerToken"):
+    result.inputCostPerToken = some(node["inputCostPerToken"].getFloat())
+    
+  if node.hasKey("outputCostPerToken"):
+    result.outputCostPerToken = some(node["outputCostPerToken"].getFloat())
 
 proc parseSpecialModelConfig(node: JsonNode): SpecialModelConfig =
   result.baseUrl = node["baseUrl"].getStr()
@@ -59,6 +112,39 @@ proc parseMcpServerConfig(node: JsonNode): McpServerConfig =
     for arg in node["args"]:
       args.add(arg.getStr())
     result.args = some(args)
+
+proc parseDatabaseConfig(node: JsonNode): DatabaseConfig =
+  result.enabled = node.getOrDefault("enabled").getBool(true)
+  
+  # Parse database type
+  if node.hasKey("type"):
+    case node["type"].getStr():
+    of "sqlite": result.`type` = dtSQLite
+    of "tidb": result.`type` = dtTiDB
+    else: result.`type` = dtSQLite  # Default to SQLite
+  
+  # SQLite specific settings
+  if node.hasKey("path"):
+    result.path = some(node["path"].getStr())
+  else:
+    result.path = some(getDefaultSqlitePath())
+
+  # TiDB specific settings
+  if node.hasKey("host"):
+    result.host = some(node["host"].getStr())
+  if node.hasKey("port"):
+    result.port = some(node["port"].getInt())
+  if node.hasKey("database"):
+    result.database = some(node["database"].getStr())
+  if node.hasKey("username"):
+    result.username = some(node["username"].getStr())
+  if node.hasKey("password"):
+    result.password = some(node["password"].getStr())
+  
+  # Common settings
+  result.walMode = node.getOrDefault("walMode").getBool(true)
+  result.busyTimeout = node.getOrDefault("busyTimeout").getInt(5000)
+  result.poolSize = node.getOrDefault("poolSize").getInt(10)
 
 proc parseConfig(configJson: JsonNode): Config =
   result.yourName = configJson["yourName"].getStr()
@@ -83,6 +169,9 @@ proc parseConfig(configJson: JsonNode): Config =
     result.mcpServers = some(initTable[string, McpServerConfig]())
     for key, val in configJson["mcpServers"]:
       result.mcpServers.get()[key] = parseMcpServerConfig(val)
+      
+  if configJson.hasKey("database"):
+    result.database = some(parseDatabaseConfig(configJson["database"]))
 
 proc readConfig*(path: string): Config =
   let content = readFile(path)
@@ -114,8 +203,65 @@ proc writeConfig*(config: Config, path: string) =
     if model.reasoning.isSome():
       modelObj["reasoning"] = newJString($model.reasoning.get())
       
+    # OpenAI protocol parameters
+    if model.temperature.isSome():
+      modelObj["temperature"] = newJFloat(model.temperature.get())
+    if model.topP.isSome():
+      modelObj["topP"] = newJFloat(model.topP.get())
+    if model.topK.isSome():
+      modelObj["topK"] = newJInt(model.topK.get())
+    if model.maxTokens.isSome():
+      modelObj["maxTokens"] = newJInt(model.maxTokens.get())
+    if model.stop.isSome():
+      var stopArray = newJArray()
+      for stopItem in model.stop.get():
+        stopArray.add(newJString(stopItem))
+      modelObj["stop"] = stopArray
+    if model.presencePenalty.isSome():
+      modelObj["presencePenalty"] = newJFloat(model.presencePenalty.get())
+    if model.frequencyPenalty.isSome():
+      modelObj["frequencyPenalty"] = newJFloat(model.frequencyPenalty.get())
+    if model.logitBias.isSome():
+      var biasObj = newJObject()
+      for key, val in model.logitBias.get():
+        biasObj[$key] = newJFloat(val)
+      modelObj["logitBias"] = biasObj
+    if model.seed.isSome():
+      modelObj["seed"] = newJInt(model.seed.get())
+      
+    # Cost tracking parameters
+    if model.inputCostPerToken.isSome():
+      modelObj["inputCostPerToken"] = newJFloat(model.inputCostPerToken.get())
+    if model.outputCostPerToken.isSome():
+      modelObj["outputCostPerToken"] = newJFloat(model.outputCostPerToken.get())
+      
     modelsArray.add(modelObj)
   configJson["models"] = modelsArray
+  
+  # Add database configuration if present
+  if config.database.isSome():
+    var dbObj = newJObject()
+    let dbConfig = config.database.get()
+    dbObj["type"] = newJString($dbConfig.`type`)
+    dbObj["enabled"] = newJBool(dbConfig.enabled)
+    dbObj["walMode"] = newJBool(dbConfig.walMode)
+    dbObj["busyTimeout"] = newJInt(dbConfig.busyTimeout)
+    dbObj["poolSize"] = newJInt(dbConfig.poolSize)
+    
+    if dbConfig.path.isSome():
+      dbObj["path"] = newJString(dbConfig.path.get())
+    if dbConfig.host.isSome():
+      dbObj["host"] = newJString(dbConfig.host.get())
+    if dbConfig.port.isSome():
+      dbObj["port"] = newJInt(dbConfig.port.get())
+    if dbConfig.database.isSome():
+      dbObj["database"] = newJString(dbConfig.database.get())
+    if dbConfig.username.isSome():
+      dbObj["username"] = newJString(dbConfig.username.get())
+    if dbConfig.password.isSome():
+      dbObj["password"] = newJString(dbConfig.password.get())
+    
+    configJson["database"] = dbObj
   
   writeFile(path, pretty(configJson, 2))
 
@@ -143,6 +289,27 @@ proc writeKeys*(keys: KeyConfig) =
   # Set restrictive permissions (owner read/write only)
   setFilePermissions(keyPath, {fpUserRead, fpUserWrite})
 
+# Cost calculation helpers
+proc calculateCosts*(cost: var CostTracking, usage: CostTokenUsage) =
+  ## Calculate and populate cost totals based on token usage and per-token rates.
+  cost.usage = usage
+  if cost.inputCostPerToken.isSome():
+    cost.totalInputCost = float(usage.inputTokens) * cost.inputCostPerToken.get()
+  else:
+    cost.totalInputCost = 0.0
+  if cost.outputCostPerToken.isSome():
+    cost.totalOutputCost = float(usage.outputTokens) * cost.outputCostPerToken.get()
+  else:
+    cost.totalOutputCost = 0.0
+  cost.totalCost = cost.totalInputCost + cost.totalOutputCost
+
+proc addUsage*(cost: var CostTracking, inputTokens: int, outputTokens: int) =
+  ## Add token usage and update running totals and costs.
+  cost.usage.inputTokens = cost.usage.inputTokens + inputTokens
+  cost.usage.outputTokens = cost.usage.outputTokens + outputTokens
+  cost.usage.totalTokens = cost.usage.inputTokens + cost.usage.outputTokens
+  calculateCosts(cost, cost.usage)
+
 proc initializeConfig*(path: string) =
   if fileExists(path):
     echo "Configuration file already exists: ", path
@@ -157,7 +324,16 @@ proc initializeConfig*(path: string) =
         model: "gpt-4o",
         context: 128000,
         `type`: some(mtStandard),
-        enabled: true
+        enabled: true,
+        # OpenAI protocol parameters
+        temperature: some(0.7),
+        topP: some(1.0),
+        maxTokens: some(4096),
+        presencePenalty: some(0.0),
+        frequencyPenalty: some(0.0),
+        # Cost tracking parameters (example rates for GPT-4o)
+        inputCostPerToken: some(0.0000025),  # $2.50 per 1M tokens
+        outputCostPerToken: some(0.000010)   # $10.00 per 1M tokens
       ),
       ModelConfig(
         nickname: "claude-3.5-sonnet",
@@ -175,11 +351,18 @@ proc initializeConfig*(path: string) =
         `type`: some(mtStandard),
         enabled: false
       )
-    ]
+    ],
+    database: some(DatabaseConfig(
+      `type`: dtSQLite,
+      enabled: true,
+      path: some(SQLITE_FILE_NAME),
+      walMode: true,
+      busyTimeout: 5000,
+      poolSize: 10
+    ))
   )
   
   writeConfig(defaultConfig, path)
-  echo "Default configuration created at: ", path
 
 proc loadConfig*(): Config =
   if globalConfigManager.configPath.len == 0:

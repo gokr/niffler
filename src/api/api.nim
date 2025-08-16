@@ -336,11 +336,22 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           try:
             # Create and send HTTP request
             var client = currentClient.get()
+            
+            # Create a temporary ModelConfig from the API request
+            let tempModelConfig = ModelConfig(
+              nickname: "api-request",
+              baseUrl: request.baseUrl,
+              model: request.model,
+              context: 128000,  # Default context
+              enabled: true,
+              maxTokens: some(request.maxTokens),
+              temperature: some(request.temperature),
+              apiKey: some(request.apiKey)
+            )
+            
             let chatRequest = createChatRequest(
-              request.model,
+              tempModelConfig,
               request.messages,
-              some(request.maxTokens),
-              some(request.temperature),
               stream = true,  # Enable streaming for real-time responses
               tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
             )
@@ -354,6 +365,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var fullContent = ""
             var collectedToolCalls: seq[ChatToolCall] = @[]
             var hasToolCalls = false
+            var suppressInitialContent = false  # Suppress initial content if tool calls detected
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
@@ -365,19 +377,25 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 let choice = chunk.choices[0]
                 let delta = choice.delta
                 
-                # Send content chunks in real-time
+                # Send content chunks in real-time, unless we detect tool calls
                 if delta.content.len > 0:
                   fullContent.add(delta.content)
-                  let chunkResponse = APIResponse(
-                    requestId: request.requestId,
-                    kind: arkStreamChunk,
-                    content: delta.content,
-                    done: false
-                  )
-                  sendAPIResponse(channels, chunkResponse)
+                  
+                  # Only send content if we haven't detected tool calls yet
+                  if not suppressInitialContent:
+                    let chunkResponse = APIResponse(
+                      requestId: request.requestId,
+                      kind: arkStreamChunk,
+                      content: delta.content,
+                      done: false
+                    )
+                    sendAPIResponse(channels, chunkResponse)
                 
                 # Buffer tool calls from delta instead of processing immediately
                 if delta.toolCalls.isSome():
+                  if not suppressInitialContent:
+                    suppressInitialContent = true  # Stop sending initial content when ANY tool call fragment detected
+                    debug("Tool call detected - suppressing further initial content")
                   for toolCall in delta.toolCalls.get():
                     debug(fmt"Buffering tool call fragment: id='{toolCall.id}', name='{toolCall.function.name}', args='{toolCall.function.arguments}'")
                     # Buffer the tool call fragment
@@ -513,11 +531,22 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     updatedMessages.add(toolResult)
                   # Create follow-up request to continue conversation
                   debug(fmt"Creating follow-up request with {updatedMessages.len} messages")
+                  
+                  # Create a temporary ModelConfig from the API request
+                  let tempModelConfig = ModelConfig(
+                    nickname: "api-request-followup",
+                    baseUrl: request.baseUrl,
+                    model: request.model,
+                    context: 128000,  # Default context
+                    enabled: true,
+                    maxTokens: some(request.maxTokens),
+                    temperature: some(request.temperature),
+                    apiKey: some(request.apiKey)
+                  )
+                  
                   let followUpRequest = createChatRequest(
-                    request.model,
+                    tempModelConfig,
                     updatedMessages,
-                    some(request.maxTokens),
-                    some(request.temperature),
                     stream = true,
                     tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
                   )
@@ -536,7 +565,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                       let choice = chunk.choices[0]
                       let delta = choice.delta
                       
-                      # Send content chunks in real-time
+                      # Send follow-up content (initial content was suppressed)
                       if delta.content.len > 0:
                         followUpContent.add(delta.content)
                         let chunkResponse = APIResponse(

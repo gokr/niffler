@@ -4,7 +4,9 @@
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/Version-0.2.2-green.svg)
 
-**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and a comprehensive tool system for file operations, command execution, and web interactions. Designed as a Nim-based alternative to AI coding assistants, Niffler combines the performance and safety of Nim with the flexibility of modern AI integration.
+**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers and a tool system for file operations, command execution, and web interactions. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over Octofriend.
+
+**NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
 ## 🚀 Features
 
@@ -13,10 +15,9 @@
 - **Interactive Chat Mode**: Real-time conversation with streaming responses
 - **Single Prompt Mode**: Send individual prompts directly from your command line and get immediate responses
 - **Model Management**: Easy configuration and switching between AI models
-- **Token Usage Tracking**: Monitor token consumption and costs
-- **Single binary and Cross Platform**: Written in Nim means it is a single small and very fast binary for Linux, OSX, Windows and more.
+- **Single binary and Cross Platform**: Written in Nim means it is a single cross platform binary.
 
-### Comprehensive Tool System
+### Tool System
 Niffler includes a tool system that enables AI assistants to interact with your development environment:
 
 #### 🛠️ Core Tools
@@ -29,14 +30,17 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 
 #### 🔧 Tool Infrastructure
 - **Thread-Safe Execution**: Dedicated worker threads for safe tool execution
-- **Argument Validation**: Robust input validation with detailed error messages
+- **Argument Validation**: Input validation with detailed error messages
 - **Security Features**: Path sanitization, size limits, and permission checks
 - **Modular Architecture**: Easy to extend with new tools
 
 ### Advanced Features
-- **Configuration Management**: Flexible configuration system with environment variable support
-- **History Tracking**: Conversation history with message persistence
-- **Debug Logging**: Extended logging with info or debug levels
+- **Configuration Management**: Simple JSON configuration with platform-appropriate directories
+- **Enhanced Terminal Interface**: Full cursor key support, history navigation, and colored prompts
+- **Database Persistence**: SQLite-based prompt and response history with cross-session persistence
+- **Job Control Support**: Ctrl+Z background suspension (Unix/Linux/macOS)
+- **History Tracking**: Conversation history with message persistence and database storage
+- **Debug Logging**: Logging with info & debug levels
 - **HTTP Request/Response Dumping**: Complete HTTP transaction visibility for debugging API issues
 
 ## 📦 Installation
@@ -63,7 +67,9 @@ nimble build
 ```bash
 niffler init
 ```
-This creates a configuration file at `~/.config/niffler/config.json`.
+This creates a configuration file at the platform-appropriate location:
+- **Linux/macOS**: `~/.niffler/config.json`
+- **Windows**: `%APPDATA%\niffler\config.json`
 
 ### 2. Configure Your AI Model
 Edit the configuration file to add (or enable) at least one AI model and API key:
@@ -120,6 +126,25 @@ niffler --debug --dump
 - `/clear` - Clear conversation history
 - `/exit` or `/quit` - Exit Niffler
 
+### Enhanced Terminal Features
+
+**Cursor Key Support:**
+- **←/→ Arrow Keys**: Navigate within your input line for editing
+- **↑/↓ Arrow Keys**: Navigate through command history (persisted across sessions)
+- **Home/End**: Jump to beginning/end of current line
+- **Ctrl+C**: Graceful exit
+- **Ctrl+Z**: Suspend to background (Unix/Linux/macOS)
+
+**Visual Enhancements:**
+- **Colored Prompts**: Username appears in blue and cannot be backspaced over
+- **History Persistence**: Your conversation history is saved to a SQLite database and restored between sessions
+- **Cross-Platform**: Works consistently on Windows, Linux, and macOS
+
+**Database Integration:**
+All conversations are automatically saved to a SQLite database located at:
+- **Linux/macOS**: `~/.niffler/niffler.db`
+- **Windows**: `%APPDATA%\niffler\niffler.db`
+
 ### Configuration Management
 ```bash
 # Initialize configuration
@@ -132,8 +157,17 @@ niffler init --config-path /path/to/config.json
 ## 🔧 Configuration
 
 ### Configuration File Location
-- Default: `~/.config/niffler/config.json`
-- Custom: Specified via `--config-path` argument
+
+**Linux/macOS:**
+- Default: `~/.niffler/config.json`
+- Directory: `~/.niffler/` (hidden directory)
+
+**Windows:**
+- Default: `%APPDATA%\niffler\config.json`
+- Directory: `%APPDATA%\niffler\` (e.g., `C:\Users\Username\AppData\Roaming\niffler\`)
+
+**Custom:**
+- Can be specified via `--config-path` argument for any platform
 
 ### Configuration Structure
 ```json
@@ -369,4 +403,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - **Nim Programming Language**: For providing an excellent, performant language for systems programming
-- **Original Octofriend**: For inspiring the architecture and feature set
+- **Original Octofriend**: For inspiring the feature set and a very friendly Discord

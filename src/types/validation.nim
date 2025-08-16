@@ -1,4 +1,4 @@
-import std/[json, strutils, tables, options, sequtils, macros]
+import std/[json, strutils, tables, options, sequtils, macros, times, logging]
 
 type
   ValidationError* = object of CatchableError
@@ -146,3 +146,151 @@ proc combine*[T, U](result1: ValidationResult[T], result2: ValidationResult[U]):
     errors.add(result2.errors)
   
   return invalid[(T, U)](errors)
+
+# OpenAI parameter validation
+proc validateTemperature*(node: JsonNode, field: string = ""): ValidationResult[float] =
+  let floatResult = validateFloat(node, field)
+  if not floatResult.isValid:
+    return floatResult
+  
+  let value = floatResult.value
+  if value < 0.0 or value > 2.0:
+    return invalid[float](newValidationError(field, "temperature between 0.0 and 2.0", $value))
+  
+  return valid(value)
+
+proc validateTopP*(node: JsonNode, field: string = ""): ValidationResult[float] =
+  let floatResult = validateFloat(node, field)
+  if not floatResult.isValid:
+    return floatResult
+  
+  let value = floatResult.value
+  if value < 0.0 or value > 1.0:
+    return invalid[float](newValidationError(field, "top_p between 0.0 and 1.0", $value))
+  
+  return valid(value)
+
+proc validateTopK*(node: JsonNode, field: string = ""): ValidationResult[int] =
+  let intResult = validateInt(node, field)
+  if not intResult.isValid:
+    return intResult
+  
+  let value = intResult.value
+  if value < 0 or value > 100:
+    return invalid[int](newValidationError(field, "top_k between 0 and 100", $value))
+  
+  return valid(value)
+
+proc validateMaxTokens*(node: JsonNode, field: string = ""): ValidationResult[int] =
+  let intResult = validateInt(node, field)
+  if not intResult.isValid:
+    return intResult
+  
+  let value = intResult.value
+  if value < 1 or value > 128000:
+    return invalid[int](newValidationError(field, "max_tokens between 1 and 128000", $value))
+  
+  return valid(value)
+
+proc validatePresencePenalty*(node: JsonNode, field: string = ""): ValidationResult[float] =
+  let floatResult = validateFloat(node, field)
+  if not floatResult.isValid:
+    return floatResult
+  
+  let value = floatResult.value
+  if value < -2.0 or value > 2.0:
+    return invalid[float](newValidationError(field, "presence_penalty between -2.0 and 2.0", $value))
+  
+  return valid(value)
+
+proc validateFrequencyPenalty*(node: JsonNode, field: string = ""): ValidationResult[float] =
+  let floatResult = validateFloat(node, field)
+  if not floatResult.isValid:
+    return floatResult
+  
+  let value = floatResult.value
+  if value < -2.0 or value > 2.0:
+    return invalid[float](newValidationError(field, "frequency_penalty between -2.0 and 2.0", $value))
+  
+  return valid(value)
+
+proc validateSeed*(node: JsonNode, field: string = ""): ValidationResult[int] =
+  let intResult = validateInt(node, field)
+  if not intResult.isValid:
+    return intResult
+  
+  let value = intResult.value
+  if value < 0:
+    return invalid[int](newValidationError(field, "non-negative seed", $value))
+  
+  return valid(value)
+
+# Token usage logging
+type
+  TokenLogEntry* = object
+    timestamp*: DateTime
+    modelName*: string
+    inputTokens*: int
+    outputTokens*: int
+    totalTokens*: int
+    inputCost*: float
+    outputCost*: float
+    totalCost*: float
+
+  TokenLogger* = object
+    entries*: seq[TokenLogEntry]
+    logFile*: Option[string]
+
+proc newTokenLogger*(logFile: Option[string] = none(string)): TokenLogger =
+  TokenLogger(entries: @[], logFile: logFile)
+
+proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int, outputTokens: int,
+                   inputCostPerToken: Option[float], outputCostPerToken: Option[float]) =
+  let inputCost = if inputCostPerToken.isSome(): float(inputTokens) * inputCostPerToken.get() else: 0.0
+  let outputCost = if outputCostPerToken.isSome(): float(outputTokens) * outputCostPerToken.get() else: 0.0
+  let totalCost = inputCost + outputCost
+  
+  let entry = TokenLogEntry(
+    timestamp: now(),
+    modelName: modelName,
+    inputTokens: inputTokens,
+    outputTokens: outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    inputCost: inputCost,
+    outputCost: outputCost,
+    totalCost: totalCost
+  )
+  
+  logger.entries.add(entry)
+  
+  # Log to file if specified
+  if logger.logFile.isSome():
+    try:
+      let file = open(logger.logFile.get(), fmAppend)
+      defer: file.close()
+      file.writeLine($entry.timestamp & " | " & modelName & " | Input: " & $inputTokens &
+                     " | Output: " & $outputTokens & " | Total: " & $(inputTokens + outputTokens) &
+                     " | Cost: $" & $totalCost)
+    except IOError:
+      warn("Failed to write to token log file: " & logger.logFile.get())
+
+proc getTotalCost*(logger: TokenLogger): float =
+  result = 0.0
+  for entry in logger.entries:
+    result += entry.totalCost
+
+proc getTotalTokens*(logger: TokenLogger): (int, int, int) =
+  var totalInput, totalOutput, totalAll = 0
+  for entry in logger.entries:
+    totalInput += entry.inputTokens
+    totalOutput += entry.outputTokens
+    totalAll += entry.totalTokens
+  return (totalInput, totalOutput, totalAll)
+
+proc getCostByModel*(logger: TokenLogger): Table[string, float] =
+  result = initTable[string, float]()
+  for entry in logger.entries:
+    if result.hasKey(entry.modelName):
+      result[entry.modelName] += entry.totalCost
+    else:
+      result[entry.modelName] = entry.totalCost

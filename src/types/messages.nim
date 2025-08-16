@@ -20,7 +20,7 @@
 ## - Optional fields using Option[T] for flexibility
 ## - Streaming-first approach with chunk-based processing
 
-import std/[options, json]
+import std/[options, json, tables]
 
 type
   # Core message types for LLM conversations
@@ -220,6 +220,13 @@ type
     messages*: seq[ChatMessage]
     maxTokens*: Option[int]
     temperature*: Option[float]
+    topP*: Option[float]
+    topK*: Option[int]
+    stop*: Option[seq[string]]
+    presencePenalty*: Option[float]
+    frequencyPenalty*: Option[float]
+    logitBias*: Option[Table[int, float]]
+    seed*: Option[int]
     stream*: bool
     tools*: Option[seq[ToolDefinition]]
 

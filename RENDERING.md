@@ -1,4 +1,15 @@
-# Markdown and Diff Rendering in Niffler
+# UI Modes and Rendering in Niffler
+
+## Available UI Modes
+
+### 1. Basic CLI (`--simple`)
+Simple terminal interface with basic I/O
+
+### 2. Enhanced UI (`enhanced.nim`)
+illwill-based interface with markdown rendering and streaming
+
+### 3. TUI Widget Mode (`--tui` - NEW!)
+Clean widget-style interface inspired by tui_widget concepts
 
 ## Current Enhanced UI Implementation
 
@@ -59,3 +70,28 @@ The enhanced UI in `src/ui/enhanced.nim` includes:
 - Color scheme using illwill's color constants (fgYellow, fgGreen, fgCyan, etc.)
 
 The current implementation provides a solid foundation for markdown rendering in terminal applications, with room for enhancement using dedicated parsing libraries.
+
+## New TUI Widget Mode (`enhanced_tui.nim`)
+
+**✅ Features:**
+- Clean widget-like interface using pure illwill
+- Proper input box at the bottom with borders
+- Status bar showing connection status and model info  
+- Title bar with helpful hints
+- Streaming response support
+- History navigation with arrow keys
+- Auto-scrolling response display
+- Better visual separation of UI elements
+
+**Usage:**
+```bash
+niffler --tui    # Use TUI widget-style interface
+niffler -t       # Short form
+```
+
+**Design Benefits:**
+- Cleaner visual layout than basic enhanced UI
+- More responsive to streaming content
+- Better organized screen real estate
+- Widget-style approach inspired by tui_widget but using pure illwill
+- Fallback hierarchy: TUI → Enhanced → Basic CLI
