@@ -355,7 +355,7 @@ proc initializeConfig*(path: string) =
     database: some(DatabaseConfig(
       `type`: dtSQLite,
       enabled: true,
-      path: some(SQLITE_FILE_NAME),
+      path: some(getDefaultSqlitePath()),
       walMode: true,
       busyTimeout: 5000,
       poolSize: 10
@@ -363,6 +363,7 @@ proc initializeConfig*(path: string) =
   )
   
   writeConfig(defaultConfig, path)
+  echo "Configuration initialized at: ", path
 
 proc loadConfig*(): Config =
   if globalConfigManager.configPath.len == 0:

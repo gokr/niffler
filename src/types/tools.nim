@@ -44,16 +44,10 @@ type
   ToolPermissionError* = ref object of ToolError
     path*: string
 
-  ToolArguments* = object of RootObj
-
   ToolCall* = object
     id*: string
     name*: string
     arguments*: JsonNode
-
-  InternalTool* = object of RootObj
-    name*: string
-    description*: string
 
 proc newToolError*(toolName, message: string): ToolError =
   result = ToolError(msg: message)
@@ -81,6 +75,8 @@ proc newToolPermissionError*(toolName, path: string): ToolPermissionError =
   result = ToolPermissionError(msg: "Permission denied for path: " & path)
   result.toolName = toolName
   result.path = path
+
+
 
 proc newToolResult*(output: string): ToolResult =
   ToolResult(id: "", output: output, error: none(string))

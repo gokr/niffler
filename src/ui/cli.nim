@@ -39,7 +39,7 @@ import tui
 var globalDatabase: DatabaseBackend = nil
 
 # Global noise instance for enhanced input
-var noiseInstance: Option[Noise] = none(Noise)
+var noiseInstance: Option[Noise] = none[Noise]()
 
 proc getUserName*(): string =
   ## Get the current user's name
@@ -106,19 +106,45 @@ proc readInputLine(prompt: string): string =
 when defined(posix):
   # Global flag to track if we're suspended
   var suspended = false
+  # Global state for stream cancellation
+  var currentActiveRequestId = ""
+  var currentChannels: ptr ThreadChannels = nil
+  var streamCancellationRequested = false
   
   proc handleSIGTSTP(sig: cint) {.noconv.} =
     ## Handle Ctrl+Z (SIGTSTP) - suspend to background
     suspended = true
-    # Send SIGSTOP to ourselves to actually suspend
-    discard kill(getpid(), SIGSTOP)
+    # Reset signal handler to default and resend signal for proper suspension
+    signal(SIGTSTP, SIG_DFL)
+    discard kill(getpid(), SIGTSTP)
   
   proc handleSIGCONT(sig: cint) {.noconv.} =
     ## Handle SIGCONT - resume from background
     suspended = false
+    # Reinstall SIGTSTP handler
+    signal(SIGTSTP, handleSIGTSTP)
     # Clear the line and redraw prompt when resuming
     stdout.write("\r\e[K")  # Clear current line
     stdout.flushFile()
+  
+  proc handleSIGINT(sig: cint) {.noconv.} =
+    ## Handle Ctrl+C (SIGINT) - cancel stream or exit
+    if currentActiveRequestId.len > 0 and currentChannels != nil:
+      # We have an active stream, cancel it
+      streamCancellationRequested = true
+      let cancelRequest = APIRequest(
+        kind: arkStreamCancel,
+        cancelRequestId: currentActiveRequestId
+      )
+      if trySendAPIRequest(currentChannels, cancelRequest):
+        echo "\n\x1b[31m⚠️ Response stopped by user, token generation may continue briefly\x1b[0m"
+        currentActiveRequestId = ""
+      else:
+        echo "\n⚠️ Failed to cancel stream"
+    else:
+      # No active stream, exit normally
+      echo "\nGoodbye!"
+      quit(0)
 
 proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBright) =
   ## Write colored text to stdout
@@ -158,10 +184,11 @@ proc initializeAppSystems*(level: Level, dump: bool = false) =
   else:
     debug("Enhanced input initialization failed, will use basic input")
   
-  # Set up signal handlers for Ctrl+Z support (POSIX only)
+  # Set up signal handlers for Ctrl+Z and Ctrl+C support (POSIX only)
   when defined(posix):
     signal(SIGTSTP, handleSIGTSTP)
     signal(SIGCONT, handleSIGCONT)
+    signal(SIGINT, handleSIGINT)
 
 proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, tui: bool = false) =
   ## Start the interactive terminal UI (TUI, enhanced, or basic fallback)
@@ -177,6 +204,7 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
   
   # Fallback to basic CLI
   echo "Type '/help' for help and '/exit' or '/quit' to leave."
+  echo "Press Ctrl+C to stop stream display or exit."
   echo ""
   
   # Initialize the app systems
@@ -184,6 +212,10 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
   
   let channels = getChannels()
   let config = loadConfig()
+  
+  # Set up global state for stream cancellation
+  when defined(posix):
+    currentChannels = channels
   
   # Select initial model based on parameter or default
   var currentModel = if model.len > 0:
@@ -246,6 +278,13 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
           echo "  /clear - Clear conversation history"
           echo "  /help - Show this help"
           echo ""
+          echo "Keyboard shortcuts:"
+          echo "  Ctrl+C - Stop stream display or exit"
+          echo "  Ctrl+Z - Suspend to background (Unix/Linux)"
+          echo ""
+          echo "Note: Stream cancellation stops display but may not stop"
+          echo "      token generation immediately due to API limitations."
+          echo ""
           continue
         of "models":
           echo ""
@@ -288,7 +327,13 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
           continue
       
       # Regular message - send to API
-      if sendSinglePromptInteractive(input, currentModel):
+      let (success, requestId) = sendSinglePromptInteractiveWithId(input, currentModel)
+      if success:
+        # Track the request for cancellation
+        when defined(posix):
+          currentActiveRequestId = requestId
+          streamCancellationRequested = false
+        
         # Wait for response and display it
         var responseText = ""
         var responseReceived = false
@@ -299,8 +344,20 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
         stdout.flushFile()
         
         while not responseReceived and attempts < maxAttempts:
+          # Check for cancellation request
+          when defined(posix):
+            if streamCancellationRequested:
+              responseReceived = true
+              currentActiveRequestId = ""
+              break
+          
           var response: APIResponse
           if tryReceiveAPIResponse(channels, response):
+            # Validate that this response belongs to our current request
+            if response.requestId != requestId:
+              debug(fmt"Ignoring response from request {response.requestId} (current: {requestId})")
+              continue  # Skip processing this response
+            
             case response.kind:
             of arkStreamChunk:
               if response.content.len > 0:
@@ -324,10 +381,14 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
                   except Exception as e:
                     debug(fmt"Failed to log prompt to database: {e.msg}")
               responseReceived = true
+              when defined(posix):
+                currentActiveRequestId = ""
             of arkStreamError:
               echo fmt"Error: {response.error}"
               echo ""
               responseReceived = true
+              when defined(posix):
+                currentActiveRequestId = ""
             of arkReady:
               discard  # Just ignore ready responses
           
@@ -338,6 +399,8 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
         if not responseReceived:
           echo "Timeout waiting for response"
           echo ""
+          when defined(posix):
+            currentActiveRequestId = ""
       else:
         echo "Failed to send message"
         echo ""
@@ -360,7 +423,7 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
   
   # Cleanup noise instance
   if noiseInstance.isSome():
-    noiseInstance = none(Noise)
+    noiseInstance = none[Noise]()
 
 proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false) =
   ## Send a single prompt and return response
@@ -380,7 +443,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   # Start tool worker
   var toolWorker = startToolWorker(channels, level, dump)
   
-  if sendSinglePromptAsync(text, model):
+  let (success, requestId) = sendSinglePromptAsyncWithId(text, model)
+  if success:
     debug "Request sent, waiting for response..."
     
     # Wait for response with timeout
@@ -392,6 +456,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     while not responseReceived and attempts < maxAttempts:
       var response: APIResponse
       if tryReceiveAPIResponse(channels, response):
+        # Validate that this response belongs to our current request
+        if response.requestId != requestId:
+          debug(fmt"Ignoring response from request {response.requestId} (current: {requestId})")
+          continue  # Skip processing this response
+        
         case response.kind:
         of arkStreamChunk:
           if response.content.len > 0:
@@ -445,4 +514,4 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   
   # Cleanup noise instance
   if noiseInstance.isSome():
-    noiseInstance = none(Noise)
+    noiseInstance = none[Noise]()

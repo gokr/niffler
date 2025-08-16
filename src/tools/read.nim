@@ -2,13 +2,7 @@ import std/[os, streams, times, strutils, json]
 import ../types/tools
 import common
 
-type
-  ReadTool* = ref object of InternalTool
-
-proc newReadTool*(): ReadTool =
-  result = ReadTool()
-  result.name = "read"
-  result.description = "Read file content with encoding detection and size limits"
+# Tool removed - using object variants now
 
 
 proc detectFileEncoding*(path: string): string =
@@ -42,7 +36,7 @@ proc detectFileEncoding*(path: string): string =
   # Default to utf-8
   return "utf-8"
 
-proc execute*(tool: ReadTool, args: JsonNode): string {.gcsafe.} =
+proc executeRead*(args: JsonNode): string {.gcsafe.} =
   ## Execute read file operation
   # Validate arguments
   validateArgs(args, @["path"])

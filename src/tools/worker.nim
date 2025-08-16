@@ -92,17 +92,17 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 # Execute the tool using direct implementation lookup
                 let result = case toolCall.name:
                   of "bash":
-                    newBashTool().execute(toolCall.arguments)
+                    executeBash(toolCall.arguments)
                   of "read":
-                    newReadTool().execute(toolCall.arguments)
+                    executeRead(toolCall.arguments)
                   of "list":
-                    newListTool().execute(toolCall.arguments)
+                    executeList(toolCall.arguments)
                   of "edit":
-                    newEditTool().execute(toolCall.arguments)
+                    executeEdit(toolCall.arguments)
                   of "create":
-                    newCreateTool().execute(toolCall.arguments)
+                    executeCreate(toolCall.arguments)
                   of "fetch":
-                    newFetchTool().execute(toolCall.arguments)
+                    executeFetch(toolCall.arguments)
                   else:
                     raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
                 

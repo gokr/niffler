@@ -33,27 +33,36 @@ type
     historyIndex: int
     savedCurrentInput: string  # Save current input when navigating history
     currentModel: configTypes.ModelConfig
-    responseLines: seq[string]
-    scrollOffset: int
+    responseLines: seq[string]  # Conversation history buffer
+    scrollOffset: int  # Manual scroll position
+    isFollowingBottom: bool  # Whether to auto-scroll to new content
     inputBoxHeight: int
     statusHeight: int
     waitingForResponse: bool
     currentResponseText: string
-    # New popup framework state
+    # Request tracking for cancellation
+    currentRequestId: string  # Track active request for cancellation
+    # Popup framework state
     commandCompletionPopup: Popup[CommandInfo]
     modelSelectionPopup: Popup[configTypes.ModelConfig]
     originalInputBoxHeight: int
-    # Help shortcuts state (keeping separate for now)
+    # Help shortcuts state
     showingHelp: bool
     helpShortcuts: seq[tuple[key: string, description: string]]
     # Activity indicator state
     requestStartTime: DateTime
     currentTokenCount: int
+    # Session token tracking
+    sessionPromptTokens: int
+    sessionCompletionTokens: int
+    currentContextSize: int  # Estimated context size in tokens
 
 var tuiApp: TUIApp
 var globalChannels: ptr ThreadChannels = nil
 var globalAPIWorker: APIWorker
 var globalToolWorker: ToolWorker
+
+# Clean illwill-only TUI functions
 
 proc getUserName(): string =
   ## Get the current user's name
@@ -77,6 +86,8 @@ proc initTUIApp(database: DatabaseBackend = nil) =
   tuiApp.terminalBuffer = newTerminalBuffer(terminalWidth(), terminalHeight())
   tuiApp.width = terminalWidth()
   tuiApp.height = terminalHeight()
+  
+  # Initialize input state
   tuiApp.inputLines = @[""]  # Start with one empty line
   tuiApp.cursorX = 0
   tuiApp.cursorY = 0
@@ -94,12 +105,24 @@ proc initTUIApp(database: DatabaseBackend = nil) =
     except Exception as e:
       debug(fmt"Could not load history from database into TUI: {e.msg}")
   
+  # Load history from database
+  if database != nil:
+    try:
+      let recentPrompts = getRecentPrompts(database, 50)
+      for prompt in recentPrompts:
+        tuiApp.promptHistory.addLast(prompt)
+      debug(fmt"Loaded {recentPrompts.len} prompts from database into TUI history")
+    except Exception as e:
+      debug(fmt"Could not load history from database into TUI: {e.msg}")
+  
   tuiApp.responseLines = @[]
   tuiApp.scrollOffset = 0
+  tuiApp.isFollowingBottom = true  # Start following new content
   tuiApp.inputBoxHeight = 3
   tuiApp.statusHeight = 1
   tuiApp.waitingForResponse = false
   tuiApp.currentResponseText = ""
+  tuiApp.currentRequestId = ""
   # Initialize new popup framework
   tuiApp.commandCompletionPopup = newPopup[CommandInfo](PopupConfig(
     title: "Commands",
@@ -126,11 +149,20 @@ proc initTUIApp(database: DatabaseBackend = nil) =
     ("↑↓", "Navigate history/completions"),
     ("←→", "Move cursor"),
     ("Home/End", "Jump to line start/end"),
-    ("Esc", "Close completions/help"),
+    ("Esc", "Close popups/stop stream display"),
     ("Ctrl+C", "Exit Niffler")
   ]
   tuiApp.requestStartTime = now()
   tuiApp.currentTokenCount = 0
+  tuiApp.sessionPromptTokens = 0
+  tuiApp.sessionCompletionTokens = 0
+  tuiApp.currentContextSize = 0
+
+proc resetSessionCounts*() =
+  ## Reset session token counts
+  tuiApp.sessionPromptTokens = 0
+  tuiApp.sessionCompletionTokens = 0
+  tuiApp.currentContextSize = 0
 
 proc cleanupTUIApp() =
   ## Clean up the TUI application
@@ -314,10 +346,11 @@ proc addResponseLine(line: string) =
   for wrappedLine in wrappedLines:
     tuiApp.responseLines.add(wrappedLine)
   
-  # Auto-scroll to show latest content
-  let maxDisplayLines = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
-  if tuiApp.responseLines.len > maxDisplayLines:
-    tuiApp.scrollOffset = tuiApp.responseLines.len - maxDisplayLines
+  # Smart auto-scroll: only scroll if user is following the bottom
+  if tuiApp.isFollowingBottom:
+    let maxDisplayLines = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
+    if tuiApp.responseLines.len > maxDisplayLines:
+      tuiApp.scrollOffset = tuiApp.responseLines.len - maxDisplayLines
 
 proc selectModel() =
   ## Select the current model from the popup
@@ -476,25 +509,23 @@ proc renderMarkdownLine(line: string, x: int, y: int) =
     renderInlineMarkdown(line, currentX, y)
 
 proc renderHelpPopup() =
-  ## Render keyboard shortcuts help popup
+  ## Render keyboard shortcuts help popup in bottom area
   if not tuiApp.showingHelp:
     return
   
-  let maxItems = min(10, tuiApp.helpShortcuts.len)  # Show max 10 shortcuts
+  let maxItems = min(6, tuiApp.helpShortcuts.len)  # Reduce to fit in bottom area
   let popupHeight = maxItems + 2  # +2 for borders
-  let popupWidth = min(70, tuiApp.width - 4)  # Leave some margin
+  let popupWidth = min(60, tuiApp.width - 4)  # Leave some margin
   
-  # Calculate popup position (below input box, but ensure it fits on screen)
-  let inputY = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight
-  let desiredPopupY = inputY + tuiApp.inputBoxHeight + 1  # 1 line below input box
-  let popupY = if desiredPopupY + popupHeight < tuiApp.height - 1:
-    desiredPopupY
-  else:
-    max(0, inputY - popupHeight - 1)  # Above input if no room below
+  # Position within bottom reserved area
+  let popupY = 1  # Start below separator line
   let popupX = 2
   
-  # Draw popup background and border
-  tuiApp.terminalBuffer.fill(popupX, popupY, popupX + popupWidth - 1, popupY + popupHeight - 1, " ")
+  # Only render if it fits in the bottom area
+  let maxPopupY = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight
+  if popupY + popupHeight <= maxPopupY:
+    # Draw popup background and border
+    tuiApp.terminalBuffer.fill(popupX, popupY, popupX + popupWidth - 1, popupY + popupHeight - 1, " ")
   
   # Top border
   tuiApp.terminalBuffer.fill(popupX, popupY, popupX + popupWidth - 1, popupY, "─")
@@ -533,7 +564,7 @@ proc renderInputBox() =
   # Adjust height first
   adjustInputBoxHeight()
   
-  # Input box stays at bottom (popups now go below it) 
+  # Input box stays at bottom
   let inputY = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight
   
   # Clear input area
@@ -581,25 +612,28 @@ proc renderInputBox() =
     let line = tuiApp.inputLines[tuiApp.cursorY]
     let availableWidth = maxInputWidth - promptPrefix.len
     
+    # Ensure cursor position is valid and within bounds
+    let validCursorX = max(0, min(tuiApp.cursorX, line.len))
+    
     # Account for text truncation when positioning cursor
     let effectiveCursorX = if line.len > availableWidth:
-      min(tuiApp.cursorX, availableWidth - 1)  # -1 for the ellipsis
+      min(validCursorX, availableWidth - 1)  # -1 for the ellipsis
     else:
-      tuiApp.cursorX
+      validCursorX
     
     let cursorXPos = 2 + promptPrefix.len + effectiveCursorX
     tuiApp.terminalBuffer.setCursorPos(min(cursorXPos, tuiApp.width-2), lineY)
 
 proc renderResponseArea() =
-  ## Render the response display area
+  ## Render the response display area with scrolling support
   let maxY = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
-  let startY = 0  # Start from top since no title bar
+  let startY = 0
   let maxDisplayLines = maxY - startY
   
   # Clear response area
   tuiApp.terminalBuffer.fill(0, startY, tuiApp.width-1, maxY, " ")
   
-  # Display response lines with scrolling
+  # Display response lines with manual scrolling
   let startIdx = tuiApp.scrollOffset
   let endIdx = min(tuiApp.responseLines.len, startIdx + maxDisplayLines)
   
@@ -607,23 +641,30 @@ proc renderResponseArea() =
     let y = startY + (i - startIdx)
     let line = tuiApp.responseLines[i]
     renderMarkdownLine(line, 0, y)
+  
+  # Show scroll indicators if there's more content
+  if tuiApp.scrollOffset > 0:
+    tuiApp.terminalBuffer.write(tuiApp.width-1, startY, "▲", fgYellow, styleBright)
+  if tuiApp.scrollOffset + maxDisplayLines < tuiApp.responseLines.len:
+    tuiApp.terminalBuffer.write(tuiApp.width-1, maxY-1, "▼", fgYellow, styleBright)
 
 proc renderActivityIndicator() =
-  ## Render activity indicator above input box when processing
+  ## Render activity indicator in bottom area when processing
   if not tuiApp.waitingForResponse:
     return
   
   let elapsed = now() - tuiApp.requestStartTime
   let elapsedSeconds = elapsed.inSeconds()
-  let activityText = fmt"⚡ Thinking... ({elapsedSeconds}s · {tuiApp.currentTokenCount} tokens · esc to interrupt)"
+  let activityText = fmt"⚡ Thinking... ({elapsedSeconds}s · esc to stop display)"
   
-  # Calculate position above input box
+  # Position above input box
   let activityY = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
   
   # Clear and draw activity indicator
-  tuiApp.terminalBuffer.fill(0, activityY, tuiApp.width-1, activityY, " ")
-  let centeredX = max(0, (tuiApp.width - activityText.len) div 2)
-  tuiApp.terminalBuffer.write(centeredX, activityY, activityText, fgYellow, styleBright)
+  if activityY > 0:  # Make sure we have space
+    tuiApp.terminalBuffer.fill(0, activityY, tuiApp.width-1, activityY, " ")
+    let centeredX = max(0, (tuiApp.width - activityText.len) div 2)
+    tuiApp.terminalBuffer.write(centeredX, activityY, activityText, fgYellow, styleBright)
 
 proc renderStatusBar() =
   ## Render the status bar at the bottom
@@ -636,83 +677,102 @@ proc renderStatusBar() =
   let statusText = if tuiApp.waitingForResponse: "Processing..." else: "Ready"
   tuiApp.terminalBuffer.write(0, statusY, statusText, if tuiApp.waitingForResponse: fgYellow else: fgGreen)
   
-  # Right side: model info
-  let modelInfo = fmt"Model: {tuiApp.currentModel.nickname}"
-  let rightStartX = tuiApp.width - modelInfo.len - 1
+  # Right side: token info and model info with visual indicators
+  let sessionTotal = tuiApp.sessionPromptTokens + tuiApp.sessionCompletionTokens
+  
+  # Create context usage bar (assume max context of model, fallback to 128k)
+  let maxContext = if tuiApp.currentModel.context > 0: tuiApp.currentModel.context else: 128000
+  let contextPercent = min(100, (tuiApp.currentContextSize * 100) div maxContext)
+  let barWidth = 10
+  let filledBars = (contextPercent * barWidth) div 100
+  let contextBar = "█".repeat(filledBars) & "░".repeat(barWidth - filledBars)
+  
+  let tokenInfo = if sessionTotal > 0:
+    fmt"↑{tuiApp.sessionPromptTokens} ↓{tuiApp.sessionCompletionTokens} [{contextBar}]{contextPercent}% | {tuiApp.currentModel.nickname}"
+  else:
+    fmt"{tuiApp.currentModel.nickname}"
+  
+  let rightStartX = tuiApp.width - tokenInfo.len - 1
   if rightStartX > statusText.len + 5:
-    tuiApp.terminalBuffer.write(rightStartX, statusY, modelInfo, fgCyan)
+    tuiApp.terminalBuffer.write(rightStartX, statusY, tokenInfo, fgCyan)
 
 proc redrawScreen() =
   ## Redraw the entire screen
   tuiApp.terminalBuffer.clear()
   renderResponseArea()
   renderInputBox()
-  # Render popups using new framework
+  # Render popups using framework
   tuiApp.commandCompletionPopup.renderPopup(tuiApp.terminalBuffer, tuiApp.width, tuiApp.height, 
                                            tuiApp.inputBoxHeight, tuiApp.statusHeight)
   tuiApp.modelSelectionPopup.renderPopup(tuiApp.terminalBuffer, tuiApp.width, tuiApp.height,
                                         tuiApp.inputBoxHeight, tuiApp.statusHeight)
-  renderHelpPopup()  # Keep help popup separate for now
+  renderHelpPopup()
   renderActivityIndicator()
   renderStatusBar()
   tuiApp.terminalBuffer.display()
 
+# Removed hybrid rendering functions
+
 proc handleAPIResponses() =
   ## Check for and handle streaming API responses
-  if not tuiApp.waitingForResponse or globalChannels == nil:
+  if globalChannels == nil:
     return
   
   var response: APIResponse
   if tryReceiveAPIResponse(globalChannels, response):
-    case response.kind:
-    of arkStreamChunk:
-      if response.content.len > 0:
-        # Split content into lines
-        let lines = response.content.split('\n')
-        if lines.len > 0:
-          # Update the last line (append to current line) with wrapping
-          if tuiApp.responseLines.len > 0:
-            let combinedLine = tuiApp.responseLines[^1] & lines[0]
-            # Remove the last line and replace with wrapped version
-            tuiApp.responseLines.delete(tuiApp.responseLines.len - 1)
-            let maxWidth = tuiApp.width - 2
-            let wrappedLines = wrapText(combinedLine, maxWidth)
-            for wrappedLine in wrappedLines:
-              tuiApp.responseLines.add(wrappedLine)
-          else:
-            # No existing lines, just add with wrapping
-            let maxWidth = tuiApp.width - 2
-            let wrappedLines = wrapText(lines[0], maxWidth)
-            for wrappedLine in wrappedLines:
-              tuiApp.responseLines.add(wrappedLine)
+    # Validate that this response belongs to our current request
+    if tuiApp.waitingForResponse and response.requestId == tuiApp.currentRequestId:
+      case response.kind:
+      of arkStreamChunk:
+        if response.content.len > 0:
+          # Split content into lines and handle streaming properly
+          let lines = response.content.split('\n')
+          if lines.len > 0:
+            # Update the last line (append to current line)
+            if tuiApp.responseLines.len > 0:
+              let combinedLine = tuiApp.responseLines[^1] & lines[0]
+              tuiApp.responseLines[^1] = combinedLine
+            else:
+              tuiApp.responseLines.add(lines[0])
+            
+            # Add any additional lines
+            for i in 1..<lines.len:
+              tuiApp.responseLines.add(lines[i])
           
-          # Add any additional lines with wrapping
-          for i in 1..<lines.len:
-            let maxWidth = tuiApp.width - 2
-            let wrappedLines = wrapText(lines[i], maxWidth)
-            for wrappedLine in wrappedLines:
-              tuiApp.responseLines.add(wrappedLine)
+          tuiApp.currentResponseText.add(response.content)
+          
+          # Auto-scroll if following bottom
+          if tuiApp.isFollowingBottom:
+            let maxDisplayLines = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
+            if tuiApp.responseLines.len > maxDisplayLines:
+              tuiApp.scrollOffset = tuiApp.responseLines.len - maxDisplayLines
+      of arkStreamComplete:
+        tuiApp.waitingForResponse = false
+        tuiApp.currentRequestId = ""  # Clear request ID when completed
         
-        tuiApp.currentResponseText.add(response.content)
+        # Update session token counts
+        tuiApp.sessionPromptTokens += response.usage.promptTokens
+        tuiApp.sessionCompletionTokens += response.usage.completionTokens
         
-        # Note: arkStreamChunk doesn't have usage field, only arkStreamComplete does
-    of arkStreamComplete:
-      tuiApp.waitingForResponse = false
-      
-      # Add assistant response to history
-      if tuiApp.currentResponseText.len > 0:
-        discard addAssistantMessage(tuiApp.currentResponseText)
-      
-      # Add token usage info
-      addResponseLine("")
-      addResponseLine(fmt"[{response.usage.totalTokens} tokens]")
-      addResponseLine("")
-    of arkStreamError:
-      addResponseLine(fmt"Error: {response.error}")
-      addResponseLine("")
-      tuiApp.waitingForResponse = false
-    of arkReady:
-      discard
+        # Estimate context size (rough approximation: prompt + all completion tokens)
+        tuiApp.currentContextSize = tuiApp.sessionPromptTokens + tuiApp.sessionCompletionTokens
+        
+        # Add assistant response to history
+        if tuiApp.currentResponseText.len > 0:
+          discard addAssistantMessage(tuiApp.currentResponseText)
+        
+        # Just add a blank line, token info moved to status bar
+        addResponseLine("")
+      of arkStreamError:
+        addResponseLine(fmt"Error: {response.error}")
+        addResponseLine("")
+        tuiApp.waitingForResponse = false
+        tuiApp.currentRequestId = ""  # Clear request ID on error
+      of arkReady:
+        discard
+    else:
+      # Response from cancelled or old request - ignore and drain
+      debug(fmt"Ignoring response from request {response.requestId} (current: {tuiApp.currentRequestId}, waiting: {tuiApp.waitingForResponse})")
 
 proc sendPromptToAPI(promptText: string) =
   ## Send a prompt to the API worker
@@ -725,11 +785,14 @@ proc sendPromptToAPI(promptText: string) =
   # Add user message to display
   let userName = getUserName()
   addResponseLine(fmt"{userName}: {promptText}")
-  addResponseLine(fmt"{tuiApp.currentModel.nickname}: ")
+  # Start the assistant response line
+  tuiApp.responseLines.add(fmt"{tuiApp.currentModel.nickname}: ")
   
-  if sendSinglePromptInteractive(promptText, tuiApp.currentModel):
+  let (success, requestId) = sendSinglePromptInteractiveWithId(promptText, tuiApp.currentModel)
+  if success:
     tuiApp.waitingForResponse = true
     tuiApp.currentResponseText = ""
+    tuiApp.currentRequestId = requestId
     tuiApp.requestStartTime = now()
     tuiApp.currentTokenCount = 0
   else:
@@ -754,7 +817,28 @@ proc handleKeypress(key: illwill.Key): bool =
       # Close model selection and clear input
       tuiApp.modelSelectionPopup.hide()
       clearCurrentInput()
-    # ESC no longer exits - only closes popups
+    elif tuiApp.waitingForResponse and tuiApp.currentRequestId.len > 0:
+      # Cancel active stream if waiting for response
+      if globalChannels != nil:
+        let requestIdToCancel = tuiApp.currentRequestId  # Capture to avoid race conditions
+        let cancelRequest = APIRequest(
+          kind: arkStreamCancel,
+          cancelRequestId: requestIdToCancel
+        )
+        if trySendAPIRequest(globalChannels, cancelRequest):
+          addResponseLine("")
+          addResponseLine("\x1b[31m⚠️ Response stopped by user, token generation may continue briefly\x1b[0m")
+          addResponseLine("")
+          tuiApp.waitingForResponse = false
+          tuiApp.currentRequestId = ""
+          
+          # Note: Request ID validation in handleAPIResponses will ignore 
+          # any remaining responses from the cancelled request
+        else:
+          addResponseLine("")
+          addResponseLine("⚠️ Failed to cancel stream")
+          addResponseLine("")
+    # ESC no longer exits - only closes popups or cancels streams
   of illwill.Key.CtrlC:
     return false
   of illwill.Key.Enter:
@@ -782,8 +866,11 @@ proc handleKeypress(key: illwill.Key): bool =
               addResponseLine(res.message)
               addResponseLine("")
               
-              # Handle special commands that need API reconfiguration
-              if res.success and command == "model":
+              # Handle special commands that need additional actions
+              if res.success and command == "clear":
+                # Reset session token counts when clearing history
+                resetSessionCounts()
+              elif res.success and command == "model":
                 # Reconfigure API worker with new model
                 if not configureAPIWorker(tuiApp.currentModel):
                   addResponseLine(fmt"Warning: Failed to configure API worker with model {tuiApp.currentModel.nickname}. Check API key.")
@@ -842,19 +929,31 @@ proc handleKeypress(key: illwill.Key): bool =
       adjustInputBoxHeight()
     ensureCursorValid()
   of illwill.Key.Left:
-    if tuiApp.cursorX > 0:
-      tuiApp.cursorX -= 1
-    elif tuiApp.cursorY > 0:
-      tuiApp.cursorY -= 1
-      tuiApp.cursorX = tuiApp.inputLines[tuiApp.cursorY].len
-    ensureCursorValid()
+    # Handle popup navigation first
+    if tuiApp.modelSelectionPopup.isVisible() or tuiApp.commandCompletionPopup.isVisible():
+      # Don't handle cursor movement in input when popups are visible
+      discard
+    else:
+      # Normal cursor movement
+      if tuiApp.cursorX > 0:
+        tuiApp.cursorX -= 1
+      elif tuiApp.cursorY > 0:
+        tuiApp.cursorY -= 1
+        tuiApp.cursorX = tuiApp.inputLines[tuiApp.cursorY].len
+      ensureCursorValid()
   of illwill.Key.Right:
-    if tuiApp.cursorX < tuiApp.inputLines[tuiApp.cursorY].len:
-      tuiApp.cursorX += 1
-    elif tuiApp.cursorY < tuiApp.inputLines.len - 1:
-      tuiApp.cursorY += 1
-      tuiApp.cursorX = 0
-    ensureCursorValid()
+    # Handle popup navigation first
+    if tuiApp.modelSelectionPopup.isVisible() or tuiApp.commandCompletionPopup.isVisible():
+      # Don't handle cursor movement in input when popups are visible
+      discard
+    else:
+      # Normal cursor movement
+      if tuiApp.cursorX < tuiApp.inputLines[tuiApp.cursorY].len:
+        tuiApp.cursorX += 1
+      elif tuiApp.cursorY < tuiApp.inputLines.len - 1:
+        tuiApp.cursorY += 1
+        tuiApp.cursorX = 0
+      ensureCursorValid()
   of illwill.Key.Up:
     if tuiApp.modelSelectionPopup.isVisible():
       # Navigate model selection using popup framework
@@ -911,6 +1010,22 @@ proc handleKeypress(key: illwill.Key): bool =
     tuiApp.cursorX = 0
   of illwill.Key.End:
     tuiApp.cursorX = tuiApp.inputLines[tuiApp.cursorY].len
+  of illwill.Key.PageUp:
+    # Scroll conversation up (manual scrolling)
+    let maxDisplayLines = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
+    let scrollAmount = maxDisplayLines div 2  # Scroll half a screen
+    tuiApp.scrollOffset = max(0, tuiApp.scrollOffset - scrollAmount)
+    tuiApp.isFollowingBottom = false  # User manually scrolled, stop auto-following
+  of illwill.Key.PageDown:
+    # Scroll conversation down (manual scrolling)
+    let maxDisplayLines = tuiApp.height - tuiApp.inputBoxHeight - tuiApp.statusHeight - 1
+    let scrollAmount = maxDisplayLines div 2  # Scroll half a screen
+    let maxScroll = max(0, tuiApp.responseLines.len - maxDisplayLines)
+    tuiApp.scrollOffset = min(maxScroll, tuiApp.scrollOffset + scrollAmount)
+    
+    # If we've scrolled to the bottom, resume auto-following
+    if tuiApp.scrollOffset >= maxScroll:
+      tuiApp.isFollowingBottom = true
   else:
     # Handle regular character input
     let ch = char(ord(key))
@@ -994,7 +1109,7 @@ proc startTUIMode*(model: string = "", level: Level, dump: bool = false, databas
     addResponseLine(fmt"Connected to: {tuiApp.currentModel.nickname} ({tuiApp.currentModel.model})")
     addResponseLine("")
     addResponseLine("Type your messages below and press Enter to send.")
-    addResponseLine("Use Ctrl+J for newlines, Tab for command completion, arrow keys for navigation.")
+    addResponseLine("Use Ctrl+J for newlines, Tab for command completion, Page Up/Down for scrolling.")
     addResponseLine("Type '/' to see available commands, '?' for keyboard shortcuts. Press Ctrl+C to exit.")
     addResponseLine("")
     

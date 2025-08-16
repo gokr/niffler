@@ -2,13 +2,6 @@ import std/[os, json, times]
 import ../types/tools
 import common
 
-type
-  CreateTool* = ref object of InternalTool
-
-proc newCreateTool*(): CreateTool =
-  result = CreateTool()
-  result.name = "create"
-  result.description = "Create files with safety checks, directory creation, and permission management"
 
 proc createDirectories*(path: string) =
   ## Create parent directories if they don't exist
@@ -33,7 +26,7 @@ proc createFileWithContent*(path: string, content: string, permissions: string) 
   except IOError as e:
     raise newToolExecutionError("create", "Failed to create file: " & e.msg, -1, "")
 
-proc execute*(tool: CreateTool, args: JsonNode): string =
+proc executeCreate*(args: JsonNode): string =
   ## Execute create file operation
   validateArgs(args, @["path", "content"])
   let path = getArgStr(args, "path")

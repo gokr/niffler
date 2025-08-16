@@ -26,66 +26,15 @@ type
     hitRequestFailed = "request-failed"
     hitNotification = "notification"
 
-  # Base for all history items
-  HistoryItemBase* = object of RootObj
-    id*: SequenceId
-    itemType*: HistoryItemType
-
-  # User message
-  UserItem* = object of HistoryItemBase
-    content*: string
-
-  # Assistant message  
   AnthropicAssistantData* = object
     encrypted*: Option[string]
     itemId*: Option[string]
-
-  AssistantItem* = object of HistoryItemBase
-    content*: string
-    anthropicData*: Option[AnthropicAssistantData]
-    toolCalls*: Option[seq[ToolCallRequest]]
-
-  # Tool execution
-  ToolCallItem* = object of HistoryItemBase
-    tool*: ToolCallRequest
-
-  ToolOutputItem* = object of HistoryItemBase
-    content*: string
-    toolCallId*: string
-
-  ToolMalformedItem* = object of HistoryItemBase
-    error*: string
-    original*: ToolCallOriginal
-    toolCallId*: string
 
   ToolCallOriginal* = object
     id*: Option[string]
     function*: Option[ToolCallFunction]
 
-  ToolFailedItem* = object of HistoryItemBase
-    error*: string
-    toolCallId*: string
-    toolName*: string
-
-  ToolRejectItem* = object of HistoryItemBase
-    toolCallId*: string
-
-  # File-related items
-  FileOutdatedItem* = object of HistoryItemBase
-    file*: string
-
-  FileUnreadableItem* = object of HistoryItemBase  
-    file*: string
-    error*: string
-
-  # Error and notification items
-  RequestFailedItem* = object of HistoryItemBase
-    error*: string
-
-  NotificationItem* = object of HistoryItemBase
-    content*: string
-
-  # Simplified history item using variant objects
+  # History item using variant objects
   HistoryItem* = object
     id*: SequenceId
     case itemType*: HistoryItemType
@@ -148,10 +97,10 @@ proc getLastItem*(history: History): Option[HistoryItem] =
     return none(HistoryItem)
   return some(history[^1])
 
-proc getItemsByType*[T: HistoryItem](history: History, itemType: typedesc[T]): seq[T] =
+proc getItemsByType*(history: History, itemType: HistoryItemType): seq[HistoryItem] =
   result = @[]
   for item in history:
-    when item is T:
+    if item.itemType == itemType:
       result.add(item)
 
 proc removeLastItem*(history: var History) =

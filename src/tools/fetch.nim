@@ -2,14 +2,6 @@ import std/[strutils, json, httpclient, uri, xmltree]
 import pkg/htmlparser
 import ../types/tools
 
-type
-  FetchTool* = ref object of InternalTool
-
-proc newFetchTool*(): FetchTool =
-  result = FetchTool()
-  result.name = "fetch"
-  result.description = "Fetch HTTP/HTTPS content with web scraping, authentication, and streaming support"
-
 
 proc htmlToText*(html: string): string =
   ## Convert HTML to plain text
@@ -49,7 +41,7 @@ proc addCustomHeaders*(client: var HttpClient, headers: JsonNode) =
     for key, value in headers:
       client.headers[key] = value.getStr()
 
-proc execute*(tool: FetchTool, args: JsonNode): string {.gcsafe.} =
+proc executeFetch*(args: JsonNode): string {.gcsafe.} =
   ## Execute fetch HTTP/HTTPS content operation
   # Validate arguments
   validateArgs(args, @["url"])

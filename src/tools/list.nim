@@ -3,8 +3,6 @@ import ../types/tools
 import common
 
 type
-  ListTool* = ref object of InternalTool
-
   ListEntry = object
     name: string
     path: string
@@ -16,10 +14,7 @@ type
     isFile: bool
     isLink: bool
 
-proc newListTool*(): ListTool =
-  result = ListTool()
-  result.name = "list"
-  result.description = "List directory contents with filtering, sorting, and metadata"
+# Tool removed - using object variants now
 
 
 proc getPermissions*(path: string): string =
@@ -116,7 +111,7 @@ proc sortEntries*(entries: var seq[ListEntry], sortBy: string, sortOrder: string
   
   entries.sort(compare)
 
-proc execute*(tool: ListTool, args: JsonNode): string {.gcsafe.} =
+proc executeList*(args: JsonNode): string {.gcsafe.} =
   ## Execute list directory operation
   # Validate arguments
   validateArgs(args, @["path"])

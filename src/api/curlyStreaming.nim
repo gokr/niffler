@@ -145,6 +145,8 @@ proc newCurlyStreamingClient*(baseUrl, apiKey, model: string): CurlyStreamingCli
   headers["Accept"] = "text/event-stream"
   headers["Cache-Control"] = "no-cache"
   headers["User-Agent"] = "Niffler"
+  # Force connection closure for better cancellation behavior
+  headers["Connection"] = "close"
   
   # Add provider-specific headers
   if baseUrl.contains("openrouter.ai"):

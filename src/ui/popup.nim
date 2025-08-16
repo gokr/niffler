@@ -94,15 +94,9 @@ proc navigateDown*[T](popup: var Popup[T]): bool =
 
 proc calculatePopupPosition*(terminalWidth, terminalHeight, inputBoxHeight, statusHeight: int,
                            popupWidth, popupHeight: int): tuple[x: int, y: int] =
-  ## Calculate optimal popup position
+  ## Calculate optimal popup position - right above input box
   let inputY = terminalHeight - inputBoxHeight - statusHeight
-  let desiredPopupY = inputY + inputBoxHeight + 1  # 1 line below input box
-  
-  let popupY = if desiredPopupY + popupHeight < terminalHeight - 1:
-    desiredPopupY
-  else:
-    max(0, inputY - popupHeight - 1)  # Above input if no room below
-  
+  let popupY = max(0, inputY - popupHeight)  # Always place above input box
   let popupX = 2
   return (x: popupX, y: popupY)
 
@@ -171,7 +165,7 @@ proc renderPopup*[T](popup: Popup[T], terminalBuffer: var TerminalBuffer,
           fullText & " ".repeat(availableWidth - fullText.len)
         else:
           fullText[0..<availableWidth]
-        terminalBuffer.write(contentStartX, y, paddedText, fgBlack, styleBright, bgWhite)
+        terminalBuffer.write(contentStartX, y, paddedText, fgBlack, styleBright, bgCyan)
       else:
         # Normal rendering
         let displayColor = if item.isCurrentItem: fgGreen else: fgYellow
@@ -185,7 +179,7 @@ proc renderPopup*[T](popup: Popup[T], terminalBuffer: var TerminalBuffer,
           displayText & " ".repeat(availableWidth - displayText.len)
         else:
           displayText[0..<availableWidth]
-        terminalBuffer.write(contentStartX, y, paddedText, fgBlack, styleBright, bgWhite)
+        terminalBuffer.write(contentStartX, y, paddedText, fgBlack, styleBright, bgCyan)
       else:
         # Normal rendering
         let displayColor = if item.isCurrentItem: fgGreen else: fgYellow

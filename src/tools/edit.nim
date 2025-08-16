@@ -3,8 +3,6 @@ import ../types/tools
 import common
 
 type
-  EditTool* = ref object of InternalTool
-
   EditOperation = enum
     Replace, Insert, Delete, Append, Prepend, Rewrite
 
@@ -16,11 +14,6 @@ type
     lineRange: tuple[start: int, `end`: int]
     createBackup: bool
     confirmChanges: bool
-
-proc newEditTool*(): EditTool =
-  result = EditTool()
-  result.name = "edit"
-  result.description = "Edit file content with diff-based editing, append/prepend operations, and backup functionality"
 
 
 proc createBackup*(originalPath: string): string {.gcsafe.} =
@@ -106,7 +99,7 @@ proc rewriteFile*(path: string, newText: string): string =
   ## Rewrite entire file with new content
   return newText
 
-proc execute*(tool: EditTool, args: JsonNode): string {.gcsafe.} =
+proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   ## Execute edit file operation
   # Validate arguments
   validateArgs(args, @["path", "operation"])

@@ -1,20 +1,21 @@
-import std/[options, tables, strformat, os, times, strutils, sequtils, algorithm]
+import std/[options, tables, strformat, os, times, strutils, algorithm]
 import ../types/config
 import debby/sqlite
 
 type
-  DatabaseBackend* = ref object of RootObj
-    config: DatabaseConfig
+  DatabaseBackendKind* = enum
+    dbkSQLite
+    dbkTiDB
   
-  SQLiteBackend* = ref object of DatabaseBackend
-    db: sqlite.Db
-  
-  TiDBBackend* = ref object of DatabaseBackend
-    db: sqlite.Db  # Using SQLite for now, will be replaced with MySQL later
+  DatabaseBackend* = ref object
+    config*: DatabaseConfig
+    case kind*: DatabaseBackendKind
+    of dbkSQLite, dbkTiDB:
+      db: sqlite.Db
   
   TokenLogEntry* = ref object of RootObj
     id*: int
-    timestamp*: DateTime
+    created_at*: DateTime
     model*: string
     inputTokens*: int
     outputTokens*: int
@@ -27,195 +28,142 @@ type
   
   PromptHistoryEntry* = ref object of RootObj
     id*: int
-    timestamp*: DateTime
+    created_at*: DateTime
     userPrompt*: string
     assistantResponse*: string
     model*: string
     sessionId*: string
 
+proc initializeDatabase*(db: DatabaseBackend) =
+  ## This is where we create the tables if they are not already created.
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # When running this for the first time, it will create the tables
+    if not db.db.tableExists(TokenLogEntry):
+      db.db.createTable(TokenLogEntry)
+      # Create indexes for better performance
+      db.db.createIndexIfNotExists(TokenLogEntry, "model")
+      db.db.createIndexIfNotExists(TokenLogEntry, "created_at")
+    
+    if not db.db.tableExists(PromptHistoryEntry):
+      db.db.createTable(PromptHistoryEntry)
+      # Create indexes for better performance
+      db.db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
+      db.db.createIndexIfNotExists(PromptHistoryEntry, "sessionId")
+
+proc checkDatabase*(db: DatabaseBackend) =
+  ## Verify structure of database against model definitions
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    db.db.checkTable(TokenLogEntry)
+    db.db.checkTable(PromptHistoryEntry)
+  echo "Database checked"
+
 proc init*(db: DatabaseBackend) =
-  raise newException(CatchableError, "Database backend not implemented")
+  case db.kind:
+  of dbkSQLite:
+    let fullPath = db.config.path.get()
+    
+    # Create directory if it doesn't exist
+    createDir(parentDir(fullPath))
+    
+    # Check if file is missing
+    if not fileExists(fullPath):
+      echo "Creating Sqlite3 database ..."
+
+    # Open database connection
+    db.db = sqlite.openDatabase(fullPath)
+    
+    # Enable WAL mode for better concurrency
+    if db.config.walMode:
+      db.db.query("PRAGMA journal_mode=WAL")
+      db.db.query("PRAGMA synchronous=NORMAL")
+    
+    # Set busy timeout
+    db.db.query(fmt"PRAGMA busy_timeout = {db.config.busyTimeout}")
+    
+    # Create tables using debby's ORM
+    db.initializeDatabase()
+  
+  of dbkTiDB:
+    let host = db.config.host.get("localhost")
+    let port = db.config.port.get(4000)
+    let database = db.config.database.get("niffler")
+    let username = db.config.username.get("root")
+    let password = db.config.password.get("")
+    
+    # For now, use SQLite as a placeholder
+    # In a real implementation, this would connect to TiDB using MySQL driver
+    echo "Tidb backend not yet ready"
+    #db.createTables()
 
 proc close*(db: DatabaseBackend) =
-  raise newException(CatchableError, "Database backend not implemented")
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    if cast[pointer](db.db) != nil:
+      db.db.close()
 
 proc logTokenUsage*(db: DatabaseBackend, entry: TokenLogEntry) =
-  raise newException(CatchableError, "Database backend not implemented")
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Insert using debby's ORM
+    db.db.insert(entry)
 
 proc getTokenStats*(db: DatabaseBackend, model: string, startDate, endDate: DateTime): tuple[totalInputTokens: int, totalOutputTokens: int, totalCost: float] =
-  raise newException(CatchableError, "Database backend not implemented")
-
-proc createTables*(db: DatabaseBackend) =
-  raise newException(CatchableError, "Database backend not implemented")
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let startDateStr = startDate.format("yyyy-MM-dd HH:mm:ss")
+    let endDateStr = endDate.format("yyyy-MM-dd HH:mm:ss")
+    
+    # Query using debby's ORM
+    let entries = if model.len > 0:
+      db.db.filter(TokenLogEntry, it.model == model and it.created_at >= startDate and it.created_at <= endDate)
+    else:
+      db.db.filter(TokenLogEntry, it.created_at >= startDate and it.created_at <= endDate)
+    
+    # Calculate totals
+    result = (0, 0, 0.0)
+    for entry in entries:
+      result.totalInputTokens += entry.inputTokens
+      result.totalOutputTokens += entry.outputTokens
+      result.totalCost += entry.totalCost
 
 proc logPromptHistory*(db: DatabaseBackend, entry: PromptHistoryEntry) =
-  raise newException(CatchableError, "Database backend not implemented")
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Insert using debby's ORM
+    db.db.insert(entry)
 
 
 
-# SQLite Backend Implementation
-proc init*(db: SQLiteBackend) =
-  let fullPath = db.config.path.get()
-  
-  # Create directory if it doesn't exist
-  createDir(parentDir(fullPath))
-  
-  # Open database connection
-  db.db = sqlite.openDatabase(fullPath)
-  
-  # Enable WAL mode for better concurrency
-  if db.config.walMode:
-    db.db.query("PRAGMA journal_mode=WAL")
-    db.db.query("PRAGMA synchronous=NORMAL")
-  
-  # Set busy timeout
-  db.db.query(fmt"PRAGMA busy_timeout = {db.config.busyTimeout}")
-  
-  # Create tables using debby's ORM
-  db.createTables()
+proc getPromptHistory*(db: DatabaseBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Query using debby's ORM
+    let entries = if sessionId.len > 0:
+      db.db.filter(PromptHistoryEntry, it.sessionId == sessionId)
+    else:
+      # Get all entries by filtering with a condition that's always true
+      db.db.filter(PromptHistoryEntry, it.id > 0)
+    
+    # Sort by created_at descending and limit results
+    result = entries.sortedByIt(-it.created_at.toTime().toUnix())
+    if result.len > maxEntries:
+      result = result[0..<maxEntries]
 
-proc close*(db: SQLiteBackend) =
-  if cast[pointer](db.db) != nil:
-    db.db.close()
-
-proc createTables*(db: SQLiteBackend) =
-  # Create token_logs table using debby's ORM
-  db.db.checkTable(TokenLogEntry)
-  
-  # Create prompt_history table using debby's ORM
-  db.db.checkTable(PromptHistoryEntry)
-  
-  # Create indexes for better performance
-  db.db.createIndexIfNotExists(TokenLogEntry, "model")
-  db.db.createIndexIfNotExists(TokenLogEntry, "timestamp")
-  db.db.createIndexIfNotExists(PromptHistoryEntry, "timestamp")
-  db.db.createIndexIfNotExists(PromptHistoryEntry, "sessionId")
-
-proc logTokenUsage*(db: SQLiteBackend, entry: TokenLogEntry) =
-  # Insert using debby's ORM
-  db.db.insert(entry)
-
-proc getTokenStats*(db: SQLiteBackend, model: string, startDate, endDate: DateTime): tuple[totalInputTokens: int, totalOutputTokens: int, totalCost: float] =
-  let startDateStr = startDate.format("yyyy-MM-dd HH:mm:ss")
-  let endDateStr = endDate.format("yyyy-MM-dd HH:mm:ss")
-  
-  # Query using debby's ORM
-  let entries = if model.len > 0:
-    db.db.filter(TokenLogEntry, it.model == model and it.timestamp >= startDate and it.timestamp <= endDate)
-  else:
-    db.db.filter(TokenLogEntry, it.timestamp >= startDate and it.timestamp <= endDate)
-  
-  # Calculate totals
-  result = (0, 0, 0.0)
-  for entry in entries:
-    result.totalInputTokens += entry.inputTokens
-    result.totalOutputTokens += entry.outputTokens
-    result.totalCost += entry.totalCost
-
-proc logPromptHistory*(db: SQLiteBackend, entry: PromptHistoryEntry) =
-  # Insert using debby's ORM
-  db.db.insert(entry)
-
-proc getPromptHistory*(db: SQLiteBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
-  # Query using debby's ORM
-  let entries = if sessionId.len > 0:
-    db.db.filter(PromptHistoryEntry, it.sessionId == sessionId)
-  else:
-    # Get all entries by filtering with a condition that's always true
-    db.db.filter(PromptHistoryEntry, it.id > 0)
-  
-  # Sort by timestamp descending and limit results
-  result = entries.sortedByIt(-it.timestamp.toTime().toUnix())
-  if result.len > maxEntries:
-    result = result[0..<maxEntries]
-
-proc getRecentPrompts*(db: SQLiteBackend, maxEntries: int = 20): seq[string] =
-  # Get recent user prompts only
-  let entries = db.db.filter(PromptHistoryEntry, it.id > 0)
-  let sortedEntries = entries.sortedByIt(-it.timestamp.toTime().toUnix())
-  
-  result = @[]
-  for entry in sortedEntries:
-    if entry.userPrompt.len > 0:
-      result.add(entry.userPrompt)
-      if result.len >= maxEntries:
-        break
-
-# TiDB Backend Implementation (placeholder for now)
-proc init*(db: TiDBBackend) =
-  let host = db.config.host.get("localhost")
-  let port = db.config.port.get(4000)
-  let database = db.config.database.get("niffler")
-  let username = db.config.username.get("root")
-  let password = db.config.password.get("")
-  
-  # For now, use SQLite as a placeholder
-  # In a real implementation, this would connect to TiDB using MySQL driver
-  let dbPath = "tidb_placeholder.db"
-  let fullPath = joinPath(getConfigDir(), "niffler", dbPath)
-  createDir(parentDir(fullPath))
-  db.db = sqlite.openDatabase(fullPath)
-  db.createTables()
-
-proc close*(db: TiDBBackend) =
-  if cast[pointer](db.db) != nil:
-    db.db.close()
-
-proc createTables*(db: TiDBBackend) =
-  # Same as SQLite for now
-  db.db.checkTable(TokenLogEntry)
-  db.db.checkTable(PromptHistoryEntry)
-  db.db.createIndexIfNotExists(TokenLogEntry, "model")
-  db.db.createIndexIfNotExists(TokenLogEntry, "timestamp")
-  db.db.createIndexIfNotExists(PromptHistoryEntry, "timestamp")
-  db.db.createIndexIfNotExists(PromptHistoryEntry, "sessionId")
-
-proc logTokenUsage*(db: TiDBBackend, entry: TokenLogEntry) =
-  # Same as SQLite for now
-  db.db.insert(entry)
-
-proc getTokenStats*(db: TiDBBackend, model: string, startDate, endDate: DateTime): tuple[totalInputTokens: int, totalOutputTokens: int, totalCost: float] =
-  # Same as SQLite for now
-  let startDateStr = startDate.format("yyyy-MM-dd HH:mm:ss")
-  let endDateStr = endDate.format("yyyy-MM-dd HH:mm:ss")
-  
-  let entries = if model.len > 0:
-    db.db.filter(TokenLogEntry, it.model == model and it.timestamp >= startDate and it.timestamp <= endDate)
-  else:
-    db.db.filter(TokenLogEntry, it.timestamp >= startDate and it.timestamp <= endDate)
-  
-  result = (0, 0, 0.0)
-  for entry in entries:
-    result.totalInputTokens += entry.inputTokens
-    result.totalOutputTokens += entry.outputTokens
-    result.totalCost += entry.totalCost
-
-proc logPromptHistory*(db: TiDBBackend, entry: PromptHistoryEntry) =
-  # Same as SQLite for now
-  db.db.insert(entry)
-
-proc getPromptHistory*(db: TiDBBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
-  # Same as SQLite for now
-  let entries = if sessionId.len > 0:
-    db.db.filter(PromptHistoryEntry, it.sessionId == sessionId)
-  else:
-    db.db.filter(PromptHistoryEntry, it.id > 0)
-  
-  result = entries.sortedByIt(-it.timestamp.toTime().toUnix())
-  if result.len > maxEntries:
-    result = result[0..<maxEntries]
-
-proc getRecentPrompts*(db: TiDBBackend, maxEntries: int = 20): seq[string] =
-  # Same as SQLite for now
-  let entries = db.db.filter(PromptHistoryEntry, it.id > 0)
-  let sortedEntries = entries.sortedByIt(-it.timestamp.toTime().toUnix())
-  
-  result = @[]
-  for entry in sortedEntries:
-    if entry.userPrompt.len > 0:
-      result.add(entry.userPrompt)
-      if result.len >= maxEntries:
-        break
+proc getRecentPrompts*(db: DatabaseBackend, maxEntries: int = 20): seq[string] =
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Get recent user prompts only
+    let entries = db.db.filter(PromptHistoryEntry, it.id > 0)
+    let sortedEntries = entries.sortedByIt(-it.created_at.toTime().toUnix())
+    
+    result = @[]
+    for entry in sortedEntries:
+      if entry.userPrompt.len > 0:
+        result.add(entry.userPrompt)
+        if result.len >= maxEntries:
+          break
 
 # Factory function to create database backend
 proc createDatabaseBackend*(config: DatabaseConfig): DatabaseBackend =
@@ -224,11 +172,11 @@ proc createDatabaseBackend*(config: DatabaseConfig): DatabaseBackend =
   
   case config.`type`:
   of dtSQLite:
-    let backend = SQLiteBackend(config: config)
+    let backend = DatabaseBackend(config: config, kind: dbkSQLite)
     backend.init()
     return backend
   of dtTiDB:
-    let backend = TiDBBackend(config: config)
+    let backend = DatabaseBackend(config: config, kind: dbkTiDB)
     backend.init()
     return backend
 
@@ -240,7 +188,7 @@ proc logTokenUsage*(db: DatabaseBackend, model: string, inputTokens, outputToken
   
   let entry = TokenLogEntry(
     id: 0,  # Will be set by database
-    timestamp: now(),
+    created_at: now(),
     model: model,
     inputTokens: inputTokens,
     outputTokens: outputTokens,
@@ -271,7 +219,7 @@ proc logPromptHistory*(db: DatabaseBackend, userPrompt: string, assistantRespons
   
   let entry = PromptHistoryEntry(
     id: 0,  # Will be set by database
-    timestamp: now(),
+    created_at: now(),
     userPrompt: userPrompt,
     assistantResponse: assistantResponse,
     model: model,
@@ -280,14 +228,4 @@ proc logPromptHistory*(db: DatabaseBackend, userPrompt: string, assistantRespons
   
   db.logPromptHistory(entry)
 
-proc getRecentPrompts*(db: DatabaseBackend, maxEntries: int = 20): seq[string] =
-  if db == nil:
-    return @[]
-  
-  return db.getRecentPrompts(maxEntries)
-
-proc getPromptHistory*(db: DatabaseBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
-  if db == nil:
-    return @[]
-  
-  return db.getPromptHistory(sessionId, maxEntries)
+# Wrapper functions removed - using direct method calls now

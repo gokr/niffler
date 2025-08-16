@@ -228,7 +228,7 @@ proc validateSeed*(node: JsonNode, field: string = ""): ValidationResult[int] =
 # Token usage logging
 type
   TokenLogEntry* = object
-    timestamp*: DateTime
+    created_at*: DateTime
     modelName*: string
     inputTokens*: int
     outputTokens*: int
@@ -251,7 +251,7 @@ proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int
   let totalCost = inputCost + outputCost
   
   let entry = TokenLogEntry(
-    timestamp: now(),
+    created_at: now(),
     modelName: modelName,
     inputTokens: inputTokens,
     outputTokens: outputTokens,
@@ -268,7 +268,7 @@ proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int
     try:
       let file = open(logger.logFile.get(), fmAppend)
       defer: file.close()
-      file.writeLine($entry.timestamp & " | " & modelName & " | Input: " & $inputTokens &
+      file.writeLine($entry.created_at & " | " & modelName & " | Input: " & $inputTokens &
                      " | Output: " & $outputTokens & " | Total: " & $(inputTokens + outputTokens) &
                      " | Cost: $" & $totalCost)
     except IOError:

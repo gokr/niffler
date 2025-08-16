@@ -29,7 +29,6 @@ proc init(configPath: string = "") =
   ## Initialize Niffler configuration
   let path = if configPath.len == 0: getDefaultConfigPath() else: configPath
   initializeConfig(path)
-  echo "Configuration initialized at: ", path
 
 proc showModels() = 
   ## List available models and configurations
