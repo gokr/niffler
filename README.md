@@ -8,6 +8,10 @@
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
+Niffler is a heavy work-in-progress but has several unique selling points:
+- 
+
+
 ## 🚀 Features
 
 ### Core AI Capabilities
