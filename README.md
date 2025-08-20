@@ -8,7 +8,13 @@
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
-Niffler is heavily work-in-progress.
+Niffler is heavily a work-in-progress. Some of the design ideas that perhaps **stand out** are these:
+
+- **Native multithreaded**. The tool executions are in one thread. The UI is in one thread. The communication with the LLM is in one thread.
+- **Designed for multiple UIs**. Currently have one simpler readline UI and one TUI style. Niffler separates UI from underlying mechanisms which enables experiments with different UIs.
+- **Has a client side database**. Just started using it, but Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
+- **Not yet another node.js thing**. Nim is a different eco system!
+- **Portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
 
 
 ## 🚀 Features
@@ -18,10 +24,10 @@ Niffler is heavily work-in-progress.
 - **Interactive Chat Mode**: Real-time conversation with streaming responses
 - **Single Prompt Mode**: Send individual prompts directly from your command line and get immediate responses
 - **Model Management**: Easy configuration and switching between AI models
-- **Single binary and Cross Platform**: Written in Nim means it is a single cross platform binary.
+- **Single binary and Cross Platform**: Written in Nim means it is a single binary.
 
 ### Tool System
-Niffler includes a tool system that enables AI assistants to interact with your development environment:
+Niffler includes a tool system that enables AI assistants to interact with your development environment. All tool executions are being run in a separate thread. It should be easy to add more builtin tools:
 
 #### 🛠️ Core Tools
 - **bash**: Execute shell commands with timeout control and process management
@@ -31,20 +37,9 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **create**: Safe file creation with directory management and permission control
 - **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
 
-#### 🔧 Tool Infrastructure
-- **Thread-Safe Execution**: Dedicated worker threads for safe tool execution
-- **Argument Validation**: Input validation with detailed error messages
-- **Security Features**: Path sanitization, size limits, and permission checks
-- **Modular Architecture**: Easy to extend with new tools
-
 ### Advanced Features
-- **Configuration Management**: Simple JSON configuration with platform-appropriate directories
-- **Enhanced Terminal Interface**: Full cursor key support, history navigation, and colored prompts
 - **Database Persistence**: SQLite-based prompt and response history with cross-session persistence
-- **Job Control Support**: Ctrl+Z background suspension (Unix/Linux/macOS)
-- **History Tracking**: Conversation history with message persistence and database storage
-- **Debug Logging**: Logging with info & debug levels
-- **HTTP Request/Response Dumping**: Complete HTTP transaction visibility for debugging API issues
+- **Debug Logging**: Logging with info & debug levels and optional HTTP request/response dumping  
 
 ## 📦 Installation
 
@@ -70,7 +65,7 @@ nimble build
 ```bash
 niffler init
 ```
-This creates a configuration file at the platform-appropriate location:
+This creates a default configuration file:
 - **Linux/macOS**: `~/.niffler/config.json`
 - **Windows**: `%APPDATA%\niffler\config.json`
 
@@ -80,7 +75,7 @@ Edit the configuration file to add (or enable) at least one AI model and API key
 {
   "models": [
     {
-      "nickname": "gpt-4",
+      "nickname": "gpt4",
       "baseUrl": "https://api.openai.com/v1",
       "model": "gpt-4",
       "apiKey": "your-api-key-here",
@@ -95,19 +90,18 @@ Edit the configuration file to add (or enable) at least one AI model and API key
 niffler
 ```
 
-
 ## 💻 Usage Examples
 
 ### Interactive Mode
 ```bash
 # List available models
-niffler models
+niffler model list
 
 # Send a single prompt
 niffler -p "Hello, how are you?"
 
 # Use specific model
-niffler --model gpt-4
+niffler --model gpt4
 
 # Enable debug logging
 niffler --debug
@@ -121,13 +115,6 @@ niffler --dump
 # Combine debug and dump for maximum visibility
 niffler --debug --dump
 ```
-
-### Available Commands in Interactive Mode
-- `/help` - Show available commands
-- `/models` - List available models
-- `/model <nickname>` - Switch to a different model
-- `/clear` - Clear conversation history
-- `/exit` or `/quit` - Exit Niffler
 
 ### Enhanced Terminal Features
 

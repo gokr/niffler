@@ -254,12 +254,7 @@ This document outlines the features from the original Octofriend (TypeScript) th
 
 ## Claude Code features
 
-- Time ticking on requests, also counting tokens and showing arrow up down for direction.
-- ESC to interrupt request.
 - Custom /-commands
 - Task with indented arrow showing what was done
 - Markdown rendering
 - Diff rendering with red and gren
-- Always present input box at bottom while rest scrolls by
-- Status indicators at bottom like mode, model etc
-- 
