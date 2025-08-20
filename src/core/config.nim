@@ -90,11 +90,15 @@ proc parseModelConfig(node: JsonNode): ModelConfig =
     result.seed = some(node["seed"].getInt())
     
   # Cost tracking parameters
-  if node.hasKey("inputCostPerToken"):
-    result.inputCostPerToken = some(node["inputCostPerToken"].getFloat())
+  if node.hasKey("inputCostPerMToken"):
+    result.inputCostPerMToken = some(node["inputCostPerMToken"].getFloat())
+  elif node.hasKey("inputCostPerToken"):  # Backward compatibility
+    result.inputCostPerMToken = some(node["inputCostPerToken"].getFloat() * 1_000_000.0)
     
-  if node.hasKey("outputCostPerToken"):
-    result.outputCostPerToken = some(node["outputCostPerToken"].getFloat())
+  if node.hasKey("outputCostPerMToken"):
+    result.outputCostPerMToken = some(node["outputCostPerMToken"].getFloat())
+  elif node.hasKey("outputCostPerToken"):  # Backward compatibility
+    result.outputCostPerMToken = some(node["outputCostPerToken"].getFloat() * 1_000_000.0)
 
 proc parseSpecialModelConfig(node: JsonNode): SpecialModelConfig =
   result.baseUrl = node["baseUrl"].getStr()
@@ -146,6 +150,23 @@ proc parseDatabaseConfig(node: JsonNode): DatabaseConfig =
   result.busyTimeout = node.getOrDefault("busyTimeout").getInt(5000)
   result.poolSize = node.getOrDefault("poolSize").getInt(10)
 
+proc parseThemeStyleConfig(node: JsonNode): ThemeStyleConfig =
+  result.color = node.getOrDefault("color").getStr("white")
+  result.style = node.getOrDefault("style").getStr("bright")
+
+proc parseThemeConfig(node: JsonNode): ThemeConfig =
+  result.name = node.getOrDefault("name").getStr()
+  result.header1 = parseThemeStyleConfig(node.getOrDefault("header1"))
+  result.header2 = parseThemeStyleConfig(node.getOrDefault("header2"))
+  result.header3 = parseThemeStyleConfig(node.getOrDefault("header3"))
+  result.bold = parseThemeStyleConfig(node.getOrDefault("bold"))
+  result.italic = parseThemeStyleConfig(node.getOrDefault("italic"))
+  result.code = parseThemeStyleConfig(node.getOrDefault("code"))
+  result.link = parseThemeStyleConfig(node.getOrDefault("link"))
+  result.listBullet = parseThemeStyleConfig(node.getOrDefault("listBullet"))
+  result.codeBlock = parseThemeStyleConfig(node.getOrDefault("codeBlock"))
+  result.normal = parseThemeStyleConfig(node.getOrDefault("normal"))
+
 proc parseConfig(configJson: JsonNode): Config =
   result.yourName = configJson["yourName"].getStr()
   
@@ -172,6 +193,17 @@ proc parseConfig(configJson: JsonNode): Config =
       
   if configJson.hasKey("database"):
     result.database = some(parseDatabaseConfig(configJson["database"]))
+    
+  if configJson.hasKey("themes"):
+    result.themes = some(initTable[string, ThemeConfig]())
+    for key, val in configJson["themes"]:
+      result.themes.get()[key] = parseThemeConfig(val)
+      
+  if configJson.hasKey("currentTheme"):
+    result.currentTheme = some(configJson["currentTheme"].getStr())
+    
+  if configJson.hasKey("markdownEnabled"):
+    result.markdownEnabled = some(configJson["markdownEnabled"].getBool())
 
 proc readConfig*(path: string): Config =
   let content = readFile(path)
@@ -230,10 +262,10 @@ proc writeConfig*(config: Config, path: string) =
       modelObj["seed"] = newJInt(model.seed.get())
       
     # Cost tracking parameters
-    if model.inputCostPerToken.isSome():
-      modelObj["inputCostPerToken"] = newJFloat(model.inputCostPerToken.get())
-    if model.outputCostPerToken.isSome():
-      modelObj["outputCostPerToken"] = newJFloat(model.outputCostPerToken.get())
+    if model.inputCostPerMToken.isSome():
+      modelObj["inputCostPerMToken"] = newJFloat(model.inputCostPerMToken.get())
+    if model.outputCostPerMToken.isSome():
+      modelObj["outputCostPerMToken"] = newJFloat(model.outputCostPerMToken.get())
       
     modelsArray.add(modelObj)
   configJson["models"] = modelsArray
@@ -262,6 +294,40 @@ proc writeConfig*(config: Config, path: string) =
       dbObj["password"] = newJString(dbConfig.password.get())
     
     configJson["database"] = dbObj
+  
+  # Add theme configurations if present
+  if config.themes.isSome():
+    var themesObj = newJObject()
+    for themeName, themeConfig in config.themes.get():
+      var themeObj = newJObject()
+      themeObj["name"] = newJString(themeConfig.name)
+      
+      # Helper proc to create theme style JSON
+      proc createThemeStyleJson(style: ThemeStyleConfig): JsonNode =
+        var styleObj = newJObject()
+        styleObj["color"] = newJString(style.color)
+        styleObj["style"] = newJString(style.style)
+        return styleObj
+      
+      themeObj["header1"] = createThemeStyleJson(themeConfig.header1)
+      themeObj["header2"] = createThemeStyleJson(themeConfig.header2)
+      themeObj["header3"] = createThemeStyleJson(themeConfig.header3)
+      themeObj["bold"] = createThemeStyleJson(themeConfig.bold)
+      themeObj["italic"] = createThemeStyleJson(themeConfig.italic)
+      themeObj["code"] = createThemeStyleJson(themeConfig.code)
+      themeObj["link"] = createThemeStyleJson(themeConfig.link)
+      themeObj["listBullet"] = createThemeStyleJson(themeConfig.listBullet)
+      themeObj["codeBlock"] = createThemeStyleJson(themeConfig.codeBlock)
+      themeObj["normal"] = createThemeStyleJson(themeConfig.normal)
+      
+      themesObj[themeName] = themeObj
+    configJson["themes"] = themesObj
+  
+  if config.currentTheme.isSome():
+    configJson["currentTheme"] = newJString(config.currentTheme.get())
+    
+  if config.markdownEnabled.isSome():
+    configJson["markdownEnabled"] = newJBool(config.markdownEnabled.get())
   
   writeFile(path, pretty(configJson, 2))
 
@@ -293,12 +359,14 @@ proc writeKeys*(keys: KeyConfig) =
 proc calculateCosts*(cost: var CostTracking, usage: CostTokenUsage) =
   ## Calculate and populate cost totals based on token usage and per-token rates.
   cost.usage = usage
-  if cost.inputCostPerToken.isSome():
-    cost.totalInputCost = float(usage.inputTokens) * cost.inputCostPerToken.get()
+  if cost.inputCostPerMToken.isSome():
+    let costPerToken = cost.inputCostPerMToken.get() / 1_000_000.0
+    cost.totalInputCost = float(usage.inputTokens) * costPerToken
   else:
     cost.totalInputCost = 0.0
-  if cost.outputCostPerToken.isSome():
-    cost.totalOutputCost = float(usage.outputTokens) * cost.outputCostPerToken.get()
+  if cost.outputCostPerMToken.isSome():
+    let costPerToken = cost.outputCostPerMToken.get() / 1_000_000.0
+    cost.totalOutputCost = float(usage.outputTokens) * costPerToken
   else:
     cost.totalOutputCost = 0.0
   cost.totalCost = cost.totalInputCost + cost.totalOutputCost
@@ -310,6 +378,70 @@ proc addUsage*(cost: var CostTracking, inputTokens: int, outputTokens: int) =
   cost.usage.totalTokens = cost.usage.inputTokens + cost.usage.outputTokens
   calculateCosts(cost, cost.usage)
 
+proc createDefaultThemes(): Table[string, ThemeConfig] =
+  ## Create built-in themes
+  result = initTable[string, ThemeConfig]()
+  
+  # Default theme (matches current TUI colors)
+  result["default"] = ThemeConfig(
+    name: "default",
+    header1: ThemeStyleConfig(color: "yellow", style: "bright"),
+    header2: ThemeStyleConfig(color: "yellow", style: "bright"),
+    header3: ThemeStyleConfig(color: "yellow", style: "dim"),
+    bold: ThemeStyleConfig(color: "white", style: "bright"),
+    italic: ThemeStyleConfig(color: "cyan", style: "bright"),
+    code: ThemeStyleConfig(color: "green", style: "dim"),
+    link: ThemeStyleConfig(color: "blue", style: "bright"),
+    listBullet: ThemeStyleConfig(color: "white", style: "bright"),
+    codeBlock: ThemeStyleConfig(color: "cyan", style: "bright"),
+    normal: ThemeStyleConfig(color: "white", style: "bright")
+  )
+  
+  # Dark theme
+  result["dark"] = ThemeConfig(
+    name: "dark",
+    header1: ThemeStyleConfig(color: "blue", style: "bright"),
+    header2: ThemeStyleConfig(color: "cyan", style: "bright"),
+    header3: ThemeStyleConfig(color: "cyan", style: "dim"),
+    bold: ThemeStyleConfig(color: "white", style: "bright"),
+    italic: ThemeStyleConfig(color: "yellow", style: "bright"),
+    code: ThemeStyleConfig(color: "green", style: "bright"),
+    link: ThemeStyleConfig(color: "magenta", style: "bright"),
+    listBullet: ThemeStyleConfig(color: "cyan", style: "bright"),
+    codeBlock: ThemeStyleConfig(color: "blue", style: "dim"),
+    normal: ThemeStyleConfig(color: "white", style: "bright")
+  )
+  
+  # Light theme
+  result["light"] = ThemeConfig(
+    name: "light",
+    header1: ThemeStyleConfig(color: "blue", style: "bright"),
+    header2: ThemeStyleConfig(color: "magenta", style: "bright"),
+    header3: ThemeStyleConfig(color: "magenta", style: "dim"),
+    bold: ThemeStyleConfig(color: "black", style: "bright"),
+    italic: ThemeStyleConfig(color: "blue", style: "dim"),
+    code: ThemeStyleConfig(color: "green", style: "dim"),
+    link: ThemeStyleConfig(color: "blue", style: "bright"),
+    listBullet: ThemeStyleConfig(color: "black", style: "bright"),
+    codeBlock: ThemeStyleConfig(color: "magenta", style: "dim"),
+    normal: ThemeStyleConfig(color: "black", style: "bright")
+  )
+  
+  # Minimal theme
+  result["minimal"] = ThemeConfig(
+    name: "minimal",
+    header1: ThemeStyleConfig(color: "white", style: "bright"),
+    header2: ThemeStyleConfig(color: "white", style: "bright"),
+    header3: ThemeStyleConfig(color: "white", style: "dim"),
+    bold: ThemeStyleConfig(color: "white", style: "bright"),
+    italic: ThemeStyleConfig(color: "white", style: "dim"),
+    code: ThemeStyleConfig(color: "white", style: "dim"),
+    link: ThemeStyleConfig(color: "white", style: "underscore"),
+    listBullet: ThemeStyleConfig(color: "white", style: "bright"),
+    codeBlock: ThemeStyleConfig(color: "white", style: "dim"),
+    normal: ThemeStyleConfig(color: "white", style: "bright")
+  )
+
 proc initializeConfig*(path: string) =
   if fileExists(path):
     echo "Configuration file already exists: ", path
@@ -319,37 +451,40 @@ proc initializeConfig*(path: string) =
     yourName: "User",
     models: @[
       ModelConfig(
-        nickname: "gpt-4o",
-        baseUrl: "https://api.openai.com/v1",
-        model: "gpt-4o",
-        context: 128000,
+        nickname: "qwen3coder",
+        baseUrl: "https://router.requesty.ai/v1",
+        model: "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        context: 262144,
         `type`: some(mtStandard),
         enabled: true,
         # OpenAI protocol parameters
         temperature: some(0.7),
-        topP: some(1.0),
-        maxTokens: some(4096),
+        topP: some(0.8),
+        topK: some(20),
+        maxTokens: some(65536),
         presencePenalty: some(0.0),
-        frequencyPenalty: some(0.0),
+        frequencyPenalty: some(1.05),
         # Cost tracking parameters (example rates for GPT-4o)
-        inputCostPerToken: some(0.0000025),  # $2.50 per 1M tokens
-        outputCostPerToken: some(0.000010)   # $10.00 per 1M tokens
+        inputCostPerMToken: some(0.4),  # $2.50 per million tokens
+        outputCostPerMToken: some(1.6),   # $10.00 per million tokens
+        apiEnvVar: some("REQUESTY_API_KEY")
       ),
       ModelConfig(
-        nickname: "claude-3.5-sonnet",
-        baseUrl: "https://api.anthropic.com/v1",
-        model: "claude-3-5-sonnet-20241022",
-        context: 200000,
+        nickname: "kimi",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "moonshotai/kimi-k2:free",
+        context: 128000,
         `type`: some(mtAnthropic),
-        enabled: false
+        apiEnvVar: some("OPENROUTER_API_KEY"),
+        enabled: true
       ),
       ModelConfig(
-        nickname: "local-llm",
+        nickname: "qwen3",
         baseUrl: "http://localhost:1234/v1",
-        model: "llama-3.2-3b-instruct",
-        context: 8000,
+        model: "qwe3:1.7b",
+        context: 8192,
         `type`: some(mtStandard),
-        enabled: false
+        enabled: true
       )
     ],
     database: some(DatabaseConfig(
@@ -359,7 +494,10 @@ proc initializeConfig*(path: string) =
       walMode: true,
       busyTimeout: 5000,
       poolSize: 10
-    ))
+    )),
+    themes: some(createDefaultThemes()),
+    currentTheme: some("default"),
+    markdownEnabled: some(true)
   )
   
   writeConfig(defaultConfig, path)

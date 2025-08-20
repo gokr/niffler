@@ -245,9 +245,9 @@ proc newTokenLogger*(logFile: Option[string] = none(string)): TokenLogger =
   TokenLogger(entries: @[], logFile: logFile)
 
 proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int, outputTokens: int,
-                   inputCostPerToken: Option[float], outputCostPerToken: Option[float]) =
-  let inputCost = if inputCostPerToken.isSome(): float(inputTokens) * inputCostPerToken.get() else: 0.0
-  let outputCost = if outputCostPerToken.isSome(): float(outputTokens) * outputCostPerToken.get() else: 0.0
+                   inputCostPerMToken: Option[float], outputCostPerMToken: Option[float]) =
+  let inputCost = if inputCostPerMToken.isSome(): float(inputTokens) * (inputCostPerMToken.get() / 1_000_000.0) else: 0.0
+  let outputCost = if outputCostPerMToken.isSome(): float(outputTokens) * (outputCostPerMToken.get() / 1_000_000.0) else: 0.0
   let totalCost = inputCost + outputCost
   
   let entry = TokenLogEntry(

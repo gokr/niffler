@@ -33,9 +33,9 @@ type
     logitBias*: Option[Table[int, float]]
     seed*: Option[int]
     
-    # Cost tracking parameters
-    inputCostPerToken*: Option[float]
-    outputCostPerToken*: Option[float]
+    # Cost tracking parameters (per million tokens)
+    inputCostPerMToken*: Option[float]
+    outputCostPerMToken*: Option[float]
 
   SpecialModelConfig* = object
     baseUrl*: string
@@ -68,6 +68,23 @@ type
     busyTimeout*: int
     poolSize*: int
 
+  ThemeStyleConfig* = object
+    color*: string
+    style*: string
+
+  ThemeConfig* = object
+    name*: string
+    header1*: ThemeStyleConfig
+    header2*: ThemeStyleConfig
+    header3*: ThemeStyleConfig
+    bold*: ThemeStyleConfig
+    italic*: ThemeStyleConfig
+    code*: ThemeStyleConfig
+    link*: ThemeStyleConfig
+    listBullet*: ThemeStyleConfig
+    codeBlock*: ThemeStyleConfig
+    normal*: ThemeStyleConfig
+
   Config* = object
     yourName*: string
     models*: seq[ModelConfig]
@@ -76,6 +93,9 @@ type
     defaultApiKeyOverrides*: Option[Table[string, string]]
     mcpServers*: Option[Table[string, McpServerConfig]]
     database*: Option[DatabaseConfig]
+    themes*: Option[Table[string, ThemeConfig]]
+    currentTheme*: Option[string]
+    markdownEnabled*: Option[bool]
 
   KeyConfig* = Table[string, string]
 
@@ -90,8 +110,8 @@ type
     totalTokens*: int
 
   CostTracking* = object
-    inputCostPerToken*: Option[float]
-    outputCostPerToken*: Option[float]
+    inputCostPerMToken*: Option[float]
+    outputCostPerMToken*: Option[float]
     totalInputCost*: float
     totalOutputCost*: float
     totalCost*: float
