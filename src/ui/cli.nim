@@ -23,7 +23,7 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat, terminal, options, times]
+import std/[os, strutils, strformat, terminal, options, times, algorithm]
 import std/logging
 when defined(posix):
   import posix
@@ -33,11 +33,16 @@ import ../types/[messages, config as configTypes]
 import ../api/api
 import ../api/curlyStreaming
 import ../tools/worker
-import tui
+import commands
+import theme
+import markdown_cli
 
-# Global database backend
-var globalDatabase: DatabaseBackend = nil
-
+# State for input box rendering
+var currentInputText: string = ""
+var currentModelName: string = ""
+var isProcessing: bool = false
+var promptTokens: int = 0
+var completionTokens: int = 0
 # Global noise instance for enhanced input
 var noiseInstance: Option[Noise] = none[Noise]()
 
@@ -45,63 +50,113 @@ proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
 
-proc getGlobalDatabase*(): DatabaseBackend =
-  ## Get the global database backend instance
-  result = globalDatabase
 
-proc initializeNoiseInput(): bool =
+proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: string, prefix: string, startPos: int] =
+  ## Detect completion context based on cursor position and surrounding text
+  # nim-noise might pass just the word being completed, so check if it starts with / or @
+  if text.len > 0 and text[0] == '/':
+    # Command completion - remove the leading /
+    let prefix = if text.len > 1: text[1..^1] else: ""
+    return ("command", prefix, 0)
+  elif text.len > 0 and text[0] == '@':
+    # Mention completion - remove the leading @
+    let prefix = if text.len > 1: text[1..^1] else: ""
+    return ("mention", prefix, 0)
+  
+  # Fallback: look backward from cursor to find completion triggers  
+  var searchPos = min(cursorPos - 1, text.len - 1)
+  
+  # Find the start of the current word/token
+  while searchPos >= 0:
+    let ch = text[searchPos]
+    if ch in {' ', '\t', '\n'}:
+      break
+    if ch == '/':
+      # Command completion context
+      let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
+      return ("command", prefix, searchPos)
+    elif ch == '@':
+      # Mention/user completion context  
+      let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
+      return ("mention", prefix, searchPos)
+    searchPos -= 1
+  
+  return ("none", "", -1)
+
+proc nifflerCompletionHook(noise: var Noise, text: string): int =
+  ## Completion hook for nim-noise that handles both / and @ completion
+  let cursorPos = text.len  # nim-noise gives us the full current line
+  let (contextType, prefix, startPos) = detectCompletionContext(text, cursorPos)
+  
+  case contextType:
+  of "command":
+    # Command completion for /
+    let completions = getCommandCompletions(prefix)
+    for cmd in completions:
+      noise.addCompletion(cmd.name)  # nim-noise will replace the typed text
+    return completions.len
+  of "mention": 
+    # User/mention completion for @
+    # For now, add some example mentions - this could be extended
+    let mentions = @["user", "assistant", "system", "claude", "gpt"]
+    var matchCount = 0
+    for mention in mentions:
+      if mention.startsWith(prefix.toLower()):
+        noise.addCompletion(mention)  # nim-noise will replace the typed text
+        inc matchCount
+    return matchCount
+  else:
+    return 0
+
+proc initializeNoiseInput(database: DatabaseBackend): bool =
   ## Initialize noise with history and completion support
   try:
     var noise = Noise.init()
     
     # Load history from database if available
-    if globalDatabase != nil:
+    if database != nil:
       try:
-        let recentPrompts = getRecentPrompts(globalDatabase, 100)
+        let recentPrompts = getRecentPrompts(database, 100)
         for prompt in recentPrompts:
           noise.historyAdd(prompt)
       except Exception as e:
         debug(fmt"Could not load history from database: {e.msg}")
     
-    # TODO: Add completion callback when we figure out the correct API
+    # Set up completion hook for commands and mentions
+    noise.setCompletionHook(nifflerCompletionHook)
+    
     noiseInstance = some(noise)
     return true
   except Exception as e:
     debug(fmt"Failed to initialize noise: {e.msg}")
-    return false
+    raise newException(OSError, fmt"Failed to initialize enhanced input (nim-noise): {e.msg}")
 
 proc readInputLine(prompt: string): string =
-  ## Read input with enhanced features (noise) or fallback to basic input
-  if noiseInstance.isSome():
-    try:
-      var noise = noiseInstance.get()
-      
-      # Create a colored prompt using Styler - can't be backspaced over
-      let styledPrompt = Styler.init(fgBlue, prompt)
-      noise.setPrompt(styledPrompt)
-      
-      # Use noise readline with proper prompt handling
-      if noise.readLine():
-        let input = noise.getLine()
-        if input.len > 0:
-          noise.historyAdd(input)
-          # Update the option with the modified noise instance
-          noiseInstance = some(noise)
-        return input
-      else:
-        # EOF, Ctrl+D, or Ctrl+C - treat as exit signal
-        raise newException(EOFError, "User requested exit")
-    except EOFError:
-      # Re-raise EOF errors (Ctrl+C, Ctrl+D)
-      raise
-    except Exception as e:
-      debug(fmt"Noise readline failed, falling back to basic input: {e.msg}")
-      # Fall through to basic input
+  ## Read input with enhanced features (noise) - no fallback
+  if noiseInstance.isNone():
+    raise newException(OSError, "Enhanced input not initialized")
   
-  # Fallback to basic input with colored prompt
-  stdout.styledWrite(fgBlue, styleBright, prompt)
-  stdout.flushFile()
-  return stdin.readLine()
+  try:
+    var noise = noiseInstance.get()
+    
+    # Create a colored prompt using Styler - can't be backspaced over
+    let styledPrompt = Styler.init(fgBlue, prompt)
+    noise.setPrompt(styledPrompt)
+    
+    # Use noise readline with proper prompt handling
+    if noise.readLine():
+      let input = noise.getLine()
+      if input.len > 0:
+        noise.historyAdd(input)
+        # Update the option with the modified noise instance
+        noiseInstance = some(noise)
+      return input
+    else:
+      # EOF, Ctrl+D, or Ctrl+C - treat as exit signal
+      raise newException(EOFError, "User requested exit")
+  except EOFError:
+    # Re-raise EOF errors (Ctrl+C, Ctrl+D)
+    raise
 
 when defined(posix):
   # Global flag to track if we're suspended
@@ -132,6 +187,7 @@ when defined(posix):
     if currentActiveRequestId.len > 0 and currentChannels != nil:
       # We have an active stream, cancel it
       streamCancellationRequested = true
+      isProcessing = false  # Reset processing state
       let cancelRequest = APIRequest(
         kind: arkStreamCancel,
         cancelRequestId: currentActiveRequestId
@@ -147,95 +203,115 @@ when defined(posix):
       quit(0)
 
 proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBright) =
-  ## Write colored text to stdout
+  ## Write colored text to stdout (deprecated - use writeToConversationArea instead)
   stdout.styledWrite(color, style, text)
   stdout.flushFile()
 
-proc initializeAppSystems*(level: Level, dump: bool = false) =
-  ## Initialize common app systems
-  let consoleLogger = newConsoleLogger()
-  addHandler(consoleLogger)
-  setLogFilter(level)
-  initThreadSafeChannels()
-  initHistoryManager()
-  # Store dump setting for later use by HTTP clients
-  initDumpFlag()
-  setDumpEnabled(dump)
+proc generatePrompt*(modelName: string, isProcessing: bool = false,
+                    promptTokens: int = 0, completionTokens: int = 0,
+                    contextSize: int = 0, maxContext: int = 128000,
+                    modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
+  ## Generate a rich prompt string with token counts, context info, and cost
+  let sessionTotal = promptTokens + completionTokens
   
-  # Initialize database backend
-  try:
-    let config = loadConfig()
-    if config.database.isSome():
-      globalDatabase = createDatabaseBackend(config.database.get())
-      if globalDatabase != nil:
-        debug("Database backend initialized successfully")
-      else:
-        debug("Database backend disabled in configuration")
-    else:
-      debug("No database configuration found")
-      globalDatabase = nil
-  except Exception as e:
-    error(fmt"Failed to initialize database backend: {e.msg}")
-    globalDatabase = nil
-  
-  # Initialize enhanced input with noise
-  if initializeNoiseInput():
-    debug("Enhanced input (noise) initialized successfully")
+  if sessionTotal > 0:
+    # Create context usage bar
+    let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
+    let barWidth = 10
+    let filledBars = if barWidth > 0: (contextPercent * barWidth) div 100 else: 0
+    let contextBar = "█".repeat(filledBars) & "░".repeat(barWidth - filledBars)
+    
+    # Calculate context cost if available
+    let messages = getConversationContext()
+    let contextCost = calculateContextCost(messages, modelConfig)
+    let costInfo = if contextCost.totalCost > 0: fmt" {formatCost(contextCost.totalCost)}" else: ""
+    
+    # Use a simpler processing indicator to avoid cursor offset issues
+    let statusIndicator = if isProcessing: "⚡" else: ""
+    return fmt"{statusIndicator}↑{promptTokens} ↓{completionTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName} > "
   else:
-    debug("Enhanced input initialization failed, will use basic input")
+    let statusIndicator = if isProcessing: "⚡ " else: ""
+    return fmt"{statusIndicator}{modelName} > "
+
+proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
+  ## Write text to conversation area with automatic newline and optional markdown rendering
+  if useMarkdown:
+    # Render markdown and output directly (markdown rendering includes its own colors)
+    let renderedText = renderMarkdownTextCLI(text)
+    stdout.write(renderedText & "\n")
+  elif color != fgWhite or style != styleBright:
+    stdout.styledWrite(color, style, text & "\n")
+  else:
+    stdout.write(text & "\n")
+  stdout.flushFile()
+
+proc updateTokenCounts*(newPromptTokens: int, newCompletionTokens: int) =
+  ## Update token counts in central history storage
+  updateSessionTokens(newPromptTokens, newCompletionTokens)
+  # Also update UI state for prompt display
+  promptTokens = newPromptTokens
+  completionTokens = newCompletionTokens
+
+proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
+  ## Read input with dynamic prompt showing current state
+  # Get actual context information
+  let contextMessages = getConversationContext()
+  let contextTokens = estimateTokenCount(contextMessages)
+  let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
+  
+  let dynamicPrompt = generatePrompt(currentModelName, isProcessing, 
+                                   promptTokens, completionTokens,
+                                   contextTokens,  # Use real context size
+                                   maxContext, modelConfig)
+  
+  let input = readInputLine(dynamicPrompt).strip()
+  currentInputText = input
+  return input
+
+
+proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
+  ## Start the CLI mode with enhanced interface
+  
+  # Load configuration to get theme settings
+  let config = loadConfig()
+  loadThemesFromConfig(config)
+  let markdownEnabled = isMarkdownEnabled(config)
+  
+  # Initialize enhanced input with noise - fail if not available
+  if not initializeNoiseInput(database):
+    raise newException(OSError, "Failed to initialize enhanced input")
+  
+  # Initialize command system
+  initializeCommands()
   
   # Set up signal handlers for Ctrl+Z and Ctrl+C support (POSIX only)
   when defined(posix):
     signal(SIGTSTP, handleSIGTSTP)
     signal(SIGCONT, handleSIGCONT)
     signal(SIGINT, handleSIGINT)
-
-proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, tui: bool = false) =
-  ## Start the interactive terminal UI (TUI, enhanced, or basic fallback)
-  
-  # Try TUI mode first if requested
-  if tui:
-    try:
-      startTUIMode(model, level, dump, globalDatabase)
-      return
-    except Exception as e:
-      error(fmt"TUI mode failed to start: {e.msg}")
-      echo "Falling back to basic CLI..."
-  
-  # Fallback to basic CLI
-  echo "Type '/help' for help and '/exit' or '/quit' to leave."
-  echo "Press Ctrl+C to stop stream display or exit."
-  echo ""
-  
-  # Initialize the app systems
-  initializeAppSystems(level, dump)
   
   let channels = getChannels()
-  let config = loadConfig()
   
   # Set up global state for stream cancellation
   when defined(posix):
     currentChannels = channels
   
-  # Select initial model based on parameter or default
-  var currentModel = if model.len > 0:
-    block:
-      var found = false
-      var selectedModel = config.models[0]  # fallback
-      for m in config.models:
-        if m.nickname == model:
-          selectedModel = m
-          found = true
-          break
-      if not found:
-        echo fmt"Warning: Model '{model}' not found, using default: {config.models[0].nickname}"
-      selectedModel
-  else:
-    if config.models.len > 0: config.models[0] else: 
-      quit("No models configured. Please run 'niffler init' first.")
+  # Use the provided model configuration
+  var currentModel = modelConfig
   
-  echo fmt"Using model: {currentModel.nickname} ({currentModel.model})"
-  echo ""
+  # Display welcome message in conversation area
+  writeToConversationArea("Welcome to Niffler! ", fgCyan, styleBright)
+  writeToConversationArea("Type '/help' for help and '/exit' or '/quit' to leave.\n")
+  writeToConversationArea("Press Ctrl+C to stop stream display or exit.\n")
+  writeToConversationArea(fmt"Using model: {currentModel.nickname} ({currentModel.model})", fgGreen)
+  writeToConversationArea("\n")
+  
+  # Initialize global state for enhanced CLI
+  currentModelName = currentModel.nickname
+  currentInputText = ""
+  isProcessing = false
+  promptTokens = 0
+  completionTokens = 0
   
   # Start API worker
   var apiWorker = startAPIWorker(channels, level, dump)
@@ -254,76 +330,38 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
   var running = true
   while running:
     try:
-      # Read user input with enhanced features (history, completion, cursor keys)
-      let input = readInputLine(fmt"{userName}: ").strip()
+      # Read user input with dynamic prompt
+      let input = readInputWithPrompt(currentModel)
       
       if input.len == 0:
         continue
       
-      # Handle commands
+      # Handle commands using the command system
       if input.startsWith("/"):
-        let parts = input[1..^1].split(' ', 1)
-        let cmd = parts[0].toLower()
-        
-        case cmd:
-        of "exit", "quit":
-          running = false
-          continue
-        of "help":
-          echo ""
-          echo "Available commands:"
-          echo "  /exit, /quit - Exit Niffler"
-          echo "  /model <name> - Switch to a different model"
-          echo "  /models - List available models"
-          echo "  /clear - Clear conversation history"
-          echo "  /help - Show this help"
-          echo ""
-          echo "Keyboard shortcuts:"
-          echo "  Ctrl+C - Stop stream display or exit"
-          echo "  Ctrl+Z - Suspend to background (Unix/Linux)"
-          echo ""
-          echo "Note: Stream cancellation stops display but may not stop"
-          echo "      token generation immediately due to API limitations."
-          echo ""
-          continue
-        of "models":
-          echo ""
-          echo "Available models:"
-          for model in config.models:
-            let marker = if model.nickname == currentModel.nickname: " (current)" else: ""
-            echo fmt"  {model.nickname} - {model.model}{marker}"
-          echo ""
-          continue
-        of "model":
-          if parts.len > 1:
-            let modelName = parts[1]
-            var found = false
-            for model in config.models:
-              if model.nickname == modelName:
-                currentModel = model
-                found = true
-                # Configure API worker with new model
-                if configureAPIWorker(currentModel):
-                  echo fmt"Switched to model: {currentModel.nickname} ({currentModel.model})"
-                else:
-                  echo fmt"Error: Failed to configure model {currentModel.nickname}. Check API key."
-                echo ""
-                break
-            if not found:
-              echo fmt"Model '{modelName}' not found. Use '/models' to see available models."
-              echo ""
-          else:
-            echo "Usage: /model <name>"
-            echo ""
-          continue
-        of "clear":
-          clearHistory()
-          echo "Conversation history cleared."
-          echo ""
+        let (command, args) = parseCommand(input)
+        if command.len > 0:
+          let res = executeCommand(command, args, currentModel)
+          
+          # Display command result with markdown if enabled
+          writeToConversationArea(res.message, fgWhite, styleBright, markdownEnabled)
+          writeToConversationArea("")
+          
+          # Handle special commands that need additional actions
+          if res.success:
+            if command == "model":
+              # Reconfigure API worker with new model
+              currentModelName = currentModel.nickname
+              if not configureAPIWorker(currentModel):
+                writeToConversationArea(fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key.")
+                writeToConversationArea("")
+          
+          if res.shouldExit:
+            running = false
+          
           continue
         else:
-          echo fmt"Unknown command: /{cmd}. Type '/help' for available commands."
-          echo ""
+          writeToConversationArea("Invalid command format")
+          writeToConversationArea("")
           continue
       
       # Regular message - send to API
@@ -340,14 +378,18 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
         var attempts = 0
         const maxAttempts = 600  # 60 seconds with 100ms sleep
         
-        writeColored(fmt"{currentModel.nickname}: ", fgGreen)
-        stdout.flushFile()
+        # Show processing status
+        isProcessing = true
+        
+        # Write model name in conversation area (nim-noise already showed user input)
+        # Not needed since we now have it in the prompt: writeToConversationArea(fmt"{currentModel.nickname}: ", fgGreen)
         
         while not responseReceived and attempts < maxAttempts:
           # Check for cancellation request
           when defined(posix):
             if streamCancellationRequested:
               responseReceived = true
+              isProcessing = false  # Reset processing state
               currentActiveRequestId = ""
               break
           
@@ -361,31 +403,45 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
             case response.kind:
             of arkStreamChunk:
               if response.content.len > 0:
+                # For streaming, we need to buffer content to avoid breaking markdown formatting
+                responseText.add(response.content)
+                # For now, just write the raw content - we'll apply markdown at the end
                 stdout.write(response.content)
                 stdout.flushFile()
-                responseText.add(response.content)
             of arkStreamComplete:
-              echo ""
-              echo fmt"[{response.usage.totalTokens} tokens]"
-              echo ""
-              # Add assistant response to history
+              # Clear the line and apply markdown rendering if enabled to the complete response
+              if markdownEnabled and responseText.len > 0:
+                # Move to beginning of response and clear it
+                stdout.write("\r")
+                # Clear the entire response area (rough approach)
+                for i in 0..<(responseText.count('\n') + 1):
+                  stdout.write("\x1b[2K\x1b[1A")  # Clear line and move up
+                stdout.write("\x1b[2K")  # Clear current line
+                # Now render with markdown
+                let renderedResponse = renderMarkdownTextCLI(responseText)
+                stdout.write(renderedResponse)
+              writeToConversationArea("")  # Add final newline
+              # Update token counts with new response (prompt will show tokens)
+              isProcessing = false
+              updateTokenCounts(response.usage.promptTokens, response.usage.completionTokens)
+              # Add assistant response to history (without tool calls in CLI - tool calls are handled by API worker)
               if responseText.len > 0:
                 discard addAssistantMessage(responseText)
                 
                 # Log the prompt exchange to database
-                if globalDatabase != nil:
+                if database != nil:
                   try:
                     let dateStr = now().format("yyyy-MM-dd")
                     let sessionId = fmt"session_{getUserName()}_{dateStr}"
-                    logPromptHistory(globalDatabase, input, responseText, currentModel.nickname, sessionId)
+                    logPromptHistory(database, input, responseText, currentModel.nickname, sessionId)
                   except Exception as e:
                     debug(fmt"Failed to log prompt to database: {e.msg}")
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
             of arkStreamError:
-              echo fmt"Error: {response.error}"
-              echo ""
+              writeToConversationArea(fmt"Error: {response.error}", fgRed)
+              isProcessing = false
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
@@ -397,18 +453,15 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
             inc attempts
         
         if not responseReceived:
-          echo "Timeout waiting for response"
-          echo ""
+          writeToConversationArea("Timeout waiting for response", fgRed)
+          isProcessing = false
           when defined(posix):
             currentActiveRequestId = ""
       else:
-        echo "Failed to send message"
-        echo ""
+        writeToConversationArea("Failed to send message", fgRed)
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
-  
-  echo "Goodbye!"
   
   # Cleanup
   signalShutdown(channels)
@@ -417,9 +470,8 @@ proc startInteractiveUI*(model: string = "", level: Level, dump: bool = false, t
   closeChannels(channels[])
   
   # Close database connection
-  if globalDatabase != nil:
-    globalDatabase.close()
-    globalDatabase = nil
+  if database != nil:
+    database.close()
   
   # Cleanup noise instance
   if noiseInstance.isSome():
@@ -432,8 +484,19 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     return
     
   # Initialize the app systems but don't start the full UI loop
+  let consoleLogger = newConsoleLogger()
+  addHandler(consoleLogger)
+  setLogFilter(level)
+  initThreadSafeChannels()
+  initHistoryManager()
+  initDumpFlag()
+  setDumpEnabled(dump)
   
-  initializeAppSystems(level, dump)
+  # Initialize database
+  let database = initializeGlobalDatabase(level)
+  
+  # Start a new conversation for cost tracking
+  discard startNewConversation()
   
   let channels = getChannels()
   
@@ -472,7 +535,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           info fmt"Tokens used: {response.usage.totalTokens}"
           
           # Log the prompt exchange to database
-          if globalDatabase != nil and responseText.len > 0:
+          if database != nil and responseText.len > 0:
             try:
               let config = loadConfig()
               let selectedModel = if model.len > 0:
@@ -481,7 +544,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
                 config.models[0]
               let dateStr = now().format("yyyy-MM-dd")
               let sessionId = fmt"session_{getUserName()}_{dateStr}"
-              logPromptHistory(globalDatabase, text, responseText, selectedModel.nickname, sessionId)
+              logPromptHistory(database, text, responseText, selectedModel.nickname, sessionId)
             except Exception as e:
               debug(fmt"Failed to log prompt to database: {e.msg}")
           
@@ -508,9 +571,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   closeChannels(channels[])
   
   # Close database connection
-  if globalDatabase != nil:
-    globalDatabase.close()
-    globalDatabase = nil
+  if database != nil:
+    database.close()
   
   # Cleanup noise instance
   if noiseInstance.isSome():

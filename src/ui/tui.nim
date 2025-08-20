@@ -68,21 +68,13 @@ proc getUserName(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
 
-proc initializeAppSystems(level: Level, dump: bool) =
-  ## Initialize common app systems
-  let consoleLogger = newConsoleLogger()
-  addHandler(consoleLogger)
-  setLogFilter(level)
-  initThreadSafeChannels()
-  initHistoryManager()
 
 proc initTUIApp(database: DatabaseBackend = nil) =
   ## Initialize the TUI application
-  when defined(posix):
-    if isatty(stdin.getFileHandle()) == 0:
-      raise newException(OSError, "TUI requires an interactive terminal")
-  
-  illwillInit(fullscreen = false)
+  try:
+    illwillInit(fullscreen = false)
+  except Exception as e:
+    raise newException(OSError, fmt"Failed to initialize TUI (illwill required): {e.msg}")
   tuiApp.terminalBuffer = newTerminalBuffer(terminalWidth(), terminalHeight())
   tuiApp.width = terminalWidth()
   tuiApp.height = terminalHeight()
@@ -687,14 +679,18 @@ proc renderStatusBar() =
   let filledBars = (contextPercent * barWidth) div 100
   let contextBar = "█".repeat(filledBars) & "░".repeat(barWidth - filledBars)
   
+  # Add context warning indicator
+  let contextWarning = if contextPercent > 80: " 🚨" elif contextPercent > 60: " ⚠️" else: ""
+  
   let tokenInfo = if sessionTotal > 0:
-    fmt"↑{tuiApp.sessionPromptTokens} ↓{tuiApp.sessionCompletionTokens} [{contextBar}]{contextPercent}% | {tuiApp.currentModel.nickname}"
+    fmt"↑{tuiApp.sessionPromptTokens} ↓{tuiApp.sessionCompletionTokens} [{contextBar}]{contextPercent}%{contextWarning} | {tuiApp.currentModel.nickname}"
   else:
     fmt"{tuiApp.currentModel.nickname}"
   
   let rightStartX = tuiApp.width - tokenInfo.len - 1
   if rightStartX > statusText.len + 5:
-    tuiApp.terminalBuffer.write(rightStartX, statusY, tokenInfo, fgCyan)
+    let tokenColor = if contextPercent > 80: fgRed elif contextPercent > 60: fgYellow else: fgCyan
+    tuiApp.terminalBuffer.write(rightStartX, statusY, tokenInfo, tokenColor)
 
 proc redrawScreen() =
   ## Redraw the entire screen
@@ -747,6 +743,13 @@ proc handleAPIResponses() =
             if tuiApp.responseLines.len > maxDisplayLines:
               tuiApp.scrollOffset = tuiApp.responseLines.len - maxDisplayLines
       of arkStreamComplete:
+        # Send completed response to scrollback buffer
+        if tuiApp.currentResponseText.len > 0:
+          # Print to stdout so it goes to terminal scrollback
+          echo ""
+          echo tuiApp.currentResponseText
+          echo ""
+        
         tuiApp.waitingForResponse = false
         tuiApp.currentRequestId = ""  # Clear request ID when completed
         
@@ -754,10 +757,11 @@ proc handleAPIResponses() =
         tuiApp.sessionPromptTokens += response.usage.promptTokens
         tuiApp.sessionCompletionTokens += response.usage.completionTokens
         
-        # Estimate context size (rough approximation: prompt + all completion tokens)
-        tuiApp.currentContextSize = tuiApp.sessionPromptTokens + tuiApp.sessionCompletionTokens
+        # Calculate actual context size using real conversation context
+        let contextMessages = app.getConversationContext()
+        tuiApp.currentContextSize = app.estimateTokenCount(contextMessages)
         
-        # Add assistant response to history
+        # Add assistant response to history (without tool calls in TUI - tool calls are handled by API worker)
         if tuiApp.currentResponseText.len > 0:
           discard addAssistantMessage(tuiApp.currentResponseText)
         
@@ -1062,35 +1066,21 @@ proc handleKeypress(key: illwill.Key): bool =
   
   return true
 
-proc startTUIMode*(model: string = "", level: Level, dump: bool = false, database: DatabaseBackend = nil) =
-  ## Start the TUI interface
+proc startTUIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
+  ## Start the TUI interface - fail fast if not available
+  when defined(posix):
+    if isatty(stdin.getFileHandle()) == 0:
+      raise newException(OSError, "TUI requires an interactive terminal")
+  
   try:
-    # Initialize app systems
-    initializeAppSystems(level, dump)
     let channels = getChannels()
     globalChannels = channels
-    let config = loadConfig()
     
-    # Select initial model
-    tuiApp.currentModel = if model.len > 0:
-      block:
-        var found = false
-        var selectedModel = config.models[0]  # fallback
-        for m in config.models:
-          if m.nickname == model:
-            selectedModel = m
-            found = true
-            break
-        if not found:
-          echo fmt"Warning: Model '{model}' not found, using default: {config.models[0].nickname}"
-        selectedModel
-    else:
-      if config.models.len > 0: config.models[0] else: 
-        echo "Error: No models configured. Please run 'niffler init' first."
-        return
+    # Use the provided model configuration
+    tuiApp.currentModel = modelConfig
     
     # Start workers
-    globalAPIWorker = startAPIWorker(channels, level, dump)
+    globalAPIWorker = startAPIWorker(channels, level, dump, database)
     globalToolWorker = startToolWorker(channels, level, dump)
     
     # Configure API worker with initial model
