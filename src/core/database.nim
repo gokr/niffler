@@ -1,5 +1,6 @@
-import std/[options, tables, strformat, os, times, strutils, algorithm]
+import std/[options, tables, strformat, os, times, strutils, algorithm, logging]
 import ../types/config
+import config
 import debby/sqlite
 
 type
@@ -34,6 +35,40 @@ type
     model*: string
     sessionId*: string
 
+  # New types for conversation tracking
+  Conversation* = ref object of RootObj
+    id*: int
+    created_at*: DateTime
+    updated_at*: DateTime
+    sessionId*: string
+    title*: string
+    isActive*: bool
+
+  ConversationMessage* = ref object of RootObj
+    id*: int
+    conversationId*: int
+    created_at*: DateTime
+    role*: string
+    content*: string
+    toolCallId*: Option[string]
+    model*: string
+    inputTokens*: int
+    outputTokens*: int
+    inputCost*: float
+    outputCost*: float
+
+  ModelTokenUsage* = ref object of RootObj
+    id*: int
+    conversationId*: int
+    messageId*: int
+    created_at*: DateTime
+    model*: string
+    inputTokens*: int
+    outputTokens*: int
+    inputCost*: float
+    outputCost*: float
+    totalCost*: float
+
 proc initializeDatabase*(db: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
   case db.kind:
@@ -50,6 +85,27 @@ proc initializeDatabase*(db: DatabaseBackend) =
       # Create indexes for better performance
       db.db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
       db.db.createIndexIfNotExists(PromptHistoryEntry, "sessionId")
+    
+    # Create new conversation tracking tables
+    if not db.db.tableExists(Conversation):
+      db.db.createTable(Conversation)
+      # Create indexes for better performance
+      db.db.createIndexIfNotExists(Conversation, "sessionId")
+      db.db.createIndexIfNotExists(Conversation, "isActive")
+    
+    if not db.db.tableExists(ConversationMessage):
+      db.db.createTable(ConversationMessage)
+      # Create indexes for better performance
+      db.db.createIndexIfNotExists(ConversationMessage, "conversationId")
+      db.db.createIndexIfNotExists(ConversationMessage, "model")
+      db.db.createIndexIfNotExists(ConversationMessage, "created_at")
+    
+    if not db.db.tableExists(ModelTokenUsage):
+      db.db.createTable(ModelTokenUsage)
+      # Create indexes for better performance
+      db.db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
+      db.db.createIndexIfNotExists(ModelTokenUsage, "model")
+      db.db.createIndexIfNotExists(ModelTokenUsage, "created_at")
 
 proc checkDatabase*(db: DatabaseBackend) =
   ## Verify structure of database against model definitions
@@ -57,6 +113,9 @@ proc checkDatabase*(db: DatabaseBackend) =
   of dbkSQLite, dbkTiDB:
     db.db.checkTable(TokenLogEntry)
     db.db.checkTable(PromptHistoryEntry)
+    db.db.checkTable(Conversation)
+    db.db.checkTable(ConversationMessage)
+    db.db.checkTable(ModelTokenUsage)
   echo "Database checked"
 
 proc init*(db: DatabaseBackend) =
@@ -64,33 +123,39 @@ proc init*(db: DatabaseBackend) =
   of dbkSQLite:
     let fullPath = db.config.path.get()
     
-    # Create directory if it doesn't exist
-    createDir(parentDir(fullPath))
-    
-    # Check if file is missing
-    if not fileExists(fullPath):
-      echo "Creating Sqlite3 database ..."
+    try:
+      # Create directory if it doesn't exist
+      createDir(parentDir(fullPath))
+      
+      # Check if file is missing
+      if not fileExists(fullPath):
+        echo "Creating Sqlite3 database at: ", fullPath
 
-    # Open database connection
-    db.db = sqlite.openDatabase(fullPath)
-    
-    # Enable WAL mode for better concurrency
-    if db.config.walMode:
-      db.db.query("PRAGMA journal_mode=WAL")
-      db.db.query("PRAGMA synchronous=NORMAL")
-    
-    # Set busy timeout
-    db.db.query(fmt"PRAGMA busy_timeout = {db.config.busyTimeout}")
-    
-    # Create tables using debby's ORM
-    db.initializeDatabase()
+      # Open database connection
+      db.db = sqlite.openDatabase(fullPath)
+      
+      # Enable WAL mode for better concurrency
+      if db.config.walMode:
+        db.db.query("PRAGMA journal_mode=WAL")
+        db.db.query("PRAGMA synchronous=NORMAL")
+      
+      # Set busy timeout
+      db.db.query(fmt"PRAGMA busy_timeout = {db.config.busyTimeout}")
+      
+      # Create tables using debby's ORM
+      db.initializeDatabase()
+      
+      echo "Database initialized successfully at: ", fullPath
+    except Exception as e:
+      error(fmt"Failed to initialize SQLite database: {e.msg}")
+      raise e
   
   of dbkTiDB:
-    let host = db.config.host.get("localhost")
-    let port = db.config.port.get(4000)
-    let database = db.config.database.get("niffler")
-    let username = db.config.username.get("root")
-    let password = db.config.password.get("")
+    #let host = db.config.host.get("localhost")
+    #let port = db.config.port.get(4000)
+    #let database = db.config.database.get("niffler")
+    #let username = db.config.username.get("root")
+    #let password = db.config.password.get("")
     
     # For now, use SQLite as a placeholder
     # In a real implementation, this would connect to TiDB using MySQL driver
@@ -228,4 +293,210 @@ proc logPromptHistory*(db: DatabaseBackend, userPrompt: string, assistantRespons
   
   db.logPromptHistory(entry)
 
+# New conversation tracking functions
+proc startConversation*(db: DatabaseBackend, sessionId: string, title: string): int =
+  ## Start a new conversation and return its ID
+  if db == nil:
+    return 0
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let conv = Conversation(
+      id: 0,
+      created_at: now(),
+      updated_at: now(),
+      sessionId: sessionId,
+      title: title,
+      isActive: true
+    )
+    db.db.insert(conv)
+    return conv.id
+
+proc logConversationMessage*(db: DatabaseBackend, conversationId: int, role: string,
+                           content: string, model: string, toolCallId: Option[string] = none(string),
+                           inputTokens: int = 0, outputTokens: int = 0,
+                           inputCost: float = 0.0, outputCost: float = 0.0) =
+  ## Log a message in a conversation
+  if db == nil or conversationId == 0:
+    return
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let msg = ConversationMessage(
+      id: 0,
+      conversationId: conversationId,
+      created_at: now(),
+      role: role,
+      content: content,
+      toolCallId: toolCallId,
+      model: model,
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      inputCost: inputCost,
+      outputCost: outputCost
+    )
+    db.db.insert(msg)
+
+proc logModelTokenUsage*(db: DatabaseBackend, conversationId: int, messageId: int,
+                        model: string, inputTokens: int, outputTokens: int,
+                        inputCostPerMToken: Option[float], outputCostPerMToken: Option[float]) =
+  ## Log model-specific token usage for accurate cost calculation
+  if db == nil or conversationId == 0:
+    return
+  
+  let inputCost = if inputCostPerMToken.isSome():
+    float(inputTokens) * (inputCostPerMToken.get() / 1_000_000.0)
+  else: 0.0
+  
+  let outputCost = if outputCostPerMToken.isSome():
+    float(outputTokens) * (outputCostPerMToken.get() / 1_000_000.0)
+  else: 0.0
+  
+  let totalCost = inputCost + outputCost
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let usage = ModelTokenUsage(
+      id: 0,
+      conversationId: conversationId,
+      messageId: messageId,
+      created_at: now(),
+      model: model,
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      inputCost: inputCost,
+      outputCost: outputCost,
+      totalCost: totalCost
+    )
+    db.db.insert(usage)
+
+proc getConversationCostBreakdown*(db: DatabaseBackend, conversationId: int): tuple[totalCost: float, breakdown: seq[string]] =
+  ## Calculate accurate cost breakdown by model for a conversation
+  if db == nil or conversationId == 0:
+    return (0.0, @[])
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Group by model and sum costs
+    let query = """
+      SELECT model,
+             SUM(input_tokens) as totalInputTokens,
+             SUM(output_tokens) as totalOutputTokens,
+             SUM(input_cost) as totalInputCost,
+             SUM(output_cost) as totalOutputCost,
+             SUM(total_cost) as totalModelCost
+      FROM model_token_usage
+      WHERE conversation_id = ?
+      GROUP BY model
+      ORDER BY created_at
+    """
+    
+    let rows = db.db.query(query, conversationId)
+    result.totalCost = 0.0
+    result.breakdown = @[]
+    
+    for row in rows:
+      let model = row[0]
+      let inputTokens = parseInt(row[1])
+      let outputTokens = parseInt(row[2])
+      let inputCost = parseFloat(row[3])
+      let outputCost = parseFloat(row[4])
+      let modelCost = parseFloat(row[5])
+      
+      result.totalCost += modelCost
+      result.breakdown.add(fmt"{model}: {inputTokens} input tokens (${inputCost:.4f}) + {outputTokens} output tokens (${outputCost:.4f}) = ${modelCost:.4f}")
+
 # Wrapper functions removed - using direct method calls now
+
+# Global database instance
+var globalDatabase {.threadvar.}: DatabaseBackend
+
+# Forward declaration for getGlobalDatabase
+proc initializeGlobalDatabase*(level: Level): DatabaseBackend
+
+proc getGlobalDatabase*(): DatabaseBackend =
+  ## Get the global database instance, attempting to initialize if nil
+  if globalDatabase == nil:
+    try:
+      debug("Global database is nil, attempting to initialize")
+      globalDatabase = initializeGlobalDatabase(lvlWarn)
+    except Exception as e:
+      error(fmt"Failed to initialize global database: {e.msg}")
+      return nil
+  result = globalDatabase
+
+proc setGlobalDatabase*(db: DatabaseBackend) =
+  ## Set the global database instance
+  globalDatabase = db
+
+proc verifyDatabaseHealth*(): bool =
+  ## Verify that the database is healthy and all required tables exist
+  let database = getGlobalDatabase()
+  if database == nil:
+    return false
+  
+  case database.kind:
+  of dbkSQLite, dbkTiDB:
+    try:
+      # Check if all required tables exist
+      if not database.db.tableExists(TokenLogEntry):
+        warn("TokenLogEntry table missing")
+        return false
+      if not database.db.tableExists(PromptHistoryEntry):
+        warn("PromptHistoryEntry table missing")
+        return false
+      if not database.db.tableExists(Conversation):
+        warn("Conversation table missing")
+        return false
+      if not database.db.tableExists(ConversationMessage):
+        warn("ConversationMessage table missing")
+        return false
+      if not database.db.tableExists(ModelTokenUsage):
+        warn("ModelTokenUsage table missing")
+        return false
+      
+      debug("Database health check passed")
+      return true
+    except Exception as e:
+      error(fmt"Database health check failed: {e.msg}")
+      return false
+
+proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
+  ## Initialize global database backend from configuration
+  try:
+    let config = loadConfig()
+    if config.database.isSome():
+      let dbConfig = config.database.get()
+      if dbConfig.enabled:
+        result = createDatabaseBackend(dbConfig)
+        if result != nil:
+          debug("Database backend initialized successfully")
+          setGlobalDatabase(result)  # Set the global database instance
+        else:
+          error("Failed to create database backend")
+          result = nil
+      else:
+        debug("Database backend disabled in configuration")
+        result = nil
+    else:
+      # No database configuration found - create default SQLite configuration
+      debug("No database configuration found, creating default SQLite database")
+      let defaultDbConfig = DatabaseConfig(
+        `type`: dtSQLite,
+        enabled: true,
+        path: some(getDefaultSqlitePath()),
+        walMode: true,
+        busyTimeout: 5000,
+        poolSize: 10
+      )
+      
+      result = createDatabaseBackend(defaultDbConfig)
+      if result != nil:
+        debug("Default database backend initialized successfully")
+        setGlobalDatabase(result)
+      else:
+        error("Failed to create default database backend")
+        result = nil
+  except Exception as e:
+    error(fmt"Failed to initialize database backend: {e.msg}")
+    result = nil
