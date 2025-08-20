@@ -1,12 +1,14 @@
 import std/[locks, atomics, options, logging]
 import ../types/messages
 import queue
+import database
 
 type
   ThreadParams* = ref object
     channels*: ptr ThreadChannels
     level*: Level
     dump*: bool
+    database*: DatabaseBackend
 
   ThreadChannels* = object
     # API Thread Communication
