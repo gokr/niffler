@@ -33,7 +33,7 @@ else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 import ../types/[messages, config]
 import std/logging
-import ../core/channels
+import ../core/[channels, history, database]
 import curlyStreaming
 import ../tools/schemas
 
@@ -260,6 +260,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   setDumpEnabled(params.dump)
   
   let channels = params.channels
+  let database = params.database
   
   debug("API worker thread started")
   incrementActiveThreads(channels)
@@ -346,7 +347,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               enabled: true,
               maxTokens: some(request.maxTokens),
               temperature: some(request.temperature),
-              apiKey: some(request.apiKey)
+              apiKey: some(request.apiKey),
+              inputCostPerMToken: none(float),  # Will be filled from actual model config
+              outputCostPerMToken: none(float)  # Will be filled from actual model config
             )
             
             let chatRequest = createChatRequest(
@@ -490,6 +493,10 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                             toolCallId: some(toolCall.id)
                           )
                           allToolResults.add(toolResultMsg)
+                          
+                          # Store tool result in conversation history
+                          discard addToolMessage(toolContent, toolCall.id)
+                          
                           break
                       sleep(100)
                       attempts += 1
@@ -503,6 +510,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                         toolCallId: some(toolCall.id)
                       )
                       allToolResults.add(errorMsg)
+                      
+                      # Store error in conversation history
+                      discard addToolMessage("Error: Tool execution timed out", toolCall.id)
                   else:
                     # Failed to send tool request - error will be in the tool result message
                     
@@ -512,6 +522,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                       toolCallId: some(toolCall.id)
                     )
                     allToolResults.add(errorMsg)
+                    
+                    # Store error in conversation history
+                    discard addToolMessage("Error: Failed to send tool request", toolCall.id)
                 
                 # Send tool results back to LLM for continuation
                 if allToolResults.len > 0:
@@ -521,11 +534,15 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   var updatedMessages = request.messages
                   
                   # Add the assistant message with tool calls
-                  updatedMessages.add(Message(
+                  let assistantWithTools = Message(
                     role: mrAssistant,
                     content: fullContent,
                     toolCalls: some(convertToLLMToolCalls(collectedToolCalls))
-                  ))
+                  )
+                  updatedMessages.add(assistantWithTools)
+                  
+                  # Store assistant message with tool calls in conversation history
+                  discard addAssistantMessage(fullContent, some(convertToLLMToolCalls(collectedToolCalls)))
                   # Add all tool result messages
                   for toolResult in allToolResults:
                     updatedMessages.add(toolResult)
@@ -620,6 +637,26 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   sendAPIResponse(channels, finalChunkResponse)
                   
                   # Send completion with extracted usage data
+                  # Log model-specific token usage to database
+                  if database != nil:
+                    try:
+                      # Get current conversation ID from history and convert to int
+                      let conversationId = getCurrentConversationId().int
+                      let messageId = getCurrentMessageId().int
+                      
+                      # Get pricing from temp model config (already has Option[float] type)
+                      let inputCostPerMToken = tempModelConfig.inputCostPerMToken
+                      let outputCostPerMToken = tempModelConfig.outputCostPerMToken
+                      
+                      # Log model-specific token usage to database
+                      logModelTokenUsage(database, conversationId, messageId, request.model,
+                                        finalUsage.promptTokens, finalUsage.completionTokens,
+                                        inputCostPerMToken, outputCostPerMToken)
+                      
+                      debug(fmt"Logged token usage for model {request.model}: {finalUsage.promptTokens} input, {finalUsage.completionTokens} output")
+                    except Exception as e:
+                      debug(fmt"Failed to log token usage to database: {e.msg}")
+                  
                   let completeResponse = APIResponse(
                     requestId: request.requestId,
                     kind: arkStreamComplete,
@@ -714,9 +751,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil): APIWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level, dump: dump)
+  let params = ThreadParams(channels: channels, level: level, dump: dump, database: database)
   createThread(result.thread, apiWorkerProc, params)
 
 proc stopAPIWorker*(worker: var APIWorker) =
