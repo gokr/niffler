@@ -2,6 +2,8 @@ import std/[strformat, locks, options, times]
 import ../types/[messages, history]
 import std/logging
 
+# Note: Conversion functions removed - now using LLMToolCall directly throughout
+
 type
   HistoryManager* = object
     history: History
@@ -36,7 +38,8 @@ proc addUserMessage*(content: string): Message =
 proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall])): Message =
   acquire(globalHistory.lock)
   try:
-    let assistantItem = newAssistantItem(content)
+    # Store LLMToolCall directly in history (no conversion needed)
+    let assistantItem = newAssistantItem(content, toolCalls)
     globalHistory.history.add(assistantItem)
     
     result = Message(
@@ -75,7 +78,8 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
     
     var userCount = 0
     var assistantCount = 0
-    var toolCount = 0
+    var toolCount = 0  # Tool result messages (hitToolOutput)
+    var toolCallCount = 0  # Tool calls embedded in assistant messages
     var skippedCount = 0
     
     for i in startIdx..<globalHistory.history.len:
@@ -87,8 +91,17 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
         result.add(Message(role: mrUser, content: item.userContent))
         inc userCount
       of hitAssistant:
-        result.add(Message(role: mrAssistant, content: item.assistantContent))
+        # Tool calls are already LLMToolCall - use directly
+        result.add(Message(
+          role: mrAssistant, 
+          content: item.assistantContent,
+          toolCalls: item.toolCalls
+        ))
         inc assistantCount
+        
+        # Count tool calls in this assistant message
+        if item.toolCalls.isSome():
+          toolCallCount += item.toolCalls.get().len
       of hitToolOutput:
         result.add(Message(
           role: mrTool,
@@ -103,6 +116,7 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
         discard
         
     debug(fmt"History breakdown: {userCount} user, {assistantCount} assistant, {toolCount} tool, {skippedCount} skipped (total: {globalHistory.history.len})")
+    debug(fmt"Tool calls in context: {toolCallCount}")
     debug(fmt"Retrieved {result.len} recent messages (including tool results)")
   finally:
     release(globalHistory.lock)
@@ -149,24 +163,24 @@ proc incrementMessageId*(): int64 =
   currentMessageId += 1
   result = currentMessageId
 
-proc updateSessionTokens*(promptTokens: int, completionTokens: int) =
+proc updateSessionTokens*(inputTokens: int, outputTokens: int) =
   ## Update session token counts with exact values from LLM response
   acquire(globalHistory.lock)
   try:
     # These are cumulative for the current conversation session
-    globalHistory.sessionPromptTokens = promptTokens
-    globalHistory.sessionCompletionTokens = completionTokens
-    debug(fmt"Updated session tokens: {promptTokens} prompt, {completionTokens} completion")
+    globalHistory.sessionPromptTokens = inputTokens  # Note: keeping internal field names for now
+    globalHistory.sessionCompletionTokens = outputTokens
+    debug(fmt"Updated session tokens: {inputTokens} input, {outputTokens} output")
   finally:
     release(globalHistory.lock)
 
-proc getSessionTokens*(): tuple[promptTokens: int, completionTokens: int, totalTokens: int] =
+proc getSessionTokens*(): tuple[inputTokens: int, outputTokens: int, totalTokens: int] =
   ## Get current session token counts
   acquire(globalHistory.lock)
   try:
     result = (
-      promptTokens: globalHistory.sessionPromptTokens,
-      completionTokens: globalHistory.sessionCompletionTokens,
+      inputTokens: globalHistory.sessionPromptTokens,  # Note: keeping internal field names for now
+      outputTokens: globalHistory.sessionCompletionTokens,
       totalTokens: globalHistory.sessionPromptTokens + globalHistory.sessionCompletionTokens
     )
   finally:

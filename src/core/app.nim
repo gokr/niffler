@@ -17,7 +17,7 @@
 ## - Handles API key retrieval from configuration and environment
 ## - Provides both interactive and single-shot execution modes
 
-import std/[strformat, logging, options]
+import std/[strformat, logging, options, strutils]
 import channels, history, config
 import ../types/[messages, history as historyTypes, config as configTypes]
 import ../api/api
@@ -70,54 +70,7 @@ proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_M
     info(fmt"Warning: Context still large ({currentTokens} tokens) after truncation")
 
 # Cost calculation functions
-proc calculateContextCost*(messages: seq[Message], modelConfig: configTypes.ModelConfig): configTypes.CostTracking =
-  ## Calculate the actual cost for a conversation context
-  let tokens = estimateTokenCount(messages)
-  
-  result = configTypes.CostTracking(
-    inputCostPerMToken: modelConfig.inputCostPerMToken,
-    outputCostPerMToken: modelConfig.outputCostPerMToken,
-    totalInputCost: 0.0,
-    totalOutputCost: 0.0,
-    totalCost: 0.0,
-    usage: configTypes.CostTokenUsage(
-      inputTokens: tokens,
-      outputTokens: 0,
-      totalTokens: tokens
-    )
-  )
-  
-  # Calculate input cost if available (convert per-million-tokens to per-token)
-  if modelConfig.inputCostPerMToken.isSome():
-    let costPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
-    result.totalInputCost = tokens.float * costPerToken
-    result.totalCost = result.totalInputCost
 
-proc estimateResponseCost*(inputTokens: int, avgResponseTokens: int, modelConfig: configTypes.ModelConfig): configTypes.CostTracking =
-  ## Estimate the total cost including response tokens
-  result = configTypes.CostTracking(
-    inputCostPerMToken: modelConfig.inputCostPerMToken,
-    outputCostPerMToken: modelConfig.outputCostPerMToken,
-    totalInputCost: 0.0,
-    totalOutputCost: 0.0,
-    totalCost: 0.0,
-    usage: configTypes.CostTokenUsage(
-      inputTokens: inputTokens,
-      outputTokens: avgResponseTokens,
-      totalTokens: inputTokens + avgResponseTokens
-    )
-  )
-  
-  # Calculate costs if available (convert per-million-tokens to per-token)
-  if modelConfig.inputCostPerMToken.isSome():
-    let inputCostPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
-    result.totalInputCost = inputTokens.float * inputCostPerToken
-    result.totalCost += result.totalInputCost
-  
-  if modelConfig.outputCostPerMToken.isSome():
-    let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
-    result.totalOutputCost = avgResponseTokens.float * outputCostPerToken
-    result.totalCost += result.totalOutputCost
 
 proc formatCost*(cost: float): string =
   ## Format cost as currency (assumes USD)
@@ -128,117 +81,69 @@ proc formatCost*(cost: float): string =
   else:
     return fmt"${cost:.2f}"
 
-proc sendSinglePromptInteractive*(text: string, modelConfig: configTypes.ModelConfig): bool =
-  let channels = getChannels()
-  
-  # Get API key
+proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
+  ## Validate and return API key, or None with error message displayed
+  ## Local servers (localhost/127.0.0.1) don't require API keys
   let apiKey = readKeyForModel(modelConfig)
-  if apiKey.len == 0:
-    echo fmt"Error: No API key found for {modelConfig.baseUrl}"
-    echo "Set environment variable or configure API key"
-    return false
-    
-  # Add user message to history
-  let userMsg = addUserMessage(text)
   
-  # Get full conversation context instead of just the current message
+  # Check if this is a local server that doesn't require authentication
+  if apiKey.len == 0:
+    let baseUrl = modelConfig.baseUrl.toLower()
+    if baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1"):
+      # Local server - return empty string as valid key
+      return some("")
+    else:
+      # Remote server - API key required
+      echo fmt"Error: No API key found for {modelConfig.baseUrl}"
+      echo "Set environment variable or configure API key"
+      return none(string)
+  
+  return some(apiKey)
+
+proc prepareConversationMessages*(text: string): (seq[Message], string) =
+  ## Prepare conversation context and return messages with request ID
+  let userMsg = addUserMessage(text)
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
-  
-  # Generate request ID
   let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
-  
-  return sendChatRequestAsync(channels, messages, modelConfig, requestId, apiKey)
+  return (messages, requestId)
+
+proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
+  ## Select model from config based on parameter or return default
+  if model.len > 0:
+    return getModelFromConfig(config, model)
+  else:
+    return config.models[0]
+
 
 proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.ModelConfig): (bool, string) =
   ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   
-  # Get API key
-  let apiKey = readKeyForModel(modelConfig)
-  if apiKey.len == 0:
-    echo fmt"Error: No API key found for {modelConfig.baseUrl}"
-    echo "Set environment variable or configure API key"
+  let apiKeyOpt = validateApiKey(modelConfig)
+  if apiKeyOpt.isNone:
     return (false, "")
-    
-  # Add user message to history
-  let userMsg = addUserMessage(text)
   
-  # Get full conversation context instead of just the current message
-  var messages = getConversationContext()
-  messages = truncateContextIfNeeded(messages)
-  
-  # Generate request ID
-  let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
-  
-  let success = sendChatRequestAsync(channels, messages, modelConfig, requestId, apiKey)
+  let (messages, requestId) = prepareConversationMessages(text)
+  let success = sendChatRequestAsync(channels, messages, modelConfig, requestId, apiKeyOpt.get())
   return (success, requestId)
 
-proc sendSinglePromptAsync*(text: string, model: string = ""): bool =
-  let channels = getChannels()
-  let config = loadConfig()
-  
-  let selectedModel = if model.len > 0:
-    getModelFromConfig(config, model)
-  else:
-    config.models[0]
-  
-  # Get API key
-  let apiKey = readKeyForModel(selectedModel)
-  if apiKey.len == 0:
-    echo fmt"Error: No API key found for {selectedModel.baseUrl}"
-    echo "Set environment variable or configure API key"
-    return false
-  
-  # Debug: Log the API key being used (without the full key for security)
-  let keyPreview = if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey
-  info fmt"Using API key: {keyPreview} for {selectedModel.baseUrl}"
-    
-  # Add user message to history
-  let userMsg = addUserMessage(text)
-  
-  # Get full conversation context instead of just the current message
-  var messages = getConversationContext()
-  messages = truncateContextIfNeeded(messages)
-  
-  # Generate request ID
-  let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
-  
-  info fmt"Sending prompt to {selectedModel.nickname} with {messages.len} context messages"
-  
-  return sendChatRequestAsync(channels, messages, selectedModel, requestId, apiKey)
 
 proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, string) =
   ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   let config = loadConfig()
+  let selectedModel = selectModelFromConfig(config, model)
   
-  let selectedModel = if model.len > 0:
-    getModelFromConfig(config, model)
-  else:
-    config.models[0]
-  
-  # Get API key
-  let apiKey = readKeyForModel(selectedModel)
-  if apiKey.len == 0:
-    echo fmt"Error: No API key found for {selectedModel.baseUrl}"
-    echo "Set environment variable or configure API key"
+  let apiKeyOpt = validateApiKey(selectedModel)
+  if apiKeyOpt.isNone:
     return (false, "")
   
-  # Debug: Log the API key being used (without the full key for security)
+  let apiKey = apiKeyOpt.get()
   let keyPreview = if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey
   info fmt"Using API key: {keyPreview} for {selectedModel.baseUrl}"
-    
-  # Add user message to history
-  let userMsg = addUserMessage(text)
   
-  # Get full conversation context instead of just the current message
-  var messages = getConversationContext()
-  messages = truncateContextIfNeeded(messages)
-  
-  # Generate request ID
-  let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
-  
+  let (messages, requestId) = prepareConversationMessages(text)
   info fmt"Sending prompt to {selectedModel.nickname} with {messages.len} context messages"
   
   let success = sendChatRequestAsync(channels, messages, selectedModel, requestId, apiKey)
@@ -247,15 +152,15 @@ proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, stri
 proc configureAPIWorker*(modelConfig: configTypes.ModelConfig): bool =
   ## Configure the API worker with a new model configuration
   let channels = getChannels()
-  let apiKey = readKeyForModel(modelConfig)
+  let apiKeyOpt = validateApiKey(modelConfig)
   
-  if apiKey.len == 0:
+  if apiKeyOpt.isNone:
     return false
   
   let configRequest = APIRequest(
     kind: arkConfigure,
     configBaseUrl: modelConfig.baseUrl,
-    configApiKey: apiKey,
+    configApiKey: apiKeyOpt.get(),
     configModelName: modelConfig.model
   )
   
