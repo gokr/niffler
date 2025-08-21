@@ -27,7 +27,7 @@ import std/[os, strutils, strformat, terminal, options, times, algorithm]
 import std/logging
 when defined(posix):
   import posix
-import noise
+import linecross
 import ../core/[app, channels, history, config, database]
 import ../types/[messages, config as configTypes]
 import ../api/api
@@ -41,10 +41,12 @@ import markdown_cli
 var currentInputText: string = ""
 var currentModelName: string = ""
 var isProcessing: bool = false
-var promptTokens: int = 0
-var completionTokens: int = 0
-# Global noise instance for enhanced input
-var noiseInstance: Option[Noise] = none[Noise]()
+var inputTokens: int = 0
+var outputTokens: int = 0
+# Linecross initialization flag
+var linecrossInitialized: bool = false
+
+# Clipboard functionality is now handled by linecross built-in system
 
 proc getUserName*(): string =
   ## Get the current user's name
@@ -58,6 +60,9 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
     # Command completion - remove the leading /
     let prefix = if text.len > 1: text[1..^1] else: ""
     return ("command", prefix, 0)
+  elif text == "/":
+    # Special case: just a slash, show all commands
+    return ("command", "", 0)
   elif text.len > 0 and text[0] == '@':
     # Mention completion - remove the leading @
     let prefix = if text.len > 1: text[1..^1] else: ""
@@ -83,77 +88,104 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
   
   return ("none", "", -1)
 
-proc nifflerCompletionHook(noise: var Noise, text: string): int =
-  ## Completion hook for nim-noise that handles both / and @ completion
-  let cursorPos = text.len  # nim-noise gives us the full current line
-  let (contextType, prefix, startPos) = detectCompletionContext(text, cursorPos)
+
+proc nifflerCompletionHook(buf: string, completions: var Completions) =
+  ## Completion hook for linecross that handles / and @ completion
+  debug(fmt"=== COMPLETION HOOK DEBUG ===")
+  debug(fmt"Buffer text received: '{buf}'")
+  debug(fmt"Text length: {buf.len}")
+  
+  let cursorPos = buf.len  # linecross gives us the current buffer
+  let (contextType, prefix, startPos) = detectCompletionContext(buf, cursorPos)
+  
+  debug(fmt"Context type: '{contextType}', prefix: '{prefix}', startPos: {startPos}")
+  debug(fmt"==============================")
   
   case contextType:
   of "command":
-    # Command completion for /
-    let completions = getCommandCompletions(prefix)
-    for cmd in completions:
-      noise.addCompletion(cmd.name)  # nim-noise will replace the typed text
-    return completions.len
+    # Parse the command and arguments
+    let parts = prefix.split(' ', 1)  # Split into command and rest
+    if parts.len == 1:
+      # Just completing the command name
+      let commandCompletions = getCommandCompletions(parts[0])
+      debug(fmt"Found {commandCompletions.len} command completions for prefix '{parts[0]}'")
+      for cmd in commandCompletions:
+        debug(fmt"Adding completion: '{cmd.name}'")
+        addCompletion(completions, cmd.name, cmd.description)
+    else:
+      # Completing command arguments
+      let command = parts[0]
+      let argPrefix = parts[1]
+      debug(fmt"Completing arguments for command '{command}' with prefix '{argPrefix}'")
+      
+      case command:
+      of "model":
+        # Complete model names
+        let config = loadConfig()
+        for model in config.models:
+          if model.nickname.toLower().startsWith(argPrefix.toLower()):
+            debug(fmt"Adding model completion: '{model.nickname}'")
+            addCompletion(completions, model.nickname, model.model)
+      of "theme":
+        # Complete theme names
+        let availableThemes = getAvailableThemes()
+        for themeName in availableThemes:
+          if themeName.toLower().startsWith(argPrefix.toLower()):
+            debug(fmt"Adding theme completion: '{themeName}'")
+            addCompletion(completions, themeName, "Theme: " & themeName)
+      else:
+        # No argument completion for this command
+        debug(fmt"No argument completion available for command '{command}'")
   of "mention": 
     # User/mention completion for @
     # For now, add some example mentions - this could be extended
     let mentions = @["user", "assistant", "system", "claude", "gpt"]
-    var matchCount = 0
     for mention in mentions:
       if mention.startsWith(prefix.toLower()):
-        noise.addCompletion(mention)  # nim-noise will replace the typed text
-        inc matchCount
-    return matchCount
+        debug(fmt"Adding mention completion: {mention}")
+        addCompletion(completions, mention, "Mention: " & mention)
   else:
-    return 0
+    debug("No completion context found")
 
-proc initializeNoiseInput(database: DatabaseBackend): bool =
-  ## Initialize noise with history and completion support
+proc initializeLinecrossInput(database: DatabaseBackend): bool =
+  ## Initialize linecross with history and completion support
   try:
-    var noise = Noise.init()
+    # Initialize linecross with essential features for good editing experience
+    initLinecross(EssentialFeatures)
+    
+    # Set up completion callback for commands and mentions
+    registerCompletionCallback(nifflerCompletionHook)
+    
+    # Configure prompt colors to match current blue style
+    setPromptColor(fgBlue, {styleBright})
     
     # Load history from database if available
     if database != nil:
       try:
         let recentPrompts = getRecentPrompts(database, 100)
         for prompt in recentPrompts:
-          noise.historyAdd(prompt)
+          addToHistory(prompt)
+        debug(fmt"Loaded {recentPrompts.len} prompts from database into linecross history")
       except Exception as e:
         debug(fmt"Could not load history from database: {e.msg}")
     
-    # Set up completion hook for commands and mentions
-    noise.setCompletionHook(nifflerCompletionHook)
-    
-    noiseInstance = some(noise)
+    linecrossInitialized = true
     return true
   except Exception as e:
-    debug(fmt"Failed to initialize noise: {e.msg}")
-    raise newException(OSError, fmt"Failed to initialize enhanced input (nim-noise): {e.msg}")
+    debug(fmt"Failed to initialize linecross: {e.msg}")
+    raise newException(OSError, fmt"Failed to initialize enhanced input (linecross): {e.msg}")
 
 proc readInputLine(prompt: string): string =
-  ## Read input with enhanced features (noise) - no fallback
-  if noiseInstance.isNone():
+  ## Read input with enhanced features (linecross) - no fallback
+  if not linecrossInitialized:
     raise newException(OSError, "Enhanced input not initialized")
   
   try:
-    var noise = noiseInstance.get()
+    # Use linecross readline - linecross handles colored prompts automatically
+    let input = readline(prompt)
     
-    # Create a colored prompt using Styler - can't be backspaced over
-    let styledPrompt = Styler.init(fgBlue, prompt)
-    noise.setPrompt(styledPrompt)
-    
-    # Use noise readline with proper prompt handling
-    if noise.readLine():
-      let input = noise.getLine()
-      if input.len > 0:
-        noise.historyAdd(input)
-        # Update the option with the modified noise instance
-        noiseInstance = some(noise)
-      return input
-    else:
-      # EOF, Ctrl+D, or Ctrl+C - treat as exit signal
-      raise newException(EOFError, "User requested exit")
+    # linecross automatically handles history addition for non-empty lines
+    return input
   except EOFError:
     # Re-raise EOF errors (Ctrl+C, Ctrl+D)
     raise
@@ -208,11 +240,11 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
   stdout.flushFile()
 
 proc generatePrompt*(modelName: string, isProcessing: bool = false,
-                    promptTokens: int = 0, completionTokens: int = 0,
+                    inputTokens: int = 0, outputTokens: int = 0,
                     contextSize: int = 0, maxContext: int = 128000,
                     modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Generate a rich prompt string with token counts, context info, and cost
-  let sessionTotal = promptTokens + completionTokens
+  let sessionTotal = inputTokens + outputTokens
   
   if sessionTotal > 0:
     # Create context usage bar
@@ -221,14 +253,23 @@ proc generatePrompt*(modelName: string, isProcessing: bool = false,
     let filledBars = if barWidth > 0: (contextPercent * barWidth) div 100 else: 0
     let contextBar = "█".repeat(filledBars) & "░".repeat(barWidth - filledBars)
     
-    # Calculate context cost if available
-    let messages = getConversationContext()
-    let contextCost = calculateContextCost(messages, modelConfig)
-    let costInfo = if contextCost.totalCost > 0: fmt" {formatCost(contextCost.totalCost)}" else: ""
+    # Calculate session cost if available using real token data
+    let sessionTokens = getSessionTokens()
+    var sessionCost = 0.0
+    
+    if modelConfig.inputCostPerMToken.isSome() and sessionTokens.inputTokens > 0:
+      let inputCostPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
+      sessionCost += sessionTokens.inputTokens.float * inputCostPerToken
+    
+    if modelConfig.outputCostPerMToken.isSome() and sessionTokens.outputTokens > 0:
+      let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
+      sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
+    
+    let costInfo = if sessionCost > 0: fmt" {formatCost(sessionCost)}" else: ""
     
     # Use a simpler processing indicator to avoid cursor offset issues
     let statusIndicator = if isProcessing: "⚡" else: ""
-    return fmt"{statusIndicator}↑{promptTokens} ↓{completionTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName} > "
+    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName} > "
   else:
     let statusIndicator = if isProcessing: "⚡ " else: ""
     return fmt"{statusIndicator}{modelName} > "
@@ -245,12 +286,12 @@ proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, st
     stdout.write(text & "\n")
   stdout.flushFile()
 
-proc updateTokenCounts*(newPromptTokens: int, newCompletionTokens: int) =
+proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
   ## Update token counts in central history storage
-  updateSessionTokens(newPromptTokens, newCompletionTokens)
+  updateSessionTokens(newInputTokens, newOutputTokens)
   # Also update UI state for prompt display
-  promptTokens = newPromptTokens
-  completionTokens = newCompletionTokens
+  inputTokens = newInputTokens
+  outputTokens = newOutputTokens
 
 proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Read input with dynamic prompt showing current state
@@ -260,7 +301,7 @@ proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.Mod
   let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
   
   let dynamicPrompt = generatePrompt(currentModelName, isProcessing, 
-                                   promptTokens, completionTokens,
+                                   inputTokens, outputTokens,
                                    contextTokens,  # Use real context size
                                    maxContext, modelConfig)
   
@@ -277,8 +318,8 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   loadThemesFromConfig(config)
   let markdownEnabled = isMarkdownEnabled(config)
   
-  # Initialize enhanced input with noise - fail if not available
-  if not initializeNoiseInput(database):
+  # Initialize enhanced input with linecross - fail if not available
+  if not initializeLinecrossInput(database):
     raise newException(OSError, "Failed to initialize enhanced input")
   
   # Initialize command system
@@ -310,8 +351,8 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   currentModelName = currentModel.nickname
   currentInputText = ""
   isProcessing = false
-  promptTokens = 0
-  completionTokens = 0
+  inputTokens = 0
+  outputTokens = 0
   
   # Start API worker
   var apiWorker = startAPIWorker(channels, level, dump)
@@ -403,27 +444,19 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
             case response.kind:
             of arkStreamChunk:
               if response.content.len > 0:
-                # For streaming, we need to buffer content to avoid breaking markdown formatting
                 responseText.add(response.content)
-                # For now, just write the raw content - we'll apply markdown at the end
-                stdout.write(response.content)
+                # Apply real-time markdown rendering if enabled
+                if markdownEnabled:
+                  let renderedChunk = renderMarkdownTextCLIStream(response.content)
+                  stdout.write(renderedChunk)
+                else:
+                  stdout.write(response.content)
                 stdout.flushFile()
             of arkStreamComplete:
-              # Clear the line and apply markdown rendering if enabled to the complete response
-              if markdownEnabled and responseText.len > 0:
-                # Move to beginning of response and clear it
-                stdout.write("\r")
-                # Clear the entire response area (rough approach)
-                for i in 0..<(responseText.count('\n') + 1):
-                  stdout.write("\x1b[2K\x1b[1A")  # Clear line and move up
-                stdout.write("\x1b[2K")  # Clear current line
-                # Now render with markdown
-                let renderedResponse = renderMarkdownTextCLI(responseText)
-                stdout.write(renderedResponse)
               writeToConversationArea("")  # Add final newline
               # Update token counts with new response (prompt will show tokens)
               isProcessing = false
-              updateTokenCounts(response.usage.promptTokens, response.usage.completionTokens)
+              updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
               # Add assistant response to history (without tool calls in CLI - tool calls are handled by API worker)
               if responseText.len > 0:
                 discard addAssistantMessage(responseText)
@@ -473,9 +506,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   if database != nil:
     database.close()
   
-  # Cleanup noise instance
-  if noiseInstance.isSome():
-    noiseInstance = none[Noise]()
+  # Linecross cleanup is automatic
 
 proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false) =
   ## Send a single prompt and return response
@@ -574,6 +605,4 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   if database != nil:
     database.close()
   
-  # Cleanup noise instance
-  if noiseInstance.isSome():
-    noiseInstance = none[Noise]()
+  # Linecross cleanup is automatic
