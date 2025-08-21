@@ -6,7 +6,15 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "model": "openai/gpt-oss-20b:free",
       "context": 128000,
+      "enabled": true,
       "type": "standard",
+      "temperature": 0.7,
+      "topP": 1.0,
+      "maxTokens": 4096,
+      "presencePenalty": 0.0,
+      "frequencyPenalty": 0.0,
+      "inputCostPerToken": 0.0000025,
+      "outputCostPerToken": 0.00001,
       "apiEnvVar": "OPENROUTER_API_KEY"
     },
     {
@@ -18,7 +26,7 @@
       "apiEnvVar": "OPENROUTER_API_KEY"
     },
     {
-      "nickname": "qwen3",
+      "nickname": "coderfree",
       "baseUrl": "https://openrouter.ai/api/v1",
       "model": "qwen/qwen3-coder:free",
       "context": 128000,
@@ -39,6 +47,14 @@
       "model": "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
       "context": 262144,
       "type": "standard",
+      "temperature": 0.7,
+      "topP": 0.8,
+      "topK": 20,
+      "maxTokens": 65536,
+      "presencePenalty": 0.0,
+      "frequencyPenalty": 1.05,
+      "inputCostPerMToken": 0.40,
+      "outputCostPerMToken": 1.6,
       "apiEnvVar": "REQUESTY_API_KEY"
     },
     {
@@ -58,20 +74,19 @@
       "apiEnvVar": "REQUESTY_API_KEY"
     },
     {
-      "nickname": "stable-code",
+      "nickname": "qwen3",
       "baseUrl": "http://localhost:11434/v1",
-      "model": "stable-code:3b",
-      "context": 8192,
-      "type": "standard",
-      "apiEnvVar": "OLLAMA_API_KEY"
-    },
-    {
-      "nickname": "qwen2.5",
-      "baseUrl": "http://localhost:11434/v1",
-      "model": "qwen2.5-coder:3b",
+      "model": "qwen3:1.7b",
       "context": 8192,
       "type": "standard",
       "apiEnvVar": "OLLAMA_API_KEY"
     }
-  ]
+  ],
+  "database": {
+    "type": "sqlite",
+    "enabled": true,
+    "walMode": true,
+    "busyTimeout": 5000,
+    "poolSize": 10
+  }
 }
