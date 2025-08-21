@@ -7,15 +7,8 @@
 ## - Uses docopt for self-documenting command-line interface
 ## - Default behavior (no subcommand) starts interactive mode
 ## - Single prompts can be sent via --prompt/-p option
-## - Supports multiple logging levels (debug, info, notice)
-## - Configuration management through init subcommand
-## - Model management through model subcommands
-##
-## Command Structure:
-## - `niffler` - Interactive mode
-## - `niffler --prompt "text"` - Send single prompt
-## - `niffler init [<path>]` - Initialize configuration
-## - `niffler model list` - List available models
+## - Supports multiple logging levels (debug, info, dump)
+
 
 import std/[os, tables, logging, strformat]
 import docopt

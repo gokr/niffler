@@ -1,260 +1,234 @@
 # Niffler Development Roadmap
 
-This document outlines the features from the original Octofriend (TypeScript) that haven't been ported to Niffler (Nim) yet, organized by implementation phases and complexity.
+*Consolidated roadmap and implementation guide - Last updated: August 2025*
 
-## Current Status (Phase 3 Complete ✅)
+## Project Overview
 
-**What Niffler Has:**
-- ✅ Basic CLI interface with interactive chat
-- ✅ Configuration management for models and API keys  
-- ✅ HTTP client for OpenAI-compatible APIs
-- ✅ Threading-based architecture (no async)
-- ✅ Basic message history tracking
-- ✅ Model switching and basic commands (`/help`, `/models`, `/clear`)
+Niffler is an AI-powered terminal assistant written in Nim, designed to provide an agentic coding experience with Plan/Code workflow inspired by Claude Code. This document consolidates all development planning and tracks progress toward feature parity and enhancement beyond the original Octofriend.
+
+## Current Implementation Status
+
+**Core Infrastructure:**
+- ✅ Multi-threaded architecture with dedicated workers
+- ✅ OpenAI-compatible HTTP client with SSL support
+- ✅ Configuration management (TOML-based) with environment variables
+- ✅ Basic CLI interface with commands (`/help`, `/models`, `/clear`)
+- ✅ SQLite-based message history tracking
 - ✅ Debug logging control
-- ✅ SSL/HTTPS support
-- ✅ Environment variable configuration
 
-## Phase 4: Tool System (High Priority)
+**Tool System (6/6 tools completed):**
+- ✅ **bash** - Command execution with timeout/process management
+- ✅ **read** - File reading with encoding detection and size limits
+- ✅ **list** - Directory listing with filtering and metadata
+- ✅ **edit** - Diff-based editing with backup system
+- ✅ **create** - File creation with safety checks
+- ✅ **fetch** - HTTP/HTTPS content fetching with scraping
+- ✅ Tool registry, JSON schema validation, and worker threading
+- ✅ Exception-based error handling with custom types
 
-### Core Tools Implementation
-- [x] **bash** - Execute shell commands with timeout and process management
-  - [x] Command execution with proper error handling
-  - [x] Process timeout and signal management
-  - [x] Output streaming and capture
-  - [x] Working directory and environment control
+**LLM Integration:**
+- ✅ **Tool Calling** - Complete OpenAI-compatible tool calling pipeline
+- ✅ **Multi-turn Conversations** - Tool results integrated into conversation flow
+- ✅ **Streaming Infrastructure** - Real network-level SSE streaming using Curly/libcurl
+- ✅ **Context Management** - Basic message history with tool result integration
 
-- [x] **read** - Read file contents with change tracking
-  - [x] File timestamp tracking for modifications
-  - [x] Safe reading with encoding detection
-  - [ ] Change notification system
-  - [x] File size limits and streaming for large files
+## Gap Analysis: Key Missing Features for Agentic Coding
 
-- [x] **list** - Directory listing with filtering
-  - [x] Directory traversal with depth limits
-  - [x] File/directory filtering and sorting
-  - [x] Permission and metadata display
-  - [x] Hidden file handling
+### **High Priority: Core Agentic Features**
 
-- [x] **edit** - Advanced file editing operations
-  - [x] Diff-based editing with preview
-  - [x] Append/prepend operations
-  - [x] Rewrite mode with backup
-  - [x] Edit validation and conflict detection
+#### **1. Plan/Code Mode System**
+- ❌ **Plan Mode** - Analysis, research, and planning focus with todo generation
+- ❌ **Code Mode** - Implementation mode that executes plans and todos
+- ❌ **Mode Switching** - Seamless transition between planning and implementation
 
-- [x] **create** - File creation with safety checks
-  - [x] Existence checking and confirmation
-  - [x] Directory creation as needed
-  - [ ] Template support
-  - [x] Permission setting
+#### **2. Dynamic System Prompt Generation** 
+*Crucial for agentic behavior*
+- ❌ **Context-Aware Prompts** - Generate prompts based on current workspace state
+- ❌ **Workspace Context Injection** - Include current directory, recent files, open tabs
+- ❌ **Tool Availability Awareness** - Only describe actually available tools
+- ❌ **Instruction File Support** - Automatically include CLAUDE.md, OCTO.md project instructions and find them in hierarchy
+- ❌ **Environment Information** - Current time, git status, OS information
 
-- [x] **fetch** - HTTP/HTTPS content fetching
-  - [x] Web scraping with HTML-to-text conversion
-  - [x] Header customization and authentication
-  - [x] Response size limits and streaming
-  - [x] Content type detection and handling
+#### **3. Todolist Tool Implementation**
+*Essential agentic feature for task breakdown and tracking*
+- ❌ **Structured Todo Management** - Parse/generate markdown checklists with state tracking
+- ❌ **State Persistence** - Maintain todo state across conversation turns
+- ❌ **User Approval Flow** - Show proposed todo updates before applying
+- ❌ **Progress Integration** - Link todos to actual implementation progress
+- ❌ **Plan Mode Integration** - Generate comprehensive implementation plans as todos
 
-### Tool Infrastructure
-- [x] Tool validation and argument parsing
-- [ ] Tool confirmation system with user interaction
-- [x] Tool error handling and recovery mechanisms
-- [x] Tool output processing and formatting
-- [x] Tool execution queue and threading
+#### **4. Enhanced Message Persistence**
+*Building on existing SQLite foundation*
+- ❌ **Tool Call Integration** - Store tool calls and results with messages
+- ❌ **Message Metadata** - Support timestamps, summary flags, tool metadata
+- ❌ **Rich Content Support** - Handle multiple content blocks per message
+- ❌ **Conversation Summarization** - Mark messages as condensed summaries
 
-## Phase 5: Advanced LLM Integration
+### **Medium Priority: User Experience**
 
-### Streaming and Tool Calling
-- [ ] **Real-time streaming** - Proper Server-Sent Events (SSE) parsing
-- [ ] **Tool calling** - JSON schema validation and execution
-- [ ] **Function calling** - Integration with tool system
-- [ ] **Multi-turn conversations** - Context management across tool calls
+#### **5. Context Management**
+*User-controlled*
+- ❌ **Context Window Monitoring** - Warn when approaching token limits
+- ❌ **User-Controlled Condensing** - Let user choose condensing vs sliding window
+- ❌ **Conversation Summarization** - LLM-powered context condensing with fallback
+- ❌ **Transparent Management** - Clear indication of context operations
+- ❌ **@ Referencing** - No context referencing system (@file.txt, @folder/)
 
-### Provider-Specific Features
-- [ ] **Anthropic integration** - Native Anthropic API client
-  - Tool use format support
-  - Thinking/reasoning content parsing
-  - XML tag processing
-- [ ] **OpenAI advanced features** - Function calling, vision, etc.
-- [ ] **Provider auto-detection** - Smart model routing
+#### **6. Basic Terminal UI Enhancements**
+- ❌ **Enhanced help system** - Update for new Plan/Code workflow
+- ❌ **Markdown Rendering** - Basic markdown display for responses
+- ❌ **Colored Output** - Syntax highlighting and colored diffs
+- ❌ **Status Indicators** - Model, token count, mode, connection status
+- ❌ **History Navigation** - Arrow key navigation through prompt history
 
-### Context Management
-- [ ] **Context window management** - Intelligent message truncation
-- [ ] **Token counting** - Accurate token estimation per model
-- [ ] **History compression** - Smart conversation summarization
-- [ ] **Message windowing** - Automatic context optimization
+### **Lower Priority: Advanced Features**
 
-## Phase 6: Rich Terminal UI
+#### **7. Multiple Provider Support**
+- ❌ **Anthropic Integration** - Dedicated Claude API client, not sure needed, OpenAPI seems like a good standard?
+- ❌ **Provider-Specific Features** - Thinking tokens, reasoning content
+- ❌ **Reasoning Effort** - No low/medium/high reasoning control
 
-### Interactive Components (Requires Terminal UI Library)
-- [ ] **Rich terminal interface** - Beyond basic text I/O
-  - Colored output and syntax highlighting
-  - Progress bars and loading indicators
-  - Interactive menus and navigation
-  - Panel layouts and text wrapping
+#### **8. File Enhancement Features**
+- ❌ **Advanced Change Detection** - Timestamp-based file modification tracking
+- ❌ **Git Integration** - Git-aware file operations and status
+- ❌ **Session Management** - Save/restore conversation sessions
 
-- [ ] **Streaming display** - Real-time response rendering
-  - Typewriter effect for responses
-  - Diff visualization with colors
-  - Tool output formatting
-  - Status indicators
+#### **9. MCP Integration** *(Future consideration)*
+- ❌ **MCP Client** - Model Context Protocol support
+- ❌ **External Tools** - Dynamic tool loading from servers
+- ❌ **Service Discovery** - Automatic MCP server detection
 
-- [ ] **Menu system** - ESC-triggered navigation
-  - Main menu with options
-  - Model selection interface
-  - Settings configuration UI
-  - Help system with navigation
+## Diff rendering
+**`hldiff`** - Perfect for git-style diffs
+   - Ports Python's difflib with ~100x performance improvement
+   - Colored terminal output with customizable ANSI/SGR escapes
+   - Git diff compatibility: `git diff | hldiff`
+   - Installation: `nimble install hldiff`
 
-### User Experience
-- [ ] **Keyboard shortcuts** - Efficient navigation
-- [ ] **Copy/paste integration** - System clipboard support
-- [ ] **Session management** - Save/restore conversations
-- [ ] **Export functionality** - Markdown, text, JSON exports
+## Implementation Phases
 
-## Phase 7: File Management System
+### **Phase 5: Agentic Core (IMMEDIATE PRIORITY)**
 
-### File Tracking and Safety
-- [ ] **File modification detection** - Timestamp-based tracking
-- [ ] **Safe editing** - Prevent editing of modified files
-- [ ] **File locking** - Multi-process safety
-- [ ] **Backup system** - Automatic backups before edits
+#### 5.1: Plan/Code Mode System
+- [ ] Implement mode switching (we do not need mode **detection**)
+- [ ] Define mode-specific behavior and prompts  
+- [ ] Add mode indicator in the prompt, color and perhaps added "(plan)" text
 
-### Directory Operations  
-- [ ] **Workspace management** - Project-aware file operations
-- [ ] **File watching** - Real-time change notifications
-- [ ] **Git integration** - Git-aware file operations
-- [ ] **Permission management** - Safe file permission handling
+#### 5.2: Dynamic System Prompt Generation
+- [ ] Create modular prompt assembly system
+- [ ] Implement workspace context detection (cwd, recent files)
+- [ ] Add instruction file discovery (CLAUDE.md, OCTO.md)
+- [ ] Include environment information (time, git status)
+- [ ] Add tool availability awareness
 
-## Phase 8: Configuration and Setup
+#### 5.3: Todolist Tool Implementation
+- [ ] Create todo data structures and persistence
+- [ ] Implement markdown checklist parsing/generation
+- [ ] Add user approval flows for todo updates
+- [ ] Integrate with Plan mode for task breakdown
+- [ ] Link todos to Code mode implementation progress
 
-### Advanced Configuration
-- [ ] **Multi-model management** - Complex model configurations
-  - Model-specific settings (temperature, context, etc.)
-  - Provider-specific authentication
-  - Reasoning levels (low/medium/high)
-  - Custom endpoints and parameters
+#### 5.4: Enhanced Message Persistence
+- [ ] Extend SQLite schema for tool calls and metadata
+- [ ] Add support for rich content blocks
+- [ ] Implement conversation summarization flags
+- [ ] Maintain backward compatibility with existing history
 
-- [ ] **Interactive setup wizard** - First-time user experience
-  - Model detection and configuration
-  - API key setup flow
-  - Feature discovery and onboarding
+### **Phase 6: User Experience (HIGH PRIORITY)**
 
-### Configuration Features
-- [ ] **Model Context Protocol (MCP)** - External tool integration
-- [ ] **Autofix models** - Specialized correction models
-- [ ] **Default overrides** - User preference management
-- [ ] **Profile management** - Multiple configuration profiles
+#### 6.1: Context Management
+- [ ] Add token counting and context window monitoring
+- [ ] Implement user-controlled conversation condensing
+- [ ] Create LLM-powered summarization with sliding window fallback
+- [ ] Add transparent context operation indicators
 
-## Phase 9: Autofix System
+#### 6.2: CLI and UI Improvements
+- [ ] Enhance terminal output with basic markdown rendering
+- [ ] Add colored diffs and syntax highlighting
+- [ ] Implement status indicators and history navigation
 
-### Error Recovery
-- [ ] **Diff Apply** - Automatic fixing of edit mistakes
-  - Integration with specialized diff-fix models
-  - Smart diff parsing and correction
-  - Confidence scoring and user confirmation
+### **Phase 7: Provider Support (MEDIUM PRIORITY)**
 
-- [ ] **JSON Fix** - Malformed JSON correction
-  - Tool call JSON repair
-  - Schema validation and fixing
-  - Fallback to manual correction
+#### 7.1: Anthropic Integration
+- [ ] Add thinking tokens and reasoning content support
+- [ ] Create unified provider interface
+- [ ] Add provider-specific optimizations
 
-- [ ] **Error Recovery** - Automatic retry with fixes
-  - Context-aware error analysis
-  - Automatic prompt refinement
-  - Progressive fallback strategies
+### **Phase 8: Advanced Features (LOWER PRIORITY)**
 
-## Phase 10: Model Context Protocol (MCP)
+#### 8.1: File and Session Management
+- [ ] Advanced file change detection and tracking
+- [ ] Git integration for repository awareness
+- [ ] Session save/restore functionality
+- [ ] Export capabilities for conversations
 
-### MCP Client Implementation
-- [ ] **Server connection** - MCP server communication
-- [ ] **Tool discovery** - Dynamic tool loading from servers
-- [ ] **Resource access** - File system and external resource access
-- [ ] **Caching system** - Performance optimization for MCP calls
+#### 8.2: MCP Integration (Future)
+- [ ] Model Context Protocol client implementation
+- [ ] Dynamic external tool loading
+- [ ] Service discovery and security model
 
-### MCP Integration
-- [ ] **External tools** - Integration with external services
-- [ ] **Service discovery** - Automatic MCP server detection
-- [ ] **Protocol versioning** - Multiple MCP version support
-- [ ] **Security model** - Safe execution of external tools
+## Architecture Principles
 
-## Phase 11: Developer Experience
+### **Agentic Design Patterns** *(learned from Claude Code and Roo Code)*
+- **Plan First**: Always break down complex tasks into actionable todos
+- **User Control**: Transparent operations with user approval for major changes
+- **Context Awareness**: Dynamic prompts based on current workspace state
+- **Tool Orchestration**: Sophisticated tool coordination with error recovery
+- **Mode Separation**: Clear distinction between planning and implementation
 
-### Advanced Features
-- [ ] **System prompts** - Dynamic system prompt generation
-- [ ] **Instruction files** - Support for CLAUDE.md, OCTO.md
-- [ ] **XML utilities** - Structured response parsing
-- [ ] **Debug tools** - Advanced debugging and inspection
-
-### Logging and Monitoring
-- [ ] **Comprehensive logging** - Detailed operation logs
-- [ ] **Performance metrics** - Token usage and timing
-- [ ] **Error tracking** - Crash reporting and recovery
-- [ ] **Usage analytics** - Feature usage statistics
-
-## Phase 12: Security and Reliability
-
-### Security Enhancements
-- [ ] **Secure key storage** - Encrypted API key management
-- [ ] **Input validation** - Comprehensive input sanitization
-- [ ] **Sandbox execution** - Safe tool execution environment
-- [ ] **Permission system** - Fine-grained access controls
-
-### Reliability Features
-- [ ] **Comprehensive error handling** - Robust error recovery
-- [ ] **Retry logic** - Smart retry with backoff
-- [ ] **Abort handling** - Proper cancellation support
-- [ ] **Memory management** - Efficient resource usage
-
-## Implementation Priority Guide
-
-### Must Have (Core Functionality)
-1. **Tool System** - Essential for AI coding assistant functionality
-2. **Advanced LLM Integration** - Required for proper AI interaction
-3. **File Management** - Critical for safe file operations
-
-### Should Have (Enhanced Experience)  
-1. **Rich Terminal UI** - Significantly improves user experience
-2. **Configuration Management** - Better usability and setup
-3. **Autofix System** - Reduces user friction
-
-### Nice to Have (Advanced Features)
-1. **MCP Integration** - Extensibility and external tool access
-2. **Developer Experience** - Advanced debugging and customization
-3. **Security Enhancements** - Production-ready security
-
-## Technical Considerations
-
-### Nim-Specific Challenges
-- **Terminal UI Library**: Need equivalent to React/Ink (consider `illwill` or custom solution)
-- **Async vs Threading**: Maintain threading-based approach while handling streaming
-- **JSON Schema**: Need runtime validation equivalent to TypeScript's `structural`
-- **HTTP Streaming**: Proper SSE parsing without async/await
-
-### Architecture Decisions
-- **Taskpools**: Consider migrating from threads to taskpools as suggested
-- **Options Avoidance**: Continue minimizing Option usage as requested
-- **Error Handling**: Prefer explicit error types over exceptions where possible
+### **Nim-Specific Approach**
+- **Threading Over Async**: Maintain current thread-based architecture
+- **Exception Handling**: Continue exception-based error handling where appropriate
 - **Memory Management**: Leverage Nim's deterministic memory management
+- **Performance**: Target equal or better performance than TypeScript alternatives
+
+### **Quality Gates**
+- Thread-safe operations throughout
+- User transparency and control maintained
 
 ## Success Metrics
 
-### Phase Completion Criteria
-- [ ] **Tool System**: All core tools functional with proper error handling
-- [ ] **LLM Integration**: Streaming responses and tool calling working
-- [ ] **Terminal UI**: Rich interface with menu navigation
-- [ ] **File Management**: Safe file operations with change detection
-- [ ] **Feature Parity**: 80%+ of Octofriend features working in Niffler
+### **Phase Completion Criteria**
+- **Phase 5**: Plan/Code modes working with dynamic prompts and todolist tool
+- **Phase 6**: Real streaming, context management, and enhanced CLI working
+- **Phase 7**: Multi-provider support with Anthropic integration
+- **Phase 8**: Advanced file management and session capabilities
 
-### Quality Gates
-- All features must compile with `--threads:on -d:ssl`
-- Comprehensive error handling for all API interactions
-- Thread-safe operations throughout
-- Minimal Options usage maintained
-- Performance comparable to or better than TypeScript version
+### **Agentic Capability Goal**
+Target: Full agentic coding assistant capability with Plan/Code workflow supporting complex multi-step development tasks.
 
+**Current Progress: ~80% Foundation Complete**
+- ✅ Tool System: 100% (all 6 core tools implemented)
+- ✅ Threading Architecture: 100% (robust worker system)
+- ✅ LLM Integration: 95% (tool calling and real streaming working)
+- ❌ Agentic Features: 20% (basic conversations, needs Plan/Code modes and todos)
+- ❌ Dynamic Prompts: 10% (static prompts, needs context awareness)
+- ❌ User Experience: 30% (CLI needs more refinement)
 
-## Claude Code features
+## Immediate Next Steps
 
-- Custom /-commands
-- Task with indented arrow showing what was done
-- Markdown rendering
-- Diff rendering with red and gren
+1. **Implement Plan/Code Mode System**: Core agentic workflow foundation
+2. **Add Dynamic System Prompt Generation**: Context-aware prompt assembly  
+3. **Create Todolist Tool**: Essential for task breakdown and tracking
+4. **Enhanced Message Persistence**: Support tool calls and conversation metadata
+
+## Key Insights from Research
+
+### **From Claude Code:**
+- Plan/Code workflow is more intuitive than complex multi-mode systems
+- Todolist tool is essential for agentic behavior and user transparency
+- User approval flows prevent surprises while maintaining autonomy
+
+### **From Roo Code:**
+- Dynamic system prompt generation dramatically improves context awareness
+- Structured message persistence enables sophisticated conversation management
+- User-controlled context management prevents unwanted automatic behaviors
+- Modular prompt assembly allows flexible agent behavior
+
+### **Design Philosophy:**
+- Embrace simplicity over complexity (Plan/Code vs multi-mode)
+- Prioritize user control and transparency
+- Build on solid foundation (current tool system is excellent)
+- Focus on agentic patterns that demonstrably improve coding workflows
+
+This roadmap represents a focused path toward creating a sophisticated agentic coding assistant while maintaining Niffler's core design principles and Nim-based architecture.

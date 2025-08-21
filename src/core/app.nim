@@ -19,8 +19,12 @@
 
 import std/[strformat, logging, options, strutils]
 import channels, history, config
-import ../types/[messages, history as historyTypes, config as configTypes]
+import ../types/[messages, history as historyTypes, config as configTypes, mode]
 import ../api/api
+
+# Global mode state (thread-safe access through procedures)
+var currentMode {.threadvar.}: AgentMode
+var modeInitialized {.threadvar.}: bool
 
 # Context management constants
 const
@@ -165,3 +169,37 @@ proc configureAPIWorker*(modelConfig: configTypes.ModelConfig): bool =
   )
   
   return trySendAPIRequest(channels, configRequest)
+
+# Mode Management Functions
+
+proc initializeModeState*() =
+  ## Initialize mode state for the current thread
+  if not modeInitialized:
+    currentMode = getDefaultMode()
+    modeInitialized = true
+    debug(fmt"Mode state initialized to: {currentMode}")
+
+proc getCurrentMode*(): AgentMode =
+  ## Get the current agent mode (thread-safe)
+  if not modeInitialized:
+    initializeModeState()
+  return currentMode
+
+proc setCurrentMode*(mode: AgentMode) =
+  ## Set the current agent mode (thread-safe)
+  currentMode = mode
+  modeInitialized = true
+  debug(fmt"Mode changed to: {mode}")
+
+proc toggleMode*(): AgentMode =
+  ## Toggle between Plan and Code modes, returns new mode
+  let newMode = getNextMode(getCurrentMode())
+  setCurrentMode(newMode)
+  return newMode
+
+proc getModePromptIndicator*(): string =
+  ## Get the mode indicator for prompt display
+  let mode = getCurrentMode()
+  case mode:
+  of amPlan: "(plan)"
+  of amCode: "(code)"

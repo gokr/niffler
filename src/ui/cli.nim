@@ -46,8 +46,6 @@ var outputTokens: int = 0
 # Linecross initialization flag
 var linecrossInitialized: bool = false
 
-# Clipboard functionality is now handled by linecross built-in system
-
 proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
@@ -147,14 +145,20 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
   else:
     debug("No completion context found")
 
+# Forward declaration
+proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool
+
 proc initializeLinecrossInput(database: DatabaseBackend): bool =
   ## Initialize linecross with history and completion support
   try:
-    # Initialize linecross with essential features for good editing experience
-    initLinecross(EssentialFeatures)
+    # Initialize linecross with full features for good editing experience
+    initLinecross(FullFeatures)
     
     # Set up completion callback for commands and mentions
     registerCompletionCallback(nifflerCompletionHook)
+    
+    # Set up custom key callback for shift-tab etc
+    registerCustomKeyCallback(nifflerCustomKeyHook)
     
     # Configure prompt colors to match current blue style
     setPromptColor(fgBlue, {styleBright})
@@ -269,10 +273,12 @@ proc generatePrompt*(modelName: string, isProcessing: bool = false,
     
     # Use a simpler processing indicator to avoid cursor offset issues
     let statusIndicator = if isProcessing: "⚡" else: ""
-    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName} > "
+    let modeIndicator = getModePromptIndicator()
+    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName}{modeIndicator} > "
   else:
     let statusIndicator = if isProcessing: "⚡ " else: ""
-    return fmt"{statusIndicator}{modelName} > "
+    let modeIndicator = getModePromptIndicator()
+    return fmt"{statusIndicator}{modelName}{modeIndicator} > "
 
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
@@ -292,6 +298,17 @@ proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
   # Also update UI state for prompt display
   inputTokens = newInputTokens
   outputTokens = newOutputTokens
+
+proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
+  ## Custom key hook for handling special key combinations like Shift+Tab
+  if keyCode == ShiftTab:
+    # Toggle mode and show feedback
+    let newMode = toggleMode()
+    let modeName = $newMode
+    writeToConversationArea(fmt"→ {modeName.capitalizeAscii()} Mode", fgCyan, styleBright)
+    return true  # Key was handled
+  
+  return false  # Key not handled, continue with default processing
 
 proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Read input with dynamic prompt showing current state
@@ -353,6 +370,8 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   isProcessing = false
   inputTokens = 0
   outputTokens = 0
+  
+  initializeModeState()
   
   # Start API worker
   var apiWorker = startAPIWorker(channels, level, dump)

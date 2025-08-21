@@ -13,7 +13,6 @@ import std/[strutils, strformat, tables, options, formatfloat, logging]
 import ../core/[history, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
-# Clipboard functionality now handled by linecross
 
 type
   CommandResult* = object
