@@ -62,7 +62,7 @@ proc createThemeStyle*(color: string, style: string = "bright"): ThemeStyle =
   )
 
 proc getDefaultTheme*(): Theme =
-  ## Get the default theme matching current TUI colors
+  ## Get the default theme with standard terminal colors
   Theme(
     name: "default",
     header1: createThemeStyle("yellow", "bright"),

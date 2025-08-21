@@ -1,5 +1,5 @@
 import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
-import ../types/config
+import ../types/[config, messages]
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.json"
@@ -356,7 +356,7 @@ proc writeKeys*(keys: KeyConfig) =
   setFilePermissions(keyPath, {fpUserRead, fpUserWrite})
 
 # Cost calculation helpers
-proc calculateCosts*(cost: var CostTracking, usage: CostTokenUsage) =
+proc calculateCosts*(cost: var CostTracking, usage: TokenUsage) =
   ## Calculate and populate cost totals based on token usage and per-token rates.
   cost.usage = usage
   if cost.inputCostPerMToken.isSome():
@@ -382,7 +382,7 @@ proc createDefaultThemes(): Table[string, ThemeConfig] =
   ## Create built-in themes
   result = initTable[string, ThemeConfig]()
   
-  # Default theme (matches current TUI colors)
+  # Default theme with standard terminal colors
   result["default"] = ThemeConfig(
     name: "default",
     header1: ThemeStyleConfig(color: "yellow", style: "bright"),
@@ -481,7 +481,7 @@ proc initializeConfig*(path: string) =
       ModelConfig(
         nickname: "qwen3",
         baseUrl: "http://localhost:1234/v1",
-        model: "qwe3:1.7b",
+        model: "qwen3:1.7b",
         context: 8192,
         `type`: some(mtStandard),
         enabled: true

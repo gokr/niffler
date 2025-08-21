@@ -34,7 +34,7 @@ nim c -r --threads:on -d:ssl test_tool_execution.nim
 ### Dependencies
 ```bash
 # Install dependencies
-nimble install illwill cligen sunny
+nimble install cligen sunny
 
 # Required Nim version: >= 2.2.4
 # Compile with: --threads:on -d:ssl (set in config.nims)
@@ -97,7 +97,6 @@ The tool calling system follows OpenAI's function calling specification:
 
 ## Dependencies and Libraries
 
-- **illwill**: Terminal UI framework (future enhanced UI)
 - **cligen**: Command line argument parsing
 - **sunny**: JSON Schema validation
 - **JsonSchemaValidator**: Additional schema validation support

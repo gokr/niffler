@@ -1,7 +1,7 @@
 ## Command System for Niffler
 ##
 ## This module provides a unified command system for handling slash commands
-## across different UI modes (CLI, enhanced, TUI).
+## for the CLI interface.
 ##
 ## Features:
 ## - Command parsing and validation
@@ -13,6 +13,7 @@ import std/[strutils, strformat, tables, options, formatfloat, logging]
 import ../core/[history, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
+# Clipboard functionality now handled by linecross
 
 type
   CommandResult* = object
@@ -59,16 +60,24 @@ proc getAvailableCommands*(): seq[CommandInfo] =
 proc getCommandCompletions*(input: string): seq[CommandInfo] =
   ## Get command completions for the given input
   let available = getAvailableCommands()
+  debug(fmt"getCommandCompletions called with input='{input}', available commands: {available.len}")
+  
   if input.len == 0:
+    debug("Returning all available commands")
     return available
   
   result = @[]
   let searchTerm = input.toLower()
+  debug(fmt"Searching for commands starting with '{searchTerm}'")
   
   # Only match command names that start with the search term
   for cmd in available:
+    debug(fmt"Checking command '{cmd.name}' against '{searchTerm}'")
     if cmd.name.toLower().startsWith(searchTerm):
+      debug(fmt"Match found: {cmd.name}")
       result.add(cmd)
+  
+  debug(fmt"Returning {result.len} completions")
 
 proc parseCommand*(input: string): tuple[command: string, args: seq[string]] =
   ## Parse a command input string
@@ -194,15 +203,22 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
   var userCount = 0
   var assistantCount = 0
   var toolCount = 0
+  var toolCallCount = 0
   
   for msg in messages:
     case msg.role:
     of mrUser: inc userCount
-    of mrAssistant: inc assistantCount
+    of mrAssistant: 
+      inc assistantCount
+      # Count tool calls in assistant messages
+      if msg.toolCalls.isSome():
+        toolCallCount += msg.toolCalls.get().len
     of mrTool: inc toolCount
     else: discard
   
   message.add("  Breakdown: " & $userCount & " user, " & $assistantCount & " assistant, " & $toolCount & " tool messages\n")
+  if toolCallCount > 0:
+    message.add("  Tool calls: " & $toolCallCount & "\n")
   
   if messages.len >= DEFAULT_MAX_CONTEXT_MESSAGES:
     message.add("  📝 Context is at maximum size (" & $DEFAULT_MAX_CONTEXT_MESSAGES & " messages)\n")
@@ -219,13 +235,13 @@ proc tokensHandler(args: seq[string], currentModel: var configTypes.ModelConfig)
   let sessionCounts = getSessionTokens()
   
   var message = "Token Usage & Cost Information:\n"
-  message.add("  Session input tokens: " & $sessionCounts.promptTokens & "\n")
-  message.add("  Session output tokens: " & $sessionCounts.completionTokens & "\n")
+  message.add("  Session input tokens: " & $sessionCounts.inputTokens & "\n")
+  message.add("  Session output tokens: " & $sessionCounts.outputTokens & "\n")
   message.add("  Session total tokens: " & $sessionCounts.totalTokens & "\n")
   message.add("  Model context limit: " & $currentModel.context & " tokens\n")
   
-  if currentModel.context > 0 and sessionCounts.promptTokens > 0:
-    let usagePercent = (sessionCounts.promptTokens * 100) div currentModel.context
+  if currentModel.context > 0 and sessionCounts.inputTokens > 0:
+    let usagePercent = (sessionCounts.inputTokens * 100) div currentModel.context
     message.add("  Current context usage: " & $usagePercent & "%\n")
     
     if usagePercent > 80:
@@ -293,54 +309,10 @@ proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
       message.add("  ❌ Database error: " & e.msg & "\n")
       message.add("  💡 Try restarting Niffler to reinitialize database\n")
   else:
-    # Fallback to old calculation method if database is not available
+    # Database not available - simplified message
     message.add("  Session: " & $messages.len & " messages, " & $sessionCounts.totalTokens & " tokens\n")
-    message.add("  ⚠️  Database not available - using estimated costs\n")
+    message.add("  ❌ Database not available for cost tracking\n")
     message.add("  💡 Database will be automatically created when available\n")
-    
-    # Get cost information from model config
-    let hasInputCost = currentModel.inputCostPerMToken.isSome()
-    let hasOutputCost = currentModel.outputCostPerMToken.isSome()
-    
-    if hasInputCost or hasOutputCost:
-      # Calculate session costs based on actual token usage
-      var sessionInputCost = 0.0
-      var sessionOutputCost = 0.0
-      var sessionTotalCost = 0.0
-      
-      if hasInputCost:
-        let inputCostPerToken = currentModel.inputCostPerMToken.get() / 1_000_000.0
-        sessionInputCost = sessionCounts.promptTokens.float * inputCostPerToken
-        sessionTotalCost += sessionInputCost
-      
-      if hasOutputCost:
-        let outputCostPerToken = currentModel.outputCostPerMToken.get() / 1_000_000.0
-        sessionOutputCost = sessionCounts.completionTokens.float * outputCostPerToken
-        sessionTotalCost += sessionOutputCost
-      
-      if sessionInputCost > 0:
-        message.add("  Input cost: " & formatCost(sessionInputCost) & "\n")
-      if sessionOutputCost > 0:
-        message.add("  Output cost: " & formatCost(sessionOutputCost) & "\n")
-      if sessionTotalCost > 0:
-        message.add("  Total session cost: " & formatCost(sessionTotalCost) & "\n")
-      
-      # Show cost breakdown
-      if hasInputCost:
-        let inputRate = currentModel.inputCostPerMToken.get()
-        message.add("  Input rate: $" & inputRate.formatFloat(ffDecimal, 2) & " per million tokens\n")
-      if hasOutputCost:
-        let outputRate = currentModel.outputCostPerMToken.get()
-        message.add("  Output rate: $" & outputRate.formatFloat(ffDecimal, 2) & " per million tokens\n")
-      
-      # Cost per message average
-      if messages.len > 0 and sessionTotalCost > 0:
-        let avgCostPerMessage = sessionTotalCost / messages.len.float
-        message.add("  Average per message: " & formatCost(avgCostPerMessage) & "\n")
-    else:
-      message.add("  💡 Add cost tracking to model config:\n")
-      message.add("     inputCostPerMToken = 10.0     # Example: $10 per million tokens\n")
-      message.add("     outputCostPerMToken = 30.0    # Example: $30 per million tokens\n")
   
   message.add("\n💡 Use '/clear' to reset context and costs\n")
   
@@ -439,6 +411,15 @@ proc markdownHandler(args: seq[string], currentModel: var configTypes.ModelConfi
       shouldContinue: true
     )
 
+proc pasteHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle the paste command - note: linecross handles clipboard automatically via Ctrl+V
+  return CommandResult(
+    success: true,
+    message: "Clipboard paste is available via Ctrl+V when typing. Linecross handles system clipboard integration automatically.",
+    shouldExit: false,
+    shouldContinue: true
+  )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   registerCommand("help", "Show help and available commands", "", @[], helpHandler)
@@ -452,3 +433,4 @@ proc initializeCommands*() =
   registerCommand("themes", "List available themes", "", @[], themesHandler)
   registerCommand("theme", "Switch theme or show current theme", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
+  registerCommand("paste", "Show clipboard contents", "", @[], pasteHandler)

@@ -11,7 +11,7 @@
 Niffler is heavily a work-in-progress. Some of the design ideas that perhaps **stand out** are these:
 
 - **Native multithreaded**. The tool executions are in one thread. The UI is in one thread. The communication with the LLM is in one thread.
-- **Designed for multiple UIs**. Currently have one simpler readline UI and one TUI style. Niffler separates UI from underlying mechanisms which enables experiments with different UIs.
+- **Enhanced CLI Interface**. Built on linecross for superior input handling with tab completion, history, and real-time markdown rendering.
 - **Has a client side database**. Just started using it, but Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
 - **Not yet another node.js thing**. Nim is a different eco system!
 - **Portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
