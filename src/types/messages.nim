@@ -45,11 +45,7 @@ type
     output*: string
     error*: Option[string]
 
-  # Legacy tool call type (for existing tool system)
-  ToolCall* = object
-    id*: string
-    name*: string
-    arguments*: string
+  # Legacy ToolCall type removed - use LLMToolCall instead
 
   Message* = object
     role*: MessageRole
@@ -58,8 +54,7 @@ type
     toolCalls*: Option[seq[LLMToolCall]]
     # Tool call ID for tool messages
     toolCallId*: Option[string]
-    # Legacy fields for backward compatibility
-    legacyToolCalls*: Option[seq[ToolCall]]
+    # Legacy field for backward compatibility - removed
     toolResults*: Option[seq[ToolResult]]
 
   # API Thread Communication
@@ -98,8 +93,8 @@ type
     arkReady
 
   TokenUsage* = object
-    promptTokens*: int
-    completionTokens*: int
+    inputTokens*: int      # Renamed from promptTokens for consistency
+    outputTokens*: int     # Renamed from completionTokens for consistency
     totalTokens*: int
 
   # Tool definition for API requests (OpenAI format)
@@ -233,14 +228,7 @@ type
   ChatMessage* = object
     role*: string
     content*: string
-    toolCalls*: Option[seq[ChatToolCall]]
+    toolCalls*: Option[seq[LLMToolCall]]
     toolCallId*: Option[string]
 
-  ChatToolCall* = object
-    id*: string
-    `type`*: string
-    function*: ChatFunction
-
-  ChatFunction* = object
-    name*: string
-    arguments*: string
+  # ChatToolCall and ChatFunction removed - use LLMToolCall and FunctionCall instead

@@ -1,4 +1,5 @@
 import std/[json, strutils, tables, options, sequtils, macros, times, logging]
+import ../core/database
 
 type
   ValidationError* = object of CatchableError
@@ -227,18 +228,10 @@ proc validateSeed*(node: JsonNode, field: string = ""): ValidationResult[int] =
 
 # Token usage logging
 type
-  TokenLogEntry* = object
-    created_at*: DateTime
-    modelName*: string
-    inputTokens*: int
-    outputTokens*: int
-    totalTokens*: int
-    inputCost*: float
-    outputCost*: float
-    totalCost*: float
-
+  # TokenLogEntry removed - using the comprehensive version from database.nim instead
+  
   TokenLogger* = object
-    entries*: seq[TokenLogEntry]
+    entries*: seq[database.TokenLogEntry]  # Use database TokenLogEntry
     logFile*: Option[string]
 
 proc newTokenLogger*(logFile: Option[string] = none(string)): TokenLogger =
@@ -250,15 +243,18 @@ proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int
   let outputCost = if outputCostPerMToken.isSome(): float(outputTokens) * (outputCostPerMToken.get() / 1_000_000.0) else: 0.0
   let totalCost = inputCost + outputCost
   
-  let entry = TokenLogEntry(
+  let entry = database.TokenLogEntry(
+    id: 0,  # Will be set by database if saved
     created_at: now(),
-    modelName: modelName,
+    model: modelName,  # Using 'model' field name to match database version
     inputTokens: inputTokens,
     outputTokens: outputTokens,
     totalTokens: inputTokens + outputTokens,
     inputCost: inputCost,
     outputCost: outputCost,
-    totalCost: totalCost
+    totalCost: totalCost,
+    request: "",  # Empty for validation logger
+    response: ""  # Empty for validation logger
   )
   
   logger.entries.add(entry)
@@ -290,7 +286,7 @@ proc getTotalTokens*(logger: TokenLogger): (int, int, int) =
 proc getCostByModel*(logger: TokenLogger): Table[string, float] =
   result = initTable[string, float]()
   for entry in logger.entries:
-    if result.hasKey(entry.modelName):
-      result[entry.modelName] += entry.totalCost
+    if result.hasKey(entry.model):
+      result[entry.model] += entry.totalCost
     else:
-      result[entry.modelName] = entry.totalCost
+      result[entry.model] = entry.totalCost

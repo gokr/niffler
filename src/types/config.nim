@@ -1,4 +1,5 @@
 import std/[tables, options, locks]
+import messages
 
 type
   ModelType* = enum
@@ -104,17 +105,14 @@ type
     configPath*: string
     lock*: Lock
 
-  CostTokenUsage* = object
-    inputTokens*: int
-    outputTokens*: int
-    totalTokens*: int
-
+  # CostTokenUsage removed - using TokenUsage from messages.nim instead
+  
   CostTracking* = object
     inputCostPerMToken*: Option[float]
     outputCostPerMToken*: Option[float]
     totalInputCost*: float
     totalOutputCost*: float
     totalCost*: float
-    usage*: CostTokenUsage
+    usage*: TokenUsage
 
 # Remove unused global var - will be managed in config.nim

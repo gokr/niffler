@@ -1,17 +1,11 @@
 import std/[json, options, tables]
 import validation
+import messages
 
 type
   SequenceId* = int64
 
-  ToolCallRequest* = object
-    `type`*: string  # Should be "function"
-    function*: ToolCallFunction
-    toolCallId*: string
-
-  ToolCallFunction* = object
-    name*: string
-    arguments*: string
+  # Remove ToolCallRequest and ToolCallFunction - use LLMToolCall from messages.nim instead
 
   HistoryItemType* = enum
     hitUser = "user"
@@ -32,7 +26,7 @@ type
 
   ToolCallOriginal* = object
     id*: Option[string]
-    function*: Option[ToolCallFunction]
+    function*: Option[FunctionCall]
 
   # History item using variant objects
   HistoryItem* = object
@@ -43,9 +37,9 @@ type
     of hitAssistant:
       assistantContent*: string
       anthropicData*: Option[AnthropicAssistantData]
-      toolCalls*: Option[seq[ToolCallRequest]]
+      toolCalls*: Option[seq[LLMToolCall]]
     of hitTool:
-      tool*: ToolCallRequest
+      tool*: LLMToolCall
     of hitToolOutput:
       toolOutputContent*: string
       toolCallId*: string
@@ -72,20 +66,20 @@ type
   History* = seq[HistoryItem]
 
 # Basic validators - will be implemented fully in Phase 2
-proc validateToolCallFunction*(node: JsonNode, field: string = ""): ValidationResult[ToolCallFunction] =
+proc validateFunctionCall*(node: JsonNode, field: string = ""): ValidationResult[FunctionCall] =
   # Simplified validation for now
   if node.kind != JObject:
-    return invalid[ToolCallFunction](newValidationError(field, "object", $node.kind))
-  result = valid(ToolCallFunction(name: "placeholder", arguments: "{}"))
+    return invalid[FunctionCall](newValidationError(field, "object", $node.kind))
+  result = valid(FunctionCall(name: "placeholder", arguments: "{}"))
 
-proc validateToolCallRequest*(node: JsonNode, field: string = ""): ValidationResult[ToolCallRequest] =
+proc validateLLMToolCall*(node: JsonNode, field: string = ""): ValidationResult[LLMToolCall] =
   # Simplified validation for now
   if node.kind != JObject:
-    return invalid[ToolCallRequest](newValidationError(field, "object", $node.kind))
-  result = valid(ToolCallRequest(
+    return invalid[LLMToolCall](newValidationError(field, "object", $node.kind))
+  result = valid(LLMToolCall(
+    id: "placeholder",
     `type`: "function",
-    function: ToolCallFunction(name: "placeholder", arguments: "{}"),
-    toolCallId: "placeholder"
+    function: FunctionCall(name: "placeholder", arguments: "{}")
   ))
 
 # History manipulation
@@ -124,7 +118,7 @@ proc newUserItem*(content: string): HistoryItem =
     userContent: content
   )
 
-proc newAssistantItem*(content: string, toolCalls: Option[seq[ToolCallRequest]] = none(seq[ToolCallRequest])): HistoryItem =
+proc newAssistantItem*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall])): HistoryItem =
   result = HistoryItem(
     id: getNextSequenceId(),
     itemType: hitAssistant,
@@ -132,7 +126,7 @@ proc newAssistantItem*(content: string, toolCalls: Option[seq[ToolCallRequest]] 
     toolCalls: toolCalls
   )
 
-proc newToolCallItem*(tool: ToolCallRequest): HistoryItem =
+proc newToolCallItem*(tool: LLMToolCall): HistoryItem =
   result = HistoryItem(
     id: getNextSequenceId(),
     itemType: hitTool,
