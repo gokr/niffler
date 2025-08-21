@@ -1,7 +1,7 @@
 import std/[unittest, options, json, os, tempfiles, strformat]
 import ../src/types/messages
 import ../src/tools/[schemas, common]
-import ../src/api/httpClient
+import ../src/api/curlyStreaming
 
 # Comprehensive test suite that works with current codebase
 
