@@ -9,14 +9,13 @@ bin           = @["niffler"]
 # Dependencies
 
 requires "nim >= 2.2.4"
-requires "illwill"                        # For terminal UI things
-requires "docopt"                         # For good command line argument parsing
-requires "sunny"                          # For type safe and clean JSON handling via types
-requires "curly"                          # For solid curl based HTTP client with streaming support
-requires "htmlparser"                     # For scraping in the fetch tool
-requires "https://github.com/gokr/debby"  # For nice relational database handling
+requires "docopt"                                    # For good command line argument parsing
+requires "sunny"                                     # For type safe and clean JSON handling via types
+requires "curly"                                     # For solid curl based HTTP client with streaming support
+requires "htmlparser"                                # For scraping in the fetch tool
+requires "https://github.com/gokr/debby"             # For nice relational database handling
 requires "https://github.com/Vindaar/JsonSchemaValidator.git >= 0.1.0"
-requires "noise"                          # For readline-like input with history and cursor keys
+requires "https://github.com/gokr/linecross"         # For readline-like input with history, cursor keys and more
 
 
 task test, "Run all tests":
