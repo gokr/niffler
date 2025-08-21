@@ -50,18 +50,7 @@ type
     client: CurlyStreamingClient
     isRunning: bool
 
-# Helper function to convert ChatToolCall to LLMToolCall
-proc convertToLLMToolCalls*(chatToolCalls: seq[ChatToolCall]): seq[LLMToolCall] =
-  result = @[]
-  for chatCall in chatToolCalls:
-    result.add(LLMToolCall(
-      id: chatCall.id,
-      `type`: chatCall.`type`,
-      function: FunctionCall(
-        name: chatCall.function.name,
-        arguments: chatCall.function.arguments
-      )
-    ))
+# Helper function to convert ChatToolCall to LLMToolCall - REMOVED (now using LLMToolCall directly)
 
 # Helper functions for tool display
 proc getToolIcon(toolName: string): string =
@@ -152,7 +141,7 @@ proc isCompleteJson*(jsonStr: string): bool =
   
   return braceCount == 0 and bracketCount == 0 and not inString
 
-proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCall: ChatToolCall): bool =
+proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCall: LLMToolCall): bool =
   ## Buffer a tool call fragment, return true if complete
   let toolId = if toolCall.id.len > 0: toolCall.id else: "temp_" & $epochTime()
   
@@ -216,17 +205,17 @@ proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCal
   
   return hasValidName and hasValidJson
 
-proc getCompletedToolCalls*(buffers: var Table[string, ToolCallBuffer]): seq[ChatToolCall] =
+proc getCompletedToolCalls*(buffers: var Table[string, ToolCallBuffer]): seq[LLMToolCall] =
   ## Get all completed tool calls from buffers
   result = @[]
   var toRemove: seq[string] = @[]
   
   for id, buffer in buffers:
     if buffer.arguments.isCompleteJson() and buffer.arguments.isValidJson():
-      result.add(ChatToolCall(
+      result.add(LLMToolCall(
         id: buffer.id,
         `type`: "function",
-        function: ChatFunction(
+        function: FunctionCall(
           name: buffer.name,
           arguments: buffer.arguments
         )
@@ -366,7 +355,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             
             # Handle streaming response with real-time chunks
             var fullContent = ""
-            var collectedToolCalls: seq[ChatToolCall] = @[]
+            var collectedToolCalls: seq[LLMToolCall] = @[]
             var hasToolCalls = false
             var suppressInitialContent = false  # Suppress initial content if tool calls detected
             
@@ -421,7 +410,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var finalUsage = if streamUsage.isSome(): 
               streamUsage.get() 
             else: 
-              TokenUsage(promptTokens: 0, completionTokens: 0, totalTokens: 0)
+              TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
             
             # After streaming completes, check for any remaining completed tool calls in buffers
             let remainingCompletedCalls = getCompletedToolCalls(toolCallBuffers)
@@ -443,7 +432,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   kind: arkStreamChunk,
                   content: fullContent,
                   done: false,
-                  toolCalls: some(convertToLLMToolCalls(collectedToolCalls))
+                  toolCalls: some(collectedToolCalls)
                 )
                 sendAPIResponse(channels, assistantResponse)
                 
@@ -537,12 +526,12 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   let assistantWithTools = Message(
                     role: mrAssistant,
                     content: fullContent,
-                    toolCalls: some(convertToLLMToolCalls(collectedToolCalls))
+                    toolCalls: some(collectedToolCalls)
                   )
                   updatedMessages.add(assistantWithTools)
                   
                   # Store assistant message with tool calls in conversation history
-                  discard addAssistantMessage(fullContent, some(convertToLLMToolCalls(collectedToolCalls)))
+                  discard addAssistantMessage(fullContent, some(collectedToolCalls))
                   # Add all tool result messages
                   for toolResult in allToolResults:
                     updatedMessages.add(toolResult)
@@ -650,10 +639,10 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                       
                       # Log model-specific token usage to database
                       logModelTokenUsage(database, conversationId, messageId, request.model,
-                                        finalUsage.promptTokens, finalUsage.completionTokens,
+                                        finalUsage.inputTokens, finalUsage.outputTokens,
                                         inputCostPerMToken, outputCostPerMToken)
                       
-                      debug(fmt"Logged token usage for model {request.model}: {finalUsage.promptTokens} input, {finalUsage.completionTokens} output")
+                      debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output")
                     except Exception as e:
                       debug(fmt"Failed to log token usage to database: {e.msg}")
                   

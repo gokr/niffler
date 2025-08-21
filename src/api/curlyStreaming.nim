@@ -98,12 +98,12 @@ proc parseSSELine(line: string): Option[StreamChunk] =
             
             # Parse tool calls in delta
             if delta.hasKey("tool_calls"):
-              var toolCalls: seq[ChatToolCall] = @[]
+              var toolCalls: seq[LLMToolCall] = @[]
               for tcJson in delta["tool_calls"]:
-                let toolCall = ChatToolCall(
+                let toolCall = LLMToolCall(
                   id: tcJson{"id"}.getStr(""),
                   `type`: tcJson{"type"}.getStr("function"),
-                  function: ChatFunction(
+                  function: FunctionCall(
                     name: tcJson{"function"}{"name"}.getStr(""),
                     arguments: tcJson{"function"}{"arguments"}.getStr("")
                   )
@@ -121,8 +121,8 @@ proc parseSSELine(line: string): Option[StreamChunk] =
       if json.hasKey("usage"):
         let usageJson = json["usage"]
         chunk.usage = some(messages.TokenUsage(
-          promptTokens: usageJson{"prompt_tokens"}.getInt(0),
-          completionTokens: usageJson{"completion_tokens"}.getInt(0),
+          inputTokens: usageJson{"prompt_tokens"}.getInt(0),
+          outputTokens: usageJson{"completion_tokens"}.getInt(0),
           totalTokens: usageJson{"total_tokens"}.getInt(0)
         ))
       
@@ -370,16 +370,8 @@ proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
     
     # Handle tool calls (assistant -> API)
     if msg.toolCalls.isSome():
-      var apiToolCalls: seq[ChatToolCall] = @[]
-      for toolCall in msg.toolCalls.get():
-        apiToolCalls.add(ChatToolCall(
-          id: toolCall.id,
-          `type`: toolCall.`type`,
-          function: ChatFunction(
-            name: toolCall.function.name,
-            arguments: toolCall.function.arguments
-          )
-        ))
+      # Tool calls are already LLMToolCall - use directly without conversion
+      let apiToolCalls = msg.toolCalls.get()
       chatMsg.toolCalls = some(apiToolCalls)
     
     # Handle tool call ID (tool -> API)
