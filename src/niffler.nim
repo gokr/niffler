@@ -23,7 +23,6 @@ import docopt
 import core/[config, app, channels, history, database]
 import api/curlyStreaming
 import ui/cli
-import ui/tui as tuiModule
 import types/config as configTypes
 
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2") 
@@ -65,8 +64,8 @@ proc selectModelFromConfig(modelName: string, config: configTypes.Config): confi
     echo "Error: No models configured. Please run 'niffler init' first."
     quit(1)
 
-proc startInteractiveMode(modelName: string, level: Level, dump: bool, useTui: bool) =
-  ## Start interactive mode with selected UI
+proc startInteractiveMode(modelName: string, level: Level, dump: bool) =
+  ## Start interactive mode with CLI interface
   # Initialize app systems
   initializeAppSystems(level, dump)
   
@@ -80,21 +79,13 @@ proc startInteractiveMode(modelName: string, level: Level, dump: bool, useTui: b
   # Start a new conversation for cost tracking
   discard startNewConversation()
   
-  # Choose UI and start
-  if useTui:
-    try:
-      tuiModule.startTUIMode(selectedModel, database, level, dump)
-    except Exception as e:
-      echo fmt"TUI mode failed: {e.msg}"
-      echo "TUI requires illwill library and compatible terminal"
-      quit(1)
-  else:
-    try:
-      startCLIMode(selectedModel, database, level, dump)
-    except Exception as e:
-      echo fmt"CLI mode failed: {e.msg}"
-      echo "CLI requires nim-noise library for enhanced input"
-      quit(1)
+  # Start CLI mode
+  try:
+    startCLIMode(selectedModel, database, level, dump)
+  except Exception as e:
+    echo fmt"CLI mode failed: {e.msg}"
+    echo "CLI requires linecross library for enhanced input"
+    quit(1)
 
 let doc = """
 Niffler - your friendly magical AI buddy
@@ -111,7 +102,6 @@ Options:
   -v --version           Show version of Niffler
   -m --model <nickname>  Select model by nickname
   -p --prompt "<text>"   Perform single prompt and exit
-  -t --tui               Use TUI widget-style interface
   -i --info              Show info level logging
   -d --debug             Show debug level logging
   --dump                 Show HTTP requests & responses
@@ -152,11 +142,10 @@ when isMainModule:
   let model = if args["--model"] and args["--model"].kind != vkNone: $args["--model"] else: ""
   let prompt = if args["--prompt"] and args["--prompt"].kind != vkNone: $args["--prompt"] else: ""
   let dump = args["--dump"]
-  let tui = args["--tui"]
 
   if prompt.len == 0:
-    # Start interactive mode with selected UI
-    startInteractiveMode(model, level, dump, tui)
+    # Start interactive mode
+    startInteractiveMode(model, level, dump)
   else:
     # Send single prompt
     sendSinglePrompt(prompt, model, level, dump)
