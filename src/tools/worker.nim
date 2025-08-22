@@ -32,7 +32,7 @@ else:
 
 import ../types/[tools, messages]
 import ../core/channels
-import bash, create, edit, fetch, list, read
+import registry
 
 
 type    
@@ -89,22 +89,12 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             
             let output = 
               try:
-                # Execute the tool using direct implementation lookup
-                let result = case toolCall.name:
-                  of "bash":
-                    executeBash(toolCall.arguments)
-                  of "read":
-                    executeRead(toolCall.arguments)
-                  of "list":
-                    executeList(toolCall.arguments)
-                  of "edit":
-                    executeEdit(toolCall.arguments)
-                  of "create":
-                    executeCreate(toolCall.arguments)
-                  of "fetch":
-                    executeFetch(toolCall.arguments)
-                  else:
-                    raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
+                # Execute the tool using registry lookup
+                let maybeTool = getTool(toolCall.name)
+                let result = if maybeTool.isSome():
+                  executeTool(maybeTool.get(), toolCall.arguments)
+                else:
+                  raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
                 
                 debug("Tool execution successful, result length: " & $result.len)
                 result

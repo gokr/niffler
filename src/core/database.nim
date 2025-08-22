@@ -69,6 +69,37 @@ type
     outputCost*: float
     totalCost*: float
 
+  # Todo system types
+  TodoList* = ref object of RootObj
+    id*: int
+    conversationId*: int
+    title*: string
+    description*: string
+    createdAt*: DateTime
+    updatedAt*: DateTime
+    isActive*: bool
+
+  TodoState* = enum
+    tsPending = "pending"
+    tsInProgress = "in_progress" 
+    tsCompleted = "completed"
+    tsCancelled = "cancelled"
+
+  TodoPriority* = enum
+    tpLow = "low"
+    tpMedium = "medium"
+    tpHigh = "high"
+
+  TodoItem* = ref object of RootObj
+    id*: int
+    listId*: int
+    content*: string
+    state*: TodoState
+    priority*: TodoPriority
+    createdAt*: DateTime
+    updatedAt*: DateTime
+    orderIndex*: int
+
 proc initializeDatabase*(db: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
   case db.kind:
@@ -106,6 +137,18 @@ proc initializeDatabase*(db: DatabaseBackend) =
       db.db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
       db.db.createIndexIfNotExists(ModelTokenUsage, "model")
       db.db.createIndexIfNotExists(ModelTokenUsage, "created_at")
+    
+    # Create todo system tables
+    if not db.db.tableExists(TodoList):
+      db.db.createTable(TodoList)
+      db.db.createIndexIfNotExists(TodoList, "conversationId")
+      db.db.createIndexIfNotExists(TodoList, "isActive")
+    
+    if not db.db.tableExists(TodoItem):
+      db.db.createTable(TodoItem)
+      db.db.createIndexIfNotExists(TodoItem, "listId")
+      db.db.createIndexIfNotExists(TodoItem, "state")
+      db.db.createIndexIfNotExists(TodoItem, "orderIndex")
 
 proc checkDatabase*(db: DatabaseBackend) =
   ## Verify structure of database against model definitions
@@ -116,6 +159,8 @@ proc checkDatabase*(db: DatabaseBackend) =
     db.db.checkTable(Conversation)
     db.db.checkTable(ConversationMessage)
     db.db.checkTable(ModelTokenUsage)
+    db.db.checkTable(TodoList)
+    db.db.checkTable(TodoItem)
   echo "Database checked"
 
 proc init*(db: DatabaseBackend) =
@@ -500,3 +545,98 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
   except Exception as e:
     error(fmt"Failed to initialize database backend: {e.msg}")
     result = nil
+
+# Todo system database functions
+proc createTodoList*(db: DatabaseBackend, conversationId: int, title: string, description: string = ""): int =
+  ## Create a new todo list and return its ID
+  if db == nil:
+    return 0
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let todoList = TodoList(
+      id: 0,
+      conversationId: conversationId,
+      title: title,
+      description: description,
+      createdAt: now(),
+      updatedAt: now(),
+      isActive: true
+    )
+    db.db.insert(todoList)
+    return todoList.id
+
+proc addTodoItem*(db: DatabaseBackend, listId: int, content: string, priority: TodoPriority = tpMedium): int =
+  ## Add a new todo item to a list
+  if db == nil:
+    return 0
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    # Get the next order index
+    let existingItems = db.db.filter(TodoItem, it.listId == listId)
+    let nextOrder = if existingItems.len > 0: existingItems.len else: 0
+    
+    let todoItem = TodoItem(
+      id: 0,
+      listId: listId,
+      content: content,
+      state: tsPending,
+      priority: priority,
+      createdAt: now(),
+      updatedAt: now(),
+      orderIndex: nextOrder
+    )
+    db.db.insert(todoItem)
+    return todoItem.id
+
+proc updateTodoItem*(db: DatabaseBackend, itemId: int, newState: Option[TodoState] = none(TodoState),
+                    newContent: Option[string] = none(string), newPriority: Option[TodoPriority] = none(TodoPriority)): bool =
+  ## Update a todo item's state, content, or priority
+  if db == nil:
+    return false
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    try:
+      let items = db.db.filter(TodoItem, it.id == itemId)
+      if items.len == 0:
+        return false
+      
+      var item = items[0]
+      item.updatedAt = now()
+      
+      if newState.isSome():
+        item.state = newState.get()
+      if newContent.isSome():
+        item.content = newContent.get()
+      if newPriority.isSome():
+        item.priority = newPriority.get()
+      
+      db.db.update(item)
+      return true
+    except:
+      return false
+
+proc getTodoItems*(db: DatabaseBackend, listId: int): seq[TodoItem] =
+  ## Get all todo items for a list, sorted by order index
+  if db == nil:
+    return @[]
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let items = db.db.filter(TodoItem, it.listId == listId)
+    return items.sortedByIt(it.orderIndex)
+
+proc getActiveTodoList*(db: DatabaseBackend, conversationId: int): Option[TodoList] =
+  ## Get the active todo list for a conversation
+  if db == nil:
+    return none(TodoList)
+  
+  case db.kind:
+  of dbkSQLite, dbkTiDB:
+    let lists = db.db.filter(TodoList, it.conversationId == conversationId and it.isActive == true)
+    if lists.len > 0:
+      return some(lists[0])
+    else:
+      return none(TodoList)
