@@ -204,6 +204,12 @@ proc parseConfig(configJson: JsonNode): Config =
     
   if configJson.hasKey("markdownEnabled"):
     result.markdownEnabled = some(configJson["markdownEnabled"].getBool())
+    
+  if configJson.hasKey("instructionFiles"):
+    var instructionFiles: seq[string] = @[]
+    for fileNode in configJson["instructionFiles"]:
+      instructionFiles.add(fileNode.getStr())
+    result.instructionFiles = some(instructionFiles)
 
 proc readConfig*(path: string): Config =
   let content = readFile(path)
@@ -328,6 +334,12 @@ proc writeConfig*(config: Config, path: string) =
     
   if config.markdownEnabled.isSome():
     configJson["markdownEnabled"] = newJBool(config.markdownEnabled.get())
+    
+  if config.instructionFiles.isSome():
+    var instructionFilesArray = newJArray()
+    for filename in config.instructionFiles.get():
+      instructionFilesArray.add(newJString(filename))
+    configJson["instructionFiles"] = instructionFilesArray
   
   writeFile(path, pretty(configJson, 2))
 
@@ -442,9 +454,107 @@ proc createDefaultThemes(): Table[string, ThemeConfig] =
     normal: ThemeStyleConfig(color: "white", style: "bright")
   )
 
+proc createDefaultNifflerMd*(configDir: string) =
+  ## Create default NIFFLER.md in config directory if it doesn't exist
+  let nifflerPath = configDir / "NIFFLER.md"
+  
+  if fileExists(nifflerPath):
+    return
+    
+  let defaultNifflerContent = """# Common System Prompt
+
+You are Niffler, an AI-powered terminal assistant built in Nim. You provide conversational assistance with software development tasks while supporting tool calling for file operations, command execution, and web fetching.
+
+Available tools: {availableTools}
+
+Current environment:
+- Working directory: {currentDir}
+- Current time: {currentTime}
+- OS: {osInfo}
+{gitInfo}
+{projectInfo}
+
+General guidelines:
+- Be concise and direct in responses
+- Use tools when needed to gather information or make changes
+- Follow project conventions and coding standards
+- Always validate information before making changes
+
+# Plan Mode Prompt
+
+**PLAN MODE ACTIVE**
+
+You are in Plan mode - focus on analysis, research, and breaking down tasks into actionable steps.
+
+Plan mode priorities:
+1. **Research thoroughly** before suggesting implementation
+2. **Break down complex tasks** into smaller, manageable steps
+3. **Identify dependencies** and potential challenges
+4. **Suggest approaches** and gather requirements
+5. **Use read/list tools extensively** to understand the codebase
+6. **Create detailed plans** before moving to implementation
+
+In Plan mode:
+- Read files to understand current implementation
+- List directories to explore project structure
+- Research existing patterns and conventions
+- Ask clarifying questions when requirements are unclear
+- Propose step-by-step implementation plans
+- Avoid making changes until the plan is clear
+
+# Code Mode Prompt
+
+**CODE MODE ACTIVE**
+
+You are in Code mode - focus on implementation and execution of planned tasks.
+
+Code mode priorities:
+1. **Execute plans efficiently** and make concrete changes
+2. **Implement solutions** using edit/create/bash tools
+3. **Test implementations** and verify functionality
+4. **Fix issues** as they arise during implementation
+5. **Complete tasks systematically** following established plans
+6. **Document changes** when significant
+
+In Code mode:
+- Make file edits and create new files as needed
+- Execute commands to test and verify changes
+- Implement features following the established plan
+- Address errors and edge cases proactively
+- Focus on working, tested solutions
+- Be decisive in implementation choices
+
+# System-Wide Configuration
+
+This NIFFLER.md file provides system-wide defaults for all projects. 
+Individual projects can override these settings by creating their own NIFFLER.md files.
+
+You can customize these prompts by editing this file. The prompts support template variables like:
+- {availableTools} - List of available tools
+- {currentDir} - Current working directory
+- {currentTime} - Current timestamp
+- {osInfo} - Operating system information
+- {gitInfo} - Git repository information
+- {projectInfo} - Project context information
+
+You can also include other files using @include directives:
+@include ~/shared/coding-standards.md
+
+For more information, see the NIFFLER-FEATURES.md documentation.
+"""
+  
+  try:
+    writeFile(nifflerPath, defaultNifflerContent)
+    echo "Default NIFFLER.md created at: ", nifflerPath
+  except:
+    echo "Warning: Could not create NIFFLER.md at: ", nifflerPath
+
 proc initializeConfig*(path: string) =
   if fileExists(path):
     echo "Configuration file already exists: ", path
+    # Even if config exists, create NIFFLER.md if it doesn't
+    let configDir = path.parentDir()
+    createDefaultNifflerMd(configDir)
     return
     
   let defaultConfig = Config(
@@ -497,11 +607,16 @@ proc initializeConfig*(path: string) =
     )),
     themes: some(createDefaultThemes()),
     currentTheme: some("default"),
-    markdownEnabled: some(true)
+    markdownEnabled: some(true),
+    instructionFiles: some(@["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"])
   )
   
   writeConfig(defaultConfig, path)
   echo "Configuration initialized at: ", path
+  
+  # Also create default NIFFLER.md
+  let configDir = path.parentDir()
+  createDefaultNifflerMd(configDir)
 
 proc loadConfig*(): Config =
   if globalConfigManager.configPath.len == 0:

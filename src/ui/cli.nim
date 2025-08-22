@@ -12,7 +12,6 @@
 ##
 ## Interactive Commands:
 ## - `/help` - Show available commands
-## - `/models` - List available models  
 ## - `/model <name>` - Switch to different model
 ## - `/clear` - Clear conversation history
 ## - `/exit`, `/quit` - Exit application
@@ -43,8 +42,6 @@ var currentModelName: string = ""
 var isProcessing: bool = false
 var inputTokens: int = 0
 var outputTokens: int = 0
-# Linecross initialization flag
-var linecrossInitialized: bool = false
 
 proc getUserName*(): string =
   ## Get the current user's name
@@ -157,11 +154,8 @@ proc initializeLinecrossInput(database: DatabaseBackend): bool =
     # Set up completion callback for commands and mentions
     registerCompletionCallback(nifflerCompletionHook)
     
-    # Set up custom key callback for shift-tab etc
-    registerCustomKeyCallback(nifflerCustomKeyHook)
-    
     # Configure prompt colors to match current blue style
-    setPromptColor(fgBlue, {styleBright})
+    setPromptColor(getModePromptColor(), {styleBright})
     
     # Load history from database if available
     if database != nil:
@@ -173,22 +167,15 @@ proc initializeLinecrossInput(database: DatabaseBackend): bool =
       except Exception as e:
         debug(fmt"Could not load history from database: {e.msg}")
     
-    linecrossInitialized = true
     return true
   except Exception as e:
     debug(fmt"Failed to initialize linecross: {e.msg}")
     raise newException(OSError, fmt"Failed to initialize enhanced input (linecross): {e.msg}")
 
 proc readInputLine(prompt: string): string =
-  ## Read input with enhanced features (linecross) - no fallback
-  if not linecrossInitialized:
-    raise newException(OSError, "Enhanced input not initialized")
-  
+  ## Read input with linecross
   try:
-    # Use linecross readline - linecross handles colored prompts automatically
     let input = readline(prompt)
-    
-    # linecross automatically handles history addition for non-empty lines
     return input
   except EOFError:
     # Re-raise EOF errors (Ctrl+C, Ctrl+D)
@@ -243,13 +230,15 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
   stdout.styledWrite(color, style, text)
   stdout.flushFile()
 
-proc generatePrompt*(modelName: string, isProcessing: bool = false,
-                    inputTokens: int = 0, outputTokens: int = 0,
-                    contextSize: int = 0, maxContext: int = 128000,
-                    modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
+proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Generate a rich prompt string with token counts, context info, and cost
+  let contextMessages = getConversationContext()
+  let contextSize = estimateTokenCount(contextMessages)
+  let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
   let sessionTotal = inputTokens + outputTokens
-  
+  let statusIndicator = if isProcessing: "⚡" else: ""
+  let modeIndicator = getModePromptIndicator()
+
   if sessionTotal > 0:
     # Create context usage bar
     let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
@@ -270,15 +259,9 @@ proc generatePrompt*(modelName: string, isProcessing: bool = false,
       sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
     
     let costInfo = if sessionCost > 0: fmt" {formatCost(sessionCost)}" else: ""
-    
-    # Use a simpler processing indicator to avoid cursor offset issues
-    let statusIndicator = if isProcessing: "⚡" else: ""
-    let modeIndicator = getModePromptIndicator()
-    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {modelName}{modeIndicator} > "
+    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {currentModelName}{modeIndicator} > "
   else:
-    let statusIndicator = if isProcessing: "⚡ " else: ""
-    let modeIndicator = getModePromptIndicator()
-    return fmt"{statusIndicator}{modelName}{modeIndicator} > "
+    return fmt"{statusIndicator}{currentModelName}{modeIndicator} > "
 
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
@@ -302,30 +285,18 @@ proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
 proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   ## Custom key hook for handling special key combinations like Shift+Tab
   if keyCode == ShiftTab:
-    # Toggle mode and show feedback
-    let newMode = toggleMode()
-    let modeName = $newMode
-    writeToConversationArea(fmt"→ {modeName.capitalizeAscii()} Mode", fgCyan, styleBright)
+    # Toggle mode and immediately update prompt, it is refreshed by linecross
+    discard toggleMode()
+    setPrompt(generatePrompt())
+    setPromptColor(getModePromptColor(), {styleBright})
     return true  # Key was handled
-  
   return false  # Key not handled, continue with default processing
 
 proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Read input with dynamic prompt showing current state
-  # Get actual context information
-  let contextMessages = getConversationContext()
-  let contextTokens = estimateTokenCount(contextMessages)
-  let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
-  
-  let dynamicPrompt = generatePrompt(currentModelName, isProcessing, 
-                                   inputTokens, outputTokens,
-                                   contextTokens,  # Use real context size
-                                   maxContext, modelConfig)
-  
-  let input = readInputLine(dynamicPrompt).strip()
-  currentInputText = input
-  return input
-
+  ## Read input with prompt showing current state  
+  let prompt = generatePrompt(modelConfig)
+  currentInputText = readInputLine(prompt).strip()
+  return currentInputText
 
 proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
   ## Start the CLI mode with enhanced interface
@@ -386,6 +357,19 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   # Get user name for prompts
   let userName = getUserName()
   
+  proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
+    ## Custom key hook for handling special key combinations like Shift+Tab
+    if keyCode == ShiftTab:
+      # Toggle mode silently - the prompt will update on next input
+      discard toggleMode()
+      setPrompt(generatePrompt(currentModel))
+      setPromptColor(getModePromptColor())
+      return true  # Key was handled
+    return false  # Key not handled, continue with default processing
+
+  # Set up custom key callback for shift-tab etc
+  registerCustomKeyCallback(nifflerCustomKeyHook)
+
   # Interactive loop
   var running = true
   while running:

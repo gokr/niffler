@@ -10,3 +10,6 @@ switch("linedir", "on")
 switch("debuginfo")
 switch("stacktrace", "on")
 switch("linetrace", "on")
+
+# Enables system copy paste
+switch("d", "useSystemClipboard")

@@ -97,6 +97,7 @@ type
     themes*: Option[Table[string, ThemeConfig]]
     currentTheme*: Option[string]
     markdownEnabled*: Option[bool]
+    instructionFiles*: Option[seq[string]]
 
   KeyConfig* = Table[string, string]
 

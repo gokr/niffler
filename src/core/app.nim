@@ -17,8 +17,8 @@
 ## - Handles API key retrieval from configuration and environment
 ## - Provides both interactive and single-shot execution modes
 
-import std/[strformat, logging, options, strutils]
-import channels, history, config
+import std/[strformat, logging, options, strutils, terminal]
+import channels, history, config, system_prompt
 import ../types/[messages, history as historyTypes, config as configTypes, mode]
 import ../api/api
 
@@ -73,8 +73,48 @@ proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_M
   if currentTokens > maxTokens:
     info(fmt"Warning: Context still large ({currentTokens} tokens) after truncation")
 
-# Cost calculation functions
+# Mode Management Functions
 
+proc initializeModeState*() =
+  ## Initialize mode state for the current thread
+  if not modeInitialized:
+    currentMode = getDefaultMode()
+    modeInitialized = true
+    debug(fmt"Mode state initialized to: {currentMode}")
+
+proc getCurrentMode*(): AgentMode =
+  ## Get the current agent mode (thread-safe)
+  if not modeInitialized:
+    initializeModeState()
+  return currentMode
+
+proc setCurrentMode*(mode: AgentMode) =
+  ## Set the current agent mode (thread-safe)
+  currentMode = mode
+  modeInitialized = true
+  debug(fmt"Mode changed to: {mode}")
+
+proc toggleMode*(): AgentMode =
+  ## Toggle between Plan and Code modes, returns new mode
+  let newMode = getNextMode(getCurrentMode())
+  setCurrentMode(newMode)
+  return newMode
+
+proc getModePromptIndicator*(): string =
+  ## Get the mode indicator for prompt display
+  let mode = getCurrentMode()
+  case mode:
+  of amPlan: "(plan)"
+  of amCode: "(code)"
+
+proc getModePromptColor*(): ForegroundColor =
+  ## Get the mode color for prompt display
+  let mode = getCurrentMode()
+  case mode:
+  of amPlan: fgGreen
+  of amCode: fgBlue
+
+# Cost calculation functions
 
 proc formatCost*(cost: float): string =
   ## Format cost as currency (assumes USD)
@@ -105,11 +145,17 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
   return some(apiKey)
 
 proc prepareConversationMessages*(text: string): (seq[Message], string) =
-  ## Prepare conversation context and return messages with request ID
+  ## Prepare conversation context with system prompt and return messages with request ID
   let userMsg = addUserMessage(text)
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
+  
+  # Insert system message at the beginning based on current mode
+  let systemMsg = createSystemMessage(getCurrentMode())
+  messages.insert(systemMsg, 0)
+  
   let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
+  debug(fmt"Prepared {messages.len} messages for {getCurrentMode()} mode")
   return (messages, requestId)
 
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
@@ -169,37 +215,3 @@ proc configureAPIWorker*(modelConfig: configTypes.ModelConfig): bool =
   )
   
   return trySendAPIRequest(channels, configRequest)
-
-# Mode Management Functions
-
-proc initializeModeState*() =
-  ## Initialize mode state for the current thread
-  if not modeInitialized:
-    currentMode = getDefaultMode()
-    modeInitialized = true
-    debug(fmt"Mode state initialized to: {currentMode}")
-
-proc getCurrentMode*(): AgentMode =
-  ## Get the current agent mode (thread-safe)
-  if not modeInitialized:
-    initializeModeState()
-  return currentMode
-
-proc setCurrentMode*(mode: AgentMode) =
-  ## Set the current agent mode (thread-safe)
-  currentMode = mode
-  modeInitialized = true
-  debug(fmt"Mode changed to: {mode}")
-
-proc toggleMode*(): AgentMode =
-  ## Toggle between Plan and Code modes, returns new mode
-  let newMode = getNextMode(getCurrentMode())
-  setCurrentMode(newMode)
-  return newMode
-
-proc getModePromptIndicator*(): string =
-  ## Get the mode indicator for prompt display
-  let mode = getCurrentMode()
-  case mode:
-  of amPlan: "(plan)"
-  of amCode: "(code)"

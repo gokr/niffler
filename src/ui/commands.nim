@@ -106,7 +106,12 @@ proc executeCommand*(command: string, args: seq[string],
 
 # Built-in command handlers
 proc helpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  var message = "Available commands:\n"
+  var message = """
+Type '/help' for help and '/exit' or '/quit' to leave.
+Press Ctrl+C to stop streaming display or exit. Ctrl-Z to suspend.
+Press Shift+Tab to switch between Plan and Code mode.
+
+Available commands:\n"""
   let commands = getAvailableCommands()
   
   for cmd in commands:
@@ -130,26 +135,13 @@ proc exitHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
     shouldContinue: false
   )
 
-proc modelsHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  let config = loadConfig()
-  var message = "Available models:\n"
-  
-  for model in config.models:
-    let marker = if model.nickname == currentModel.nickname: " (current)" else: ""
-    message.add("  {model.nickname} - {model.model}{marker}\n".fmt)
-  
-  return CommandResult(
-    success: true,
-    message: message,
-    shouldExit: false,
-    shouldContinue: true
-  )
 
 proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   if args.len == 0:
+    # Show current model
     return CommandResult(
-      success: false,
-      message: "Usage: /model <name>",
+      success: true,
+      message: fmt"Current model: {currentModel.nickname} ({currentModel.model})",
       shouldExit: false,
       shouldContinue: true
     )
@@ -170,7 +162,7 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
   
   return CommandResult(
     success: false,
-    message: fmt"Model '{modelName}' not found. Use '/models' to see available models.",
+    message: fmt"Model '{modelName}' not found. Use '/model' to see available models.",
     shouldExit: false,
     shouldContinue: true
   )
@@ -322,24 +314,6 @@ proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
     shouldContinue: true
   )
 
-proc themesHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Show available themes
-  let availableThemes = getAvailableThemes()
-  let currentThemeName = getCurrentTheme().name
-  
-  var message = "Available themes:\n"
-  for themeName in availableThemes:
-    let marker = if themeName == currentThemeName: " (current)" else: ""
-    message.add("  {themeName}{marker}\n".fmt)
-  
-  message.add("\nUse '/theme <name>' to switch themes\n")
-  
-  return CommandResult(
-    success: true,
-    message: message,
-    shouldExit: false,
-    shouldContinue: true
-  )
 
 proc themeHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to a different theme or show current theme
@@ -365,7 +339,7 @@ proc themeHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
   else:
     return CommandResult(
       success: false,
-      message: fmt"Theme '{themeName}' not found. Use '/themes' to see available themes.",
+      message: fmt"Theme '{themeName}' not found. Use '/theme' to see available themes.",
       shouldExit: false,
       shouldContinue: true
     )
@@ -423,13 +397,11 @@ proc initializeCommands*() =
   ## Initialize the built-in commands
   registerCommand("help", "Show help and available commands", "", @[], helpHandler)
   registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler)
-  registerCommand("models", "List available models", "", @[], modelsHandler)
-  registerCommand("model", "Switch to a different model", "<name>", @[], modelHandler)
+  registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler)
   registerCommand("clear", "Clear conversation history", "", @[], clearHandler)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler)
   registerCommand("tokens", "Show detailed token usage information", "", @[], tokensHandler)
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
-  registerCommand("themes", "List available themes", "", @[], themesHandler)
-  registerCommand("theme", "Switch theme or show current theme", "[name]", @[], themeHandler)
+  registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
   registerCommand("paste", "Show clipboard contents", "", @[], pasteHandler)
