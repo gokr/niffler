@@ -31,23 +31,27 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ **Multi-turn Conversations** - Tool results integrated into conversation flow
 - ✅ **Streaming Infrastructure** - Real network-level SSE streaming using Curly/libcurl
 - ✅ **Context Management** - Basic message history with tool result integration
+- ❌ **Thinking Token Streaming** - Real-time processing of reasoning content during streaming
 
 ## Gap Analysis: Key Missing Features for Agentic Coding
 
 ### **High Priority: Core Agentic Features**
 
 #### **1. Plan/Code Mode System**
-- ❌ **Plan Mode** - Analysis, research, and planning focus with todo generation
-- ❌ **Code Mode** - Implementation mode that executes plans and todos
-- ❌ **Mode Switching** - Seamless transition between planning and implementation
+- ✅ **Plan Mode** - Analysis, research, and planning focus with specialized prompts
+- ✅ **Code Mode** - Implementation mode that executes plans with specialized prompts
+- ✅ **Mode Switching** - Seamless transition between planning and implementation (Shift+Tab)
 
 #### **2. Dynamic System Prompt Generation** 
 *Crucial for agentic behavior*
-- ❌ **Context-Aware Prompts** - Generate prompts based on current workspace state
-- ❌ **Workspace Context Injection** - Include current directory, recent files, open tabs
-- ❌ **Tool Availability Awareness** - Only describe actually available tools
-- ❌ **Instruction File Support** - Automatically include CLAUDE.md, OCTO.md project instructions and find them in hierarchy
-- ❌ **Environment Information** - Current time, git status, OS information
+- ✅ **Context-Aware Prompts** - Generate prompts based on current workspace state
+- ✅ **Workspace Context Injection** - Include current directory, git status, project info
+- ✅ **Tool Availability Awareness** - Only describe actually available tools
+- ✅ **Instruction File Support** - Automatically include CLAUDE.md, OCTO.md project instructions and find them in hierarchy
+- ✅ **Environment Information** - Current time, git status, OS information
+- ✅ **NIFFLER.md System Prompts** - Extract system prompts from NIFFLER.md with fallback to defaults
+- ✅ **File Inclusion Support** - @include directive for modular instruction files
+- ✅ **Config Directory Search** - System-wide NIFFLER.md in ~/.niffler/
 
 #### **3. Todolist Tool Implementation**
 *Essential agentic feature for task breakdown and tracking*
@@ -63,6 +67,7 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ❌ **Message Metadata** - Support timestamps, summary flags, tool metadata
 - ❌ **Rich Content Support** - Handle multiple content blocks per message
 - ❌ **Conversation Summarization** - Mark messages as condensed summaries
+- ❌ **Thinking Token Storage** - Store reasoning content separately with encryption support
 
 ### **Medium Priority: User Experience**
 
@@ -73,6 +78,7 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ❌ **Conversation Summarization** - LLM-powered context condensing with fallback
 - ❌ **Transparent Management** - Clear indication of context operations
 - ❌ **@ Referencing** - No context referencing system (@file.txt, @folder/)
+- ❌ **Thinking Token Budget Management** - Dynamic token allocation for reasoning vs output content
 
 #### **6. Basic Terminal UI Enhancements**
 - ❌ **Enhanced help system** - Update for new Plan/Code workflow
@@ -83,10 +89,20 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 
 ### **Lower Priority: Advanced Features**
 
-#### **7. Multiple Provider Support**
-- ❌ **Anthropic Integration** - Dedicated Claude API client, not sure needed, OpenAPI seems like a good standard?
-- ❌ **Provider-Specific Features** - Thinking tokens, reasoning content
-- ❌ **Reasoning Effort** - No low/medium/high reasoning control
+#### **7. Thinking Token Support** *(NEW HIGH PRIORITY)*
+*Essential for next-generation reasoning models like GPT-5 and Claude 4*
+- ❌ **Multi-Provider Thinking Architecture** - Separate handling for Anthropic thinking blocks vs OpenAI reasoning content
+- ❌ **Unified Thinking Token IR** - Consistent interface with `reasoningContent`, `encryptedReasoningContent`, `reasoningId` fields
+- ❌ **Streaming Thinking Processing** - Real-time thinking token handling with separate callbacks
+- ❌ **Budget Configuration** - Configurable reasoning levels (low: 2048, medium: 4096, high: 8192 tokens)
+- ❌ **Encryption Support** - Handle both clear-text and redacted/encrypted thinking blocks
+- ❌ **Context-Aware Windowing** - Intelligent preservation of important reasoning content
+- ❌ **Provider Abstraction** - Unified interface while preserving provider-specific features
+
+#### **8. Multiple Provider Support**
+- ❌ **Anthropic Integration** - Dedicated Claude API client with thinking token support
+- ❌ **Provider-Specific Features** - Thinking tokens, reasoning content, encrypted content
+- ❌ **Reasoning Effort** - Configurable low/medium/high reasoning control
 
 #### **8. File Enhancement Features**
 - ❌ **Advanced Change Detection** - Timestamp-based file modification tracking
@@ -107,19 +123,23 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 
 ## Implementation Phases
 
-### **Phase 5: Agentic Core (IMMEDIATE PRIORITY)**
+### **Phase 5: Agentic Core (COMPLETED ✅)**
 
 #### 5.1: Plan/Code Mode System
-- [ ] Implement mode switching (we do not need mode **detection**)
-- [ ] Define mode-specific behavior and prompts  
-- [ ] Add mode indicator in the prompt, color and perhaps added "(plan)" text
+- [x] Implement mode switching (Shift+Tab toggle)
+- [x] Define mode-specific behavior and prompts  
+- [x] Add mode indicator in the prompt, color and "(plan)"/"(code)" text
 
 #### 5.2: Dynamic System Prompt Generation
-- [ ] Create modular prompt assembly system
-- [ ] Implement workspace context detection (cwd, recent files)
-- [ ] Add instruction file discovery (CLAUDE.md, OCTO.md)
-- [ ] Include environment information (time, git status)
-- [ ] Add tool availability awareness
+- [x] Create modular prompt assembly system
+- [x] Implement workspace context detection (cwd, git status, project info)
+- [x] Add instruction file discovery (CLAUDE.md, OCTO.md, NIFFLER.md, AGENT.md)
+- [x] Include environment information (time, git status, OS information)
+- [x] Add tool availability awareness
+- [x] NIFFLER.md system prompt extraction with fallback to hardcoded defaults
+- [x] File inclusion support (@include directive)
+- [x] Config directory search for system-wide NIFFLER.md
+- [x] Init command creates default NIFFLER.md for user customization
 
 #### 5.3: Todolist Tool Implementation
 - [ ] Create todo data structures and persistence
@@ -147,10 +167,27 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - [ ] Add colored diffs and syntax highlighting
 - [ ] Implement status indicators and history navigation
 
-### **Phase 7: Provider Support (MEDIUM PRIORITY)**
+### **Phase 7: Thinking Token Support (HIGH PRIORITY)**
 
-#### 7.1: Anthropic Integration
-- [ ] Add thinking tokens and reasoning content support
+#### 7.1: Multi-Provider Thinking Architecture
+- [ ] Implement Anthropic thinking block parser (streaming XML-like format)
+- [ ] Add OpenAI reasoning content handler (native reasoning_content field)
+- [ ] Create provider detection and routing logic
+
+#### 7.2: Unified Thinking Token IR
+- [ ] Extend message types with reasoningContent, encryptedReasoningContent, reasoningId
+- [ ] Create thinking token abstraction layer
+- [ ] Add provider-specific metadata support
+
+#### 7.3: Streaming and Budget Management
+- [ ] Implement real-time thinking token processing during streaming
+- [ ] Add configurable reasoning budgets (low/medium/high)
+- [ ] Create dynamic token allocation between reasoning and output
+
+### **Phase 8: Provider Support (MEDIUM PRIORITY)**
+
+#### 8.1: Anthropic Integration
+- [ ] Add dedicated Claude API client with thinking token support
 - [ ] Create unified provider interface
 - [ ] Add provider-specific optimizations
 
@@ -191,26 +228,28 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 ### **Phase Completion Criteria**
 - **Phase 5**: Plan/Code modes working with dynamic prompts and todolist tool
 - **Phase 6**: Real streaming, context management, and enhanced CLI working
-- **Phase 7**: Multi-provider support with Anthropic integration
-- **Phase 8**: Advanced file management and session capabilities
+- **Phase 7**: Thinking token support across providers with unified IR and streaming
+- **Phase 8**: Multi-provider support with Anthropic integration
+- **Phase 9**: Advanced file management and session capabilities
 
 ### **Agentic Capability Goal**
 Target: Full agentic coding assistant capability with Plan/Code workflow supporting complex multi-step development tasks.
 
-**Current Progress: ~80% Foundation Complete**
+**Current Progress: ~95% Foundation Complete**
 - ✅ Tool System: 100% (all 6 core tools implemented)
 - ✅ Threading Architecture: 100% (robust worker system)
 - ✅ LLM Integration: 95% (tool calling and real streaming working)
-- ❌ Agentic Features: 20% (basic conversations, needs Plan/Code modes and todos)
-- ❌ Dynamic Prompts: 10% (static prompts, needs context awareness)
+- ✅ Agentic Features: 90% (Plan/Code modes implemented, needs todolist tool)
+- ✅ Dynamic Prompts: 100% (context-aware prompts with NIFFLER.md support)
 - ❌ User Experience: 30% (CLI needs more refinement)
 
 ## Immediate Next Steps
 
-1. **Implement Plan/Code Mode System**: Core agentic workflow foundation
-2. **Add Dynamic System Prompt Generation**: Context-aware prompt assembly  
-3. **Create Todolist Tool**: Essential for task breakdown and tracking
-4. **Enhanced Message Persistence**: Support tool calls and conversation metadata
+1. ✅ **Plan/Code Mode System**: COMPLETED - Core agentic workflow foundation
+2. ✅ **Dynamic System Prompt Generation**: COMPLETED - Context-aware prompt assembly with NIFFLER.md support
+3. **Create Todolist Tool**: Essential for task breakdown and tracking (CURRENT PRIORITY)
+4. **Thinking Token Support**: Critical for next-generation reasoning models (HIGH PRIORITY)
+5. **Enhanced Message Persistence**: Support tool calls, conversation metadata, and thinking token storage
 
 ## Key Insights from Research
 
@@ -224,6 +263,14 @@ Target: Full agentic coding assistant capability with Plan/Code workflow support
 - Structured message persistence enables sophisticated conversation management
 - User-controlled context management prevents unwanted automatic behaviors
 - Modular prompt assembly allows flexible agent behavior
+
+### **From Octofriend:**
+- Thinking token support is essential for next-generation reasoning models (GPT-5, Claude 4)
+- Multi-provider architecture enables seamless switching between LLM providers
+- Unified IR with provider-specific features preserves capabilities while maintaining consistency
+- Streaming thinking token processing enables real-time reasoning display
+- Budget management prevents thinking tokens from overwhelming context windows
+- Encryption support future-proofs against privacy-preserving reasoning models
 
 ### **Design Philosophy:**
 - Embrace simplicity over complexity (Plan/Code vs multi-mode)
