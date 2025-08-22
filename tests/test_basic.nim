@@ -1,16 +1,17 @@
 import std/[unittest, options]
 import ../src/types/messages
-import ../src/tools/schemas
+import ../src/tools/registry
 
 # Very basic test suite that works with current codebase
 
 suite "Basic Functionality Tests":
   
   test "Tool schema generation":
-    let bashSchema = bashToolSchema()
-    check bashSchema.`type` == "function"
-    check bashSchema.function.name == "bash"
-    check bashSchema.function.description == "Execute shell commands"
+    let bashSchema = getToolSchema("bash")
+    check bashSchema.isSome()
+    check bashSchema.get().`type` == "function"
+    check bashSchema.get().function.name == "bash"
+    check bashSchema.get().function.description == "Execute shell commands"
 
   test "Message type creation":
     let message = Message(
@@ -22,9 +23,9 @@ suite "Basic Functionality Tests":
 
   test "Tool definition access":
     let allSchemas = getAllToolSchemas()
-    check allSchemas.len == 6
+    check allSchemas.len == 7
     
-    let toolNames = ["bash", "read", "list", "edit", "create", "fetch"]
+    let toolNames = ["bash", "read", "list", "edit", "create", "fetch", "todolist"]
     for toolName in toolNames:
       let schema = getToolSchema(toolName)
       check schema.isSome()

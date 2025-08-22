@@ -35,7 +35,7 @@ import ../types/[messages, config]
 import std/logging
 import ../core/[channels, history, database]
 import curlyStreaming
-import ../tools/schemas
+import ../tools/registry
 
 type
   # Buffer for tracking incomplete tool calls during streaming

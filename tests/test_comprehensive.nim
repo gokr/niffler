@@ -1,6 +1,6 @@
 import std/[unittest, options, json, os, tempfiles, strformat]
 import ../src/types/messages
-import ../src/tools/[schemas, common]
+import ../src/tools/[registry, common]
 import ../src/api/curlyStreaming
 
 # Comprehensive test suite that works with current codebase
@@ -9,7 +9,7 @@ suite "Comprehensive Tool Tests":
   
   test "All tool schemas exist and are valid":
     let allSchemas = getAllToolSchemas()
-    check allSchemas.len == 6
+    check allSchemas.len == 7
     
     # Check each tool individually
     for schema in allSchemas:
