@@ -1,0 +1,28 @@
+{
+  "yourName": "Developer",
+  "models": [
+    {
+      "nickname": "claude",
+      "baseUrl": "https://api.anthropic.com",
+      "apiEnvVar": "ANTHROPIC_API_KEY",
+      "model": "claude-3-5-sonnet-20241022",
+      "context": 200000,
+      "enabled": true,
+      "temperature": 0.7
+    }
+  ],
+  "database": {
+    "type": "sqlite",
+    "enabled": true,
+    "walMode": true,
+    "busyTimeout": 5000,
+    "poolSize": 10
+  },
+  "markdownEnabled": true,
+  "instructionFiles": [
+    "CLAUDE.md",
+    "OCTO.md", 
+    "NIFFLER.md",
+    "AGENT.md"
+  ]
+}

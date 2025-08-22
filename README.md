@@ -4,16 +4,16 @@
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/Version-0.2.2-green.svg)
 
-**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers and a tool system for file operations, command execution, and web interactions. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over Octofriend.
+**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers and a tool system for file operations, command execution, and web interactions. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
-Niffler is heavily a work-in-progress. Some of the design ideas that perhaps **stand out** are these:
+Niffler is a work-in-progress. Some of the design ideas that perhaps **stand out** are these:
 
 - **Native multithreaded**. The tool executions are in one thread. The UI is in one thread. The communication with the LLM is in one thread.
-- **Enhanced CLI Interface**. Built on linecross for superior input handling with tab completion, history, and real-time markdown rendering.
+- **CLI Interface**. Built on linecross for input handling with tab completion, history and more. A bit less polished as Ink-based tools but very terminal friendly and *cross platform*.
 - **Has a client side database**. Just started using it, but Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
-- **Not yet another node.js thing**. Nim is a different eco system!
+- **Not yet another node.js thing**. Nim is a different eco system.
 - **Portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
 
 
@@ -24,7 +24,7 @@ Niffler is heavily a work-in-progress. Some of the design ideas that perhaps **s
 - **Interactive Chat Mode**: Real-time conversation with streaming responses
 - **Single Prompt Mode**: Send individual prompts directly from your command line and get immediate responses
 - **Model Management**: Easy configuration and switching between AI models
-- **Single binary and Cross Platform**: Written in Nim means it is a single binary.
+- **Single binary and Cross Platform**: Written in Nim means it compiles to a single binary.
 
 ### Tool System
 Niffler includes a tool system that enables AI assistants to interact with your development environment. All tool executions are being run in a separate thread. It should be easy to add more builtin tools:
@@ -38,6 +38,9 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
 
 ### Advanced Features
+- **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
+- **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
+- **NIFFLER.md Integration**: Customizable system prompts and instruction files with include directive support
 - **Database Persistence**: SQLite-based prompt and response history with cross-session persistence
 - **Debug Logging**: Logging with info & debug levels and optional HTTP request/response dumping  
 
@@ -65,9 +68,11 @@ nimble build
 ```bash
 niffler init
 ```
-This creates a default configuration file:
-- **Linux/macOS**: `~/.niffler/config.json`
-- **Windows**: `%APPDATA%\niffler\config.json`
+This creates default configuration files:
+- **Linux/macOS**: `~/.niffler/config.json` and `~/.niffler/NIFFLER.md`
+- **Windows**: `%APPDATA%\niffler\config.json` and `%APPDATA%\niffler\NIFFLER.md`
+
+The NIFFLER.md file contains customizable system prompts that you can edit to tailor Niffler's behavior to your preferences.
 
 ### 2. Configure Your AI Model
 Edit the configuration file to add (or enable) at least one AI model and API key:
@@ -116,6 +121,25 @@ niffler --dump
 niffler --debug --dump
 ```
 
+### Plan/Code Mode System
+
+Niffler features an intelligent mode system that adapts its behavior based on the current task:
+
+**Mode Switching:**
+- **Shift+Tab**: Toggle between Plan and Code modes
+- **Visual Indicators**: Mode displayed in prompt with color coding (green for plan, blue for code)
+- **Dynamic Prompts**: Each mode has specialized system prompts for optimal AI behavior
+
+**Plan Mode:**
+- Focus on analysis, research, and task breakdown
+- Emphasizes understanding requirements before implementation
+- Encourages thorough exploration of codebases and documentation
+
+**Code Mode:**
+- Focus on implementation and execution
+- Emphasizes making concrete changes and testing
+- Optimized for completing established plans and fixing issues
+
 ### Enhanced Terminal Features
 
 **Cursor Key Support:**
@@ -124,9 +148,11 @@ niffler --debug --dump
 - **Home/End**: Jump to beginning/end of current line
 - **Ctrl+C**: Graceful exit
 - **Ctrl+Z**: Suspend to background (Unix/Linux/macOS)
+- **Shift+Tab**: Toggle between Plan and Code modes
 
 **Visual Enhancements:**
 - **Colored Prompts**: Username appears in blue and cannot be backspaced over
+- **Mode Indicators**: Current mode (plan/code) with color coding in prompt
 - **History Persistence**: Your conversation history is saved to a SQLite database and restored between sessions
 - **Cross-Platform**: Works consistently on Windows, Linux, and macOS
 
@@ -184,6 +210,12 @@ niffler init --config-path /path/to/config.json
       "apiKey": "not-needed",
       "enabled": false
     }
+  ],
+  "instructionFiles": [
+    "NIFFLER.md",
+    "CLAUDE.md",
+    "OCTO.md",
+    "AGENT.md"
   ]
 }
 ```
@@ -209,6 +241,39 @@ You can configure API keys using environment variables:
 export OPENAI_API_KEY="your-openai-key"
 export ANTHROPIC_API_KEY="your-anthropic-key"
 ```
+
+### NIFFLER.md System Prompt Customization
+
+Niffler supports advanced customization through NIFFLER.md files that can contain both system prompts and project instructions:
+
+**System Prompt Sections:**
+- `# Common System Prompt` - Base instructions for all modes
+- `# Plan Mode Prompt` - Specific instructions for Plan mode
+- `# Code Mode Prompt` - Specific instructions for Code mode
+
+**Search Hierarchy:**
+1. **Project directory** - Current and parent directories (up to 3 levels)
+2. **Config directory** - `~/.niffler/NIFFLER.md` for system-wide defaults
+
+**File Inclusion Support:**
+```markdown
+# Common System Prompt
+Base instructions here
+
+@include CLAUDE.md
+@include shared/guidelines.md
+
+# Project Instructions
+Additional project-specific content
+```
+
+**Features:**
+- **Dynamic prompts** with template variables (`{availableTools}`, `{currentDir}`, etc.)
+- **Hierarchical configuration** - project-specific overrides system-wide defaults
+- **Claude Code compatibility** - include CLAUDE.md for seamless integration
+- **Modular organization** - break up large instruction files with includes
+
+For detailed documentation and examples, see [NIFFLER-FEATURES.md](NIFFLER-FEATURES.md).
 
 ## 🛠️ Tool System Details
 
