@@ -9,6 +9,8 @@ The multi-agent system would consist of:
 2. **Agent Niffler Instances** - Specialized agents running as separate processes, each showing their own conversations
 3. **Inter-Process Communication** - Coordination layer between master and agents
 
+This idea turns one agent == one process. Most other tools coordinate multiple agents in a single running process.
+
 ## Current Architecture Analysis
 
 ### Core Strengths for Multi-Agent Extension
