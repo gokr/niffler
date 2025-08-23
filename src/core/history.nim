@@ -50,6 +50,13 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
     
     let callsInfo = if toolCalls.isSome(): fmt" (with {toolCalls.get().len} tool calls)" else: ""
     debug(fmt"Added assistant message: {content[0..min(50, content.len-1)]}...{callsInfo}")
+    
+    # Debug: Verify toolCalls were stored properly
+    if toolCalls.isSome():
+      debug(fmt"DEBUG: Assistant item toolCalls stored: {assistantItem.toolCalls.isSome()}")
+      debug(fmt"DEBUG: Assistant item toolCalls count: {assistantItem.toolCalls.get().len}")
+    else:
+      debug("DEBUG: No tool calls in assistant message")
   finally:
     release(globalHistory.lock)
 
@@ -100,8 +107,13 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
         inc assistantCount
         
         # Count tool calls in this assistant message
+        debug(fmt"DEBUG: Processing assistant item - toolCalls.isSome(): {item.toolCalls.isSome()}")
         if item.toolCalls.isSome():
-          toolCallCount += item.toolCalls.get().len
+          let toolCallsLen = item.toolCalls.get().len
+          debug(fmt"DEBUG: Found {toolCallsLen} tool calls in assistant message")
+          toolCallCount += toolCallsLen
+        else:
+          debug("DEBUG: No tool calls found in assistant message")
       of hitToolOutput:
         result.add(Message(
           role: mrTool,
