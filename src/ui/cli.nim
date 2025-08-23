@@ -28,6 +28,7 @@ when defined(posix):
   import posix
 import linecross
 import ../core/[app, channels, history, config, database]
+import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes]
 import ../api/api
 import ../api/curlyStreaming
@@ -419,6 +420,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
         # Wait for response and display it
         var responseText = ""
         var responseReceived = false
+        var hadToolCalls = false  # Track if this conversation involved tool calls
         var attempts = 0
         const maxAttempts = 600  # 60 seconds with 100ms sleep
         
@@ -446,6 +448,11 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
             
             case response.kind:
             of arkStreamChunk:
+              # Check if this chunk contains tool calls
+              if response.toolCalls.isSome():
+                hadToolCalls = true
+                debug("DEBUG: Tool calls detected in UI - will not add duplicate assistant message to history")
+              
               if response.content.len > 0:
                 responseText.add(response.content)
                 # Apply real-time markdown rendering if enabled
@@ -460,18 +467,22 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               # Update token counts with new response (prompt will show tokens)
               isProcessing = false
               updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
-              # Add assistant response to history (without tool calls in CLI - tool calls are handled by API worker)
-              if responseText.len > 0:
+              # Add assistant response to history only if no tool calls were involved
+              # (API worker already handles history for tool call conversations)
+              if responseText.len > 0 and not hadToolCalls:
+                debug("DEBUG: Adding assistant message to history (no tool calls detected)")
                 discard addAssistantMessage(responseText)
-                
-                # Log the prompt exchange to database
-                if database != nil:
-                  try:
-                    let dateStr = now().format("yyyy-MM-dd")
-                    let sessionId = fmt"session_{getUserName()}_{dateStr}"
-                    logPromptHistory(database, input, responseText, currentModel.nickname, sessionId)
-                  except Exception as e:
-                    debug(fmt"Failed to log prompt to database: {e.msg}")
+              elif hadToolCalls:
+                debug("DEBUG: Skipping assistant message addition - tool calls already handled by API worker")
+              
+              # Log the prompt exchange to database
+              if database != nil:
+                try:
+                  let dateStr = now().format("yyyy-MM-dd")
+                  let sessionId = fmt"session_{getUserName()}_{dateStr}"
+                  logPromptHistory(database, input, responseText, currentModel.nickname, sessionId)
+                except Exception as e:
+                  debug(fmt"Failed to log prompt to database: {e.msg}")
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
@@ -509,17 +520,32 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   if database != nil:
     database.close()
   
+  # Close log file if active
+  if logFileModule.isLoggingActive():
+    let logManager = logFileModule.getGlobalLogManager()
+    logManager.closeLogFile()
+  
   # Linecross cleanup is automatic
 
-proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false) =
+proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false, logFile: string = "") =
   ## Send a single prompt and return response
   if text.len == 0:
     echo "Error: No prompt text provided"
     return
     
   # Initialize the app systems but don't start the full UI loop
-  let consoleLogger = newConsoleLogger()
-  addHandler(consoleLogger)
+  if logFile.len > 0:
+    # Setup file and console logging
+    let logManager = logFileModule.initLogFileManager(logFile)
+    logFileModule.setGlobalLogManager(logManager)
+    logManager.activateLogFile()
+    let logger = logFileModule.newFileAndConsoleLogger(logManager)
+    addHandler(logger)
+  else:
+    # Setup console-only logging
+    let consoleLogger = newConsoleLogger()
+    addHandler(consoleLogger)
+  
   setLogFilter(level)
   initThreadSafeChannels()
   initHistoryManager()
@@ -607,5 +633,10 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   # Close database connection
   if database != nil:
     database.close()
+  
+  # Close log file if active
+  if logFileModule.isLoggingActive():
+    let logManager = logFileModule.getGlobalLogManager()
+    logManager.closeLogFile()
   
   # Linecross cleanup is automatic

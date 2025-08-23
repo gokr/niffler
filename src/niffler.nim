@@ -14,6 +14,7 @@ import std/[os, tables, logging, strformat]
 import docopt
 
 import core/[config, app, channels, history, database]
+import core/log_file as logFileModule
 import api/curlyStreaming
 import ui/cli
 import types/config as configTypes
@@ -32,10 +33,20 @@ proc showModels() =
   for model in config.models:
     echo "  ", model.nickname, " (", model.baseUrl, ")"
 
-proc initializeAppSystems(level: Level, dump: bool = false) =
+proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = "") =
   ## Initialize common app systems
-  let consoleLogger = newConsoleLogger()
-  addHandler(consoleLogger)
+  if logFile.len > 0:
+    # Setup file and console logging
+    let logManager = logFileModule.initLogFileManager(logFile)
+    logFileModule.setGlobalLogManager(logManager)
+    logManager.activateLogFile()
+    let logger = logFileModule.newFileAndConsoleLogger(logManager)
+    addHandler(logger)
+  else:
+    # Setup console-only logging
+    let consoleLogger = newConsoleLogger()
+    addHandler(consoleLogger)
+  
   setLogFilter(level)
   initThreadSafeChannels()
   initHistoryManager()
@@ -57,10 +68,10 @@ proc selectModelFromConfig(modelName: string, config: configTypes.Config): confi
     echo "Error: No models configured. Please run 'niffler init' first."
     quit(1)
 
-proc startInteractiveMode(modelName: string, level: Level, dump: bool) =
+proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "") =
   ## Start interactive mode with CLI interface
   # Initialize app systems
-  initializeAppSystems(level, dump)
+  initializeAppSystems(level, dump, logFile)
   
   # Load configuration and select model
   let config = loadConfig()
@@ -98,6 +109,7 @@ Options:
   -i --info              Show info level logging
   -d --debug             Show debug level logging
   --dump                 Show HTTP requests & responses
+  --log <filename>       Redirect debug/dump output to log files
 
 Commands:
   init                   Initialize configuration
@@ -135,11 +147,12 @@ when isMainModule:
   let model = if args["--model"] and args["--model"].kind != vkNone: $args["--model"] else: ""
   let prompt = if args["--prompt"] and args["--prompt"].kind != vkNone: $args["--prompt"] else: ""
   let dump = args["--dump"]
+  let logFile = if args["--log"] and args["--log"].kind != vkNone: $args["--log"] else: ""
 
   if prompt.len == 0:
     # Start interactive mode
-    startInteractiveMode(model, level, dump)
+    startInteractiveMode(model, level, dump, logFile)
   else:
     # Send single prompt
-    sendSinglePrompt(prompt, model, level, dump)
+    sendSinglePrompt(prompt, model, level, dump, logFile)
 
