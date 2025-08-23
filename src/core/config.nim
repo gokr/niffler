@@ -526,21 +526,7 @@ In Code mode:
 
 # System-Wide Configuration
 
-This NIFFLER.md file provides system-wide defaults for all projects. 
-Individual projects can override these settings by creating their own NIFFLER.md files.
-
-You can customize these prompts by editing this file. The prompts support template variables like:
-- {availableTools} - List of available tools
-- {currentDir} - Current working directory
-- {currentTime} - Current timestamp
-- {osInfo} - Operating system information
-- {gitInfo} - Git repository information
-- {projectInfo} - Project context information
-
-You can also include other files using @include directives:
-@include ~/shared/coding-standards.md
-
-For more information, see the NIFFLER-FEATURES.md documentation.
+This NIFFLER.md file provides system-wide defaults for all projects, see the NIFFLER-FEATURES.md documentation.
 """
   
   try:
