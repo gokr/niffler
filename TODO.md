@@ -278,4 +278,70 @@ Target: Full agentic coding assistant capability with Plan/Code workflow support
 - Build on solid foundation (current tool system is excellent)
 - Focus on agentic patterns that demonstrably improve coding workflows
 
+## Tool Call Deduplication: Current Implementation vs Industry Best Practices
+
+### Current Niffler Implementation ✅
+- **String-based signature matching**: Uses `fmt"{toolCall.function.name}({toolCall.function.arguments})"` for duplicate detection
+- **Complete prevention**: Blocks any duplicate tool call immediately 
+- **Recursion depth limit**: Maximum 20 levels to prevent deep loops
+- **Simple and effective**: Successfully prevents infinite tool calling loops
+- **Low overhead**: Minimal performance impact
+
+### Roo-Code's Advanced Approach 🏆
+*(More sophisticated system for reference)*
+
+**ToolRepetitionDetector Class:**
+- **Parameter normalization**: Alphabetically sorts parameters to ensure consistent comparison regardless of order
+- **Configurable limits**: Default 3 consecutive identical calls, but user-customizable
+- **User interaction**: Actively asks users for guidance when limits are reached
+- **Automatic recovery**: Resets state after reaching limit to allow legitimate retries
+- **Sophisticated serialization**: Handles complex parameter structures properly
+
+**Multi-layered Protection:**
+- **Tool repetition tracking**: Consecutive identical tool calls
+- **Consecutive mistake tracking**: Failed tool execution patterns  
+- **Usage statistics**: Comprehensive analytics for debugging and optimization
+- **Tool-specific limits**: Some tools have their own specialized mistake counters
+
+### Recommended Future Enhancements (Priority: Low-Medium)
+
+#### 1. Parameter Order Normalization
+```nim
+proc normalizeToolSignature(toolCall: LLMToolCall): string =
+  # Sort JSON parameters alphabetically for consistent comparison
+  let argsJson = parseJson(toolCall.function.arguments)
+  let sortedArgs = sortJsonKeys(argsJson)  # Custom function needed
+  return fmt"{toolCall.function.name}({$sortedArgs})"
+```
+
+#### 2. Configurable Limits
+- Add `maxConsecutiveDuplicates` to model configuration (default: 3)
+- Add `maxRecursionDepth` as configurable parameter
+- Allow per-tool duplicate limits for different use cases
+
+#### 3. User Interaction on Limits
+- Instead of silent termination, ask user: "Model is repeating tool calls. Continue, modify approach, or stop?"
+- Provide context about what tool is being repeated and why
+- Allow user to override limits for legitimate cases
+
+#### 4. Enhanced Tracking
+```nim
+type ToolCallTracker = object
+  consecutiveDuplicates: Table[string, int]  # Track per-signature
+  totalAttempts: Table[string, int]          # Usage analytics
+  failures: Table[string, int]              # Error tracking
+```
+
+#### 5. Recovery Mechanisms
+- Reset duplicate counters after successful different tool calls
+- Implement "cooling off" periods where duplicates are allowed after delays
+- Smart context injection to help model avoid repetition
+
+### Implementation Priority
+**Current Status: ✅ Adequate** - The existing deduplication prevents infinite loops effectively
+
+**Recommended Timing:** Implement enhanced deduplication during **Phase 6: User Experience** when focusing on user interaction improvements.
+
+**Why Low Priority:** The current system successfully prevents the core problem (infinite loops). Enhanced features would improve user experience but aren't critical for basic functionality.
+
 This roadmap represents a focused path toward creating a sophisticated agentic coding assistant while maintaining Niffler's core design principles and Nim-based architecture.

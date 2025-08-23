@@ -84,7 +84,7 @@ let doc = """
 Niffler - your friendly magical AI buddy
 
 Usage:
-  niffler [--model=<nickname>] [--prompt=<text>] [options]
+  niffler [--model <nickname>] [--prompt <text>] [options]
   niffler init [<path>] [options]
   niffler model list [options]
   niffler --version
