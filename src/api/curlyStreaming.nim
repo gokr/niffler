@@ -25,6 +25,7 @@
 import std/[json, strutils, options, strformat, logging, tables]
 import curly
 import ../types/[messages, config]
+import ../core/log_file as logFileModule
 
 # Single long-lived Curly instance for the entire application
 let curl* = newCurly()
@@ -254,20 +255,20 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
     
     # Dump HTTP request if enabled
     if isDumpEnabled():
-      echo ""
-      echo "=== HTTP REQUEST ==="
-      echo "URL: " & endpoint
-      echo "Method: POST"
-      echo "Headers:"
+      logFileModule.logEcho ""
+      logFileModule.logEcho "=== HTTP REQUEST ==="
+      logFileModule.logEcho "URL: " & endpoint
+      logFileModule.logEcho "Method: POST"
+      logFileModule.logEcho "Headers:"
       for key, value in client.headers.pairs:
         # Mask Authorization header for security
         let displayValue = if key.toLowerAscii() == "authorization": "Bearer ***" else: value
-        echo "  " & key & ": " & displayValue
-      echo ""
-      echo "Body:"
-      echo requestBody
-      echo "==================="
-      echo ""
+        logFileModule.logEcho "  " & key & ": " & displayValue
+      logFileModule.logEcho ""
+      logFileModule.logEcho "Body:"
+      logFileModule.logEcho requestBody
+      logFileModule.logEcho "==================="
+      logFileModule.logEcho ""
     
     # Create headers array for Curly
     var headerSeq: seq[(string, string)] = @[]
@@ -341,14 +342,14 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
                 debug("SSE stream completed with [DONE]")
                 # Finalize dump
                 if isDumpEnabled():
-                  echo "===================="
-                  echo ""
+                  logFileModule.logEcho "===================="
+                  logFileModule.logEcho ""
                 return (true, finalUsage)
       
       # Finalize dump if no [DONE] received
       if isDumpEnabled():
-        echo "===================="
-        echo ""
+        logFileModule.logEcho "===================="
+        logFileModule.logEcho ""
       
       return (true, finalUsage)
       

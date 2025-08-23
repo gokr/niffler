@@ -239,6 +239,255 @@ proc cleanupStaleBuffers*(buffers: var Table[string, ToolCallBuffer], timeoutSec
   for id in toRemove:
     buffers.del(id)
 
+proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                                request: APIRequest, toolCalls: seq[LLMToolCall], 
+                                initialContent: string, database: DatabaseBackend,
+                                recursionDepth: int = 0, 
+                                executedCalls: seq[string] = @[]): bool =
+  ## Execute tool calls and continue conversation recursively
+  ## Returns true if successful, false if max recursion depth exceeded
+  const MAX_RECURSION_DEPTH = 20  # Reduced from 100 to prevent excessive loops
+  
+  if recursionDepth >= MAX_RECURSION_DEPTH:
+    debug(fmt"Max recursion depth ({MAX_RECURSION_DEPTH}) exceeded, stopping tool execution")
+    return false
+  
+  if toolCalls.len == 0:
+    return true
+    
+  debug(fmt"Executing {toolCalls.len} tool calls (recursion depth: {recursionDepth})")
+  
+  # Check for duplicate tool calls to prevent infinite loops
+  var filteredToolCalls: seq[LLMToolCall] = @[]
+  var updatedExecutedCalls = executedCalls
+  
+  for toolCall in toolCalls:
+    let toolSignature = fmt"{toolCall.function.name}({toolCall.function.arguments})"
+    if toolSignature in executedCalls:
+      debug(fmt"DEBUG: Skipping duplicate tool call: {toolSignature}")
+      continue
+    filteredToolCalls.add(toolCall)
+    updatedExecutedCalls.add(toolSignature)
+  
+  if filteredToolCalls.len == 0:
+    debug("DEBUG: All tool calls were duplicates, stopping execution")
+    return true
+  
+  debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
+  
+  # Execute each unique tool call
+  var allToolResults: seq[Message] = @[]
+  for toolCall in filteredToolCalls:
+    debug(fmt"Executing tool call: {toolCall.function.name}")
+    
+    # Send tool execution status to user
+    let toolIcon = getToolIcon(toolCall.function.name)
+    let argsPreview = getArgsPreview(toolCall.function.arguments)
+    let toolStatusResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkStreamChunk,
+      content: fmt"{'\n'}{toolIcon} {toolCall.function.name}({argsPreview}){'\n'}",
+      done: false
+    )
+    sendAPIResponse(channels, toolStatusResponse)
+    
+    # Send tool request to tool worker
+    let toolRequest = ToolRequest(
+      kind: trkExecute,
+      requestId: toolCall.id,
+      toolName: toolCall.function.name,
+      arguments: toolCall.function.arguments
+    )
+    debug("Tool request: " & $toolRequest)
+    
+    if trySendToolRequest(channels, toolRequest):
+      # Wait for tool response
+      var attempts = 0
+      while attempts < 300:  # Timeout after ~30 seconds
+        let maybeResponse = tryReceiveToolResponse(channels)
+        if maybeResponse.isSome():
+          let toolResponse = maybeResponse.get()
+          debug("Tool response: " & $toolResponse)
+          if toolResponse.requestId == toolCall.id:
+            # Create tool result message
+            let toolContent = if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}"
+            debug(fmt"Tool result received for {toolCall.function.name}: {toolContent[0..min(200, toolContent.len-1)]}...")
+            
+            let toolResultMsg = Message(
+              role: mrTool,
+              content: toolContent,
+              toolCallId: some(toolCall.id)
+            )
+            allToolResults.add(toolResultMsg)
+            
+            # Store tool result in conversation history
+            discard addToolMessage(toolContent, toolCall.id)
+            
+            break
+        sleep(100)
+        attempts += 1
+      
+      if attempts >= 300:
+        # Tool execution timed out
+        let errorMsg = Message(
+          role: mrTool,
+          content: "Error: Tool execution timed out",
+          toolCallId: some(toolCall.id)
+        )
+        allToolResults.add(errorMsg)
+        discard addToolMessage("Error: Tool execution timed out", toolCall.id)
+    else:
+      # Failed to send tool request
+      let errorMsg = Message(
+        role: mrTool,
+        content: "Error: Failed to send tool request",
+        toolCallId: some(toolCall.id)
+      )
+      allToolResults.add(errorMsg)
+      discard addToolMessage("Error: Failed to send tool request", toolCall.id)
+  
+  # Send tool results back to LLM for continuation
+  if allToolResults.len > 0:
+    debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
+    
+    # Add tool results to conversation and continue
+    var updatedMessages = request.messages
+    
+    # Add the assistant message with tool calls
+    let assistantWithTools = Message(
+      role: mrAssistant,
+      content: initialContent,
+      toolCalls: some(toolCalls)
+    )
+    updatedMessages.add(assistantWithTools)
+    
+    # Store assistant message with tool calls in conversation history
+    discard addAssistantMessage(initialContent, some(toolCalls))
+    
+    # Add all tool result messages
+    for toolResult in allToolResults:
+      updatedMessages.add(toolResult)
+    
+    # Create follow-up request to continue conversation
+    debug(fmt"Creating follow-up request with {updatedMessages.len} messages (depth: {recursionDepth})")
+    
+    # Create a temporary ModelConfig from the API request
+    let tempModelConfig = ModelConfig(
+      nickname: fmt"api-request-followup-{recursionDepth}",
+      baseUrl: request.baseUrl,
+      model: request.model,
+      context: 128000,  # Default context
+      enabled: true,
+      maxTokens: some(request.maxTokens),
+      temperature: some(request.temperature),
+      apiKey: some(request.apiKey)
+    )
+    
+    let followUpRequest = createChatRequest(
+      tempModelConfig,
+      updatedMessages,
+      stream = true,
+      tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
+    )
+    
+    debug(fmt"Sending streaming follow-up request to LLM with tool results (depth: {recursionDepth})...")
+    
+    # Handle follow-up streaming response with recursive tool call support
+    var followUpContent = ""
+    var followUpToolCalls: seq[LLMToolCall] = @[]
+    var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+    
+    proc onFollowUpChunk(chunk: StreamChunk) {.gcsafe.} =
+      if chunk.choices.len > 0:
+        let choice = chunk.choices[0]
+        let delta = choice.delta
+        
+        # Debug finish reason
+        if choice.finishReason.isSome():
+          debug(fmt"DEBUG: Follow-up stream finish reason: '{choice.finishReason.get()}'")
+        
+        # Send follow-up content
+        if delta.content.len > 0:
+          followUpContent.add(delta.content)
+          let chunkResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamChunk,
+            content: delta.content,
+            done: false
+          )
+          sendAPIResponse(channels, chunkResponse)
+        
+        # Buffer tool calls for recursive execution
+        if delta.toolCalls.isSome():
+          for toolCall in delta.toolCalls.get():
+            let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
+            if isComplete:
+              let completedCalls = getCompletedToolCalls(toolCallBuffers)
+              for completedCall in completedCalls:
+                followUpToolCalls.add(completedCall)
+                debug(fmt"Follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
+            cleanupStaleBuffers(toolCallBuffers)
+    
+    let (followUpSuccess, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+    
+    # Get any remaining completed tool calls
+    let remainingCalls = getCompletedToolCalls(toolCallBuffers)
+    for completedCall in remainingCalls:
+      followUpToolCalls.add(completedCall)
+    
+    cleanupStaleBuffers(toolCallBuffers)
+    
+    # If we have more tool calls, execute them recursively
+    if followUpToolCalls.len > 0:
+      debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
+      return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+                                       followUpContent, database, recursionDepth + 1, updatedExecutedCalls)
+    else:
+      # No more tool calls, send completion
+      debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
+      let finalChunkResponse = APIResponse(
+        requestId: request.requestId,
+        kind: arkStreamChunk,
+        content: "",
+        done: true
+      )
+      sendAPIResponse(channels, finalChunkResponse)
+      
+      # Use follow-up usage if available, otherwise default
+      var finalUsage = if followUpUsage.isSome(): 
+        followUpUsage.get() 
+      else: 
+        TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
+      
+      # Log token usage
+      if database != nil:
+        try:
+          let conversationId = getCurrentConversationId().int
+          let messageId = getCurrentMessageId().int
+          let inputCostPerMToken = tempModelConfig.inputCostPerMToken
+          let outputCostPerMToken = tempModelConfig.outputCostPerMToken
+          
+          logModelTokenUsage(database, conversationId, messageId, request.model,
+                            finalUsage.inputTokens, finalUsage.outputTokens,
+                            inputCostPerMToken, outputCostPerMToken)
+          
+          debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output")
+        except Exception as e:
+          debug(fmt"Failed to log token usage to database: {e.msg}")
+      
+      let completeResponse = APIResponse(
+        requestId: request.requestId,
+        kind: arkStreamComplete,
+        usage: finalUsage,
+        finishReason: "stop"
+      )
+      sendAPIResponse(channels, completeResponse)
+      
+      debug(fmt"Recursive tool execution completed at depth {recursionDepth}")
+      return true
+  
+  return true
+
 proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
@@ -436,240 +685,25 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 )
                 sendAPIResponse(channels, assistantResponse)
                 
-                # Execute each tool call
-                var allToolResults: seq[Message] = @[]
-                for toolCall in collectedToolCalls:
-                  debug(fmt"Executing tool call: {toolCall.function.name}")
-                  
-                  # Send tool execution status to user
-                  let toolIcon = getToolIcon(toolCall.function.name)
-                  let argsPreview = getArgsPreview(toolCall.function.arguments)
-                  let toolStatusResponse = APIResponse(
-                    requestId: request.requestId,
-                    kind: arkStreamChunk,
-                    content: fmt"{'\n'}{toolIcon} {toolCall.function.name}({argsPreview}){'\n'}",
-                    done: false
-                  )
-                  sendAPIResponse(channels, toolStatusResponse)
-                  
-                  # Send tool request to tool worker
-                  let toolRequest = ToolRequest(
-                    kind: trkExecute,
-                    requestId: toolCall.id,
-                    toolName: toolCall.function.name,
-                    arguments: toolCall.function.arguments
-                  )
-                  debug("Tool request: " & $toolRequest)
-                  
-                  if trySendToolRequest(channels, toolRequest):
-                    # Wait for tool response
-                    var attempts = 0
-                    while attempts < 300:  # Timeout after ~30 seconds
-                      let maybeResponse = tryReceiveToolResponse(channels)
-                      if maybeResponse.isSome():
-                        let toolResponse = maybeResponse.get()
-                        debug("Tool response: " & $toolResponse)
-                        if toolResponse.requestId == toolCall.id:
-                          # Create tool result message
-                          let toolContent = if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}"
-                          debug(fmt"Tool result received for {toolCall.function.name}: {toolContent[0..min(200, toolContent.len-1)]}...")
-                          
-                          # Tool completion - no status indicator needed, output shows success/failure
-                          
-                          let toolResultMsg = Message(
-                            role: mrTool,
-                            content: toolContent,
-                            toolCallId: some(toolCall.id)
-                          )
-                          allToolResults.add(toolResultMsg)
-                          
-                          # Store tool result in conversation history
-                          discard addToolMessage(toolContent, toolCall.id)
-                          
-                          break
-                      sleep(100)
-                      attempts += 1
-                    
-                    if attempts >= 300:
-                      # Tool execution timed out - error will be in the tool result message
-                      
-                      let errorMsg = Message(
-                        role: mrTool,
-                        content: "Error: Tool execution timed out",
-                        toolCallId: some(toolCall.id)
-                      )
-                      allToolResults.add(errorMsg)
-                      
-                      # Store error in conversation history
-                      discard addToolMessage("Error: Tool execution timed out", toolCall.id)
-                  else:
-                    # Failed to send tool request - error will be in the tool result message
-                    
-                    let errorMsg = Message(
-                      role: mrTool,
-                      content: "Error: Failed to send tool request",
-                      toolCallId: some(toolCall.id)
-                    )
-                    allToolResults.add(errorMsg)
-                    
-                    # Store error in conversation history
-                    discard addToolMessage("Error: Failed to send tool request", toolCall.id)
+                # Use shared tool execution function with recursive support
+                var mutableClient = client
+                let executeSuccess = executeToolCallsAndContinue(channels, mutableClient, request, 
+                                                               collectedToolCalls, fullContent, database)
                 
-                # Send tool results back to LLM for continuation
-                if allToolResults.len > 0:
-                  debug(fmt"Sending {allToolResults.len} tool results back to LLM")
-                  
-                  # Add tool results to conversation and continue
-                  var updatedMessages = request.messages
-                  
-                  # Add the assistant message with tool calls
-                  let assistantWithTools = Message(
-                    role: mrAssistant,
-                    content: fullContent,
-                    toolCalls: some(collectedToolCalls)
-                  )
-                  updatedMessages.add(assistantWithTools)
-                  
-                  # Store assistant message with tool calls in conversation history
-                  discard addAssistantMessage(fullContent, some(collectedToolCalls))
-                  # Add all tool result messages
-                  for toolResult in allToolResults:
-                    updatedMessages.add(toolResult)
-                  # Create follow-up request to continue conversation
-                  debug(fmt"Creating follow-up request with {updatedMessages.len} messages")
-                  
-                  # Create a temporary ModelConfig from the API request
-                  let tempModelConfig = ModelConfig(
-                    nickname: "api-request-followup",
-                    baseUrl: request.baseUrl,
-                    model: request.model,
-                    context: 128000,  # Default context
-                    enabled: true,
-                    maxTokens: some(request.maxTokens),
-                    temperature: some(request.temperature),
-                    apiKey: some(request.apiKey)
-                  )
-                  
-                  let followUpRequest = createChatRequest(
-                    tempModelConfig,
-                    updatedMessages,
-                    stream = true,
-                    tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
-                  )
-                  
-                  debug("Sending streaming follow-up request to LLM with tool results...")
-                  
-                  # Handle follow-up streaming response
-                  var followUpContent = ""
-                  proc onFollowUpChunk(chunk: StreamChunk) {.gcsafe.} =
-                    # Check for cancellation
-                    if request.requestId notin activeRequests:
-                      debug(fmt"Follow-up request {request.requestId} was canceled")
-                      return
-                      
-                    if chunk.choices.len > 0:
-                      let choice = chunk.choices[0]
-                      let delta = choice.delta
-                      
-                      # Send follow-up content (initial content was suppressed)
-                      if delta.content.len > 0:
-                        followUpContent.add(delta.content)
-                        let chunkResponse = APIResponse(
-                          requestId: request.requestId,
-                          kind: arkStreamChunk,
-                          content: delta.content,
-                          done: false
-                        )
-                        sendAPIResponse(channels, chunkResponse)
-                      
-                      # Buffer tool calls from delta (same logic as main streaming)
-                      if delta.toolCalls.isSome():
-                        for toolCall in delta.toolCalls.get():
-                          # Buffer the tool call fragment
-                          let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
-                          if isComplete:
-                            # Tool call is complete, add to collected calls
-                            let completedCalls = getCompletedToolCalls(toolCallBuffers)
-                            for completedCall in completedCalls:
-                              collectedToolCalls.add(completedCall)
-                              hasToolCalls = true
-                              debug(fmt"Follow-up complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
-                          
-                          # Clean up stale buffers periodically
-                          cleanupStaleBuffers(toolCallBuffers)
-                  
-                  let (followUpSuccess, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
-                  
-                  # Update usage data with follow-up request usage if available
-                  if followUpUsage.isSome():
-                    finalUsage = followUpUsage.get()
-                  
-                  # After follow-up streaming completes, check for any remaining completed tool calls in buffers
-                  let followUpCompletedCalls = getCompletedToolCalls(toolCallBuffers)
-                  for completedCall in followUpCompletedCalls:
-                    collectedToolCalls.add(completedCall)
-                    hasToolCalls = true
-                    debug(fmt"Follow-up final complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
-                  
-                  # Clean up any remaining stale buffers
-                  cleanupStaleBuffers(toolCallBuffers)
-                  
-                  debug(fmt"Follow-up streaming response completed")
-                  
-                  # Send final completion signal
-                  let finalChunkResponse = APIResponse(
-                    requestId: request.requestId,
-                    kind: arkStreamChunk,
-                    content: "",
-                    done: true
-                  )
-                  sendAPIResponse(channels, finalChunkResponse)
-                  
-                  # Send completion with extracted usage data
-                  # Log model-specific token usage to database
-                  if database != nil:
-                    try:
-                      # Get current conversation ID from history and convert to int
-                      let conversationId = getCurrentConversationId().int
-                      let messageId = getCurrentMessageId().int
-                      
-                      # Get pricing from temp model config (already has Option[float] type)
-                      let inputCostPerMToken = tempModelConfig.inputCostPerMToken
-                      let outputCostPerMToken = tempModelConfig.outputCostPerMToken
-                      
-                      # Log model-specific token usage to database
-                      logModelTokenUsage(database, conversationId, messageId, request.model,
-                                        finalUsage.inputTokens, finalUsage.outputTokens,
-                                        inputCostPerMToken, outputCostPerMToken)
-                      
-                      debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output")
-                    except Exception as e:
-                      debug(fmt"Failed to log token usage to database: {e.msg}")
-                  
-                  let completeResponse = APIResponse(
-                    requestId: request.requestId,
-                    kind: arkStreamComplete,
-                    usage: finalUsage,
-                    finishReason: "stop"
-                  )
-                  sendAPIResponse(channels, completeResponse)
-                  
-                  # Remove from active requests
-                  for i in 0..<activeRequests.len:
-                    if activeRequests[i] == request.requestId:
-                      activeRequests.delete(i)
-                      break
-                  
-                  debug(fmt"Tool calling conversation completed for request {request.requestId}")
-                  debug("Successfully sent streaming final response back to user")
-                else:
-                  # No valid tool results, send error
+                if not executeSuccess:
+                  # Execution failed (likely max recursion depth exceeded)
                   let errorResponse = APIResponse(
                     requestId: request.requestId,
                     kind: arkStreamError,
-                    error: "Failed to execute tool calls"
+                    error: "Tool execution failed or exceeded maximum recursion depth"
                   )
                   sendAPIResponse(channels, errorResponse)
+                
+                # Remove from active requests
+                for i in 0..<activeRequests.len:
+                  if activeRequests[i] == request.requestId:
+                    activeRequests.delete(i)
+                    break
             else:
               # No tool calls, regular streaming response (content was already streamed in onChunkReceived)
               # Send final completion signal
