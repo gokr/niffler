@@ -86,7 +86,7 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ❌ **Colored Output** - Syntax highlighting and colored diffs
 - ❌ **Status Indicators** - Model, token count, mode, connection status
 - ❌ **History Navigation** - Arrow key navigation through prompt history
-
+ex
 ### **Lower Priority: Advanced Features**
 
 #### **7. Thinking Token Support** *(NEW HIGH PRIORITY)*
