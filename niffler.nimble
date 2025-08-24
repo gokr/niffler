@@ -16,7 +16,8 @@ requires "htmlparser"                                # For scraping in the fetch
 requires "https://github.com/gokr/debby"             # For nice relational database handling
 requires "https://github.com/Vindaar/JsonSchemaValidator.git >= 0.1.0"
 requires "https://github.com/gokr/linecross"         # For readline-like input with history, cursor keys and more
-
+requires "hldiff"                                    # For improved diff calculations
+requires "unittest2 >= 0.2.4"
 
 task test, "Run all tests":
   exec "nimble install -d"

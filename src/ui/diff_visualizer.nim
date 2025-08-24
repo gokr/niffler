@@ -4,6 +4,7 @@
 ## and line numbers, similar to git diff --color.
 
 import std/[strutils, tables]
+import hldiffpkg/edits
 import theme
 import diff_types
 
@@ -62,35 +63,6 @@ proc getDefaultDiffConfig*(): DiffConfig =
     useColor: true
   )
 
-proc computeWordDiff*(oldLine, newLine: string): tuple[oldSegments, newSegments: seq[DiffSegment]] =
-  ## Compute word-level diff between two lines
-  let oldWords = oldLine.split(' ')
-  let newWords = newLine.split(' ')
-  
-  var oldSegments: seq[DiffSegment] = @[]
-  var newSegments: seq[DiffSegment] = @[]
-  
-  # Simple word-level diff algorithm
-  # This can be enhanced with more sophisticated algorithms like Myers' diff
-  var i, j = 0
-  
-  while i < oldWords.len or j < newWords.len:
-    if i < oldWords.len and j < newWords.len and oldWords[i] == newWords[j]:
-      # Words match - add as unchanged
-      oldSegments.add(DiffSegment(content: oldWords[i] & " ", segmentType: Unchanged))
-      newSegments.add(DiffSegment(content: newWords[j] & " ", segmentType: Unchanged))
-      inc i
-      inc j
-    elif i < oldWords.len and (j >= newWords.len or oldWords[i] != newWords[j]):
-      # Word removed
-      oldSegments.add(DiffSegment(content: oldWords[i] & " ", segmentType: RemovedSegment))
-      inc i
-    elif j < newWords.len:
-      # Word added
-      newSegments.add(DiffSegment(content: newWords[j] & " ", segmentType: AddedSegment))
-      inc j
-  
-  return (oldSegments, newSegments)
 
 proc computeCharDiff*(oldLine, newLine: string): tuple[oldSegments, newSegments: seq[DiffSegment]] =
   ## Compute character-level diff between two lines for more precise highlighting
@@ -146,7 +118,7 @@ proc computeCharDiff*(oldLine, newLine: string): tuple[oldSegments, newSegments:
 
 
 proc computeDiff*(original, modified: string, config: DiffConfig = getDefaultDiffConfig()): DiffResult =
-  ## Compute diff between original and modified content
+  ## Compute diff between original and modified content using hldiff algorithm
   new(result)
   result.originalContent = original
   result.modifiedContent = modified
@@ -154,98 +126,78 @@ proc computeDiff*(original, modified: string, config: DiffConfig = getDefaultDif
   let originalLines = original.splitLines()
   let modifiedLines = modified.splitLines()
   
-  # Simple diff algorithm for now - can be enhanced later
-  var i, j = 0
-  var currentHunk: DiffHunk
-  var inHunk = false
+  # Use hldiff's grouped edits for unified diff with context
+  let sames = sames(originalLines, modifiedLines)
+  let editGroups = grouped(sames, config.contextLines)
   
-  while i < originalLines.len or j < modifiedLines.len:
-    if i < originalLines.len and j < modifiedLines.len and originalLines[i] == modifiedLines[j]:
-      # Lines match
-      if inHunk:
-        # Check if we should end the current hunk
-        let contextAhead = min(config.contextLines, originalLines.len - i - 1)
-        if contextAhead >= config.contextLines:
-          # Add remaining context and end hunk
-          for k in 0..<config.contextLines:
-            if i + k < originalLines.len:
-              currentHunk.lines.add(DiffLine(
-                lineType: Context,
-                content: originalLines[i + k],
-                originalLineNum: i + k + 1,
-                newLineNum: j + k + 1
-              ))
-          result.hunks.add(currentHunk)
-          currentHunk = DiffHunk()
-          inHunk = false
-          i += config.contextLines
-          j += config.contextLines
-          continue
+  for editGroup in editGroups:
+    var hunk = DiffHunk()
+    var lines: seq[DiffLine] = @[]
+    
+    # Calculate hunk header info from first and last edits
+    if editGroup.len > 0:
+      let firstEdit = editGroup[0]
+      let lastEdit = editGroup[^1]
       
-      # Add context line if in hunk or before first hunk
-      if inHunk or result.hunks.len == 0:
-        currentHunk.lines.add(DiffLine(
-          lineType: Context,
-          content: originalLines[i],
-          originalLineNum: i + 1,
-          newLineNum: j + 1
-        ))
-      inc(i)
-      inc(j)
-    else:
-      # Lines don't match - start or continue hunk
-      if not inHunk:
-        # Start new hunk
-        inHunk = true
-        currentHunk.originalStart = max(1, i - config.contextLines + 1)
-        currentHunk.newStart = max(1, j - config.contextLines + 1)
-        
-        # Add context lines before the change
-        let contextBefore = min(config.contextLines, i)
-        for k in countdown(contextBefore - 1, 0):
-          currentHunk.lines.add(DiffLine(
-            lineType: Context,
-            content: originalLines[i - contextBefore + k],
-            originalLineNum: i - contextBefore + k + 1,
-            newLineNum: j - contextBefore + k + 1
-          ))
-      
-      # Handle deletions
-      while i < originalLines.len and (j >= modifiedLines.len or originalLines[i] != modifiedLines[j]):
-        currentHunk.lines.add(DiffLine(
-          lineType: Removed,
-          content: originalLines[i],
-          originalLineNum: i + 1,
-          newLineNum: -1
-        ))
-        inc(i)
-        inc(currentHunk.originalLines)
-      
-      # Handle additions
-      while j < modifiedLines.len and (i >= originalLines.len or originalLines[i] != modifiedLines[j]):
-        currentHunk.lines.add(DiffLine(
-          lineType: Added,
-          content: modifiedLines[j],
-          originalLineNum: -1,
-          newLineNum: j + 1
-        ))
-        inc(j)
-        inc(currentHunk.newLines)
-  
-  # Close final hunk if open
-  if inHunk:
-    # Add context lines after the change
-    let contextAfter = min(config.contextLines, originalLines.len - currentHunk.originalStart - currentHunk.originalLines + 1)
-    for k in 0..<contextAfter:
-      let lineIdx = currentHunk.originalStart + currentHunk.originalLines + k - 1
-      if lineIdx < originalLines.len:
-        currentHunk.lines.add(DiffLine(
-          lineType: Context,
-          content: originalLines[lineIdx],
-          originalLineNum: lineIdx + 1,
-          newLineNum: currentHunk.newStart + currentHunk.newLines + k
-        ))
-    result.hunks.add(currentHunk)
+      hunk.originalStart = firstEdit.s.a + 1  # Convert to 1-based
+      hunk.newStart = firstEdit.t.a + 1
+      hunk.originalLines = lastEdit.s.b - firstEdit.s.a
+      hunk.newLines = lastEdit.t.b - firstEdit.t.a
+    
+    # Convert hldiff edits to DiffLine format
+    for edit in editGroup:
+      case edit.ek:
+      of ekEql:
+        # Equal lines - show as context  
+        for i in edit.s:
+          if i < originalLines.len:
+            lines.add(DiffLine(
+              lineType: Context,
+              content: originalLines[i],
+              originalLineNum: i + 1,
+              newLineNum: edit.t.a + (i - edit.s.a) + 1
+            ))
+      of ekDel:
+        # Deleted lines
+        for i in edit.s:
+          if i < originalLines.len:
+            lines.add(DiffLine(
+              lineType: Removed,
+              content: originalLines[i],
+              originalLineNum: i + 1,
+              newLineNum: -1
+            ))
+      of ekIns:
+        # Inserted lines
+        for i in edit.t:
+          if i < modifiedLines.len:
+            lines.add(DiffLine(
+              lineType: Added,
+              content: modifiedLines[i],
+              originalLineNum: -1,
+              newLineNum: i + 1
+            ))
+      of ekSub:
+        # Substituted lines (deleted then added)
+        for i in edit.s:
+          if i < originalLines.len:
+            lines.add(DiffLine(
+              lineType: Removed,
+              content: originalLines[i],
+              originalLineNum: i + 1,
+              newLineNum: -1
+            ))
+        for i in edit.t:
+          if i < modifiedLines.len:
+            lines.add(DiffLine(
+              lineType: Added,
+              content: modifiedLines[i],
+              originalLineNum: -1,
+              newLineNum: i + 1
+            ))
+    
+    hunk.lines = lines
+    result.hunks.add(hunk)
 
 proc formatDiffLine*(line: DiffLine, colors: Table[DiffLineType, ThemeStyle], config: DiffConfig): string =
   ## Format a single diff line with colors and line numbers

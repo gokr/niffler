@@ -4,6 +4,7 @@
 ## with structured display of tool requests and results including diff visualization.
 
 import std/[strutils, json, tables, strformat, sequtils]
+import hldiffpkg/edits
 import theme
 import diff_visualizer
 import diff_types
@@ -100,7 +101,7 @@ proc formatToolHeader*(toolName: string, args: JsonNode, config: ToolVisualizati
     return fmt"{toolName}(...)"
 
 proc createInlineDiffFromEditResult*(editResult: string, originalContent: string, newContent: string): string =
-  ## Create an enhanced diff visualization from edit tool results
+  ## Create an enhanced diff visualization from edit tool results using hldiff
   if originalContent == newContent:
     return "  No changes made"
   
@@ -113,60 +114,90 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
   let newLines = newContent.splitLines()
   
   var diffResult = ""
-  var i, j = 0
   
-  # Simple line-by-line diff with inline highlighting
-  while i < originalLines.len or j < newLines.len:
-    if i < originalLines.len and j < newLines.len and originalLines[i] == newLines[j]:
-      # Lines match - show as context (skip for brevity unless near changes)
-      inc i
-      inc j
-    elif i < originalLines.len and (j >= newLines.len or originalLines[i] != newLines[j]):
-      # Line removed or changed
-      if j < newLines.len and originalLines[i] != newLines[j]:
-        # Line changed - show with inline diff
-        let (oldSegments, newSegments) = computeCharDiff(originalLines[i], newLines[j])
-        
-        let removedLine = InlineDiffLine(
-          lineType: Removed,
-          segments: oldSegments,
-          originalLineNum: i + 1,
-          newLineNum: -1
-        )
+  # Use hldiff for accurate diff calculation
+  for edit in edits(originalLines, newLines):
+    case edit.ek:
+    of ekEql:
+      # Skip context lines for brevity in inline display
+      continue
+    of ekDel:
+      # Deleted lines
+      for i in edit.s:
+        if i < originalLines.len:
+          let segments = @[DiffSegment(content: originalLines[i], segmentType: Unchanged)]
+          let removedLine = InlineDiffLine(
+            lineType: Removed,
+            segments: segments,
+            originalLineNum: i + 1,
+            newLineNum: -1
+          )
+          diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
+    of ekIns:
+      # Inserted lines
+      for i in edit.t:
+        if i < newLines.len:
+          let segments = @[DiffSegment(content: newLines[i], segmentType: Unchanged)]
+          let addedLine = InlineDiffLine(
+            lineType: Added,
+            segments: segments,
+            originalLineNum: -1,
+            newLineNum: i + 1
+          )
+          diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+    of ekSub:
+      # Substituted lines - show with character-level inline diff
+      var newIdx = edit.t.a
+      
+      # Process substituted lines with character-level highlighting
+      for i in edit.s:
+        if i < originalLines.len:
+          var newLineContent = ""
+          if newIdx < newLines.len and newIdx < edit.t.b:
+            newLineContent = newLines[newIdx]
+            inc newIdx
+          
+          if newLineContent.len > 0:
+            # Line changed - show with inline character diff
+            let (oldSegments, newSegments) = computeCharDiff(originalLines[i], newLineContent)
+            
+            let removedLine = InlineDiffLine(
+              lineType: Removed,
+              segments: oldSegments,
+              originalLineNum: i + 1,
+              newLineNum: -1
+            )
+            let addedLine = InlineDiffLine(
+              lineType: Added,
+              segments: newSegments,
+              originalLineNum: -1,
+              newLineNum: newIdx
+            )
+            
+            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
+            diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+          else:
+            # Line only removed
+            let segments = @[DiffSegment(content: originalLines[i], segmentType: Unchanged)]
+            let removedLine = InlineDiffLine(
+              lineType: Removed,
+              segments: segments,
+              originalLineNum: i + 1,
+              newLineNum: -1
+            )
+            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
+      
+      # Handle any remaining new lines in the substitution
+      while newIdx < edit.t.b and newIdx < newLines.len:
+        let segments = @[DiffSegment(content: newLines[newIdx], segmentType: Unchanged)]
         let addedLine = InlineDiffLine(
           lineType: Added,
-          segments: newSegments,
-          originalLineNum: -1,
-          newLineNum: j + 1
-        )
-        
-        diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
-        diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
-        
-        inc i
-        inc j
-      else:
-        # Line only removed
-        let segments = @[DiffSegment(content: originalLines[i], segmentType: Unchanged)]
-        let removedLine = InlineDiffLine(
-          lineType: Removed,
           segments: segments,
-          originalLineNum: i + 1,
-          newLineNum: -1
+          originalLineNum: -1,
+          newLineNum: newIdx + 1
         )
-        diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
-        inc i
-    elif j < newLines.len:
-      # Line only added
-      let segments = @[DiffSegment(content: newLines[j], segmentType: Unchanged)]
-      let addedLine = InlineDiffLine(
-        lineType: Added,
-        segments: segments,
-        originalLineNum: -1,
-        newLineNum: j + 1
-      )
-      diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
-      inc j
+        diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+        inc newIdx
   
   return diffResult.strip()
 
@@ -226,10 +257,15 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
   
   of "read":
     # For read tool, show file info
-    let lines = resultText.splitLines()
-    if lines.len > 1:
-      formattedResult = fmt"Read {lines.len} lines"
-    else:
+    try:
+      let resultJson = parseJson(toolInfo.result)
+      if resultJson.hasKey("content"):
+        let content = resultJson["content"].getStr()
+        let lines = content.splitLines()
+        formattedResult = fmt"Read {lines.len} lines"
+      else:
+        formattedResult = "Read file"
+    except:
       formattedResult = "Read file"
   
   of "create":
