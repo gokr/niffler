@@ -85,6 +85,9 @@ type
     listBullet*: ThemeStyleConfig
     codeBlock*: ThemeStyleConfig
     normal*: ThemeStyleConfig
+    diffAdded*: ThemeStyleConfig
+    diffRemoved*: ThemeStyleConfig
+    diffContext*: ThemeStyleConfig
 
   Config* = object
     yourName*: string
