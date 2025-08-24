@@ -36,6 +36,8 @@ import std/logging
 import ../core/[channels, history, database]
 import curlyStreaming
 import ../tools/registry
+import ../ui/tool_visualizer
+import debby/pools
 
 type
   # Buffer for tracking incomplete tool calls during streaming
@@ -243,7 +245,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                 request: APIRequest, toolCalls: seq[LLMToolCall], 
                                 initialContent: string, database: DatabaseBackend,
                                 recursionDepth: int = 0, 
-                                executedCalls: seq[string] = @[]): bool =
+                                executedCalls: seq[string] = @[]): bool {.locks: 0.} =
   ## Execute tool calls and continue conversation recursively
   ## Returns true if successful, false if max recursion depth exceeded
   const MAX_RECURSION_DEPTH = 20  # Reduced from 100 to prevent excessive loops
@@ -280,16 +282,28 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   for toolCall in filteredToolCalls:
     debug(fmt"Executing tool call: {toolCall.function.name}")
     
-    # Send tool execution status to user
-    let toolIcon = getToolIcon(toolCall.function.name)
-    let argsPreview = getArgsPreview(toolCall.function.arguments)
-    let toolStatusResponse = APIResponse(
-      requestId: request.requestId,
-      kind: arkStreamChunk,
-      content: fmt"{'\n'}{toolIcon} {toolCall.function.name}({argsPreview}){'\n'}",
-      done: false
-    )
-    sendAPIResponse(channels, toolStatusResponse)
+    # Send tool execution header to user using enhanced visualization
+    try:
+      let argsJson = parseJson(toolCall.function.arguments)
+      let toolHeader = formatToolHeader(toolCall.function.name, argsJson, getDefaultToolConfig())
+      let toolHeaderResponse = APIResponse(
+        requestId: request.requestId,
+        kind: arkStreamChunk,
+        content: fmt"{'\n'}{toolHeader}{'\n'}",
+        done: false
+      )
+      sendAPIResponse(channels, toolHeaderResponse)
+    except:
+      # Fallback to old format if JSON parsing fails
+      let toolIcon = getToolIcon(toolCall.function.name)
+      let argsPreview = getArgsPreview(toolCall.function.arguments)
+      let toolStatusResponse = APIResponse(
+        requestId: request.requestId,
+        kind: arkStreamChunk,
+        content: fmt"{'\n'}{toolIcon} {toolCall.function.name}({argsPreview}){'\n'}",
+        done: false
+      )
+      sendAPIResponse(channels, toolStatusResponse)
     
     # Send tool request to tool worker
     let toolRequest = ToolRequest(
@@ -313,6 +327,36 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             let toolContent = if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}"
             debug(fmt"Tool result received for {toolCall.function.name}: {toolContent[0..min(200, toolContent.len-1)]}...")
             
+            # Send enhanced tool result visualization to user
+            try:
+              let argsJson = parseJson(toolCall.function.arguments)
+              let toolDisplayInfo = ToolDisplayInfo(
+                name: toolCall.function.name,
+                args: argsJson,
+                result: toolContent,
+                success: toolResponse.kind == trkResult,
+                executionTime: 0.0
+              )
+              let toolResultFormatted = formatToolResult(toolDisplayInfo, getDefaultToolConfig())
+              if toolResultFormatted.len > 0:
+                let toolResultResponse = APIResponse(
+                  requestId: request.requestId,
+                  kind: arkStreamChunk,
+                  content: toolResultFormatted & "\n",
+                  done: false
+                )
+                sendAPIResponse(channels, toolResultResponse)
+            except Exception as e:
+              debug(fmt"Failed to format tool result: {e.msg}")
+              # Send simple result fallback
+              let simpleResultResponse = APIResponse(
+                requestId: request.requestId,
+                kind: arkStreamChunk,
+                content: "  Result: " & toolContent[0..min(100, toolContent.len-1)] & (if toolContent.len > 100: "..." else: "") & "\n",
+                done: false
+              )
+              sendAPIResponse(channels, simpleResultResponse)
+            
             let toolResultMsg = Message(
               role: mrTool,
               content: toolContent,
@@ -320,7 +364,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             )
             allToolResults.add(toolResultMsg)
             
-            # Store tool result in conversation history
+            # Store tool result in conversation history (history module handles database/threadvar fallback)
             discard addToolMessage(toolContent, toolCall.id)
             
             break
@@ -361,7 +405,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
     )
     updatedMessages.add(assistantWithTools)
     
-    # Store assistant message with tool calls in conversation history
+    # Store assistant message with tool calls in conversation history (history module handles database/threadvar fallback)
     discard addAssistantMessage(initialContent, some(toolCalls))
     
     # Add all tool result messages
@@ -488,7 +532,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   
   return true
 
-proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
+proc apiWorkerProc(params: ThreadParams) {.thread.} =
   # Initialize logging for this thread
   let consoleLogger = newConsoleLogger()
   addHandler(consoleLogger)
@@ -499,6 +543,10 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   
   let channels = params.channels
   let database = params.database
+  let pool = params.pool
+  
+  # Initialize conversation tracking
+  var messageSequenceId = 0
   
   debug("API worker thread started")
   incrementActiveThreads(channels)
@@ -774,9 +822,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level, dump: dump, database: database)
+  let params = ThreadParams(channels: channels, level: level, dump: dump, database: database, pool: pool)
   createThread(result.thread, apiWorkerProc, params)
 
 proc stopAPIWorker*(worker: var APIWorker) =
