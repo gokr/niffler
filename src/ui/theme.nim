@@ -10,6 +10,7 @@ import ../types/config as configTypes
 type
   ThemeStyle* = object
     color*: ForegroundColor
+    bgColor*: BackgroundColor
     style*: Style
   
   Theme* = object
@@ -24,6 +25,16 @@ type
     listBullet*: ThemeStyle
     codeBlock*: ThemeStyle
     normal*: ThemeStyle
+    diffAdded*: ThemeStyle
+    diffRemoved*: ThemeStyle
+    diffContext*: ThemeStyle
+    diffAddedBg*: ThemeStyle      # Background highlight for added content
+    diffRemovedBg*: ThemeStyle    # Background highlight for removed content
+    diffAddedText*: ThemeStyle    # Text style for added content
+    diffRemovedText*: ThemeStyle  # Text style for removed content
+    success*: ThemeStyle
+    error*: ThemeStyle
+    toolCall*: ThemeStyle
 
 # Global theme registry
 var themeRegistry: Table[string, Theme]
@@ -54,10 +65,25 @@ proc parseStyle*(styleStr: string): Style =
   of "strikethrough": styleStrikethrough
   else: styleBright  # Default fallback
 
-proc createThemeStyle*(color: string, style: string = "bright"): ThemeStyle =
-  ## Create a ThemeStyle from color and style strings
+proc parseBgColor*(colorStr: string): BackgroundColor =
+  ## Parse background color string to BackgroundColor enum
+  case colorStr.toLower():
+  of "black": bgBlack
+  of "red": bgRed
+  of "green": bgGreen
+  of "yellow": bgYellow
+  of "blue": bgBlue
+  of "magenta": bgMagenta
+  of "cyan": bgCyan
+  of "white": bgWhite
+  of "default": bgDefault
+  else: bgDefault  # Default fallback
+
+proc createThemeStyle*(color: string, bgColor: string = "default", style: string = "bright"): ThemeStyle =
+  ## Create a ThemeStyle from color, background color, and style strings
   ThemeStyle(
     color: parseColor(color),
+    bgColor: parseBgColor(bgColor),
     style: parseStyle(style)
   )
 
@@ -65,64 +91,104 @@ proc getDefaultTheme*(): Theme =
   ## Get the default theme with standard terminal colors
   Theme(
     name: "default",
-    header1: createThemeStyle("yellow", "bright"),
-    header2: createThemeStyle("yellow", "bright"),
-    header3: createThemeStyle("yellow", "dim"),
-    bold: createThemeStyle("white", "bright"),
-    italic: createThemeStyle("cyan", "bright"),
-    code: createThemeStyle("green", "dim"),
-    link: createThemeStyle("blue", "bright"),
-    listBullet: createThemeStyle("white", "bright"),
-    codeBlock: createThemeStyle("cyan", "bright"),
-    normal: createThemeStyle("white", "bright")
+    header1: createThemeStyle("yellow", "default", "bright"),
+    header2: createThemeStyle("yellow", "default", "bright"),
+    header3: createThemeStyle("yellow", "default", "dim"),
+    bold: createThemeStyle("white", "default", "bright"),
+    italic: createThemeStyle("cyan", "default", "bright"),
+    code: createThemeStyle("green", "default", "dim"),
+    link: createThemeStyle("blue", "default", "bright"),
+    listBullet: createThemeStyle("white", "default", "bright"),
+    codeBlock: createThemeStyle("cyan", "default", "bright"),
+    normal: createThemeStyle("white", "default", "bright"),
+    diffAdded: createThemeStyle("white", "green", "bright"),           # Light green background for entire added line
+    diffRemoved: createThemeStyle("white", "red", "bright"),           # Light red background for entire removed line
+    diffContext: createThemeStyle("white", "default", "bright"),
+    diffAddedBg: createThemeStyle("green", "green", "bright"),         # Dark green on green for changed portions
+    diffRemovedBg: createThemeStyle("red", "red", "bright"),           # Dark red on red for changed portions
+    diffAddedText: createThemeStyle("green", "default", "bright"),
+    diffRemovedText: createThemeStyle("red", "default", "bright"),
+    success: createThemeStyle("green", "default", "bright"),
+    error: createThemeStyle("red", "default", "bright"),
+    toolCall: createThemeStyle("blue", "default", "bright")
   )
 
 proc getDarkTheme*(): Theme =
   ## Get a theme optimized for dark terminals
   Theme(
     name: "dark",
-    header1: createThemeStyle("blue", "bright"),
-    header2: createThemeStyle("cyan", "bright"),
-    header3: createThemeStyle("cyan", "dim"),
-    bold: createThemeStyle("white", "bright"),
-    italic: createThemeStyle("yellow", "bright"),
-    code: createThemeStyle("green", "bright"),
-    link: createThemeStyle("magenta", "bright"),
-    listBullet: createThemeStyle("cyan", "bright"),
-    codeBlock: createThemeStyle("blue", "dim"),
-    normal: createThemeStyle("white", "bright")
+    header1: createThemeStyle("blue", "default", "bright"),
+    header2: createThemeStyle("cyan", "default", "bright"),
+    header3: createThemeStyle("cyan", "default", "dim"),
+    bold: createThemeStyle("white", "default", "bright"),
+    italic: createThemeStyle("yellow", "default", "bright"),
+    code: createThemeStyle("green", "default", "bright"),
+    link: createThemeStyle("magenta", "default", "bright"),
+    listBullet: createThemeStyle("cyan", "default", "bright"),
+    codeBlock: createThemeStyle("blue", "default", "dim"),
+    normal: createThemeStyle("white", "default", "bright"),
+    diffAdded: createThemeStyle("white", "green", "bright"),
+    diffRemoved: createThemeStyle("white", "red", "bright"),
+    diffContext: createThemeStyle("white", "default", "bright"),
+    diffAddedBg: createThemeStyle("black", "green", "bright"),
+    diffRemovedBg: createThemeStyle("black", "red", "bright"),
+    diffAddedText: createThemeStyle("green", "default", "bright"),
+    diffRemovedText: createThemeStyle("red", "default", "bright"),
+    success: createThemeStyle("green", "default", "bright"),
+    error: createThemeStyle("red", "default", "bright"),
+    toolCall: createThemeStyle("cyan", "default", "bright")
   )
 
 proc getLightTheme*(): Theme =
   ## Get a theme optimized for light terminals
   Theme(
     name: "light",
-    header1: createThemeStyle("blue", "bright"),
-    header2: createThemeStyle("magenta", "bright"),
-    header3: createThemeStyle("magenta", "dim"),
-    bold: createThemeStyle("black", "bright"),
-    italic: createThemeStyle("blue", "dim"),
-    code: createThemeStyle("green", "dim"),
-    link: createThemeStyle("blue", "bright"),
-    listBullet: createThemeStyle("black", "bright"),
-    codeBlock: createThemeStyle("magenta", "dim"),
-    normal: createThemeStyle("black", "bright")
+    header1: createThemeStyle("blue", "default", "bright"),
+    header2: createThemeStyle("magenta", "default", "bright"),
+    header3: createThemeStyle("magenta", "default", "dim"),
+    bold: createThemeStyle("black", "default", "bright"),
+    italic: createThemeStyle("blue", "default", "dim"),
+    code: createThemeStyle("green", "default", "dim"),
+    link: createThemeStyle("blue", "default", "bright"),
+    listBullet: createThemeStyle("black", "default", "bright"),
+    codeBlock: createThemeStyle("magenta", "default", "dim"),
+    normal: createThemeStyle("black", "default", "bright"),
+    diffAdded: createThemeStyle("black", "green", "bright"),
+    diffRemoved: createThemeStyle("black", "red", "bright"),
+    diffContext: createThemeStyle("black", "default", "bright"),
+    diffAddedBg: createThemeStyle("black", "green", "bright"),
+    diffRemovedBg: createThemeStyle("white", "red", "bright"),
+    diffAddedText: createThemeStyle("green", "default", "bright"),
+    diffRemovedText: createThemeStyle("red", "default", "bright"),
+    success: createThemeStyle("green", "default", "bright"),
+    error: createThemeStyle("red", "default", "bright"),
+    toolCall: createThemeStyle("blue", "default", "bright")
   )
 
 proc getMinimalTheme*(): Theme =
   ## Get a minimal monochrome theme
   Theme(
     name: "minimal",
-    header1: createThemeStyle("white", "bright"),
-    header2: createThemeStyle("white", "bright"),
-    header3: createThemeStyle("white", "dim"),
-    bold: createThemeStyle("white", "bright"),
-    italic: createThemeStyle("white", "dim"),
-    code: createThemeStyle("white", "dim"),
-    link: createThemeStyle("white", "underscore"),
-    listBullet: createThemeStyle("white", "bright"),
-    codeBlock: createThemeStyle("white", "dim"),
-    normal: createThemeStyle("white", "bright")
+    header1: createThemeStyle("white", "default", "bright"),
+    header2: createThemeStyle("white", "default", "bright"),
+    header3: createThemeStyle("white", "default", "dim"),
+    bold: createThemeStyle("white", "default", "bright"),
+    italic: createThemeStyle("white", "default", "dim"),
+    code: createThemeStyle("white", "default", "dim"),
+    link: createThemeStyle("white", "default", "underscore"),
+    listBullet: createThemeStyle("white", "default", "bright"),
+    codeBlock: createThemeStyle("white", "default", "dim"),
+    normal: createThemeStyle("white", "default", "bright"),
+    diffAdded: createThemeStyle("white", "default", "bright"),
+    diffRemoved: createThemeStyle("white", "default", "dim"),
+    diffContext: createThemeStyle("white", "default", "bright"),
+    diffAddedBg: createThemeStyle("white", "default", "bright"),
+    diffRemovedBg: createThemeStyle("white", "default", "dim"),
+    diffAddedText: createThemeStyle("white", "default", "bright"),
+    diffRemovedText: createThemeStyle("white", "default", "dim"),
+    success: createThemeStyle("white", "default", "bright"),
+    error: createThemeStyle("white", "default", "dim"),
+    toolCall: createThemeStyle("white", "default", "bright")
   )
 
 proc registerTheme*(theme: Theme) =
@@ -148,7 +214,8 @@ proc setCurrentTheme*(themeName: string): bool =
 
 proc getCurrentTheme*(): Theme =
   ## Get the current active theme
-  result = currentTheme
+  {.gcsafe.}:
+    result = currentTheme
 
 proc getAvailableThemes*(): seq[string] =
   ## Get list of available theme names
@@ -169,6 +236,18 @@ proc formatWithStyle*(text: string, themeStyle: ThemeStyle): string =
     of fgWhite: "\x1b[37m"
     else: "\x1b[37m"  # Default to white
   
+  let bgColorCode = case themeStyle.bgColor:
+    of bgBlack: "\x1b[40m"
+    of bgRed: "\x1b[41m"
+    of bgGreen: "\x1b[42m"
+    of bgYellow: "\x1b[43m"
+    of bgBlue: "\x1b[44m"
+    of bgMagenta: "\x1b[45m"
+    of bgCyan: "\x1b[46m"
+    of bgWhite: "\x1b[47m"
+    of bgDefault: ""
+    else: ""  # Default to no background color
+  
   let styleCode = case themeStyle.style:
     of styleBright: "\x1b[1m"
     of styleDim: "\x1b[2m"
@@ -179,12 +258,15 @@ proc formatWithStyle*(text: string, themeStyle: ThemeStyle): string =
     of styleStrikethrough: "\x1b[9m"
     else: "\x1b[1m"  # Default to bright
   
-  result = styleCode & colorCode & text & "\x1b[0m"
+  result = styleCode & colorCode & bgColorCode & text & "\x1b[0m"
 
 proc convertThemeStyleConfig(config: configTypes.ThemeStyleConfig): ThemeStyle =
   ## Convert config ThemeStyleConfig to theme ThemeStyle
+  # For now, we'll use default background color for config-based themes
+  # In the future, we could extend the config to support background colors
   ThemeStyle(
     color: parseColor(config.color),
+    bgColor: bgDefault,
     style: parseStyle(config.style)
   )
 
@@ -201,7 +283,18 @@ proc convertThemeConfig(config: configTypes.ThemeConfig): Theme =
     link: convertThemeStyleConfig(config.link),
     listBullet: convertThemeStyleConfig(config.listBullet),
     codeBlock: convertThemeStyleConfig(config.codeBlock),
-    normal: convertThemeStyleConfig(config.normal)
+    normal: convertThemeStyleConfig(config.normal),
+    diffAdded: convertThemeStyleConfig(config.diffAdded),
+    diffRemoved: convertThemeStyleConfig(config.diffRemoved),
+    diffContext: convertThemeStyleConfig(config.diffContext),
+    # Use diff styles as fallbacks for new fields
+    diffAddedBg: convertThemeStyleConfig(config.diffAdded),
+    diffRemovedBg: convertThemeStyleConfig(config.diffRemoved),
+    diffAddedText: createThemeStyle("green", "default", "bright"),
+    diffRemovedText: createThemeStyle("red", "default", "bright"),
+    success: createThemeStyle("green", "default", "bright"),
+    error: createThemeStyle("red", "default", "bright"),
+    toolCall: createThemeStyle("blue", "default", "bright")
   )
 
 proc loadThemesFromConfig*(config: configTypes.Config) =

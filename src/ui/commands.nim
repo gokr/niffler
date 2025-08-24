@@ -178,7 +178,7 @@ proc clearHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
 
 proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Show current conversation context information
-  let messages = getConversationContext()
+  let messages = history.getConversationContext()
   let estimatedTokens = estimateTokenCount(messages)
   let historyLength = getHistoryLength()
   
@@ -271,7 +271,7 @@ proc tokensHandler(args: seq[string], currentModel: var configTypes.ModelConfig)
 proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Show session cost summary with accurate model-specific breakdown
   let sessionCounts = getSessionTokens()
-  let messages = getConversationContext()
+  let messages = history.getConversationContext()
   
   var message = "Session Cost Summary:\n"
   
