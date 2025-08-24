@@ -102,25 +102,19 @@ proc removeLastItem*(history: var History) =
     history.setLen(history.len - 1)
 
 # Generate sequence IDs
-var nextSequenceId {.threadvar.}: SequenceId
-
-proc getNextSequenceId*(): SequenceId =
-  if nextSequenceId == 0:
-    nextSequenceId = 1
-  result = nextSequenceId
-  inc nextSequenceId
+# Sequence ID generation removed - database auto-incrementing IDs are used instead
 
 # Factory functions
 proc newUserItem*(content: string): HistoryItem =
   result = HistoryItem(
-    id: getNextSequenceId(),
+    id: 0, # Database handles ID generation
     itemType: hitUser,
     userContent: content
   )
 
 proc newAssistantItem*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall])): HistoryItem =
   result = HistoryItem(
-    id: getNextSequenceId(),
+    id: 0, # Database handles ID generation
     itemType: hitAssistant,
     assistantContent: content,
     toolCalls: toolCalls
@@ -128,14 +122,14 @@ proc newAssistantItem*(content: string, toolCalls: Option[seq[LLMToolCall]] = no
 
 proc newToolCallItem*(tool: LLMToolCall): HistoryItem =
   result = HistoryItem(
-    id: getNextSequenceId(),
+    id: 0, # Database handles ID generation
     itemType: hitTool,
     tool: tool
   )
 
 proc newToolOutputItem*(content: string, toolCallId: string): HistoryItem =
   result = HistoryItem(
-    id: getNextSequenceId(),
+    id: 0, # Database handles ID generation
     itemType: hitToolOutput,
     toolOutputContent: content,
     toolCallId: toolCallId
@@ -143,7 +137,7 @@ proc newToolOutputItem*(content: string, toolCallId: string): HistoryItem =
 
 proc newToolFailedItem*(error: string, toolCallId: string, toolName: string): HistoryItem =
   result = HistoryItem(
-    id: getNextSequenceId(),
+    id: 0, # Database handles ID generation
     itemType: hitToolFailed,
     failedError: error,
     failedToolCallId: toolCallId,
