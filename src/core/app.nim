@@ -17,9 +17,9 @@
 ## - Handles API key retrieval from configuration and environment
 ## - Provides both interactive and single-shot execution modes
 
-import std/[strformat, logging, options, strutils, terminal]
+import std/[strformat, logging, options, strutils, terminal, random]
 import channels, history, config, system_prompt
-import ../types/[messages, history as historyTypes, config as configTypes, mode]
+import ../types/[messages, config as configTypes, mode]
 import ../api/api
 
 # Global mode state (thread-safe access through procedures)
@@ -154,7 +154,7 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   let systemMsg = createSystemMessage(getCurrentMode())
   messages.insert(systemMsg, 0)
   
-  let requestId = fmt"req_{historyTypes.getNextSequenceId()}"
+  let requestId = fmt"req_{rand(100000)}"
   debug(fmt"Prepared {messages.len} messages for {getCurrentMode()} mode")
   return (messages, requestId)
 

@@ -233,7 +233,7 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
 
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Generate a rich prompt string with token counts, context info, and cost
-  let contextMessages = getConversationContext()
+  let contextMessages = history.getConversationContext()
   let contextSize = estimateTokenCount(contextMessages)
   let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
   let sessionTotal = inputTokens + outputTokens
@@ -345,11 +345,18 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   
   initializeModeState()
   
-  # Start API worker
-  var apiWorker = startAPIWorker(channels, level, dump)
+  # Get database pool for cross-thread history sharing
+  let pool = if database != nil: database.pool else: nil
   
-  # Start tool worker
-  var toolWorker = startToolWorker(channels, level, dump)
+  # Initialize history manager with pool
+  let conversationId = startNewConversation().int
+  initHistoryManager(pool, conversationId)
+  
+  # Start API worker with pool
+  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  
+  # Start tool worker with pool
+  var toolWorker = startToolWorker(channels, level, dump, database, pool)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -548,23 +555,26 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   
   setLogFilter(level)
   initThreadSafeChannels()
-  initHistoryManager()
   initDumpFlag()
   setDumpEnabled(dump)
   
   # Initialize database
   let database = initializeGlobalDatabase(level)
   
-  # Start a new conversation for cost tracking
-  discard startNewConversation()
+  # Get database pool for cross-thread history sharing
+  let pool = if database != nil: database.pool else: nil
+  
+  # Initialize history manager with pool
+  let conversationId = startNewConversation().int
+  initHistoryManager(pool, conversationId)
   
   let channels = getChannels()
   
-  # Start API worker
-  var apiWorker = startAPIWorker(channels, level, dump)
+  # Start API worker with pool
+  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
   
-  # Start tool worker
-  var toolWorker = startToolWorker(channels, level, dump)
+  # Start tool worker with pool
+  var toolWorker = startToolWorker(channels, level, dump, database, pool)
   
   let (success, requestId) = sendSinglePromptAsyncWithId(text, model)
   if success:

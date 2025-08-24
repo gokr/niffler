@@ -33,7 +33,7 @@ proc showModels() =
   for model in config.models:
     echo "  ", model.nickname, " (", model.baseUrl, ")"
 
-proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = "") =
+proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""): DatabaseBackend =
   ## Initialize common app systems
   if logFile.len > 0:
     # Setup file and console logging
@@ -49,9 +49,17 @@ proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""
   
   setLogFilter(level)
   initThreadSafeChannels()
-  initHistoryManager()
   initDumpFlag()
   setDumpEnabled(dump)
+  
+  # Initialize database
+  result = database.initializeGlobalDatabase(level)
+  
+  # Get database pool for cross-thread history sharing
+  let pool = if result != nil: result.pool else: nil
+  
+  # Initialize history manager with pool - will be reset in CLI mode with conversation ID
+  initHistoryManager(pool)
 
 proc selectModelFromConfig(modelName: string, config: configTypes.Config): configTypes.ModelConfig =
   ## Select model from configuration by name or use default
@@ -70,22 +78,16 @@ proc selectModelFromConfig(modelName: string, config: configTypes.Config): confi
 
 proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "") =
   ## Start interactive mode with CLI interface
-  # Initialize app systems
-  initializeAppSystems(level, dump, logFile)
+  # Initialize app systems and get database
+  let databaseBackend = initializeAppSystems(level, dump, logFile)
   
   # Load configuration and select model
   let config = loadConfig()
   let selectedModel = selectModelFromConfig(modelName, config)
   
-  # Initialize database
-  let database = initializeGlobalDatabase(level)
-  
-  # Start a new conversation for cost tracking
-  discard startNewConversation()
-  
-  # Start CLI mode
+  # Start CLI mode (database already initialized earlier)
   try:
-    startCLIMode(selectedModel, database, level, dump)
+    startCLIMode(selectedModel, databaseBackend, level, dump)
   except Exception as e:
     echo fmt"CLI mode failed: {e.msg}"
     echo "CLI requires linecross library for enhanced input"
