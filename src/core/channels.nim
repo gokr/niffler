@@ -2,13 +2,15 @@ import std/[locks, atomics, options, logging]
 import ../types/messages
 import queue
 import database
+import debby/pools
 
 type
   ThreadParams* = ref object
     channels*: ptr ThreadChannels
     level*: Level
     dump*: bool
-    database*: DatabaseBackend
+    database*: DatabaseBackend  # Keep for backward compatibility
+    pool*: Pool                 # New database pool for cross-thread sharing
 
   ThreadChannels* = object
     # API Thread Communication

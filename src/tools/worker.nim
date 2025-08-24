@@ -31,8 +31,9 @@ else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 
 import ../types/[tools, messages]
-import ../core/channels
+import ../core/[channels, database]
 import registry
+import debby/pools
 
 
 type    
@@ -157,9 +158,9 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   finally:
     debug("Tool worker thread stopped")
 
-proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false): ToolWorker =
+proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): ToolWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level, dump: dump)
+  let params = ThreadParams(channels: channels, level: level, dump: dump, database: database, pool: pool)
   createThread(result.thread, toolWorkerProc, params)
 
 proc stopToolWorker*(worker: var ToolWorker) =
