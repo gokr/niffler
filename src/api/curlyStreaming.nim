@@ -26,6 +26,7 @@ import std/[json, strutils, options, strformat, logging, tables]
 import curly
 import ../types/[messages, config]
 import ../core/log_file as logFileModule
+import tool_call_parser
 
 # Single long-lived Curly instance for the entire application
 let curl* = newCurly()
@@ -33,9 +34,19 @@ let curl* = newCurly()
 # Global dump flag for request/response logging
 var dumpEnabled {.threadvar.}: bool
 
+# Global parser for flexible tool call format detection
+var globalFlexibleParser {.threadvar.}: FlexibleParser
+
 proc setDumpEnabled*(enabled: bool) =
   ## Set the global dump flag for HTTP request/response logging
   dumpEnabled = enabled
+
+proc initGlobalParser*() =
+  ## Initialize the global flexible parser
+  globalFlexibleParser = newFlexibleParser()
+
+# Forward declaration
+proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.}
 
 proc initDumpFlag*() =
   ## Initialize the dump flag (called once per thread)
@@ -130,12 +141,48 @@ proc parseSSELine(line: string): Option[StreamChunk] =
       return some(chunk)
       
     except JsonParsingError:
-      debug(fmt"Failed to parse SSE JSON: {dataLine}")
+      debug(fmt"Failed to parse SSE JSON, trying flexible parser: {dataLine}")
+      # Try flexible parsing for non-OpenAI formats
+      return parseNonOpenAIFormat(dataLine)
     except KeyError:
       debug(fmt"Missing expected field in SSE JSON: {dataLine}")
     except ValueError:
       debug(fmt"Invalid value in SSE JSON: {dataLine}")
       
+  return none(StreamChunk)
+
+proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.} =
+  ## Parse non-OpenAI formats using flexible parser
+  debug(fmt"Attempting to parse non-OpenAI format: {dataLine}")
+  
+  # Initialize parser if not already done
+  if globalFlexibleParser.detectedFormat.isNone:
+    initGlobalParser()
+  
+  # Try to extract tool calls from the content
+  let toolCalls = parseToolCallFragment(globalFlexibleParser, dataLine)
+  
+  if toolCalls.len > 0:
+    # Create a synthetic StreamChunk for the tool calls
+    var chunk = StreamChunk(choices: @[])
+    var choice = StreamChoice(
+      index: 0,
+      delta: ChatMessage(
+        role: "assistant",
+        content: "",
+        toolCalls: some(toolCalls)
+      ),
+      finishReason: none(string)
+    )
+    chunk.choices.add(choice)
+    debug(fmt"Successfully parsed {toolCalls.len} tool calls from non-OpenAI format")
+    return some(chunk)
+  
+  # If no tool calls found, treat as regular content
+  let format = detectToolCallFormat(dataLine)
+  if format != tfUnknown:
+    debug(fmt"Detected format {format} but no complete tool calls yet")
+  
   return none(StreamChunk)
 
 proc newCurlyStreamingClient*(baseUrl, apiKey, model: string): CurlyStreamingClient =
