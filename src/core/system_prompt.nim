@@ -247,7 +247,6 @@ proc extractSystemPromptsFromNiffler*(): tuple[common: string, planMode: string,
   
   # Then search in config directory (~/.niffler)
   try:
-    let config = loadConfig()
     let configDir = getDefaultConfigPath().parentDir()
     searchPaths.add(configDir)
   except:

@@ -284,10 +284,7 @@ proc logTokenUsage*(backend: DatabaseBackend, entry: TokenLogEntry) =
 proc getTokenStats*(backend: DatabaseBackend, model: string, startDate, endDate: DateTime): tuple[totalInputTokens: int, totalOutputTokens: int, totalCost: float] =
   case backend.kind:
   of dbkSQLite, dbkTiDB:
-    let startDateStr = startDate.format("yyyy-MM-dd HH:mm:ss")
-    let endDateStr = endDate.format("yyyy-MM-dd HH:mm:ss")
-    
-    # Query using debby's ORM
+    # Query using debby's ORM - directly use startDate and endDate in filter
     let entries = if model.len > 0:
       backend.pool.filter(TokenLogEntry, it.model == model and it.created_at >= startDate and it.created_at <= endDate)
     else:

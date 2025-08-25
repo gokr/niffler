@@ -3,6 +3,7 @@ nimcache
 niffler
 testresults
 *.log
+.roo
 # Compiled Nim binaries
 tests/test_*
 !tests/test_*.nim

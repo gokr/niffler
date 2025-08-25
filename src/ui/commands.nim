@@ -9,7 +9,7 @@
 ## - Unified command execution interface
 ## - Extensible command registration system
 
-import std/[strutils, strformat, tables, options, formatfloat, logging]
+import std/[strutils, strformat, tables, options, logging]
 import ../core/[history, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
@@ -101,7 +101,7 @@ proc executeCommand*(command: string, args: seq[string],
       shouldContinue: true
     )
   
-  let (info, handler) = commandRegistry[command]
+  let (_, handler) = commandRegistry[command]
   return handler(args, currentModel)
 
 # Built-in command handlers

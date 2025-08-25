@@ -13,7 +13,7 @@
 import std/[os, tables, logging, strformat]
 import docopt
 
-import core/[config, app, channels, history, database]
+import core/[config, channels, history, database]
 import core/log_file as logFileModule
 import api/curlyStreaming
 import ui/cli

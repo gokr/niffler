@@ -3,7 +3,7 @@
 ## This module provides functionality to redirect debug and dump output to
 ## incrementally numbered log files for each LLM conversation session.
 
-import std/[os, strformat, strutils, logging, times]
+import std/[os, strformat, logging, times]
 
 type
   LogFileManager* = ref object

@@ -146,7 +146,6 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
 
 proc prepareConversationMessages*(text: string): (seq[Message], string) =
   ## Prepare conversation context with system prompt and return messages with request ID
-  let userMsg = addUserMessage(text)
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
   
@@ -154,8 +153,12 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   let systemMsg = createSystemMessage(getCurrentMode())
   messages.insert(systemMsg, 0)
   
+  # Add the current user message to history and to the conversation context
+  let userMessage = addUserMessage(text)
+  messages.add(userMessage)
+  
   let requestId = fmt"req_{rand(100000)}"
-  debug(fmt"Prepared {messages.len} messages for {getCurrentMode()} mode")
+  debug(fmt"Prepared {messages.len} messages for {getCurrentMode()} mode (including current user message)")
   return (messages, requestId)
 
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =

@@ -5,17 +5,6 @@ import common
 type
   EditOperation = enum
     Replace, Insert, Delete, Append, Prepend, Rewrite
-
-  EditRequest = object
-    path: string
-    operation: EditOperation
-    oldText: string
-    newText: string
-    lineRange: tuple[start: int, `end`: int]
-    createBackup: bool
-    confirmChanges: bool
-
-
 proc createBackup*(originalPath: string): string {.gcsafe.} =
   ## Create a backup of the original file
   let backupPath = createBackupPath(originalPath)
@@ -109,7 +98,6 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   let oldText = if args.hasKey("old_text"): getArgStr(args, "old_text") else: ""
   let newText = if args.hasKey("new_text"): getArgStr(args, "new_text") else: ""
   let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: true
-  let confirmChanges = if args.hasKey("confirm_changes"): getArgBool(args, "confirm_changes") else: true
   
   # Validate path
   if path.len == 0:
