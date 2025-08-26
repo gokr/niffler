@@ -54,7 +54,7 @@ proc validateFileReadable*(path: string) =
 proc validateFileWritable*(path: string) =
   ## Validate that a file is writable
   try:
-    let file = open(path, fmWrite)
+    let file = open(path, fmAppend)
     file.close()
   except IOError:
     raise newToolPermissionError("unknown", path)
@@ -78,7 +78,7 @@ proc getCurrentDirectory*(): string =
 
 proc sanitizePath*(path: string): string =
   ## Sanitize a file path to prevent directory traversal
-  let normalized = normalizedPath(path)
+  let normalized = if isAbsolute(path): normalizedPath(path) else: normalizedPath(getCurrentDir() / path)
   if normalized.startsWith("..") or normalized.contains("/../") or normalized.contains("\\..\\"):
     raise newToolValidationError("unknown", "path", "safe path", path)
   return normalized
