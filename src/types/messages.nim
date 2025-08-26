@@ -91,6 +91,8 @@ type
     arkStreamComplete
     arkStreamError
     arkReady
+    arkToolCallRequest    # NEW: Compact tool call request display
+    arkToolCallResult     # NEW: Compact tool call result update
 
   TokenUsage* = object
     inputTokens*: int      # Renamed from promptTokens for consistency
@@ -115,6 +117,22 @@ type
     `type`*: string  # Always "function" for OpenAI - backticks escape the keyword
     function*: ToolFunction
 
+  # New types for compact tool call display
+  CompactToolRequestInfo* = object
+    toolName*: string
+    toolCallId*: string
+    args*: JsonNode
+    icon*: string
+    status*: string  # "executing", "completed", "failed"
+
+  CompactToolResultInfo* = object
+    toolCallId*: string
+    toolName*: string
+    icon*: string
+    success*: bool
+    resultSummary*: string
+    executionTime*: float
+
   APIResponse* = object
     requestId*: string
     case kind*: APIResponseKind
@@ -130,6 +148,10 @@ type
       error*: string
     of arkReady:
       discard
+    of arkToolCallRequest:
+      toolRequestInfo*: CompactToolRequestInfo
+    of arkToolCallResult:
+      toolResultInfo*: CompactToolResultInfo
 
   # Tool Thread Communication
   ToolRequestKind* = enum

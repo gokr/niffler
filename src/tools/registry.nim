@@ -145,12 +145,33 @@ proc createEditTool(): Tool =
         "type": "string",
         "description": "The file path to edit"
       },
-      "content": {
+      "operation": {
         "type": "string",
-        "description": "The new content for the file"
+        "description": "The edit operation to perform",
+        "enum": ["replace", "insert", "delete", "append", "prepend", "rewrite"]
+      },
+      "old_text": {
+        "type": "string", 
+        "description": "Text to find and replace/delete (required for replace/delete operations)"
+      },
+      "new_text": {
+        "type": "string",
+        "description": "New text to insert/append/prepend/rewrite (required for most operations)"
+      },
+      "line_range": {
+        "type": "array",
+        "description": "Line range for insert operation [start_line, end_line]",
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "create_backup": {
+        "type": "boolean",
+        "description": "Whether to create a backup before editing (default: true)",
+        "default": true
       }
     },
-    "required": ["path", "content"]
+    "required": ["path", "operation"]
   }
   let schema = ToolDefinition(
     `type`: "function",

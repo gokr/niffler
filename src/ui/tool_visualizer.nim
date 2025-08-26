@@ -3,12 +3,12 @@
 ## Provides comprehensive tool execution visualization similar to Claude Code,
 ## with structured display of tool requests and results including diff visualization.
 
-import std/[strutils, json, tables, strformat, sequtils]
+import std/[strutils, json, strformat, sequtils, os]
 import hldiffpkg/edits
 import theme
 import diff_visualizer
 import diff_types
-import markdown_cli
+import ../types/messages
 
 type
   ToolVisualizationConfig* = object
@@ -355,6 +355,153 @@ proc displayToolExecution*(toolName: string, args: JsonNode, toolResult: string,
   
   let visualization = formatToolVisualization(toolInfo, config)
   echo visualization
+
+proc getToolIcon*(toolName: string): string =
+  ## Get appropriate icon for tool type
+  case toolName:
+  of "read": return "📖"
+  of "edit": return "📝"
+  of "list": return "📋"
+  of "bash": return "💻"
+  of "fetch": return "🌐"
+  of "create": return "📁"
+  else: return "🔧"
+
+proc formatToolArgs*(toolName: string, args: JsonNode): string =
+  ## Format tool arguments for compact display
+  try:
+    var argParts: seq[string] = @[]
+    
+    case toolName:
+    of "edit":
+      if args.hasKey("path"):
+        argParts.add(args["path"].getStr())
+      if args.hasKey("operation"):
+        let op = args["operation"].getStr()
+        if op != "replace":  # Only show non-default operations
+          argParts.add(op)
+    of "read":
+      if args.hasKey("path") or args.hasKey("file_path"):
+        let path = if args.hasKey("path"): args["path"].getStr() else: args["file_path"].getStr()
+        argParts.add(path)
+    of "create":
+      if args.hasKey("path") or args.hasKey("file_path"):
+        let path = if args.hasKey("path"): args["path"].getStr() else: args["file_path"].getStr()
+        argParts.add(path)
+    of "list":
+      if args.hasKey("path"):
+        argParts.add(args["path"].getStr())
+    of "bash":
+      if args.hasKey("command"):
+        let cmd = args["command"].getStr()
+        argParts.add(if cmd.len > 30: cmd[0..29] & "..." else: cmd)
+    of "fetch":
+      if args.hasKey("url"):
+        argParts.add(args["url"].getStr())
+    
+    let argStr = if argParts.len > 0: argParts.join(", ") else: ""
+    return argStr
+    
+  except:
+    return "..."
+
+proc formatCompactToolRequest*(toolInfo: CompactToolRequestInfo): string =
+  ## Format compact one-line tool request display
+  let argsStr = formatToolArgs(toolInfo.toolName, toolInfo.args)
+  return fmt"{toolInfo.icon} {toolInfo.toolName}({argsStr}) {toolInfo.status}"
+
+proc formatCompactToolResult*(toolInfo: CompactToolResultInfo): string =
+  ## Format compact one-line tool result display
+  let statusIcon = if toolInfo.success: "✅" else: "❌"
+  return fmt"{toolInfo.icon} {toolInfo.toolName} {statusIcon} {toolInfo.resultSummary}"
+
+proc createToolResultSummary*(toolName: string, toolResult: string, success: bool): string =
+  ## Create a concise summary of tool execution result
+  if not success:
+    return "Failed"
+  
+  case toolName:
+  of "read":
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("content"):
+        let content = resultJson["content"].getStr()
+        let lines = content.splitLines()
+        return fmt"{lines.len} lines read"
+      else:
+        return "File read"
+    except:
+      return "File read"
+  
+  of "edit":
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("path") and resultJson.hasKey("changes_made"):
+        let changesMade = resultJson["changes_made"].getBool()
+        
+        if changesMade:
+          var summary = "Updated"
+          
+          # Add size change info if available
+          if resultJson.hasKey("size_change"):
+            let sizeChange = resultJson["size_change"].getInt()
+            if sizeChange > 0:
+              summary.add(fmt" (+{sizeChange} chars)")
+            elif sizeChange < 0:
+              summary.add(fmt" ({sizeChange} chars)")
+          
+          # Add line range info if available
+          if resultJson.hasKey("line_range"):
+            let lineRange = resultJson["line_range"]
+            if lineRange.kind == JArray and lineRange.len == 2:
+              let startLine = lineRange[0].getInt()
+              let endLine = lineRange[1].getInt()
+              summary.add(fmt" (lines {startLine}-{endLine})")
+          
+          return summary
+        else:
+          return fmt"No changes made"
+      else:
+        return "Edit completed"
+    except:
+      return "Edit completed"
+  
+  of "create":
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("path"):
+        let path = resultJson["path"].getStr()
+        return fmt"Created {path.extractFilename()}"
+      else:
+        return "File created"
+    except:
+      return "File created"
+  
+  of "list":
+    let lines = toolResult.splitLines()
+    let fileCount = lines.len - 1  # Subtract header line
+    if fileCount > 0:
+      return fmt"Listed {fileCount} items"
+    else:
+      return "Directory empty"
+  
+  of "bash":
+    let lines = toolResult.splitLines()
+    let nonEmptyLines = lines.filterIt(it.strip().len > 0)
+    if nonEmptyLines.len > 0:
+      return fmt"Command executed ({nonEmptyLines.len} lines output)"
+    else:
+      return "Command executed successfully"
+  
+  of "fetch":
+    let lines = toolResult.splitLines()
+    if lines.len > 0:
+      return fmt"Fetched content ({lines.len} lines)"
+    else:
+      return "Fetch completed"
+  
+  else:
+    return "Completed"
 
 proc createToolDisplayFromResult*(toolName: string, argsJson: string, toolResult: string, success: bool = true): ToolDisplayInfo =
   ## Create tool display info from string arguments

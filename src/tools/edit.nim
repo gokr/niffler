@@ -1,3 +1,29 @@
+## Edit Tool Implementation
+##
+## This module implements the file editing functionality for Niffler's tool system.
+## It provides comprehensive text manipulation capabilities with safety features
+## including automatic backups, path sanitization, and detailed error reporting.
+##
+## Architecture:
+## - EditOperation enum: Defines supported operation types (Replace, Insert, Delete, Append, Prepend, Rewrite)
+## - Helper functions: Text manipulation utilities for each operation type
+## - executeEdit: Main entry point that validates arguments and applies operations
+## - Safety features: Backup creation, path validation, file permission checks
+##
+## Operation Flow:
+## 1. Validate input arguments (path, operation, operation-specific parameters)
+## 2. Sanitize file path and validate file existence/permissions
+## 3. Create backup file (if requested)
+## 4. Apply the specified edit operation to the file content
+## 5. Write modified content back to file (if changes were made)
+## 6. Return detailed JSON response with operation results
+##
+## Security Considerations:
+## - All file paths are sanitized to prevent directory traversal attacks
+## - File permissions are validated before operations
+## - Automatic backups prevent data loss
+## - Comprehensive error handling with specific error types
+
 import std/[strutils, json]
 import ../types/tools
 import common

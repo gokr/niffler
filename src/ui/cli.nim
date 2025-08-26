@@ -22,7 +22,7 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat, terminal, options, times, algorithm]
+import std/[os, strutils, strformat, terminal, options, times, math]
 import std/logging
 when defined(posix):
   import posix
@@ -36,6 +36,7 @@ import ../tools/worker
 import commands
 import theme
 import markdown_cli
+import tool_visualizer
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -231,6 +232,36 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
   stdout.styledWrite(color, style, text)
   stdout.flushFile()
 
+proc formatTokenAmount*(tokens: int): string =
+  ## Format token amounts with appropriate units (0-1000, 1.0k-20.0k, 20k-999k, 1.0M+)
+  if tokens < 1000:
+    return $tokens
+  elif tokens < 20000:
+    let k = tokens.float / 1000.0
+    return fmt"{k:.1f}k"
+  elif tokens < 1000000:
+    let k = tokens div 1000
+    return fmt"{k}k"
+  else:
+    let m = tokens.float / 1000000.0
+    return fmt"{m:.1f}M"
+
+proc formatCostRounded*(cost: float): string =
+  ## Format cost rounded to 3 decimals with no trailing zeros
+  let rounded = round(cost, 3)
+  if rounded == 0.0:
+    return "$0"
+  
+  let formatted = fmt"${rounded:.3f}"
+  # Remove trailing zeros after decimal point
+  var finalResult = formatted
+  if '.' in finalResult:
+    while finalResult.endsWith("0"):
+      finalResult = finalResult[0..^2]
+    if finalResult.endsWith("."):
+      finalResult = finalResult[0..^2]
+  return finalResult
+
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Generate a rich prompt string with token counts, context info, and cost
   let contextMessages = history.getConversationContext()
@@ -241,11 +272,13 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
   let modeIndicator = getModePromptIndicator()
 
   if sessionTotal > 0:
-    # Create context usage bar
+    # Calculate context percentage and format max context
     let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
-    let barWidth = 10
-    let filledBars = if barWidth > 0: (contextPercent * barWidth) div 100 else: 0
-    let contextBar = "█".repeat(filledBars) & "░".repeat(barWidth - filledBars)
+    let contextInfo = fmt"{contextPercent}% of {formatTokenAmount(maxContext)}"
+    
+    # Format token amounts with new formatting
+    let formattedInputTokens = formatTokenAmount(inputTokens)
+    let formattedOutputTokens = formatTokenAmount(outputTokens)
     
     # Calculate session cost if available using real token data
     let sessionTokens = getSessionTokens()
@@ -259,8 +292,8 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
       let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
       sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
     
-    let costInfo = if sessionCost > 0: fmt" {formatCost(sessionCost)}" else: ""
-    return fmt"{statusIndicator}↑{inputTokens} ↓{outputTokens} [{contextBar}]{contextPercent}%{costInfo} {currentModelName}{modeIndicator} > "
+    let costInfo = if sessionCost > 0: fmt" {formatCostRounded(sessionCost)}" else: ""
+    return fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo} {currentModelName}{modeIndicator} > "
   else:
     return fmt"{statusIndicator}{currentModelName}{modeIndicator} > "
 
@@ -362,19 +395,6 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
   
-  # Get user name for prompts
-  let userName = getUserName()
-  
-  proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
-    ## Custom key hook for handling special key combinations like Shift+Tab
-    if keyCode == ShiftTab:
-      # Toggle mode silently - the prompt will update on next input
-      discard toggleMode()
-      setPrompt(generatePrompt(currentModel))
-      setPromptColor(getModePromptColor())
-      return true  # Key was handled
-    return false  # Key not handled, continue with default processing
-
   # Set up custom key callback for shift-tab etc
   registerCustomKeyCallback(nifflerCustomKeyHook)
 
@@ -397,6 +417,14 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
           # Display command result with markdown if enabled
           writeToConversationArea(res.message, fgWhite, styleBright, markdownEnabled)
           writeToConversationArea("")
+          
+          # Store command in prompt history (input only, like bash history)
+          if database != nil:
+            try:
+              logPromptHistory(database, input, "", currentModel.nickname, "")
+              debug(fmt"Stored command in prompt history: {input}")
+            except Exception as e:
+              debug(fmt"Failed to store command in prompt history: {e.msg}")
           
           # Handle special commands that need additional actions
           if res.success:
@@ -469,6 +497,18 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 else:
                   stdout.write(response.content)
                 stdout.flushFile()
+            of arkToolCallRequest:
+              # Handle compact tool call request display
+              let toolRequest = response.toolRequestInfo
+              let formattedRequest = formatCompactToolRequest(toolRequest)
+              stdout.write("\n" & formattedRequest)
+              stdout.flushFile()
+            of arkToolCallResult:
+              # Handle compact tool call result display
+              let toolResult = response.toolResultInfo
+              let formattedResult = formatCompactToolResult(toolResult)
+              stdout.write("\n" & formattedResult & "\n")
+              stdout.flushFile()
             of arkStreamComplete:
               writeToConversationArea("")  # Add final newline
               # Update token counts with new response (prompt will show tokens)
@@ -482,14 +522,15 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               elif hadToolCalls:
                 debug("DEBUG: Skipping assistant message addition - tool calls already handled by API worker")
               
-              # Log the prompt exchange to database
+              # Log user input to prompt history (bash-style history)
               if database != nil:
                 try:
                   let dateStr = now().format("yyyy-MM-dd")
                   let sessionId = fmt"session_{getUserName()}_{dateStr}"
-                  logPromptHistory(database, input, responseText, currentModel.nickname, sessionId)
+                  logPromptHistory(database, input, "", currentModel.nickname, sessionId)
+                  debug(fmt"Stored user input in prompt history: {input}")
                 except Exception as e:
-                  debug(fmt"Failed to log prompt to database: {e.msg}")
+                  debug(fmt"Failed to log user input to prompt history: {e.msg}")
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
@@ -561,6 +602,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   # Initialize database
   let database = initializeGlobalDatabase(level)
   
+  # Load config and check if markdown rendering is enabled
+  let config = loadConfig()
+  loadThemesFromConfig(config)
+  let markdownEnabled = isMarkdownEnabled(config)
+  
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
   
@@ -597,11 +643,19 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
         case response.kind:
         of arkStreamChunk:
           if response.content.len > 0:
+            # For single prompt mode, show plain text while streaming
+            # and render markdown on the complete text at the end
             stdout.write(response.content)
             stdout.flushFile()
             responseText.add(response.content)
         of arkStreamComplete:
-          echo "\n"
+          # Apply markdown formatting to the complete response if enabled
+          if markdownEnabled and responseText.len > 0:
+            echo "\n--- Formatted Output ---"
+            let renderedText = renderMarkdownTextCLI(responseText)
+            echo renderedText
+          else:
+            echo "\n"
           info fmt"Tokens used: {response.usage.totalTokens}"
           
           # Log the prompt exchange to database
@@ -622,6 +676,18 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
         of arkStreamError:
           echo fmt"Error: {response.error}"
           responseReceived = true
+        of arkToolCallRequest:
+          # Handle compact tool call request display
+          let toolRequest = response.toolRequestInfo
+          let formattedRequest = formatCompactToolRequest(toolRequest)
+          stdout.write("\n" & formattedRequest)
+          stdout.flushFile()
+        of arkToolCallResult:
+          # Handle compact tool call result display
+          let toolResult = response.toolResultInfo
+          let formattedResult = formatCompactToolResult(toolResult)
+          stdout.write("\n" & formattedResult & "\n")
+          stdout.flushFile()
         of arkReady:
           discard  # Just ignore ready responses
       
