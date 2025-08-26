@@ -207,6 +207,74 @@ proc validateFetchArgs*(args: JsonNode): void =
   # TODO: Add proper validation once JsonValue API is figured out
   discard
 
+proc validateTodolistArgs*(args: JsonNode): void =
+  ## Validate todolist tool arguments
+  if not args.hasKey("operation") or args["operation"].kind != JString:
+    raise newToolValidationError("todolist", "operation", "string operation", "missing or invalid")
+  
+  let operation = args["operation"].getStr()
+  let validOperations = ["add", "update", "delete", "list", "show", "bulk_update"]
+  
+  if operation notin validOperations:
+    raise newToolValidationError("todolist", "operation", "valid operation (" & validOperations.join(", ") & ")", operation)
+  
+  case operation:
+  of "add":
+    if not args.hasKey("content") or args["content"].kind != JString:
+      raise newToolValidationError("todolist", "content", "string content", "missing or invalid")
+    if args["content"].getStr().len == 0:
+      raise newToolValidationError("todolist", "content", "non-empty string", "empty string")
+    
+    # Priority is optional
+    if args.hasKey("priority"):
+      if args["priority"].kind != JString:
+        raise newToolValidationError("todolist", "priority", "string priority", "invalid type")
+      let priority = args["priority"].getStr()
+      if priority notin ["high", "medium", "low"]:
+        raise newToolValidationError("todolist", "priority", "high|medium|low", priority)
+  
+  of "update":
+    if not args.hasKey("itemId") or args["itemId"].kind != JInt:
+      raise newToolValidationError("todolist", "itemId", "integer itemId", "missing or invalid")
+    
+    # At least one of state, content, or priority must be provided
+    if not (args.hasKey("state") or args.hasKey("content") or args.hasKey("priority")):
+      raise newToolValidationError("todolist", "update", "at least one of state|content|priority", "none provided")
+    
+    if args.hasKey("state"):
+      if args["state"].kind != JString:
+        raise newToolValidationError("todolist", "state", "string state", "invalid type")
+      let state = args["state"].getStr()
+      if state notin ["pending", "in_progress", "completed", "cancelled"]:
+        raise newToolValidationError("todolist", "state", "pending|in_progress|completed|cancelled", state)
+    
+    if args.hasKey("content"):
+      if args["content"].kind != JString:
+        raise newToolValidationError("todolist", "content", "string content", "invalid type")
+      if args["content"].getStr().len == 0:
+        raise newToolValidationError("todolist", "content", "non-empty string", "empty string")
+    
+    if args.hasKey("priority"):
+      if args["priority"].kind != JString:
+        raise newToolValidationError("todolist", "priority", "string priority", "invalid type")
+      let priority = args["priority"].getStr()
+      if priority notin ["high", "medium", "low"]:
+        raise newToolValidationError("todolist", "priority", "high|medium|low", priority)
+  
+  of "bulk_update":
+    if not args.hasKey("todos") or args["todos"].kind != JString:
+      raise newToolValidationError("todolist", "todos", "string markdown content", "missing or invalid")
+    if args["todos"].getStr().len == 0:
+      raise newToolValidationError("todolist", "todos", "non-empty markdown content", "empty string")
+  
+  of "list", "show":
+    # No additional arguments required for list/show operations
+    discard
+  
+  else:
+    # Should not happen due to earlier validation, but be safe
+    raise newToolValidationError("todolist", "operation", "supported operation", operation)
+
 proc validateToolArgs*(toolName: string, args: JsonNode): void =
   ## Main validation function
   case toolName:
@@ -216,5 +284,6 @@ proc validateToolArgs*(toolName: string, args: JsonNode): void =
   of "edit": validateEditArgs(args)
   of "create": validateCreateArgs(args)
   of "fetch": validateFetchArgs(args)
+  of "todolist": validateTodolistArgs(args)
   else:
     raise newToolValidationError(toolName, "tool", "supported tool", "unknown tool")
