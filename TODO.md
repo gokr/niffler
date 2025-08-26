@@ -16,13 +16,14 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ SQLite-based message history tracking
 - ✅ Debug logging control
 
-**Tool System (6/6 tools completed):**
+**Tool System (7/7 tools completed):**
 - ✅ **bash** - Command execution with timeout/process management
 - ✅ **read** - File reading with encoding detection and size limits
 - ✅ **list** - Directory listing with filtering and metadata
 - ✅ **edit** - Diff-based editing with backup system
 - ✅ **create** - File creation with safety checks
 - ✅ **fetch** - HTTP/HTTPS content fetching with scraping
+- ✅ **todolist** - Agentic task breakdown and progress tracking with SQLite persistence
 - ✅ Tool registry, JSON schema validation, and worker threading
 - ✅ Exception-based error handling with custom types
 
@@ -53,13 +54,13 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ **File Inclusion Support** - @include directive for modular instruction files
 - ✅ **Config Directory Search** - System-wide NIFFLER.md in ~/.niffler/
 
-#### **3. Todolist Tool Implementation**
+#### **3. Todolist Tool Implementation** ✅
 *Essential agentic feature for task breakdown and tracking*
-- ❌ **Structured Todo Management** - Parse/generate markdown checklists with state tracking
-- ❌ **State Persistence** - Maintain todo state across conversation turns
-- ❌ **User Approval Flow** - Show proposed todo updates before applying
-- ❌ **Progress Integration** - Link todos to actual implementation progress
-- ❌ **Plan Mode Integration** - Generate comprehensive implementation plans as todos
+- ✅ **Structured Todo Management** - Parse/generate markdown checklists with state tracking
+- ✅ **State Persistence** - Maintain todo state across conversation turns using SQLite
+- ✅ **User Approval Flow** - Show proposed todo updates before applying (bulk_update operation)
+- ✅ **Progress Integration** - Link todos to actual implementation progress with state management
+- ✅ **Plan Mode Integration** - Generate comprehensive implementation plans as todos
 
 #### **4. Enhanced Message Persistence**
 *Building on existing SQLite foundation*
@@ -141,12 +142,12 @@ ex
 - [x] Config directory search for system-wide NIFFLER.md
 - [x] Init command creates default NIFFLER.md for user customization
 
-#### 5.3: Todolist Tool Implementation
-- [ ] Create todo data structures and persistence
-- [ ] Implement markdown checklist parsing/generation
-- [ ] Add user approval flows for todo updates
-- [ ] Integrate with Plan mode for task breakdown
-- [ ] Link todos to Code mode implementation progress
+#### 5.3: Todolist Tool Implementation ✅ COMPLETED
+- [x] Create todo data structures and persistence
+- [x] Implement markdown checklist parsing/generation
+- [x] Add user approval flows for todo updates
+- [x] Integrate with Plan mode for task breakdown
+- [x] Link todos to Code mode implementation progress
 
 #### 5.4: Enhanced Message Persistence
 - [ ] Extend SQLite schema for tool calls and metadata
@@ -235,11 +236,11 @@ ex
 ### **Agentic Capability Goal**
 Target: Full agentic coding assistant capability with Plan/Code workflow supporting complex multi-step development tasks.
 
-**Current Progress: ~95% Foundation Complete**
-- ✅ Tool System: 100% (all 6 core tools implemented)
+**Current Progress: ~98% Foundation Complete**
+- ✅ Tool System: 100% (all 7 core tools implemented including todolist)
 - ✅ Threading Architecture: 100% (robust worker system)
 - ✅ LLM Integration: 95% (tool calling and real streaming working)
-- ✅ Agentic Features: 90% (Plan/Code modes implemented, needs todolist tool)
+- ✅ Agentic Features: 100% (Plan/Code modes and todolist tool fully implemented)
 - ✅ Dynamic Prompts: 100% (context-aware prompts with NIFFLER.md support)
 - ❌ User Experience: 30% (CLI needs more refinement)
 
@@ -247,8 +248,8 @@ Target: Full agentic coding assistant capability with Plan/Code workflow support
 
 1. ✅ **Plan/Code Mode System**: COMPLETED - Core agentic workflow foundation
 2. ✅ **Dynamic System Prompt Generation**: COMPLETED - Context-aware prompt assembly with NIFFLER.md support
-3. **Create Todolist Tool**: Essential for task breakdown and tracking (CURRENT PRIORITY)
-4. **Thinking Token Support**: Critical for next-generation reasoning models (HIGH PRIORITY)
+3. ✅ **Todolist Tool Implementation**: COMPLETED - Essential for task breakdown and tracking
+4. **Thinking Token Support**: Critical for next-generation reasoning models (CURRENT HIGH PRIORITY)
 5. **Enhanced Message Persistence**: Support tool calls, conversation metadata, and thinking token storage
 
 ## Key Insights from Research
