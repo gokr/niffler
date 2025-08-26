@@ -36,7 +36,7 @@ import std/logging
 import ../core/[channels, history, database]
 import curlyStreaming
 import ../tools/registry
-import ../ui/tool_visualizer
+import tool_call_parser
 import debby/pools
 
 type
@@ -46,6 +46,7 @@ type
     name*: string
     arguments*: string
     lastUpdated*: float  # timestamp for timeout handling
+    format*: Option[ToolFormat]  # detected format for this tool call
 
   APIWorker* = object
     thread: Thread[ThreadParams]
@@ -54,16 +55,7 @@ type
 
 # Helper function to convert ChatToolCall to LLMToolCall - REMOVED (now using LLMToolCall directly)
 
-# Helper functions for tool display
-proc getToolIcon(toolName: string): string =
-  case toolName:
-  of "bash": "🔧"
-  of "read": "📖"
-  of "list": "📁"
-  of "edit": "✏️"
-  of "create": "📝"
-  of "fetch": "🌐"
-  else: "🔧"
+# Unused functions removed to avoid warnings - using tool_visualizer versions instead
 
 proc getArgsPreview(arguments: string): string =
   try:
@@ -96,9 +88,9 @@ proc getArgsPreview(arguments: string): string =
   except:
     return "."
 
-# Helper functions for tool call buffering
+# Helper functions for tool call buffering (now format-aware)
 proc isValidJson*(jsonStr: string): bool =
-  ## Check if a string is valid JSON
+  ## Check if a string is valid JSON (legacy function for compatibility)
   try:
     discard parseJson(jsonStr)
     return true
@@ -106,7 +98,7 @@ proc isValidJson*(jsonStr: string): bool =
     return false
 
 proc isCompleteJson*(jsonStr: string): bool =
-  ## Check if JSON string is complete (balanced braces and brackets)
+  ## Check if JSON string is complete (legacy function for compatibility)
   var braceCount = 0
   var bracketCount = 0
   var inString = false
@@ -143,6 +135,25 @@ proc isCompleteJson*(jsonStr: string): bool =
   
   return braceCount == 0 and bracketCount == 0 and not inString
 
+# New format-aware validation functions
+proc detectAndValidateFormat*(content: string, buffer: var ToolCallBuffer): bool =
+  ## Detect format and validate tool call content
+  if buffer.format.isNone:
+    let detectedFormat = detectToolCallFormat(content)
+    buffer.format = some(detectedFormat)
+    debug(fmt"Detected tool call format for buffer {buffer.id}: {detectedFormat}")
+  
+  let format = buffer.format.get()
+  return isValidToolCall(content, format)
+
+proc isToolCallComplete*(content: string, buffer: ToolCallBuffer): bool =
+  ## Check if tool call is complete based on detected format
+  if buffer.format.isNone:
+    return false
+  
+  let format = buffer.format.get()
+  return isCompleteToolCall(content, format)
+
 proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCall: LLMToolCall): bool =
   ## Buffer a tool call fragment, return true if complete
   let toolId = if toolCall.id.len > 0: toolCall.id else: "temp_" & $epochTime()
@@ -172,20 +183,22 @@ proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCal
       mostRecentBuffer[].arguments.add(toolCall.function.arguments)
       mostRecentBuffer[].lastUpdated = epochTime()
       
-      # Check if the accumulated arguments form complete JSON
+      # Check if the accumulated arguments are complete using format-aware validation
       let hasValidName = mostRecentBuffer[].name.len > 0
-      let hasValidJson = mostRecentBuffer[].arguments.isCompleteJson() and mostRecentBuffer[].arguments.isValidJson()
+      let isComplete = detectAndValidateFormat(mostRecentBuffer[].arguments, mostRecentBuffer[]) and 
+                      isToolCallComplete(mostRecentBuffer[].arguments, mostRecentBuffer[])
       
-      debug(fmt"Buffer check (associated): name='{mostRecentBuffer[].name}', args='{mostRecentBuffer[].arguments}', validName={hasValidName}, validJson={hasValidJson}")
+      debug(fmt"Buffer check (associated): name='{mostRecentBuffer[].name}', args='{mostRecentBuffer[].arguments}', validName={hasValidName}, isComplete={isComplete}")
       
-      return hasValidName and hasValidJson
+      return hasValidName and isComplete
   
   if not buffers.hasKey(toolId):
     buffers[toolId] = ToolCallBuffer(
       id: toolId,
       name: toolCall.function.name,
       arguments: "",
-      lastUpdated: epochTime()
+      lastUpdated: epochTime(),
+      format: none(ToolFormat)
     )
   
   let buffer = buffers[toolId].addr
@@ -198,14 +211,15 @@ proc bufferToolCallFragment*(buffers: var Table[string, ToolCallBuffer], toolCal
   buffer[].arguments.add(toolCall.function.arguments)
   buffer[].lastUpdated = epochTime()
   
-  # Check if the accumulated arguments form complete JSON
+  # Check if the tool call is complete using format-aware validation
   # Only return true if we also have a valid tool name
   let hasValidName = buffer[].name.len > 0
-  let hasValidJson = buffer[].arguments.isCompleteJson() and buffer[].arguments.isValidJson()
+  let isComplete = detectAndValidateFormat(buffer[].arguments, buffer[]) and 
+                  isToolCallComplete(buffer[].arguments, buffer[])
   
-  debug(fmt"Buffer check: name='{buffer[].name}', args='{buffer[].arguments}', validName={hasValidName}, validJson={hasValidJson}")
+  debug(fmt"Buffer check: name='{buffer[].name}', args='{buffer[].arguments}', validName={hasValidName}, isComplete={isComplete}")
   
-  return hasValidName and hasValidJson
+  return hasValidName and isComplete
 
 proc getCompletedToolCalls*(buffers: var Table[string, ToolCallBuffer]): seq[LLMToolCall] =
   ## Get all completed tool calls from buffers
@@ -213,7 +227,10 @@ proc getCompletedToolCalls*(buffers: var Table[string, ToolCallBuffer]): seq[LLM
   var toRemove: seq[string] = @[]
   
   for id, buffer in buffers:
-    if buffer.arguments.isCompleteJson() and buffer.arguments.isValidJson():
+    # Use format-aware validation - make a copy to check completion
+    var bufferCopy = buffer
+    if detectAndValidateFormat(buffer.arguments, bufferCopy) and 
+       isToolCallComplete(buffer.arguments, buffer):
       result.add(LLMToolCall(
         id: buffer.id,
         `type`: "function",
@@ -234,18 +251,27 @@ proc cleanupStaleBuffers*(buffers: var Table[string, ToolCallBuffer], timeoutSec
   var toRemove: seq[string] = @[]
   
   for id, buffer in buffers:
+    # Remove stale buffers based on time
     if currentTime - buffer.lastUpdated > timeoutSeconds.float:
       debug(fmt"Removing stale tool call buffer for {buffer.name} (ID: {id})")
+      toRemove.add(id)
+    # Remove malformed buffers with null IDs that have no name
+    elif id.startsWith("temp_") and buffer.name.len == 0 and buffer.arguments.len == 0:
+      debug(fmt"Removing malformed buffer with temp ID: {id}")
+      toRemove.add(id)
+    # Remove buffers that failed format detection and have no content
+    elif buffer.format.isNone and buffer.arguments.len == 0 and currentTime - buffer.lastUpdated > 5.0:
+      debug(fmt"Removing empty buffer that failed format detection: {id}")
       toRemove.add(id)
   
   for id in toRemove:
     buffers.del(id)
 
 proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
-                                request: APIRequest, toolCalls: seq[LLMToolCall], 
+                                request: APIRequest, toolCalls: seq[LLMToolCall],
                                 initialContent: string, database: DatabaseBackend,
-                                recursionDepth: int = 0, 
-                                executedCalls: seq[string] = @[]): bool {.locks: 0.} =
+                                recursionDepth: int = 0,
+                                executedCalls: seq[string] = @[]): bool =
   ## Execute tool calls and continue conversation recursively
   ## Returns true if successful, false if max recursion depth exceeded
   const MAX_RECURSION_DEPTH = 20  # Reduced from 100 to prevent excessive loops
@@ -264,12 +290,34 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   var updatedExecutedCalls = executedCalls
   
   for toolCall in toolCalls:
-    let toolSignature = fmt"{toolCall.function.name}({toolCall.function.arguments})"
+    # Create a normalized signature for better deduplication
+    var normalizedArgs = ""
+    try:
+      # Try to normalize JSON arguments to catch formatting differences
+      let argsJson = parseJson(toolCall.function.arguments)
+      normalizedArgs = $argsJson
+    except:
+      # Fall back to original arguments if JSON parsing fails
+      normalizedArgs = toolCall.function.arguments.strip()
+    
+    let toolSignature = fmt"{toolCall.function.name}({normalizedArgs})"
+    
+    # Also check by tool call ID to prevent the same call being executed twice
+    var isDuplicate = false
     if toolSignature in executedCalls:
-      debug(fmt"DEBUG: Skipping duplicate tool call: {toolSignature}")
-      continue
-    filteredToolCalls.add(toolCall)
-    updatedExecutedCalls.add(toolSignature)
+      isDuplicate = true
+      debug(fmt"DEBUG: Skipping duplicate tool call (signature match): {toolSignature}")
+    else:
+      # Additional check: same tool call ID indicates exact duplicate
+      for prevCall in filteredToolCalls:
+        if prevCall.id == toolCall.id and toolCall.id.len > 0:
+          isDuplicate = true
+          debug(fmt"DEBUG: Skipping duplicate tool call (ID match): {toolCall.id}")
+          break
+    
+    if not isDuplicate:
+      filteredToolCalls.add(toolCall)
+      updatedExecutedCalls.add(toolSignature)
   
   if filteredToolCalls.len == 0:
     debug("DEBUG: All tool calls were duplicates, stopping execution")
@@ -282,28 +330,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   for toolCall in filteredToolCalls:
     debug(fmt"Executing tool call: {toolCall.function.name}")
     
-    # Send tool execution header to user using enhanced visualization
-    try:
-      let argsJson = parseJson(toolCall.function.arguments)
-      let toolHeader = formatToolHeader(toolCall.function.name, argsJson, getDefaultToolConfig())
-      let toolHeaderResponse = APIResponse(
-        requestId: request.requestId,
-        kind: arkStreamChunk,
-        content: fmt"{'\n'}{toolHeader}{'\n'}",
-        done: false
-      )
-      sendAPIResponse(channels, toolHeaderResponse)
-    except:
-      # Fallback to old format if JSON parsing fails
-      let toolIcon = getToolIcon(toolCall.function.name)
-      let argsPreview = getArgsPreview(toolCall.function.arguments)
-      let toolStatusResponse = APIResponse(
-        requestId: request.requestId,
-        kind: arkStreamChunk,
-        content: fmt"{'\n'}{toolIcon} {toolCall.function.name}({argsPreview}){'\n'}",
-        done: false
-      )
-      sendAPIResponse(channels, toolStatusResponse)
+    # Tool request is now sent immediately when detected in onChunkReceived
+    # No need to send header here anymore
     
     # Send tool request to tool worker
     let toolRequest = ToolRequest(
@@ -327,35 +355,52 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             let toolContent = if toolResponse.kind == trkResult: toolResponse.output else: fmt"Error: {toolResponse.error}"
             debug(fmt"Tool result received for {toolCall.function.name}: {toolContent[0..min(200, toolContent.len-1)]}...")
             
-            # Send enhanced tool result visualization to user
+            # Send compact tool result visualization to user
             try:
-              let argsJson = parseJson(toolCall.function.arguments)
-              let toolDisplayInfo = ToolDisplayInfo(
-                name: toolCall.function.name,
-                args: argsJson,
-                result: toolContent,
-                success: toolResponse.kind == trkResult,
+              let toolSuccess = toolResponse.kind == trkResult
+              # Create tool result summary inline to avoid circular import issues
+              let resultSummary = if toolSuccess:
+                case toolCall.function.name:
+                of "read": "File read"
+                of "edit": "File updated" 
+                of "create": "File created"
+                of "list": "Directory listed"
+                of "bash": "Command executed"
+                of "fetch": "Content fetched"
+                else: "Completed"
+              else:
+                "Failed"
+              
+              # Get tool icon inline
+              let toolIcon = case toolCall.function.name:
+                of "read": "📖"
+                of "edit": "📝"
+                of "list": "📋"
+                of "bash": "💻"
+                of "fetch": "🌐"
+                of "create": "📁"
+                else: "🔧"
+              
+              let toolResultInfo = CompactToolResultInfo(
+                toolCallId: toolCall.id,
+                toolName: toolCall.function.name,
+                icon: toolIcon,
+                success: toolSuccess,
+                resultSummary: resultSummary,
                 executionTime: 0.0
               )
-              let toolResultFormatted = formatToolResult(toolDisplayInfo, getDefaultToolConfig())
-              if toolResultFormatted.len > 0:
-                let toolResultResponse = APIResponse(
-                  requestId: request.requestId,
-                  kind: arkStreamChunk,
-                  content: toolResultFormatted & "\n",
-                  done: false
-                )
-                sendAPIResponse(channels, toolResultResponse)
-            except Exception as e:
-              debug(fmt"Failed to format tool result: {e.msg}")
-              # Send simple result fallback
-              let simpleResultResponse = APIResponse(
+              
+              let toolResultResponse = APIResponse(
                 requestId: request.requestId,
-                kind: arkStreamChunk,
-                content: "  Result: " & toolContent[0..min(100, toolContent.len-1)] & (if toolContent.len > 100: "..." else: "") & "\n",
-                done: false
+                kind: arkToolCallResult,
+                toolResultInfo: toolResultInfo
               )
-              sendAPIResponse(channels, simpleResultResponse)
+              sendAPIResponse(channels, toolResultResponse)
+            except Exception as e:
+              debug(fmt"Failed to format compact tool result: {e.msg}")
+              # Simple debug output fallback
+              let status = if toolResponse.kind == trkResult: "success" else: "error"
+              debug(fmt"Tool {toolCall.function.name} completed: {status}")
             
             let toolResultMsg = Message(
               role: mrTool,
@@ -472,7 +517,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                 debug(fmt"Follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
             cleanupStaleBuffers(toolCallBuffers)
     
-    let (followUpSuccess, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+    let (_, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
     
     # Get any remaining completed tool calls
     let remainingCalls = getCompletedToolCalls(toolCallBuffers)
@@ -533,8 +578,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   return true
 
 proc apiWorkerProc(params: ThreadParams) {.thread.} =
-  # Initialize logging for this thread
-  let consoleLogger = newConsoleLogger()
+  # Initialize logging for this thread - use stderr to prevent stdout contamination
+  let consoleLogger = newConsoleLogger(useStderr = true)
   addHandler(consoleLogger)
   setLogFilter(params.level)
   
@@ -543,13 +588,14 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
   
   let channels = params.channels
   let database = params.database
-  let pool = params.pool
   
   # Initialize conversation tracking
-  var messageSequenceId = 0
   
   debug("API worker thread started")
   incrementActiveThreads(channels)
+  
+  # Initialize flexible parser for tool call format detection
+  initGlobalParser()
   
   var currentClient: Option[CurlyStreamingClient] = none(CurlyStreamingClient)
   var activeRequests: seq[string] = @[]  # Track active request IDs for cancellation
@@ -654,7 +700,6 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
             var fullContent = ""
             var collectedToolCalls: seq[LLMToolCall] = @[]
             var hasToolCalls = false
-            var suppressInitialContent = false  # Suppress initial content if tool calls detected
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
@@ -666,25 +711,10 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                 let choice = chunk.choices[0]
                 let delta = choice.delta
                 
-                # Send content chunks in real-time, unless we detect tool calls
-                if delta.content.len > 0:
-                  fullContent.add(delta.content)
-                  
-                  # Only send content if we haven't detected tool calls yet
-                  if not suppressInitialContent:
-                    let chunkResponse = APIResponse(
-                      requestId: request.requestId,
-                      kind: arkStreamChunk,
-                      content: delta.content,
-                      done: false
-                    )
-                    sendAPIResponse(channels, chunkResponse)
-                
-                # Buffer tool calls from delta instead of processing immediately
+                # Handle tool calls first to determine if content should be sent
+                var chunkHasToolCalls = false
                 if delta.toolCalls.isSome():
-                  if not suppressInitialContent:
-                    suppressInitialContent = true  # Stop sending initial content when ANY tool call fragment detected
-                    debug("Tool call detected - suppressing further initial content")
+                  chunkHasToolCalls = true
                   for toolCall in delta.toolCalls.get():
                     debug(fmt"Buffering tool call fragment: id='{toolCall.id}', name='{toolCall.function.name}', args='{toolCall.function.arguments}'")
                     # Buffer the tool call fragment
@@ -697,11 +727,56 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                         collectedToolCalls.add(completedCall)
                         hasToolCalls = true
                         debug(fmt"Complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
+                        
+                        # Send immediate tool call request display
+                        var argsJson = newJObject()
+                        try:
+                          argsJson = parseJson(completedCall.function.arguments)
+                        except:
+                          argsJson = %*{"raw": completedCall.function.arguments}
+                        
+                        # Get tool icon inline to avoid circular import issues
+                        let toolIcon = case completedCall.function.name:
+                          of "read": "📖"
+                          of "edit": "📝"
+                          of "list": "📋"
+                          of "bash": "💻"
+                          of "fetch": "🌐"
+                          of "create": "📁"
+                          else: "🔧"
+                        
+                        let toolRequestInfo = CompactToolRequestInfo(
+                          toolName: completedCall.function.name,
+                          toolCallId: completedCall.id,
+                          args: argsJson,
+                          icon: toolIcon,
+                          status: "⏳"
+                        )
+                        
+                        let toolRequestResponse = APIResponse(
+                          requestId: request.requestId,
+                          kind: arkToolCallRequest,
+                          toolRequestInfo: toolRequestInfo
+                        )
+                        sendAPIResponse(channels, toolRequestResponse)
                     
                     # Clean up stale buffers periodically
                     cleanupStaleBuffers(toolCallBuffers)
+                
+                # Send content chunks in real-time (but coordinate with tool calls)
+                if delta.content.len > 0:
+                  fullContent.add(delta.content)
+                  # Only send content if this chunk doesn't contain tool calls or if we're not actively processing tool calls
+                  if not chunkHasToolCalls or not hasToolCalls:
+                    let chunkResponse = APIResponse(
+                      requestId: request.requestId,
+                      kind: arkStreamChunk,
+                      content: delta.content,
+                      done: false
+                    )
+                    sendAPIResponse(channels, chunkResponse)
             
-            let (streamSuccess, streamUsage) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
+            let (_, streamUsage) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
             
             # Use extracted usage data from streaming response if available
             var finalUsage = if streamUsage.isSome(): 
@@ -723,11 +798,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
             if hasToolCalls and collectedToolCalls.len > 0:
                 debug(fmt"Found {collectedToolCalls.len} tool calls in streaming response")
                 
-                # Send assistant message with tool calls
+                # Send assistant message with tool calls (content was already streamed)
                 let assistantResponse = APIResponse(
                   requestId: request.requestId,
                   kind: arkStreamChunk,
-                  content: fullContent,
+                  content: "",
                   done: false,
                   toolCalls: some(collectedToolCalls)
                 )
@@ -839,7 +914,7 @@ proc initializeAPIClient*(worker: var APIWorker, config: ModelConfig) =
 
 proc sendChatRequestAsync*(channels: ptr ThreadChannels, messages: seq[Message], 
                           modelConfig: ModelConfig, requestId: string, apiKey: string,
-                          maxTokens: int = 2048, temperature: float = 0.7): bool =
+                          maxTokens: int = 8192, temperature: float = 0.7): bool =
   let toolSchemas = getAllToolSchemas()
   debug(fmt"Preparing chat request with {toolSchemas.len} available tools")
   

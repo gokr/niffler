@@ -140,14 +140,17 @@ proc parseSSELine(line: string): Option[StreamChunk] =
       
       return some(chunk)
       
-    except JsonParsingError:
-      debug(fmt"Failed to parse SSE JSON, trying flexible parser: {dataLine}")
+    except JsonParsingError as e:
+      debug(fmt"Failed to parse SSE JSON, trying flexible parser: {dataLine[0..min(200, dataLine.len-1)]} - Error: {e.msg}")
       # Try flexible parsing for non-OpenAI formats
-      return parseNonOpenAIFormat(dataLine)
-    except KeyError:
-      debug(fmt"Missing expected field in SSE JSON: {dataLine}")
-    except ValueError:
-      debug(fmt"Invalid value in SSE JSON: {dataLine}")
+      try:
+        return parseNonOpenAIFormat(dataLine)
+      except Exception as flexErr:
+        debug(fmt"Flexible parser also failed: {flexErr.msg}")
+    except KeyError as e:
+      debug(fmt"Missing expected field in SSE JSON: {e.msg} - Line: {dataLine[0..min(200, dataLine.len-1)]}")
+    except ValueError as e:
+      debug(fmt"Invalid value in SSE JSON: {e.msg} - Line: {dataLine[0..min(200, dataLine.len-1)]}")
       
   return none(StreamChunk)
 
@@ -335,16 +338,16 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
       
       debug(fmt"Received HTTP {stream.code}, starting SSE processing")
       
-      # Dump HTTP response headers if enabled
+      # Dump HTTP response headers if enabled - use logging to prevent stream contamination
       if isDumpEnabled():
-        echo ""
-        echo "=== HTTP RESPONSE ==="
-        echo "Status: " & $stream.code
-        echo "Headers:"
-        echo "  Content-Type: text/event-stream"
-        echo "  Transfer-Encoding: chunked"
-        echo ""
-        echo "Body (streaming):"
+        logFileModule.logEcho ""
+        logFileModule.logEcho "=== HTTP RESPONSE ==="
+        logFileModule.logEcho "Status: " & $stream.code
+        logFileModule.logEcho "Headers:"
+        logFileModule.logEcho "  Content-Type: text/event-stream"
+        logFileModule.logEcho "  Transfer-Encoding: chunked"
+        logFileModule.logEcho ""
+        logFileModule.logEcho "Body (streaming):"
       
       # Process the stream line by line in real-time
       var lineBuffer = ""
@@ -371,27 +374,33 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
           lineBuffer = lineBuffer[lineEndPos+1..^1]
           
           if line.len > 0:
-            # Dump line if enabled
+            # Dump line if enabled - use logging instead of echo to prevent stream contamination
             if isDumpEnabled():
-              echo line
+              logFileModule.logEcho line
             
-            let maybeChunk = parseSSELine(line)
-            if maybeChunk.isSome():
-              let chunk = maybeChunk.get()
-              
-              # Capture usage data if present
-              if chunk.usage.isSome():
-                finalUsage = chunk.usage
-                debug(fmt"Found usage data: {chunk.usage.get().totalTokens} tokens")
-              
-              callback(chunk)
-              if chunk.done:
-                debug("SSE stream completed with [DONE]")
-                # Finalize dump
-                if isDumpEnabled():
-                  logFileModule.logEcho "===================="
-                  logFileModule.logEcho ""
-                return (true, finalUsage)
+            try:
+              let maybeChunk = parseSSELine(line)
+              if maybeChunk.isSome():
+                let chunk = maybeChunk.get()
+                
+                # Capture usage data if present
+                if chunk.usage.isSome():
+                  finalUsage = chunk.usage
+                  debug(fmt"Found usage data: {chunk.usage.get().totalTokens} tokens")
+                
+                callback(chunk)
+                if chunk.done:
+                  debug("SSE stream completed with [DONE]")
+                  # Finalize dump
+                  if isDumpEnabled():
+                    logFileModule.logEcho "===================="
+                    logFileModule.logEcho ""
+                  return (true, finalUsage)
+              else:
+                debug(fmt"Failed to parse SSE line, skipping: {line[0..min(100, line.len-1)]}")
+            except Exception as e:
+              debug(fmt"Error processing SSE line: {e.msg}, line: {line[0..min(100, line.len-1)]}")
+              # Continue processing other lines instead of failing completely
       
       # Finalize dump if no [DONE] received
       if isDumpEnabled():

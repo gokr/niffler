@@ -23,7 +23,8 @@ proc detectToolCallFormat*(content: string): ToolFormat =
     return tfOpenAI
   
   # Qwen3 XML format - specific malformed XML pattern
-  if "<tool_call>" in content and "<function=" in content and "<parameter=" in content:
+  if ("<tool_call>" in content and "<function=" in content and "<parameter=" in content) or
+     ("<toolcall>" in content and "<function=" in content and "<parameter=" in content):
     return tfQwenXML
   
   # Standard Anthropic XML format  
@@ -68,6 +69,10 @@ proc isCompleteXML*(content: string): bool =
   if trimmed.contains("<tool_call>"):
     return trimmed.contains("</tool_call>")
   
+  # Alternative Qwen format: <toolcall>...<function=name>...<parameter=key>value</parameter>...</function></toolcall>
+  if trimmed.contains("<toolcall>"):
+    return trimmed.contains("</toolcall>")
+  
   # Anthropic format: <invoke name="...">...</invoke>
   if trimmed.contains("<invoke "):
     return trimmed.contains("</invoke>")
@@ -91,8 +96,8 @@ proc parseQwenXMLFragment*(content: string): seq[LLMToolCall] =
   
   debug("Parsing Qwen XML fragment: " & content)
   
-  # Simple string-based parsing for Qwen3 format
-  if "<tool_call>" in content and "<function=" in content:
+  # Simple string-based parsing for Qwen3 format (both <tool_call> and <toolcall>)
+  if (("<tool_call>" in content) or ("<toolcall>" in content)) and "<function=" in content:
     # Extract function name
     var toolName = ""
     let funcStart = content.find("<function=")
