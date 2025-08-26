@@ -231,8 +231,8 @@ proc updateSessionTokens*(inputTokens: int, outputTokens: int) =
   acquire(globalHistory.lock)
   try:
     # These are cumulative for the current conversation session
-    globalHistory.sessionPromptTokens = inputTokens  # Note: keeping internal field names for now
-    globalHistory.sessionCompletionTokens = outputTokens
+    globalHistory.sessionPromptTokens += inputTokens  # Note: keeping internal field names for now
+    globalHistory.sessionCompletionTokens += outputTokens
     debug(fmt"Updated session tokens: {inputTokens} input, {outputTokens} output")
   finally:
     release(globalHistory.lock)
