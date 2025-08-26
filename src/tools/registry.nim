@@ -167,8 +167,8 @@ proc createEditTool(): Tool =
       },
       "create_backup": {
         "type": "boolean",
-        "description": "Whether to create a backup before editing (default: true)",
-        "default": true
+        "description": "Whether to create a backup before editing (default: false)",
+        "default": false
       }
     },
     "required": ["path", "operation"]

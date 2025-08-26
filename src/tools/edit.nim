@@ -24,13 +24,14 @@
 ## - Automatic backups prevent data loss
 ## - Comprehensive error handling with specific error types
 
-import std/[strutils, json]
+import std/[strutils, json, strformat, logging, os]
 import ../types/tools
 import common
 
 type
   EditOperation = enum
     Replace, Insert, Delete, Append, Prepend, Rewrite
+
 proc createBackup*(originalPath: string): string {.gcsafe.} =
   ## Create a backup of the original file
   let backupPath = createBackupPath(originalPath)
@@ -104,6 +105,7 @@ proc appendText*(content: string, newText: string): string =
 proc prependText*(content: string, newText: string): string =
   ## Prepend new text to content
   if content.len == 0:
+    debug "WARNING: prependText called with empty content - this may indicate a file reading issue"
     return newText
   elif not newText.endsWith("\n"):
     return newText & "\n" & content
@@ -123,7 +125,7 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   let operation = getArgStr(args, "operation")
   let oldText = if args.hasKey("old_text"): getArgStr(args, "old_text") else: ""
   let newText = if args.hasKey("new_text"): getArgStr(args, "new_text") else: ""
-  let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: true
+  let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: false
   
   # Validate path
   if path.len == 0:
@@ -185,6 +187,16 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   try:
     # Read original content
     let originalContent = attemptUntrackedRead(sanitizedPath)
+    
+    # Debug logging for content reading issues
+    debug fmt"Edit operation: path={sanitizedPath}, op={operation}"
+    debug fmt"Working directory: {getCurrentDir()}"
+    debug fmt"Input path: {path}"
+    debug fmt"Sanitized path: {sanitizedPath}"
+    debug fmt"Original content length: {originalContent.len}"
+    if originalContent.len == 0:
+      debug fmt"WARNING: Read empty content from {sanitizedPath} - file exists: {fileExists(sanitizedPath)}"
+      debug fmt"File info: size={getFileSize(sanitizedPath)}"
     
     # Create backup if requested
     var backupPath = ""
