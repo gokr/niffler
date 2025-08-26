@@ -1,3 +1,38 @@
+## List Tool Implementation
+##
+## This module implements the 'list' tool which provides directory listing functionality
+## with various options for sorting, filtering, and recursion.
+##
+## ## Features:
+## - Basic directory listing with file details (name, size, permissions, etc.)
+## - Recursive listing with configurable depth
+## - Sorting by name, size, modification time, or type
+## - Filtering by file type (file, directory, link)
+## - Hidden file inclusion option
+##
+## ## Usage:
+## The tool is invoked through the executeList() proc which takes a JSON object
+## with the following parameters:
+## - path (required): Directory path to list
+## - recursive (optional): Whether to list recursively (default: false)
+## - max_depth (optional): Maximum recursion depth (default: 10, max: 100)
+## - include_hidden (optional): Include hidden files (default: false)
+## - sort_by (optional): Sort criteria - "name", "size", "modified", "type" (default: "name")
+## - sort_order (optional): Sort order - "asc" or "desc" (default: "asc")
+## - filter_type (optional): Filter by type - "file", "directory", "link"
+##
+## ## Response Format:
+## Returns a JSON object with the directory path, entries array, and metadata about
+## the operation (total count, options used, etc.)
+##
+## Each entry contains:
+## - name: File/directory name
+## - path: Full path
+## - type: "file", "directory", or "link"
+## - size: File size in bytes
+## - modified: Last modified timestamp (Unix time)
+## - permissions: File permissions in rwx format
+## - is_dir, is_file, is_link: Boolean flags for type
 import std/[os, strutils, times, json, algorithm]
 import ../types/tools
 import common
