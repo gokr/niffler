@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Classic Pong Game</title>
+    <link rel="stylesheet" href="pong.css">
+</head>
+<body>
+    <div class="game-container">
+        <h1>Pong Game</h1>
+        <div class="score-board">
+            <div class="player-score">Player 1: <span id="player1Score">0</span></div>
+            <div class="player-score">Player 2: <span id="player2Score">0</span></div>
+        </div>
+        <canvas id="pongCanvas" width="800" height="400"></canvas>
+        <div class="controls">
+            <p>Player 1: W (up) and S (down) | Player 2: Arrow Up and Arrow Down</p>
+            <button id="startBtn">Start Game</button>
+            <button id="resetBtn">Reset Game</button>
+        </div>
+    </div>
+    <script src="pong.js"></script>
+</body>
+</html>

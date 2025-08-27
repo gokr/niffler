@@ -1,0 +1,77 @@
+body {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: #2c3e50;
+    font-family: 'Arial', sans-serif;
+    color: white;
+}
+
+.game-container {
+    text-align: center;
+}
+
+h1 {
+    margin-bottom: 20px;
+    font-size: 2.5rem;
+    text-shadow: 0 0 10px #3498db;
+}
+
+.score-board {
+    display: flex;
+    justify-content: space-between;
+    width: 800px;
+    margin-bottom: 20px;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+#pongCanvas {
+    background-color: #000;
+    border: 2px solid #3498db;
+    box-shadow: 0 0 20px rgba(52, 152, 219, 0.5);
+}
+
+.controls {
+    margin-top: 20px;
+}
+
+.controls p {
+    margin: 10px 0;
+    font-size: 1.1rem;
+}
+
+button {
+    background-color: #3498db;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    margin: 0 10px;
+    font-size: 1rem;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+button:hover {
+    background-color: #2980b9;
+}
+
+#startBtn {
+    background-color: #2ecc71;
+}
+
+#startBtn:hover {
+    background-color: #27ae60;
+}
+
+#resetBtn {
+    background-color: #e74c3c;
+}
+
+#resetBtn:hover {
+    background-color: #c0392b;
+}
