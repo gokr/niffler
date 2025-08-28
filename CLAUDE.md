@@ -73,7 +73,7 @@ nimble install cligen sunny
 
 - `src/niffler.nim`: CLI entry point with cligen command dispatch
 - `src/core/app.nim`: Application lifecycle and coordination
-- `src/api/worker.nim`: LLM API integration with tool calling support
+- `src/api/api.nim`: LLM API integration with tool calling support
 - `src/api/http_client.nim`: OpenAI-compatible HTTP client
 - `src/tools/worker.nim`: Tool execution engine
 - `src/types/messages.nim`: Message type definitions for LLM and tool communication

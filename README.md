@@ -280,6 +280,23 @@ For detailed documentation and examples, see [NIFFLER-FEATURES.md](NIFFLER-FEATU
 ### Tool Execution
 Niffler's tool system allows AI models to safely interact with your system:
 
+#### Smart Duplicate Tool Call Handling
+Niffler implements intelligent duplicate detection that keeps conversations flowing smoothly:
+
+**How It Works:**
+- **Signature-based Detection**: Uses `toolName(normalizedArguments)` signatures to identify duplicate calls
+- **Graceful Recovery**: Instead of stopping conversation, sends helpful feedback to the model
+- **Conversation Continuity**: Allows the model to respond with different approaches or continue naturally
+- **Recursive Tool Support**: Handles new tool calls that arise from duplicate feedback
+
+**Benefits Over Hard Stops:**
+- **No Conversation Interruption**: Models can recover and try alternative approaches
+- **Better User Experience**: Users don't hit unexpected conversation terminations  
+- **Follows AI Best Practices**: Multi-turn tool calling with contextual feedback
+- **Prevents Infinite Loops**: Still protects against runaway tool calling with depth limits
+
+This approach follows industry best practices from OpenAI, Google, and other AI tool providers who recommend continuing conversations with feedback rather than hard termination.
+
 #### Example Tool Usage
 The AI can use tools like:
 ```json
