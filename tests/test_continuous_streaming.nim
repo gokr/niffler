@@ -1,6 +1,7 @@
 import std/[unittest, options, json, asyncdispatch, times, strutils]
 import ../src/types/messages
 import ../src/ui/tool_visualizer
+import ../src/tools/common
 import ../src/api/api
 
 suite "Continuous Streaming Tests":

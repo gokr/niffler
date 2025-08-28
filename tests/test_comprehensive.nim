@@ -51,11 +51,12 @@ suite "Comprehensive Tool Tests":
   test "Chat request creation":
     let messages = @[Message(role: mrUser, content: "Hello")]
     let tools = getAllToolSchemas()
+    let config = ModelConfig(nickname: "gpt4", model: "gpt-4")
     
     let request = createChatRequest(
-      "gpt-4", 
+      config, 
       messages, 
-      maxTokens = some(1000),
+      stream = false,
       tools = some(tools)
     )
     
