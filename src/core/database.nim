@@ -1,5 +1,5 @@
 import std/[options, tables, strformat, os, times, strutils, algorithm, logging, json, sequtils]
-import ../types/[config, messages]
+import ../types/[config, messages, mode]
 import config
 import debby/sqlite
 import debby/pools
@@ -44,6 +44,15 @@ type
     sessionId*: string
     title*: string
     isActive*: bool
+    mode*: AgentMode
+    modelNickname*: string
+    messageCount*: int
+    lastActivity*: DateTime
+
+  ConversationSession* = object
+    conversation*: Conversation
+    isActive*: bool
+    startedAt*: DateTime
 
   ConversationMessage* = ref object of RootObj
     id*: int
@@ -149,6 +158,37 @@ proc migrateConversationMessageSchema*(conn: sqlite.Db) =
   except Exception as e:
     error(fmt"Failed to migrate ConversationMessage schema: {e.msg}")
 
+proc migrateConversationSchema*(conn: sqlite.Db) =
+  ## Add new columns to Conversation table for mode and model tracking
+  try:
+    # Check if mode column exists
+    let hasMode = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "mode")
+    if not hasMode:
+      debug("Adding mode column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN mode TEXT DEFAULT 'plan'")
+    
+    # Check if model_nickname column exists  
+    let hasModelNickname = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "model_nickname")
+    if not hasModelNickname:
+      debug("Adding model_nickname column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN model_nickname TEXT DEFAULT ''")
+    
+    # Check if message_count column exists
+    let hasMessageCount = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "message_count")
+    if not hasMessageCount:
+      debug("Adding message_count column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN message_count INTEGER DEFAULT 0")
+    
+    # Check if last_activity column exists
+    let hasLastActivity = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "last_activity")
+    if not hasLastActivity:
+      debug("Adding last_activity column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN last_activity DATETIME DEFAULT CURRENT_TIMESTAMP")
+    
+    debug("Conversation schema migration completed")
+  except Exception as e:
+    error(fmt"Failed to migrate Conversation schema: {e.msg}")
+
 proc initializeDatabase*(backend: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
   case backend.kind:
@@ -181,8 +221,9 @@ proc initializeDatabase*(backend: DatabaseBackend) =
         db.createIndexIfNotExists(ConversationMessage, "model")
         db.createIndexIfNotExists(ConversationMessage, "created_at")
       
-      # Run schema migration for ConversationMessage to add new columns
+      # Run schema migrations to add new columns
       migrateConversationMessageSchema(db)
+      migrateConversationSchema(db)
       
       if not db.tableExists(ModelTokenUsage):
         db.createTable(ModelTokenUsage)
