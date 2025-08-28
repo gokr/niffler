@@ -93,6 +93,41 @@ proc formatToolHeader*(toolName: string, args: JsonNode, config: ToolVisualizati
     of "fetch":
       if args.hasKey("url"):
         argParts.add(args["url"].getStr())
+    of "todolist":
+      if args.hasKey("operation"):
+        let op = args["operation"].getStr()
+        case op:
+        of "bulk_update":
+          if args.hasKey("todos"):
+            let todos = args["todos"].getStr()
+            let lineCount = todos.splitLines().filterIt(it.strip().startsWith("- [")).len
+            argParts.add(fmt"bulk_update({lineCount} items)")
+          else:
+            argParts.add("bulk_update")
+        of "add":
+          if args.hasKey("content"):
+            let content = args["content"].getStr()
+            let shortContent = if content.len > 30: content[0..29] & "..." else: content
+            argParts.add("add(\"" & shortContent & "\")")
+          else:
+            argParts.add("add")
+        of "update":
+          if args.hasKey("itemId"):
+            let itemId = args["itemId"].getInt()
+            var updateInfo = fmt"item {itemId}"
+            if args.hasKey("state"):
+              let state = args["state"].getStr()
+              updateInfo.add(fmt" → {state}")
+            argParts.add(fmt"update({updateInfo})")
+          else:
+            argParts.add("update")
+        else:
+          argParts.add(op)
+    
+    # Fallback to "raw" key if no specific args were found and raw exists
+    if argParts.len == 0 and args.hasKey("raw"):
+      let rawArgs = args["raw"].getStr()
+      argParts.add(if rawArgs.len > 30: rawArgs[0..29] & "..." else: rawArgs)
     
     let argStr = if argParts.len > 0: argParts.join(", ") else: ""
     return fmt"{toolName}({argStr})"
@@ -256,13 +291,18 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
       formattedResult = resultText
   
   of "read":
-    # For read tool, show file info
+    # For read tool, show file content summary
     try:
       let resultJson = parseJson(toolInfo.result)
       if resultJson.hasKey("content"):
         let content = resultJson["content"].getStr()
         let lines = content.splitLines()
-        formattedResult = fmt"Read {lines.len} lines"
+        let nonEmptyLines = lines.filterIt(it.strip().len > 0)
+        # Show first few lines as preview if content is short
+        if lines.len <= 10 and content.len <= 500:
+          formattedResult = content
+        else:
+          formattedResult = fmt"Read {lines.len} lines ({nonEmptyLines.len} non-empty)"
       else:
         formattedResult = "Read file"
     except:
@@ -281,25 +321,74 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
       formattedResult = resultText
   
   of "list":
-    # For list tool, show directory content summary
-    let lines = resultText.splitLines()
-    let fileCount = lines.len - 1  # Subtract header line
-    if fileCount > 0:
-      formattedResult = fmt"Listed {fileCount} items"
-    else:
-      formattedResult = "Directory empty"
+    # For list tool, show directory content or summary
+    try:
+      let resultJson = parseJson(resultText)
+      if resultJson.hasKey("entries"):
+        let entries = resultJson["entries"].getElems()
+        
+        if entries.len == 0:
+          formattedResult = "Directory empty"
+        elif entries.len <= 10:
+          # Show actual directory contents if small
+          var contentLines: seq[string] = @[]
+          for entry in entries:
+            let name = entry["name"].getStr()
+            let entryType = entry["type"].getStr()
+            let typeChar = if entryType == "directory": "📁" else: "📄"
+            contentLines.add(fmt"{typeChar} {name}")
+          formattedResult = contentLines.join("\n")
+        else:
+          formattedResult = fmt"Listed {entries.len} items"
+      else:
+        formattedResult = "Listed directory"
+    except:
+      formattedResult = "Error parsing list result"
   
   of "bash":
-    # For bash tool, show command execution status
-    if toolInfo.success:
-      let lines = resultText.splitLines()
-      let nonEmptyLines = lines.filterIt(it.strip().len > 0)
-      if nonEmptyLines.len > 0:
-        formattedResult = fmt"Command executed ({nonEmptyLines.len} lines output)"
+    # For bash tool, show command output when relevant
+    try:
+      let resultJson = parseJson(resultText)
+      if resultJson.hasKey("exit_code"):
+        let exitCode = resultJson["exit_code"].getInt()
+        let output = resultJson{"output"}.getStr("")
+        let outputLines = if output.len > 0: output.splitLines() else: @[]
+        let nonEmptyLines = outputLines.filterIt(it.strip().len > 0)
+        
+        if exitCode == 0:
+          if output.len > 0:
+            # Show actual output if it's small and useful
+            if output.len <= 500 and nonEmptyLines.len <= 10:
+              formattedResult = output.strip()
+            else:
+              formattedResult = fmt"Command executed ({nonEmptyLines.len} lines output)"
+          else:
+            formattedResult = "Command executed"
+        else:
+          # Always show error output if available
+          if output.len > 0:
+            if output.len <= 300:
+              formattedResult = fmt"Command failed (exit code {exitCode}):\n{output.strip()}"
+            else:
+              formattedResult = fmt"Command failed (exit code {exitCode}) with {nonEmptyLines.len} lines of output"
+          else:
+            formattedResult = fmt"Command failed (exit code {exitCode})"
       else:
-        formattedResult = "Command executed successfully"
-    else:
-      formattedResult = "Command failed: " & resultText
+        # Fallback for other JSON formats
+        formattedResult = "Command executed"
+    except:
+      # Not JSON, treat as raw output (legacy format for exit code 0)
+      if toolInfo.success:
+        let lines = resultText.splitLines()
+        let nonEmptyLines = lines.filterIt(it.strip().len > 0)
+        if nonEmptyLines.len > 0 and resultText.len <= 500:
+          formattedResult = resultText.strip()
+        elif nonEmptyLines.len > 0:
+          formattedResult = fmt"Command executed ({nonEmptyLines.len} lines output)"
+        else:
+          formattedResult = "Command executed"
+      else:
+        formattedResult = "Command failed: " & resultText
   
   of "fetch":
     # For fetch tool, show URL fetch status
@@ -309,17 +398,37 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
     else:
       formattedResult = "Fetch completed"
   
+  of "todolist":
+    # For todolist tool, show the actual todo list content like Claude Code
+    try:
+      let resultJson = parseJson(toolInfo.result)
+      if resultJson.hasKey("success") and resultJson["success"].getBool():
+        if resultJson.hasKey("todoList"):
+          let todoList = resultJson["todoList"].getStr()
+          if todoList.strip().len > 0:
+            # Show only the formatted todo list content
+            formattedResult = todoList
+          else:
+            formattedResult = "Todo list is empty"
+        else:
+          formattedResult = if resultJson.hasKey("message"): resultJson["message"].getStr() else: "Todo list updated"
+      else:
+        formattedResult = "Todo list operation failed"
+    except:
+      formattedResult = "Todo list updated"
+  
   else:
     formattedResult = resultText
   
   # Apply styling if enabled
   if config.useColors and config.indentResults:
+    let indentedResult = formattedResult.splitLines().mapIt("  " & it).join("\n")
     if toolInfo.success:
-      return "  " & formatWithStyle(formattedResult, theme.success)
+      return formatWithStyle(indentedResult, theme.success)
     else:
-      return "  " & formatWithStyle(formattedResult, theme.error)
+      return formatWithStyle(indentedResult, theme.error)
   elif config.indentResults:
-    return "  " & formattedResult
+    return formattedResult.splitLines().mapIt("  " & it).join("\n")
   else:
     return formattedResult
 
@@ -356,16 +465,6 @@ proc displayToolExecution*(toolName: string, args: JsonNode, toolResult: string,
   let visualization = formatToolVisualization(toolInfo, config)
   echo visualization
 
-proc getToolIcon*(toolName: string): string =
-  ## Get appropriate icon for tool type
-  case toolName:
-  of "read": return "📖"
-  of "edit": return "📝"
-  of "list": return "📋"
-  of "bash": return "💻"
-  of "fetch": return "🌐"
-  of "create": return "📁"
-  else: return "🔧"
 
 proc formatToolArgs*(toolName: string, args: JsonNode): string =
   ## Format tool arguments for compact display
@@ -398,6 +497,41 @@ proc formatToolArgs*(toolName: string, args: JsonNode): string =
     of "fetch":
       if args.hasKey("url"):
         argParts.add(args["url"].getStr())
+    of "todolist":
+      if args.hasKey("operation"):
+        let op = args["operation"].getStr()
+        case op:
+        of "bulk_update":
+          if args.hasKey("todos"):
+            let todos = args["todos"].getStr()
+            let lineCount = todos.splitLines().filterIt(it.strip().startsWith("- [")).len
+            argParts.add(fmt"bulk_update({lineCount} items)")
+          else:
+            argParts.add("bulk_update")
+        of "add":
+          if args.hasKey("content"):
+            let content = args["content"].getStr()
+            let shortContent = if content.len > 30: content[0..29] & "..." else: content
+            argParts.add("add(\"" & shortContent & "\")")
+          else:
+            argParts.add("add")
+        of "update":
+          if args.hasKey("itemId"):
+            let itemId = args["itemId"].getInt()
+            var updateInfo = fmt"item {itemId}"
+            if args.hasKey("state"):
+              let state = args["state"].getStr()
+              updateInfo.add(fmt" → {state}")
+            argParts.add(fmt"update({updateInfo})")
+          else:
+            argParts.add("update")
+        else:
+          argParts.add(op)
+    
+    # Fallback to "raw" key if no specific args were found and raw exists
+    if argParts.len == 0 and args.hasKey("raw"):
+      let rawArgs = args["raw"].getStr()
+      argParts.add(if rawArgs.len > 30: rawArgs[0..29] & "..." else: rawArgs)
     
     let argStr = if argParts.len > 0: argParts.join(", ") else: ""
     return argStr
@@ -414,6 +548,16 @@ proc formatCompactToolResult*(toolInfo: CompactToolResultInfo): string =
   ## Format compact one-line tool result display
   let statusIcon = if toolInfo.success: "✅" else: "❌"
   return fmt"{toolInfo.icon} {toolInfo.toolName} {statusIcon} {toolInfo.resultSummary}"
+
+proc formatCompactToolRequestWithIndent*(toolInfo: CompactToolRequestInfo): string =
+  ## Format tool request with 4-space indentation (no hourglass)
+  let argsStr = formatToolArgs(toolInfo.toolName, toolInfo.args)
+  return fmt"    {toolInfo.icon} {toolInfo.toolName}({argsStr})"
+
+proc formatCompactToolResultWithIndent*(toolInfo: CompactToolResultInfo): string =
+  ## Format tool result with 8-space indentation
+  let statusIcon = if toolInfo.success: "✅" else: "❌"
+  return fmt"        {statusIcon} {toolInfo.resultSummary}"
 
 proc createToolResultSummary*(toolName: string, toolResult: string, success: bool): string =
   ## Create a concise summary of tool execution result
@@ -478,20 +622,48 @@ proc createToolResultSummary*(toolName: string, toolResult: string, success: boo
       return "File created"
   
   of "list":
-    let lines = toolResult.splitLines()
-    let fileCount = lines.len - 1  # Subtract header line
-    if fileCount > 0:
-      return fmt"Listed {fileCount} items"
-    else:
-      return "Directory empty"
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("entries"):
+        let entries = resultJson["entries"].getElems()
+        if entries.len > 0:
+          return fmt"Listed {entries.len} items"
+        else:
+          return "Directory empty"
+      else:
+        return "Listed directory"
+    except:
+      return "Error parsing list result"
   
   of "bash":
-    let lines = toolResult.splitLines()
-    let nonEmptyLines = lines.filterIt(it.strip().len > 0)
-    if nonEmptyLines.len > 0:
-      return fmt"Command executed ({nonEmptyLines.len} lines output)"
-    else:
-      return "Command executed successfully"
+    # Check if result is JSON with exit code info
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("exit_code"):
+        let exitCode = resultJson["exit_code"].getInt()
+        let output = resultJson{"output"}.getStr("")
+        let outputLines = if output.len > 0: output.splitLines().filterIt(it.strip().len > 0) else: @[]
+        
+        if exitCode == 0:
+          if outputLines.len > 0:
+            return fmt"Command executed ({outputLines.len} lines output)"
+          else:
+            return "Command executed"
+        else:
+          if outputLines.len > 0:
+            return fmt"Command executed, exit code {exitCode} ({outputLines.len} lines output)"
+          else:
+            return fmt"Command executed, exit code {exitCode}"
+      else:
+        return "Command executed"
+    except:
+      # Not JSON, treat as raw output (legacy format for exit code 0)
+      let lines = toolResult.splitLines()
+      let nonEmptyLines = lines.filterIt(it.strip().len > 0)
+      if nonEmptyLines.len > 0:
+        return fmt"Command executed ({nonEmptyLines.len} lines output)"
+      else:
+        return "Command executed"
   
   of "fetch":
     let lines = toolResult.splitLines()
@@ -499,6 +671,27 @@ proc createToolResultSummary*(toolName: string, toolResult: string, success: boo
       return fmt"Fetched content ({lines.len} lines)"
     else:
       return "Fetch completed"
+  
+  of "todolist":
+    # For todolist tool, show the actual todo list content like Claude Code
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("success") and resultJson["success"].getBool():
+        if resultJson.hasKey("todoList"):
+          let todoList = resultJson["todoList"].getStr()
+          if todoList.strip().len > 0:
+            # Show only the formatted todo list content
+            return todoList
+          else:
+            return "Todo list is empty"
+        elif resultJson.hasKey("message"):
+          return resultJson["message"].getStr()
+        else:
+          return "Todo list updated"
+      else:
+        return "Todo list operation failed"
+    except:
+      return "Todo list updated"
   
   else:
     return "Completed"

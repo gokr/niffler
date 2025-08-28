@@ -1,4 +1,4 @@
-import std/[strutils, os, times, strformat, osproc, json, streams, logging]
+import std/[strutils, os, times, strformat, osproc, json, streams, logging, sequtils]
 import ../types/tools
 
 const
@@ -274,6 +274,19 @@ proc validateTodolistArgs*(args: JsonNode): void =
   else:
     # Should not happen due to earlier validation, but be safe
     raise newToolValidationError("todolist", "operation", "supported operation", operation)
+
+proc getToolIcon*(toolName: string): string =
+  ## Get appropriate icon for tool type
+  case toolName:
+  of "read": return "📖"
+  of "edit": return "📝"
+  of "list": return "📋"
+  of "bash": return "💻"
+  of "fetch": return "🌐"
+  of "create": return "📁"
+  of "todolist": return "📝"  # Use same as edit for now
+  else: return "🔧"
+
 
 proc validateToolArgs*(toolName: string, args: JsonNode): void =
   ## Main validation function

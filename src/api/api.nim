@@ -33,9 +33,10 @@ else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 import ../types/[messages, config]
 import std/logging
-import ../core/[channels, history, database]
+import ../core/[channels, conversation_manager, database]
 import curlyStreaming
-import ../tools/registry
+import ../tools/[registry, common]
+import ../ui/tool_visualizer
 import tool_call_parser
 import debby/pools
 
@@ -52,41 +53,6 @@ type
     thread: Thread[ThreadParams]
     client: CurlyStreamingClient
     isRunning: bool
-
-# Helper function to convert ChatToolCall to LLMToolCall - REMOVED (now using LLMToolCall directly)
-
-# Unused functions removed to avoid warnings - using tool_visualizer versions instead
-
-proc getArgsPreview(arguments: string): string =
-  try:
-    let argsJson = parseJson(arguments)
-    case argsJson.kind:
-    of JObject:
-      var parts: seq[string] = @[]
-      for key, value in argsJson:
-        case key:
-        of "path", "file_path", "target_path":
-          let pathStr = value.getStr()
-          let filename = pathStr.splitPath().tail
-          parts.add(if filename != "": filename else: pathStr)
-        of "url":
-          let urlStr = value.getStr()
-          parts.add(urlStr)
-        of "command":
-          let cmdStr = value.getStr()
-          parts.add(if cmdStr.len > 20: cmdStr[0..19] & "..." else: cmdStr)
-        of "content":
-          parts.add("...")
-        of "old_string", "new_string":
-          let str = value.getStr()
-          parts.add(if str.len > 15: str[0..14] & "..." else: str)
-        else:
-          parts.add(".")
-      return parts.join(", ")
-    else:
-      return "."
-  except:
-    return "."
 
 # Helper functions for tool call buffering (now format-aware)
 proc isValidJson*(jsonStr: string): bool =
@@ -320,8 +286,91 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
       updatedExecutedCalls.add(toolSignature)
   
   if filteredToolCalls.len == 0:
-    debug("DEBUG: All tool calls were duplicates, stopping execution")
-    return true
+    debug("DEBUG: All tool calls were duplicates, sending feedback to model")
+    # Instead of stopping, create a tool result indicating duplication
+    let duplicateResult = Message(
+      role: mrTool,
+      toolCallId: some(toolCalls[0].id),
+      content: "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
+    )
+    
+    # Add duplicate feedback and continue conversation using same pattern as normal tool results
+    var updatedMessages = request.messages
+    
+    # Add the assistant message with tool calls (even though duplicates)
+    let assistantWithTools = Message(
+      role: mrAssistant,
+      content: initialContent,
+      toolCalls: some(toolCalls)
+    )
+    updatedMessages.add(assistantWithTools)
+    updatedMessages.add(duplicateResult)
+    
+    # Create temporary ModelConfig to continue conversation  
+    let tempModelConfig = ModelConfig(
+      nickname: fmt"api-request-duplicate-{recursionDepth}",
+      baseUrl: request.baseUrl,
+      model: request.model,
+      context: 128000,
+      enabled: true,
+      maxTokens: some(request.maxTokens),
+      temperature: some(request.temperature),
+      apiKey: some(request.apiKey)
+    )
+    
+    let followUpRequest = createChatRequest(
+      tempModelConfig,
+      updatedMessages,
+      stream = true,
+      tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
+    )
+    
+    # Continue with streaming follow-up to let model respond to duplicate feedback
+    debug("Continuing conversation with duplicate feedback instead of stopping")
+    var followUpContent = ""
+    var followUpToolCalls: seq[LLMToolCall] = @[]
+    var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+    
+    proc onDuplicateFollowUp(chunk: StreamChunk) {.gcsafe.} =
+      if chunk.choices.len > 0:
+        let choice = chunk.choices[0]
+        let delta = choice.delta
+        
+        # Handle content
+        if delta.content.len > 0:
+          followUpContent.add(delta.content)
+          let contentResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamChunk,
+            content: delta.content,
+            done: false
+          )
+          sendAPIResponse(channels, contentResponse)
+        
+        # Buffer tool calls for recursive execution (same pattern as existing code)
+        if delta.toolCalls.isSome():
+          for toolCall in delta.toolCalls.get():
+            let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
+            if isComplete:
+              let completedCalls = getCompletedToolCalls(toolCallBuffers)
+              for completedCall in completedCalls:
+                followUpToolCalls.add(completedCall)
+                debug(fmt"Duplicate follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
+            cleanupStaleBuffers(toolCallBuffers)
+    
+    let (success, _) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
+    
+    # Get any remaining completed tool calls after streaming completes
+    let remainingCalls = getCompletedToolCalls(toolCallBuffers)
+    for completedCall in remainingCalls:
+      followUpToolCalls.add(completedCall)
+    
+    # Recursively execute any follow-up tool calls detected
+    if followUpToolCalls.len > 0:
+      debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
+      discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, followUpContent, database, recursionDepth + 1, updatedExecutedCalls)
+    
+    return success
   
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
   
@@ -330,8 +379,30 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   for toolCall in filteredToolCalls:
     debug(fmt"Executing tool call: {toolCall.function.name}")
     
-    # Tool request is now sent immediately when detected in onChunkReceived
-    # No need to send header here anymore
+    # Send tool request display to UI (needed for tool calls not announced during streaming)
+    var argsJson = newJObject()
+    try:
+      argsJson = parseJson(toolCall.function.arguments)
+    except:
+      argsJson = %*{"raw": toolCall.function.arguments}
+    
+    # Get tool icon from centralized function
+    let toolIcon = getToolIcon(toolCall.function.name)
+    
+    let toolRequestInfo = CompactToolRequestInfo(
+      toolName: toolCall.function.name,
+      toolCallId: toolCall.id,
+      args: argsJson,
+      icon: toolIcon,
+      status: "⏳"
+    )
+    
+    let toolRequestResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkToolCallRequest,
+      toolRequestInfo: toolRequestInfo
+    )
+    sendAPIResponse(channels, toolRequestResponse)
     
     # Send tool request to tool worker
     let toolRequest = ToolRequest(
@@ -345,7 +416,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
     if trySendToolRequest(channels, toolRequest):
       # Wait for tool response
       var attempts = 0
-      while attempts < 300:  # Timeout after ~30 seconds
+      while attempts < 3000:  # Timeout after ~300 seconds
         let maybeResponse = tryReceiveToolResponse(channels)
         if maybeResponse.isSome():
           let toolResponse = maybeResponse.get()
@@ -358,28 +429,12 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             # Send compact tool result visualization to user
             try:
               let toolSuccess = toolResponse.kind == trkResult
-              # Create tool result summary inline to avoid circular import issues
-              let resultSummary = if toolSuccess:
-                case toolCall.function.name:
-                of "read": "File read"
-                of "edit": "File updated" 
-                of "create": "File created"
-                of "list": "Directory listed"
-                of "bash": "Command executed"
-                of "fetch": "Content fetched"
-                else: "Completed"
-              else:
-                "Failed"
+              # Use enhanced tool result summary from tool_visualizer
+              let toolResult = if toolSuccess: toolResponse.output else: toolResponse.error
+              let resultSummary = createToolResultSummary(toolCall.function.name, toolResult, toolSuccess)
               
-              # Get tool icon inline
-              let toolIcon = case toolCall.function.name:
-                of "read": "📖"
-                of "edit": "📝"
-                of "list": "📋"
-                of "bash": "💻"
-                of "fetch": "🌐"
-                of "create": "📁"
-                else: "🔧"
+              # Get tool icon from centralized function
+              let toolIcon = getToolIcon(toolCall.function.name)
               
               let toolResultInfo = CompactToolResultInfo(
                 toolCallId: toolCall.id,
@@ -409,8 +464,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             )
             allToolResults.add(toolResultMsg)
             
-            # Store tool result in conversation history (history module handles database/threadvar fallback)
-            discard addToolMessage(toolContent, toolCall.id)
+            # Store tool result in conversation history (conversation_manager handles database/threadvar fallback)
+            discard conversation_manager.addToolMessage(toolContent, toolCall.id)
             
             break
         sleep(100)
@@ -424,7 +479,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
           toolCallId: some(toolCall.id)
         )
         allToolResults.add(errorMsg)
-        discard addToolMessage("Error: Tool execution timed out", toolCall.id)
+        discard conversation_manager.addToolMessage("Error: Tool execution timed out", toolCall.id)
     else:
       # Failed to send tool request
       let errorMsg = Message(
@@ -433,7 +488,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         toolCallId: some(toolCall.id)
       )
       allToolResults.add(errorMsg)
-      discard addToolMessage("Error: Failed to send tool request", toolCall.id)
+      discard conversation_manager.addToolMessage("Error: Failed to send tool request", toolCall.id)
   
   # Send tool results back to LLM for continuation
   if allToolResults.len > 0:
@@ -450,8 +505,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
     )
     updatedMessages.add(assistantWithTools)
     
-    # Store assistant message with tool calls in conversation history (history module handles database/threadvar fallback)
-    discard addAssistantMessage(initialContent, some(toolCalls))
+    # Store assistant message with tool calls in conversation history (conversation_manager handles database/threadvar fallback)
+    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
     
     # Add all tool result messages
     for toolResult in allToolResults:
@@ -728,37 +783,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                         hasToolCalls = true
                         debug(fmt"Complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
                         
-                        # Send immediate tool call request display
-                        var argsJson = newJObject()
-                        try:
-                          argsJson = parseJson(completedCall.function.arguments)
-                        except:
-                          argsJson = %*{"raw": completedCall.function.arguments}
-                        
-                        # Get tool icon inline to avoid circular import issues
-                        let toolIcon = case completedCall.function.name:
-                          of "read": "📖"
-                          of "edit": "📝"
-                          of "list": "📋"
-                          of "bash": "💻"
-                          of "fetch": "🌐"
-                          of "create": "📁"
-                          else: "🔧"
-                        
-                        let toolRequestInfo = CompactToolRequestInfo(
-                          toolName: completedCall.function.name,
-                          toolCallId: completedCall.id,
-                          args: argsJson,
-                          icon: toolIcon,
-                          status: "⏳"
-                        )
-                        
-                        let toolRequestResponse = APIResponse(
-                          requestId: request.requestId,
-                          kind: arkToolCallRequest,
-                          toolRequestInfo: toolRequestInfo
-                        )
-                        sendAPIResponse(channels, toolRequestResponse)
+                        # Tool call request notification will be sent by main execution loop
                     
                     # Clean up stale buffers periodically
                     cleanupStaleBuffers(toolCallBuffers)
