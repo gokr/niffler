@@ -22,17 +22,17 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat, terminal, options, times, math]
+import std/[os, strutils, strformat, terminal, options, times, math, tables]
 import std/logging
 when defined(posix):
   import posix
 import linecross
-import ../core/[app, channels, history, config, database]
+import ../core/[app, channels, conversation_manager, config, database]
 import ../core/log_file as logFileModule
-import ../types/[messages, config as configTypes]
+import ../types/[messages, config as configTypes, tools]
 import ../api/api
 import ../api/curlyStreaming
-import ../tools/worker
+import ../tools/[worker, common]
 import commands
 import theme
 import markdown_cli
@@ -44,6 +44,10 @@ var currentModelName: string = ""
 var isProcessing: bool = false
 var inputTokens: int = 0
 var outputTokens: int = 0
+
+# State for tool call display with progressive rendering
+var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
+var outputAfterToolCall: bool = false  # Track if any output occurred after showing tool call
 
 proc getUserName*(): string =
   ## Get the current user's name
@@ -130,6 +134,37 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
           if themeName.toLower().startsWith(argPrefix.toLower()):
             debug(fmt"Adding theme completion: '{themeName}'")
             addCompletion(completions, themeName, "Theme: " & themeName)
+      of "conv", "archive":
+        # Complete conversation IDs and titles with detailed information
+        try:
+          let database = getGlobalDatabase()
+          if database != nil:
+            let conversations = listConversations(database)
+            let currentSession = getCurrentSession()
+            let activeId = if currentSession.isSome(): currentSession.get().conversation.id else: -1
+            
+            for conv in conversations:
+              let activeMarker = if conv.id == activeId: " (current)" else: ""
+              let statusMarker = if conv.isActive: "" else: " [archived]"
+              
+              # Build detailed description like /conversations shows
+              let shortDesc = fmt"#{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname} ({conv.messageCount} messages){activeMarker}{statusMarker}"
+              let created = conv.created_at.format("yyyy-MM-dd HH:mm")
+              let activity = conv.lastActivity.format("yyyy-MM-dd HH:mm")
+              let fullDesc = fmt"{shortDesc} | Created: {created}, Last: {activity}"
+              
+              # Try matching by ID first
+              let idStr = $conv.id
+              if idStr.startsWith(argPrefix):
+                debug(fmt"Adding conversation ID completion: '{idStr}'")
+                addCompletion(completions, idStr, fullDesc)
+              
+              # Also try matching by title (case-insensitive)
+              if conv.title.toLower().contains(argPrefix.toLower()) and argPrefix.len > 0:
+                debug(fmt"Adding conversation title completion: '{conv.title}'")
+                addCompletion(completions, conv.title, fullDesc)
+        except Exception as e:
+          debug(fmt"Error getting conversation completions: {e.msg}")
       else:
         # No argument completion for this command
         debug(fmt"No argument completion available for command '{command}'")
@@ -143,9 +178,6 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
         addCompletion(completions, mention, "Mention: " & mention)
   else:
     debug("No completion context found")
-
-# Forward declaration
-proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool
 
 proc initializeLinecrossInput(database: DatabaseBackend): bool =
   ## Initialize linecross with history and completion support
@@ -263,13 +295,21 @@ proc formatCostRounded*(cost: float): string =
   return finalResult
 
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Generate a rich prompt string with token counts, context info, and cost
-  let contextMessages = history.getConversationContext()
+  ## Generate a rich prompt string with token counts, context info, cost, and conversation info
+  let contextMessages = conversation_manager.getConversationContext()
   let contextSize = estimateTokenCount(contextMessages)
   let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
   let sessionTotal = inputTokens + outputTokens
   let statusIndicator = if isProcessing: "⚡" else: ""
   let modeIndicator = getModePromptIndicator()
+  
+  # Get conversation info and build model name with conversation context
+  let currentSession = getCurrentSession()
+  let modelNameWithContext = if currentSession.isSome():
+    let conv = currentSession.get().conversation
+    fmt"{currentModelName}({conv.mode}, {conv.id})"
+  else:
+    currentModelName
 
   if sessionTotal > 0:
     # Calculate context percentage and format max context
@@ -293,9 +333,9 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
       sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
     
     let costInfo = if sessionCost > 0: fmt" {formatCostRounded(sessionCost)}" else: ""
-    return fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo} {currentModelName}{modeIndicator} > "
+    return fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo} {modelNameWithContext} > "
   else:
-    return fmt"{statusIndicator}{currentModelName}{modeIndicator} > "
+    return fmt"{statusIndicator}{modelNameWithContext} > "
 
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
@@ -308,6 +348,9 @@ proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, st
   else:
     stdout.write(text & "\n")
   stdout.flushFile()
+  
+  # Track that output occurred after tool call for progressive rendering
+  outputAfterToolCall = true
 
 proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
   ## Update token counts in central history storage
@@ -332,6 +375,54 @@ proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.Mod
   currentInputText = readInputLine(prompt).strip()
   return currentInputText
 
+proc executeBashCommand(command: string, database: DatabaseBackend, currentModel: configTypes.ModelConfig, markdownEnabled: bool) =
+  ## Execute a bash command directly and display the output
+  try:
+    let output = getCommandOutput(command, timeout = 30000)
+    writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
+    if output.len > 0:
+      writeToConversationArea(output, fgWhite, styleBright)
+    writeToConversationArea("")
+    
+    # Store command in prompt history (bash-style history) but NOT in LLM conversation
+    if database != nil:
+      try:
+        let fullCommand = "!" & command
+        logPromptHistory(database, fullCommand, "", currentModel.nickname, "")
+        debug(fmt"Stored bash command in prompt history: {fullCommand}")
+      except Exception as e:
+        debug(fmt"Failed to store bash command in prompt history: {e.msg}")
+        
+  except ToolExecutionError as e:
+    # Non-zero exit code - show command, output, and exit code
+    writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
+    if e.output.len > 0:
+      writeToConversationArea(e.output, fgWhite, styleBright)
+    writeToConversationArea(fmt"Exit code: {e.exitCode}", fgRed, styleBright)
+    writeToConversationArea("")
+    
+    # Store failed command in history too
+    if database != nil:
+      try:
+        let fullCommand = "!" & command
+        logPromptHistory(database, fullCommand, "", currentModel.nickname, "")
+        debug(fmt"Stored failed bash command in prompt history: {fullCommand}")
+      except Exception as e:
+        debug(fmt"Failed to store failed bash command in prompt history: {e.msg}")
+        
+  except ToolTimeoutError:
+    writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
+    writeToConversationArea("Command timed out after 30 seconds", fgRed, styleBright)
+    writeToConversationArea("")
+  except ToolError as e:
+    writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
+    writeToConversationArea(fmt"Error: {e.msg}", fgRed, styleBright)
+    writeToConversationArea("")
+  except Exception as e:
+    writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
+    writeToConversationArea(fmt"Unexpected error: {e.msg}", fgRed, styleBright)
+    writeToConversationArea("")
+
 proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
   ## Start the CLI mode with enhanced interface
   
@@ -346,6 +437,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   
   # Initialize command system
   initializeCommands()
+  
+  # Initialize default conversation if needed
+  initializeDefaultConversation(database)
   
   # Set up signal handlers for Ctrl+Z and Ctrl+C support (POSIX only)
   when defined(posix):
@@ -364,7 +458,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   
   # Display welcome message in conversation area
   writeToConversationArea("Welcome to Niffler! ", fgCyan, styleBright)
-  writeToConversationArea("Type '/help' for help and '/exit' or '/quit' to leave.\n")
+  writeToConversationArea("Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.\n")
   writeToConversationArea("Press Ctrl+C to stop stream display or exit.\n")
   writeToConversationArea(fmt"Using model: {currentModel.nickname} ({currentModel.model})", fgGreen)
   writeToConversationArea("\n")
@@ -381,9 +475,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
   
-  # Initialize history manager with pool
+  # Initialize session manager with pool
   let conversationId = startNewConversation().int
-  initHistoryManager(pool, conversationId)
+  initSessionManager(pool, conversationId)
   
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
@@ -396,7 +490,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
   
   # Set up custom key callback for shift-tab etc
-  registerCustomKeyCallback(nifflerCustomKeyHook)
+  registerCustomKeyCallback(nifflerCustomKeyHook)  # TODO: Fix this - function may not exist
 
   # Interactive loop
   var running = true
@@ -444,6 +538,16 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
           writeToConversationArea("")
           continue
       
+      # Handle bash commands with ! prefix
+      if input.startsWith("!"):
+        let command = input[1..^1].strip()  # Remove ! prefix and strip whitespace
+        if command.len > 0:
+          executeBashCommand(command, database, currentModel, markdownEnabled)
+        else:
+          writeToConversationArea("Empty command after '!'", fgRed)
+          writeToConversationArea("")
+        continue
+      
       # Regular message - send to API
       let (success, requestId) = sendSinglePromptInteractiveWithId(input, currentModel)
       if success:
@@ -457,7 +561,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
         var responseReceived = false
         var hadToolCalls = false  # Track if this conversation involved tool calls
         var attempts = 0
-        const maxAttempts = 600  # 60 seconds with 100ms sleep
+        const maxAttempts = 12000  # 120 seconds with 10ms sleep
         
         # Show processing status
         isProcessing = true
@@ -497,17 +601,45 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 else:
                   stdout.write(response.content)
                 stdout.flushFile()
+                # Track that output occurred after tool call for progressive rendering
+                outputAfterToolCall = true
             of arkToolCallRequest:
-              # Handle compact tool call request display
+              # Display tool request immediately with hourglass indicator
               let toolRequest = response.toolRequestInfo
-              let formattedRequest = formatCompactToolRequest(toolRequest)
-              stdout.write("\n" & formattedRequest)
+              pendingToolCalls[toolRequest.toolCallId] = toolRequest
+              
+              # Reset output tracking and display tool call with hourglass
+              outputAfterToolCall = false
+              let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+              stdout.write(formattedRequest & " ⏳\n")
               stdout.flushFile()
             of arkToolCallResult:
-              # Handle compact tool call result display
+              # Handle progressive tool result display
               let toolResult = response.toolResultInfo
-              let formattedResult = formatCompactToolResult(toolResult)
-              stdout.write("\n" & formattedResult & "\n")
+              if pendingToolCalls.hasKey(toolResult.toolCallId):
+                let toolRequest = pendingToolCalls[toolResult.toolCallId]
+                let formattedResult = formatCompactToolResultWithIndent(toolResult)
+                
+                if not outputAfterToolCall:
+                  # No output since tool call - move cursor up, clear hourglass, and add result
+                  stdout.write("\r\e[K")  # Clear current line
+                  stdout.write("\e[1A")   # Move cursor up one line
+                  stdout.write("\r\e[K")  # Clear the tool call line with hourglass
+                  
+                  # Re-write tool call without hourglass and add result
+                  let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+                  stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+                else:
+                  # Output occurred since tool call - re-render both request and result
+                  let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+                  stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+                
+                # Remove from pending
+                pendingToolCalls.del(toolResult.toolCallId)
+              else:
+                # Fallback if request wasn't tracked
+                let formattedResult = formatCompactToolResult(toolResult)
+                stdout.write("\n" & formattedResult & "\n\n")
               stdout.flushFile()
             of arkStreamComplete:
               writeToConversationArea("")  # Add final newline
@@ -544,7 +676,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               discard  # Just ignore ready responses
           
           if not responseReceived:
-            sleep(100)
+            sleep(5)
             inc attempts
         
         if not responseReceived:
@@ -610,9 +742,9 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
   
-  # Initialize history manager with pool
+  # Initialize session manager with pool
   let conversationId = startNewConversation().int
-  initHistoryManager(pool, conversationId)
+  initSessionManager(pool, conversationId)
   
   let channels = getChannels()
   
@@ -630,7 +762,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     var responseReceived = false
     var responseText = ""
     var attempts = 0
-    const maxAttempts = 300  # 30 seconds with 100ms sleep
+    const maxAttempts = 12000  # 60 seconds with 5ms sleep
     
     while not responseReceived and attempts < maxAttempts:
       var response: APIResponse
@@ -648,6 +780,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
             stdout.write(response.content)
             stdout.flushFile()
             responseText.add(response.content)
+            # Track that output occurred after tool call for progressive rendering
+            outputAfterToolCall = true
         of arkStreamComplete:
           # Apply markdown formatting to the complete response if enabled
           if markdownEnabled and responseText.len > 0:
@@ -677,22 +811,48 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           echo fmt"Error: {response.error}"
           responseReceived = true
         of arkToolCallRequest:
-          # Handle compact tool call request display
+          # Display tool request immediately with hourglass indicator
           let toolRequest = response.toolRequestInfo
-          let formattedRequest = formatCompactToolRequest(toolRequest)
-          stdout.write("\n" & formattedRequest)
+          pendingToolCalls[toolRequest.toolCallId] = toolRequest
+          
+          # Reset output tracking and display tool call with hourglass
+          outputAfterToolCall = false
+          let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+          stdout.write(formattedRequest & " ⏳\n")
           stdout.flushFile()
         of arkToolCallResult:
-          # Handle compact tool call result display
+          # Handle progressive tool result display
           let toolResult = response.toolResultInfo
-          let formattedResult = formatCompactToolResult(toolResult)
-          stdout.write("\n" & formattedResult & "\n")
+          if pendingToolCalls.hasKey(toolResult.toolCallId):
+            let toolRequest = pendingToolCalls[toolResult.toolCallId]
+            let formattedResult = formatCompactToolResultWithIndent(toolResult)
+            
+            if not outputAfterToolCall:
+              # No output since tool call - move cursor up, clear hourglass, and add result
+              stdout.write("\r\e[K")  # Clear current line
+              stdout.write("\e[1A")   # Move cursor up one line
+              stdout.write("\r\e[K")  # Clear the tool call line with hourglass
+              
+              # Re-write tool call without hourglass and add result
+              let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+              stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+            else:
+              # Output occurred since tool call - re-render both request and result
+              let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+              stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+            
+            # Remove from pending
+            pendingToolCalls.del(toolResult.toolCallId)
+          else:
+            # Fallback if request wasn't tracked
+            let formattedResult = formatCompactToolResult(toolResult)
+            stdout.write(formattedResult & "\n")
           stdout.flushFile()
         of arkReady:
           discard  # Just ignore ready responses
       
       if not responseReceived:
-        sleep(100)
+        sleep(5)
         inc attempts
     
     if not responseReceived:

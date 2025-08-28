@@ -18,7 +18,7 @@
 ## - Provides both interactive and single-shot execution modes
 
 import std/[strformat, logging, options, strutils, terminal, random]
-import channels, history, config, system_prompt
+import channels, conversation_manager, config, system_prompt
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
 
@@ -28,9 +28,8 @@ var modeInitialized {.threadvar.}: bool
 
 # Context management constants
 const
-  DEFAULT_MAX_CONTEXT_MESSAGES* = 20
-  DEFAULT_MAX_CONTEXT_TOKENS* = 100000
-  TOKEN_WARNING_THRESHOLD* = 50000
+  DEFAULT_MAX_CONTEXT_MESSAGES* = 1000
+  DEFAULT_MAX_CONTEXT_TOKENS* = 10000000
   CHARS_PER_TOKEN_ESTIMATE* = 4  # Rough estimate: 1 token ≈ 4 characters
 
 proc estimateTokenCount*(messages: seq[Message]): int =
@@ -47,17 +46,6 @@ proc estimateTokenCount*(messages: seq[Message]): int =
         result += toolCall.function.arguments.len div CHARS_PER_TOKEN_ESTIMATE
         result += 20  # Function call overhead
 
-proc getConversationContext*(maxMessages: int = DEFAULT_MAX_CONTEXT_MESSAGES): seq[Message] =
-  ## Get conversation context with the most recent messages
-  ## Returns messages in chronological order (oldest first)
-  result = getRecentMessages(maxMessages)
-  debug(fmt"Retrieved {result.len} messages for conversation context")
-  
-  let estimatedTokens = estimateTokenCount(result)
-  if estimatedTokens > TOKEN_WARNING_THRESHOLD:
-    info(fmt"Context size: {estimatedTokens} tokens (approaching limits)")
-  else:
-    debug(fmt"Context size: {estimatedTokens} tokens")
 
 proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_MAX_CONTEXT_TOKENS): seq[Message] =
   ## Truncate context if it exceeds token limits using sliding window
@@ -153,8 +141,8 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   let systemMsg = createSystemMessage(getCurrentMode())
   messages.insert(systemMsg, 0)
   
-  # Add the current user message to history and to the conversation context
-  let userMessage = addUserMessage(text)
+  # Add the current user message to conversation and to the conversation context
+  let userMessage = conversation_manager.addUserMessage(text)
   messages.add(userMessage)
   
   let requestId = fmt"req_{rand(100000)}"

@@ -13,7 +13,7 @@
 import std/[os, tables, logging, strformat]
 import docopt
 
-import core/[config, channels, history, database]
+import core/[config, channels, conversation_manager, database]
 import core/log_file as logFileModule
 import api/curlyStreaming
 import ui/cli
@@ -58,8 +58,8 @@ proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""
   # Get database pool for cross-thread history sharing
   let pool = if result != nil: result.pool else: nil
   
-  # Initialize history manager with pool - will be reset in CLI mode with conversation ID
-  initHistoryManager(pool)
+  # Initialize session manager with pool - will be reset in CLI mode with conversation ID
+  initSessionManager(pool)
 
 proc selectModelFromConfig(modelName: string, config: configTypes.Config): configTypes.ModelConfig =
   ## Select model from configuration by name or use default
