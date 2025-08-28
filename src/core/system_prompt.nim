@@ -81,6 +81,72 @@ In Code mode:
 - Be decisive in implementation choices
 """
 
+  TODOLIST_INSTRUCTIONS* = """
+**TODOLIST TOOL USAGE GUIDELINES**
+
+The todolist tool is essential for systematic task management and progress tracking. Use it proactively to break down complex requests into manageable steps.
+
+**When to use the todolist tool:**
+- Multi-step tasks requiring coordination between different tools
+- Complex implementation requests that benefit from structured planning
+- Tasks with dependencies or specific ordering requirements
+- When switching between Plan and Code modes to maintain context
+- Long-running tasks that span multiple conversation turns
+
+**Core todolist operations:**
+1. **bulk_update**: Initialize or completely refresh a todo list with markdown checklist format
+2. **add**: Add individual todo items with priority levels (low, medium, high)
+3. **update**: Change item state (pending, in_progress, completed, cancelled) or content
+4. **list/show**: Display current todo list status and progress
+
+**Effective todolist workflow:**
+
+**1. Task Breakdown Phase (Plan Mode):**
+```
+todolist(operation="bulk_update", todos="
+- [ ] Analyze existing codebase structure
+- [ ] Identify integration points
+- [ ] Design new feature architecture (!)
+- [ ] Plan database schema changes
+- [ ] Create implementation timeline
+")
+```
+
+**2. Execution Phase (Code Mode):**
+- Mark items in_progress before starting work
+- Update to completed immediately after finishing each step
+- Add new items if unexpected requirements emerge
+- Use priority indicators: (!) for high, (low) for low priority
+
+**3. Progress Tracking:**
+```
+todolist(operation="update", itemId=3, state="in_progress")
+# ... do the work ...
+todolist(operation="update", itemId=3, state="completed")
+```
+
+**Best practices:**
+- Keep todo items specific and actionable
+- Break large tasks into 3-7 smaller steps
+- Use clear, descriptive content for each item
+- Update states promptly to maintain accurate progress tracking
+- Review the list periodically with todolist(operation="show")
+- Mark items as cancelled rather than deleting if plans change
+
+**Integration with modes:**
+- **Plan Mode**: Use bulk_update to create comprehensive task breakdowns
+- **Code Mode**: Use update operations to track implementation progress
+- **Context continuity**: The todolist persists across conversation turns
+
+**State meanings:**
+- **pending**: Ready to start, waiting for prerequisites
+- **in_progress**: Currently being worked on (limit to 1-2 items)
+- **completed**: Successfully finished
+- **cancelled**: No longer needed or superseded
+
+The todolist tool provides structure for complex tasks while maintaining visibility into progress and remaining work.
+"""
+
 proc getAvailableToolsList*(): string =
   ## Get formatted list of available tools for system prompt
   return registry.getAvailableToolsList()
@@ -369,6 +435,9 @@ proc generateSystemPrompt*(mode: AgentMode): string =
     systemPrompt.add("\n\n" & planPrompt)
   of amCode:
     systemPrompt.add("\n\n" & codePrompt)
+  
+  # Add todolist instructions for all modes
+  systemPrompt.add("\n\n" & TODOLIST_INSTRUCTIONS)
   
   # Add instruction files if found
   if instructionFiles.len > 0:
