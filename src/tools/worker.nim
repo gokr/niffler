@@ -88,6 +88,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             # Execute the tool call
             debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)
             
+            var toolSuccess = false
             let output = 
               try:
                 # Execute the tool using registry lookup
@@ -98,36 +99,55 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
                 
                 debug("Tool execution successful, result length: " & $result.len)
+                toolSuccess = true
                 result
+              except ToolExecutionError as e:
+                # For execution errors, include both the error message and the actual output
+                let errorMsg = "Tool execution error: " & e.msg
+                # Skip WARN log for bash tool failures since they're often expected  
+                if toolCall.name != "bash":
+                  debug(errorMsg)  # Changed from warn to debug
+                toolSuccess = false
+                if e.output.len > 0:
+                  # Include the actual command output for the LLM to see what went wrong
+                  $ %*{"error": errorMsg, "output": e.output, "exit_code": e.exitCode, "tool": toolCall.name}
+                else:
+                  $ %*{"error": errorMsg, "exit_code": e.exitCode, "tool": toolCall.name}
               except ToolError as e:
                 let errorMsg = "Tool execution error: " & e.msg
-                warn(errorMsg)
+                debug(errorMsg)  # Changed from warn to debug
+                toolSuccess = false
                 $ %*{"error": errorMsg, "tool": toolCall.name}
               except Exception as e:
                 let errorMsg = "Unexpected error executing tool " & toolCall.name & ": " & e.msg
                 error(errorMsg)
+                toolSuccess = false
                 $ %*{"error": errorMsg, "tool": toolCall.name}
             
             debug("Tool " & toolCall.name & " execution completed, output length: " & $output.len)
             debug("Output preview: " & (if output.len > 100: output[0..100] & "..." else: output))
             
-            debug("Creating ToolExecutionResponse...")
-            let response = ToolExecutionResponse(
-              requestId: request.requestId,
-              result: newToolResult(output),
-              success: true
-            )
-            
-            # Send response back through channels
-            debug("Creating ToolResponse...")
-            let toolResponse = ToolResponse(
-              requestId: request.requestId,
-              kind: trkResult,
-              output: response.result.output
-            )
-            debug("ToolResponse created, sending...")
-            sendToolResponse(channels, toolResponse)
-            debug("ToolResponse sent successfully")
+            # Send response based on success/failure
+            if toolSuccess:
+              debug("Creating successful ToolResponse...")
+              let toolResponse = ToolResponse(
+                requestId: request.requestId,
+                kind: trkResult,
+                output: output
+              )
+              debug("ToolResponse created, sending...")
+              sendToolResponse(channels, toolResponse)
+              debug("ToolResponse sent successfully")
+            else:
+              debug("Creating error ToolResponse...")
+              let toolResponse = ToolResponse(
+                requestId: request.requestId,
+                kind: trkError,
+                error: output
+              )
+              debug("Error ToolResponse created, sending...")
+              sendToolResponse(channels, toolResponse)
+              debug("Error ToolResponse sent successfully")
             
             debug("Tool request " & request.requestId & " completed successfully")
             

@@ -21,8 +21,8 @@
 ## - Result wrapper types for consistent error handling
 ## - Thread-safe types for worker communication
 
-import std/[options, json]
-import ../types/messages
+import std/[options, json, strutils]
+import messages
 
 type
   ToolError* = ref object of CatchableError
@@ -116,9 +116,17 @@ proc getArgInt*(args: JsonNode, field: string): int =
   if not args.hasKey(field):
     raise newToolValidationError("unknown", field, "int", "missing")
   let node = args[field]
-  if node.kind != JInt:
+  case node.kind:
+  of JInt:
+    return node.getInt()
+  of JString:
+    # Try to parse string as integer (LLMs often send numbers as strings)
+    try:
+      return parseInt(node.getStr())
+    except ValueError:
+      raise newToolValidationError("unknown", field, "int", "invalid string: " & node.getStr())
+  else:
     raise newToolValidationError("unknown", field, "int", $node.kind)
-  return node.getInt()
 
 proc getArgBool*(args: JsonNode, field: string): bool =
   if not args.hasKey(field):
@@ -140,6 +148,14 @@ proc getOptArgInt*(args: JsonNode, field: string, default: int = 0): int =
   if not args.hasKey(field):
     return default
   let node = args[field]
-  if node.kind != JInt:
+  case node.kind:
+  of JInt:
+    return node.getInt()
+  of JString:
+    # Try to parse string as integer (LLMs often send numbers as strings)
+    try:
+      return parseInt(node.getStr())
+    except ValueError:
+      raise newToolValidationError("unknown", field, "int", "invalid string: " & node.getStr())
+  else:
     raise newToolValidationError("unknown", field, "int", $node.kind)
-  return node.getInt()

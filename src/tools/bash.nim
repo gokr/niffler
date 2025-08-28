@@ -13,8 +13,20 @@ proc executeBash*(args: JsonNode): string =
   validateTimeout(timeout)
 
   try:
-    return getCommandOutput(command, timeout = timeout)
+    let output = getCommandOutput(command, timeout = timeout)
+    # Success case (exit code 0) - return output as before
+    return output
+  except ToolExecutionError as e:
+    # Non-zero exit code - return JSON with exit code info instead of failing
+    let resultJson = %*{
+      "output": e.output,
+      "exit_code": e.exitCode,
+      "success": false,
+      "command": command
+    }
+    return $resultJson
   except ToolError as e:
+    # Other tool errors (timeouts, etc.) should still be errors
     raise e
   except Exception as e:
     raise newToolExecutionError("bash", "Command execution failed: " & e.msg, -1, "")

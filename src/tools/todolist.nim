@@ -11,7 +11,7 @@
 ## - Progress integration linking todos to implementation progress
 ## - Plan mode integration for comprehensive task breakdown
 
-import std/[json, options, strformat, strutils, logging]
+import std/[json, options, strformat, strutils, logging, sequtils]
 import ../types/tools
 import ../core/database
 
@@ -27,7 +27,9 @@ type
 
 proc formatTodoList*(db: DatabaseBackend, listId: int): string =
   ## Format a todo list as markdown checklist
-  let items = getTodoItems(db, listId)
+  let allItems = getTodoItems(db, listId)
+  # Filter out cancelled items to avoid showing duplicates
+  let items = allItems.filterIt(it.state != tsCancelled)
   var lines: seq[string] = @[]
   
   for item in items:
