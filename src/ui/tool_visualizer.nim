@@ -139,10 +139,9 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
   ## Create an enhanced diff visualization from edit tool results using hldiff
   if originalContent == newContent:
     return "  No changes made"
-  
-  let theme = getCurrentTheme()
-  let lineColors = getDiffColors(theme)
-  let segmentColors = getDiffSegmentColors(theme)
+
+  let lineColors = getDiffColors(currentTheme)
+  let segmentColors = getDiffSegmentColors(currentTheme)
   let config = getDefaultDiffConfig()
   
   let originalLines = originalContent.splitLines()
@@ -241,7 +240,6 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
   if not config.showToolResults:
     return ""
   
-  let theme = getCurrentTheme()
   var resultText = toolInfo.result
   
   # Truncate if needed
@@ -424,9 +422,9 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
   if config.useColors and config.indentResults:
     let indentedResult = formattedResult.splitLines().mapIt("  " & it).join("\n")
     if toolInfo.success:
-      return formatWithStyle(indentedResult, theme.success)
+      return formatWithStyle(indentedResult, currentTheme.success)
     else:
-      return formatWithStyle(indentedResult, theme.error)
+      return formatWithStyle(indentedResult, currentTheme.error)
   elif config.indentResults:
     return formattedResult.splitLines().mapIt("  " & it).join("\n")
   else:
@@ -434,12 +432,11 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
 
 proc formatToolVisualization*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfig = getDefaultToolConfig()): string =
   ## Format complete tool visualization with header and result
-  let theme = getCurrentTheme()
   
   # Format header
   let header = formatToolHeader(toolInfo.name, toolInfo.args, config)
   let styledHeader = if config.useColors:
-    formatWithStyle(header, theme.toolCall)
+    formatWithStyle(header, currentTheme.toolCall)
   else:
     header
   

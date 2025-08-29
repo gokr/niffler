@@ -321,7 +321,7 @@ proc themeHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
   ## Switch to a different theme or show current theme
   if args.len == 0:
     # Show current theme
-    let currentTheme = getCurrentTheme()
+    let currentTheme = currentTheme
     return CommandResult(
       success: true,
       message: fmt"Current theme: {currentTheme.name}",

@@ -272,8 +272,7 @@ proc formatInlineDiffLine*(line: InlineDiffLine, lineColors: Table[DiffLineType,
 
 proc formatDiffHeader*(filePath: string, colors: Table[DiffLineType, ThemeStyle], config: DiffConfig): string =
   ## Format diff header with file information
-  var theme = getCurrentTheme()
-  let headerColor = if config.useColor: colors[Header] else: theme.normal
+  let headerColor = if config.useColor: colors[Header] else: currentTheme.normal
   
   result = ""
   if config.useColor:
@@ -285,8 +284,7 @@ proc formatDiffHeader*(filePath: string, colors: Table[DiffLineType, ThemeStyle]
 
 proc formatDiffHunk*(hunk: DiffHunk, colors: Table[DiffLineType, ThemeStyle], config: DiffConfig): string =
   ## Format a diff hunk with range information
-  var theme = getCurrentTheme()
-  let headerColor = if config.useColor: colors[Header] else: theme.normal
+  let headerColor = if config.useColor: colors[Header] else: currentTheme.normal
   
   let hunkHeader = "@@ -" & $hunk.originalStart & "," & $hunk.originalLines & 
                    " +" & $hunk.newStart & "," & $hunk.newLines & " @@"
@@ -306,8 +304,7 @@ proc renderDiff*(diffResult: DiffResult, config: DiffConfig = getDefaultDiffConf
   if diffResult.hunks.len == 0:
     return ""
   
-  let theme = getCurrentTheme()
-  let colors = getDiffColors(theme)
+  let colors = getDiffColors(currentTheme)
   
   result = formatDiffHeader(diffResult.filePath, colors, config)
   
