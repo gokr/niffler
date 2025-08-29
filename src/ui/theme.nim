@@ -37,8 +37,8 @@ type
     toolCall*: ThemeStyle
 
 # Global theme registry
-var themeRegistry: Table[string, Theme]
-var currentTheme: Theme
+var themeRegistry*: Table[string, Theme]
+var currentTheme*: Theme
 
 proc parseColor*(colorStr: string): ForegroundColor =
   ## Parse color string to ForegroundColor enum
@@ -211,11 +211,6 @@ proc setCurrentTheme*(themeName: string): bool =
     currentTheme = themeRegistry[themeName]
     return true
   return false
-
-proc getCurrentTheme*(): Theme =
-  ## Get the current active theme
-  {.gcsafe.}:
-    result = currentTheme
 
 proc getAvailableThemes*(): seq[string] =
   ## Get list of available theme names

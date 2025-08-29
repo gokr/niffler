@@ -8,7 +8,7 @@ import theme
 proc renderInlineMarkdownCLI*(line: string): string =
   ## Render inline markdown formatting (bold, italic, code, links) for CLI
   result = ""
-  let theme = getCurrentTheme()
+  let theme = currentTheme
   var i = 0
   
   while i < line.len:
@@ -116,7 +116,7 @@ proc extractTableCells(line: string): seq[string] =
 
 proc renderTableRowCLI*(cells: seq[string], columnWidths: seq[int]): string =
   ## Render a table row with proper column alignment
-  let theme = getCurrentTheme()
+  let theme = currentTheme
   result = formatWithStyle("│", theme.listBullet)
   
   for i, cell in cells:
@@ -130,7 +130,7 @@ proc renderTableRowCLI*(cells: seq[string], columnWidths: seq[int]): string =
 
 proc renderTableSeparator*(columnWidths: seq[int]): string =
   ## Render a table separator line with proper column widths
-  let theme = getCurrentTheme()
+  let theme = currentTheme
   result = formatWithStyle("├", theme.listBullet)
   for i, width in columnWidths:
     result.add(formatWithStyle("─".repeat(width + 2), theme.listBullet))
@@ -189,7 +189,7 @@ proc renderCompleteTableHelper*(tableLines: seq[string]): string =
 
 proc renderMarkdownLineCLI*(line: string): string =
   ## Render a line with markdown formatting for CLI
-  let theme = getCurrentTheme()
+  let theme = currentTheme
   
   # Handle different markdown elements
   if line.startsWith("# "):
@@ -260,7 +260,7 @@ proc renderMarkdownTextCLIStream*(content: string): string =
   ## Simple streaming markdown renderer for real-time output
   ## Applies basic formatting without complex token buffering
   result = ""
-  let theme = getCurrentTheme()
+  let theme = currentTheme
   var i = 0
   
   while i < content.len:
