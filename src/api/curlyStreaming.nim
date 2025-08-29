@@ -94,7 +94,7 @@ proc parseSSELine(line: string): Option[StreamChunk] =
       )
       
       # Parse choices
-      if json.hasKey("choices"):
+      if json.hasKey("choices") and json["choices"].kind == JArray:
         for choiceJson in json["choices"]:
           var choice = StreamChoice(
             index: choiceJson{"index"}.getInt(0),
@@ -109,15 +109,15 @@ proc parseSSELine(line: string): Option[StreamChunk] =
             choice.delta.content = delta{"content"}.getStr("")
             
             # Parse tool calls in delta
-            if delta.hasKey("tool_calls"):
+            if delta.hasKey("tool_calls") and delta["tool_calls"].kind == JArray:
               var toolCalls: seq[LLMToolCall] = @[]
               for tcJson in delta["tool_calls"]:
                 let toolCall = LLMToolCall(
                   id: tcJson{"id"}.getStr(""),
                   `type`: tcJson{"type"}.getStr("function"),
                   function: FunctionCall(
-                    name: tcJson{"function"}{"name"}.getStr(""),
-                    arguments: tcJson{"function"}{"arguments"}.getStr("")
+                    name: if tcJson.hasKey("function") and tcJson["function"].kind == JObject: tcJson{"function"}{"name"}.getStr("") else: "",
+                    arguments: if tcJson.hasKey("function") and tcJson["function"].kind == JObject: tcJson{"function"}{"arguments"}.getStr("") else: ""
                   )
                 )
                 toolCalls.add(toolCall)
@@ -130,7 +130,7 @@ proc parseSSELine(line: string): Option[StreamChunk] =
           chunk.choices.add(choice)
       
       # Parse usage data if present (often sent in final streaming chunk)
-      if json.hasKey("usage"):
+      if json.hasKey("usage") and json["usage"].kind == JObject:
         let usageJson = json["usage"]
         chunk.usage = some(messages.TokenUsage(
           inputTokens: usageJson{"prompt_tokens"}.getInt(0),

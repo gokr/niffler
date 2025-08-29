@@ -36,6 +36,59 @@ proc detectFileEncoding*(path: string): string =
   # Default to utf-8
   return "utf-8"
 
+proc parseLineRange*(rangeStr: string): tuple[startLine: int, endLine: int] =
+  ## Parse line range string like "b'[660,690]'" or "[660,690]"
+  var cleanRange = rangeStr.strip()
+  
+  # Remove b' prefix and ' suffix if present
+  if cleanRange.startsWith("b'") and cleanRange.endsWith("'"):
+    cleanRange = cleanRange[2..^2]
+  
+  # Remove brackets if present
+  if cleanRange.startsWith("[") and cleanRange.endsWith("]"):
+    cleanRange = cleanRange[1..^2]
+  
+  # Split by comma
+  let parts = cleanRange.split(',')
+  if parts.len == 2:
+    try:
+      result.startLine = parseInt(parts[0].strip())
+      result.endLine = parseInt(parts[1].strip())
+      # Convert to 1-based indexing if needed (Nim uses 0-based internally)
+      if result.startLine > 0:
+        result.startLine -= 1
+      if result.endLine > 0:
+        result.endLine -= 1
+    except ValueError:
+      # Invalid format, return full range
+      result.startLine = 0
+      result.endLine = -1
+  else:
+    # Invalid format, return full range
+    result.startLine = 0
+    result.endLine = -1
+
+proc extractLinesByRange*(content: string, rangeStr: string): string =
+  ## Extract lines from content based on range string
+  let (startLine, endLine) = parseLineRange(rangeStr)
+  let lines = content.splitLines()
+  
+  if startLine >= lines.len:
+    return ""
+  
+  let actualEndLine = if endLine < 0 or endLine >= lines.len: lines.len - 1 else: endLine
+  let startIndex = max(0, startLine)
+  let endIndex = min(actualEndLine, lines.len - 1)
+  
+  if startIndex <= endIndex:
+    var extractedLines: seq[string] = @[]
+    for i in startIndex..endIndex:
+      # Add line numbers as prefixes for clarity
+      extractedLines.add($(i + 1) & " | " & lines[i])
+    return extractedLines.join("\n")
+  else:
+    return ""
+
 proc executeRead*(args: JsonNode): string {.gcsafe.} =
   ## Execute read file operation
   # Validate arguments
@@ -44,6 +97,7 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
   let path = getArgStr(args, "path")
   let encoding = getOptArgStr(args, "encoding", "auto")
   let maxSize = getOptArgInt(args, "max_size", 10485760)  # 10MB default
+  let lineRange = if args.hasKey("linerange"): args["linerange"].getStr() else: ""
   
   # Validate path
   if path.len == 0:
@@ -76,28 +130,33 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
     let detectedEncoding = if encoding == "auto": detectFileEncoding(sanitizedPath) else: encoding
     
     # Read file content
-    var content: string
+    var fullContent: string
     case detectedEncoding.toLowerAscii():
       of "utf-8":
-        content = attemptUntrackedRead(sanitizedPath)
+        fullContent = attemptUntrackedRead(sanitizedPath)
       of "utf-16":
         let stream = openFileStream(sanitizedPath, fmRead)
         defer: stream.close()
-        content = stream.readAll()
+        fullContent = stream.readAll()
       of "utf-32":
         let stream = openFileStream(sanitizedPath, fmRead)
         defer: stream.close()
-        content = stream.readAll()
+        fullContent = stream.readAll()
       of "ascii":
-        content = attemptUntrackedRead(sanitizedPath)
+        fullContent = attemptUntrackedRead(sanitizedPath)
         # Validate ASCII
-        for c in content:
+        for c in fullContent:
           if ord(c) > 127:
             raise newToolExecutionError("read", "File contains non-ASCII characters", -1, "")
       of "latin1":
-        content = attemptUntrackedRead(sanitizedPath)
+        fullContent = attemptUntrackedRead(sanitizedPath)
       else:
         raise newToolExecutionError("read", "Unsupported encoding: " & detectedEncoding, -1, "")
+    
+    # Process line range if specified
+    var content = fullContent
+    if lineRange.len > 0:
+      content = extractLinesByRange(fullContent, lineRange)
     
     # Get file modification time
     let modTime = fileInfo.lastWriteTime

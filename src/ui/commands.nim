@@ -11,8 +11,9 @@
 
 import std/[strutils, strformat, tables, times, options, logging]
 import ../core/[conversation_manager, config, app, database]
-import ../types/[config as configTypes, messages, mode]
+import ../types/[config as configTypes, messages]
 import theme
+import cli
 
 type
   CommandResult* = object
@@ -152,7 +153,9 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
   for model in config.models:
     if model.nickname == modelName:
       currentModel = model
-      # Note: Model switching will be handled by the calling UI
+      # Update prompt to reflect new model
+      cli.setPrompt(cli.generatePrompt(currentModel))
+      
       return CommandResult(
         success: true,
         message: fmt"Switched to model: {currentModel.nickname} ({currentModel.model})",
@@ -415,6 +418,10 @@ proc newConversationHandler(args: seq[string], currentModel: var configTypes.Mod
     let conv = convOpt.get()
     # Switch to the new conversation
     discard switchToConversation(database, conv.id)
+    
+    # Update prompt to reflect new conversation context
+    cli.setPrompt(cli.generatePrompt(currentModel))
+    
     return CommandResult(
       success: true,
       message: fmt"Created and switched to new conversation: {conv.title} (ID: {conv.id})",
@@ -602,6 +609,9 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
+          # Update prompt to reflect new conversation context
+          cli.setPrompt(cli.generatePrompt(currentModel))
+          
           return CommandResult(
             success: true,
             message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
@@ -649,6 +659,9 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
             if model.nickname == conv.modelNickname:
               currentModel = model
               break
+          
+          # Update prompt to reflect new conversation context
+          cli.setPrompt(cli.generatePrompt(currentModel))
           
           return CommandResult(
             success: true,
