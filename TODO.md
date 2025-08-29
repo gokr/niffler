@@ -31,7 +31,7 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ **Tool Calling** - Complete OpenAI-compatible tool calling pipeline
 - ✅ **Multi-turn Conversations** - Tool results integrated into conversation flow
 - ✅ **Streaming Infrastructure** - Real network-level SSE streaming using Curly/libcurl
-- ✅ **Context Management** - Basic message history with tool result integration
+- ✅ **Context Management** - Token counting, context window monitoring, conversation truncation
 - ❌ **Thinking Token Streaming** - Real-time processing of reasoning content during streaming
 
 ## Gap Analysis: Key Missing Features for Agentic Coding
@@ -64,8 +64,10 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 
 #### **4. Enhanced Message Persistence**
 *Building on existing SQLite foundation*
-- ❌ **Tool Call Integration** - Store tool calls and results with messages
-- ❌ **Message Metadata** - Support timestamps, summary flags, tool metadata
+- ✅ **Basic Conversation Management** - Full conversation tracking with SQLite
+- ✅ **Message History** - Complete message persistence with timestamps
+- ❌ **Tool Call Integration** - Store tool calls and results with rich metadata  
+- ❌ **Message Metadata** - Support summary flags, tool metadata
 - ❌ **Rich Content Support** - Handle multiple content blocks per message
 - ❌ **Conversation Summarization** - Mark messages as condensed summaries
 - ❌ **Thinking Token Storage** - Store reasoning content separately with encryption support
@@ -74,23 +76,25 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 
 #### **5. Context Management**
 *User-controlled*
-- ❌ **Context Window Monitoring** - Warn when approaching token limits
+- ✅ **Context Window Monitoring** - Token estimation and context truncation implemented
+- ✅ **@ File Referencing** - Automatic tool call generation for @file.txt references
 - ❌ **User-Controlled Condensing** - Let user choose condensing vs sliding window
 - ❌ **Conversation Summarization** - LLM-powered context condensing with fallback
 - ❌ **Transparent Management** - Clear indication of context operations
-- ❌ **@ Referencing** - No context referencing system (@file.txt, @folder/)
+- ❌ **Advanced @ Referencing** - Extended context referencing system (@folder/, etc.)
 - ❌ **Thinking Token Budget Management** - Dynamic token allocation for reasoning vs output content
 
 #### **6. Basic Terminal UI Enhancements**
+- ✅ **Markdown Rendering** - CLI markdown renderer with theme support (markdown_cli.nim)
+- ✅ **Colored Output** - Theme system with colored diffs using hldiff (diff_visualizer.nim)
+- ✅ **Mode Indicators** - Plan/Code mode display with colors in CLI
 - ❌ **Enhanced help system** - Update for new Plan/Code workflow
-- ❌ **Markdown Rendering** - Basic markdown display for responses
-- ❌ **Colored Output** - Syntax highlighting and colored diffs
-- ❌ **Status Indicators** - Model, token count, mode, connection status
+- ❌ **Status Indicators** - Model, token count, connection status
 - ❌ **History Navigation** - Arrow key navigation through prompt history
 ex
-### **Lower Priority: Advanced Features**
+### **Higher Priority: Next-Generation Features**
 
-#### **7. Thinking Token Support** *(NEW HIGH PRIORITY)*
+#### **7. Thinking Token Support** *(HIGH PRIORITY)*
 *Essential for next-generation reasoning models like GPT-5 and Claude 4*
 - ❌ **Multi-Provider Thinking Architecture** - Separate handling for Anthropic thinking blocks vs OpenAI reasoning content
 - ❌ **Unified Thinking Token IR** - Consistent interface with `reasoningContent`, `encryptedReasoningContent`, `reasoningId` fields
@@ -100,17 +104,19 @@ ex
 - ❌ **Context-Aware Windowing** - Intelligent preservation of important reasoning content
 - ❌ **Provider Abstraction** - Unified interface while preserving provider-specific features
 
-#### **8. Multiple Provider Support**
+#### **8. Multiple Provider Support** *(MEDIUM PRIORITY)*
 - ❌ **Anthropic Integration** - Dedicated Claude API client with thinking token support
 - ❌ **Provider-Specific Features** - Thinking tokens, reasoning content, encrypted content
 - ❌ **Reasoning Effort** - Configurable low/medium/high reasoning control
 
-#### **8. File Enhancement Features**
+### **Lower Priority: Advanced Features**
+
+#### **9. File Enhancement Features**
 - ❌ **Advanced Change Detection** - Timestamp-based file modification tracking
 - ❌ **Git Integration** - Git-aware file operations and status
 - ❌ **Session Management** - Save/restore conversation sessions
 
-#### **9. MCP Integration** *(Future consideration)*
+#### **10. MCP Integration** *(Future consideration)*
 - ❌ **MCP Client** - Model Context Protocol support
 - ❌ **External Tools** - Dynamic tool loading from servers
 - ❌ **Service Discovery** - Automatic MCP server detection
@@ -126,12 +132,14 @@ ex
 
 ### **Phase 5: Agentic Core (COMPLETED ✅)**
 
-#### 5.1: Plan/Code Mode System
+*All core agentic features have been successfully implemented*
+
+#### 5.1: Plan/Code Mode System ✅
 - [x] Implement mode switching (Shift+Tab toggle)
 - [x] Define mode-specific behavior and prompts  
 - [x] Add mode indicator in the prompt, color and "(plan)"/"(code)" text
 
-#### 5.2: Dynamic System Prompt Generation
+#### 5.2: Dynamic System Prompt Generation ✅
 - [x] Create modular prompt assembly system
 - [x] Implement workspace context detection (cwd, git status, project info)
 - [x] Add instruction file discovery (CLAUDE.md, OCTO.md, NIFFLER.md, AGENT.md)
@@ -142,31 +150,34 @@ ex
 - [x] Config directory search for system-wide NIFFLER.md
 - [x] Init command creates default NIFFLER.md for user customization
 
-#### 5.3: Todolist Tool Implementation ✅ COMPLETED
+#### 5.3: Todolist Tool Implementation ✅
 - [x] Create todo data structures and persistence
 - [x] Implement markdown checklist parsing/generation
 - [x] Add user approval flows for todo updates
 - [x] Integrate with Plan mode for task breakdown
 - [x] Link todos to Code mode implementation progress
 
-#### 5.4: Enhanced Message Persistence
-- [ ] Extend SQLite schema for tool calls and metadata
-- [ ] Add support for rich content blocks
-- [ ] Implement conversation summarization flags
-- [ ] Maintain backward compatibility with existing history
+#### 5.4: Message Persistence Foundation ✅
+- [x] Complete SQLite conversation management system
+- [x] Message history with timestamps and role tracking
+- [x] Conversation switching and session management
+- [x] Token usage tracking and persistence
 
-### **Phase 6: User Experience (HIGH PRIORITY)**
+### **Phase 6: User Experience (PARTIALLY COMPLETED)**
 
-#### 6.1: Context Management
-- [ ] Add token counting and context window monitoring
+#### 6.1: Context Management ✅
+- [x] Add token counting and context window monitoring
+- [x] Implement @ file referencing with automatic tool calls
 - [ ] Implement user-controlled conversation condensing
 - [ ] Create LLM-powered summarization with sliding window fallback
 - [ ] Add transparent context operation indicators
 
-#### 6.2: CLI and UI Improvements
-- [ ] Enhance terminal output with basic markdown rendering
-- [ ] Add colored diffs and syntax highlighting
-- [ ] Implement status indicators and history navigation
+#### 6.2: CLI and UI Improvements ✅
+- [x] Enhance terminal output with basic markdown rendering (markdown_cli.nim)
+- [x] Add colored diffs and syntax highlighting (theme.nim, diff_visualizer.nim)
+- [x] Implement mode indicators with color coding
+- [ ] Add status indicators (model, token count, connection status)
+- [ ] Implement history navigation
 
 ### **Phase 7: Thinking Token Support (HIGH PRIORITY)**
 
@@ -236,21 +247,34 @@ ex
 ### **Agentic Capability Goal**
 Target: Full agentic coding assistant capability with Plan/Code workflow supporting complex multi-step development tasks.
 
-**Current Progress: ~98% Foundation Complete**
+**Current Progress: ~85% Foundation Complete**
 - ✅ Tool System: 100% (all 7 core tools implemented including todolist)
 - ✅ Threading Architecture: 100% (robust worker system)
-- ✅ LLM Integration: 95% (tool calling and real streaming working)
+- ✅ LLM Integration: 100% (tool calling, real streaming, context management all working)
 - ✅ Agentic Features: 100% (Plan/Code modes and todolist tool fully implemented)
 - ✅ Dynamic Prompts: 100% (context-aware prompts with NIFFLER.md support)
-- ❌ User Experience: 30% (CLI needs more refinement)
+- ✅ Message Persistence: 90% (SQLite conversation management, missing rich tool metadata)
+- ✅ User Experience: 65% (markdown rendering, colored output, mode indicators implemented)
 
 ## Immediate Next Steps
 
-1. ✅ **Plan/Code Mode System**: COMPLETED - Core agentic workflow foundation
+**Core Foundation: COMPLETED ✅**
+1. ✅ **Plan/Code Mode System**: COMPLETED - Core agentic workflow foundation  
 2. ✅ **Dynamic System Prompt Generation**: COMPLETED - Context-aware prompt assembly with NIFFLER.md support
 3. ✅ **Todolist Tool Implementation**: COMPLETED - Essential for task breakdown and tracking
-4. **Thinking Token Support**: Critical for next-generation reasoning models (CURRENT HIGH PRIORITY)
-5. **Enhanced Message Persistence**: Support tool calls, conversation metadata, and thinking token storage
+4. ✅ **All 7 Core Tools**: COMPLETED - bash, read, list, edit, create, fetch, todolist
+5. ✅ **Real Streaming & Tool Calling**: COMPLETED - Curly-based SSE with OpenAI compatibility
+6. ✅ **Basic UI Enhancements**: COMPLETED - Markdown rendering, colored output, mode indicators
+
+**Current High Priority:**
+1. **Thinking Token Support**: Critical for next-generation reasoning models (GPT-5, Claude 4)
+2. **Enhanced Message Persistence**: Rich tool metadata storage and conversation summarization
+3. **Advanced Context Management**: User-controlled condensing and transparent operations
+
+**Next Phase Focus:**
+- Thinking token architecture and streaming
+- Multi-provider support (Anthropic integration)
+- Advanced UI features (status indicators, history navigation)
 
 ## Key Insights from Research
 
