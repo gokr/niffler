@@ -334,7 +334,8 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
   let currentSession = getCurrentSession()
   let modelNameWithContext = if currentSession.isSome():
     let conv = currentSession.get().conversation
-    fmt"{currentModelName}({conv.mode}, {conv.id})"
+    let runtimeMode = getCurrentMode()  # Use actual runtime mode instead of stored mode
+    fmt"{currentModelName}({runtimeMode}, {conv.id})"
   else:
     currentModelName
 
@@ -378,6 +379,29 @@ proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, st
   
   # Track that output occurred after tool call for progressive rendering
   outputAfterToolCall = true
+
+proc resetUIState*() =
+  ## Reset UI-specific state (tokens, pending tool calls) - used when switching conversations
+  inputTokens = 0
+  outputTokens = 0
+  pendingToolCalls.clear()
+  
+  # Sync currentModelName with the current session's model
+  let currentSession = getCurrentSession()
+  if currentSession.isSome():
+    let conv = currentSession.get().conversation
+    currentModelName = conv.modelNickname
+    debug(fmt"UI state reset: tokens/tool calls cleared, model synced to {currentModelName}")
+  else:
+    debug("UI state reset: tokens and pending tool calls cleared")
+    
+proc resetUIState*(modelName: string) =
+  ## Reset UI-specific state and set specific model name (for cases with known model)
+  inputTokens = 0
+  outputTokens = 0
+  pendingToolCalls.clear()
+  currentModelName = modelName
+  debug(fmt"UI state reset: tokens/tool calls cleared, model set to {modelName}")
 
 proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
   ## Update token counts in central history storage
@@ -569,6 +593,11 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
           if res.shouldExit:
             running = false
           
+          # Reset UI state if requested by command (e.g., after conversation switching)
+          when compiles(res.shouldResetUI):
+            if res.shouldResetUI:
+              resetUIState()
+          
           continue
         else:
           writeToConversationArea("Invalid command format")
@@ -675,7 +704,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               stdout.flushFile()
             of arkStreamComplete:
               # Apply markdown formatting to the complete response if enabled
-              if markdownEnabled and responseText.len > 0 and not hadToolCalls:
+              if markdownEnabled and responseText.len > 0:
                 # Move cursor up to overwrite the plain text with formatted markdown
                 let lines = responseText.split('\n')
                 let lineCount = lines.len

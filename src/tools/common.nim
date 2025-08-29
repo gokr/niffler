@@ -1,4 +1,4 @@
-import std/[strutils, os, times, strformat, osproc, json, streams, logging, sequtils]
+import std/[strutils, os, times, strformat, osproc, json, streams, logging]
 import ../types/tools
 
 const
