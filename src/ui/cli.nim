@@ -37,6 +37,7 @@ import commands
 import theme
 import markdown_cli
 import tool_visualizer
+import file_completion
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -65,11 +66,11 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
     # Special case: just a slash, show all commands
     return ("command", "", 0)
   elif text.len > 0 and text[0] == '@':
-    # Mention completion - remove the leading @
+    # File completion - remove the leading @
     let prefix = if text.len > 1: text[1..^1] else: ""
-    return ("mention", prefix, 0)
+    return ("file", prefix, 0)
   
-  # Fallback: look backward from cursor to find completion triggers  
+  # Fallback: look backward from cursor to find completion triggers
   var searchPos = min(cursorPos - 1, text.len - 1)
   
   # Find the start of the current word/token
@@ -78,13 +79,28 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
     if ch in {' ', '\t', '\n'}:
       break
     if ch == '/':
-      # Command completion context
-      let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
-      return ("command", prefix, searchPos)
+      # Check if we're in a file context (after @)
+      # Look backward to see if there's an @ before this /
+      var atPos = -1
+      for i in countdown(searchPos - 1, 0):
+        if text[i] == '@':
+          atPos = i
+          break
+        elif text[i] in {' ', '\t', '\n'}:
+          break
+      
+      if atPos >= 0:
+        # We're in file context, continue with file completion
+        let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
+        return ("file", prefix, searchPos)
+      else:
+        # Command completion context
+        let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
+        return ("command", prefix, searchPos)
     elif ch == '@':
-      # Mention/user completion context  
+      # File completion context
       let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
-      return ("mention", prefix, searchPos)
+      return ("file", prefix, searchPos)
     searchPos -= 1
   
   return ("none", "", -1)
@@ -168,7 +184,7 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
       else:
         # No argument completion for this command
         debug(fmt"No argument completion available for command '{command}'")
-  of "mention": 
+  of "mention":
     # User/mention completion for @
     # For now, add some example mentions - this could be extended
     let mentions = @["user", "assistant", "system", "claude", "gpt"]
@@ -176,6 +192,18 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
       if mention.startsWith(prefix.toLower()):
         debug(fmt"Adding mention completion: {mention}")
         addCompletion(completions, mention, "Mention: " & mention)
+  of "file":
+    # File completion for @
+    try:
+      let fileCompletions = getFileCompletions(prefix)
+      debug(fmt"Found {fileCompletions.len} file completions for prefix '{prefix}'")
+      for file in fileCompletions:
+        if file.isDir:
+          addCompletion(completions, file.path & "/", file.path & "/")
+        else:
+          addCompletion(completions, file.path, file.path)
+    except Exception as e:
+      debug(fmt"Error getting file completions: {e.msg}")
   else:
     debug("No completion context found")
 
@@ -301,7 +329,6 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
   let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
   let sessionTotal = inputTokens + outputTokens
   let statusIndicator = if isProcessing: "⚡" else: ""
-  let modeIndicator = getModePromptIndicator()
   
   # Get conversation info and build model name with conversation context
   let currentSession = getCurrentSession()
@@ -475,9 +502,19 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
   
-  # Initialize session manager with pool
-  let conversationId = startNewConversation().int
-  initSessionManager(pool, conversationId)
+  # Initialize default conversation and session manager
+  if database != nil:
+    initializeDefaultConversation(database)
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let conversationId = currentSession.get().conversation.id
+      initSessionManager(pool, conversationId)
+    else:
+      # Fallback: use timestamp-based ID if no conversation system available
+      initSessionManager(pool, epochTime().int)
+  else:
+    # No database: use timestamp-based ID for in-memory session
+    initSessionManager(pool, epochTime().int)
   
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
@@ -560,8 +597,6 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
         var responseText = ""
         var responseReceived = false
         var hadToolCalls = false  # Track if this conversation involved tool calls
-        var attempts = 0
-        const maxAttempts = 12000  # 120 seconds with 10ms sleep
         
         # Show processing status
         isProcessing = true
@@ -569,7 +604,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
         # Write model name in conversation area (nim-noise already showed user input)
         # Not needed since we now have it in the prompt: writeToConversationArea(fmt"{currentModel.nickname}: ", fgGreen)
         
-        while not responseReceived and attempts < maxAttempts:
+        while not responseReceived:
           # Check for cancellation request
           when defined(posix):
             if streamCancellationRequested:
@@ -594,12 +629,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               
               if response.content.len > 0:
                 responseText.add(response.content)
-                # Apply real-time markdown rendering if enabled
-                if markdownEnabled:
-                  let renderedChunk = renderMarkdownTextCLIStream(response.content)
-                  stdout.write(renderedChunk)
-                else:
-                  stdout.write(response.content)
+                # For interactive mode, we don't use streaming markdown to avoid broken rendering
+                # Markdown will be applied to the complete response at the end
+                stdout.write(response.content)
                 stdout.flushFile()
                 # Track that output occurred after tool call for progressive rendering
                 outputAfterToolCall = true
@@ -642,7 +674,24 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 stdout.write("\n" & formattedResult & "\n\n")
               stdout.flushFile()
             of arkStreamComplete:
-              writeToConversationArea("")  # Add final newline
+              # Apply markdown formatting to the complete response if enabled
+              if markdownEnabled and responseText.len > 0 and not hadToolCalls:
+                # Move cursor up to overwrite the plain text with formatted markdown
+                let lines = responseText.split('\n')
+                let lineCount = lines.len
+                # Move up lineCount lines and clear each one
+                for i in 0..<lineCount:
+                  stdout.write("\r\e[K")  # Clear current line
+                  if i < lineCount - 1:
+                    stdout.write("\e[1A")   # Move up one line
+                stdout.flushFile()
+                # Now render the complete markdown
+                let renderedText = renderMarkdownTextCLI(responseText)
+                echo renderedText
+              elif responseText.len > 0:
+                # Just add final newline if no markdown or tool calls were involved
+                echo ""
+              
               # Update token counts with new response (prompt will show tokens)
               isProcessing = false
               updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
@@ -677,7 +726,6 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
           
           if not responseReceived:
             sleep(5)
-            inc attempts
         
         if not responseReceived:
           writeToConversationArea("Timeout waiting for response", fgRed)
@@ -742,9 +790,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
   
-  # Initialize session manager with pool
-  let conversationId = startNewConversation().int
-  initSessionManager(pool, conversationId)
+  # Initialize session manager with pool (no database for single prompts)
+  initSessionManager(pool, epochTime().int)
   
   let channels = getChannels()
   
@@ -761,10 +808,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     # Wait for response with timeout
     var responseReceived = false
     var responseText = ""
-    var attempts = 0
-    const maxAttempts = 12000  # 60 seconds with 5ms sleep
     
-    while not responseReceived and attempts < maxAttempts:
+    while not responseReceived:
       var response: APIResponse
       if tryReceiveAPIResponse(channels, response):
         # Validate that this response belongs to our current request
@@ -853,10 +898,6 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
       
       if not responseReceived:
         sleep(5)
-        inc attempts
-    
-    if not responseReceived:
-      echo "Timeout waiting for response"
   else:
     echo "Failed to send request"
     

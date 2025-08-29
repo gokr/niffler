@@ -6,7 +6,7 @@
 ## - Handle conversation session state
 ## - Integrate with database for persistence
 
-import std/[options, strformat, times, logging, locks, parseutils, strutils]
+import std/[options, strformat, times, logging, locks, strutils]
 import ../types/[mode, messages]
 import database
 import debby/pools
@@ -31,6 +31,31 @@ var globalSession: SessionManager
 proc getCurrentSession*(): Option[ConversationSession] =
   ## Get the current conversation session
   currentSession
+
+proc syncSessionState*(conversationId: int) =
+  ## Helper function to sync both session systems with the same conversation ID
+  acquire(globalSession.lock)
+  try:
+    globalSession.conversationId = conversationId
+    debug(fmt"Synced globalSession.conversationId to {conversationId}")
+  finally:
+    release(globalSession.lock)
+
+proc validateSessionState*(): tuple[valid: bool, message: string] =
+  ## Validate that both session systems are in sync
+  let currentSessionOpt = getCurrentSession()
+  if currentSessionOpt.isNone():
+    return (valid: false, message: "No current session active")
+  
+  let currentConversationId = currentSessionOpt.get().conversation.id
+  acquire(globalSession.lock)
+  let globalConversationId = globalSession.conversationId
+  release(globalSession.lock)
+  
+  if currentConversationId != globalConversationId:
+    return (valid: false, message: fmt"Session state divergence: currentSession has conversation ID {currentConversationId}, globalSession has {globalConversationId}")
+  else:
+    return (valid: true, message: "Session states are synchronized")
 
 proc listConversations*(backend: DatabaseBackend): seq[Conversation] =
   ## List all conversations, ordered by last activity
@@ -202,6 +227,9 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   
   # Update current session
   currentSession = some(session)
+  
+  # Sync globalSession with the new conversation ID
+  syncSessionState(conversationId)
   
   # Restore mode context - TODO: implement when circular import is resolved
   debug(fmt"switchToConversation: should restore mode {conversation.mode}")
@@ -455,6 +483,3 @@ proc getCurrentMessageId*(): int64 =
   ## Get the current message ID (stub for now)
   result = 0
 
-proc startNewConversation*(): int64 =
-  ## Start a new conversation and return its ID (for backwards compatibility)
-  result = epochTime().int64

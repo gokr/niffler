@@ -13,7 +13,7 @@ import std/[strutils, strformat, tables, times, options, logging]
 import ../core/[conversation_manager, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
-import cli
+import linecross
 
 type
   CommandResult* = object
@@ -154,7 +154,7 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
     if model.nickname == modelName:
       currentModel = model
       # Update prompt to reflect new model
-      cli.setPrompt(cli.generatePrompt(currentModel))
+      # Prompt will be updated on next input cycle
       
       return CommandResult(
         success: true,
@@ -420,7 +420,7 @@ proc newConversationHandler(args: seq[string], currentModel: var configTypes.Mod
     discard switchToConversation(database, conv.id)
     
     # Update prompt to reflect new conversation context
-    cli.setPrompt(cli.generatePrompt(currentModel))
+    # Prompt will be updated on next input cycle
     
     return CommandResult(
       success: true,
@@ -610,7 +610,7 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               break
           
           # Update prompt to reflect new conversation context
-          cli.setPrompt(cli.generatePrompt(currentModel))
+          # Prompt will be updated on next input cycle
           
           return CommandResult(
             success: true,
@@ -661,7 +661,7 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               break
           
           # Update prompt to reflect new conversation context
-          cli.setPrompt(cli.generatePrompt(currentModel))
+          # Prompt will be updated on next input cycle
           
           return CommandResult(
             success: true,
