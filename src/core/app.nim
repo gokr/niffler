@@ -17,14 +17,112 @@
 ## - Handles API key retrieval from configuration and environment
 ## - Provides both interactive and single-shot execution modes
 
-import std/[strformat, logging, options, strutils, terminal, random]
+import std/[strformat, logging, options, strutils, terminal, random, os, re, json, times]
 import channels, conversation_manager, config, system_prompt
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
+import ../tools/common
+when defined(posix):
+  import posix
 
 # Global mode state (thread-safe access through procedures)
 var currentMode {.threadvar.}: AgentMode
 var modeInitialized {.threadvar.}: bool
+
+# Simple file reference processing
+proc isValidTextFileForReference*(path: string): bool =
+  ## Check if a file is valid for @ referencing (text files only)
+  let info = getFileInfo(path)
+  
+  # Directories are valid for navigation
+  if info.kind == pcDir:
+    return true
+  
+  # First try extension-based detection
+  if isTextFile(path):
+    return true
+  
+  # For files without extensions, check content
+  let ext = getFileExtension(path)
+  if ext.len == 0:
+    # No extension - check for binary content (simple check)
+    try:
+      let file = open(path, fmRead)
+      defer: file.close()
+      
+      # Read first 1KB of file
+      let bufferSize = 1024
+      var buffer = newString(bufferSize)
+      let bytesRead = file.readChars(buffer, 0, bufferSize)
+      
+      # Check for null bytes which are common in binary files
+      for i in 0..<bytesRead:
+        if buffer[i] == '\0':
+          return false
+      
+      return true
+    except:
+      # If we can't read the file, assume it's not valid
+      return false
+  
+  # Has extension but not in text list - assume binary
+  return false
+
+proc processFileReferencesInText*(input: string): tuple[processedText: string, toolCalls: seq[LLMToolCall]] =
+  ## Process @ file references in input text and convert to tool calls
+  result.processedText = input
+  result.toolCalls = @[]
+  
+  # Regex to match @ references
+  let pattern = re(r"@([^\s]+)")
+  
+  # Find all @ references
+  var matches: seq[string] = @[]
+  for match in input.findAll(pattern):
+    matches.add(match)
+  
+  # Process each match in reverse order to maintain string indices
+  var replacements: seq[tuple[original, replacement: string]] = @[]
+  
+  for match in matches:
+    # Extract the path part (remove the @)
+    let pathPart = match[1..^1]
+    
+    # Resolve the full path
+    let fullPath = if isAbsolute(pathPart):
+      pathPart
+      else:
+        getCurrentDir() / pathPart
+    
+    # Check if file exists
+    if fileExists(fullPath) or dirExists(fullPath):
+      # Check if it's a valid text file
+      if isValidTextFileForReference(fullPath):
+        # Valid text file - create tool call
+        let toolCall = LLMToolCall(
+          id: "call_" & $getTime().toUnix() & "_" & $rand(9999),
+          `type`: "function",
+          function: FunctionCall(
+            name: "read",
+            arguments: $ %*{
+              "path": pathPart
+            }
+          )
+        )
+        result.toolCalls.add(toolCall)
+        # Keep the reference in the text for now (will be handled by the LLM)
+        replacements.add((match, match))
+      else:
+        # Binary file - replace with error message
+        replacements.add((match, "[Error: Cannot reference binary file: " & pathPart & "]"))
+    else:
+      # File not found - replace with error message
+      replacements.add((match, "[Error: File not found: " & pathPart & "]"))
+  
+  # Apply replacements
+  result.processedText = input
+  for rep in replacements:
+    result.processedText = result.processedText.replace(rep.original, rep.replacement)
 
 # Context management constants
 const
@@ -88,13 +186,6 @@ proc toggleMode*(): AgentMode =
   setCurrentMode(newMode)
   return newMode
 
-proc getModePromptIndicator*(): string =
-  ## Get the mode indicator for prompt display
-  let mode = getCurrentMode()
-  case mode:
-  of amPlan: "(plan)"
-  of amCode: "(code)"
-
 proc getModePromptColor*(): ForegroundColor =
   ## Get the mode color for prompt display
   let mode = getCurrentMode()
@@ -141,8 +232,17 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   let systemMsg = createSystemMessage(getCurrentMode())
   messages.insert(systemMsg, 0)
   
+  # Process @ file references in the user message
+  let processed = processFileReferencesInText(text)
+  let finalText = processed.processedText
+  
   # Add the current user message to conversation and to the conversation context
-  let userMessage = conversation_manager.addUserMessage(text)
+  var userMessage = conversation_manager.addUserMessage(finalText)
+  
+  # Add tool calls for valid file references
+  if processed.toolCalls.len > 0:
+    userMessage.toolCalls = some(processed.toolCalls)
+  
   messages.add(userMessage)
   
   let requestId = fmt"req_{rand(100000)}"
