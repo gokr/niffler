@@ -366,7 +366,7 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
           # Always show error output if available
           if output.len > 0:
             if output.len <= 300:
-              formattedResult = fmt"Command failed (exit code {exitCode}):\n{output.strip()}"
+              formattedResult = fmt("Command failed (exit code {exitCode}):\n{output.strip()}")
             else:
               formattedResult = fmt"Command failed (exit code {exitCode}) with {nonEmptyLines.len} lines of output"
           else:

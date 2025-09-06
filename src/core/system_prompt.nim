@@ -183,7 +183,7 @@ proc getGitInfo*(): string =
         let headContent = readFile(".git/HEAD").strip()
         if headContent.startsWith("ref: refs/heads/"):
           let branch = headContent[16..^1]  # Remove "ref: refs/heads/"
-          gitInfo.add(fmt"\n- Current branch: {branch}")
+          gitInfo.add(fmt("\n- Current branch: {branch}"))
         else:
           gitInfo.add("\n- Current branch: (detached HEAD)")
       except:
@@ -195,7 +195,7 @@ proc getGitInfo*(): string =
       if statusCode == 0:
         let lines = statusOutput.splitLines().filterIt(it.len > 0)
         if lines.len > 0:
-          gitInfo.add(fmt"\n- Changes: {lines.len} modified files")
+          gitInfo.add(fmt("\n- Changes: {lines.len} modified files"))
         else:
           gitInfo.add("\n- Changes: Clean working tree")
     except:
@@ -237,9 +237,9 @@ proc getProjectInfo*(): string =
     if sourceFileCount > 100:
       additionalInfo.add("\n- Large codebase (100+ source files)")
     elif sourceFileCount > 20:
-      additionalInfo.add(fmt"\n- Medium codebase ({sourceFileCount} source files)")
+      additionalInfo.add(fmt("\n- Medium codebase ({sourceFileCount} source files)"))
     else:
-      additionalInfo.add(fmt"\n- Small codebase ({sourceFileCount} source files)")
+      additionalInfo.add(fmt("\n- Small codebase ({sourceFileCount} source files)"))
   
   return additionalInfo
 
@@ -387,14 +387,14 @@ proc findInstructionFiles*(): string =
             for heading, sectionContent in sections:
               # Skip the system prompt sections
               if heading notin ["Common System Prompt", "Plan Mode Prompt", "Code Mode Prompt"]:
-                filteredContent.add(fmt"# {heading}\n\n{sectionContent}\n\n")
+                filteredContent.add(fmt("# {heading}\n\n{sectionContent}\n\n"))
             
             if filteredContent.len > 0:
-              instructionContent.add(fmt"\n\n--- {relativePath} ---\n{filteredContent}")
+              instructionContent.add(fmt("\n\n--- {relativePath} ---\n{filteredContent}"))
           else:
             # Process includes for non-NIFFLER.md files too
             let contentWithIncludes = processFileIncludes(rawContent, searchDir)
-            instructionContent.add(fmt"\n\n--- {relativePath} ---\n{contentWithIncludes}")
+            instructionContent.add(fmt("\n\n--- {relativePath} ---\n{contentWithIncludes}"))
           
           return instructionContent  # Return after finding the first instruction file
         except:

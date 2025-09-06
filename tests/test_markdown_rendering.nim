@@ -124,7 +124,7 @@ This is a **performance** test with *many* formatting `elements`.
     check fullResult.len > 0
     check streamResult.len > 0
     
-    echo fmt"\nRendering times - Full: {fullTime:.4f}s, Stream: {streamTime:.4f}s"
+    echo fmt("\nRendering times - Full: {fullTime:.4f}s, Stream: {streamTime:.4f}s")
 
 when isMainModule:
   echo "Running Markdown Rendering Tests..."

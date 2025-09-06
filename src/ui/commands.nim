@@ -21,6 +21,7 @@ type
     message*: string
     shouldExit*: bool
     shouldContinue*: bool
+    shouldResetUI*: bool
 
   CommandInfo* = object
     name*: string
@@ -99,7 +100,8 @@ proc executeCommand*(command: string, args: seq[string],
       success: false,
       message: fmt"Unknown command: /{command}. Type '/help' for available commands.",
       shouldExit: false,
-      shouldContinue: true
+      shouldContinue: true,
+      shouldResetUI: false
     )
   
   let (_, handler) = commandRegistry[command]
@@ -108,11 +110,13 @@ proc executeCommand*(command: string, args: seq[string],
 # Built-in command handlers
 proc helpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   var message = """
-Type '/help' for help and '/exit' or '/quit' to leave.
+Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.
+
 Press Ctrl+C to stop streaming display or exit. Ctrl-Z to suspend.
 Press Shift+Tab to switch between Plan and Code mode.
 
-Available commands:\n"""
+Available commands:
+"""
   let commands = getAvailableCommands()
   
   for cmd in commands:
@@ -419,21 +423,20 @@ proc newConversationHandler(args: seq[string], currentModel: var configTypes.Mod
     # Switch to the new conversation
     discard switchToConversation(database, conv.id)
     
-    # Update prompt to reflect new conversation context
-    # Prompt will be updated on next input cycle
-    
     return CommandResult(
       success: true,
       message: fmt"Created and switched to new conversation: {conv.title} (ID: {conv.id})",
       shouldExit: false,
-      shouldContinue: true
+      shouldContinue: true,
+      shouldResetUI: true
     )
   else:
     return CommandResult(
       success: false,
       message: "Failed to create new conversation",
       shouldExit: false,
-      shouldContinue: true
+      shouldContinue: true,
+      shouldResetUI: false
     )
 
 proc archiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
@@ -509,9 +512,9 @@ proc searchConversationsHandler(args: seq[string], currentModel: var configTypes
       shouldContinue: true
     )
   
-  var message = fmt"Found {results.len} conversations matching '{query}':\n"
+  var message = fmt("Found {results.len} conversations matching '{query}':\n")
   for conv in results:
-    message &= fmt"  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname}\n"
+    message &= fmt("  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname}\n")
   
   return CommandResult(
     success: true,
@@ -579,10 +582,10 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
     for conv in conversations:
       let activeMarker = if conv.id == activeId: " (current)" else: ""
       let statusMarker = if conv.isActive: "" else: " [archived]"
-      message &= fmt"  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname} ({conv.messageCount} messages){activeMarker}{statusMarker}\n"
+      message &= fmt("  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname} ({conv.messageCount} messages){activeMarker}{statusMarker}\n")
       let c = conv.created_at.format("yyyy-MM-dd HH:mm")
       let a = conv.lastActivity.format("yyyy-MM-dd HH:mm")
-      message &= fmt"    Created: {c}, Last activity: {a}\n"
+      message &= fmt("    Created: {c}, Last activity: {a}\n")
     
     return CommandResult(
       success: true,
@@ -609,14 +612,12 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
-          # Update prompt to reflect new conversation context
-          # Prompt will be updated on next input cycle
-          
           return CommandResult(
             success: true,
             message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
             shouldExit: false,
-            shouldContinue: true
+            shouldContinue: true,
+            shouldResetUI: true
           )
         else:
           return CommandResult(
@@ -660,14 +661,12 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
-          # Update prompt to reflect new conversation context
-          # Prompt will be updated on next input cycle
-          
           return CommandResult(
             success: true,
             message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
             shouldExit: false,
-            shouldContinue: true
+            shouldContinue: true,
+            shouldResetUI: true
           )
         else:
           return CommandResult(
