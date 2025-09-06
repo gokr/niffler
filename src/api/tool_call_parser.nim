@@ -26,6 +26,10 @@ proc detectToolCallFormat*(content: string): ToolFormat =
   if "<toolcall>" in content and "<argkey>" in content and "<argvalue>" in content:
     return tfQwenXML  # Treat GLM format as Qwen variant for now
   
+  # GLM-4.5 format - <tool_call> with <arg_key>/<arg_value> pairs  
+  if "<tool_call>" in content and "<arg_key>" in content and "<arg_value>" in content:
+    return tfQwenXML  # Treat GLM-4.5 format as Qwen variant for now
+  
   # Qwen3 XML format - specific malformed XML pattern
   if ("<tool_call>" in content and "<function=" in content and "<parameter=" in content) or
      ("<toolcall>" in content and "<function=" in content and "<parameter=" in content):
@@ -39,6 +43,11 @@ proc detectToolCallFormat*(content: string): ToolFormat =
   if ("<function" in contentLower and "name=" in contentLower) or 
      ("<tool" in contentLower and ("call" in contentLower or "use" in contentLower)):
     return tfQwenXML  # Treat unknown XML as Qwen variant for robustness
+  
+  # Fallback: if content looks like JSON (has braces and common JSON keys), treat as OpenAI
+  if content.startsWith("{") and content.endsWith("}") and 
+     ("\"path\"" in content or "\"operation\"" in content or "\"content\"" in content or "\"text\"" in content):
+    return tfOpenAI
   
   return tfUnknown
 
@@ -70,6 +79,7 @@ proc isCompleteXML*(content: string): bool =
   let trimmed = content.strip()
   
   # Qwen format: <tool_call>...<function=name>...<parameter=key>value</parameter>...</function></tool_call>
+  # GLM-4.5 format: <tool_call>name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
   if trimmed.contains("<tool_call>"):
     return trimmed.contains("</tool_call>")
   
@@ -100,7 +110,61 @@ proc parseQwenXMLFragment*(content: string): seq[LLMToolCall] =
   
   debug("Parsing Qwen XML fragment: " & content)
   
-  # Handle GLM format: <toolcall>toolname<argkey>key1</argkey><argvalue>value1</argvalue></toolcall>
+  # Handle GLM-4.5 format: <tool_call>toolname<arg_key>key1</arg_key><arg_value>value1</arg_value></tool_call>
+  if "<tool_call>" in content and "<arg_key>" in content and "<arg_value>" in content:
+    # Extract tool name (text between <tool_call> and first <arg_key>)
+    let toolcallStart = content.find("<tool_call>")
+    let argkeyStart = content.find("<arg_key>")
+    if toolcallStart >= 0 and argkeyStart > toolcallStart:
+      let toolNameStart = toolcallStart + 11  # length of "<tool_call>"
+      var toolName = content[toolNameStart..<argkeyStart].strip()
+      
+      # Handle case where tool name might be on same line as opening tag
+      if toolName.startsWith(">"):
+        toolName = toolName[1..^1].strip()
+      
+      if toolName.len > 0:
+        # Extract parameters using arg_key/arg_value pairs
+        var args = %*{}
+        var searchPos = 0
+        while true:
+          let argkeyStart = content.find("<arg_key>", searchPos)
+          if argkeyStart < 0: break
+          
+          let argkeyEndStart = argkeyStart + 9  # length of "<arg_key>"
+          let argkeyEnd = content.find("</arg_key>", argkeyEndStart)
+          if argkeyEnd <= argkeyEndStart: break
+          
+          let paramName = content[argkeyEndStart..<argkeyEnd].strip()
+          
+          let argvalueStart = content.find("<arg_value>", argkeyEnd)
+          if argvalueStart < 0: break
+          
+          let argvalueEndStart = argvalueStart + 11  # length of "<arg_value>"
+          let argvalueEnd = content.find("</arg_value>", argvalueEndStart)
+          if argvalueEnd <= argvalueEndStart: break
+          
+          let paramValue = content[argvalueEndStart..<argvalueEnd].strip()
+          args[paramName] = %paramValue
+          debug(fmt"GLM-4.5 Parameter: {paramName} = {paramValue}")
+          
+          searchPos = argvalueEnd + 12  # length of "</arg_value>"
+        
+        # Create normalized tool call
+        let toolCall = LLMToolCall(
+          id: generateToolCallId(),
+          `type`: "function",
+          function: FunctionCall(
+            name: toolName,
+            arguments: $args
+          )
+        )
+        
+        result.add(toolCall)
+        debug(fmt"Created GLM-4.5 tool call: {toolName} with args: {$args}")
+        return result  # Return early since we found GLM-4.5 format
+  
+  # Handle original GLM format: <toolcall>toolname<argkey>key1</argkey><argvalue>value1</argvalue></toolcall>
   if "<toolcall>" in content and "<argkey>" in content and "<argvalue>" in content:
     # Extract tool name (text between <toolcall> and first <argkey>)
     let toolcallStart = content.find("<toolcall>")
@@ -266,8 +330,20 @@ proc recoverMalformedToolCall*(content: string): Option[LLMToolCall] =
   var toolName = ""
   var params = %*{}
   
-  # Strategy 1: Handle GLM format first
-  if "<toolcall>" in content and "<argkey>" in content:
+  # Strategy 1: Handle GLM-4.5 format first
+  if "<tool_call>" in content and "<arg_key>" in content:
+    # Extract tool name (text between <tool_call> and first <arg_key>)
+    let toolcallStart = content.find("<tool_call>")
+    let argkeyStart = content.find("<arg_key>")
+    if toolcallStart >= 0 and argkeyStart > toolcallStart:
+      let toolNameStart = toolcallStart + 11  # length of "<tool_call>"
+      toolName = content[toolNameStart..<argkeyStart].strip()
+      
+      # Handle case where tool name might be on same line as opening tag
+      if toolName.startsWith(">"):
+        toolName = toolName[1..^1].strip()
+  # Strategy 1b: Handle original GLM format
+  elif "<toolcall>" in content and "<argkey>" in content:
     # Extract tool name (text between <toolcall> and first <argkey>)
     let toolcallStart = content.find("<toolcall>")
     let argkeyStart = content.find("<argkey>")
@@ -299,9 +375,33 @@ proc recoverMalformedToolCall*(content: string): Option[LLMToolCall] =
     debug("Could not extract tool name from malformed content")
     return none(LLMToolCall)
   
-  # Strategy 3: Extract parameters - handle GLM format first
-  if "<argkey>" in content and "<argvalue>" in content:
-    # Extract parameters using argkey/argvalue pairs (GLM format)
+  # Strategy 3: Extract parameters - handle GLM-4.5 format first
+  if "<arg_key>" in content and "<arg_value>" in content:
+    # Extract parameters using arg_key/arg_value pairs (GLM-4.5 format)
+    var searchPos = 0
+    while true:
+      let argkeyStart = content.find("<arg_key>", searchPos)
+      if argkeyStart < 0: break
+      
+      let argkeyEndStart = argkeyStart + 9  # length of "<arg_key>"
+      let argkeyEnd = content.find("</arg_key>", argkeyEndStart)
+      if argkeyEnd <= argkeyEndStart: break
+      
+      let paramName = content[argkeyEndStart..<argkeyEnd].strip()
+      
+      let argvalueStart = content.find("<arg_value>", argkeyEnd)
+      if argvalueStart < 0: break
+      
+      let argvalueEndStart = argvalueStart + 11  # length of "<arg_value>"
+      let argvalueEnd = content.find("</arg_value>", argvalueEndStart)
+      if argvalueEnd <= argvalueEndStart: break
+      
+      let paramValue = content[argvalueEndStart..<argvalueEnd].strip()
+      params[paramName] = %paramValue
+      
+      searchPos = argvalueEnd + 12  # length of "</arg_value>"
+  elif "<argkey>" in content and "<argvalue>" in content:
+    # Extract parameters using argkey/argvalue pairs (original GLM format)
     var searchPos = 0
     while true:
       let argkeyStart = content.find("<argkey>", searchPos)
