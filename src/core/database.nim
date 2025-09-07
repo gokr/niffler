@@ -82,6 +82,22 @@ type
     inputCost*: float
     outputCost*: float
     totalCost*: float
+    reasoningTokens*: int          # New: thinking token count
+    reasoningCost*: float          # New: thinking token cost
+
+  # New table for conversation thinking token storage
+  ConversationThinkingToken* = ref object of RootObj
+    id*: int
+    conversationId*: int
+    messageId*: Option[int]         # Optional link to specific message
+    created_at*: DateTime
+    thinkingContent*: string       # JSON blob of ThinkingContent
+    providerFormat*: string        # "anthropic", "openai", "encrypted", "none"
+    importanceLevel*: string       # "low", "medium", "high", "essential"
+    tokenCount*: int               # Estimated token count
+    keywords*: string              # JSON array of extracted keywords
+    contextId*: string             # Context identifier for windowing
+    reasoningId*: Option[string]   # Optional reasoning correlation ID
 
   # Todo system types
   TodoList* = ref object of RootObj
@@ -158,6 +174,25 @@ proc migrateConversationMessageSchema*(conn: sqlite.Db) =
   except Exception as e:
     error(fmt"Failed to migrate ConversationMessage schema: {e.msg}")
 
+proc migrateModelTokenUsageSchema*(conn: sqlite.Db) =
+  ## Add thinking token columns to ModelTokenUsage table
+  try:
+    # Check if reasoning_tokens column exists
+    let hasReasoningTokens = conn.query("PRAGMA table_info(model_token_usage)").anyIt(it[1] == "reasoning_tokens")
+    if not hasReasoningTokens:
+      debug("Adding reasoning_tokens column to model_token_usage table")
+      conn.query("ALTER TABLE model_token_usage ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
+    
+    # Check if reasoning_cost column exists
+    let hasReasoningCost = conn.query("PRAGMA table_info(model_token_usage)").anyIt(it[1] == "reasoning_cost")
+    if not hasReasoningCost:
+      debug("Adding reasoning_cost column to model_token_usage table")
+      conn.query("ALTER TABLE model_token_usage ADD COLUMN reasoning_cost REAL DEFAULT 0.0")
+    
+    debug("ModelTokenUsage schema migration completed")
+  except Exception as e:
+    error(fmt"Failed to migrate ModelTokenUsage schema: {e.msg}")
+
 proc migrateConversationSchema*(conn: sqlite.Db) =
   ## Add new columns to Conversation table for mode and model tracking
   try:
@@ -224,6 +259,7 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       # Run schema migrations to add new columns
       migrateConversationMessageSchema(db)
       migrateConversationSchema(db)
+      migrateModelTokenUsageSchema(db)
       
       if not db.tableExists(ModelTokenUsage):
         db.createTable(ModelTokenUsage)
@@ -231,6 +267,16 @@ proc initializeDatabase*(backend: DatabaseBackend) =
         db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
         db.createIndexIfNotExists(ModelTokenUsage, "model")
         db.createIndexIfNotExists(ModelTokenUsage, "created_at")
+      
+      # Create thinking token storage table
+      if not db.tableExists(ConversationThinkingToken):
+        db.createTable(ConversationThinkingToken)
+        # Create indexes for better performance
+        db.createIndexIfNotExists(ConversationThinkingToken, "conversationId")
+        db.createIndexIfNotExists(ConversationThinkingToken, "messageId")
+        db.createIndexIfNotExists(ConversationThinkingToken, "created_at")
+        db.createIndexIfNotExists(ConversationThinkingToken, "importanceLevel")
+        db.createIndexIfNotExists(ConversationThinkingToken, "providerFormat")
       
       # Create todo system tables
       if not db.tableExists(TodoList):
@@ -254,6 +300,7 @@ proc checkDatabase*(backend: DatabaseBackend) =
       db.checkTable(Conversation)
       db.checkTable(ConversationMessage)
       db.checkTable(ModelTokenUsage)
+      db.checkTable(ConversationThinkingToken)
       db.checkTable(TodoList)
       db.checkTable(TodoItem)
   echo "Database checked"
@@ -485,8 +532,9 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
 
 proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageId: int,
                         model: string, inputTokens: int, outputTokens: int,
-                        inputCostPerMToken: Option[float], outputCostPerMToken: Option[float]) =
-  ## Log model-specific token usage for accurate cost calculation
+                        inputCostPerMToken: Option[float], outputCostPerMToken: Option[float],
+                        reasoningTokens: int = 0, reasoningCostPerMToken: Option[float] = none(float)) =
+  ## Log model-specific token usage for accurate cost calculation including thinking tokens
   if backend == nil or conversationId == 0:
     return
   
@@ -498,7 +546,11 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
     float(outputTokens) * (outputCostPerMToken.get() / 1_000_000.0)
   else: 0.0
   
-  let totalCost = inputCost + outputCost
+  let reasoningCost = if reasoningCostPerMToken.isSome() and reasoningTokens > 0:
+    float(reasoningTokens) * (reasoningCostPerMToken.get() / 1_000_000.0)
+  else: 0.0
+  
+  let totalCost = inputCost + outputCost + reasoningCost
   
   case backend.kind:
   of dbkSQLite, dbkTiDB:
@@ -512,7 +564,9 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
       outputTokens: outputTokens,
       inputCost: inputCost,
       outputCost: outputCost,
-      totalCost: totalCost
+      totalCost: totalCost,
+      reasoningTokens: reasoningTokens,
+      reasoningCost: reasoningCost
     )
     backend.pool.insert(usage)
 

@@ -18,7 +18,7 @@
 ## - Provides both interactive and single-shot execution modes
 
 import std/[strformat, logging, options, strutils, terminal, random, os, re, json, times]
-import channels, conversation_manager, config, system_prompt
+import channels, conversation_manager, config, system_prompt, database
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
 import ../tools/common
@@ -53,7 +53,7 @@ proc isValidTextFileForReference*(path: string): bool =
       # Read first 1KB of file
       let bufferSize = 1024
       var buffer = newString(bufferSize)
-      let bytesRead = file.readChars(buffer, 0, bufferSize)
+      let bytesRead = file.readChars(toOpenArray(buffer, 0, bufferSize-1))
       
       # Check for null bytes which are common in binary files
       for i in 0..<bytesRead:
@@ -179,6 +179,18 @@ proc setCurrentMode*(mode: AgentMode) =
   currentMode = mode
   modeInitialized = true
   debug(fmt"Mode changed to: {mode}")
+  
+  # Persist mode change to current conversation if available
+  try:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        updateConversationMode(database, conversationId, mode)
+        debug(fmt"Persisted mode change to database for conversation {conversationId}")
+  except Exception as e:
+    debug(fmt"Failed to persist mode change to database: {e.msg}")
 
 proc toggleMode*(): AgentMode =
   ## Toggle between Plan and Code modes, returns new mode

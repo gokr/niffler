@@ -81,6 +81,66 @@ In Code mode:
 - Be decisive in implementation choices
 """
 
+  THINKING_TOKEN_INSTRUCTIONS* = """
+**THINKING TOKEN SUPPORT**
+
+Niffler supports advanced thinking tokens (reasoning tokens) from next-generation LLMs like GPT-5, Claude 4, and DeepSeek R1. These models can show their internal reasoning process, which Niffler captures, stores, and integrates into conversations.
+
+**Thinking Token Capabilities:**
+- **Real-time thinking capture**: Niffler automatically detects and stores thinking content during streaming responses
+- **Multi-provider support**: Handles Anthropic XML `<thinking>` blocks, OpenAI `reasoning_content`, and encrypted reasoning
+- **Conversation persistence**: Thinking tokens are stored in the database and linked to conversation context
+- **Cost tracking**: Reasoning tokens are tracked separately and included in usage/cost calculations
+- **Privacy protection**: Supports encrypted thinking tokens for privacy-preserving reasoning models
+
+**Supported Formats:**
+1. **Anthropic Format**: XML-style thinking blocks
+   ```
+   <thinking>
+   Let me think through this step by step...
+   - First, I need to understand the user's request
+   - Then, I should break down the problem
+   - Finally, I'll provide a clear solution
+   </thinking>
+   
+   Based on my analysis...
+   ```
+
+2. **OpenAI Format**: Native reasoning_content fields
+   - Reasoning content is automatically captured from API responses
+   - Handled transparently without special markup
+
+3. **Encrypted Format**: Privacy-preserving reasoning
+   - Reasoning content is encrypted or redacted
+   - Preserves privacy while maintaining conversation flow
+
+**Best Practices for Thinking Tokens:**
+- **Use thinking blocks for complex reasoning**: When working through multi-step problems, use thinking tokens to show your process
+- **Be transparent about analysis**: Show your reasoning when evaluating code, planning implementations, or making decisions
+- **Break down complex problems**: Use thinking tokens to decompose large tasks into manageable components
+- **Share insights**: Include key insights and decision factors in your thinking process
+- **Maintain context awareness**: Reference previous thinking when building on earlier analysis
+
+**Integration with Modes:**
+- **Plan Mode**: Use thinking tokens for thorough analysis, requirement gathering, and architectural decisions
+- **Code Mode**: Use thinking tokens for implementation planning, debugging analysis, and testing strategy
+
+**Example Usage:**
+When approaching a complex task, show your thinking process:
+
+<thinking>
+The user wants to implement feature X. Let me analyze:
+1. Current codebase structure suggests pattern Y would work best
+2. This will require changes to modules A, B, and C
+3. Need to consider backward compatibility
+4. Should write tests for edge cases D and E
+</thinking>
+
+Based on my analysis, I'll implement this using pattern Y...
+
+Niffler will automatically capture, store, and track these thinking tokens as part of your conversation history and cost analysis.
+"""
+
   TODOLIST_INSTRUCTIONS* = """
 **TODOLIST TOOL USAGE GUIDELINES**
 
@@ -438,6 +498,9 @@ proc generateSystemPrompt*(mode: AgentMode): string =
   
   # Add todolist instructions for all modes
   systemPrompt.add("\n\n" & TODOLIST_INSTRUCTIONS)
+  
+  # Add thinking token instructions for all modes
+  systemPrompt.add("\n\n" & THINKING_TOKEN_INSTRUCTIONS)
   
   # Add instruction files if found
   if instructionFiles.len > 0:

@@ -6,8 +6,8 @@
 ## - Handle conversation session state
 ## - Integrate with database for persistence
 
-import std/[options, strformat, times, logging, locks, strutils]
-import ../types/[mode, messages]
+import std/[options, strformat, times, logging, locks, strutils, json]
+import ../types/[mode, messages, thinking_tokens]
 import database
 import debby/pools
 import debby/sqlite
@@ -206,6 +206,38 @@ proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: i
     except Exception as e:
       error(fmt"Failed to update conversation message count: {e.msg}")
 
+proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode: AgentMode) =
+  ## Update the mode for a conversation
+  if backend == nil or conversationId == 0:
+    return
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    try:
+      backend.pool.withDb:
+        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        db.query("UPDATE conversation SET mode = ?, updated_at = ? WHERE id = ?", 
+                 $mode, currentTime, conversationId)
+        debug(fmt"Updated mode for conversation {conversationId} to {mode}")
+    except Exception as e:
+      error(fmt"Failed to update conversation mode: {e.msg}")
+
+proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, modelNickname: string) =
+  ## Update the model nickname for a conversation
+  if backend == nil or conversationId == 0:
+    return
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    try:
+      backend.pool.withDb:
+        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        db.query("UPDATE conversation SET model_nickname = ?, updated_at = ? WHERE id = ?", 
+                 modelNickname, currentTime, conversationId)
+        debug(fmt"Updated model nickname for conversation {conversationId} to {modelNickname}")
+    except Exception as e:
+      error(fmt"Failed to update conversation model: {e.msg}")
+
 proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Switch to a specific conversation and restore its mode/model context
   if backend == nil:
@@ -231,8 +263,8 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   # Sync globalSession with the new conversation ID
   syncSessionState(conversationId)
   
-  # Restore mode context - TODO: implement when circular import is resolved
-  debug(fmt"switchToConversation: should restore mode {conversation.mode}")
+  # Mode restoration is handled in UI layer (commands.nim) to avoid circular imports
+  debug(fmt"switchToConversation: mode {conversation.mode} will be restored by UI layer")
   
   # Update activity timestamp
   updateConversationActivity(backend, conversationId)
@@ -370,6 +402,10 @@ proc addUserMessage*(content: string): Message =
       # Add to database if pool is available
       if globalSession.pool != nil and globalSession.conversationId > 0:
         discard addUserMessageToDb(globalSession.pool, globalSession.conversationId, content)
+        # Update message count
+        let backend = getGlobalDatabase()
+        if backend != nil:
+          updateConversationMessageCount(backend, globalSession.conversationId)
       
       result = Message(
         role: mrUser,
@@ -388,6 +424,10 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
       # Add to database if pool is available
       if globalSession.pool != nil and globalSession.conversationId > 0:
         discard addAssistantMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCalls, "")
+        # Update message count
+        let backend = getGlobalDatabase()
+        if backend != nil:
+          updateConversationMessageCount(backend, globalSession.conversationId)
       
       result = Message(
         role: mrAssistant,
@@ -408,6 +448,10 @@ proc addToolMessage*(content: string, toolCallId: string): Message =
       # Add to database if pool is available
       if globalSession.pool != nil and globalSession.conversationId > 0:
         discard addToolMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCallId)
+        # Update message count
+        let backend = getGlobalDatabase()
+        if backend != nil:
+          updateConversationMessageCount(backend, globalSession.conversationId)
       
       result = Message(
         role: mrTool,
@@ -482,4 +526,167 @@ proc getCurrentConversationId*(): int64 =
 proc getCurrentMessageId*(): int64 =
   ## Get the current message ID (stub for now)
   result = 0
+
+# Thinking Token Management Functions
+
+proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: ThinkingContent, 
+                          messageId: Option[int] = none(int), format: ThinkingTokenFormat = ttfNone,
+                          importance: string = "medium"): int =
+  ## Add thinking token to database and return the thinking token ID
+  pool.withDb:
+    # Extract content from ThinkingContent
+    let content = if thinkingContent.reasoningContent.isSome(): 
+                    thinkingContent.reasoningContent.get() 
+                  elif thinkingContent.encryptedReasoningContent.isSome():
+                    thinkingContent.encryptedReasoningContent.get()
+                  else: ""
+    
+    let thinkingToken = ConversationThinkingToken(
+      id: 0,
+      conversationId: conversationId,
+      messageId: messageId,
+      created_at: now(),
+      thinkingContent: $ %*thinkingContent,  # Serialize as JSON
+      providerFormat: $format,
+      importanceLevel: importance,
+      tokenCount: content.len div 4,  # Rough token estimate
+      keywords: "[]",  # Empty array for now
+      contextId: fmt"ctx_{epochTime().int64}",
+      reasoningId: thinkingContent.reasoningId
+    )
+    db.insert(thinkingToken)
+    debug(fmt"Added thinking token to database: {format} format, {importance} importance")
+    return thinkingToken.id
+
+proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50): seq[ThinkingContent] =
+  ## Retrieve thinking token history for a conversation, most recent first
+  result = @[]
+  pool.withDb:
+    let query = """
+      SELECT thinking_content, provider_format, importance_level, token_count, 
+             keywords, context_id, reasoning_id, created_at
+      FROM conversation_thinking_token 
+      WHERE conversation_id = ? 
+      ORDER BY created_at DESC 
+      LIMIT ?
+    """
+    
+    try:
+      let rows = db.query(query, conversationId, limit)
+      
+      for row in rows:
+        # Parse the JSON thinking content back to ThinkingContent
+        let thinkingJson = parseJson(row[0])
+        
+        let thinkingContent = ThinkingContent(
+          reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
+                              some(thinkingJson{"reasoningContent"}.getStr("")) 
+                            else: none(string),
+          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
+                                       some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
+                                     else: none(string),
+          reasoningId: if row[6].len > 0: some(row[6]) else: none(string),
+          providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
+                              some(thinkingJson{"providerSpecific"})
+                            else: none(JsonNode)
+        )
+        result.add(thinkingContent)
+      
+      debug(fmt"Retrieved {result.len} thinking tokens for conversation {conversationId}")
+    except Exception as e:
+      error(fmt"Failed to retrieve thinking token history: {e.msg}")
+
+proc getThinkingTokensByImportance*(pool: Pool, conversationId: int, 
+                                   importance: string, limit: int = 20): seq[ThinkingContent] =
+  ## Get thinking tokens filtered by importance level
+  result = @[]
+  pool.withDb:
+    let query = """
+      SELECT thinking_content, provider_format, importance_level, token_count,
+             keywords, context_id, reasoning_id, created_at
+      FROM conversation_thinking_token 
+      WHERE conversation_id = ? AND importance_level = ?
+      ORDER BY created_at DESC 
+      LIMIT ?
+    """
+    
+    try:
+      let rows = db.query(query, conversationId, importance, limit)
+      
+      for row in rows:
+        # Parse the JSON thinking content back to ThinkingContent
+        let thinkingJson = parseJson(row[0])
+        
+        let thinkingContent = ThinkingContent(
+          reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
+                              some(thinkingJson{"reasoningContent"}.getStr("")) 
+                            else: none(string),
+          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
+                                       some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
+                                     else: none(string),
+          reasoningId: if row[6].len > 0: some(row[6]) else: none(string),
+          providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
+                              some(thinkingJson{"providerSpecific"})
+                            else: none(JsonNode)
+        )
+        result.add(thinkingContent)
+      
+      debug(fmt"Retrieved {result.len} thinking tokens with {importance} importance for conversation {conversationId}")
+    except Exception as e:
+      error(fmt"Failed to retrieve thinking tokens by importance: {e.msg}")
+
+proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenFormat, 
+                                     messageId: Option[int] = none(int), 
+                                     isEncrypted: bool = false): Option[int] =
+  ## Store thinking token from streaming response - thread-safe
+  {.gcsafe.}:
+    acquire(globalSession.lock)
+    try:
+      # Store thinking token if pool is available
+      if globalSession.pool != nil and globalSession.conversationId > 0 and content.len > 0:
+        # Create ThinkingContent from streaming data
+        let thinkingContent = if isEncrypted:
+          ThinkingContent(
+            reasoningContent: none(string),
+            encryptedReasoningContent: some(content),
+            reasoningId: none(string),
+            providerSpecific: some(%*{"format": $format, "timestamp": epochTime()})
+          )
+        else:
+          ThinkingContent(
+            reasoningContent: some(content),
+            encryptedReasoningContent: none(string),
+            reasoningId: none(string),
+            providerSpecific: some(%*{"format": $format, "timestamp": epochTime()})
+          )
+        
+        let thinkingId = addThinkingTokenToDb(globalSession.pool, globalSession.conversationId, 
+                                            thinkingContent, messageId, format, "medium")
+        debug(fmt"Stored thinking token from streaming: {format} format, {content.len} chars")
+        return some(thinkingId)
+      else:
+        debug("Cannot store thinking token: no database pool or conversation ID")
+        return none(int)
+    except Exception as e:
+      error(fmt"Failed to store thinking token from streaming: {e.msg}")
+      return none(int)
+    finally:
+      release(globalSession.lock)
+
+proc getRecentThinkingTokens*(maxTokens: int = 10): seq[ThinkingContent] =
+  ## Get recent thinking tokens from current conversation
+  {.gcsafe.}:
+    acquire(globalSession.lock)
+    try:
+      # Use database if available
+      if globalSession.pool != nil and globalSession.conversationId > 0:
+        result = getThinkingTokenHistory(globalSession.pool, globalSession.conversationId, maxTokens)
+        debug(fmt"Retrieved {result.len} recent thinking tokens from database")
+        return result
+      
+      # Fallback: no thinking tokens if no database
+      result = @[]
+      debug("No database available, returning empty thinking token history")
+    finally:
+      release(globalSession.lock)
 
