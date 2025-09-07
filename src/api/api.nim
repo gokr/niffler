@@ -31,7 +31,7 @@ when compileOption("threads"):
   import std/typedthreads
 else:
   {.error: "This module requires threads support. Compile with --threads:on".}
-import ../types/[messages, config]
+import ../types/[messages, config, thinking_tokens]
 import std/logging
 import ../core/[channels, conversation_manager, database]
 import curlyStreaming
@@ -343,7 +343,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             requestId: request.requestId,
             kind: arkStreamChunk,
             content: delta.content,
-            done: false
+            done: false,
+            thinkingContent: none(string),
+            isEncrypted: none(bool)
           )
           sendAPIResponse(channels, contentResponse)
         
@@ -557,7 +559,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             requestId: request.requestId,
             kind: arkStreamChunk,
             content: delta.content,
-            done: false
+            done: false,
+            thinkingContent: none(string),
+            isEncrypted: none(bool)
           )
           sendAPIResponse(channels, chunkResponse)
         
@@ -593,7 +597,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         requestId: request.requestId,
         kind: arkStreamChunk,
         content: "",
-        done: true
+        done: true,
+        thinkingContent: none(string),
+        isEncrypted: none(bool)
       )
       sendAPIResponse(channels, finalChunkResponse)
       
@@ -611,11 +617,16 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
           let inputCostPerMToken = tempModelConfig.inputCostPerMToken
           let outputCostPerMToken = tempModelConfig.outputCostPerMToken
           
+          # Extract reasoning tokens from usage if available
+          let reasoningTokens = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
+          let reasoningCostPerMToken = tempModelConfig.reasoningCostPerMToken
+          
           logModelTokenUsage(database, conversationId, messageId, request.model,
                             finalUsage.inputTokens, finalUsage.outputTokens,
-                            inputCostPerMToken, outputCostPerMToken)
+                            inputCostPerMToken, outputCostPerMToken,
+                            reasoningTokens, reasoningCostPerMToken)
           
-          debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output")
+          debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output, {reasoningTokens} reasoning")
         except Exception as e:
           debug(fmt"Failed to log token usage to database: {e.msg}")
       
@@ -788,6 +799,30 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                     # Clean up stale buffers periodically
                     cleanupStaleBuffers(toolCallBuffers)
                 
+                # Handle thinking token processing from streaming chunks
+                var hasThinkingContent = false
+                var thinkingContentStr: Option[string] = none(string)
+                var isThinkingEncrypted: Option[bool] = none(bool)
+                
+                if chunk.isThinkingContent and chunk.thinkingContent.isSome():
+                  let thinkingContent = chunk.thinkingContent.get()
+                  if thinkingContent.len > 0:
+                    let format = if chunk.isEncrypted.isSome() and chunk.isEncrypted.get(): 
+                                  ttfEncrypted 
+                                else: 
+                                  ttfAnthropic  # Default to Anthropic format, could enhance detection
+                    let isEncrypted = chunk.isEncrypted.isSome() and chunk.isEncrypted.get()
+                    
+                    # Store thinking token in database
+                    discard storeThinkingTokenFromStreaming(thinkingContent, format, none(int), isEncrypted)
+                    
+                    # Prepare thinking content for UI display
+                    hasThinkingContent = true
+                    thinkingContentStr = some(thinkingContent)
+                    isThinkingEncrypted = some(isEncrypted)
+                    
+                    debug(fmt"Processed thinking token: {thinkingContent.len} chars, format: {format}, encrypted: {isEncrypted}")
+                
                 # Send content chunks in real-time (but coordinate with tool calls)
                 if delta.content.len > 0:
                   fullContent.add(delta.content)
@@ -797,9 +832,22 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                       requestId: request.requestId,
                       kind: arkStreamChunk,
                       content: delta.content,
-                      done: false
+                      done: false,
+                      thinkingContent: thinkingContentStr,
+                      isEncrypted: isThinkingEncrypted
                     )
                     sendAPIResponse(channels, chunkResponse)
+                elif hasThinkingContent:
+                  # Send thinking content even if there's no regular content
+                  let thinkingOnlyResponse = APIResponse(
+                    requestId: request.requestId,
+                    kind: arkStreamChunk,
+                    content: "",
+                    done: false,
+                    thinkingContent: thinkingContentStr,
+                    isEncrypted: isThinkingEncrypted
+                  )
+                  sendAPIResponse(channels, thinkingOnlyResponse)
             
             let (_, streamUsage) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
             
@@ -829,7 +877,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                   kind: arkStreamChunk,
                   content: "",
                   done: false,
-                  toolCalls: some(collectedToolCalls)
+                  toolCalls: some(collectedToolCalls),
+                  thinkingContent: none(string),
+                  isEncrypted: none(bool)
                 )
                 sendAPIResponse(channels, assistantResponse)
                 
@@ -859,7 +909,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
                 requestId: request.requestId,
                 kind: arkStreamChunk,
                 content: "",
-                done: true
+                done: true,
+                thinkingContent: none(string),
+                isEncrypted: none(bool)
               )
               sendAPIResponse(channels, finalChunkResponse)
               

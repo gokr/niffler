@@ -11,6 +11,12 @@ type
     rlLow = "low"
     rlMedium = "medium"
     rlHigh = "high"
+    rlNone = "none"
+    
+  ReasoningContentType* = enum
+    rctVisible = "visible"
+    rctHidden = "hidden"
+    rctEncrypted = "encrypted"
 
   ModelConfig* = object
     `type`*: Option[ModelType]
@@ -22,6 +28,7 @@ type
     context*: int
     reasoning*: Option[ReasoningLevel]
     enabled*: bool
+    reasoningContent*: Option[ReasoningContentType]  # New: thinking token visibility
     
     # OpenAI protocol parameters
     temperature*: Option[float]
@@ -37,6 +44,7 @@ type
     # Cost tracking parameters (per million tokens)
     inputCostPerMToken*: Option[float]
     outputCostPerMToken*: Option[float]
+    reasoningCostPerMToken*: Option[float]  # Cost for reasoning/thinking tokens
 
   SpecialModelConfig* = object
     baseUrl*: string
@@ -101,6 +109,10 @@ type
     currentTheme*: Option[string]
     markdownEnabled*: Option[bool]
     instructionFiles*: Option[seq[string]]
+    # Thinking token global configuration
+    thinkingTokensEnabled*: Option[bool]
+    defaultReasoningLevel*: Option[ReasoningLevel]
+    defaultReasoningContentType*: Option[ReasoningContentType]
 
   KeyConfig* = Table[string, string]
 
