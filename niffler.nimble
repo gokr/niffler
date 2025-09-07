@@ -1,5 +1,5 @@
 # Package
-version       = "0.2.4"
+version       = "0.3.0"
 author        = "Göran Krampe"
 description   = "Niffler - AI assistant in Nim"
 license       = "MIT"
