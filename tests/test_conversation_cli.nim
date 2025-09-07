@@ -3,7 +3,7 @@
 ## These tests verify that all conversation management CLI commands work correctly
 ## through the full command execution pipeline with real database operations.
 
-import std/[unittest, strformat, times, strutils, sequtils]
+import std/[unittest, strformat, times, strutils, sequtils, options]
 import test_conversation_infrastructure
 import ../src/core/[database, conversation_manager, config, app]
 import ../src/types/[config as configTypes, messages, mode]
@@ -14,7 +14,7 @@ suite "CLI Command Integration Tests":
   testConversationLifecycle "New conversation command creates and switches":
     var testModel = createTestModelConfig()
     
-    # Test /new command without title
+    # Test /new command without title  
     let result1 = executeCommand("new", @[], testModel)
     check result1.success == true
     check "Created and switched to new conversation:" in result1.message
@@ -273,7 +273,7 @@ suite "Concurrent Operations and Thread Safety":
     var testModel = createTestModelConfig()
     
     # Perform rapid sequential operations
-    let results = newSeq[CommandResult](5)
+    var results = newSeq[CommandResult](5)
     for i in 0..4:
       results[i] = executeCommand("new", @[fmt"Rapid Test {i}"], testModel)
       check results[i].success == true

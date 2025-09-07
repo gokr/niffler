@@ -142,7 +142,7 @@ proc simulateFullConversationWorkflow*(db: DatabaseBackend): tuple[convId: int, 
 template testConversationLifecycle*(name: string, body: untyped): untyped =
   ## Template for creating conversation lifecycle tests
   test name:
-    let testDb = createTestDatabase()
+    let testDb {.inject.} = createTestDatabase()
     defer: cleanupTestDatabase(testDb)
     
     # Set global database for testing

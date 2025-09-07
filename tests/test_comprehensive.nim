@@ -1,5 +1,5 @@
 import std/[unittest, options, json, os, tempfiles, strformat]
-import ../src/types/messages
+import ../src/types/[messages, config]
 import ../src/tools/[registry, common]
 import ../src/api/curlyStreaming
 
@@ -67,7 +67,8 @@ suite "Comprehensive Tool Tests":
 
   test "JSON serialization works":
     let messages = @[Message(role: mrUser, content: "Test")]
-    let request = createChatRequest("gpt-4", messages)
+    let config = ModelConfig(nickname: "test", model: "gpt-4", baseUrl: "https://api.openai.com/v1", context: 4096, enabled: true)
+    let request = createChatRequest(config, messages, stream = false, tools = none(seq[ToolDefinition]))
     
     let jsonRequest = request.toJson()
     check jsonRequest.hasKey("model")
@@ -248,11 +249,19 @@ when isMainModule:
     echo fmt"✓ Converted to {apiMessages.len} API messages"
     
     # 4. Create API request
+    let testConfig = ModelConfig(
+      nickname: "test", 
+      model: "gpt-4", 
+      baseUrl: "https://api.openai.com/v1", 
+      context: 4096, 
+      enabled: true,
+      maxTokens: some(2000),
+      temperature: some(0.7)
+    )
     let request = createChatRequest(
-      "gpt-4",
+      testConfig,
       conversation,
-      maxTokens = some(2000),
-      temperature = some(0.7),
+      stream = false,
       tools = some(tools)
     )
     

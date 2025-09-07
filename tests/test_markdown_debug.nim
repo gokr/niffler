@@ -1,5 +1,6 @@
-import std/[unittest, options]
+import std/[unittest, options, strutils]
 import ../src/core/config
+import ../src/types/config
 import ../src/ui/theme
 import ../src/ui/markdown_cli
 
@@ -34,8 +35,8 @@ suite "Markdown Debug Tests":
     let testText = "**bold text** and *italic text*"
     let rendered = renderMarkdownTextCLI(testText)
     check rendered.len > 0
-    check rendered.contains("bold text")
-    check rendered.contains("italic text")
+    check "bold text" in rendered
+    check "italic text" in rendered
   
   test "Empty markdown handling":
     let emptyResult = renderMarkdownTextCLI("")
@@ -45,9 +46,9 @@ suite "Markdown Debug Tests":
     let simpleMarkdown = "# Header\n**Bold**\n*Italic*"
     let result = renderMarkdownTextCLI(simpleMarkdown)
     check result.len > 0
-    check result.contains("Header")
-    check result.contains("Bold")
-    check result.contains("Italic")
+    check "Header" in result
+    check "Bold" in result
+    check "Italic" in result
 
 when isMainModule:
   echo "Running Markdown Debug Tests..."
