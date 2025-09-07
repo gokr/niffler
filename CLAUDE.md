@@ -118,6 +118,7 @@ The tool calling system follows OpenAI's function calling specification:
 - Prefer generics or object variants over methods and type inheritance
 - Use `return expression` for early exits
 - Prefer direct field access over getters/setters
+- Avoid creating accessor functions for simple field access - use `.field` syntax directly
 - **NO `asyncdispatch`** - use threads or taskpools for concurrency
 - Remove old code during refactoring
 - Import full modules, not selected symbols

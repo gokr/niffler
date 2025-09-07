@@ -42,7 +42,8 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
 - **NIFFLER.md Integration**: Customizable system prompts and instruction files with include directive support
 - **Database Persistence**: SQLite-based prompt and response history with cross-session persistence
-- **Debug Logging**: Logging with info & debug levels and optional HTTP request/response dumping  
+- **Debug Logging**: Logging with info & debug levels and optional HTTP request/response dumping
+- **Thinking Token Support**: Next-generation reasoning capabilities for advanced AI models (GPT-5, Claude 4, DeepSeek R1)  
 
 ## 📦 Installation
 
@@ -140,6 +141,51 @@ Niffler features an intelligent mode system that adapts its behavior based on th
 - Emphasizes making concrete changes and testing
 - Optimized for completing established plans and fixing issues
 
+### Thinking Token Support
+
+Niffler includes cutting-edge support for **thinking tokens** (reasoning tokens) from next-generation AI models. These models can show their internal reasoning process, which Niffler automatically captures, stores, and integrates into conversations.
+
+**Supported Models:**
+- **GPT-5** and future OpenAI reasoning models (native `reasoning_content` field)
+- **Claude 4** and Anthropic reasoning models (XML `<thinking>` blocks)
+- **DeepSeek R1** and similar reasoning-capable models
+- **Privacy models** with encrypted/redacted reasoning content
+
+**Key Features:**
+- **Real-time Reasoning Capture**: Automatically detects and stores thinking content during streaming responses
+- **Multi-provider Support**: Handles different reasoning formats transparently
+- **Conversation Persistence**: Thinking tokens are stored in the database and linked to conversation history
+- **Cost Tracking**: Reasoning tokens are tracked separately and included in usage/cost calculations
+- **Enhanced Problem Solving**: See exactly how the AI reaches its conclusions
+
+**Configuration:**
+Add reasoning capabilities to your model configuration:
+```json
+{
+  "models": [
+    {
+      "nickname": "gpt5-reasoning",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-5-turbo",
+      "reasoning": "high",
+      "reasoningContent": "visible",
+      "reasoningCostPerMToken": 10.0,
+      "enabled": true
+    }
+  ],
+  "thinkingTokensEnabled": true,
+  "defaultReasoningLevel": "medium"
+}
+```
+
+**Benefits:**
+- **Self-Correcting AI**: Models can catch and fix their own reasoning errors
+- **Transparency**: Users see exactly how conclusions are reached  
+- **Better First Responses**: Reduced trial-and-error through deliberate reasoning
+- **Multi-Turn Intelligence**: Preserved reasoning context across conversation turns
+
+For detailed information about thinking token implementation and architecture, see [doc/THINK.md](doc/THINK.md).
+
 ### Enhanced Terminal Features
 
 **Cursor Key Support:**
@@ -224,6 +270,7 @@ niffler init --config-path /path/to/config.json
 
 Each model in the configuration supports the following fields:
 
+**Core Settings:**
 - **nickname**: Friendly name to identify the model
 - **baseUrl**: API base URL for the model provider
 - **model**: Specific model identifier 
@@ -231,6 +278,16 @@ Each model in the configuration supports the following fields:
 - **apiEnvVar**: Environment variable containing the API key (optional)
 - **apiKey**: Direct API key specification (optional)
 - **enabled**: Whether this model is available for use (defaults to true)
+
+**Thinking Token Settings:**
+- **reasoning**: Reasoning budget level - "low" (2048), "medium" (4096), "high" (8192), or "none"
+- **reasoningContent**: Reasoning visibility - "visible", "hidden", or "encrypted"
+- **reasoningCostPerMToken**: Cost per million reasoning tokens (optional, for cost tracking)
+
+**Cost Tracking:**
+- **inputCostPerMToken**: Cost per million input tokens (optional)
+- **outputCostPerMToken**: Cost per million output tokens (optional)
+- **reasoningCostPerMToken**: Cost per million reasoning tokens (optional)
 
 ### API Key Priority
 When both `apiEnvVar` and `apiKey` are specified, the environment variable takes precedence. This allows you to override hardcoded keys with environment variables for security.
@@ -422,7 +479,11 @@ Fetch web content:
 
 ### Running Tests
 ```bash
+# Run all tests including thinking token integration tests
 nimble test
+
+# Run specific thinking token tests
+nim c -r --threads:on -d:ssl -d:testing tests/test_thinking_token_integration.nim
 ```
 
 ### Building
