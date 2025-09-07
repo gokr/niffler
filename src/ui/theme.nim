@@ -35,6 +35,9 @@ type
     success*: ThemeStyle
     error*: ThemeStyle
     toolCall*: ThemeStyle
+    thinking*: ThemeStyle         # Thinking token content style
+    thinkingHeader*: ThemeStyle   # Thinking section header style
+    encryptedThinking*: ThemeStyle # Encrypted thinking content style
 
 # Global theme registry
 var themeRegistry*: Table[string, Theme]
@@ -110,7 +113,10 @@ proc getDefaultTheme*(): Theme =
     diffRemovedText: createThemeStyle("red", "default", "bright"),
     success: createThemeStyle("green", "default", "bright"),
     error: createThemeStyle("red", "default", "bright"),
-    toolCall: createThemeStyle("blue", "default", "bright")
+    toolCall: createThemeStyle("blue", "default", "bright"),
+    thinking: createThemeStyle("cyan", "default", "italic"),         # Cursive/italic for thinking
+    thinkingHeader: createThemeStyle("cyan", "default", "bright"),   # Header for thinking sections
+    encryptedThinking: createThemeStyle("yellow", "default", "italic") # Encrypted thinking in italic yellow
   )
 
 proc getDarkTheme*(): Theme =
@@ -136,7 +142,10 @@ proc getDarkTheme*(): Theme =
     diffRemovedText: createThemeStyle("red", "default", "bright"),
     success: createThemeStyle("green", "default", "bright"),
     error: createThemeStyle("red", "default", "bright"),
-    toolCall: createThemeStyle("cyan", "default", "bright")
+    toolCall: createThemeStyle("cyan", "default", "bright"),
+    thinking: createThemeStyle("magenta", "default", "italic"),      # Cursive magenta for dark theme thinking
+    thinkingHeader: createThemeStyle("magenta", "default", "bright"), # Header for thinking sections
+    encryptedThinking: createThemeStyle("yellow", "default", "italic") # Encrypted thinking in italic yellow
   )
 
 proc getLightTheme*(): Theme =
@@ -162,7 +171,10 @@ proc getLightTheme*(): Theme =
     diffRemovedText: createThemeStyle("red", "default", "bright"),
     success: createThemeStyle("green", "default", "bright"),
     error: createThemeStyle("red", "default", "bright"),
-    toolCall: createThemeStyle("blue", "default", "bright")
+    toolCall: createThemeStyle("blue", "default", "bright"),
+    thinking: createThemeStyle("blue", "default", "italic"),         # Cursive blue for light theme thinking
+    thinkingHeader: createThemeStyle("blue", "default", "bright"),   # Header for thinking sections
+    encryptedThinking: createThemeStyle("red", "default", "italic")  # Encrypted thinking in italic red
   )
 
 proc getMinimalTheme*(): Theme =
@@ -188,7 +200,10 @@ proc getMinimalTheme*(): Theme =
     diffRemovedText: createThemeStyle("white", "default", "dim"),
     success: createThemeStyle("white", "default", "bright"),
     error: createThemeStyle("white", "default", "dim"),
-    toolCall: createThemeStyle("white", "default", "bright")
+    toolCall: createThemeStyle("white", "default", "bright"),
+    thinking: createThemeStyle("white", "default", "italic"),        # Cursive white for minimal theme thinking
+    thinkingHeader: createThemeStyle("white", "default", "bright"),  # Header for thinking sections
+    encryptedThinking: createThemeStyle("white", "default", "italic") # Encrypted thinking in italic
   )
 
 proc registerTheme*(theme: Theme) =
@@ -289,7 +304,10 @@ proc convertThemeConfig(config: configTypes.ThemeConfig): Theme =
     diffRemovedText: createThemeStyle("red", "default", "bright"),
     success: createThemeStyle("green", "default", "bright"),
     error: createThemeStyle("red", "default", "bright"),
-    toolCall: createThemeStyle("blue", "default", "bright")
+    toolCall: createThemeStyle("blue", "default", "bright"),
+    thinking: createThemeStyle("cyan", "default", "italic"),         # Default thinking style
+    thinkingHeader: createThemeStyle("cyan", "default", "bright"),   # Header for thinking sections
+    encryptedThinking: createThemeStyle("yellow", "default", "italic") # Encrypted thinking in italic yellow
   )
 
 proc loadThemesFromConfig*(config: configTypes.Config) =

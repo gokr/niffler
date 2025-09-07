@@ -50,6 +50,9 @@ var outputTokens: int = 0
 var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
 var outputAfterToolCall: bool = false  # Track if any output occurred after showing tool call
 
+# State for thinking token display
+var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
+
 proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
@@ -223,8 +226,10 @@ proc initializeLinecrossInput(database: DatabaseBackend): bool =
     if database != nil:
       try:
         let recentPrompts = getRecentPrompts(database, 100)
-        for prompt in recentPrompts:
+        debug(fmt"Retrieved {recentPrompts.len} prompts from database")
+        for i, prompt in recentPrompts:
           addToHistory(prompt)
+          debug(fmt"Added prompt {i+1}: {prompt[0..min(50, prompt.len-1)]}")
         debug(fmt"Loaded {recentPrompts.len} prompts from database into linecross history")
       except Exception as e:
         debug(fmt"Could not load history from database: {e.msg}")
@@ -511,8 +516,6 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   writeToConversationArea("Welcome to Niffler! ", fgCyan, styleBright)
   writeToConversationArea("Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.\n")
   writeToConversationArea("Press Ctrl+C to stop stream display or exit.\n")
-  writeToConversationArea(fmt"Using model: {currentModel.nickname} ({currentModel.model})", fgGreen)
-  writeToConversationArea("\n")
   
   # Initialize global state for enhanced CLI
   currentModelName = currentModel.nickname
@@ -533,12 +536,38 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
     if currentSession.isSome():
       let conversationId = currentSession.get().conversation.id
       initSessionManager(pool, conversationId)
+      
+      # Restore model and mode from loaded conversation
+      let conversation = currentSession.get().conversation
+      
+      # Restore mode from conversation
+      setCurrentMode(conversation.mode)
+      debug(fmt"Restored mode from conversation: {conversation.mode}")
+      
+      # Restore model from loaded conversation (if no model specified on command line)
+      if conversation.modelNickname.len > 0 and modelConfig.nickname == config.models[0].nickname:
+        # Only restore model if user didn't specify one and we're using the default
+        for model in config.models:
+          if model.nickname == conversation.modelNickname:
+            currentModel = model
+            currentModelName = model.nickname
+            debug(fmt"Restored model from conversation: {model.nickname}")
+            break
     else:
       # Fallback: use timestamp-based ID if no conversation system available
       initSessionManager(pool, epochTime().int)
   else:
     # No database: use timestamp-based ID for in-memory session
     initSessionManager(pool, epochTime().int)
+  
+  # Display final model after all conversation loading and restoration
+  writeToConversationArea(fmt"Using model: {currentModel.nickname} ({currentModel.model})", fgGreen)
+  
+  # Update prompt color to reflect the restored mode
+  setPromptColor(getModePromptColor(), {styleBright})
+  setPrompt(generatePrompt())
+  
+  writeToConversationArea("\n")
   
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
@@ -656,7 +685,26 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 hadToolCalls = true
                 debug("DEBUG: Tool calls detected in UI - will not add duplicate assistant message to history")
               
+              # Handle thinking content display
+              if response.thinkingContent.isSome():
+                let thinkingContent = response.thinkingContent.get()
+                let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
+                
+                if not isInThinkingBlock:
+                  # Start of thinking block - show emoji prefix and set flag
+                  let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
+                  let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+                  stdout.write(emojiPrefix & styledContent)
+                  isInThinkingBlock = true
+                else:
+                  # Continuing thinking block - just show content without emoji
+                  let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+                  stdout.write(styledContent)
+                stdout.flushFile()
+              
               if response.content.len > 0:
+                # Reset thinking block flag when we get regular content
+                isInThinkingBlock = false
                 responseText.add(response.content)
                 # For interactive mode, we don't use streaming markdown to avoid broken rendering
                 # Markdown will be applied to the complete response at the end
@@ -689,18 +737,18 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                   
                   # Re-write tool call without hourglass and add result
                   let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-                  stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+                  stdout.write(formattedRequest & "\n" & formattedResult & "\n")
                 else:
                   # Output occurred since tool call - re-render both request and result
                   let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-                  stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+                  stdout.write(formattedRequest & "\n" & formattedResult & "\n")
                 
                 # Remove from pending
                 pendingToolCalls.del(toolResult.toolCallId)
               else:
                 # Fallback if request wasn't tracked
                 let formattedResult = formatCompactToolResult(toolResult)
-                stdout.write("\n" & formattedResult & "\n\n")
+                stdout.write("\n" & formattedResult & "\n")
               stdout.flushFile()
             of arkStreamComplete:
               # Apply markdown formatting to the complete response if enabled
@@ -723,6 +771,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               
               # Update token counts with new response (prompt will show tokens)
               isProcessing = false
+              isInThinkingBlock = false  # Reset thinking block flag when stream completes
               updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
               # Add assistant response to history only if no tool calls were involved
               # (API worker already handles history for tool call conversations)
@@ -747,6 +796,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
             of arkStreamError:
               writeToConversationArea(fmt"Error: {response.error}", fgRed)
               isProcessing = false
+              isInThinkingBlock = false  # Reset thinking block flag on error
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
@@ -848,7 +898,26 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
         
         case response.kind:
         of arkStreamChunk:
+          # Handle thinking content display
+          if response.thinkingContent.isSome():
+            let thinkingContent = response.thinkingContent.get()
+            let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
+            
+            if not isInThinkingBlock:
+              # Start of thinking block - show emoji prefix and set flag
+              let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
+              let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+              stdout.write(emojiPrefix & styledContent)
+              isInThinkingBlock = true
+            else:
+              # Continuing thinking block - just show content without emoji
+              let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+              stdout.write(styledContent)
+            stdout.flushFile()
+          
           if response.content.len > 0:
+            # Reset thinking block flag when we get regular content
+            isInThinkingBlock = false
             # For single prompt mode, show plain text while streaming
             # and render markdown on the complete text at the end
             stdout.write(response.content)
@@ -880,9 +949,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
             except Exception as e:
               debug(fmt"Failed to log prompt to database: {e.msg}")
           
+          isInThinkingBlock = false  # Reset thinking block flag when stream completes
           responseReceived = true
         of arkStreamError:
           echo fmt"Error: {response.error}"
+          isInThinkingBlock = false  # Reset thinking block flag on error
           responseReceived = true
         of arkToolCallRequest:
           # Display tool request immediately with hourglass indicator
@@ -909,11 +980,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
               
               # Re-write tool call without hourglass and add result
               let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-              stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+              stdout.write(formattedRequest & "\n" & formattedResult & "\n")
             else:
               # Output occurred since tool call - re-render both request and result
               let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-              stdout.write(formattedRequest & "\n" & formattedResult & "\n\n")
+              stdout.write(formattedRequest & "\n" & formattedResult & "\n")
             
             # Remove from pending
             pendingToolCalls.del(toolResult.toolCallId)

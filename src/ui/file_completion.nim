@@ -22,7 +22,7 @@ proc isBinaryFileByContent*(path: string): bool =
     # Read first 4KB of file
     let bufferSize = 4096
     var buffer = newString(bufferSize)
-    let bytesRead = file.readChars(buffer, 0, bufferSize)
+    let bytesRead = file.readChars(toOpenArray(buffer, 0, bufferSize-1))
     
     # Check for null bytes which are common in binary files
     for i in 0..<bytesRead:

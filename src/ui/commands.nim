@@ -13,7 +13,7 @@ import std/[strutils, strformat, tables, times, options, logging]
 import ../core/[conversation_manager, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
-import linecross
+# import linecross  # Used only in comments
 
 type
   CommandResult* = object
@@ -159,6 +159,18 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
       currentModel = model
       # Update prompt to reflect new model
       # Prompt will be updated on next input cycle
+      
+      # Persist model change to current conversation if available
+      try:
+        let currentSession = getCurrentSession()
+        if currentSession.isSome():
+          let database = getGlobalDatabase()
+          if database != nil:
+            let conversationId = currentSession.get().conversation.id
+            updateConversationModel(database, conversationId, model.nickname)
+            debug(fmt"Persisted model change to database for conversation {conversationId}")
+      except Exception as e:
+        debug(fmt"Failed to persist model change to database: {e.msg}")
       
       return CommandResult(
         success: true,
@@ -536,12 +548,18 @@ proc conversationInfoHandler(args: seq[string], currentModel: var configTypes.Mo
   
   let session = currentSession.get()
   let conv = session.conversation
+  
+  # Get fresh conversation data from database for accurate message count
+  let backend = getGlobalDatabase()
+  let freshConvOpt = if backend != nil: getConversationById(backend, conv.id) else: none(Conversation)
+  let actualMessageCount = if freshConvOpt.isSome(): freshConvOpt.get().messageCount else: conv.messageCount
+  
   let info = fmt"""Current Conversation:
   ID: {conv.id}
   Title: {conv.title}
   Mode: {conv.mode}
   Model: {conv.modelNickname}
-  Messages: {conv.messageCount}
+  Messages: {actualMessageCount}
   Created: {conv.created_at.format("yyyy-MM-dd HH:mm")}
   Last Activity: {conv.lastActivity.format("yyyy-MM-dd HH:mm")}
   Session Started: {session.startedAt.format("yyyy-MM-dd HH:mm")}"""
@@ -612,6 +630,10 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
+          # Restore mode from conversation (fixes circular import issue)
+          setCurrentMode(conv.mode)
+          debug(fmt"Restored mode from conversation: {conv.mode}")
+          
           return CommandResult(
             success: true,
             message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
@@ -660,6 +682,10 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
             if model.nickname == conv.modelNickname:
               currentModel = model
               break
+          
+          # Restore mode from conversation (fixes circular import issue)
+          setCurrentMode(conv.mode)
+          debug(fmt"Restored mode from conversation: {conv.mode}")
           
           return CommandResult(
             success: true,
