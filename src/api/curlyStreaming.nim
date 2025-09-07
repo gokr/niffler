@@ -24,9 +24,10 @@
 
 import std/[json, strutils, options, strformat, logging, tables]
 import curly
-import ../types/[messages, config]
+import ../types/[messages, config, thinking_tokens]
 import ../core/log_file as logFileModule
 import tool_call_parser
+import thinking_token_parser
 
 # Single long-lived Curly instance for the entire application
 let curl* = newCurly()
@@ -37,6 +38,9 @@ var dumpEnabled {.threadvar.}: bool
 # Global parser for flexible tool call format detection
 var globalFlexibleParser {.threadvar.}: FlexibleParser
 
+# Global thinking token parser for incremental processing
+var globalThinkingParser {.threadvar.}: IncrementalThinkingParser
+
 proc setDumpEnabled*(enabled: bool) =
   ## Set the global dump flag for HTTP request/response logging
   dumpEnabled = enabled
@@ -45,8 +49,31 @@ proc initGlobalParser*() =
   ## Initialize the global flexible parser
   globalFlexibleParser = newFlexibleParser()
 
+proc initGlobalThinkingParser*(enabled: bool = true) =
+  ## Initialize the global thinking token parser
+  if enabled:
+    globalThinkingParser = initIncrementalParser()
+
 # Forward declaration
 proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.}
+
+# Thinking token processing procs
+proc processThinkingContent(rawContent: string, chunk: var StreamChunk): string =
+  ## Process potential thinking content in response and separate it from regular content
+  let thinkingResult = detectAndParseThinkingContent(rawContent)
+  
+  if thinkingResult.isThinkingContent and thinkingResult.format != ttfNone:
+    # Update chunk with thinking content
+    if thinkingResult.thinkingContent.isSome():
+      chunk.thinkingContent = thinkingResult.thinkingContent
+      chunk.isThinkingContent = true
+    
+    # Return regular content (if any)
+    return thinkingResult.regularContent.get("")
+  else:
+    # No thinking content found, return original content
+    chunk.isThinkingContent = false
+    return rawContent
 
 proc initDumpFlag*() =
   ## Initialize the dump flag (called once per thread)
@@ -106,7 +133,31 @@ proc parseSSELine(line: string): Option[StreamChunk] =
           if choiceJson.hasKey("delta"):
             let delta = choiceJson["delta"]
             choice.delta.role = delta{"role"}.getStr("")
-            choice.delta.content = delta{"content"}.getStr("")
+            let rawContent = delta{"content"}.getStr("")
+            
+            # Parse thinking token content (Anthropic/OpenAI format)
+            if delta.hasKey("thinking"):
+              # Anthropic format - thinking content in delta
+              let thinkingContent = delta{"thinking"}.getStr("")
+              chunk.thinkingContent = some(thinkingContent)
+              chunk.isThinkingContent = true
+              choice.delta.content = rawContent  # Keep regular content
+            elif delta.hasKey("reasoning_content"):
+              # OpenAI format - reasoning content in delta
+              let reasoningContent = delta{"reasoning_content"}.getStr("")
+              chunk.thinkingContent = some(reasoningContent)
+              chunk.isThinkingContent = true
+              choice.delta.content = rawContent  # Keep regular content
+            elif delta.hasKey("encrypted_thinking"):
+              # Encrypted thinking content
+              let encryptedThinking = delta{"encrypted_thinking"}.getStr("")
+              chunk.thinkingContent = some(encryptedThinking)
+              chunk.isThinkingContent = true
+              chunk.isEncrypted = some(true)
+              choice.delta.content = rawContent  # Keep regular content
+            else:
+              # No explicit thinking fields, use processThinkingContent to detect embedded thinking
+              choice.delta.content = processThinkingContent(rawContent, chunk)
             
             # Parse tool calls in delta
             if delta.hasKey("tool_calls") and delta["tool_calls"].kind == JArray:
@@ -129,13 +180,32 @@ proc parseSSELine(line: string): Option[StreamChunk] =
           
           chunk.choices.add(choice)
       
+      # Parse thinking content at root level (some providers)
+      if json.hasKey("reasoning_content"):
+        chunk.thinkingContent = some(json{"reasoning_content"}.getStr(""))
+        chunk.isThinkingContent = true
+      
+      if json.hasKey("thinking"):
+        chunk.thinkingContent = some(json{"thinking"}.getStr(""))
+        chunk.isThinkingContent = true
+      
+      if json.hasKey("encrypted_reasoning"):
+        chunk.thinkingContent = some(json{"encrypted_reasoning"}.getStr(""))
+        chunk.isThinkingContent = true
+        chunk.isEncrypted = some(true)
+
       # Parse usage data if present (often sent in final streaming chunk)
       if json.hasKey("usage") and json["usage"].kind == JObject:
         let usageJson = json["usage"]
+        var reasoningTokens = 0
+        if usageJson.hasKey("reasoning_tokens"):
+          reasoningTokens = usageJson{"reasoning_tokens"}.getInt(0)
+        
         chunk.usage = some(messages.TokenUsage(
           inputTokens: usageJson{"prompt_tokens"}.getInt(0),
           outputTokens: usageJson{"completion_tokens"}.getInt(0),
-          totalTokens: usageJson{"total_tokens"}.getInt(0)
+          totalTokens: usageJson{"total_tokens"}.getInt(0),
+          reasoningTokens: if reasoningTokens > 0: some(reasoningTokens) else: none(int)
         ))
       
       return some(chunk)
@@ -161,6 +231,51 @@ proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.} =
   # Initialize parser if not already done
   if globalFlexibleParser.detectedFormat.isNone:
     initGlobalParser()
+  
+  # Update global thinking parser for incremental thinking token processing
+  globalThinkingParser.updateIncrementalParser(dataLine)
+  let thinkingContent = globalThinkingParser.getThinkingContentFromIncrementalParser()
+  
+  # If we have thinking content from incremental parsing, create thinking chunk
+  if thinkingContent.isSome() and globalThinkingParser.isThinkingBlockComplete():
+    var chunk = StreamChunk(
+      choices: @[
+        StreamChoice(
+          index: 0,
+          delta: ChatMessage(
+            role: "assistant",
+            content: "",
+            reasoningContent: thinkingContent,
+            encryptedReasoningContent: if globalThinkingParser.format.get(ttfNone) == ttfEncrypted: some("[ENCRYPTED REASONING]") else: none(string)
+          ),
+          finishReason: none(string)
+        )
+      ],
+      isThinkingContent: true,
+      thinkingContent: thinkingContent,
+      isEncrypted: some(globalThinkingParser.format.get(ttfNone) == ttfEncrypted)
+    )
+    debug(fmt"Successfully parsed thinking token from incremental parsing")
+    return some(chunk)
+  elif thinkingContent.isSome() and not globalThinkingParser.isThinkingBlockComplete():
+    # Partial thinking content, create chunk with partial content
+    var chunk = StreamChunk(
+      choices: @[
+        StreamChoice(
+          index: 0,
+          delta: ChatMessage(
+            role: "assistant",
+            content: "",  # Regular content
+            reasoningContent: thinkingContent  # Partial thinking content
+          ),
+          finishReason: none(string)
+        )
+      ],
+      isThinkingContent: true,
+      thinkingContent: thinkingContent,
+      isEncrypted: some(globalThinkingParser.format.get(ttfNone) == ttfEncrypted)
+    )
+    return some(chunk)
   
   # Try to extract tool calls from the content
   let toolCalls = parseToolCallFragment(globalFlexibleParser, dataLine)

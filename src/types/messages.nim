@@ -23,6 +23,13 @@
 import std/[options, json, tables]
 
 type
+  # Thinking Token Support Types
+  ThinkingContent* = object
+    reasoningContent*: Option[string]      # Plain text reasoning
+    encryptedReasoningContent*: Option[string]  # Encrypted reasoning for privacy models
+    reasoningId*: Option[string]           # Unique ID for reasoning correlation
+    providerSpecific*: Option[JsonNode]    # Provider-specific metadata
+    
   # Core message types for LLM conversations
   MessageRole* = enum
     mrUser = "user"
@@ -56,6 +63,8 @@ type
     toolCallId*: Option[string]
     # Legacy field for backward compatibility - removed
     toolResults*: Option[seq[ToolResult]]
+    # Thinking token support
+    thinkingContent*: Option[ThinkingContent]  # Thinking content from model
 
   # API Thread Communication
   APIRequestKind* = enum
@@ -98,6 +107,7 @@ type
     inputTokens*: int      # Renamed from promptTokens for consistency
     outputTokens*: int     # Renamed from completionTokens for consistency
     totalTokens*: int
+    reasoningTokens*: Option[int]  # New: thinking token usage tracking
 
   # Tool definition for API requests (OpenAI format)
   ToolParameter* = object
@@ -141,6 +151,9 @@ type
       done*: bool
       # Tool calling in stream chunks
       toolCalls*: Option[seq[LLMToolCall]]
+      # Thinking token display in stream chunks  
+      thinkingContent*: Option[string]
+      isEncrypted*: Option[bool]
     of arkStreamComplete:
       usage*: TokenUsage
       finishReason*: string
@@ -225,6 +238,10 @@ type
     choices*: seq[StreamChoice]
     usage*: Option[TokenUsage]
     done*: bool  # Additional field to indicate end of stream
+    # Thinking token support for streaming
+    thinkingContent*: Option[string]  # Real-time reasoning content
+    isThinkingContent*: bool           # Indicates if this is a thinking chunk
+    isEncrypted*: Option[bool]        # Whether thinking content is encrypted
 
   StreamChoice* = object
     index*: int
@@ -252,5 +269,11 @@ type
     content*: string
     toolCalls*: Option[seq[LLMToolCall]]
     toolCallId*: Option[string]
+    # Thinking token support for chat requests
+    reasoningContent*: Option[string]         # OpenAI-style thinking content
+    encryptedReasoningContent*: Option[string]  # Encrypted reasoning content
+    reasoningId*: Option[string]              # Unique reasoning identifier
 
   # ChatToolCall and ChatFunction removed - use LLMToolCall and FunctionCall instead
+
+  # Simple convenience check - access thinkingContent directly in practice
