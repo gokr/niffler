@@ -151,6 +151,9 @@ template testConversationLifecycle*(name: string, body: untyped): untyped =
     # Initialize mode state for tests
     initializeModeState()
     
+    # Initialize commands for testing
+    initializeCommands()
+    
     body
 
 proc verifyDatabasePersistence*(db1: DatabaseBackend, db2: DatabaseBackend, conversationId: int): bool =

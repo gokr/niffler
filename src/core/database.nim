@@ -395,33 +395,25 @@ proc logPromptHistory*(backend: DatabaseBackend, entry: PromptHistoryEntry) =
 
 
 proc getPromptHistory*(backend: DatabaseBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
+  ## Return history entries, latest comes first in the seq
   case backend.kind:
   of dbkSQLite, dbkTiDB:
-    # Query using debby's ORM
-    let entries = if sessionId.len > 0:
-      backend.pool.filter(PromptHistoryEntry, it.sessionId == sessionId)
-    else:
-      # Get all entries by filtering with a condition that's always true
-      backend.pool.filter(PromptHistoryEntry, it.id > 0)
-    
-    # Sort by created_at descending and limit results
-    result = entries.sortedByIt(-it.created_at.toTime().toUnix())
-    if result.len > maxEntries:
-      result = result[0..<maxEntries]
+    backend.pool.withDb:
+      result = if sessionId.len > 0:
+        db.query(PromptHistoryEntry, 
+          fmt"SELECT * FROM prompt_history_entry WHERE session_id = '{sessionId}' ORDER BY created_at ASC LIMIT {maxEntries}")
+      else:
+        db.query(PromptHistoryEntry, 
+          fmt"SELECT * FROM prompt_history_entry ORDER BY created_at ASC LIMIT {maxEntries}")
 
 proc getRecentPrompts*(backend: DatabaseBackend, maxEntries: int = 20): seq[string] =
+  ## Return history prompts, latest comes first in the seq
   case backend.kind:
   of dbkSQLite, dbkTiDB:
-    # Get recent user prompts only
-    let entries = backend.pool.filter(PromptHistoryEntry, it.id > 0)
-    let sortedEntries = entries.sortedByIt(-it.created_at.toTime().toUnix())
-    
-    result = @[]
-    for entry in sortedEntries:
-      if entry.userPrompt.len > 0:
-        result.add(entry.userPrompt)
-        if result.len >= maxEntries:
-          break
+    backend.pool.withDb:
+      let entries = db.query(PromptHistoryEntry, 
+        fmt"SELECT * FROM prompt_history_entry WHERE user_prompt != '' ORDER BY created_at DESC LIMIT {maxEntries}")
+      result = entries.map(proc(entry: PromptHistoryEntry): string = entry.userPrompt)
 
 # Factory function to create database backend
 proc createDatabaseBackend*(config: DatabaseConfig): DatabaseBackend =

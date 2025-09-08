@@ -25,15 +25,11 @@ Tool execution and validation tests:
 - Security and safety checks
 - Error handling scenarios
 
-### `run_tests.nim`
-Main test runner that executes all test suites and provides a summary.
-
 ## Running Tests
 
 ### Run All Tests
 ```bash
-cd tests
-nim c -r run_tests.nim
+nimble test
 ```
 
 ### Run Individual Test Suites
