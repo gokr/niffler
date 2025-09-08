@@ -57,8 +57,14 @@ proc validateSessionState*(): tuple[valid: bool, message: string] =
   else:
     return (valid: true, message: "Session states are synchronized")
 
-proc listConversations*(backend: DatabaseBackend): seq[Conversation] =
-  ## List all conversations, ordered by last activity
+type
+  ConversationFilter* = enum
+    cfAll = "all"
+    cfActive = "active"
+    cfArchived = "archived"
+
+proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = cfAll): seq[Conversation] =
+  ## List conversations with optional filtering, ordered by last activity
   if backend == nil:
     return @[]
   
@@ -66,10 +72,16 @@ proc listConversations*(backend: DatabaseBackend): seq[Conversation] =
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
-        let query = """
+        let whereClause = case filter:
+          of cfActive: "WHERE is_active = 1"
+          of cfArchived: "WHERE is_active = 0"
+          of cfAll: ""
+        
+        let query = fmt"""
           SELECT id, created_at, updated_at, session_id, title, is_active, 
                  mode, model_nickname, message_count, last_activity
           FROM conversation 
+          {whereClause}
           ORDER BY last_activity DESC
         """
         
@@ -91,10 +103,26 @@ proc listConversations*(backend: DatabaseBackend): seq[Conversation] =
           )
           result.add(conv)
         
-        debug(fmt"Retrieved {result.len} conversations from database")
+        let filterDesc = case filter:
+          of cfActive: "active"
+          of cfArchived: "archived" 
+          of cfAll: "total"
+        debug(fmt"Retrieved {result.len} {filterDesc} conversations from database")
     except Exception as e:
-      error(fmt"Failed to list conversations: {e.msg}")
+      let filterDesc = case filter:
+        of cfActive: "active"
+        of cfArchived: "archived"
+        of cfAll: "all"
+      error(fmt"Failed to list {filterDesc} conversations: {e.msg}")
       result = @[]
+
+proc listActiveConversations*(backend: DatabaseBackend): seq[Conversation] =
+  ## List only active conversations, ordered by last activity
+  listConversations(backend, cfActive)
+
+proc listArchivedConversations*(backend: DatabaseBackend): seq[Conversation] =
+  ## List only archived conversations, ordered by last activity
+  listConversations(backend, cfArchived)
 
 proc createConversation*(backend: DatabaseBackend, title: string = "", 
                         mode: AgentMode = amPlan, modelNickname: string = ""): Option[Conversation] =
@@ -269,7 +297,7 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   # Update activity timestamp
   updateConversationActivity(backend, conversationId)
   
-  info(fmt"Switched to conversation: {conversation.title} (Mode: {conversation.mode}, Model: {conversation.modelNickname})")
+  info(fmt"Switched to conversation: {conversation.title}")
   return true
 
 proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
@@ -293,6 +321,29 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
         result = true
     except Exception as e:
       error(fmt"Failed to archive conversation {conversationId}: {e.msg}")
+      result = false
+
+proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
+  ## Unarchive a conversation (set isActive = true)
+  if backend == nil:
+    return false
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    try:
+      backend.pool.withDb:
+        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        db.query("UPDATE conversation SET is_active = 1, updated_at = ? WHERE id = ?", 
+                 currentTime, conversationId)
+        
+        # Get conversation title for logging
+        let titleRows = db.query("SELECT title FROM conversation WHERE id = ?", conversationId)
+        let title = if titleRows.len > 0: titleRows[0][0] else: "Unknown"
+        
+        info(fmt"Unarchived conversation {conversationId}: {title}")
+        result = true
+    except Exception as e:
+      error(fmt"Failed to unarchive conversation {conversationId}: {e.msg}")
       result = false
 
 proc deleteConversation*(backend: DatabaseBackend, conversationId: int): bool =

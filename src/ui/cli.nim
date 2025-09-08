@@ -35,6 +35,7 @@ import ../api/curlyStreaming
 import ../tools/[worker, common]
 import commands
 import theme
+import table_utils
 import markdown_cli
 import tool_visualizer
 import file_completion
@@ -154,36 +155,53 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
             debug(fmt"Adding theme completion: '{themeName}'")
             addCompletion(completions, themeName, "Theme: " & themeName)
       of "conv", "archive":
-        # Complete conversation IDs and titles with detailed information
+        # Show ONLY Nancy table for conversation selection
         try:
           let database = getGlobalDatabase()
           if database != nil:
-            let conversations = listConversations(database)
+            let allConversations = listActiveConversations(database)
             let currentSession = getCurrentSession()
             let activeId = if currentSession.isSome(): currentSession.get().conversation.id else: -1
             
-            for conv in conversations:
-              let activeMarker = if conv.id == activeId: " (current)" else: ""
-              let statusMarker = if conv.isActive: "" else: " [archived]"
-              
-              # Build detailed description like /conversations shows
-              let shortDesc = fmt"#{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname} ({conv.messageCount} messages){activeMarker}{statusMarker}"
-              let created = conv.created_at.format("yyyy-MM-dd HH:mm")
-              let activity = conv.lastActivity.format("yyyy-MM-dd HH:mm")
-              let fullDesc = fmt"{shortDesc} | Created: {created}, Last: {activity}"
-              
-              # Try matching by ID first
+            # Filter conversations based on argPrefix
+            var filteredConversations: seq[Conversation] = @[]
+            for conv in allConversations:
               let idStr = $conv.id
-              if idStr.startsWith(argPrefix):
-                debug(fmt"Adding conversation ID completion: '{idStr}'")
-                addCompletion(completions, idStr, fullDesc)
+              let matchesId = idStr.startsWith(argPrefix)
+              let matchesTitle = conv.title.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
               
-              # Also try matching by title (case-insensitive)
-              if conv.title.toLower().contains(argPrefix.toLower()) and argPrefix.len > 0:
-                debug(fmt"Adding conversation title completion: '{conv.title}'")
-                addCompletion(completions, conv.title, fullDesc)
+              if matchesId or matchesTitle:
+                filteredConversations.add(conv)
+            
+            # Show ONLY the Nancy table with proper spacing
+            if filteredConversations.len > 0:
+              let tableOutput = formatConversationTable(filteredConversations, activeId, showArchived = false)
+              addCompletion(completions, "\n" & tableOutput, "")
         except Exception as e:
           debug(fmt"Error getting conversation completions: {e.msg}")
+      of "unarchive":
+        # Show ONLY Nancy table for archived conversation selection
+        try:
+          let database = getGlobalDatabase()
+          if database != nil:
+            let allConversations = listArchivedConversations(database)
+            
+            # Filter conversations based on argPrefix
+            var filteredConversations: seq[Conversation] = @[]
+            for conv in allConversations:
+              let idStr = $conv.id
+              let matchesId = idStr.startsWith(argPrefix)
+              let matchesTitle = conv.title.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
+              
+              if matchesId or matchesTitle:
+                filteredConversations.add(conv)
+            
+            # Show ONLY the Nancy table with proper spacing  
+            if filteredConversations.len > 0:
+              let tableOutput = formatConversationTable(filteredConversations, currentId = -1, showArchived = true)
+              addCompletion(completions, "\n" & tableOutput, "")
+        except Exception as e:
+          debug(fmt"Error getting archived conversation completions: {e.msg}")
       else:
         # No argument completion for this command
         debug(fmt"No argument completion available for command '{command}'")
@@ -227,9 +245,10 @@ proc initializeLinecrossInput(database: DatabaseBackend): bool =
       try:
         let recentPrompts = getRecentPrompts(database, 100)
         debug(fmt"Retrieved {recentPrompts.len} prompts from database")
-        for i, prompt in recentPrompts:
+        for i in countdown(recentPrompts.len - 1, 0):
+          let prompt = recentPrompts[i]
           addToHistory(prompt)
-          debug(fmt"Added prompt {i+1}: {prompt[0..min(50, prompt.len-1)]}")
+          debug(fmt"Added prompt {recentPrompts.len - i}: {prompt[0..min(50, prompt.len-1)]}")
         debug(fmt"Loaded {recentPrompts.len} prompts from database into linecross history")
       except Exception as e:
         debug(fmt"Could not load history from database: {e.msg}")
@@ -399,12 +418,20 @@ proc resetUIState*() =
     debug(fmt"UI state reset: tokens/tool calls cleared, model synced to {currentModelName}")
   else:
     debug("UI state reset: tokens and pending tool calls cleared")
+  
+  # Update prompt color to reflect current mode (fixes conversation switching color bug)
+  setPromptColor(getModePromptColor(), {styleBright})
+  setPrompt(generatePrompt())
     
 proc resetUIState*(modelName: string) =
   ## Reset UI-specific state and set specific model name (for cases with known model)
   inputTokens = 0
   outputTokens = 0
   pendingToolCalls.clear()
+  
+  # Update prompt color to reflect current mode (fixes conversation switching color bug)
+  setPromptColor(getModePromptColor(), {styleBright})
+  setPrompt(generatePrompt())
   currentModelName = modelName
   debug(fmt"UI state reset: tokens/tool calls cleared, model set to {modelName}")
 

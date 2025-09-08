@@ -9,10 +9,11 @@
 ## - Unified command execution interface
 ## - Extensible command registration system
 
-import std/[strutils, strformat, tables, times, options, logging]
+import std/[strutils, strformat, tables, times, options, logging, json, httpclient]
 import ../core/[conversation_manager, config, app, database]
 import ../types/[config as configTypes, messages]
 import theme
+import table_utils
 # import linecross  # Used only in comments
 
 type
@@ -494,6 +495,49 @@ proc archiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig
       shouldContinue: true
     )
 
+proc unarchiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Unarchive a conversation
+  if args.len == 0:
+    return CommandResult(
+      success: false,
+      message: "Usage: /unarchive <conversation_id>",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let database = getGlobalDatabase()
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "Database not available for conversation management",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  try:
+    let conversationId = parseInt(args[0])
+    if unarchiveConversation(database, conversationId):
+      return CommandResult(
+        success: true,
+        message: fmt"Unarchived conversation ID {conversationId}",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: fmt"Failed to unarchive conversation ID {conversationId}. Check that it exists and is archived.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+  except ValueError:
+    return CommandResult(
+      success: false,
+      message: "Invalid conversation ID. Use a number.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
 proc searchConversationsHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Search conversations by title or content
   if args.len == 0:
@@ -524,13 +568,15 @@ proc searchConversationsHandler(args: seq[string], currentModel: var configTypes
       shouldContinue: true
     )
   
-  var message = fmt("Found {results.len} conversations matching '{query}':\n")
-  for conv in results:
-    message &= fmt("  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname}\n")
+  # Use Nancy table for search results  
+  let currentSession = getCurrentSession()
+  let activeId = if currentSession.isSome(): currentSession.get().conversation.id else: -1
+  let searchHeader = fmt("Found {results.len} conversations matching '{query}':\n")
+  let tableOutput = formatConversationTable(results, activeId, showArchived = true)
   
   return CommandResult(
     success: true,
-    message: message,
+    message: searchHeader & tableOutput,
     shouldExit: false,
     shouldContinue: true
   )
@@ -571,6 +617,40 @@ proc conversationInfoHandler(args: seq[string], currentModel: var configTypes.Mo
     shouldContinue: true
   )
 
+proc modelsHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## List available models from the API endpoint
+  try:
+    let client = newHttpClient()
+    let apiKey = currentModel.apiKey.get("")
+    client.headers = newHttpHeaders({
+      "Authorization": "Bearer " & apiKey,
+      "Accept": "application/json",
+      "User-Agent": "Niffler"
+    })
+    
+    let endpoint = currentModel.baseUrl & "/models"
+    let response = client.request(endpoint, HttpGet)
+    let jsonResponse = parseJson(response.body)
+    
+    client.close()
+    
+    # Try to format as a table, fall back to JSON if needed
+    let formattedOutput = formatApiModelsTable(jsonResponse)
+    
+    return CommandResult(
+      success: true,
+      message: fmt("Models from {endpoint}:\n{formattedOutput}"),
+      shouldExit: false,
+      shouldContinue: true
+    )
+  except Exception as e:
+    return CommandResult(
+      success: false,
+      message: fmt"Error fetching models: {e.msg}",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
 proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Unified conversation command - list when no args, switch when args provided
   let database = getGlobalDatabase()
@@ -583,31 +663,16 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
     )
   
   if args.len == 0:
-    # List all conversations (like /conversations but with proper formatting)
-    let conversations = listConversations(database)
-    if conversations.len == 0:
-      return CommandResult(
-        success: true,
-        message: "No conversations found. Create one with '/new [title]'",
-        shouldExit: false,
-        shouldContinue: true
-      )
-    
-    var message = "Conversations:\n"
+    # List active conversations only (archived ones are hidden)
+    let conversations = listActiveConversations(database)
     let currentSession = getCurrentSession()
     let activeId = if currentSession.isSome(): currentSession.get().conversation.id else: -1
     
-    for conv in conversations:
-      let activeMarker = if conv.id == activeId: " (current)" else: ""
-      let statusMarker = if conv.isActive: "" else: " [archived]"
-      message &= fmt("  #{conv.id}: {conv.title} - {conv.mode}/{conv.modelNickname} ({conv.messageCount} messages){activeMarker}{statusMarker}\n")
-      let c = conv.created_at.format("yyyy-MM-dd HH:mm")
-      let a = conv.lastActivity.format("yyyy-MM-dd HH:mm")
-      message &= fmt("    Created: {c}, Last activity: {a}\n")
+    let tableOutput = formatConversationTable(conversations, activeId, showArchived = false)
     
     return CommandResult(
       success: true,
-      message: message,
+      message: tableOutput,
       shouldExit: false,
       shouldContinue: true
     )
@@ -636,7 +701,7 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
           
           return CommandResult(
             success: true,
-            message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
+            message: fmt"Switched to conversation: {conv.title}",
             shouldExit: false,
             shouldContinue: true,
             shouldResetUI: true
@@ -689,7 +754,7 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
           
           return CommandResult(
             success: true,
-            message: fmt"Switched to conversation: {conv.title} (Mode: {conv.mode}, Model: {conv.modelNickname})",
+            message: fmt"Switched to conversation: {conv.title}",
             shouldExit: false,
             shouldContinue: true,
             shouldResetUI: true
@@ -725,5 +790,7 @@ proc initializeCommands*() =
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler)
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler)
   registerCommand("archive", "Archive a conversation", "<id>", @[], archiveHandler)
+  registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler)
   registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler)
   registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler)
+  registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler)
