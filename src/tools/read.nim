@@ -1,11 +1,25 @@
-import std/[os, streams, times, strutils, json]
+## File Reading Tool
+##
+## This tool provides secure file reading functionality with:
+## - File encoding detection and handling
+## - Text file type detection based on extensions
+## - Safe file content retrieval with size limits
+## - Multiple output format options (content, summary, info)
+##
+## Features:
+## - UTF-8, UTF-16 encoding detection via BOM
+## - ASCII validation for text files
+## - File type detection based on extensions
+## - Size and safety validation before reading
+## - Detailed file information retrieval
+
+import std/[os, streams, times, strutils, json, strformat]
 import ../types/tools
+import ../core/constants
 import common
 
-# Tool removed - using object variants now
-
-
 proc detectFileEncoding*(path: string): string =
+  ## Detect file encoding by examining BOM and content characteristics
   ## Simple file encoding detection
   let content = attemptUntrackedRead(path)
   if content.len == 0:
@@ -96,7 +110,7 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
   
   let path = getArgStr(args, "path")
   let encoding = getOptArgStr(args, "encoding", "auto")
-  let maxSize = getOptArgInt(args, "max_size", 10485760)  # 10MB default
+  let maxSize = getOptArgInt(args, "max_size", MAX_FILE_SIZE)
   let lineRange = if args.hasKey("linerange"): args["linerange"].getStr() else: ""
   
   # Validate path
@@ -107,8 +121,8 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
   if maxSize <= 0:
     raise newToolValidationError("read", "max_size", "positive integer", $maxSize)
   
-  if maxSize > 100 * 1024 * 1024:  # 100MB limit
-    raise newToolValidationError("read", "max_size", "size under 100MB", $maxSize)
+  if maxSize > MAX_FETCH_SIZE_LIMIT:
+    raise newToolValidationError("read", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $maxSize)
   
   # Validate encoding
   if encoding != "auto" and encoding notin ["utf-8", "utf-16", "utf-32", "ascii", "latin1"]:

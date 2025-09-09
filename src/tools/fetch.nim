@@ -1,9 +1,27 @@
-import std/[strutils, json, httpclient, uri, xmltree]
+## Web Fetch Tool
+##
+## This tool provides secure web content fetching with:
+## - HTTP/HTTPS URL support with timeout protection
+## - HTML to text conversion for readable content
+## - Content type detection and handling
+## - User agent specification and header management
+## - Response size limits for safety
+##
+## Features:
+## - Clean HTML to text conversion with proper formatting
+## - HTTP client with configurable timeout
+## - URL validation and sanitization
+## - Error handling for network issues and invalid responses
+## - Support for redirects and various content types
+
+import std/[strutils, json, httpclient, uri, xmltree, strformat]
 import pkg/htmlparser
 import ../types/tools
+import ../core/constants
 
 
 proc htmlToText*(html: string): string =
+  ## Convert HTML content to plain text with proper formatting and spacing
   ## Convert HTML to plain text
   try:
     let xml = parseHtml(html)
@@ -27,6 +45,7 @@ proc htmlToText*(html: string): string =
     return "Failed to parse HTML content"
 
 proc createHttpClient*(timeout: int): HttpClient =
+  ## Create HTTP client with specified timeout and appropriate headers
   ## Create HTTP client with timeout
   result = newHttpClient(timeout = timeout)
   result.headers = newHttpHeaders({
@@ -47,8 +66,8 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
   validateArgs(args, @["url"])
   
   let url = getArgStr(args, "url")
-  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
-  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: 10485760  # 10MB
+  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: DEFAULT_TIMEOUT
+  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: MAX_FETCH_SIZE
   let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
   let headers = if args.hasKey("headers"): args["headers"] else: newJObject()
   let body = if args.hasKey("body"): getArgStr(args, "body") else: ""
@@ -69,15 +88,15 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
   if timeout <= 0:
     raise newToolValidationError("fetch", "timeout", "positive integer", $timeout)
   
-  if timeout > 300000:  # 5 minutes max
-    raise newToolValidationError("fetch", "timeout", "timeout under 300000ms", $timeout)
+  if timeout > MAX_TIMEOUT:
+    raise newToolValidationError("fetch", "timeout", fmt"timeout under {MAX_TIMEOUT}ms", $timeout)
   
   # Validate max_size
   if maxSize <= 0:
     raise newToolValidationError("fetch", "max_size", "positive integer", $maxSize)
   
-  if maxSize > 100 * 1024 * 1024:  # 100MB limit
-    raise newToolValidationError("fetch", "max_size", "size under 100MB", $maxSize)
+  if maxSize > MAX_FETCH_SIZE_LIMIT:
+    raise newToolValidationError("fetch", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $maxSize)
   
   # Validate method
   let validMethods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]

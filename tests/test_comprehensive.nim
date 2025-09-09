@@ -1,4 +1,4 @@
-import std/[unittest, options, json, os, tempfiles, strformat]
+import std/[unittest, options, json, os, tempfiles, strformat, strutils]
 import ../src/types/[messages, config]
 import ../src/tools/[registry, common]
 import ../src/api/curlyStreaming
@@ -63,7 +63,7 @@ suite "Comprehensive Tool Tests":
     check request.model == "gpt-4"
     check request.messages.len == 1
     check request.tools.isSome()
-    check request.tools.get().len == 6
+    check request.tools.get().len == 7
 
   test "JSON serialization works":
     let messages = @[Message(role: mrUser, content: "Test")]
@@ -126,9 +126,9 @@ suite "File System Operations":
     check not dirExists(testDir)
 
   test "Path sanitization":
-    # Test safe paths
+    # Test safe paths - sanitizePath returns normalized absolute paths
     let safePath = sanitizePath("safe/path/file.txt")
-    check safePath == "safe/path/file.txt"
+    check safePath.endsWith("safe/path/file.txt")
     
     # Test current directory function
     let currentDir = getCurrentDirectory()

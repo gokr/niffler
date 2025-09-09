@@ -3,7 +3,7 @@
 ## These tests exercise the complete conversation management system through
 ## real database operations and verify persistence across the entire stack.
 
-import std/[unittest, strformat, times, strutils, options]
+import std/[unittest, strformat, times, strutils, options, sequtils]
 import test_conversation_infrastructure
 import ../src/core/[database, conversation_manager, config, app]
 import ../src/types/[config as configTypes, messages, mode]
@@ -265,7 +265,8 @@ suite "Conversation Context and Message Retrieval":
     # Create a mock tool call
     let mockToolCall = LLMToolCall(
       id: "test_tool_call_1",
-      function: LLMFunction(
+      `type`: "function",
+      function: FunctionCall(
         name: "test_tool",
         arguments: """{"param": "value"}"""
       )

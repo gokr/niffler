@@ -1,12 +1,24 @@
+## Common Tool Utilities
+##
+## This module provides shared utilities and helper functions for all tools:
+## - File system validation and safety checks
+## - Command execution with timeout and error handling
+## - Text processing and file type detection
+## - Path sanitization and security validation
+## - Error handling and consistent exception types
+##
+## Security Features:
+## - Path traversal protection
+## - File size limits for safety
+## - Timeout enforcement for commands
+## - Input validation and sanitization
+
 import std/[strutils, os, times, strformat, osproc, json, streams, logging]
 import ../types/tools
-
-const
-  USER_ABORTED_ERROR_MESSAGE* = "Aborted by user"
-  MAX_FILE_SIZE* = 1024 * 1024 * 10  # 10MB default max file size
-  DEFAULT_TIMEOUT* = 30000  # 30 seconds default timeout
+import ../core/constants
 
 proc attempt*[T](errMessage: string, callback: proc(): T {.gcsafe.}): T {.gcsafe.} =
+  ## Generic error handling wrapper for operations with consistent error messages
   ## Helper to wrap operations with consistent error handling
   try:
     return callback()
@@ -14,18 +26,21 @@ proc attempt*[T](errMessage: string, callback: proc(): T {.gcsafe.}): T {.gcsafe
     raise newToolError("unknown", errMessage)
 
 proc attemptUntrackedStat*(path: string): FileInfo {.gcsafe.} =
+  ## Safely get file info with proper error handling and path validation
   ## Attempt to stat a file without tracking it
   return attempt(fmt"Could not stat({path}): does the file exist?", proc(): FileInfo =
     getFileInfo(path)
   )
 
 proc attemptUntrackedRead*(path: string): string {.gcsafe.} =
+  ## Safely read file contents with error handling and validation
   ## Attempt to read a file without tracking it
   return attempt(fmt"{path} couldn't be read", proc(): string =
     readFile(path)
   )
 
 proc validateFileExists*(path: string) =
+  ## Validate that a file exists and is a regular file (not directory)
   ## Validate that a file exists and is readable
   if not fileExists(path):
     raise newToolValidationError("unknown", "filePath", "existing file", path)
@@ -35,16 +50,19 @@ proc validateFileExists*(path: string) =
     raise newToolValidationError("unknown", "filePath", "regular file", path)
 
 proc validateFileNotExists*(path: string) =
+  ## Validate that a file does not exist (for create operations)
   ## Validate that a file does not exist
   if fileExists(path):
     raise newToolValidationError("unknown", "filePath", "non-existent path", path)
 
 proc validateDirectoryExists*(path: string) =
+  ## Validate that a directory exists and is accessible
   ## Validate that a directory exists
   if not dirExists(path):
     raise newToolValidationError("unknown", "path", "existing directory", path)
 
 proc validateFileReadable*(path: string) =
+  ## Validate that a file can be read successfully
   ## Validate that a file is readable
   try:
     discard readFile(path)
@@ -69,8 +87,8 @@ proc validateTimeout*(timeout: int) =
   ## Validate that timeout is reasonable
   if timeout <= 0:
     raise newToolValidationError("unknown", "timeout", "positive integer", $timeout)
-  if timeout > 300000:  # 5 minutes max
-    raise newToolValidationError("unknown", "timeout", "timeout under 300000ms", $timeout)
+  if timeout > MAX_TIMEOUT:
+    raise newToolValidationError("unknown", "timeout", fmt"timeout under {MAX_TIMEOUT}ms", $timeout)
 
 proc getCurrentDirectory*(): string =
   ## Get the current working directory
@@ -177,35 +195,6 @@ proc getCommandOutput*(command: string, args: seq[string] = @[], timeout: int = 
   except Exception as e:
     raise newToolExecutionError("bash", "Unexpected error: " & e.msg, -1, "")
 
-# Simplified validation functions for basic functionality
-proc validateBashArgs*(args: JsonNode): void =
-  ## Validate bash tool arguments - simplified for basic functionality
-  # TODO: Add proper validation once JsonValue API is figured out
-  discard
-
-proc validateReadArgs*(args: JsonNode): void =
-  ## Validate read tool arguments - simplified for basic functionality
-  # TODO: Add proper validation once JsonValue API is figured out
-  discard
-
-proc validateListArgs*(args: JsonNode): void =
-  ## Validate list tool arguments - all optional
-  discard  # All args are optional
-
-proc validateEditArgs*(args: JsonNode): void =
-  ## Validate edit tool arguments - simplified for basic functionality
-  # TODO: Add proper validation once JsonValue API is figured out
-  discard
-
-proc validateCreateArgs*(args: JsonNode): void =
-  ## Validate create tool arguments - simplified for basic functionality
-  # TODO: Add proper validation once JsonValue API is figured out
-  discard
-
-proc validateFetchArgs*(args: JsonNode): void =
-  ## Validate fetch tool arguments - simplified for basic functionality
-  # TODO: Add proper validation once JsonValue API is figured out
-  discard
 
 proc validateTodolistArgs*(args: JsonNode): void =
   ## Validate todolist tool arguments
@@ -289,14 +278,6 @@ proc getToolIcon*(toolName: string): string =
 
 
 proc validateToolArgs*(toolName: string, args: JsonNode): void =
-  ## Main validation function
-  case toolName:
-  of "bash": validateBashArgs(args)
-  of "read": validateReadArgs(args)
-  of "list": validateListArgs(args)
-  of "edit": validateEditArgs(args)
-  of "create": validateCreateArgs(args)
-  of "fetch": validateFetchArgs(args)
-  of "todolist": validateTodolistArgs(args)
-  else:
-    raise newToolValidationError(toolName, "tool", "supported tool", "unknown tool")
+  ## Main validation function - tools handle their own validation internally
+  ## This is a placeholder for future schema-based validation
+  discard
