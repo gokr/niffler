@@ -28,6 +28,7 @@ when defined(posix):
   import posix
 import linecross
 import ../core/[app, channels, conversation_manager, config, database]
+import debby/pools
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools]
 import ../api/api
@@ -39,6 +40,10 @@ import table_utils
 import markdown_cli
 import tool_visualizer
 import file_completion
+
+# Forward declarations for helper functions called early in the file
+proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string
+proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig())
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -57,6 +62,47 @@ var isInThinkingBlock: bool = false  # Track if we're currently displaying think
 proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
+
+proc logToPromptHistory*(database: DatabaseBackend, input: string, output: string = "", modelNickname: string, sessionId: string = "") =
+  ## Log prompt exchange to database with consistent error handling
+  if database != nil:
+    try:
+      let finalSessionId = if sessionId.len > 0: 
+        sessionId 
+      else: 
+        let dateStr = now().format("yyyy-MM-dd")
+        fmt"session_{getUserName()}_{dateStr}"
+      logPromptHistory(database, input, output, modelNickname, finalSessionId)
+      debug(fmt"Stored prompt in history: {input[0..min(50, input.len-1)]}")
+    except Exception as e:
+      debug(fmt"Failed to log prompt to database: {e.msg}")
+
+proc initializeSystemComponents*(): (configTypes.Config, bool) =
+  ## Initialize system components and return config and markdown flag
+  let config = loadConfig()
+  loadThemesFromConfig(config)
+  let markdownEnabled = isMarkdownEnabled(config)
+  return (config, markdownEnabled)
+
+proc startWorkers*(channels: ptr ThreadChannels, level: Level, dump: bool, database: DatabaseBackend, pool: Pool): (APIWorker, ToolWorker) =
+  ## Start API and tool workers and return worker handles
+  let apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  let toolWorker = startToolWorker(channels, level, dump, database, pool)
+  return (apiWorker, toolWorker)
+
+proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, database: DatabaseBackend) =
+  ## Perform system cleanup: shutdown workers, close database and log files
+  signalShutdown(channels)
+  stopAPIWorker(apiWorker)
+  stopToolWorker(toolWorker)
+  closeChannels(channels[])
+  
+  if database != nil:
+    database.close()
+  
+  if logFileModule.isLoggingActive():
+    let logManager = logFileModule.getGlobalLogManager()
+    logManager.closeLogFile()
 
 
 proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: string, prefix: string, startPos: int] =
@@ -238,7 +284,7 @@ proc initializeLinecrossInput(database: DatabaseBackend): bool =
     registerCompletionCallback(nifflerCompletionHook)
     
     # Configure prompt colors to match current blue style
-    setPromptColor(getModePromptColor(), {styleBright})
+    updatePromptState()
     
     # Load history from database if available
     if database != nil:
@@ -389,6 +435,11 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
   else:
     return fmt"{statusIndicator}{modelNameWithContext} > "
 
+proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()) =
+  ## Update prompt color and text based on current mode and model  
+  setPromptColor(getModePromptColor(), {styleBright})
+  setPrompt(generatePrompt(modelConfig))
+
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
   if useMarkdown:
@@ -420,8 +471,7 @@ proc resetUIState*() =
     debug("UI state reset: tokens and pending tool calls cleared")
   
   # Update prompt color to reflect current mode (fixes conversation switching color bug)
-  setPromptColor(getModePromptColor(), {styleBright})
-  setPrompt(generatePrompt())
+  updatePromptState()
     
 proc resetUIState*(modelName: string) =
   ## Reset UI-specific state and set specific model name (for cases with known model)
@@ -430,8 +480,7 @@ proc resetUIState*(modelName: string) =
   pendingToolCalls.clear()
   
   # Update prompt color to reflect current mode (fixes conversation switching color bug)
-  setPromptColor(getModePromptColor(), {styleBright})
-  setPrompt(generatePrompt())
+  updatePromptState()
   currentModelName = modelName
   debug(fmt"UI state reset: tokens/tool calls cleared, model set to {modelName}")
 
@@ -447,8 +496,7 @@ proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   if keyCode == ShiftTab:
     # Toggle mode and immediately update prompt, it is refreshed by linecross
     discard toggleMode()
-    setPrompt(generatePrompt())
-    setPromptColor(getModePromptColor(), {styleBright})
+    updatePromptState()
     return true  # Key was handled
   return false  # Key not handled, continue with default processing
 
@@ -468,13 +516,8 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
     writeToConversationArea("")
     
     # Store command in prompt history (bash-style history) but NOT in LLM conversation
-    if database != nil:
-      try:
-        let fullCommand = "!" & command
-        logPromptHistory(database, fullCommand, "", currentModel.nickname, "")
-        debug(fmt"Stored bash command in prompt history: {fullCommand}")
-      except Exception as e:
-        debug(fmt"Failed to store bash command in prompt history: {e.msg}")
+    let fullCommand = "!" & command
+    logToPromptHistory(database, fullCommand, "", currentModel.nickname)
         
   except ToolExecutionError as e:
     # Non-zero exit code - show command, output, and exit code
@@ -485,13 +528,8 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
     writeToConversationArea("")
     
     # Store failed command in history too
-    if database != nil:
-      try:
-        let fullCommand = "!" & command
-        logPromptHistory(database, fullCommand, "", currentModel.nickname, "")
-        debug(fmt"Stored failed bash command in prompt history: {fullCommand}")
-      except Exception as e:
-        debug(fmt"Failed to store failed bash command in prompt history: {e.msg}")
+    let fullCommand = "!" & command
+    logToPromptHistory(database, fullCommand, "", currentModel.nickname)
         
   except ToolTimeoutError:
     writeToConversationArea(fmt"$ {command}", fgYellow, styleBright)
@@ -510,9 +548,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   ## Start the CLI mode with enhanced interface
   
   # Load configuration to get theme settings
-  let config = loadConfig()
-  loadThemesFromConfig(config)
-  let markdownEnabled = isMarkdownEnabled(config)
+  let (config, markdownEnabled) = initializeSystemComponents()
   
   # Initialize enhanced input with linecross - fail if not available
   if not initializeLinecrossInput(database):
@@ -591,16 +627,12 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   writeToConversationArea(fmt"Using model: {currentModel.nickname} ({currentModel.model})", fgGreen)
   
   # Update prompt color to reflect the restored mode
-  setPromptColor(getModePromptColor(), {styleBright})
-  setPrompt(generatePrompt())
+  updatePromptState()
   
   writeToConversationArea("\n")
   
-  # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
-  
-  # Start tool worker with pool
-  var toolWorker = startToolWorker(channels, level, dump, database, pool)
+  # Start API and tool workers with pool
+  var (apiWorker, toolWorker) = startWorkers(channels, level, dump, database, pool)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -630,12 +662,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
           writeToConversationArea("")
           
           # Store command in prompt history (input only, like bash history)
-          if database != nil:
-            try:
-              logPromptHistory(database, input, "", currentModel.nickname, "")
-              debug(fmt"Stored command in prompt history: {input}")
-            except Exception as e:
-              debug(fmt"Failed to store command in prompt history: {e.msg}")
+          logToPromptHistory(database, input, "", currentModel.nickname)
           
           # Handle special commands that need additional actions
           if res.success:
@@ -809,14 +836,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 debug("DEBUG: Skipping assistant message addition - tool calls already handled by API worker")
               
               # Log user input to prompt history (bash-style history)
-              if database != nil:
-                try:
-                  let dateStr = now().format("yyyy-MM-dd")
-                  let sessionId = fmt"session_{getUserName()}_{dateStr}"
-                  logPromptHistory(database, input, "", currentModel.nickname, sessionId)
-                  debug(fmt"Stored user input in prompt history: {input}")
-                except Exception as e:
-                  debug(fmt"Failed to log user input to prompt history: {e.msg}")
+              logToPromptHistory(database, input, "", currentModel.nickname)
               responseReceived = true
               when defined(posix):
                 currentActiveRequestId = ""
@@ -845,19 +865,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
       running = false
   
   # Cleanup
-  signalShutdown(channels)
-  stopAPIWorker(apiWorker)
-  stopToolWorker(toolWorker)
-  closeChannels(channels[])
-  
-  # Close database connection
-  if database != nil:
-    database.close()
-  
-  # Close log file if active
-  if logFileModule.isLoggingActive():
-    let logManager = logFileModule.getGlobalLogManager()
-    logManager.closeLogFile()
+  cleanupSystem(channels, apiWorker, toolWorker, database)
   
   # Linecross cleanup is automatic
 
@@ -889,9 +897,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   let database = initializeGlobalDatabase(level)
   
   # Load config and check if markdown rendering is enabled
-  let config = loadConfig()
-  loadThemesFromConfig(config)
-  let markdownEnabled = isMarkdownEnabled(config)
+  let (_, markdownEnabled) = initializeSystemComponents()
   
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
@@ -901,11 +907,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   
   let channels = getChannels()
   
-  # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
-  
-  # Start tool worker with pool
-  var toolWorker = startToolWorker(channels, level, dump, database, pool)
+  # Start API and tool workers with pool
+  var (apiWorker, toolWorker) = startWorkers(channels, level, dump, database, pool)
   
   let (success, requestId) = sendSinglePromptAsyncWithId(text, model)
   if success:
@@ -963,18 +966,13 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           info fmt"Tokens used: {response.usage.totalTokens}"
           
           # Log the prompt exchange to database
-          if database != nil and responseText.len > 0:
-            try:
-              let config = loadConfig()
-              let selectedModel = if model.len > 0:
-                getModelFromConfig(config, model)
-              else:
-                config.models[0]
-              let dateStr = now().format("yyyy-MM-dd")
-              let sessionId = fmt"session_{getUserName()}_{dateStr}"
-              logPromptHistory(database, text, responseText, selectedModel.nickname, sessionId)
-            except Exception as e:
-              debug(fmt"Failed to log prompt to database: {e.msg}")
+          if responseText.len > 0:
+            let config = loadConfig()
+            let selectedModel = if model.len > 0:
+              getModelFromConfig(config, model)
+            else:
+              config.models[0]
+            logToPromptHistory(database, text, responseText, selectedModel.nickname)
           
           isInThinkingBlock = false  # Reset thinking block flag when stream completes
           responseReceived = true
@@ -1029,18 +1027,6 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     echo "Failed to send request"
     
   # Cleanup
-  signalShutdown(channels)
-  stopAPIWorker(apiWorker)
-  stopToolWorker(toolWorker)
-  closeChannels(channels[])
-  
-  # Close database connection
-  if database != nil:
-    database.close()
-  
-  # Close log file if active
-  if logFileModule.isLoggingActive():
-    let logManager = logFileModule.getGlobalLogManager()
-    logManager.closeLogFile()
+  cleanupSystem(channels, apiWorker, toolWorker, database)
   
   # Linecross cleanup is automatic
