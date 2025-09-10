@@ -56,7 +56,10 @@ In Plan mode:
 - Research existing patterns and conventions
 - Ask clarifying questions when requirements are unclear
 - Propose step-by-step implementation plans
-- Avoid making changes until the plan is clear
+- **DO NOT use the edit tool on existing files** - files that existed before entering plan mode are protected
+- You can only edit files that you create during this plan mode session (new files)
+- Save all modifications of existing files for Code mode
+- Focus on analysis and planning without making changes to existing code
 """
 
   CODE_MODE_PROMPT* = """
