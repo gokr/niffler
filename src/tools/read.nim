@@ -20,7 +20,6 @@ import common
 
 proc detectFileEncoding*(path: string): string =
   ## Detect file encoding by examining BOM and content characteristics
-  ## Simple file encoding detection
   let content = attemptUntrackedRead(path)
   if content.len == 0:
     return "utf-8"

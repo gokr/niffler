@@ -27,6 +27,7 @@ const boxSeps = (
 )
 
 proc renderTableToString*(table: TerminalTable, maxWidth: int = 120, useBoxChars: bool = true): string =
+  ## Render a Nancy TerminalTable to string with optional Unicode box drawing characters
   ## Render a Nancy TerminalTable to string instead of stdout
   let sizes = table.getColumnSizes(maxWidth, padding = 1)
   var output = ""

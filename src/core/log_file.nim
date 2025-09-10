@@ -15,13 +15,13 @@ type
 var globalLogManager: LogFileManager = nil
 
 proc findNextLogIndex(baseFilename: string): int =
-  ## Find the next available log file index
+  ## Find the next available log file index by checking existing files
   result = 1
   while fileExists(fmt"{baseFilename}-{result}.log"):
     inc result
 
 proc initLogFileManager*(baseFilename: string): LogFileManager =
-  ## Initialize the log file manager with a base filename
+  ## Initialize the log file manager with a base filename and find next index
   let nextIndex = findNextLogIndex(baseFilename)
   let logFilename = fmt"{baseFilename}-{nextIndex}.log"
   
@@ -32,7 +32,7 @@ proc initLogFileManager*(baseFilename: string): LogFileManager =
   )
 
 proc activateLogFile*(manager: LogFileManager) =
-  ## Activate logging to file for this conversation
+  ## Activate logging to file for this conversation session with header
   if not manager.isActive:
     manager.fileHandle = open(manager.currentLogFile, fmWrite)
     manager.isActive = true
@@ -42,7 +42,7 @@ proc activateLogFile*(manager: LogFileManager) =
     manager.fileHandle.flushFile()
 
 proc closeLogFile*(manager: LogFileManager) =
-  ## Close the current log file
+  ## Close the current log file and write session end marker
   if manager.isActive:
     manager.fileHandle.writeLine("")
     manager.fileHandle.writeLine(fmt"=== Session ended at: {now()} ===")

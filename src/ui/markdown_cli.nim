@@ -6,6 +6,7 @@ import std/[strutils, re, unicode]
 import theme
 
 proc renderInlineMarkdownCLI*(line: string): string =
+  ## Render inline markdown formatting (bold, italic, code, links) for CLI output
   ## Render inline markdown formatting (bold, italic, code, links) for CLI
   result = ""
   let theme = currentTheme

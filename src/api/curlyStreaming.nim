@@ -43,13 +43,16 @@ var globalThinkingParser {.threadvar.}: IncrementalThinkingParser
 
 proc setDumpEnabled*(enabled: bool) =
   ## Set the global dump flag for HTTP request/response logging
+  ## Set the global dump flag for HTTP request/response logging
   dumpEnabled = enabled
 
 proc initGlobalParser*() =
+  ## Initialize the global flexible parser for tool call format detection
   ## Initialize the global flexible parser
   globalFlexibleParser = newFlexibleParser()
 
 proc initGlobalThinkingParser*(enabled: bool = true) =
+  ## Initialize the global thinking token parser for incremental processing
   ## Initialize the global thinking token parser
   if enabled:
     globalThinkingParser = initIncrementalParser()
@@ -59,6 +62,8 @@ proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.}
 
 # Thinking token processing procs
 proc processThinkingContent(rawContent: string, chunk: var StreamChunk): string =
+  ## Process potential thinking content in response and separate it from regular content
+  ## Returns regular content after extracting thinking tokens
   ## Process potential thinking content in response and separate it from regular content
   let thinkingResult = detectAndParseThinkingContent(rawContent)
   
@@ -76,10 +81,12 @@ proc processThinkingContent(rawContent: string, chunk: var StreamChunk): string 
     return rawContent
 
 proc initDumpFlag*() =
+  ## Initialize the dump flag for this thread (called once per thread)
   ## Initialize the dump flag (called once per thread)
   dumpEnabled = false
 
 proc isDumpEnabled*(): bool =
+  ## Check if HTTP request/response dumping is enabled for this thread
   ## Check if HTTP request/response dumping is enabled
   return dumpEnabled
 
@@ -94,6 +101,8 @@ type
 
 # SSE line parsing (same as before but with proper error handling)
 proc parseSSELine(line: string): Option[StreamChunk] =
+  ## Parse a single Server-Sent Events line into a StreamChunk
+  ## Handles OpenAI format and thinking token extraction
   ## Parse a single SSE line into a StreamChunk
   if line.startsWith("data: "):
     let dataLine = line[6..^1].strip()
@@ -304,6 +313,7 @@ proc parseNonOpenAIFormat*(dataLine: string): Option[StreamChunk] {.gcsafe.} =
   return none(StreamChunk)
 
 proc newCurlyStreamingClient*(baseUrl, apiKey, model: string): CurlyStreamingClient =
+  ## Create a new Curly-based streaming HTTP client with provider-specific headers
   ## Create a new Curly-based streaming HTTP client
   var headers = initTable[string, string]()
   headers["Content-Type"] = "application/json"
@@ -327,6 +337,7 @@ proc newCurlyStreamingClient*(baseUrl, apiKey, model: string): CurlyStreamingCli
   )
 
 proc toJson*(req: ChatRequest): JsonNode {.gcsafe.} =
+  ## Convert ChatRequest to comprehensive OpenAI-compatible JSON format
   ## Convert ChatRequest to comprehensive JSON format
   var messages: seq[JsonNode] = @[]
   
@@ -402,12 +413,15 @@ proc toJson*(req: ChatRequest): JsonNode {.gcsafe.} =
     result["tools"] = %tools
 
 proc buildRequestBody(client: CurlyStreamingClient, request: ChatRequest): string =
+  ## Build the JSON request body for streaming chat requests
   ## Build the JSON request body using comprehensive toJson
   var streamRequest = request
   streamRequest.stream = true  # Force streaming for this client
   return $streamRequest.toJson()
 
 proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRequest, callback: StreamingCallback): (bool, Option[TokenUsage]) =
+  ## Send a streaming chat request using Curly and process chunks in real-time
+  ## Returns success status and token usage information if available
   ## Send a streaming chat request using Curly and process chunks in real-time
   ## Returns success status and usage information if available
   
@@ -533,6 +547,7 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
 
 proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
   ## Convert internal Message types to OpenAI-compatible ChatMessage format
+  ## Convert internal Message types to OpenAI-compatible ChatMessage format
   result = @[]
   for msg in messages:
     var chatMsg = ChatMessage(
@@ -555,6 +570,7 @@ proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
 # Helper function to create ChatRequest (compatibility with existing API)
 proc createChatRequest*(modelConfig: ModelConfig, messages: seq[Message],
                        stream: bool, tools: Option[seq[ToolDefinition]]): ChatRequest =
+  ## Create a ChatRequest from internal message types using model configuration
   ## Create a ChatRequest from the internal message types using model configuration
   return ChatRequest(
     model: modelConfig.model,

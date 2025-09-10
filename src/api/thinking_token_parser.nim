@@ -34,6 +34,7 @@ type
     providerSpecific*: Option[JsonNode]     # Provider-specific metadata
     
 proc detectThinkingFormatFromJson*(json: JsonNode): ThinkingTokenFormat =
+  ## Detect thinking token format from JSON response structure
   ## Detect thinking token format from JSON response
   if json.hasKey("thinking") or json.hasKey("reasoning"):
     return ttfAnthropic
@@ -47,6 +48,7 @@ proc detectThinkingFormatFromJson*(json: JsonNode): ThinkingTokenFormat =
   return ttfNone
 
 proc parseAnthropicThinkingBlock*(content: string): ThinkingParseResult =
+  ## Parse Anthropic XML-style thinking blocks (<thinking>...</thinking>)
   ## Parse Anthropic XML-style thinking blocks
   result.format = ttfAnthropic
   result.isThinkingContent = false
@@ -110,6 +112,7 @@ proc parseAnthropicThinkingBlock*(content: string): ThinkingParseResult =
         result.regularContent = some(content[0..<redactedStart])
 
 proc parseOpenAIReasoningContent*(content: string): ThinkingParseResult =
+  ## Parse OpenAI native reasoning content from JSON responses
   ## Parse OpenAI native reasoning content
   result.format = ttfOpenAI
   result.isThinkingContent = false
@@ -145,6 +148,7 @@ proc parseOpenAIReasoningContent*(content: string): ThinkingParseResult =
         result.thinkingContent = some(content[reasoningPos..^1])
 
 proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): ThinkingParseResult =
+  ## Parse thinking content based on specified format type
   ## Parse thinking content based on format
   result.format = format
   
@@ -166,6 +170,7 @@ proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): Thinki
     result.regularContent = some(content)
 
 proc detectAndParseThinkingContent*(content: string): ThinkingParseResult =
+  ## Automatically detect format and parse thinking content from any provider
   ## Automatically detect format and parse thinking content
   var detectedFormat = ttfNone
   
@@ -203,6 +208,7 @@ proc hasValidThinkingContent*(parseResult: ThinkingParseResult): bool {.inline.}
   parseResult.isThinkingContent and parseResult.thinkingContent.isSome() and parseResult.thinkingContent.get().len > 0
 
 proc extractThinkingContentForStreaming*(chunk: StreamChunk): ThinkingParseResult =
+  ## Extract thinking content from streaming chunks for real-time processing
   ## Extract thinking content from streaming chunk
   if chunk.thinkingContent.isSome() and chunk.isThinkingContent:
     # Chunk already has thinking content from streaming parser
@@ -240,6 +246,7 @@ proc initIncrementalParser*(format: ThinkingTokenFormat = ttfNone): IncrementalT
   )
 
 proc updateIncrementalParser*(parser: var IncrementalThinkingParser, newContent: string) {.inline.} =
+  ## Update incremental parser with new streaming content and detect thinking blocks
   ## Update parser with new streaming content
   parser.buffer.add(newContent)
   

@@ -19,7 +19,6 @@ import ../core/constants
 
 proc attempt*[T](errMessage: string, callback: proc(): T {.gcsafe.}): T {.gcsafe.} =
   ## Generic error handling wrapper for operations with consistent error messages
-  ## Helper to wrap operations with consistent error handling
   try:
     return callback()
   except:
@@ -27,21 +26,18 @@ proc attempt*[T](errMessage: string, callback: proc(): T {.gcsafe.}): T {.gcsafe
 
 proc attemptUntrackedStat*(path: string): FileInfo {.gcsafe.} =
   ## Safely get file info with proper error handling and path validation
-  ## Attempt to stat a file without tracking it
   return attempt(fmt"Could not stat({path}): does the file exist?", proc(): FileInfo =
     getFileInfo(path)
   )
 
 proc attemptUntrackedRead*(path: string): string {.gcsafe.} =
   ## Safely read file contents with error handling and validation
-  ## Attempt to read a file without tracking it
   return attempt(fmt"{path} couldn't be read", proc(): string =
     readFile(path)
   )
 
 proc validateFileExists*(path: string) =
   ## Validate that a file exists and is a regular file (not directory)
-  ## Validate that a file exists and is readable
   if not fileExists(path):
     raise newToolValidationError("unknown", "filePath", "existing file", path)
   
@@ -51,19 +47,16 @@ proc validateFileExists*(path: string) =
 
 proc validateFileNotExists*(path: string) =
   ## Validate that a file does not exist (for create operations)
-  ## Validate that a file does not exist
   if fileExists(path):
     raise newToolValidationError("unknown", "filePath", "non-existent path", path)
 
 proc validateDirectoryExists*(path: string) =
   ## Validate that a directory exists and is accessible
-  ## Validate that a directory exists
   if not dirExists(path):
     raise newToolValidationError("unknown", "path", "existing directory", path)
 
 proc validateFileReadable*(path: string) =
   ## Validate that a file can be read successfully
-  ## Validate that a file is readable
   try:
     discard readFile(path)
   except IOError:
@@ -279,5 +272,4 @@ proc getToolIcon*(toolName: string): string =
 
 proc validateToolArgs*(toolName: string, args: JsonNode): void =
   ## Main validation function - tools handle their own validation internally
-  ## This is a placeholder for future schema-based validation
   discard

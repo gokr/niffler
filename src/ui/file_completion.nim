@@ -5,6 +5,7 @@
 
 import std/[os, strutils]
 import ../tools/common
+import ../core/constants
 
 type
   FileCompletion* = object
@@ -20,7 +21,7 @@ proc isBinaryFileByContent*(path: string): bool =
     defer: file.close()
     
     # Read first 4KB of file
-    let bufferSize = 4096
+    let bufferSize = BUFFER_SIZE
     var buffer = newString(bufferSize)
     let bytesRead = file.readChars(toOpenArray(buffer, 0, bufferSize-1))
     

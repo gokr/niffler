@@ -49,9 +49,6 @@ type
     isFile: bool
     isLink: bool
 
-# Tool removed - using object variants now
-
-
 proc getPermissions*(path: string): string =
   ## Get file permissions as a string (rwx format)
   try:

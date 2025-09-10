@@ -1,3 +1,23 @@
+## Configuration Type Definitions
+##
+## This module defines all configuration-related types for Niffler:
+## - Model configurations with OpenAI protocol parameters
+## - Database configuration for SQLite/TiDB backends
+## - Theme and UI configuration settings
+## - Cost tracking and token usage types
+##
+## Key Type Categories:
+## - ModelConfig: LLM model settings and API parameters
+## - DatabaseConfig: Database backend configuration
+## - ThemeConfig: UI theming and styling settings
+## - CostTracking: Token usage and cost calculation
+##
+## Design Decisions:
+## - Uses Option[T] for optional configuration fields
+## - Separate enums for different configuration categories
+## - Cost tracking built-in for all model configurations
+## - Flexible database backend support (SQLite/TiDB)
+
 import std/[tables, options, locks]
 import messages
 

@@ -52,8 +52,6 @@ type
     output*: string
     error*: Option[string]
 
-  # Legacy ToolCall type removed - use LLMToolCall instead
-
   Message* = object
     role*: MessageRole
     content*: string
@@ -61,7 +59,6 @@ type
     toolCalls*: Option[seq[LLMToolCall]]
     # Tool call ID for tool messages
     toolCallId*: Option[string]
-    # Legacy field for backward compatibility - removed
     toolResults*: Option[seq[ToolResult]]
     # Thinking token support
     thinkingContent*: Option[ThinkingContent]  # Thinking content from model
@@ -274,6 +271,5 @@ type
     encryptedReasoningContent*: Option[string]  # Encrypted reasoning content
     reasoningId*: Option[string]              # Unique reasoning identifier
 
-  # ChatToolCall and ChatFunction removed - use LLMToolCall and FunctionCall instead
 
   # Simple convenience check - access thinkingContent directly in practice

@@ -13,6 +13,7 @@
 
 import std/[options, strutils, json, logging, times, strformat]
 import ../types/config
+import ../core/constants
 import ../types/messages  # Import ThinkingContent and related types
 
 type
@@ -122,9 +123,9 @@ proc detectThinkingTokenFormat*(content: string): ProviderDetectionResult {.inli
 proc getReasoningLevelBudget*(level: ReasoningLevel): int {.inline.} =
   ## Get token budget for reasoning level
   case level
-  of rlLow: return 2048
-  of rlMedium: return 4096
-  of rlHigh: return 8192
+  of rlLow: return THINKING_TOKEN_LOW_BUDGET
+  of rlMedium: return THINKING_TOKEN_MEDIUM_BUDGET
+  of rlHigh: return THINKING_TOKEN_HIGH_BUDGET
   of rlNone: return 0
 
 proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): Option[ThinkingContent] =
@@ -318,7 +319,7 @@ proc createThinkingToken*(content: string, importance: ThinkingImportance = tiMe
     keywords: extractKeywords(content)
   )
 
-proc initThinkingWindowManager*(maxSize: int = 4096): ThinkingWindowManager =
+proc initThinkingWindowManager*(maxSize: int = THINKING_TOKEN_DEFAULT_BUDGET): ThinkingWindowManager =
   ## Initialize a thinking window manager
   return ThinkingWindowManager(
     maxSize: maxSize,

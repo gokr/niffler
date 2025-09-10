@@ -15,6 +15,8 @@ type
 
 # Format detection based on content patterns
 proc detectToolCallFormat*(content: string): ToolFormat =
+  ## Detect tool call format from response content patterns
+  ## Supports OpenAI JSON, Anthropic XML, and various Qwen/GLM XML variants
   ## Detect tool call format from response content
   let contentLower = content.toLowerAscii()
   
@@ -53,6 +55,7 @@ proc detectToolCallFormat*(content: string): ToolFormat =
 
 # OpenAI JSON tool call validation (existing logic)
 proc isValidJson*(content: string): bool =
+  ## Check if content is valid JSON (used for OpenAI format validation)
   ## Check if content is valid JSON
   try:
     discard parseJson(content)
@@ -61,6 +64,7 @@ proc isValidJson*(content: string): bool =
     return false
 
 proc isCompleteJson*(content: string): bool =
+  ## Check if JSON content appears complete with matching braces
   ## Check if JSON content appears complete
   if not isValidJson(content):
     return false
@@ -69,12 +73,14 @@ proc isCompleteJson*(content: string): bool =
 
 # XML tool call validation
 proc isValidXML*(content: string): bool =
+  ## Basic XML validity check - count matching angle brackets
   ## Basic XML validity check - look for matching tags
   let openTags = content.count('<')
   let closeTags = content.count('>')
   return openTags > 0 and openTags == closeTags
 
 proc isCompleteXML*(content: string): bool =
+  ## Check if XML tool call appears complete with closing tags
   ## Check if XML tool call appears complete
   let trimmed = content.strip()
   
@@ -99,12 +105,15 @@ proc isCompleteXML*(content: string): bool =
 
 # Generate unique tool call ID
 proc generateToolCallId*(): string =
+  ## Generate unique tool call ID with timestamp and random component
   ## Generate unique tool call ID
   let timestamp = getTime().toUnix()
   return "call_" & $timestamp & "_" & $rand(9999)
 
 # Parse Qwen3's specific XML format
 proc parseQwenXMLFragment*(content: string): seq[LLMToolCall] =
+  ## Parse Qwen3's XML format and GLM variants with different tag structures
+  ## Supports: <tool_call>, <toolcall>, <arg_key>/<arg_value>, <argkey>/<argvalue>
   ## Parse Qwen3's XML format: <tool_call><function=name><parameter=key>value</parameter></function></tool_call>
   result = @[]
   
@@ -268,6 +277,7 @@ proc parseQwenXMLFragment*(content: string): seq[LLMToolCall] =
 # Parse Anthropic's XML format  
 proc parseAnthropicXMLFragment*(content: string): seq[LLMToolCall] =
   ## Parse Anthropic XML format: <invoke name="tool_name"><parameter name="key">value</parameter></invoke>
+  ## Parse Anthropic XML format: <invoke name="tool_name"><parameter name="key">value</parameter></invoke>
   result = @[]
   
   # Simple string-based parsing for Anthropic format
@@ -324,6 +334,8 @@ proc parseAnthropicXMLFragment*(content: string): seq[LLMToolCall] =
 
 # Error recovery for malformed tool calls
 proc recoverMalformedToolCall*(content: string): Option[LLMToolCall] =
+  ## Attempt to recover tool information from malformed XML using various strategies
+  ## Handles partial tags, missing quotes, and incomplete structures
   ## Attempt to recover tool information from malformed XML
   debug("Attempting to recover malformed tool call from: " & content)
   
@@ -457,6 +469,7 @@ proc recoverMalformedToolCall*(content: string): Option[LLMToolCall] =
 
 # Format-aware validation functions
 proc isValidToolCall*(content: string, format: ToolFormat): bool =
+  ## Check if tool call content is valid for the specified format
   ## Check if tool call content is valid for the given format
   case format:
   of tfOpenAI: return isValidJson(content)
@@ -464,6 +477,7 @@ proc isValidToolCall*(content: string, format: ToolFormat): bool =
   of tfUnknown: return isValidJson(content) or isValidXML(content)
 
 proc isCompleteToolCall*(content: string, format: ToolFormat): bool =
+  ## Check if tool call content is complete for the specified format
   ## Check if tool call content is complete for the given format
   case format:
   of tfOpenAI: return isCompleteJson(content)
@@ -472,6 +486,7 @@ proc isCompleteToolCall*(content: string, format: ToolFormat): bool =
 
 # Main flexible parser
 proc parseToolCallFragment*(parser: var FlexibleParser, content: string): seq[LLMToolCall] =
+  ## Parse tool call fragment with automatic format detection and buffering
   ## Parse tool call fragment with automatic format detection
   result = @[]
   
@@ -524,6 +539,7 @@ proc parseToolCallFragment*(parser: var FlexibleParser, content: string): seq[LL
 
 # Initialize flexible parser
 proc newFlexibleParser*(): FlexibleParser =
+  ## Create new flexible parser instance for multi-format tool call parsing
   ## Create new flexible parser instance
   result = FlexibleParser(
     xmlBuffer: "",

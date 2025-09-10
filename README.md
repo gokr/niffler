@@ -4,27 +4,27 @@
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/Version-0.2.2-green.svg)
 
-**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers and a tool system for file operations, command execution, and web interactions. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
+**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using Sqlite3. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
-Niffler is a work-in-progress. Some of the design ideas that perhaps **stand out** are these:
+Niffler is a work-in-progress. Some of the things that perhaps **stand out** are these:
 
 - **Native multithreaded**. The tool executions are in one thread. The UI is in one thread. The communication with the LLM is in one thread.
-- **CLI Interface**. Built on linecross for input handling with tab completion, history and more. A bit less polished as Ink-based tools but very terminal friendly and *cross platform*.
-- **Has a client side database**. Just started using it, but Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
-- **Not yet another node.js thing**. Nim is a different eco system.
-- **Portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
+- **CLI Interface**. Built on linecross for input handling with tab completion, history and more. A bit less polished as Ink-based tools but very terminal friendly and *cross platform* including copy paste support.
+- **Has a client side database**. Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
+- **Single binary and portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
 
 
-## 🚀 Features
-
-### Core AI Capabilities
+## AI Capabilities
 - **Multi-Model Support**: Seamlessly switch between different AI models (OpenAI, Anthropic, and other OpenAI-compatible APIs)
-- **Interactive Chat Mode**: Real-time conversation with streaming responses
-- **Single Prompt Mode**: Send individual prompts directly from your command line and get immediate responses
+- **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
+- **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
+- **Single Prompt Mode**: Can be used in scripting to send one shot prompts and get an immediate response
 - **Model Management**: Easy configuration and switching between AI models
-- **Single binary and Cross Platform**: Written in Nim means it compiles to a single binary.
+- **Thinking Token Support**: Manages, shows and stores thinking tokens separately  
+- **NIFFLER.md handling**: Customizable system prompts and instruction files with include directive support
+
 
 ### Tool System
 Niffler includes a tool system that enables AI assistants to interact with your development environment. All tool executions are being run in a separate thread. It should be easy to add more builtin tools:
@@ -36,14 +36,7 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **edit**: Advanced file editing with diff-based operations and backup creation
 - **create**: Safe file creation with directory management and permission control
 - **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
-
-### Advanced Features
-- **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
-- **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
-- **NIFFLER.md Integration**: Customizable system prompts and instruction files with include directive support
-- **Database Persistence**: SQLite-based prompt and response history with cross-session persistence
-- **Debug Logging**: Logging with info & debug levels and optional HTTP request/response dumping
-- **Thinking Token Support**: Next-generation reasoning capabilities for advanced AI models (GPT-5, Claude 4, DeepSeek R1)  
+- **todolist**: Task management and todo tracking with persistent state and progress monitoring
 
 ## 📦 Installation
 

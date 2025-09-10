@@ -22,7 +22,6 @@ import ../core/constants
 
 proc htmlToText*(html: string): string =
   ## Convert HTML content to plain text with proper formatting and spacing
-  ## Convert HTML to plain text
   try:
     let xml = parseHtml(html)
     var textResult = ""
@@ -46,7 +45,6 @@ proc htmlToText*(html: string): string =
 
 proc createHttpClient*(timeout: int): HttpClient =
   ## Create HTTP client with specified timeout and appropriate headers
-  ## Create HTTP client with timeout
   result = newHttpClient(timeout = timeout)
   result.headers = newHttpHeaders({
     "User-Agent": "Niffler/1.0",

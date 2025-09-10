@@ -9,6 +9,7 @@ import theme
 import diff_visualizer
 import diff_types
 import ../types/messages
+import ../core/constants
 
 type
   ToolVisualizationConfig* = object
@@ -33,7 +34,7 @@ proc getDefaultToolConfig*(): ToolVisualizationConfig =
     showToolResults: true,
     indentResults: true,
     useColors: true,
-    maxResultLength: 2000,
+    maxResultLength: TOOL_RESULT_MAX_LENGTH_SHORT,
     showDiffs: true
   )
 
@@ -55,7 +56,7 @@ proc getVerboseToolConfig*(): ToolVisualizationConfig =
     showToolResults: true,
     indentResults: true,
     useColors: true,
-    maxResultLength: 5000,
+    maxResultLength: TOOL_RESULT_MAX_LENGTH_LONG,
     showDiffs: true
   )
 

@@ -36,6 +36,7 @@ var commandRegistry = initTable[string, tuple[info: CommandInfo, handler: Comman
 
 proc registerCommand*(name: string, description: string, usage: string, 
                      aliases: seq[string], handler: CommandHandler) =
+  ## Register a new command with its handler and aliases in the command system
   ## Register a new command
   let info = CommandInfo(
     name: name,

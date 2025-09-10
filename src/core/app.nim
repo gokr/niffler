@@ -31,6 +31,7 @@ var modeInitialized {.threadvar.}: bool
 
 # Simple file reference processing
 proc isValidTextFileForReference*(path: string): bool =
+  ## Check if a file is valid for @ referencing (text files only, no binary files)
   ## Check if a file is valid for @ referencing (text files only)
   let info = getFileInfo(path)
   
@@ -69,6 +70,8 @@ proc isValidTextFileForReference*(path: string): bool =
   return false
 
 proc processFileReferencesInText*(input: string): tuple[processedText: string, toolCalls: seq[LLMToolCall]] =
+  ## Process @ file references in input text and convert to tool calls
+  ## Returns modified text and generated read tool calls for valid files
   ## Process @ file references in input text and convert to tool calls
   result.processedText = input
   result.toolCalls = @[]
@@ -131,6 +134,7 @@ const
   CHARS_PER_TOKEN_ESTIMATE* = 4  # Rough estimate: 1 token ≈ 4 characters
 
 proc estimateTokenCount*(messages: seq[Message]): int =
+  ## Rough token count estimation for context management (1 token ≈ 4 characters)
   ## Rough token count estimation for context management
   result = 0
   for msg in messages:
@@ -146,6 +150,7 @@ proc estimateTokenCount*(messages: seq[Message]): int =
 
 
 proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_MAX_CONTEXT_TOKENS): seq[Message] =
+  ## Truncate context if it exceeds token limits using sliding window approach
   ## Truncate context if it exceeds token limits using sliding window
   result = messages
   var currentTokens = estimateTokenCount(result)
@@ -208,6 +213,7 @@ proc getModePromptColor*(): ForegroundColor =
 # Cost calculation functions
 
 proc formatCost*(cost: float): string =
+  ## Format cost as currency string with appropriate precision (assumes USD)
   ## Format cost as currency (assumes USD)
   if cost < 0.01:
     return fmt"${cost:.6f}"
@@ -217,6 +223,8 @@ proc formatCost*(cost: float): string =
     return fmt"${cost:.2f}"
 
 proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
+  ## Validate and return API key, or None with error message displayed
+  ## Local servers (localhost/127.0.0.1) don't require API keys
   ## Validate and return API key, or None with error message displayed
   ## Local servers (localhost/127.0.0.1) don't require API keys
   let apiKey = readKeyForModel(modelConfig)
@@ -236,6 +244,8 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
   return some(apiKey)
 
 proc prepareConversationMessages*(text: string): (seq[Message], string) =
+  ## Prepare conversation context with system prompt and process @ file references
+  ## Returns messages with context and unique request ID
   ## Prepare conversation context with system prompt and return messages with request ID
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
@@ -262,6 +272,7 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   return (messages, requestId)
 
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
+  ## Select model from config based on parameter or return default model
   ## Select model from config based on parameter or return default
   if model.len > 0:
     return getModelFromConfig(config, model)
@@ -270,6 +281,7 @@ proc selectModelFromConfig*(config: configTypes.Config, model: string): configTy
 
 
 proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.ModelConfig): (bool, string) =
+  ## Send a prompt interactively and return success status and request ID
   ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   
@@ -283,6 +295,7 @@ proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.M
 
 
 proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, string) =
+  ## Send a prompt asynchronously and return success status and request ID
   ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   let config = loadConfig()
@@ -303,6 +316,7 @@ proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, stri
   return (success, requestId)
 
 proc configureAPIWorker*(modelConfig: configTypes.ModelConfig): bool =
+  ## Configure the API worker with a new model configuration
   ## Configure the API worker with a new model configuration
   let channels = getChannels()
   let apiKeyOpt = validateApiKey(modelConfig)

@@ -1,3 +1,23 @@
+## Validation System Types and Utilities
+##
+## This module provides a comprehensive validation system for Niffler:
+## - JSON schema validation for tool parameters
+## - Type-safe validation with detailed error reporting
+## - Functional validation result types (valid/invalid)
+## - Built-in validators for common data types
+##
+## Key Features:
+## - ValidationResult[T] monad for clean error handling
+## - Detailed validation errors with field-specific information
+## - Composable validation functions for complex types
+## - JSON node validation with type checking
+##
+## Design Philosophy:
+## - Functional approach with result types instead of exceptions
+## - Detailed error messages for debugging
+## - Type-safe validation with generic result types
+## - Composable validators for complex validation scenarios
+
 import std/[json, strutils, tables, options, sequtils, macros, times, logging]
 import ../core/database
 
@@ -15,32 +35,39 @@ type
       errors*: seq[ValidationError]
 
 proc newValidationError*(field, expected, actual: string): ValidationError =
+  ## Create a new validation error with detailed field information
   result.field = field
   result.expected = expected
   result.actual = actual
   result.msg = "Validation failed for field '" & field & "': expected " & expected & ", got " & actual
 
 proc valid*[T](value: T): ValidationResult[T] =
+  ## Create a successful validation result with the validated value
   ValidationResult[T](isValid: true, value: value)
 
 proc invalid*[T](errors: seq[ValidationError]): ValidationResult[T] =
+  ## Create a failed validation result with multiple errors
   ValidationResult[T](isValid: false, errors: errors)
 
 proc invalid*[T](error: ValidationError): ValidationResult[T] =
+  ## Create a failed validation result with a single error
   invalid[T](@[error])
 
 # Basic validators
 proc validateString*(node: JsonNode, field: string = ""): ValidationResult[string] =
+  ## Validate that a JSON node is a string and extract its value
   if node.kind != JString:
     return invalid[string](newValidationError(field, "string", $node.kind))
   return valid(node.getStr())
 
 proc validateInt*(node: JsonNode, field: string = ""): ValidationResult[int] =
+  ## Validate that a JSON node is an integer and extract its value
   if node.kind != JInt:
     return invalid[int](newValidationError(field, "int", $node.kind))
   return valid(node.getInt())
 
 proc validateFloat*(node: JsonNode, field: string = ""): ValidationResult[float] =
+  ## Validate that a JSON node is a float or int and extract its value as float
   if node.kind != JFloat and node.kind != JInt:
     return invalid[float](newValidationError(field, "float", $node.kind))
   if node.kind == JFloat:

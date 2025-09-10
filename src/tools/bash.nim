@@ -1,11 +1,25 @@
+## Bash Command Execution Tool
+##
+## This tool provides secure command execution with timeout protection and
+## non-zero exit code handling. It returns structured JSON output for
+## non-zero exit codes instead of raising exceptions.
+##
+## Features:
+## - Command timeout protection (default 30 seconds)
+## - JSON output for failed commands with exit codes
+## - Input validation and sanitization
+## - Safe command execution through common utilities
+
 import std/json
 import ../types/tools
+import ../core/constants
 import common
 
 proc executeBash*(args: JsonNode): string =
-  ## Execute bash command
+  ## Execute bash command with timeout and exit code handling
+  ## Returns output on success or JSON with exit code info on failure
   let command = getArgStr(args, "command")
-  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: 30000
+  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: DEFAULT_TIMEOUT
     
   if command.len == 0:
     raise newToolValidationError("bash", "command", "non-empty string", "empty string")

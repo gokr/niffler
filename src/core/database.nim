@@ -1,3 +1,19 @@
+## Database Management Module
+##
+## This module provides comprehensive database functionality for Niffler:
+## - Support for SQLite and TiDB backends with connection pooling
+## - Conversation management with metadata tracking
+## - Message persistence with tool call support
+## - Token usage logging and cost tracking
+## - Thinking token storage and retrieval
+## - Automatic database migrations and schema management
+##
+## Architecture:
+## - Uses debby for database abstraction with connection pooling
+## - Supports both local SQLite and distributed TiDB
+## - Thread-safe operations with proper transaction handling
+## - Efficient querying with prepared statements and indexing
+
 import std/[options, tables, strformat, os, times, strutils, algorithm, logging, json, sequtils]
 import ../types/[config, messages, mode]
 import config

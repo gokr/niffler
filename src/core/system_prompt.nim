@@ -208,18 +208,18 @@ The todolist tool provides structure for complex tasks while maintaining visibil
 """
 
 proc getAvailableToolsList*(): string =
-  ## Get formatted list of available tools for system prompt
+  ## Get formatted list of available tools from the registry for system prompt
   return registry.getAvailableToolsList()
 
 proc getCurrentDirectoryInfo*(): string =
-  ## Get current working directory information
+  ## Get current working directory information safely with error handling
   try:
     return getCurrentDir()
   except:
     return "Unknown"
 
 proc getOSInfo*(): string =
-  ## Get basic OS information
+  ## Get basic OS information using compile-time platform detection
   when defined(windows):
     return "Windows"
   elif defined(macosx):
@@ -230,7 +230,7 @@ proc getOSInfo*(): string =
     return "Unix-like"
 
 proc getGitInfo*(): string =
-  ## Get comprehensive git repository information if available
+  ## Get comprehensive git repository information including branch and status
   try:
     if not dirExists(".git"):
       return "\n- Git repository: No"
@@ -266,6 +266,7 @@ proc getGitInfo*(): string =
     return ""
 
 proc getProjectInfo*(): string =
+  ## Get project context information without hardcoded assumptions about project type
   ## Get basic project context without hardcoded assumptions
   var additionalInfo = ""
   
@@ -304,6 +305,7 @@ proc getProjectInfo*(): string =
   return additionalInfo
 
 proc parseMarkdownSections*(content: string): Table[string, string] =
+  ## Parse markdown content and extract sections under h1 headings for system prompt customization
   ## Parse markdown content and extract sections under h1 headings
   result = initTable[string, string]()
   let lines = content.splitLines()
@@ -330,6 +332,7 @@ proc parseMarkdownSections*(content: string): Table[string, string] =
     result[currentHeading] = currentContent.join("\n").strip()
 
 proc processFileIncludes*(content: string, basePath: string): string =
+  ## Process @include directives in markdown content and replace with file contents
   ## Process @include directives in content and replace with file contents
   result = content
   let lines = content.splitLines()
@@ -357,7 +360,7 @@ proc processFileIncludes*(content: string, basePath: string): string =
   result = processedLines.join("\n")
 
 proc extractSystemPromptsFromNiffler*(): tuple[common: string, planMode: string, codeMode: string] =
-  ## Extract system prompts from NIFFLER.md searching project hierarchy then config dir
+  ## Extract custom system prompts from NIFFLER.md searching project hierarchy then config dir
   var searchPaths: seq[string] = @[]
   
   # First search up the project hierarchy
@@ -399,7 +402,7 @@ proc extractSystemPromptsFromNiffler*(): tuple[common: string, planMode: string,
   return ("", "", "")
 
 proc findInstructionFiles*(): string =
-  ## Find and include instruction files, searching project hierarchy then config dir
+  ## Find and include instruction files (CLAUDE.md, OCTO.md, etc.) from project or config directory
   var instructionContent = ""
   
   # Get instruction files from config, or use defaults
@@ -463,7 +466,7 @@ proc findInstructionFiles*(): string =
   return instructionContent
 
 proc generateSystemPrompt*(mode: AgentMode): string =
-  ## Generate complete system prompt based on current mode and context
+  ## Generate complete context-aware system prompt based on current mode and environment
   let availableTools = getAvailableToolsList()
   let currentDir = getCurrentDirectoryInfo()
   let currentTime = now().format("yyyy-MM-dd HH:mm:ss")
@@ -510,7 +513,7 @@ proc generateSystemPrompt*(mode: AgentMode): string =
   return systemPrompt
 
 proc createSystemMessage*(mode: AgentMode): Message =
-  ## Create a system message with generated prompt
+  ## Create a system message with generated prompt for the specified agent mode
   return Message(
     role: mrSystem,
     content: generateSystemPrompt(mode)

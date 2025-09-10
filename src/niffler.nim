@@ -22,19 +22,19 @@ import types/config as configTypes
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2") 
 
 proc init(configPath: string = "") =
-  ## Initialize Niffler configuration
+  ## Initialize Niffler configuration at specified path or default location
   let path = if configPath.len == 0: getDefaultConfigPath() else: configPath
   initializeConfig(path)
 
-proc showModels() = 
-  ## List available models and configurations
+proc showModels() =
+  ## List available models and their base URLs from configuration
   let config = loadConfig()
   echo "Available models:"
   for model in config.models:
     echo "  ", model.nickname, " (", model.baseUrl, ")"
 
 proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""): DatabaseBackend =
-  ## Initialize common app systems
+  ## Initialize common application systems (logging, channels, database) and return database backend
   if logFile.len > 0:
     # Setup file and console logging
     let logManager = logFileModule.initLogFileManager(logFile)
@@ -62,7 +62,7 @@ proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""
   initSessionManager(pool)
 
 proc selectModelFromConfig(modelName: string, config: configTypes.Config): configTypes.ModelConfig =
-  ## Select model from configuration by name or use default
+  ## Select model from configuration by nickname or use default model with warning
   if modelName.len > 0:
     # Find model by nickname
     for model in config.models:
@@ -77,7 +77,7 @@ proc selectModelFromConfig(modelName: string, config: configTypes.Config): confi
     quit(1)
 
 proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "") =
-  ## Start interactive mode with CLI interface
+  ## Start interactive CLI mode with specified model and logging configuration
   # Initialize app systems and get database
   let databaseBackend = initializeAppSystems(level, dump, logFile)
   

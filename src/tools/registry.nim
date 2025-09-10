@@ -51,6 +51,7 @@ var toolSeq {.threadvar.}: seq[Tool]
 var registryInitialized {.threadvar.}: bool
 
 proc createBashTool(): Tool =
+  ## Create the bash command execution tool with schema and execution function
   let parameters = %*{
     "type": "object",
     "properties": {
@@ -306,7 +307,7 @@ proc createTodolistTool(): Tool =
   )
 
 proc initializeRegistry() =
-  ## Initialize the tool registry with all available tools
+  ## Initialize the tool registry with all available tools (thread-safe, idempotent)
   if registryInitialized:
     return
     
@@ -346,7 +347,7 @@ proc getTool*(name: string): Option[Tool] =
     none(Tool)
 
 proc executeTool*(tool: Tool, args: JsonNode): string =
-  ## Execute a tool with the given arguments
+  ## Execute a tool with the given arguments using object variant dispatch
   case tool.kind:
   of tkBash: tool.bashExecute(args)
   of tkRead: tool.readExecute(args)
@@ -357,12 +358,12 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
   of tkTodolist: tool.todolistExecute(args)
 
 proc getAllToolSchemas*(): seq[ToolDefinition] =
-  ## Get schemas for all registered tools
+  ## Get JSON schemas for all registered tools (for LLM function calling)
   initializeRegistry()
   return toolSeq.mapIt(it.schema)
 
 proc getToolSchema*(name: string): Option[ToolDefinition] =
-  ## Get schema for a specific tool
+  ## Get JSON schema for a specific tool by name
   let maybeTool = getTool(name)
   if maybeTool.isSome():
     some(maybeTool.get().schema)
@@ -370,7 +371,7 @@ proc getToolSchema*(name: string): Option[ToolDefinition] =
     none(ToolDefinition)
 
 proc requiresConfirmation*(toolName: string): bool =
-  ## Check if a tool requires confirmation before execution
+  ## Check if a tool requires user confirmation before execution (dangerous tools)
   let maybeTool = getTool(toolName)
   if maybeTool.isSome():
     maybeTool.get().requiresConfirmation
@@ -378,7 +379,7 @@ proc requiresConfirmation*(toolName: string): bool =
     false
 
 proc getAvailableToolsList*(): string =
-  ## Get formatted list of available tools for system prompt
+  ## Get comma-separated list of available tools with descriptions for system prompt
   initializeRegistry()
   let toolDescriptions = toolSeq.mapIt(it.name & " - " & it.description)
   return toolDescriptions.join(", ")

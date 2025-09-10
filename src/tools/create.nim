@@ -1,16 +1,30 @@
+## File Creation Tool
+##
+## This tool provides secure file creation functionality with:
+## - Parent directory creation
+## - Content writing with validation
+## - File permission handling
+## - Path sanitization and security checks
+##
+## Features:
+## - Creates parent directories automatically
+## - Validates paths to prevent security issues
+## - Supports content creation with proper encoding
+## - Error handling with detailed feedback
+
 import std/[os, json, times]
 import ../types/tools
 import common
 
 
 proc createDirectories*(path: string) =
-  ## Create parent directories if they don't exist
+  ## Create parent directories for the given file path if they don't exist
   let (dir, _) = splitPath(path)
   if dir.len > 0 and not dirExists(dir):
     safeCreateDir(dir)
 
 proc setFilePermissions*(path: string, permissions: string) =
-  ## Set file permissions
+  ## Set file permissions (placeholder implementation for future enhancement)
   try:
     # For now, we'll skip setting permissions as it's complex in Nim
     # This can be implemented later with proper permission handling
@@ -19,7 +33,7 @@ proc setFilePermissions*(path: string, permissions: string) =
     raise newToolExecutionError("create", "Failed to set permissions: " & e.msg, -1, "")
 
 proc createFileWithContent*(path: string, content: string, permissions: string) =
-  ## Create file with content and set permissions
+  ## Create file with specified content and set permissions
   try:
     writeFile(path, content)
     setFilePermissions(path, permissions)
@@ -27,7 +41,7 @@ proc createFileWithContent*(path: string, content: string, permissions: string) 
     raise newToolExecutionError("create", "Failed to create file: " & e.msg, -1, "")
 
 proc executeCreate*(args: JsonNode): string =
-  ## Execute create file operation
+  ## Execute file creation operation with validation and error handling
   validateArgs(args, @["path", "content"])
   let path = getArgStr(args, "path")
   let content = getArgStr(args, "content")

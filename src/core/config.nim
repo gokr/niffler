@@ -1,3 +1,20 @@
+## Configuration Management Module
+##
+## This module handles all configuration-related functionality for Niffler:
+## - Loading and saving JSON configuration files
+## - Managing API keys securely with file permissions
+## - Platform-appropriate config directory detection
+## - Model configuration with OpenAI protocol parameters
+## - Database configuration (SQLite/TiDB)
+## - Theme configuration and built-in themes
+## - Cost tracking and token usage calculation
+##
+## Configuration Structure:
+## - Main config: ~/.niffler/config.json (Unix) or %APPDATA%/niffler/config.json (Windows)
+## - API keys: ~/.niffler/keys (with restricted permissions)
+## - Database: ~/.niffler/niffler.db (SQLite)
+## - System prompts: ~/.niffler/NIFFLER.md
+
 import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
 import ../types/[config, messages]
 
@@ -15,12 +32,15 @@ proc getConfigDir*(): string =
     joinPath(appdirs.getHomeDir().string, ".niffler")
 
 proc getDefaultConfigPath*(): string =
+  ## Get default path for main configuration file
   joinPath(getConfigDir(), CONFIG_FILE_NAME)
 
 proc getDefaultSqlitePath*(): string =
+  ## Get default path for SQLite database file
   joinPath(getConfigDir(), SQLITE_FILE_NAME)
 
-proc getDefaultKeyPath*(): string = 
+proc getDefaultKeyPath*(): string =
+  ## Get default path for API key storage file 
   joinPath(getConfigDir(), KEY_FILE_NAME)
 
 # Global config manager
@@ -31,6 +51,7 @@ proc initializeConfigManager() =
   initLock(globalConfigManager.lock)
 
 proc parseModelConfig(node: JsonNode): ModelConfig =
+  ## Parse a model configuration from JSON node with OpenAI protocol parameters
   result.nickname = node["nickname"].getStr()
   result.baseUrl = node["baseUrl"].getStr()
   result.model = node["model"].getStr()
@@ -168,6 +189,7 @@ proc parseThemeConfig(node: JsonNode): ThemeConfig =
   result.normal = parseThemeStyleConfig(node.getOrDefault("normal"))
 
 proc parseConfig(configJson: JsonNode): Config =
+  ## Parse complete configuration from JSON with all sections
   result.yourName = configJson["yourName"].getStr()
   
   for modelNode in configJson["models"]:
@@ -212,11 +234,13 @@ proc parseConfig(configJson: JsonNode): Config =
     result.instructionFiles = some(instructionFiles)
 
 proc readConfig*(path: string): Config =
+  ## Read and parse configuration file from specified path
   let content = readFile(path)
   let configJson = parseJson(content)
   return parseConfig(configJson)
 
 proc writeConfig*(config: Config, path: string) =
+  ## Write configuration to JSON file with proper formatting
   let dir = parentDir(path)
   createDir(dir)
   
@@ -344,6 +368,7 @@ proc writeConfig*(config: Config, path: string) =
   writeFile(path, pretty(configJson, 2))
 
 proc readKeys*(): KeyConfig =
+  ## Read API keys from secure key file (creates empty table if file doesn't exist)
   let keyPath = getDefaultKeyPath()
   if not fileExists(keyPath):
     return initTable[string, string]()
@@ -355,6 +380,7 @@ proc readKeys*(): KeyConfig =
     result[key] = val.getStr()
 
 proc writeKeys*(keys: KeyConfig) =
+  ## Write API keys to secure key file with restrictive permissions
   let keyPath = getDefaultKeyPath()
   let dir = parentDir(keyPath)
   createDir(dir)
@@ -369,7 +395,7 @@ proc writeKeys*(keys: KeyConfig) =
 
 # Cost calculation helpers
 proc calculateCosts*(cost: var CostTracking, usage: TokenUsage) =
-  ## Calculate and populate cost totals based on token usage and per-token rates.
+  ## Calculate and populate cost totals based on token usage and per-token rates
   cost.usage = usage
   if cost.inputCostPerMToken.isSome():
     let costPerToken = cost.inputCostPerMToken.get() / 1_000_000.0
@@ -384,14 +410,14 @@ proc calculateCosts*(cost: var CostTracking, usage: TokenUsage) =
   cost.totalCost = cost.totalInputCost + cost.totalOutputCost
 
 proc addUsage*(cost: var CostTracking, inputTokens: int, outputTokens: int) =
-  ## Add token usage and update running totals and costs.
+  ## Add token usage and update running totals and costs
   cost.usage.inputTokens = cost.usage.inputTokens + inputTokens
   cost.usage.outputTokens = cost.usage.outputTokens + outputTokens
   cost.usage.totalTokens = cost.usage.inputTokens + cost.usage.outputTokens
   calculateCosts(cost, cost.usage)
 
 proc createDefaultThemes(): Table[string, ThemeConfig] =
-  ## Create built-in themes
+  ## Create built-in themes (default, dark, light, minimal)
   result = initTable[string, ThemeConfig]()
   
   # Default theme with standard terminal colors
@@ -455,7 +481,7 @@ proc createDefaultThemes(): Table[string, ThemeConfig] =
   )
 
 proc createDefaultNifflerMd*(configDir: string) =
-  ## Create default NIFFLER.md in config directory if it doesn't exist
+  ## Create default NIFFLER.md system prompt file if it doesn't exist
   let nifflerPath = configDir / "NIFFLER.md"
   
   if fileExists(nifflerPath):
@@ -536,6 +562,7 @@ This NIFFLER.md file provides system-wide defaults for all projects, see the NIF
     echo "Warning: Could not create NIFFLER.md at: ", nifflerPath
 
 proc initializeConfig*(path: string) =
+  ## Initialize configuration with sensible defaults and create directory structure
   if fileExists(path):
     echo "Configuration file already exists: ", path
     # Even if config exists, create NIFFLER.md if it doesn't
@@ -605,6 +632,7 @@ proc initializeConfig*(path: string) =
   createDefaultNifflerMd(configDir)
 
 proc loadConfig*(): Config =
+  ## Load configuration from default path (thread-safe, creates if missing)
   if globalConfigManager.configPath.len == 0:
     initializeConfigManager()
     
@@ -618,6 +646,7 @@ proc loadConfig*(): Config =
     release(globalConfigManager.lock)
 
 proc getModelFromConfig*(config: Config, modelOverride: string): ModelConfig =
+  ## Select model from config by nickname or return first model as default
   if modelOverride.len == 0:
     return config.models[0]
     
@@ -628,6 +657,7 @@ proc getModelFromConfig*(config: Config, modelOverride: string): ModelConfig =
   return config.models[0]
 
 proc readKeyForModel*(model: ModelConfig): string =
+  ## Get API key for model (checks env vars, model config, then key file)
   if model.apiEnvVar.isSome():
     let envKey = getEnv(model.apiEnvVar.get())
     if envKey.len > 0:
@@ -640,12 +670,14 @@ proc readKeyForModel*(model: ModelConfig): string =
   return keys.getOrDefault(model.baseUrl, "")
 
 proc assertKeyForModel*(model: ModelConfig): string =
+  ## Get API key for model or raise exception if not found
   let key = readKeyForModel(model)
   if key.len == 0:
     raise newException(ValueError, fmt"No API key defined for {model.baseUrl}")
   return key
 
 proc writeKeyForModel*(model: ModelConfig, apiKey: string) =
+  ## Store API key for a specific model's base URL
   var keys = readKeys()
   keys[model.baseUrl] = apiKey
   writeKeys(keys)
