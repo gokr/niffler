@@ -64,6 +64,8 @@ type
     modelNickname*: string
     messageCount*: int
     lastActivity*: DateTime
+    planModeEnteredAt*: DateTime  # When plan mode was entered (default epoch if never entered)
+    planModeProtectedFiles*: string  # JSON array of existing files at plan mode entry
 
   ConversationSession* = object
     conversation*: Conversation
@@ -235,6 +237,18 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     if not hasLastActivity:
       debug("Adding last_activity column to conversation table")
       conn.query("ALTER TABLE conversation ADD COLUMN last_activity DATETIME DEFAULT CURRENT_TIMESTAMP")
+    
+    # Check if plan_mode_entered_at column exists
+    let hasPlanModeEnteredAt = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_entered_at")
+    if not hasPlanModeEnteredAt:
+      debug("Adding plan_mode_entered_at column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_entered_at DATETIME")
+    
+    # Check if plan_mode_protected_files column exists
+    let hasPlanModeProtectedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_protected_files")
+    if not hasPlanModeProtectedFiles:
+      debug("Adding plan_mode_protected_files column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_protected_files TEXT")
     
     debug("Conversation schema migration completed")
   except Exception as e:
@@ -508,7 +522,13 @@ proc startConversation*(backend: DatabaseBackend, sessionId: string, title: stri
       updated_at: now(),
       sessionId: sessionId,
       title: title,
-      isActive: true
+      isActive: true,
+      mode: amCode,  # Default mode
+      modelNickname: "default",  # Default model
+      messageCount: 0,
+      lastActivity: now(),
+      planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
+      planModeProtectedFiles: ""  # Initialize to empty string
     )
     backend.pool.insert(conv)
     return conv.id
@@ -954,3 +974,77 @@ proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[T
         return some(lists[0])
       else:
         return none(TodoList)
+
+# Plan Mode Protection functions
+proc setPlanModeProtection*(backend: DatabaseBackend, conversationId: int, protectedFiles: seq[string]): bool =
+  ## Set plan mode protection state for a conversation
+  if backend == nil or conversationId == 0:
+    return false
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let conversations = db.filter(Conversation, it.id == conversationId)
+        if conversations.len == 0:
+          return false
+        
+        var conv = conversations[0]
+        conv.planModeEnteredAt = now()
+        conv.planModeProtectedFiles = $(protectedFiles)  # Convert to JSON string
+        conv.updated_at = now()
+        
+        db.update(conv)
+        debug(fmt"Plan mode protection set for conversation {conversationId} with {protectedFiles.len} protected files")
+        return true
+      except Exception as e:
+        error(fmt"Failed to set plan mode protection: {e.msg}")
+        return false
+
+proc clearPlanModeProtection*(backend: DatabaseBackend, conversationId: int): bool =
+  ## Clear plan mode protection state for a conversation
+  if backend == nil or conversationId == 0:
+    return false
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let conversations = db.filter(Conversation, it.id == conversationId)
+        if conversations.len == 0:
+          return false
+        
+        var conv = conversations[0]
+        conv.planModeEnteredAt = fromUnix(0).utc()  # Set to epoch (indicates not in plan mode)
+        conv.planModeProtectedFiles = ""  # Empty string indicates no protection
+        conv.updated_at = now()
+        
+        db.update(conv)
+        debug(fmt"Plan mode protection cleared for conversation {conversationId}")
+        return true
+      except Exception as e:
+        error(fmt"Failed to clear plan mode protection: {e.msg}")
+        return false
+
+proc getPlanModeProtection*(backend: DatabaseBackend, conversationId: int): tuple[enabled: bool, protectedFiles: seq[string]] =
+  ## Get plan mode protection state for a conversation
+  if backend == nil or conversationId == 0:
+    return (false, @[])
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let conversations = db.filter(Conversation, it.id == conversationId)
+        if conversations.len == 0:
+          return (false, @[])
+        
+        let conv = conversations[0]
+        if conv.planModeEnteredAt.toTime().toUnix() > 0 and conv.planModeProtectedFiles.len > 0:
+          let protectedFiles = to(parseJson(conv.planModeProtectedFiles), seq[string])
+          return (true, protectedFiles)
+        else:
+          return (false, @[])
+      except Exception as e:
+        error(fmt"Failed to get plan mode protection state: {e.msg}")
+        return (false, @[])

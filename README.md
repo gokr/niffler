@@ -128,11 +128,13 @@ Niffler features an intelligent mode system that adapts its behavior based on th
 - Focus on analysis, research, and task breakdown
 - Emphasizes understanding requirements before implementation
 - Encourages thorough exploration of codebases and documentation
+- **File Protection**: Automatically prevents editing files that existed before entering plan mode to maintain separation between planning and implementation phases
 
 **Code Mode:**
 - Focus on implementation and execution
 - Emphasizes making concrete changes and testing
 - Optimized for completing established plans and fixing issues
+- **Full File Access**: Allows editing all files for active development and implementation
 
 ### Thinking Token Support
 
@@ -178,6 +180,30 @@ Add reasoning capabilities to your model configuration:
 - **Multi-Turn Intelligence**: Preserved reasoning context across conversation turns
 
 For detailed information about thinking token implementation and architecture, see [doc/THINK.md](doc/THINK.md).
+
+### Plan Mode File Protection
+
+Niffler implements file protection to maintain clear separation between planning and implementation phases:
+
+**How It Works:**
+- When entering **Plan Mode**, Niffler scans the current directory and subdirectories
+- All existing files are marked as "protected" and stored in the conversation database
+- The AI assistant can read protected files but cannot edit them while in Plan Mode
+- New files created during Plan Mode are allowed to be edited (as they don't exist in the baseline)
+- When switching to **Code Mode**, all file protection is removed for active development
+
+This allows new files and documentation to be created in Plan Mode.
+
+**User Experience:**
+- Transparent operation - protection is applied automatically on mode entry
+- Clear error messages when attempting to edit protected files
+- Visual mode indicators show current protection status
+- Seamless transition between modes with automatic protection management
+
+**Database Integration:**
+- Protection state is persisted across conversation sessions
+- File lists are stored efficiently as JSON in the conversation database
+- Protection is automatically cleared when exiting Plan Mode
 
 ### Enhanced Terminal Features
 

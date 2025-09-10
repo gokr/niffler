@@ -24,8 +24,10 @@
 ## - Automatic backups prevent data loss
 ## - Comprehensive error handling with specific error types
 
-import std/[strutils, json, strformat, logging, os]
+import std/[strutils, json, strformat, logging, os, options]
 import ../types/tools
+import ../types/mode
+import ../core/database, ../core/conversation_manager
 import common
 
 type
@@ -116,6 +118,51 @@ proc rewriteFile*(path: string, newText: string): string =
   ## Rewrite entire file with new content
   return newText
 
+proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
+  ## Check if a file is protected from editing in plan mode
+  ## Returns true if file should be protected (editing should be blocked)
+  {.gcsafe.}:
+    try:
+      # Get current mode from current session
+      let currentSession = getCurrentSession()
+      if not currentSession.isSome():
+        return false  # No active session, no protection
+      
+      # Check if we're in plan mode
+      if currentSession.get().conversation.mode != amPlan:
+        return false  # Not in plan mode, no protection needed
+      
+      # Get plan mode protection state
+      let database = getGlobalDatabase()
+      if database == nil:
+        return false  # No database, no protection
+      
+      let conversationId = currentSession.get().conversation.id
+      let protection = getPlanModeProtection(database, conversationId)
+      
+      if not protection.enabled:
+        return false  # Plan mode protection not enabled
+      
+      # Convert path to relative path for consistent comparison
+      let currentDir = getCurrentDir()
+      let relativePath = if path.isAbsolute():
+        relativePath(path, currentDir)
+      else:
+        path
+      
+      # Check if file is in the protected list
+      for protectedFile in protection.protectedFiles:
+        if protectedFile == relativePath:
+          debug(fmt"File {relativePath} is protected by plan mode")
+          return true
+      
+      debug(fmt"File {relativePath} is not in protected list, allowing edit")
+      return false
+      
+    except Exception as e:
+      error(fmt"Error checking plan mode protection: {e.msg}")
+      return false  # On error, allow the operation (fail open)
+
 proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   ## Execute edit file operation
   # Validate arguments
@@ -183,6 +230,12 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     validateFileExists(sanitizedPath)
     validateFileReadable(sanitizedPath)
     validateFileWritable(sanitizedPath)
+  
+  # Check plan mode protection
+  if checkPlanModeProtection(sanitizedPath):
+    raise newToolValidationError("edit", "file_protection", 
+      "Cannot edit existing files in plan mode. This file existed before plan mode was entered. Switch to code mode to edit existing files, or create new files.",
+      fmt"File '{sanitizedPath}' is protected in plan mode")
   
   try:
     # Read original content

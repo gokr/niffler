@@ -29,6 +29,9 @@ when defined(posix):
 var currentMode {.threadvar.}: AgentMode
 var modeInitialized {.threadvar.}: bool
 
+# Forward declaration
+proc captureCurrentDirectoryState(database: DatabaseBackend, conversationId: int)
+
 # Simple file reference processing
 proc isValidTextFileForReference*(path: string): bool =
   ## Check if a file is valid for @ referencing (text files only, no binary files)
@@ -181,21 +184,83 @@ proc getCurrentMode*(): AgentMode =
 
 proc setCurrentMode*(mode: AgentMode) =
   ## Set the current agent mode (thread-safe)
+  let previousMode = getCurrentMode()
   currentMode = mode
   modeInitialized = true
-  debug(fmt"Mode changed to: {mode}")
+  debug(fmt"Mode changed from {previousMode} to: {mode}")
   
   # Persist mode change to current conversation if available
   try:
+    debug("setCurrentMode: About to call getCurrentSession()")
     let currentSession = getCurrentSession()
+    debug(fmt"setCurrentMode: getCurrentSession() returned, isSome: {currentSession.isSome()}")
     if currentSession.isSome():
       let database = getGlobalDatabase()
       if database != nil:
         let conversationId = currentSession.get().conversation.id
         updateConversationMode(database, conversationId, mode)
         debug(fmt"Persisted mode change to database for conversation {conversationId}")
+        
+        # Handle plan mode protection when entering plan mode
+        if mode == amPlan and previousMode != amPlan:
+          captureCurrentDirectoryState(database, conversationId)
+        # Clear plan mode protection when exiting plan mode
+        elif previousMode == amPlan and mode != amPlan:
+          let success = clearPlanModeProtection(database, conversationId)
+          if success:
+            debug("Plan mode protection cleared when exiting to code mode")
+        
   except Exception as e:
     debug(fmt"Failed to persist mode change to database: {e.msg}")
+
+proc captureCurrentDirectoryState(database: DatabaseBackend, conversationId: int) =
+  ## Capture the current directory state for plan mode protection
+  try:
+    let currentDir = getCurrentDir()
+    var protectedFiles: seq[string] = @[]
+    
+    # Walk the directory tree and collect all files
+    for kind, path in walkDir(currentDir):
+      case kind:
+      of pcFile, pcLinkToFile:
+        # Convert to relative path for consistency
+        let relativePath = relativePath(path, currentDir)
+        protectedFiles.add(relativePath)
+      else:
+        discard
+    
+    # Also check subdirectories recursively (but limit depth to avoid performance issues)
+    proc addFilesRecursively(dir: string, maxDepth: int = 3, currentDepth: int = 0) =
+      if currentDepth >= maxDepth:
+        return
+      
+      try:
+        for kind, path in walkDir(dir):
+          case kind:
+          of pcFile, pcLinkToFile:
+            let relativePath = relativePath(path, currentDir)
+            if relativePath notin protectedFiles:
+              protectedFiles.add(relativePath)
+          of pcDir, pcLinkToDir:
+            # Skip hidden directories and common ignore patterns
+            let dirName = extractFilename(path)
+            if not dirName.startsWith(".") and dirName notin @["node_modules", "target", "build", "__pycache__"]:
+              addFilesRecursively(path, maxDepth, currentDepth + 1)
+      except OSError as e:
+        # Skip directories we can't read
+        debug(fmt"Cannot read directory {dir}: {e.msg}")
+    
+    addFilesRecursively(currentDir)
+    
+    # Set the plan mode protection with captured files
+    let success = setPlanModeProtection(database, conversationId, protectedFiles)
+    if success:
+      info(fmt"Plan mode protection enabled with {protectedFiles.len} protected files")
+    else:
+      warn("Failed to enable plan mode protection")
+      
+  except Exception as e:
+    error(fmt"Failed to capture directory state for plan mode protection: {e.msg}")
 
 proc toggleMode*(): AgentMode =
   ## Toggle between Plan and Code modes, returns new mode

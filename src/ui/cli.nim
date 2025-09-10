@@ -407,6 +407,7 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
     let runtimeMode = getCurrentMode()  # Use actual runtime mode instead of stored mode
     fmt"{currentModelName}({runtimeMode}, {conv.id})"
   else:
+    debug("generatePrompt: currentSession is None, using plain model name")
     currentModelName
 
   if sessionTotal > 0:

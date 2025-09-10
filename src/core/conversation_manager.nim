@@ -28,14 +28,22 @@ type
 
 var globalSession: SessionManager
 
+# Initialize lock at module load time to prevent race conditions
+initLock(globalSession.lock)
+
 proc getCurrentSession*(): Option[ConversationSession] =
-  ## Get the current conversation session if one is active
-  ## Get the current conversation session
-  currentSession
+  ## Get the current conversation session if one is active (thread-safe)
+  debug("getCurrentSession: Acquiring lock")
+  acquire(globalSession.lock)
+  try:
+    debug(fmt"getCurrentSession: currentSession.isSome() = {currentSession.isSome()}")
+    result = currentSession
+  finally:
+    release(globalSession.lock)
+    debug("getCurrentSession: Released lock")
 
 proc syncSessionState*(conversationId: int) =
   ## Synchronize both session systems with the same conversation ID
-  ## Helper function to sync both session systems with the same conversation ID
   acquire(globalSession.lock)
   try:
     globalSession.conversationId = conversationId
@@ -68,7 +76,6 @@ type
 
 proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = cfAll): seq[Conversation] =
   ## List conversations with optional filtering, ordered by last activity descending
-  ## List conversations with optional filtering, ordered by last activity
   if backend == nil:
     return @[]
   
@@ -131,7 +138,6 @@ proc listArchivedConversations*(backend: DatabaseBackend): seq[Conversation] =
 proc createConversation*(backend: DatabaseBackend, title: string = "", 
                         mode: AgentMode = amPlan, modelNickname: string = ""): Option[Conversation] =
   ## Create a new conversation with specified parameters, returns the created conversation
-  ## Create a new conversation with specified parameters
   if backend == nil:
     return none(Conversation)
   
@@ -150,7 +156,9 @@ proc createConversation*(backend: DatabaseBackend, title: string = "",
       mode: mode,
       modelNickname: actualModelNickname,
       messageCount: 0,
-      lastActivity: now()
+      lastActivity: now(),
+      planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
+      planModeProtectedFiles: ""  # Initialize to empty string
     )
     
     try:
@@ -163,7 +171,6 @@ proc createConversation*(backend: DatabaseBackend, title: string = "",
 
 proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversation] =
   ## Retrieve a conversation by its unique ID
-  ## Get a conversation by ID
   if backend == nil:
     return none(Conversation)
   
@@ -204,7 +211,6 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
 
 proc updateConversationActivity*(backend: DatabaseBackend, conversationId: int) =
   ## Update the last activity timestamp for a conversation
-  ## Update the last activity timestamp for a conversation
   if backend == nil or conversationId == 0:
     return
   
@@ -221,7 +227,6 @@ proc updateConversationActivity*(backend: DatabaseBackend, conversationId: int) 
 
 proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: int) =
   ## Recalculate and update the message count for a conversation
-  ## Update the message count for a conversation
   if backend == nil or conversationId == 0:
     return
   
@@ -244,7 +249,6 @@ proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: i
 
 proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode: AgentMode) =
   ## Update the agent mode (Plan/Code) for a conversation
-  ## Update the mode for a conversation
   if backend == nil or conversationId == 0:
     return
   
@@ -260,7 +264,6 @@ proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode
       error(fmt"Failed to update conversation mode: {e.msg}")
 
 proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, modelNickname: string) =
-  ## Update the model nickname for a conversation
   ## Update the model nickname for a conversation
   if backend == nil or conversationId == 0:
     return
@@ -278,7 +281,6 @@ proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, mod
 
 proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Switch to a specific conversation and restore its context/mode/model settings
-  ## Switch to a specific conversation and restore its mode/model context
   if backend == nil:
     return false
   
@@ -313,7 +315,6 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
 
 proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Archive a conversation (set isActive = false) to hide it from main list
-  ## Archive a conversation (set isActive = false)
   if backend == nil:
     return false
   
@@ -337,7 +338,6 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
 
 proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Unarchive a conversation (set isActive = true) to restore it to main list
-  ## Unarchive a conversation (set isActive = true)
   if backend == nil:
     return false
   
@@ -361,7 +361,6 @@ proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool
 
 proc deleteConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Permanently delete a conversation and all its messages (cannot be undone)
-  ## Delete a conversation and all its messages (permanent)
   if backend == nil:
     return false
   
@@ -382,7 +381,6 @@ proc deleteConversation*(backend: DatabaseBackend, conversationId: int): bool =
 
 proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversation] =
   ## Search conversations by title or message content using SQL LIKE patterns
-  ## Search conversations by title or message content
   if backend == nil or query.len == 0:
     return @[]
   
@@ -426,7 +424,6 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
 
 proc getCurrentConversationInfo*(): string =
   ## Get formatted string with current conversation info for display purposes
-  ## Get formatted string with current conversation info for display
   if currentSession.isNone():
     return "No active conversation"
   
@@ -436,7 +433,6 @@ proc getCurrentConversationInfo*(): string =
 
 proc initializeDefaultConversation*(backend: DatabaseBackend) =
   ## Initialize a default conversation if none exists or switch to most recent active
-  ## Initialize a default conversation if none exists
   if backend == nil:
     return
   
@@ -456,16 +452,13 @@ proc initializeDefaultConversation*(backend: DatabaseBackend) =
 # Message management functions for conversation persistence
 proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) =
   ## Initialize session manager with database pool and conversation ID for thread-safe operations
-  ## Initialize session manager with pool and conversation ID
   globalSession.pool = pool
   globalSession.conversationId = conversationId
   globalSession.sessionPromptTokens = 0
   globalSession.sessionCompletionTokens = 0
-  initLock(globalSession.lock)
 
 proc addUserMessage*(content: string): Message =
   ## Add user message to current conversation and persist to database
-  ## Add user message to current conversation
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -488,7 +481,6 @@ proc addUserMessage*(content: string): Message =
 
 proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall])): Message =
   ## Add assistant message to current conversation with optional tool calls
-  ## Add assistant message to current conversation
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -513,7 +505,6 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
 
 proc addToolMessage*(content: string, toolCallId: string): Message =
   ## Add tool result message to current conversation with tool call ID reference
-  ## Add tool result message to current conversation
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -537,7 +528,6 @@ proc addToolMessage*(content: string, toolCallId: string): Message =
 
 proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
   ## Get recent messages from current conversation for display purposes
-  ## Get recent messages from current conversation
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -555,7 +545,6 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
 
 proc getConversationContext*(): seq[Message] =
   ## Get full conversation context for LLM requests (includes all message types)
-  ## Get conversation context for /context command - uses database
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -572,7 +561,6 @@ proc getConversationContext*(): seq[Message] =
 
 proc updateSessionTokens*(inputTokens: int, outputTokens: int) =
   ## Update session token counts with exact values from LLM response
-  ## Update session token counts with exact values from LLM response
   acquire(globalSession.lock)
   try:
     # These are cumulative for the current conversation session
@@ -584,7 +572,6 @@ proc updateSessionTokens*(inputTokens: int, outputTokens: int) =
 
 proc getSessionTokens*(): tuple[inputTokens: int, outputTokens: int, totalTokens: int] =
   ## Get current session token counts for display and cost calculation
-  ## Get current session token counts
   acquire(globalSession.lock)
   try:
     result = (
@@ -597,12 +584,10 @@ proc getSessionTokens*(): tuple[inputTokens: int, outputTokens: int, totalTokens
 
 proc getCurrentConversationId*(): int64 =
   ## Get the current conversation ID for database operations
-  ## Get the current conversation ID
   result = globalSession.conversationId.int64
 
 proc getCurrentMessageId*(): int64 =
   ## Get the current message ID (placeholder implementation)
-  ## Get the current message ID (stub for now)
   result = 0
 
 # Thinking Token Management Functions
@@ -611,7 +596,6 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
                           messageId: Option[int] = none(int), format: ThinkingTokenFormat = ttfNone,
                           importance: string = "medium"): int =
   ## Add thinking token to database and return the assigned ID
-  ## Add thinking token to database and return the thinking token ID
   pool.withDb:
     # Extract content from ThinkingContent
     let content = if thinkingContent.reasoningContent.isSome(): 
@@ -638,7 +622,6 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
     return thinkingToken.id
 
 proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50): seq[ThinkingContent] =
-  ## Retrieve thinking token history for a conversation, most recent first
   ## Retrieve thinking token history for a conversation, most recent first
   result = @[]
   pool.withDb:
@@ -679,7 +662,6 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
 proc getThinkingTokensByImportance*(pool: Pool, conversationId: int, 
                                    importance: string, limit: int = 20): seq[ThinkingContent] =
   ## Get thinking tokens filtered by importance level (low/medium/high)
-  ## Get thinking tokens filtered by importance level
   result = @[]
   pool.withDb:
     let query = """
@@ -720,7 +702,6 @@ proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenForm
                                      messageId: Option[int] = none(int), 
                                      isEncrypted: bool = false): Option[int] =
   ## Store thinking token from streaming response in current conversation (thread-safe)
-  ## Store thinking token from streaming response - thread-safe
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -757,7 +738,6 @@ proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenForm
 
 proc getRecentThinkingTokens*(maxTokens: int = 10): seq[ThinkingContent] =
   ## Get recent thinking tokens from current conversation for analysis
-  ## Get recent thinking tokens from current conversation
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
