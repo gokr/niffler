@@ -976,7 +976,13 @@ proc apiWorkerProc(params: ThreadParams) {.thread.} =
 
 proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
   result.isRunning = true
-  let params = ThreadParams(channels: channels, level: level, dump: dump, database: database, pool: pool)
+  # Create params as heap-allocated object to ensure it stays alive for thread lifetime
+  var params = new(ThreadParams)
+  params.channels = channels
+  params.level = level  
+  params.dump = dump
+  params.database = database
+  params.pool = pool
   createThread(result.thread, apiWorkerProc, params)
 
 proc stopAPIWorker*(worker: var APIWorker) =

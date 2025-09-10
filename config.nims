@@ -10,6 +10,9 @@ switch("linedir", "on")
 switch("debuginfo")
 switch("stacktrace", "on")
 switch("linetrace", "on")
+switch("d", "debug")
+switch("opt", "none")
+switch("debugger", "native")
 
 # Enables system copy paste
 switch("d", "useSystemClipboard")
