@@ -148,3 +148,73 @@ The tool calling system follows OpenAI's function calling specification:
 
 ### Testing Best Practices
 - Always end todolists by running all the tests at the end to verify everything compiles and works
+
+## Thread Safety and GC Safety Patterns
+
+### Tool System GC Safety Requirements
+
+**Critical Rule**: All tool functions in `src/tools/` must be marked with `{.gcsafe.}` pragma to work with the multithreaded tool execution system.
+
+**The Problem**: Nim's GC safety analysis prevents access to global variables from `{.gcsafe.}` functions, even when the actual operations are thread-safe.
+
+**The Solution**: Use the `{.gcsafe.}:` block pattern to bypass compiler checks for code that is actually thread-safe.
+
+### GC Safety Pattern for Tool Functions
+
+**Correct Pattern** (from `src/tools/todolist.nim`):
+```nim
+proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
+  ## Execute todolist tool operations
+  {.gcsafe.}:
+    try:
+      let operation = getArgStr(args, "operation")
+      let db = getGlobalDatabase()  # ✅ Works with {.gcsafe.} block
+      
+      if db == nil:
+        return $ %*{"error": "Database not available"}
+      
+      # ... rest of implementation
+    except Exception as e:
+      return $ %*{"error": e.msg}
+```
+
+**Applied Example** (from `src/tools/edit.nim`):
+```nim
+proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
+  ## Check if a file is protected from editing in plan mode
+  {.gcsafe.}:
+    try:
+      let currentSession = getCurrentSession()
+      let database = getGlobalDatabase()  # ✅ Safe in {.gcsafe.} block
+      
+      # ... protection logic
+      return fileIsProtected
+    except Exception as e:
+      return false  # Fail open on errors
+```
+
+### When to Use GC Safety Blocks
+
+**Use `{.gcsafe.}:` blocks when:**
+- Tool functions need to access global database instance via `getGlobalDatabase()`
+- Accessing conversation manager functions that use global state
+- Working with any global variables that are actually thread-safe but not provably so
+
+**Why This Works:**
+- The database operations use connection pooling with proper synchronization
+- Conversation manager uses thread-safe channel communication
+- Global state access is coordinated through the application's threading architecture
+
+**Safety Considerations:**
+- Only use `{.gcsafe.}:` blocks when you're certain the code is actually thread-safe
+- Document why the block is safe (e.g., "database uses connection pooling")
+- Prefer passing parameters when possible, use global access only when necessary
+
+### Thread Architecture Context
+
+**Tool Worker Thread**: All tool functions execute in a dedicated thread separate from:
+- **Main Thread**: UI and user interaction
+- **API Worker Thread**: LLM communication
+- **Coordination**: Via thread-safe channels defined in `src/core/channels.nim`
+
+This architecture ensures tool execution doesn't block the UI while maintaining safety through proper synchronization patterns.
