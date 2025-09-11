@@ -15,6 +15,20 @@ import debby/sqlite
 # Global conversation session state
 var currentSession: Option[ConversationSession]
 
+# Thread-local conversation context cache
+type ConversationCache = object
+  messages: seq[Message]
+  toolCallCount: int
+  lastCacheTime: Time
+  conversationId: int
+
+var cachedContext {.threadvar.}: ConversationCache
+var cacheValid {.threadvar.}: bool
+
+proc invalidateConversationCache*() {.gcsafe.} =
+  ## Invalidate the conversation context cache
+  cacheValid = false
+
 # Session management for message history and tokens
 type
   SessionManager = object
@@ -33,14 +47,11 @@ initLock(globalSession.lock)
 
 proc getCurrentSession*(): Option[ConversationSession] =
   ## Get the current conversation session if one is active (thread-safe)
-  debug("getCurrentSession: Acquiring lock")
   acquire(globalSession.lock)
   try:
-    debug(fmt"getCurrentSession: currentSession.isSome() = {currentSession.isSome()}")
     result = currentSession
   finally:
     release(globalSession.lock)
-    debug("getCurrentSession: Released lock")
 
 proc syncSessionState*(conversationId: int) =
   ## Synchronize both session systems with the same conversation ID
@@ -476,6 +487,9 @@ proc addUserMessage*(content: string): Message =
       )
       
       debug(fmt"Added user message: {content[0..min(50, content.len-1)]}")
+      
+      # Invalidate conversation context cache
+      invalidateConversationCache()
     finally:
       release(globalSession.lock)
 
@@ -500,6 +514,9 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
       
       let callsInfo = if toolCalls.isSome(): fmt" (with {toolCalls.get().len} tool calls)" else: ""
       debug(fmt"Added assistant message: {content[0..min(50, content.len-1)]}...{callsInfo}")
+      
+      # Invalidate conversation context cache
+      invalidateConversationCache()
     finally:
       release(globalSession.lock)
 
@@ -523,6 +540,9 @@ proc addToolMessage*(content: string, toolCallId: string): Message =
       )
       
       debug(fmt"Added tool result message (ID: {toolCallId}): {content[0..min(50, content.len-1)]}...")
+      
+      # Invalidate conversation context cache
+      invalidateConversationCache()
     finally:
       release(globalSession.lock)
 
@@ -543,18 +563,32 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
     finally:
       release(globalSession.lock)
 
-proc getConversationContext*(): seq[Message] =
-  ## Get full conversation context for LLM requests (includes all message types)
+proc getConversationContext*(): seq[Message] {.gcsafe.} =
+  ## Get full conversation context for LLM requests (includes all message types) with caching
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
       if globalSession.pool != nil and globalSession.conversationId > 0:
-        let (messages, toolCallCount) = getConversationContextFromDb(globalSession.pool, globalSession.conversationId)
-        debug(fmt"Retrieved {messages.len} messages from database with {toolCallCount} tool calls")
-        return messages
-      else:
-        # Fallback: no messages if no database
-        return @[]
+        # Check if cache is valid and for the same conversation
+        if cacheValid and 
+           cachedContext.conversationId == globalSession.conversationId and
+           (getTime() - cachedContext.lastCacheTime) < initDuration(seconds = 60):
+          debug(fmt"Using cached conversation context with {cachedContext.messages.len} messages")
+          result = cachedContext.messages
+          return
+        
+        # Cache miss or invalid - fetch from database
+        var toolCallCount: int
+        (result, toolCallCount) = getConversationContextFromDb(globalSession.pool, globalSession.conversationId)
+        
+        # Update cache
+        cachedContext.messages = result
+        cachedContext.toolCallCount = toolCallCount
+        cachedContext.lastCacheTime = getTime()
+        cachedContext.conversationId = globalSession.conversationId
+        cacheValid = true
+        
+        debug(fmt"Retrieved and cached {result.len} messages from database with {toolCallCount} tool calls")
     finally:
       release(globalSession.lock)
 
