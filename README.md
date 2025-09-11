@@ -317,6 +317,146 @@ You can configure API keys using environment variables:
 export OPENAI_API_KEY="your-openai-key"
 export ANTHROPIC_API_KEY="your-anthropic-key"
 ```
+### Archive and Unarchive Commands
+
+Niffler provides conversation archiving functionality to help you organize your conversations while preserving them for future reference. Archived conversations are hidden from the main conversation list but can be restored when needed.
+
+#### `/archive` Command
+
+Archive a conversation to remove it from the active conversation list:
+
+```bash
+# Archive a conversation by ID
+/archive 123
+
+# Archive multiple conversations
+/archive 456
+/archive 789
+```
+
+**Features:**
+- **Soft Delete**: Archived conversations are preserved in the database but marked as inactive
+- **Tab Completion**: Press Tab after `/archive` to see a formatted table of active conversations
+- **Immediate Effect**: Archived conversations disappear from `/conv` list immediately
+- **Data Preservation**: All messages, tokens, and metadata are retained
+
+**Use Cases:**
+- Clean up your conversation list while keeping important discussions
+- Archive completed projects or resolved issues
+- Organize conversations by project status (active vs. completed)
+
+#### `/unarchive` Command
+
+Restore an archived conversation back to the active list:
+
+```bash
+# Unarchive a conversation by ID
+/unarchive 123
+
+# Unarchive multiple conversations
+/unarchive 456
+/unarchive 789
+```
+
+**Features:**
+- **Full Restoration**: Restores conversations with all original messages and metadata
+- **Tab Completion**: Press Tab after `/unarchive` to see a formatted table of archived conversations
+- **Seamless Integration**: Restored conversations appear immediately in `/conv` list
+- **Context Preservation**: Original mode, model, and conversation settings are maintained
+
+#### Archive Management Workflow
+
+**1. Viewing Conversations:**
+```bash
+# List only active conversations (default)
+/conv
+
+# List all conversations including archived (via search)
+/search your-query
+```
+
+**2. Archiving Process:**
+```bash
+# See active conversations
+/conv
+
+# Archive completed conversation
+/archive 42
+
+# Verify it's archived
+/conv  # Should no longer show conversation 42
+```
+
+**3. Unarchiving Process:**
+```bash
+# Find archived conversations
+/unarchive  # Press Tab to see archived list
+
+# Restore conversation
+/unarchive 42
+
+# Verify it's active
+/conv  # Should now show conversation 42
+```
+
+**4. Search Integration:**
+The `/search` command includes both active and archived conversations, making it easy to find content regardless of archive status:
+```bash
+# Search across all conversations
+/search "project planning"
+
+# Results show both active and archived matches
+```
+
+#### Database Integration
+
+Archived conversations are managed through Niffler's SQLite database system:
+
+- **Storage Location**: 
+  - Linux/macOS: `~/.niffler/niffler.db`
+  - Windows: `%APPDATA%\niffler\niffler.db`
+- **Data Structure**: Uses `is_active` boolean field in `conversation` table
+- **Performance**: Lightweight boolean toggle operation
+- **Persistence**: Archive status survives application restarts
+
+#### Best Practices
+
+**When to Archive:**
+- Completed projects or tasks
+- Resolved issues or debugging sessions
+- Old reference conversations you might need later
+- Conversations you want to keep but don't need active access to
+
+**When to Unarchive:**
+- Revisiting past projects or decisions
+- Referencing old solutions or approaches
+- Continuing paused conversations
+- Researching historical context
+
+**Archive Management Tips:**
+- Use descriptive conversation titles to easily identify them later
+- Archive conversations in batches when cleaning up
+- Use `/search` to find specific content in archived conversations
+- Consider archiving rather than deleting to preserve valuable context
+
+#### Integration with Other Commands
+
+The archive system integrates seamlessly with Niffler's conversation management:
+
+- **`/conv`**: Shows only active conversations by default
+- **`/search`**: Searches across both active and archived conversations
+- **`/new`**: Creates new active conversations
+- **`/info`**: Shows current conversation status (active or archived)
+- **Tab Completion**: Context-aware completion shows appropriate conversation lists
+
+### Configuration Management
+```bash
+# Initialize configuration
+niffler init
+
+# Initialize with custom path
+niffler init --config-path /path/to/config.json
+```
 
 ### NIFFLER.md System Prompt Customization
 

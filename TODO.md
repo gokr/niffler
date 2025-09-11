@@ -1,6 +1,6 @@
 # Niffler Development Roadmap
 
-*Consolidated roadmap and implementation guide - Last updated: August 2025*
+*Consolidated roadmap and implementation guide - Last updated: September 11, 2025*
 
 ## Project Overview
 
@@ -38,10 +38,11 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 
 ### **High Priority: Core Agentic Features**
 
-#### **1. Plan/Code Mode System**
+#### **1. Plan/Code Mode System** ✅
 - ✅ **Plan Mode** - Analysis, research, and planning focus with specialized prompts
 - ✅ **Code Mode** - Implementation mode that executes plans with specialized prompts
 - ✅ **Mode Switching** - Seamless transition between planning and implementation (Shift+Tab)
+- ✅ **Plan Mode File Protection** - Prevents editing existing files when in plan mode (implemented Sept 2025)
 
 #### **2. Dynamic System Prompt Generation** 
 *Crucial for agentic behavior*
@@ -61,11 +62,14 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ **User Approval Flow** - Show proposed todo updates before applying (bulk_update operation)
 - ✅ **Progress Integration** - Link todos to actual implementation progress with state management
 - ✅ **Plan Mode Integration** - Generate comprehensive implementation plans as todos
+- ✅ **Complete Test Coverage** - Comprehensive test suite added (Sept 2025)
 
 #### **4. Enhanced Message Persistence**
 *Building on existing SQLite foundation*
 - ✅ **Basic Conversation Management** - Full conversation tracking with SQLite
 - ✅ **Message History** - Complete message persistence with timestamps
+- ✅ **Conversation Cache Per Thread** - Thread-safe conversation caching (Sept 2025)
+- ✅ **Complete Session Management** - Robust conversation switching and persistence
 - ❌ **Tool Call Integration** - Store tool calls and results with rich metadata  
 - ❌ **Message Metadata** - Support summary flags, tool metadata
 - ❌ **Rich Content Support** - Handle multiple content blocks per message
@@ -88,6 +92,9 @@ Niffler is an AI-powered terminal assistant written in Nim, designed to provide 
 - ✅ **Markdown Rendering** - CLI markdown renderer with theme support (markdown_cli.nim)
 - ✅ **Colored Output** - Theme system with colored diffs using hldiff (diff_visualizer.nim)
 - ✅ **Mode Indicators** - Plan/Code mode display with colors in CLI
+- ✅ **Mode State Management** - Separate mode state file (mode_state.nim) with proper state persistence
+- ✅ **Nancy Table Formatting** - Enhanced table display for conversation management
+- ✅ **Duplicate Tool Call Handling** - Intelligent duplicate detection with graceful recovery
 - ❌ **Enhanced help system** - Update for new Plan/Code workflow
 - ❌ **Status Indicators** - Model, token count, connection status
 - ❌ **History Navigation** - Arrow key navigation through prompt history
@@ -103,6 +110,10 @@ ex
 - ✅ **Encryption Support** - Handle both clear-text and redacted/encrypted thinking blocks
 - ✅ **Context-Aware Windowing** - Intelligent preservation of important reasoning content
 - ✅ **Provider Abstraction** - Unified interface while preserving provider-specific features
+- ✅ **CLI Integration** - Enhanced UI for thinking token display during conversations
+- ✅ **Database Integration** - Complete storage and retrieval of thinking tokens with cost tracking
+- ✅ **Test Infrastructure** - Comprehensive test suite for thinking token integration
+- ✅ **Configuration Support** - Model configuration for reasoning levels and visibility settings
 
 #### **8. Multiple Provider Support** *(MEDIUM PRIORITY)*
 - ❌ **Anthropic Integration** - Dedicated Claude API client with thinking token support
@@ -184,26 +195,26 @@ ex
 *All thinking token features have been successfully implemented*
 
 #### 7.1: Multi-Provider Thinking Architecture ✅
-- [x] Implement Anthropic thinking block parser (streaming XML-like format)
-- [x] Add OpenAI reasoning content handler (native reasoning_content field)
-- [x] Create provider detection and routing logic
+- ✅ Implement Anthropic thinking block parser (streaming XML-like format)
+- ✅ Add OpenAI reasoning content handler (native reasoning_content field)
+- ✅ Create provider detection and routing logic
 
 #### 7.2: Unified Thinking Token IR ✅
-- [x] Extend message types with reasoningContent, encryptedReasoningContent, reasoningId
-- [x] Create thinking token abstraction layer
-- [x] Add provider-specific metadata support
+- ✅ Extend message types with reasoningContent, encryptedReasoningContent, reasoningId
+- ✅ Create thinking token abstraction layer
+- ✅ Add provider-specific metadata support
 
 #### 7.3: Streaming and Budget Management ✅
-- [x] Implement real-time thinking token processing during streaming
-- [x] Add configurable reasoning budgets (low/medium/high)
-- [x] Create dynamic token allocation between reasoning and output
+- ✅ Implement real-time thinking token processing during streaming
+- ✅ Add configurable reasoning budgets (low/medium/high)
+- ✅ Create dynamic token allocation between reasoning and output
 
 #### 7.4: Database Integration and Cost Tracking ✅
-- [x] Extend database schema with conversation_thinking_tokens table
-- [x] Implement conversation manager functions for thinking token storage/retrieval
-- [x] Add system prompt enhancement with thinking token capabilities
-- [x] Integrate thinking token cost tracking with existing cost system
-- [x] Create comprehensive integration tests for thinking tokens
+- ✅ Extend database schema with conversation_thinking_tokens table
+- ✅ Implement conversation manager functions for thinking token storage/retrieval
+- ✅ Add system prompt enhancement with thinking token capabilities
+- ✅ Integrate thinking token cost tracking with existing cost system
+- ✅ Create comprehensive integration tests for thinking tokens
 
 ### **Phase 8: Provider Support (MEDIUM PRIORITY)**
 
@@ -275,15 +286,17 @@ Target: Full agentic coding assistant capability with Plan/Code workflow support
 5. ✅ **Real Streaming & Tool Calling**: COMPLETED - Curly-based SSE with OpenAI compatibility
 6. ✅ **Basic UI Enhancements**: COMPLETED - Markdown rendering, colored output, mode indicators
 
-**Current High Priority:**
-1. **Thinking Token Support**: Critical for next-generation reasoning models (GPT-5, Claude 4)
-2. **Enhanced Message Persistence**: Rich tool metadata storage and conversation summarization
-3. **Advanced Context Management**: User-controlled condensing and transparent operations
+**Current High Priority (Updated September 2025):**
+1. ✅ **Thinking Token Support**: COMPLETED - Critical foundation for next-generation reasoning models (GPT-5, Claude 4)
+2. ✅ **Plan Mode File Protection**: COMPLETED - Prevents editing files that existed before entering plan mode
+3. **Enhanced Message Persistence**: Rich tool metadata storage and conversation summarization
+4. **Advanced Context Management**: User-controlled condensing and transparent operations
 
 **Next Phase Focus:**
-- Thinking token architecture and streaming
-- Multi-provider support (Anthropic integration)
-- Advanced UI features (status indicators, history navigation)
+- Complete Phase 6: User Experience enhancements
+- Enhanced message persistence with rich tool metadata
+- Advanced context management features  
+- Plan mode safety improvements
 
 ## Key Insights from Research
 
@@ -379,3 +392,104 @@ type ToolCallTracker = object
 **Why Low Priority:** The current system successfully prevents the core problem (infinite loops). Enhanced features would improve user experience but aren't critical for basic functionality.
 
 This roadmap represents a focused path toward creating a sophisticated agentic coding assistant while maintaining Niffler's core design principles and Nim-based architecture.
+
+## Phase 6 Completion: Immediate Implementation Tasks (September 2025)
+
+### **1. Plan Mode File Protection** *(CRITICAL - COMPLETED ✅)*
+*Essential for plan mode safety and user trust*
+
+**Database Schema Extension:**
+- ✅ Add `planModeEnteredAt: Option[DateTime]` to conversation sessions
+- ✅ Add `planModeProtectedFiles: seq[string]` to track existing files  
+- ✅ Update database migration scripts for new fields
+
+**Mode Entry Tracking:**
+- ✅ Modify `setCurrentMode()` in `src/core/app.nim` to capture file state
+- ✅ Scan current directory when entering plan mode
+- ✅ Store existing file list in conversation session
+
+**Edit Tool Protection:**
+- ✅ Add `checkPlanModeProtection(path: string): bool` in `src/tools/edit.nim`
+- ✅ Integrate protection check into `executeEdit()` function
+- ✅ Provide clear error messages for protected files
+
+**Session Management:**
+- ✅ Add functions to store/retrieve plan mode protection state
+- ✅ Handle session cleanup when exiting plan mode
+- ✅ Update conversation manager for protection state
+
+### **2. Enhanced Message Persistence** *(HIGH PRIORITY)*
+*Building on solid SQLite foundation*
+
+**Tool Call Integration:**
+- [ ] Extend database schema to store tool calls with rich metadata
+- [ ] Track tool execution time, success/failure, parameters
+- [ ] Link tool calls to specific messages and conversations
+
+**Message Metadata Support:**
+- [ ] Add summary flags to mark condensed messages
+- [ ] Store tool metadata (execution context, timing, results)
+- [ ] Support multiple content blocks per message
+
+**Rich Content Support:**
+- [ ] Handle multi-part messages (text + code + images)
+- [ ] Store content type metadata for different message parts
+- [ ] Support message threading and reply structures
+
+**Conversation Summarization:**
+- [ ] Add marking system for condensed summaries
+- [ ] Implement LLM-powered summarization integration
+- [ ] Track original vs summarized content relationships
+
+### **3. Advanced Context Management** *(HIGH PRIORITY)*
+*User-controlled and transparent*
+
+**User-Controlled Condensing:**
+- [ ] Add user preference for condensing vs sliding window
+- [ ] Implement interactive condensing approval flow
+- [ ] Provide context size indicators and warnings
+
+**LLM-Powered Summarization:**
+- [ ] Create summarization tool for context condensing
+- [ ] Implement fallback to sliding window if summarization fails
+- [ ] Track summarization quality and user feedback
+
+**Transparent Management:**
+- [ ] Add clear indicators when context operations occur
+- [ ] Show before/after token counts for context changes
+- [ ] Provide undo/restore options for context modifications
+
+**Advanced @ Referencing:**
+- [ ] Extend @ syntax for folder references (@folder/)
+- [ ] Support glob patterns in @ references (@*.py, @src/*)
+- [ ] Add recursive directory inclusion capabilities
+
+### **4. UI/UX Polish** *(MEDIUM PRIORITY)*
+*Completing the user experience layer*
+
+**Enhanced Help System:**
+- [ ] Update `/help` command for Plan/Code workflow
+- [ ] Add contextual help for current mode
+- [ ] Document plan mode file protection behavior
+
+**Status Indicators:**
+- [ ] Show current model in prompt/status line
+- [ ] Display token count and context window usage
+- [ ] Add connection status indicators
+
+**History Navigation:**
+- [ ] Implement arrow key navigation through command history
+- [ ] Add search functionality in command history
+- [ ] Persist command history across sessions
+
+### **Implementation Priority Order:**
+1. **Plan Mode File Protection** - Critical safety feature
+2. **Enhanced Message Persistence** - Foundation for advanced features
+3. **Advanced Context Management** - User experience improvements
+4. **UI/UX Polish** - Final user experience enhancements
+
+### **Success Criteria:**
+- Plan mode cannot accidentally modify existing files
+- Rich tool metadata available for debugging and analytics
+- Users have full control over context management operations
+- Professional-grade UI experience matching modern CLI tools
