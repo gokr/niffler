@@ -138,7 +138,6 @@ const
 
 proc estimateTokenCount*(messages: seq[Message]): int =
   ## Rough token count estimation for context management (1 token ≈ 4 characters)
-  ## Rough token count estimation for context management
   result = 0
   for msg in messages:
     result += msg.content.len div CHARS_PER_TOKEN_ESTIMATE
@@ -311,7 +310,6 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
 proc prepareConversationMessages*(text: string): (seq[Message], string) =
   ## Prepare conversation context with system prompt and process @ file references
   ## Returns messages with context and unique request ID
-  ## Prepare conversation context with system prompt and return messages with request ID
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
   
@@ -338,7 +336,6 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
 
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
   ## Select model from config based on parameter or return default model
-  ## Select model from config based on parameter or return default
   if model.len > 0:
     return getModelFromConfig(config, model)
   else:
@@ -347,7 +344,6 @@ proc selectModelFromConfig*(config: configTypes.Config, model: string): configTy
 
 proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.ModelConfig): (bool, string) =
   ## Send a prompt interactively and return success status and request ID
-  ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   
   let apiKeyOpt = validateApiKey(modelConfig)
@@ -361,7 +357,6 @@ proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.M
 
 proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, string) =
   ## Send a prompt asynchronously and return success status and request ID
-  ## Send a prompt and return both success status and request ID
   let channels = getChannels()
   let config = loadConfig()
   let selectedModel = selectModelFromConfig(config, model)

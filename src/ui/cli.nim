@@ -84,12 +84,6 @@ proc initializeSystemComponents*(): (configTypes.Config, bool) =
   let markdownEnabled = isMarkdownEnabled(config)
   return (config, markdownEnabled)
 
-proc startWorkers*(channels: ptr ThreadChannels, level: Level, dump: bool, database: DatabaseBackend, pool: Pool): (APIWorker, ToolWorker) =
-  ## Start API and tool workers and return worker handles
-  let apiWorker = startAPIWorker(channels, level, dump, database, pool)
-  let toolWorker = startToolWorker(channels, level, dump, database, pool)
-  return (apiWorker, toolWorker)
-
 proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, database: DatabaseBackend) =
   ## Perform system cleanup: shutdown workers, close database and log files
   signalShutdown(channels)
@@ -632,8 +626,11 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   
   writeToConversationArea("\n")
   
-  # Start API and tool workers with pool
-  var (apiWorker, toolWorker) = startWorkers(channels, level, dump, database, pool)
+  # Start API worker with pool
+  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  
+  # Start tool worker with pool
+  var toolWorker = startToolWorker(channels, level, dump, database, pool)
   
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
@@ -908,8 +905,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   
   let channels = getChannels()
   
-  # Start API and tool workers with pool
-  var (apiWorker, toolWorker) = startWorkers(channels, level, dump, database, pool)
+  # Start API worker with pool
+  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  
+  # Start tool worker with pool
+  var toolWorker = startToolWorker(channels, level, dump, database, pool)
   
   let (success, requestId) = sendSinglePromptAsyncWithId(text, model)
   if success:

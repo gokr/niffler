@@ -242,7 +242,11 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     let hasPlanModeEnteredAt = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_entered_at")
     if not hasPlanModeEnteredAt:
       debug("Adding plan_mode_entered_at column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_entered_at DATETIME")
+      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_entered_at DATETIME DEFAULT '1970-01-01T00:00:00'")
+    
+    # Update any existing records that have NULL or empty values
+    debug("Updating any NULL or empty plan_mode_entered_at values")
+    conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01T00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
     
     # Check if plan_mode_protected_files column exists
     let hasPlanModeProtectedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_protected_files")
@@ -748,39 +752,61 @@ proc getRecentMessagesFromDb*(pool: Pool, conversationId: int, maxMessages: int 
 
 proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messages: seq[Message], toolCallCount: int] =
   ## Get conversation context with tool call count for /context command
-  pool.withDb:
-    let messages = db.filter(ConversationMessage, it.conversationId == conversationId)
-    let sortedMessages = messages.sortedByIt(it.id)  # Sort by auto-incrementing ID for chronological order
-    
+  result.messages = @[]
+  result.toolCallCount = 0
+  
+  try:
+    pool.withDb:
+      let messages = db.filter(ConversationMessage, it.conversationId == conversationId)
+      # Convert to proper heap-allocated seq and sort
+      var sortedMessages = @messages
+      sortedMessages.sort(proc(a, b: ConversationMessage): int = cmp(a.id, b.id))
+      
+      for dbMsg in sortedMessages:
+        # Count tool calls
+        if dbMsg.toolCalls.isSome():
+          let toolCalls = deserializeToolCalls(dbMsg.toolCalls.get())
+          result.toolCallCount += toolCalls.len
+        
+        # Convert to Message format
+        case dbMsg.role:
+        of "user":
+          result.messages.add(Message(
+            role: mrUser, 
+            content: dbMsg.content,
+            toolCalls: none(seq[LLMToolCall]),
+            toolCallId: none(string),
+            toolResults: none(seq[ToolResult]),
+            thinkingContent: none(ThinkingContent)
+          ))
+        of "assistant":
+          let toolCalls = if dbMsg.toolCalls.isSome():
+            some(deserializeToolCalls(dbMsg.toolCalls.get()))
+          else:
+            none(seq[LLMToolCall])
+          result.messages.add(Message(
+            role: mrAssistant,
+            content: dbMsg.content,
+            toolCalls: toolCalls,
+            toolCallId: none(string),
+            toolResults: none(seq[ToolResult]),
+            thinkingContent: none(ThinkingContent)
+          ))
+        of "tool":
+          result.messages.add(Message(
+            role: mrTool,
+            content: dbMsg.content,
+            toolCalls: none(seq[LLMToolCall]),
+            toolCallId: dbMsg.toolCallId,
+            toolResults: none(seq[ToolResult]),
+            thinkingContent: none(ThinkingContent)
+          ))
+        else:
+          debug(fmt"Skipping message with unknown role: {dbMsg.role}")
+  except Exception as e:
+    debug(fmt"Error getting conversation context: {e.msg}")
     result.messages = @[]
     result.toolCallCount = 0
-    
-    for dbMsg in sortedMessages:
-      # Count tool calls
-      if dbMsg.toolCalls.isSome():
-        let toolCalls = deserializeToolCalls(dbMsg.toolCalls.get())
-        result.toolCallCount += toolCalls.len
-      
-      # Convert to Message format
-      case dbMsg.role:
-      of "user":
-        result.messages.add(Message(role: mrUser, content: dbMsg.content))
-      of "assistant":
-        let toolCalls = if dbMsg.toolCalls.isSome():
-          some(deserializeToolCalls(dbMsg.toolCalls.get()))
-        else:
-          none(seq[LLMToolCall])
-        result.messages.add(Message(
-          role: mrAssistant,
-          content: dbMsg.content,
-          toolCalls: toolCalls
-        ))
-      of "tool":
-        result.messages.add(Message(
-          role: mrTool,
-          content: dbMsg.content,
-          toolCallId: dbMsg.toolCallId
-        ))
 
 # Global database instance - not threadvar anymore to avoid thread isolation
 var globalDatabase: DatabaseBackend
@@ -1040,11 +1066,17 @@ proc getPlanModeProtection*(backend: DatabaseBackend, conversationId: int): tupl
           return (false, @[])
         
         let conv = conversations[0]
-        if conv.planModeEnteredAt.toTime().toUnix() > 0 and conv.planModeProtectedFiles.len > 0:
-          let protectedFiles = to(parseJson(conv.planModeProtectedFiles), seq[string])
-          return (true, protectedFiles)
-        else:
-          return (false, @[])
+        # Check if protected files exist and have content
+        if conv.planModeProtectedFiles.len > 0:
+          # Check if planModeEnteredAt is a valid DateTime (not epoch)
+          try:
+            if conv.planModeEnteredAt.toTime().toUnix() > 0:
+              let protectedFiles = to(parseJson(conv.planModeProtectedFiles), seq[string])
+              return (true, protectedFiles)
+          except Exception:
+            # If DateTime parsing fails, assume protection is not enabled
+            debug(fmt"Invalid planModeEnteredAt value for conversation {conversationId}, protection disabled")
+        return (false, @[])
       except Exception as e:
         error(fmt"Failed to get plan mode protection state: {e.msg}")
         return (false, @[])

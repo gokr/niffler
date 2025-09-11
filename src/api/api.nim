@@ -643,7 +643,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   
   return true
 
-proc apiWorkerProc(params: ThreadParams) {.thread.} =
+proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread - use stderr to prevent stdout contamination
   let consoleLogger = newConsoleLogger(useStderr = true)
   addHandler(consoleLogger)
