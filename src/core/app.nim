@@ -18,19 +18,16 @@
 ## - Provides both interactive and single-shot execution modes
 
 import std/[strformat, logging, options, strutils, terminal, random, os, re, json, times]
-import channels, conversation_manager, config, system_prompt, database
+import channels, conversation_manager, config, system_prompt, database, mode_state
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
 import ../tools/common
 when defined(posix):
   import posix
 
-# Global mode state (thread-safe access through procedures)
-var currentMode {.threadvar.}: AgentMode
-var modeInitialized {.threadvar.}: bool
 
 # Forward declaration
-proc captureCurrentDirectoryState(database: DatabaseBackend, conversationId: int)
+proc captureCurrentDirectoryState*(database: DatabaseBackend, conversationId: int)
 
 # Simple file reference processing
 proc isValidTextFileForReference*(path: string): bool =
@@ -166,53 +163,8 @@ proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_M
   if currentTokens > maxTokens:
     info(fmt"Warning: Context still large ({currentTokens} tokens) after truncation")
 
-# Mode Management Functions
 
-proc initializeModeState*() =
-  ## Initialize mode state for the current thread
-  if not modeInitialized:
-    currentMode = getDefaultMode()
-    modeInitialized = true
-    debug(fmt"Mode state initialized to: {currentMode}")
-
-proc getCurrentMode*(): AgentMode =
-  ## Get the current agent mode (thread-safe)
-  if not modeInitialized:
-    initializeModeState()
-  return currentMode
-
-proc setCurrentMode*(mode: AgentMode) =
-  ## Set the current agent mode (thread-safe)
-  let previousMode = getCurrentMode()
-  currentMode = mode
-  modeInitialized = true
-  debug(fmt"Mode changed from {previousMode} to: {mode}")
-  
-  # Persist mode change to current conversation if available
-  try:
-    debug("setCurrentMode: About to call getCurrentSession()")
-    let currentSession = getCurrentSession()
-    debug(fmt"setCurrentMode: getCurrentSession() returned, isSome: {currentSession.isSome()}")
-    if currentSession.isSome():
-      let database = getGlobalDatabase()
-      if database != nil:
-        let conversationId = currentSession.get().conversation.id
-        updateConversationMode(database, conversationId, mode)
-        debug(fmt"Persisted mode change to database for conversation {conversationId}")
-        
-        # Handle plan mode protection when entering plan mode
-        if mode == amPlan and previousMode != amPlan:
-          captureCurrentDirectoryState(database, conversationId)
-        # Clear plan mode protection when exiting plan mode
-        elif previousMode == amPlan and mode != amPlan:
-          let success = clearPlanModeProtection(database, conversationId)
-          if success:
-            debug("Plan mode protection cleared when exiting to code mode")
-        
-  except Exception as e:
-    debug(fmt"Failed to persist mode change to database: {e.msg}")
-
-proc captureCurrentDirectoryState(database: DatabaseBackend, conversationId: int) =
+proc captureCurrentDirectoryState*(database: DatabaseBackend, conversationId: int) =
   ## Capture the current directory state for plan mode protection
   try:
     let currentDir = getCurrentDir()
@@ -261,11 +213,6 @@ proc captureCurrentDirectoryState(database: DatabaseBackend, conversationId: int
   except Exception as e:
     error(fmt"Failed to capture directory state for plan mode protection: {e.msg}")
 
-proc toggleMode*(): AgentMode =
-  ## Toggle between Plan and Code modes, returns new mode
-  let newMode = getNextMode(getCurrentMode())
-  setCurrentMode(newMode)
-  return newMode
 
 proc getModePromptColor*(): ForegroundColor =
   ## Get the mode color for prompt display
