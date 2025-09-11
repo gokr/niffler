@@ -27,7 +27,7 @@ import std/logging
 when defined(posix):
   import posix
 import linecross
-import ../core/[app, channels, conversation_manager, config, database]
+import ../core/[app, channels, conversation_manager, config, database, mode_state]
 import debby/pools
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools]

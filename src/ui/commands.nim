@@ -10,7 +10,7 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient]
-import ../core/[conversation_manager, config, app, database]
+import ../core/[conversation_manager, config, app, database, mode_state]
 import ../types/[config as configTypes, messages]
 import theme
 import table_utils

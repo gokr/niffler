@@ -1017,8 +1017,9 @@ proc setPlanModeProtection*(backend: DatabaseBackend, conversationId: int, prote
         
         var conv = conversations[0]
         conv.planModeEnteredAt = now()
-        conv.planModeProtectedFiles = $(protectedFiles)  # Convert to JSON string
+        conv.planModeProtectedFiles = $(%*protectedFiles)  # Convert to JSON string
         conv.updated_at = now()
+        
         
         db.update(conv)
         debug(fmt"Plan mode protection set for conversation {conversationId} with {protectedFiles.len} protected files")
@@ -1066,11 +1067,13 @@ proc getPlanModeProtection*(backend: DatabaseBackend, conversationId: int): tupl
           return (false, @[])
         
         let conv = conversations[0]
+        
         # Check if protected files exist and have content
         if conv.planModeProtectedFiles.len > 0:
           # Check if planModeEnteredAt is a valid DateTime (not epoch)
           try:
-            if conv.planModeEnteredAt.toTime().toUnix() > 0:
+            let unixTime = conv.planModeEnteredAt.toTime().toUnix()
+            if unixTime > 0:
               let protectedFiles = to(parseJson(conv.planModeProtectedFiles), seq[string])
               return (true, protectedFiles)
           except Exception:

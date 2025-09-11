@@ -53,6 +53,14 @@ proc getCurrentSession*(): Option[ConversationSession] =
   finally:
     release(globalSession.lock)
 
+proc clearCurrentSession*() =
+  ## Clear the current session (for testing or cleanup)
+  acquire(globalSession.lock)
+  try:
+    currentSession = none(ConversationSession)
+  finally:
+    release(globalSession.lock)
+
 proc syncSessionState*(conversationId: int) =
   ## Synchronize both session systems with the same conversation ID
   acquire(globalSession.lock)
@@ -333,13 +341,16 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
+        # First check if the conversation exists
+        let existsRows = db.query("SELECT id, title FROM conversation WHERE id = ?", conversationId)
+        if existsRows.len == 0:
+          debug(fmt"Cannot archive conversation {conversationId}: conversation not found")
+          return false
+        
+        let title = existsRows[0][1]
         let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
         db.query("UPDATE conversation SET is_active = 0, updated_at = ? WHERE id = ?", 
                  currentTime, conversationId)
-        
-        # Get conversation title for logging
-        let titleRows = db.query("SELECT title FROM conversation WHERE id = ?", conversationId)
-        let title = if titleRows.len > 0: titleRows[0][0] else: "Unknown"
         
         info(fmt"Archived conversation {conversationId}: {title}")
         result = true

@@ -128,16 +128,21 @@ proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
       if not currentSession.isSome():
         return false  # No active session, no protection
       
-      # Check if we're in plan mode
-      if currentSession.get().conversation.mode != amPlan:
-        return false  # Not in plan mode, no protection needed
-      
-      # Get plan mode protection state
+      # Get fresh conversation data from database to check current mode
       let database = getGlobalDatabase()
       if database == nil:
         return false  # No database, no protection
       
       let conversationId = currentSession.get().conversation.id
+      let conversationOpt = getConversationById(database, conversationId)
+      if conversationOpt.isNone():
+        return false  # Conversation not found
+      
+      let conversation = conversationOpt.get()
+      if conversation.mode != amPlan:
+        return false  # Not in plan mode, no protection needed
+      
+      # Get plan mode protection state (database and conversationId already retrieved above)
       let protection = getPlanModeProtection(database, conversationId)
       
       if not protection.enabled:
@@ -225,13 +230,12 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   
   let sanitizedPath = sanitizePath(path)
   
-  # Check if file exists (except for create operation)
-  if operation.toLowerAscii() != "create":
-    validateFileExists(sanitizedPath)
-    validateFileReadable(sanitizedPath)
-    validateFileWritable(sanitizedPath)
+  # File must exist for edit operations
+  validateFileExists(sanitizedPath)
+  validateFileReadable(sanitizedPath)
+  validateFileWritable(sanitizedPath)
   
-  # Check plan mode protection
+  # Check plan mode protection (only for existing files)
   if checkPlanModeProtection(sanitizedPath):
     raise newToolValidationError("edit", "file_protection", 
       "Cannot edit existing files in plan mode. This file existed before plan mode was entered. Switch to code mode to edit existing files, or create new files.",
