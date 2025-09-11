@@ -4,7 +4,7 @@
 ## with real database operations.
 
 import std/[unittest, options, strformat, times, os, tempfiles, strutils, algorithm, sequtils]
-import ../src/core/[database, conversation_manager, config, app]
+import ../src/core/[database, conversation_manager, config, app, mode_state]
 import ../src/types/[config as configTypes, messages, mode]
 import debby/sqlite
 import debby/pools

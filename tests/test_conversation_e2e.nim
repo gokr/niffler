@@ -5,7 +5,7 @@
 
 import std/[unittest, strformat, times, strutils, options, sequtils]
 import test_conversation_infrastructure
-import ../src/core/[database, conversation_manager, config, app]
+import ../src/core/[database, conversation_manager, config, app, mode_state]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 
@@ -281,13 +281,19 @@ suite "Conversation Context and Message Retrieval":
     check toolCallCount == 1
     
     # Verify message ordering (chronological)
-    for i in 0..<contextMessages.len-1:
-      # Each message should be in proper sequence
+    # First 10 messages should alternate: User(0), Assistant(1), User(2), Assistant(3), etc.
+    for i in 0..<10:
       if i mod 2 == 0:
         check contextMessages[i].role == mrUser
       else:
-        # Could be assistant or tool
-        check contextMessages[i].role in [mrAssistant, mrTool]
+        check contextMessages[i].role == mrAssistant
+    
+    # Message 10 should be the assistant message with tool calls
+    check contextMessages[10].role == mrAssistant
+    check contextMessages[10].toolCalls.isSome()
+    
+    # Message 11 should be the tool response
+    check contextMessages[11].role == mrTool
     
     # Verify tool call message structure
     let toolCallMessage = contextMessages.filterIt(it.toolCalls.isSome())[0]
