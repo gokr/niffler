@@ -696,9 +696,8 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
-          # Restore mode from conversation (fixes circular import issue)
-          setCurrentMode(conv.mode)
-          debug(fmt"Restored mode from conversation: {conv.mode}")
+          # Restore mode from conversation with protection
+          restoreModeWithProtection(conv.mode)
           
           return CommandResult(
             success: true,
@@ -749,9 +748,8 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
               currentModel = model
               break
           
-          # Restore mode from conversation (fixes circular import issue)
-          setCurrentMode(conv.mode)
-          debug(fmt"Restored mode from conversation: {conv.mode}")
+          # Restore mode from conversation with protection
+          restoreModeWithProtection(conv.mode)
           
           return CommandResult(
             success: true,

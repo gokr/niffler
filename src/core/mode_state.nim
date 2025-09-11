@@ -35,3 +35,4 @@ proc toggleMode*(): AgentMode =
   let newMode = getNextMode(getCurrentMode())
   setCurrentMode(newMode)
   return newMode
+

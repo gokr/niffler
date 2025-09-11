@@ -490,7 +490,7 @@ proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   ## Custom key hook for handling special key combinations like Shift+Tab
   if keyCode == ShiftTab:
     # Toggle mode and immediately update prompt, it is refreshed by linecross
-    discard toggleMode()
+    discard toggleModeWithProtection()
     updatePromptState()
     return true  # Key was handled
   return false  # Key not handled, continue with default processing
@@ -598,9 +598,8 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
       # Restore model and mode from loaded conversation
       let conversation = currentSession.get().conversation
       
-      # Restore mode from conversation
-      setCurrentMode(conversation.mode)
-      debug(fmt"Restored mode from conversation: {conversation.mode}")
+      # Restore mode from conversation with protection
+      restoreModeWithProtection(conversation.mode)
       
       # Restore model from loaded conversation (if no model specified on command line)
       if conversation.modelNickname.len > 0 and modelConfig.nickname == config.models[0].nickname:

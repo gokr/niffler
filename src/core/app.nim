@@ -213,6 +213,61 @@ proc captureCurrentDirectoryState*(database: DatabaseBackend, conversationId: in
   except Exception as e:
     error(fmt"Failed to capture directory state for plan mode protection: {e.msg}")
 
+proc handleModeToggleWithProtection*(previousMode: AgentMode, newMode: AgentMode) {.gcsafe.} =
+  ## Handle the database updates and protection logic for mode toggling
+  ## This is called by toggleModeWithProtection to avoid circular dependencies
+  {.gcsafe.}:
+    try:
+      let currentSession = getCurrentSession()
+      if currentSession.isSome():
+        let database = getGlobalDatabase()
+        if database != nil:
+          let conversationId = currentSession.get().conversation.id
+          
+          # Update conversation mode in database
+          updateConversationMode(database, conversationId, newMode)
+          debug(fmt"Updated conversation mode in database to: {newMode}")
+          
+          # Handle plan mode protection
+          if newMode == amPlan and previousMode != amPlan:
+            # Entering plan mode - capture current directory state
+            captureCurrentDirectoryState(database, conversationId)
+            debug("Captured directory state for plan mode protection")
+          elif previousMode == amPlan and newMode != amPlan:
+            # Leaving plan mode - clear protection
+            discard clearPlanModeProtection(database, conversationId)
+            debug("Cleared plan mode protection")
+    except Exception as e:
+      error(fmt"Error in handleModeToggleWithProtection: {e.msg}")
+
+proc toggleModeWithProtection*(): AgentMode {.gcsafe.} =
+  ## Toggle between Plan and Code modes with full database updates and protection
+  ## This is the complete mode switching function that should be used by the UI
+  let previousMode = getCurrentMode()
+  let newMode = getNextMode(previousMode)
+  setCurrentMode(newMode)
+  
+  # Handle database updates and protection
+  handleModeToggleWithProtection(previousMode, newMode)
+  
+  return newMode
+
+proc restoreModeWithProtection*(targetMode: AgentMode) {.gcsafe.} =
+  ## Restore mode from conversation and initialize plan mode protection if needed
+  ## This should be used when loading/switching conversations
+  let previousMode = getCurrentMode()
+  setCurrentMode(targetMode)
+  
+  # If restoring to plan mode, ensure protection is active
+  if targetMode == amPlan and previousMode != amPlan:
+    handleModeToggleWithProtection(previousMode, targetMode)
+    debug(fmt"Restored to plan mode and initialized protection")
+  elif previousMode == amPlan and targetMode != amPlan:
+    # If leaving plan mode, clear protection
+    handleModeToggleWithProtection(previousMode, targetMode)
+    debug(fmt"Left plan mode and cleared protection")
+  else:
+    debug(fmt"Restored mode to {targetMode} (no protection changes needed)")
 
 proc getModePromptColor*(): ForegroundColor =
   ## Get the mode color for prompt display
