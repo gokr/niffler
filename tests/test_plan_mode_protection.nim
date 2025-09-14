@@ -84,16 +84,16 @@ proc switchToPlanMode() =
   setCurrentMode(amCode)
   updateConversationMode(testDb, testConvId, amCode)
   
-  # Now switch to plan mode and manually trigger file protection
+  # Now switch to plan mode and manually initialize created files tracking
   setCurrentMode(amPlan)
   updateConversationMode(testDb, testConvId, amPlan)
-  captureCurrentDirectoryState(testDb, testConvId)
+  discard setPlanModeCreatedFiles(testDb, testConvId, @[])
 
 proc switchToCodeMode() =
-  ## Switch to code mode which should clear protection
+  ## Switch to code mode which should clear created files tracking
   setCurrentMode(amCode)
   updateConversationMode(testDb, testConvId, amCode)
-  discard clearPlanModeProtection(testDb, testConvId)
+  discard clearPlanModeCreatedFiles(testDb, testConvId)
 
 suite "Plan Mode File Protection Tests":
   setup:
@@ -104,24 +104,24 @@ suite "Plan Mode File Protection Tests":
   teardown:
     cleanupTestEnvironment()
   
-  test "Plan mode protection is enabled after entering plan mode":
-    # Verify protection state is stored in database
-    let protection = getPlanModeProtection(testDb, testConvId)
-    check protection.enabled == true
-    check protection.protectedFiles.len > 0
+  test "Plan mode created files tracking is enabled after entering plan mode":
+    # Verify created files tracking state is stored in database
+    let createdFiles = getPlanModeCreatedFiles(testDb, testConvId)
+    check createdFiles.enabled == true
+    check createdFiles.createdFiles.len == 0  # Initially empty
     
-    # Verify our test files are in the protected list
-    check "existing_file1.txt" in protection.protectedFiles
-    check "existing_file2.nim" in protection.protectedFiles
-    check "subdir/nested_file.txt" in protection.protectedFiles
+    # Verify our existing test files are NOT in the created files list
+    check "existing_file1.txt" notin createdFiles.createdFiles
+    check "existing_file2.nim" notin createdFiles.createdFiles
+    check "subdir/nested_file.txt" notin createdFiles.createdFiles
   
-  test "checkPlanModeProtection correctly identifies protected files":
-    # These files should be protected (existed before plan mode)
+  test "checkPlanModeProtection correctly identifies editable files":
+    # Existing files should be protected (not created in plan mode)
     check checkPlanModeProtection("existing_file1.txt") == true
     check checkPlanModeProtection("existing_file2.nim") == true
     check checkPlanModeProtection("subdir/nested_file.txt") == true
     
-    # Files that don't exist should not be protected
+    # Files that don't exist should be allowed (new file creation)
     check checkPlanModeProtection("new_file.txt") == false
     check checkPlanModeProtection("nonexistent.nim") == false
   
@@ -151,14 +151,18 @@ suite "Plan Mode File Protection Tests":
     check fileExists("plan_mode_notes.md")
   
   test "Edit tool allows editing files created in plan mode":
-    # First create a file using create tool
+    # First create a file using create tool (should be tracked automatically)
     let createArgs = %*{
       "path": "new_plan_file.txt",
       "content": "Initial content"
     }
     discard executeCreate(createArgs)
     
-    # Then edit it - should work since it's not in the protected list
+    # Verify the file was added to created files list
+    let createdFiles = getPlanModeCreatedFiles(testDb, testConvId)
+    check "new_plan_file.txt" in createdFiles.createdFiles
+    
+    # Then edit it - should work since it's in the created files list
     let editArgs = %*{
       "path": "new_plan_file.txt",
       "operation": "replace",
@@ -171,13 +175,13 @@ suite "Plan Mode File Protection Tests":
     let resultJson = parseJson(result)
     check resultJson["changes_made"].getBool() == true
   
-  test "Protection is cleared when switching to code mode":
+  test "Created files tracking is cleared when switching to code mode":
     # Switch to code mode
     switchToCodeMode()
     
-    # Verify protection is cleared in database
-    let protection = getPlanModeProtection(testDb, testConvId)
-    check protection.enabled == false
+    # Verify created files tracking is cleared in database
+    let createdFiles = getPlanModeCreatedFiles(testDb, testConvId)
+    check createdFiles.enabled == false
     
     # Verify files are no longer protected
     check checkPlanModeProtection("existing_file1.txt") == false

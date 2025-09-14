@@ -79,9 +79,9 @@ proc createPlanModeConversation(): int =
   check switchToConversation(testDb, convId) == true
   initSessionManager(testDb.pool, convId)
   
-  # Set up plan mode protection as if the user had previously entered plan mode
+  # Set up plan mode created files tracking as if the user had previously entered plan mode
   setCurrentMode(amPlan)
-  captureCurrentDirectoryState(testDb, convId)
+  discard setPlanModeCreatedFiles(testDb, convId, @[])
   
   return convId
 
@@ -116,15 +116,15 @@ suite "Conversation Mode Restore Tests":
     # Verify that we're in plan mode
     check getCurrentMode() == amPlan
     
-    # Verify that protection is active
-    let protection = getPlanModeProtection(testDb, convId)
-    check protection.enabled == true
-    check protection.protectedFiles.len > 0
+    # Verify that created files tracking is active
+    let createdFiles = getPlanModeCreatedFiles(testDb, convId)
+    check createdFiles.enabled == true
+    check createdFiles.createdFiles.len == 0  # Initially empty
     
-    # Verify our test files are protected
-    check "existing_file1.txt" in protection.protectedFiles
-    check "existing_file2.nim" in protection.protectedFiles
-    check "subdir/nested_file.txt" in protection.protectedFiles
+    # Verify our test files are NOT in created files (so they're protected)
+    check "existing_file1.txt" notin createdFiles.createdFiles
+    check "existing_file2.nim" notin createdFiles.createdFiles
+    check "subdir/nested_file.txt" notin createdFiles.createdFiles
     
     # Verify checkPlanModeProtection works
     check checkPlanModeProtection("existing_file1.txt") == true
@@ -143,7 +143,7 @@ suite "Conversation Mode Restore Tests":
     
     # Start from plan mode (to test the transition)
     setCurrentMode(amPlan)
-    captureCurrentDirectoryState(testDb, convId)  # Set up some protection first
+    discard setPlanModeCreatedFiles(testDb, convId, @[])  # Set up created files tracking first
     
     # Now restore to code mode
     restoreModeWithProtection(amCode)
@@ -151,9 +151,9 @@ suite "Conversation Mode Restore Tests":
     # Verify we're in code mode
     check getCurrentMode() == amCode
     
-    # Verify protection is cleared
-    let protection = getPlanModeProtection(testDb, convId)
-    check protection.enabled == false
+    # Verify created files tracking is cleared
+    let createdFiles = getPlanModeCreatedFiles(testDb, convId)
+    check createdFiles.enabled == false
     
     # Verify files are not protected
     check checkPlanModeProtection("existing_file1.txt") == false
