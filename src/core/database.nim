@@ -65,7 +65,8 @@ type
     messageCount*: int
     lastActivity*: DateTime
     planModeEnteredAt*: DateTime  # When plan mode was entered (default epoch if never entered)
-    planModeProtectedFiles*: string  # JSON array of existing files at plan mode entry
+    planModeProtectedFiles*: string  # DEPRECATED: Old field for compatibility
+    planModeCreatedFiles*: string  # JSON array of files created during this plan mode session
 
   ConversationSession* = object
     conversation*: Conversation
@@ -253,6 +254,15 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     if not hasPlanModeProtectedFiles:
       debug("Adding plan_mode_protected_files column to conversation table")
       conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_protected_files TEXT")
+    
+    # Migrate to new plan_mode_created_files column (changed semantics)
+    let hasPlanModeCreatedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_created_files")
+    if not hasPlanModeCreatedFiles:
+      debug("Adding plan_mode_created_files column to conversation table")
+      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_created_files TEXT")
+      # Clear old protection data since semantics changed completely
+      debug("Clearing old plan mode protection data due to semantic change")
+      conn.query("UPDATE conversation SET plan_mode_created_files = '', plan_mode_entered_at = '1970-01-01T00:00:00'")
     
     debug("Conversation schema migration completed")
   except Exception as e:
@@ -532,7 +542,8 @@ proc startConversation*(backend: DatabaseBackend, sessionId: string, title: stri
       messageCount: 0,
       lastActivity: now(),
       planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
-      planModeProtectedFiles: ""  # Initialize to empty string
+      planModeProtectedFiles: "",  # Initialize to empty string (deprecated)
+      planModeCreatedFiles: ""  # Initialize to empty string
     )
     backend.pool.insert(conv)
     return conv.id
@@ -1002,8 +1013,8 @@ proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[T
         return none(TodoList)
 
 # Plan Mode Protection functions
-proc setPlanModeProtection*(backend: DatabaseBackend, conversationId: int, protectedFiles: seq[string]): bool =
-  ## Set plan mode protection state for a conversation
+proc setPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int, createdFiles: seq[string]): bool =
+  ## Set plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return false
   
@@ -1013,23 +1024,24 @@ proc setPlanModeProtection*(backend: DatabaseBackend, conversationId: int, prote
       try:
         let conversations = db.filter(Conversation, it.id == conversationId)
         if conversations.len == 0:
+          debug(fmt"Conversation {conversationId} not found")
           return false
         
         var conv = conversations[0]
+        debug(fmt"Found conversation {conversationId}, setting created files")
         conv.planModeEnteredAt = now()
-        conv.planModeProtectedFiles = $(%*protectedFiles)  # Convert to JSON string
+        conv.planModeCreatedFiles = $(%*createdFiles)  # Convert to JSON string
         conv.updated_at = now()
         
-        
         db.update(conv)
-        debug(fmt"Plan mode protection set for conversation {conversationId} with {protectedFiles.len} protected files")
+        debug(fmt"Plan mode created files set for conversation {conversationId} with {createdFiles.len} created files")
         return true
       except Exception as e:
-        error(fmt"Failed to set plan mode protection: {e.msg}")
+        error(fmt"Failed to set plan mode created files: {e.msg}")
         return false
 
-proc clearPlanModeProtection*(backend: DatabaseBackend, conversationId: int): bool =
-  ## Clear plan mode protection state for a conversation
+proc clearPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): bool =
+  ## Clear plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return false
   
@@ -1043,18 +1055,18 @@ proc clearPlanModeProtection*(backend: DatabaseBackend, conversationId: int): bo
         
         var conv = conversations[0]
         conv.planModeEnteredAt = fromUnix(0).utc()  # Set to epoch (indicates not in plan mode)
-        conv.planModeProtectedFiles = ""  # Empty string indicates no protection
+        conv.planModeCreatedFiles = ""  # Empty string indicates no created files
         conv.updated_at = now()
         
         db.update(conv)
-        debug(fmt"Plan mode protection cleared for conversation {conversationId}")
+        debug(fmt"Plan mode created files cleared for conversation {conversationId}")
         return true
       except Exception as e:
-        error(fmt"Failed to clear plan mode protection: {e.msg}")
+        error(fmt"Failed to clear plan mode created files: {e.msg}")
         return false
 
-proc getPlanModeProtection*(backend: DatabaseBackend, conversationId: int): tuple[enabled: bool, protectedFiles: seq[string]] =
-  ## Get plan mode protection state for a conversation
+proc getPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): tuple[enabled: bool, createdFiles: seq[string]] =
+  ## Get plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return (false, @[])
   
@@ -1068,18 +1080,56 @@ proc getPlanModeProtection*(backend: DatabaseBackend, conversationId: int): tupl
         
         let conv = conversations[0]
         
-        # Check if protected files exist and have content
-        if conv.planModeProtectedFiles.len > 0:
-          # Check if planModeEnteredAt is a valid DateTime (not epoch)
-          try:
-            let unixTime = conv.planModeEnteredAt.toTime().toUnix()
-            if unixTime > 0:
-              let protectedFiles = to(parseJson(conv.planModeProtectedFiles), seq[string])
-              return (true, protectedFiles)
-          except Exception:
-            # If DateTime parsing fails, assume protection is not enabled
-            debug(fmt"Invalid planModeEnteredAt value for conversation {conversationId}, protection disabled")
+        # Check if planModeEnteredAt is a valid DateTime (not epoch)
+        try:
+          let unixTime = conv.planModeEnteredAt.toTime().toUnix()
+          if unixTime > 0:
+            # Parse created files list (empty list if no files created yet)
+            let createdFiles = if conv.planModeCreatedFiles.len > 0:
+              to(parseJson(conv.planModeCreatedFiles), seq[string])
+            else:
+              @[]
+            return (true, createdFiles)
+        except Exception:
+          # If DateTime parsing fails, assume plan mode is not active
+          debug(fmt"Invalid planModeEnteredAt value for conversation {conversationId}, plan mode not active")
         return (false, @[])
       except Exception as e:
-        error(fmt"Failed to get plan mode protection state: {e.msg}")
+        error(fmt"Failed to get plan mode created files: {e.msg}")
         return (false, @[])
+
+proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, filePath: string): bool =
+  ## Add a file to the plan mode created files list for a conversation
+  if backend == nil or conversationId == 0:
+    return false
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let conversations = db.filter(Conversation, it.id == conversationId)
+        if conversations.len == 0:
+          return false
+        
+        var conv = conversations[0]
+        
+        # Get current created files list
+        let currentFiles = if conv.planModeCreatedFiles.len > 0:
+          to(parseJson(conv.planModeCreatedFiles), seq[string])
+        else:
+          @[]
+        
+        # Add new file if not already in list
+        var updatedFiles = currentFiles
+        if filePath notin currentFiles:
+          updatedFiles.add(filePath)
+          conv.planModeCreatedFiles = $(%*updatedFiles)
+          conv.updated_at = now()
+          
+          db.update(conv)
+          debug(fmt"Added file '{filePath}' to plan mode created files for conversation {conversationId}")
+        
+        return true
+      except Exception as e:
+        error(fmt"Failed to add plan mode created file: {e.msg}")
+        return false
