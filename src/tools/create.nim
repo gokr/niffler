@@ -12,8 +12,9 @@
 ## - Supports content creation with proper encoding
 ## - Error handling with detailed feedback
 
-import std/[os, json, times]
-import ../types/tools
+import std/[os, json, times, logging, strformat, options]
+import ../types/tools, ../types/mode
+import ../core/database, ../core/conversation_manager, ../core/mode_state
 import common
 
 
@@ -86,6 +87,26 @@ proc executeCreate*(args: JsonNode): string =
     
     # Create the file
     createFileWithContent(sanitizedPath, content, permissions)
+    
+    # Track file creation in plan mode
+    {.gcsafe.}:
+      try:
+        let currentSession = getCurrentSession()
+        if currentSession.isSome() and getCurrentMode() == amPlan:
+          let database = getGlobalDatabase()
+          if database != nil:
+            let conversationId = currentSession.get().conversation.id
+            # Convert to relative path for consistency
+            let currentDir = getCurrentDir()
+            let relativePath = if sanitizedPath.isAbsolute():
+              relativePath(sanitizedPath, currentDir)
+            else:
+              sanitizedPath
+            
+            discard addPlanModeCreatedFile(database, conversationId, relativePath)
+            debug(fmt"Tracked created file in plan mode: {relativePath}")
+      except Exception as e:
+        debug(fmt"Failed to track plan mode created file: {e.msg}")
     
     # Get file info for result
     let fileInfo = attemptUntrackedStat(sanitizedPath)

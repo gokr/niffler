@@ -142,11 +142,11 @@ proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
       if conversation.mode != amPlan:
         return false  # Not in plan mode, no protection needed
       
-      # Get plan mode protection state (database and conversationId already retrieved above)
-      let protection = getPlanModeProtection(database, conversationId)
+      # Get plan mode created files state (database and conversationId already retrieved above)
+      let createdFiles = getPlanModeCreatedFiles(database, conversationId)
       
-      if not protection.enabled:
-        return false  # Plan mode protection not enabled
+      if not createdFiles.enabled:
+        return false  # Plan mode not active
       
       # Convert path to relative path for consistent comparison
       let currentDir = getCurrentDir()
@@ -155,14 +155,20 @@ proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
       else:
         path
       
-      # Check if file is in the protected list
-      for protectedFile in protection.protectedFiles:
-        if protectedFile == relativePath:
-          debug(fmt"File {relativePath} is protected by plan mode")
-          return true
+      # Allow editing if file is in the created files list
+      for createdFile in createdFiles.createdFiles:
+        if createdFile == relativePath:
+          debug(fmt"File {relativePath} was created in plan mode, allowing edit")
+          return false
       
-      debug(fmt"File {relativePath} is not in protected list, allowing edit")
-      return false
+      # Allow editing if file doesn't exist (creating new file)
+      if not fileExists(path):
+        debug(fmt"File {relativePath} doesn't exist, allowing creation")
+        return false
+      
+      # Block editing of existing files not created in plan mode
+      debug(fmt"File {relativePath} exists but was not created in plan mode, blocking edit")
+      return true
       
     except Exception as e:
       error(fmt"Error checking plan mode protection: {e.msg}")
@@ -238,8 +244,8 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
   # Check plan mode protection (only for existing files)
   if checkPlanModeProtection(sanitizedPath):
     raise newToolValidationError("edit", "file_protection", 
-      "Cannot edit existing files in plan mode. This file existed before plan mode was entered. Switch to code mode to edit existing files, or create new files.",
-      fmt"File '{sanitizedPath}' is protected in plan mode")
+      "Cannot edit existing files in plan mode. You can only edit files created during this plan mode session, or create new files. Switch to code mode to edit existing files.",
+      fmt"File '{sanitizedPath}' cannot be edited in plan mode")
   
   try:
     # Read original content
