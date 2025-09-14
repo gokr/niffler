@@ -27,7 +27,7 @@ when defined(posix):
 
 
 # Forward declaration
-proc captureCurrentDirectoryState*(database: DatabaseBackend, conversationId: int)
+proc initializePlanModeCreatedFiles*(database: DatabaseBackend, conversationId: int)
 
 # Simple file reference processing
 proc isValidTextFileForReference*(path: string): bool =
@@ -164,54 +164,18 @@ proc truncateContextIfNeeded*(messages: seq[Message], maxTokens: int = DEFAULT_M
     info(fmt"Warning: Context still large ({currentTokens} tokens) after truncation")
 
 
-proc captureCurrentDirectoryState*(database: DatabaseBackend, conversationId: int) =
-  ## Capture the current directory state for plan mode protection
+proc initializePlanModeCreatedFiles*(database: DatabaseBackend, conversationId: int) =
+  ## Initialize plan mode with empty created files list
   try:
-    let currentDir = getCurrentDir()
-    var protectedFiles: seq[string] = @[]
-    
-    # Walk the directory tree and collect all files
-    for kind, path in walkDir(currentDir):
-      case kind:
-      of pcFile, pcLinkToFile:
-        # Convert to relative path for consistency
-        let relativePath = relativePath(path, currentDir)
-        protectedFiles.add(relativePath)
-      else:
-        discard
-    
-    # Also check subdirectories recursively (but limit depth to avoid performance issues)
-    proc addFilesRecursively(dir: string, maxDepth: int = 3, currentDepth: int = 0) =
-      if currentDepth >= maxDepth:
-        return
-      
-      try:
-        for kind, path in walkDir(dir):
-          case kind:
-          of pcFile, pcLinkToFile:
-            let relativePath = relativePath(path, currentDir)
-            if relativePath notin protectedFiles:
-              protectedFiles.add(relativePath)
-          of pcDir, pcLinkToDir:
-            # Skip hidden directories and common ignore patterns
-            let dirName = extractFilename(path)
-            if not dirName.startsWith(".") and dirName notin @["node_modules", "target", "build", "__pycache__"]:
-              addFilesRecursively(path, maxDepth, currentDepth + 1)
-      except OSError as e:
-        # Skip directories we can't read
-        debug(fmt"Cannot read directory {dir}: {e.msg}")
-    
-    addFilesRecursively(currentDir)
-    
-    # Set the plan mode protection with captured files
-    let success = setPlanModeProtection(database, conversationId, protectedFiles)
+    # Set the plan mode created files with empty list
+    let success = setPlanModeCreatedFiles(database, conversationId, @[])
     if success:
-      info(fmt"Plan mode protection enabled with {protectedFiles.len} protected files")
+      info("Plan mode initialized with empty created files list")
     else:
-      warn("Failed to enable plan mode protection")
+      warn("Failed to initialize plan mode created files")
       
   except Exception as e:
-    error(fmt"Failed to capture directory state for plan mode protection: {e.msg}")
+    error(fmt"Failed to initialize plan mode created files: {e.msg}")
 
 proc handleModeToggleWithProtection*(previousMode: AgentMode, newMode: AgentMode) {.gcsafe.} =
   ## Handle the database updates and protection logic for mode toggling
@@ -228,15 +192,15 @@ proc handleModeToggleWithProtection*(previousMode: AgentMode, newMode: AgentMode
           updateConversationMode(database, conversationId, newMode)
           debug(fmt"Updated conversation mode in database to: {newMode}")
           
-          # Handle plan mode protection
+          # Handle plan mode created files tracking
           if newMode == amPlan and previousMode != amPlan:
-            # Entering plan mode - capture current directory state
-            captureCurrentDirectoryState(database, conversationId)
-            debug("Captured directory state for plan mode protection")
+            # Entering plan mode - initialize empty created files list
+            initializePlanModeCreatedFiles(database, conversationId)
+            debug("Initialized plan mode created files list")
           elif previousMode == amPlan and newMode != amPlan:
-            # Leaving plan mode - clear protection
-            discard clearPlanModeProtection(database, conversationId)
-            debug("Cleared plan mode protection")
+            # Leaving plan mode - clear created files
+            discard clearPlanModeCreatedFiles(database, conversationId)
+            debug("Cleared plan mode created files")
     except Exception as e:
       error(fmt"Error in handleModeToggleWithProtection: {e.msg}")
 
@@ -258,16 +222,16 @@ proc restoreModeWithProtection*(targetMode: AgentMode) {.gcsafe.} =
   let previousMode = getCurrentMode()
   setCurrentMode(targetMode)
   
-  # If restoring to plan mode, ensure protection is active
+  # If restoring to plan mode, ensure created files tracking is active
   if targetMode == amPlan and previousMode != amPlan:
     handleModeToggleWithProtection(previousMode, targetMode)
-    debug(fmt"Restored to plan mode and initialized protection")
+    debug(fmt"Restored to plan mode and initialized created files tracking")
   elif previousMode == amPlan and targetMode != amPlan:
-    # If leaving plan mode, clear protection
+    # If leaving plan mode, clear created files
     handleModeToggleWithProtection(previousMode, targetMode)
-    debug(fmt"Left plan mode and cleared protection")
+    debug(fmt"Left plan mode and cleared created files")
   else:
-    debug(fmt"Restored mode to {targetMode} (no protection changes needed)")
+    debug(fmt"Restored mode to {targetMode} (no created files changes needed)")
 
 proc getModePromptColor*(): ForegroundColor =
   ## Get the mode color for prompt display

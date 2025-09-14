@@ -177,7 +177,8 @@ proc createConversation*(backend: DatabaseBackend, title: string = "",
       messageCount: 0,
       lastActivity: now(),
       planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
-      planModeProtectedFiles: ""  # Initialize to empty string
+      planModeProtectedFiles: "",  # Initialize to empty string (deprecated)
+      planModeCreatedFiles: ""  # Initialize to empty string
     )
     
     try:
