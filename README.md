@@ -183,27 +183,50 @@ For detailed information about thinking token implementation and architecture, s
 
 ### Plan Mode File Protection
 
-Niffler implements file protection to maintain clear separation between planning and implementation phases:
+Niffler implements intelligent file protection to maintain clear separation between planning and implementation phases:
 
 **How It Works:**
-- When entering **Plan Mode**, Niffler scans the current directory and subdirectories
-- All existing files are marked as "protected" and stored in the conversation database
-- The AI assistant can read protected files but cannot edit them while in Plan Mode
-- New files created during Plan Mode are allowed to be edited (as they don't exist in the baseline)
-- When switching to **Code Mode**, all file protection is removed for active development
+- When entering **Plan Mode**, Niffler initializes an empty "created files" list for the conversation
+- As new files are created during the Plan Mode session, they are automatically tracked in this list
+- The AI assistant can **only edit files that were created during the current Plan Mode session**
+- Existing files (that existed before Plan Mode) are protected from editing to prevent accidental changes during planning
+- When switching to **Code Mode**, file tracking is cleared and all file editing restrictions are removed
 
-This allows new files and documentation to be created in Plan Mode.
+**When Protection is Activated:**
+- **Manual Mode Toggle**: Pressing `Shift+Tab` to enter Plan Mode
+- **Conversation Loading**: When loading a conversation that's already in Plan Mode
+- **Application Startup**: If the last active conversation was in Plan Mode
+- **Conversation Switching**: Using `/conv` command to switch to a Plan Mode conversation
+
+**File Creation Tracking:**
+- **Automatic Detection**: Files created via the `create` tool are automatically added to the created files list
+- **Persistent Tracking**: Created file lists are stored per conversation in the database
+- **Path Normalization**: Uses relative paths for portability across different working directories
+- **Session Scope**: Each Plan Mode session maintains its own created files list
 
 **User Experience:**
-- Transparent operation - protection is applied automatically on mode entry
-- Clear error messages when attempting to edit protected files
-- Visual mode indicators show current protection status
-- Seamless transition between modes with automatic protection management
+- **Transparent Operation**: File creation tracking happens automatically without user intervention
+- **Clear Error Messages**: Informative messages when attempting to edit protected files:
+  ```
+  Cannot edit existing files in plan mode. Only files created during this plan mode session can be edited.
+  Switch to code mode to edit existing files, or create new files which can then be edited.
+  ```
+- **Visual Indicators**: Mode displayed in prompt with color coding (green for plan, blue for code)
+- **Seamless Transitions**: Automatic tracking management during mode switches
+- **New File Creation**: Full ability to create and subsequently edit new files during planning
 
 **Database Integration:**
-- Protection state is persisted across conversation sessions
-- File lists are stored efficiently as JSON in the conversation database
-- Protection is automatically cleared when exiting Plan Mode
+- **Persistent State**: Created file lists are stored in the conversation database and survive application restarts
+- **Efficient Storage**: File lists are stored as compact JSON arrays in the database
+- **Automatic Cleanup**: Created file tracking is cleared when exiting Plan Mode
+- **Cross-Session Consistency**: File creation tracking works correctly when resuming conversations across different sessions
+
+**Technical Implementation:**
+- File protection is checked at tool execution time, not file system level
+- Uses thread-safe database operations for created file list management
+- Implements "fail-open" error handling - allows operations if database is unavailable
+- Integrates with Niffler's conversation management and mode switching system
+- Files created during Plan Mode are automatically tracked by the `create` tool
 
 ### Enhanced Terminal Features
 
