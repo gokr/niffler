@@ -149,6 +149,16 @@ type
     updatedAt*: DateTime
     orderIndex*: int
 
+  # Token correction factor system for BPE tokenization
+  TokenCorrectionFactor* = ref object of RootObj
+    id*: int
+    modelName*: string           ## Model identifier (e.g., "gpt-4", "qwen-plus")
+    totalSamples*: int           ## Number of correction samples collected
+    sumRatio*: float             ## Sum of actual/estimated ratios
+    avgCorrection*: float        ## Current average correction factor
+    createdAt*: DateTime         ## When first sample was recorded
+    updatedAt*: DateTime         ## When this correction was last updated
+
 # Helper procedures for tool call serialization
 proc serializeToolCalls*(toolCalls: seq[LLMToolCall]): string =
   ## Convert LLMToolCall sequence to JSON string for database storage
@@ -334,6 +344,12 @@ proc initializeDatabase*(backend: DatabaseBackend) =
         db.createIndexIfNotExists(TodoItem, "state")
         db.createIndexIfNotExists(TodoItem, "orderIndex")
 
+      # Create token correction factor table
+      if not db.tableExists(TokenCorrectionFactor):
+        db.createTable(TokenCorrectionFactor)
+        db.createIndexIfNotExists(TokenCorrectionFactor, "modelName")
+        db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
+
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
   case backend.kind:
@@ -347,6 +363,7 @@ proc checkDatabase*(backend: DatabaseBackend) =
       db.checkTable(ConversationThinkingToken)
       db.checkTable(TodoList)
       db.checkTable(TodoItem)
+      db.checkTable(TokenCorrectionFactor)
   echo "Database checked"
 
 proc init*(backend: DatabaseBackend) =
@@ -595,6 +612,9 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
   
   let totalCost = inputCost + outputCost + reasoningCost
   
+  debug(fmt"logModelTokenUsage: conversationId={conversationId}, messageId={messageId}, model={model}")
+  debug(fmt"logModelTokenUsage: tokens=({inputTokens}, {outputTokens}, {reasoningTokens}), costs=({inputCost:.6f}, {outputCost:.6f}, {reasoningCost:.6f}, {totalCost:.6f})")
+  
   case backend.kind:
   of dbkSQLite, dbkTiDB:
     let usage = ModelTokenUsage(
@@ -611,44 +631,180 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
       reasoningTokens: reasoningTokens,
       reasoningCost: reasoningCost
     )
-    backend.pool.insert(usage)
+    
+    try:
+      backend.pool.insert(usage)
+      debug(fmt"Successfully inserted token usage record with ID: {usage.id}")
+    except Exception as e:
+      error(fmt"Failed to insert token usage to database: {e.msg}")
+      error(fmt"Insert error stack trace: {e.getStackTrace()}")
+      raise
 
-proc getConversationCostBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[totalCost: float, breakdown: seq[string]] =
-  ## Calculate accurate cost breakdown by model for a conversation
+type
+  ConversationCostRow* = object
+    model*: string
+    inputTokens*: int
+    outputTokens*: int
+    reasoningTokens*: int
+    inputCost*: float
+    outputCost*: float
+    reasoningCost*: float
+    totalCost*: float
+
+proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int): tuple[rows: seq[ConversationCostRow], totalCost: float, totalInput: int, totalOutput: int, totalReasoning: int, totalInputCost: float, totalOutputCost: float, totalReasoningCost: float] =
+  ## Calculate detailed cost breakdown by model for a conversation with reasoning token analysis
   if backend == nil or conversationId == 0:
-    return (0.0, @[])
+    return (@[], 0.0, 0, 0, 0, 0.0, 0.0, 0.0)
   
   case backend.kind:
   of dbkSQLite, dbkTiDB:
     backend.pool.withDb:
-      # Group by model and sum costs
+      # Group by model and sum costs including reasoning tokens
       let query = """
         SELECT model,
               SUM(input_tokens) as totalInputTokens,
               SUM(output_tokens) as totalOutputTokens,
+              SUM(reasoning_tokens) as totalReasoningTokens,
               SUM(input_cost) as totalInputCost,
               SUM(output_cost) as totalOutputCost,
+              SUM(reasoning_cost) as totalReasoningCost,
               SUM(total_cost) as totalModelCost
         FROM model_token_usage
         WHERE conversation_id = ?
         GROUP BY model
-        ORDER BY created_at
+        ORDER BY SUM(total_cost) DESC
       """
       
       let rows = db.query(query, conversationId)
+      result.rows = @[]
       result.totalCost = 0.0
-      result.breakdown = @[]
+      result.totalInput = 0
+      result.totalOutput = 0
+      result.totalReasoning = 0
+      result.totalInputCost = 0.0
+      result.totalOutputCost = 0.0
+      result.totalReasoningCost = 0.0
       
       for row in rows:
-        let model = row[0]
-        let inputTokens = parseInt(row[1])
-        let outputTokens = parseInt(row[2])
-        let inputCost = parseFloat(row[3])
-        let outputCost = parseFloat(row[4])
-        let modelCost = parseFloat(row[5])
+        let modelRow = ConversationCostRow(
+          model: row[0],
+          inputTokens: if row[1] == "": 0 else: parseInt(row[1]),
+          outputTokens: if row[2] == "": 0 else: parseInt(row[2]),
+          reasoningTokens: if row[3] == "": 0 else: parseInt(row[3]),
+          inputCost: if row[4] == "": 0.0 else: parseFloat(row[4]),
+          outputCost: if row[5] == "": 0.0 else: parseFloat(row[5]),
+          reasoningCost: if row[6] == "": 0.0 else: parseFloat(row[6]),
+          totalCost: if row[7] == "": 0.0 else: parseFloat(row[7])
+        )
         
-        result.totalCost += modelCost
-        result.breakdown.add(fmt"{model}: {inputTokens} input tokens (${inputCost:.4f}) + {outputTokens} output tokens (${outputCost:.4f}) = ${modelCost:.4f}")
+        result.rows.add(modelRow)
+        result.totalCost += modelRow.totalCost
+        result.totalInput += modelRow.inputTokens
+        result.totalOutput += modelRow.outputTokens
+        result.totalReasoning += modelRow.reasoningTokens
+        result.totalInputCost += modelRow.inputCost
+        result.totalOutputCost += modelRow.outputCost
+        result.totalReasoningCost += modelRow.reasoningCost
+
+proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: int): tuple[totalReasoning: int, totalOutput: int, reasoningPercent: float] =
+  ## Get reasoning token statistics for a conversation
+  if backend == nil or conversationId == 0:
+    return (0, 0, 0.0)
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      let query = """
+        SELECT SUM(reasoning_tokens) as totalReasoning,
+               SUM(output_tokens) as totalOutput
+        FROM model_token_usage
+        WHERE conversation_id = ?
+      """
+      
+      let rows = db.query(query, conversationId)
+      if rows.len > 0:
+        let row = rows[0]
+        result.totalReasoning = if row[0] == "" or row[0] == "NULL": 0 else: parseInt(row[0])
+        result.totalOutput = if row[1] == "" or row[1] == "NULL": 0 else: parseInt(row[1])
+        result.reasoningPercent = if result.totalOutput > 0:
+          (result.totalReasoning.float / result.totalOutput.float) * 100.0
+        else:
+          0.0
+
+proc getConversationCostBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[totalCost: float, breakdown: seq[string]] =
+  ## Calculate accurate cost breakdown by model for a conversation (legacy function)
+  let detailedBreakdown = getConversationCostDetailed(backend, conversationId)
+  result.totalCost = detailedBreakdown.totalCost
+  result.breakdown = @[]
+  
+  for row in detailedBreakdown.rows:
+    let reasoningInfo = if row.reasoningTokens > 0: 
+      fmt" + {row.reasoningTokens} reasoning (${row.reasoningCost:.4f})"
+    else: ""
+    result.breakdown.add(fmt"{row.model}: {row.inputTokens} input (${row.inputCost:.4f}) + {row.outputTokens} output (${row.outputCost:.4f}){reasoningInfo} = ${row.totalCost:.4f}")
+
+proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime): tuple[totalCost: float, inputCost: float, outputCost: float, reasoningCost: float, inputTokens: int, outputTokens: int, reasoningTokens: int] =
+  ## Calculate session cost breakdown since app start time
+  if backend == nil:
+    return (0.0, 0.0, 0.0, 0.0, 0, 0, 0)
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      let query = """
+        SELECT SUM(input_tokens) as totalInputTokens,
+               SUM(output_tokens) as totalOutputTokens,
+               SUM(reasoning_tokens) as totalReasoningTokens,
+               SUM(input_cost) as totalInputCost,
+               SUM(output_cost) as totalOutputCost,
+               SUM(reasoning_cost) as totalReasoningCost,
+               SUM(total_cost) as totalCost,
+               COUNT(*) as rowCount
+        FROM model_token_usage
+        WHERE created_at >= ?
+      """
+      
+      let timestampStr = appStartTime.format("yyyy-MM-dd'T'HH:mm:ss")
+      debug(fmt"Session cost query: timestamp={timestampStr}")
+      let rows = db.query(query, timestampStr)
+      debug(fmt"Session cost query returned {rows.len} rows")
+      if rows.len > 0:
+        let row = rows[0]
+        debug(fmt"Session cost raw data: {row}")
+        result.inputTokens = if row[0] == "" or row[0] == "NULL": 0 else: parseInt(row[0])
+        result.outputTokens = if row[1] == "" or row[1] == "NULL": 0 else: parseInt(row[1])
+        result.reasoningTokens = if row[2] == "" or row[2] == "NULL": 0 else: parseInt(row[2])
+        result.inputCost = if row[3] == "" or row[3] == "NULL": 0.0 else: parseFloat(row[3])
+        result.outputCost = if row[4] == "" or row[4] == "NULL": 0.0 else: parseFloat(row[4])
+        result.reasoningCost = if row[5] == "" or row[5] == "NULL": 0.0 else: parseFloat(row[5])
+        result.totalCost = if row[6] == "" or row[6] == "NULL": 0.0 else: parseFloat(row[6])
+        debug(fmt"Session cost breakdown: total={result.totalCost}, input={result.inputTokens}, output={result.outputTokens}")
+
+proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[userTokens: int, assistantTokens: int, toolTokens: int] =
+  ## Get token breakdown by message type for current conversation
+  if backend == nil or conversationId == 0:
+    return (0, 0, 0)
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      let query = """
+        SELECT cm.role,
+               SUM(mtu.input_tokens + mtu.output_tokens + mtu.reasoning_tokens) as totalTokens
+        FROM conversation_message cm
+        LEFT JOIN model_token_usage mtu ON cm.id = mtu.message_id
+        WHERE cm.conversation_id = ?
+        GROUP BY cm.role
+      """
+      
+      let rows = db.query(query, conversationId)
+      for row in rows:
+        let role = row[0]
+        let tokens = if row[1] == "": 0 else: parseInt(row[1])
+        case role:
+        of "user": result.userTokens = tokens
+        of "assistant": result.assistantTokens = tokens
+        of "tool": result.toolTokens = tokens
 
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =
@@ -914,6 +1070,49 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
     result = nil
 
 # Todo system database functions
+proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, conversationId: int, messageId: int) {.gcsafe.} =
+  ## Centralized token logging that finds model config and logs usage - used from API worker
+  {.gcsafe.}:
+    if conversationId == 0:
+      return
+    
+    let database = getGlobalDatabase()
+    if database == nil:
+      return
+    
+    try:
+      # Get the real model config to access cost information
+      let config = loadConfig()
+      var realModelConfig: ModelConfig
+      
+      # Find the model in config by matching the model name or base URL
+      var modelFound = false
+      for modelConfig in config.models:
+        if modelConfig.model == requestModel:
+          realModelConfig = modelConfig
+          modelFound = true
+          break
+      
+      let inputCostPerMToken = if modelFound: realModelConfig.inputCostPerMToken else: none(float)
+      let outputCostPerMToken = if modelFound: realModelConfig.outputCostPerMToken else: none(float)
+      let reasoningCostPerMToken = if modelFound: realModelConfig.reasoningCostPerMToken else: none(float)
+      
+      debug(fmt"About to log token usage: conversationId={conversationId}, messageId={messageId}, model={requestModel}")
+      debug(fmt"Token amounts: input={finalUsage.inputTokens}, output={finalUsage.outputTokens}")
+      debug(fmt"Cost config: inputCost={inputCostPerMToken}, outputCost={outputCostPerMToken}, modelFound={modelFound}")
+      
+      # Extract reasoning tokens from usage if available
+      let reasoningTokens = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
+      
+      logModelTokenUsage(database, conversationId, messageId, requestModel,
+                        finalUsage.inputTokens, finalUsage.outputTokens,
+                        inputCostPerMToken, outputCostPerMToken,
+                        reasoningTokens, reasoningCostPerMToken)
+      
+      debug(fmt"Successfully logged token usage: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output, {reasoningTokens} reasoning")
+    except Exception as e:
+      error(fmt"Failed to log token usage: {e.msg}")
+
 proc createTodoList*(backend: DatabaseBackend, conversationId: int, title: string, description: string = ""): int =
   ## Create a new todo list and return its ID
   if backend == nil:
@@ -1133,3 +1332,93 @@ proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, file
       except Exception as e:
         error(fmt"Failed to add plan mode created file: {e.msg}")
         return false
+
+# Token correction factor database functions
+proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, estimatedTokens: int, actualTokens: int) =
+  ## Record a token correction sample in the database
+  if backend == nil or estimatedTokens <= 0 or actualTokens <= 0:
+    return
+  
+  let ratio = actualTokens.float / estimatedTokens.float
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        # Check if correction factor exists for this model
+        let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+        
+        if existingFactors.len > 0:
+          # Update existing correction factor
+          var factor = existingFactors[0]
+          factor.totalSamples += 1
+          factor.sumRatio += ratio
+          factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
+          factor.updatedAt = now()
+          db.update(factor)
+          
+          debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
+        else:
+          # Create new correction factor
+          let factor = TokenCorrectionFactor(
+            id: 0,
+            modelName: modelName,
+            totalSamples: 1,
+            sumRatio: ratio,
+            avgCorrection: ratio,
+            createdAt: now(),
+            updatedAt: now()
+          )
+          db.insert(factor)
+          
+          debug(fmt"Created new correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
+      except Exception as e:
+        error(fmt"Failed to record token correction to database: {e.msg}")
+
+proc getCorrectionFactorFromDB*(backend: DatabaseBackend, modelName: string): Option[float] =
+  ## Get the correction factor for a model from database
+  if backend == nil:
+    return none(float)
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let factors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+        if factors.len > 0:
+          let factor = factors[0]
+          # Only apply correction if we have enough samples and it's not too extreme
+          if factor.totalSamples >= 3 and factor.avgCorrection > 0.5 and factor.avgCorrection < 2.0:
+            return some(factor.avgCorrection)
+        return none(float)
+      except Exception as e:
+        error(fmt"Failed to get correction factor from database: {e.msg}")
+        return none(float)
+
+proc getAllCorrectionFactorsFromDB*(backend: DatabaseBackend): seq[TokenCorrectionFactor] =
+  ## Get all correction factors from database
+  if backend == nil:
+    return @[]
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        return db.filter(TokenCorrectionFactor)
+      except Exception as e:
+        error(fmt"Failed to get all correction factors from database: {e.msg}")
+        return @[]
+
+proc clearAllCorrectionFactorsFromDB*(backend: DatabaseBackend) =
+  ## Clear all correction factors from database
+  if backend == nil:
+    return
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        db.query("DELETE FROM token_correction_factor")
+        debug("Cleared all token correction factors from database")
+      except Exception as e:
+        error(fmt"Failed to clear correction factors from database: {e.msg}")
