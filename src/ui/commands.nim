@@ -12,6 +12,7 @@
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient]
 import ../core/[conversation_manager, config, app, database, mode_state]
 import ../types/[config as configTypes, messages]
+import ../tokenization/tokenizer
 import theme
 import table_utils
 # import linecross  # Used only in comments
@@ -190,96 +191,103 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
 
 
 proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Show current conversation context information
+  ## Show current conversation context information using Nancy table
   let messages = conversation_manager.getConversationContext()
-  let estimatedTokens = estimateTokenCount(messages)
   
-  var message = "Conversation Context:\n"
-  message &= "  Messages in context: " & $messages.len & "\n"
-  message &= "  Estimated tokens: " & $estimatedTokens & "\n"
+  var message = "Conversation Context:\n\n"
   
-  # Show breakdown by message type
+  # Count messages by type and estimate tokens using BPE
   var userCount = 0
   var assistantCount = 0
   var toolCount = 0
   var toolCallCount = 0
+  var userTokensEstimate = 0
+  var assistantTokensEstimate = 0
+  var toolTokensEstimate = 0
+  
+  # Get model name for accurate token estimation
+  let modelName = currentModel.model
   
   for msg in messages:
     case msg.role:
-    of mrUser: inc userCount
+    of mrUser: 
+      inc userCount
+      userTokensEstimate += countTokensForModel(msg.content, modelName)
     of mrAssistant: 
       inc assistantCount
+      assistantTokensEstimate += countTokensForModel(msg.content, modelName)
       # Count tool calls in assistant messages
       if msg.toolCalls.isSome():
         toolCallCount += msg.toolCalls.get().len
-    of mrTool: inc toolCount
+        # Add token estimate for tool calls (JSON serialized)
+        for toolCall in msg.toolCalls.get():
+          let toolCallJson = fmt"""{{"name": "{toolCall.function.name}", "arguments": {toolCall.function.arguments}}}"""
+          assistantTokensEstimate += countTokensForModel(toolCallJson, modelName)
+    of mrTool: 
+      inc toolCount
+      toolTokensEstimate += countTokensForModel(msg.content, modelName)
     else: discard
   
-  message &= "  Breakdown: " & $userCount & " user, " & $assistantCount & " assistant, " & $toolCount & " tool messages\n"
-  if toolCallCount > 0:
-    message &= "  Tool calls: " & $toolCallCount & "\n"
+  # Get token data from conversation cost details (more reliable than message role breakdown)
+  let database = getGlobalDatabase()
+  var totalTokens = 0
   
-  if messages.len >= DEFAULT_MAX_CONTEXT_MESSAGES:
-    message &= "  📝 Context is at maximum size (" & $DEFAULT_MAX_CONTEXT_MESSAGES & " messages)\n"
+  if database != nil:
+    try:
+      let conversationId = getCurrentConversationId().int
+      let conversationDetails = getConversationCostDetailed(database, conversationId)
+      totalTokens = conversationDetails.totalInput + conversationDetails.totalOutput + conversationDetails.totalReasoning
+    except Exception as e:
+      debug(fmt"Failed to get conversation tokens: {e.msg}")
   
-  return CommandResult(
-    success: true,
-    message: message,
-    shouldExit: false,
-    shouldContinue: true
+  # Create and display context table with BPE token estimates
+  let contextTable = formatContextBreakdownTable(
+    userCount, assistantCount, toolCount,
+    userTokensEstimate, assistantTokensEstimate, toolTokensEstimate
   )
-
-proc tokensHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Show detailed token usage and cost information
-  let sessionCounts = getSessionTokens()
+  message &= contextTable & "\n"
   
-  var message = "Token Usage & Cost Information:\n"
-  message &= "  Session input tokens: " & $sessionCounts.inputTokens & "\n"
-  message &= "  Session output tokens: " & $sessionCounts.outputTokens & "\n"
-  message &= "  Session total tokens: " & $sessionCounts.totalTokens & "\n"
-  message &= "  Model context limit: " & $currentModel.context & " tokens\n"
+  # Add BPE estimation note
+  let totalEstimate = userTokensEstimate + assistantTokensEstimate + toolTokensEstimate
+  if totalEstimate > 0:
+    let estimateStr = if totalEstimate > 999: insertSep($totalEstimate, ',') else: $totalEstimate
+    message &= fmt"\n💡 BPE Token Estimate: ~{estimateStr} tokens (using {modelName} tokenizer with dynamic correction)\n"
   
-  if currentModel.context > 0 and sessionCounts.inputTokens > 0:
-    let usagePercent = (sessionCounts.inputTokens * 100) div currentModel.context
-    message &= "  Current context usage: " & $usagePercent & "%\n"
+  # Show tool calls if any
+  if toolCallCount > 0:
+    message &= fmt"\n🔧 Tool calls: {toolCallCount}\n"
+  
+  # Show reasoning token information
+  if database != nil:
+    try:
+      let conversationId = getCurrentConversationId().int
+      let reasoningStats = getConversationReasoningTokens(database, conversationId)
+      if reasoningStats.totalReasoning > 0:
+        let reasoningStr = if reasoningStats.totalReasoning > 999:
+          insertSep($reasoningStats.totalReasoning, ',')
+        else:
+          $reasoningStats.totalReasoning
+        message &= fmt"\n🧠 Reasoning: {reasoningStr} tokens ({reasoningStats.reasoningPercent:.1f}% of assistant output)\n"
+        totalTokens += reasoningStats.totalReasoning
+    except Exception as e:
+      debug(fmt"Failed to get reasoning tokens: {e.msg}")
+  
+  # Show context usage analysis
+  if totalTokens > 0 and currentModel.context > 0:
+    let usagePercent = (totalTokens * 100) div currentModel.context
+    let totalTokensStr = if totalTokens > 999: insertSep($totalTokens, ',') else: $totalTokens
+    let contextLimitStr = if currentModel.context > 999: insertSep($currentModel.context, ',') else: $currentModel.context
+    
+    message &= fmt"\nContext Usage: {totalTokensStr} / {contextLimitStr} tokens ({usagePercent}%)"
     
     if usagePercent > 80:
-      message &= "  🚨 High context usage - consider starting a new conversation with /new\n"
+      message &= " 🚨 High context usage - consider starting a new conversation\n"
     elif usagePercent > 60:
-      message &= "  ⚠️  Moderate context usage\n"
-  
-  # Show cost information if available
-  let hasInputCost = currentModel.inputCostPerMToken.isSome()
-  let hasOutputCost = currentModel.outputCostPerMToken.isSome()
-  
-  if hasInputCost or hasOutputCost:
-    message &= "\nCost Information:\n"
-    
-    # Calculate current session cost
-    var currentCost = 0.0
-    if hasInputCost and sessionCounts.inputTokens > 0:
-      let inputCostPerToken = currentModel.inputCostPerMToken.get() / 1_000_000.0
-      currentCost += float(sessionCounts.inputTokens) * inputCostPerToken
-    if hasOutputCost and sessionCounts.outputTokens > 0:
-      let outputCostPerToken = currentModel.outputCostPerMToken.get() / 1_000_000.0
-      currentCost += float(sessionCounts.outputTokens) * outputCostPerToken
-    
-    if currentCost > 0.0:
-      message &= "  Current cost: " & formatCost(currentCost) & "\n"
-    
-    if hasInputCost:
-      let inputRate = currentModel.inputCostPerMToken.get()
-      message &= "  Input cost: $" & inputRate.formatFloat(ffDecimal, 2) & " per million tokens\n"
-    
-    if hasOutputCost:
-      let outputRate = currentModel.outputCostPerMToken.get()
-      message &= "  Output cost: $" & outputRate.formatFloat(ffDecimal, 2) & " per million tokens\n"
-    
-    # No projections - user finds them unhelpful
-  else:
-    message &= "\n💡 Add inputCostPerMToken/outputCostPerMToken to model config for cost tracking\n"
-  
-  message &= "\n💡 Use '/new [title]' to start fresh and reduce context costs\n"
+      message &= " ⚠️  Moderate context usage\n"
+    else:
+      message &= " ✅\n"
+  elif messages.len >= DEFAULT_MAX_CONTEXT_MESSAGES:
+    message &= fmt"\n📝 Context is at maximum size ({DEFAULT_MAX_CONTEXT_MESSAGES} messages)\n"
   
   return CommandResult(
     success: true,
@@ -288,40 +296,69 @@ proc tokensHandler(args: seq[string], currentModel: var configTypes.ModelConfig)
     shouldContinue: true
   )
 
+
 proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Show session cost summary with accurate model-specific breakdown
-  let sessionCounts = conversation_manager.getSessionTokens()
-  let messages = conversation_manager.getConversationContext()
-  
-  var message = "Session Cost Summary:\n"
+  ## Show session and conversation cost breakdown with detailed token analysis
+  var message = ""
   
   # Get global database instance
   let database = getGlobalDatabase()
   
-  # Try to get accurate cost breakdown from database
   if database != nil:
     try:
-      let conversationId = getCurrentConversationId().int
-      let (totalCost, breakdown) = getConversationCostBreakdown(database, conversationId)
+      # Get session costs (since app start)
+      let appStartTime = getAppStartTime()
+      let sessionCosts = getSessionCostBreakdown(database, appStartTime)
       
-      message &= "  Session: " & $messages.len & " messages, " & $sessionCounts.totalTokens & " tokens\n"
-      
-      if totalCost > 0:
-        message &= "  Total session cost: " & formatCost(totalCost) & "\n"
-        message &= "\nCost Breakdown by Model:\n"
-        
-        for line in breakdown:
-          message &= "  " & line & "\n"
+      message &= "\nSession (since app start):\n"
+      if sessionCosts.totalCost > 0:
+        message &= fmt"  Input: {sessionCosts.inputTokens} tokens (${sessionCosts.inputCost:.4f})"
+        message &= "\n"
+        message &= fmt"  Output: {sessionCosts.outputTokens} tokens (${sessionCosts.outputCost:.4f})"
+        message &= "\n"
+        if sessionCosts.reasoningTokens > 0:
+          message &= fmt"  Reasoning: {sessionCosts.reasoningTokens} tokens (${sessionCosts.reasoningCost:.4f})"
+          message &= "\n"
+        message &= fmt"  Total: {sessionCosts.inputTokens + sessionCosts.outputTokens + sessionCosts.reasoningTokens} tokens (${sessionCosts.totalCost:.4f})"
+        message &= "\n"
       else:
-        message &= "  No cost data available for current session\n"
-        message &= "  💡 Cost tracking will begin after your next message\n"
+        message &= "  No session costs recorded\n"
+      
+      # Get conversation costs (current conversation only) with detailed breakdown
+      let conversationId = getCurrentConversationId().int
+      let conversationDetails = getConversationCostDetailed(database, conversationId)
+      
+      message &= "\nCurrent Conversation:\n"
+      if conversationDetails.totalCost > 0:
+        let costTable = formatCostBreakdownTable(
+          conversationDetails.rows,
+          conversationDetails.totalInput, 
+          conversationDetails.totalOutput, 
+          conversationDetails.totalReasoning,
+          conversationDetails.totalInputCost, 
+          conversationDetails.totalOutputCost, 
+          conversationDetails.totalReasoningCost,
+          conversationDetails.totalCost
+        )
+        message &= costTable & "\n"
+        
+        # Add input/output ratio analysis
+        if conversationDetails.totalInput > 0 and conversationDetails.totalOutput > 0:
+          let ratio = conversationDetails.totalInput.float / conversationDetails.totalOutput.float
+          message &= fmt("\n📊 Input/Output Ratio: {ratio:.2f}x")
+          if conversationDetails.totalReasoning > 0:
+            let reasoningPercent = conversationDetails.totalReasoning.float / conversationDetails.totalOutput.float * 100
+            message &= fmt" (reasoning: {reasoningPercent:.1f}% of output)"
+          message &= "\n"
+      else:
+        message &= "  No conversation costs recorded\n"
+      
     except Exception as e:
       error(fmt"Database error in cost handler: {e.msg}")
       message &= "  ❌ Database error: " & e.msg & "\n"
       message &= "  💡 Try restarting Niffler to reinitialize database\n"
   else:
-    # Database not available - simplified message
-    message &= "  Session: " & $messages.len & " messages, " & $sessionCounts.totalTokens & " tokens\n"
+    # Database not available
     message &= "  ❌ Database not available for cost tracking\n"
     message &= "  💡 Database will be automatically created when available\n"
   
@@ -779,7 +816,6 @@ proc initializeCommands*() =
   registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler)
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler)
-  registerCommand("tokens", "Show detailed token usage information", "", @[], tokensHandler)
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
   registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)

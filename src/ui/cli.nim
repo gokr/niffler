@@ -181,12 +181,27 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
       
       case command:
       of "model":
-        # Complete model names
+        # Show Nancy table for model selection and individual completions
         let config = loadConfig()
+        debug(fmt"Found {config.models.len} models in config")
+        var filteredModels: seq[configTypes.ModelConfig] = @[]
+        
         for model in config.models:
-          if model.nickname.toLower().startsWith(argPrefix.toLower()):
-            debug(fmt"Adding model completion: '{model.nickname}'")
+          let matchesNickname = model.nickname.toLower().startsWith(argPrefix.toLower())
+          let matchesModel = model.model.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
+          debug(fmt"Model '{model.nickname}': matchesNickname={matchesNickname}, matchesModel={matchesModel}")
+          
+          if matchesNickname or matchesModel:
+            filteredModels.add(model)
+            debug(fmt"Added model '{model.nickname}' to filtered list")
+            # Also add individual completion
             addCompletion(completions, model.nickname, model.model)
+        
+        debug(fmt"Filtered models count: {filteredModels.len}")
+        if filteredModels.len > 0:
+          let tableOutput = formatModelsTable(filteredModels)
+          debug(fmt"Generated table output, length: {tableOutput.len}")
+          addCompletion(completions, "\n" & tableOutput, "")
       of "theme":
         # Complete theme names
         let availableThemes = getAvailableThemes()

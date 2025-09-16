@@ -168,3 +168,122 @@ proc formatApiModelsTable*(jsonResponse: JsonNode): string =
     return renderTableToString(table, maxWidth = 120, useBoxChars = true)
   except Exception as e:
     return fmt"Error formatting API models table: {e.msg}\nRaw response:\n" & jsonResponse.pretty(indent = 2)
+
+proc formatCostBreakdownTable*(rows: seq[ConversationCostRow], 
+                              totalInput: int, totalOutput: int, totalReasoning: int,
+                              totalInputCost: float, totalOutputCost: float, totalReasoningCost: float, totalCost: float): string =
+  ## Format conversation cost breakdown as a table with reasoning token analysis
+  if rows.len == 0:
+    return "No cost data available"
+  
+  var table: TerminalTable
+  
+  # Add header
+  if totalReasoning > 0:
+    table.add bold("Model"), bold("Input"), bold("Output"), bold("Reasoning"), bold("Input Cost"), bold("Output Cost"), bold("Reasoning Cost"), bold("Total Cost")
+  else:
+    table.add bold("Model"), bold("Input"), bold("Output"), bold("Input Cost"), bold("Output Cost"), bold("Total Cost")
+  
+  # Add model rows
+  for row in rows:
+    # Format token counts with thousands separator (manual formatting)
+    let inputStr = if row.inputTokens > 999: 
+      insertSep($row.inputTokens, ',') 
+    else: 
+      $row.inputTokens
+    let outputStr = if row.outputTokens > 999: 
+      insertSep($row.outputTokens, ',') 
+    else: 
+      $row.outputTokens
+    
+    # Short model name (extract last part after /)
+    let modelName = if "/" in row.model: row.model.split("/")[^1] else: row.model
+    
+    if totalReasoning > 0:
+      let reasoningStr = if row.reasoningTokens > 0:
+        if row.reasoningTokens > 999: 
+          insertSep($row.reasoningTokens, ',')
+        else: 
+          $row.reasoningTokens
+      else: dim("0")
+      
+      let reasoningCostStr = if row.reasoningCost > 0.0: fmt"${row.reasoningCost:.4f}" else: dim("$0.0000")
+      
+      table.add modelName, inputStr, outputStr, reasoningStr, 
+                fmt"${row.inputCost:.4f}", fmt"${row.outputCost:.4f}", reasoningCostStr,
+                fmt"${row.totalCost:.4f}"
+    else:
+      table.add modelName, inputStr, outputStr,
+                fmt"${row.inputCost:.4f}", fmt"${row.outputCost:.4f}",
+                fmt"${row.totalCost:.4f}"
+  
+  # Add total row
+  let totalInputStr = if totalInput > 999: 
+    insertSep($totalInput, ',') 
+  else: 
+    $totalInput
+  let totalOutputStr = if totalOutput > 999: 
+    insertSep($totalOutput, ',') 
+  else: 
+    $totalOutput
+  
+  if totalReasoning > 0:
+    let totalReasoningStr = if totalReasoning > 0:
+      if totalReasoning > 999: 
+        insertSep($totalReasoning, ',')
+      else: 
+        $totalReasoning
+    else: dim("0")
+    
+    let totalReasoningCostStr = if totalReasoningCost > 0.0: fmt"${totalReasoningCost:.4f}" else: dim("$0.0000")
+    
+    # Calculate reasoning percentage
+    let reasoningPercent = if totalOutput > 0: 
+      fmt"({(totalReasoning.float / totalOutput.float * 100):.1f}%)"
+    else: ""
+    
+    table.add green(bold("TOTAL")), green(bold(totalInputStr)), green(bold(totalOutputStr)), 
+              green(bold(totalReasoningStr & " " & dim(reasoningPercent))), 
+              green(bold(fmt"${totalInputCost:.4f}")), green(bold(fmt"${totalOutputCost:.4f}")), green(bold(totalReasoningCostStr)),
+              green(bold(fmt"${totalCost:.4f}"))
+  else:
+    table.add green(bold("TOTAL")), green(bold(totalInputStr)), green(bold(totalOutputStr)),
+              green(bold(fmt"${totalInputCost:.4f}")), green(bold(fmt"${totalOutputCost:.4f}")),
+              green(bold(fmt"${totalCost:.4f}"))
+  
+  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
+
+proc formatContextBreakdownTable*(userCount: int, assistantCount: int, toolCount: int,
+                                  userTokens: int, assistantTokens: int, toolTokens: int): string =
+  ## Format conversation context breakdown as a table
+  let totalCount = userCount + assistantCount + toolCount
+  let totalTokens = userTokens + assistantTokens + toolTokens
+  
+  if totalCount == 0:
+    return "No messages in context"
+  
+  var table: TerminalTable
+  
+  # Add header
+  table.add bold("Message Type"), bold("Count"), bold("Total Tokens"), bold("Avg per Message")
+  
+  # Helper function to calculate average
+  proc avgTokens(tokens: int, count: int): string =
+    if count > 0: $((tokens.float / count.float).int) else: dim("-")
+  
+  # Add rows for each message type (always show all types)
+  let userTokensStr = if userTokens > 999: insertSep($userTokens, ',') else: $userTokens
+  table.add "User", $userCount, userTokensStr, avgTokens(userTokens, userCount)
+  
+  let assistantTokensStr = if assistantTokens > 999: insertSep($assistantTokens, ',') else: $assistantTokens
+  table.add "Assistant", $assistantCount, assistantTokensStr, avgTokens(assistantTokens, assistantCount)
+  
+  let toolTokensStr = if toolTokens > 999: insertSep($toolTokens, ',') else: $toolTokens
+  table.add "Tool", $toolCount, toolTokensStr, avgTokens(toolTokens, toolCount)
+  
+  # Add total row
+  let totalTokensStr = if totalTokens > 999: insertSep($totalTokens, ',') else: $totalTokens
+  table.add green(bold("TOTAL")), green(bold($totalCount)), green(bold(totalTokensStr)), 
+            green(bold(avgTokens(totalTokens, totalCount)))
+  
+  return renderTableToString(table, maxWidth = 120, useBoxChars = true)
