@@ -26,6 +26,32 @@ Niffler is a work-in-progress. Some of the things that perhaps **stand out** are
 - **NIFFLER.md handling**: Customizable system prompts and instruction files with include directive support
 
 
+## Token Counting & Cost Tracking
+
+Niffler features a **BPE (Byte Pair Encoding) tokenization implementation** with dynamic correction factors for accurate token estimation and cost tracking across LLMs.
+
+### Key Features
+- **Universal BPE Tokenization**: Works with any LLM model since all modern models use BPE-based tokenization
+- **Dynamic Correction Factor**: Learns from actual API responses to improve estimate accuracy over time, each model gets its own correction factor based on real usage data
+- **Cost Optimization**: More accurate token estimates lead to better cost predictions
+
+### How It Works
+
+**Initial Estimation**: Niffler uses a ported version of Karpathy's **minbpe** (minimal BPE tokenizer) to provide baseline token estimates that are much more accurate than simple character-based counting.
+
+**Dynamic Learning**: When you receive responses from LLM APIs, Niffler automatically compares the estimated token count with the actual count returned by the API and records the difference.
+
+**Automatic Improvement**: Future token estimates for that specific model are automatically adjusted using the learned correction factor, becoming more accurate with each API call.
+
+### Example Usage
+```nim
+# Count tokens for any model with correction factor
+let tokens = countTokensForModel("Hello world!", "gpt-4")
+
+# The system automatically improves over time as you use different models
+```
+
+
 ### Tool System
 Niffler includes a tool system that enables AI assistants to interact with your development environment. All tool executions are being run in a separate thread. It should be easy to add more builtin tools:
 

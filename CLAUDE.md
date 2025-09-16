@@ -83,6 +83,36 @@ Configuration system (`src/core/config.nim`):
 - Environment variable support for API keys
 - Config file location: `~/.config/niffler/config.toml`
 
+### Database Access
+
+Niffler uses SQLite for persistent storage of conversations, messages, and token usage data.
+
+**Database Location**: `~/.niffler/niffler.db`
+
+**Direct Access**:
+```bash
+# Connect to database for queries
+sqlite3 ~/.niffler/niffler.db
+
+# View database schema
+sqlite3 ~/.niffler/niffler.db ".schema"
+
+# Example queries
+sqlite3 ~/.niffler/niffler.db "SELECT * FROM conversations ORDER BY created_at DESC LIMIT 5"
+sqlite3 ~/.niffler/niffler.db "SELECT created_at, model, input_tokens, output_tokens, total_cost FROM model_token_usage ORDER BY created_at DESC LIMIT 10"
+```
+
+**Key Tables**:
+- `conversations`: Conversation metadata and settings
+- `conversation_message`: Individual messages in conversations
+- `model_token_usage`: Token usage and cost tracking per API call
+- `conversation_thinking_token`: Reasoning/thinking token storage
+
+**Debugging Tips**:
+- Use `sqlite3 ~/.niffler/niffler.db ".tables"` to list all tables
+- Token costs are tracked per API call with ISO timestamp format (`2025-01-15T14:30:45`)
+- Session costs use `WHERE created_at >= ?` with current app start time for filtering
+
 ## Tool Calling Implementation
 
 The tool calling system follows OpenAI's function calling specification:
