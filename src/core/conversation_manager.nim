@@ -37,6 +37,8 @@ type
     # Session token tracking
     sessionPromptTokens: int
     sessionCompletionTokens: int
+    # App session tracking
+    appStartTime: DateTime
     # Thread-safe access
     lock: Lock
 
@@ -86,6 +88,12 @@ proc validateSessionState*(): tuple[valid: bool, message: string] =
     return (valid: false, message: fmt"Session state divergence: currentSession has conversation ID {currentConversationId}, globalSession has {globalConversationId}")
   else:
     return (valid: true, message: "Session states are synchronized")
+
+proc getAppStartTime*(): DateTime =
+  ## Get the application start time for session cost calculations
+  acquire(globalSession.lock)
+  defer: release(globalSession.lock)
+  return globalSession.appStartTime
 
 type
   ConversationFilter* = enum
@@ -479,6 +487,7 @@ proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) =
   globalSession.conversationId = conversationId
   globalSession.sessionPromptTokens = 0
   globalSession.sessionCompletionTokens = 0
+  globalSession.appStartTime = now()
 
 proc addUserMessage*(content: string): Message =
   ## Add user message to current conversation and persist to database

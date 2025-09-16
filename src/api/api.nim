@@ -609,26 +609,10 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
       else: 
         TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
       
-      # Log token usage
-      if database != nil:
-        try:
-          let conversationId = getCurrentConversationId().int
-          let messageId = getCurrentMessageId().int
-          let inputCostPerMToken = tempModelConfig.inputCostPerMToken
-          let outputCostPerMToken = tempModelConfig.outputCostPerMToken
-          
-          # Extract reasoning tokens from usage if available
-          let reasoningTokens = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
-          let reasoningCostPerMToken = tempModelConfig.reasoningCostPerMToken
-          
-          logModelTokenUsage(database, conversationId, messageId, request.model,
-                            finalUsage.inputTokens, finalUsage.outputTokens,
-                            inputCostPerMToken, outputCostPerMToken,
-                            reasoningTokens, reasoningCostPerMToken)
-          
-          debug(fmt"Logged token usage for model {request.model}: {finalUsage.inputTokens} input, {finalUsage.outputTokens} output, {reasoningTokens} reasoning")
-        except Exception as e:
-          debug(fmt"Failed to log token usage to database: {e.msg}")
+      # Log token usage for tool conversations  
+      let conversationId = getCurrentConversationId().int
+      let messageId = getCurrentMessageId().int
+      logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
       
       let completeResponse = APIResponse(
         requestId: request.requestId,
@@ -914,6 +898,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 isEncrypted: none(bool)
               )
               sendAPIResponse(channels, finalChunkResponse)
+              
+              # Log token usage for regular (non-tool) conversations
+              let conversationId = getCurrentConversationId().int
+              let messageId = getCurrentMessageId().int
+              logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
               
               # Send completion response with extracted usage data
               let completeResponse = APIResponse(
