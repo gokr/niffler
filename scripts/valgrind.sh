@@ -3,8 +3,6 @@
 echo "Running Valgrind..."
 echo "Building with debug symbols..."
 
-cd /home/gokr/tankfeud/niffler
-
 # Build with debug
 nim c --stackTrace:on --lineTrace:on --debugger:native --opt:none -d:debug --threads:on -d:ssl src/niffler.nim
 echo ""
