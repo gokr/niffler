@@ -152,7 +152,7 @@ The tool calling system follows OpenAI's function calling specification:
 - Use `*` to export fields that should be publicly accessible
 - If something is not exported, export it instead of doing workarounds
 - Do not be afraid to break backwards compatibility
-- When using fmt always write it as a proc call like fmt("yaddayadda") and not fmt"yadda" (otherwise escaped characters do not work)
+- When using fmt **ALWAYS** write it as a proc call like fmt("yaddayadda") and not fmt"yadda" (otherwise escaped characters do not work)
 
 ### Function and Return Style
 - **Single-line functions**: Use direct expression without `result =` assignment or `return` statement
