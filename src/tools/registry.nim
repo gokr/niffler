@@ -18,6 +18,7 @@
 
 import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
+import ../tokenization/tokenizer
 import bash, create, edit, fetch, list, read, todolist
 
 type
@@ -361,6 +362,21 @@ proc getAllToolSchemas*(): seq[ToolDefinition] =
   ## Get JSON schemas for all registered tools (for LLM function calling)
   initializeRegistry()
   return toolSeq.mapIt(it.schema)
+
+proc countToolSchemaTokens*(modelName: string = "default"): int =
+  ## Count tokens used by all tool schemas when sent to LLM
+  ## This estimates the overhead of including tool definitions in API requests
+  let schemas = getAllToolSchemas()
+  if schemas.len == 0:
+    return 0
+  
+  try:
+    # Convert tool schemas to JSON format as they would be sent to API
+    let toolsJson = $(%schemas)
+    return countTokensForModel(toolsJson, modelName)
+  except Exception:
+    # Fallback estimation if tokenization fails
+    return schemas.len * 200  # Rough estimate: 200 tokens per tool schema
 
 proc getToolSchema*(name: string): Option[ToolDefinition] =
   ## Get JSON schema for a specific tool by name

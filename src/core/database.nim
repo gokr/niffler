@@ -65,7 +65,6 @@ type
     messageCount*: int
     lastActivity*: DateTime
     planModeEnteredAt*: DateTime  # When plan mode was entered (default epoch if never entered)
-    planModeProtectedFiles*: string  # DEPRECATED: Old field for compatibility
     planModeCreatedFiles*: string  # JSON array of files created during this plan mode session
 
   ConversationSession* = object
@@ -149,7 +148,7 @@ type
     updatedAt*: DateTime
     orderIndex*: int
 
-  # Token correction factor system for BPE tokenization
+  # Token correction factor system for tokenization counts
   TokenCorrectionFactor* = ref object of RootObj
     id*: int
     modelName*: string           ## Model identifier (e.g., "gpt-4", "qwen-plus")
@@ -158,6 +157,28 @@ type
     avgCorrection*: float        ## Current average correction factor
     createdAt*: DateTime         ## When first sample was recorded
     updatedAt*: DateTime         ## When this correction was last updated
+
+  # System prompt token tracking
+  SystemPromptTokenUsage* = ref object of RootObj
+    id*: int
+    conversationId*: int         ## Link to conversation
+    messageId*: int              ## Link to specific message/request
+    createdAt*: DateTime         ## When the request was made
+    model*: string               ## Model used for request
+    mode*: string                ## Agent mode (plan/code)
+    basePromptTokens*: int       ## Base system prompt tokens
+    modePromptTokens*: int       ## Mode-specific prompt tokens
+    environmentTokens*: int      ## Environment info tokens
+    instructionFileTokens*: int  ## CLAUDE.md etc. tokens
+    toolInstructionTokens*: int  ## TodoList/thinking instructions
+    availableToolsTokens*: int   ## Tools list tokens
+    systemPromptTotal*: int      ## Total system prompt tokens
+    toolSchemaTokens*: int       ## Tool schema JSON tokens
+    totalOverhead*: int          ## Complete API request overhead
+
+proc utcNow*(): string =
+  ## Return current UTC time
+  now().utc().format("yyyy-MM-dd'T'HH:mm:ss")
 
 # Helper procedures for tool call serialization
 proc serializeToolCalls*(toolCalls: seq[LLMToolCall]): string =
@@ -259,12 +280,6 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     debug("Updating any NULL or empty plan_mode_entered_at values")
     conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01T00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
     
-    # Check if plan_mode_protected_files column exists
-    let hasPlanModeProtectedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_protected_files")
-    if not hasPlanModeProtectedFiles:
-      debug("Adding plan_mode_protected_files column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_protected_files TEXT")
-    
     # Migrate to new plan_mode_created_files column (changed semantics)
     let hasPlanModeCreatedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_created_files")
     if not hasPlanModeCreatedFiles:
@@ -350,6 +365,14 @@ proc initializeDatabase*(backend: DatabaseBackend) =
         db.createIndexIfNotExists(TokenCorrectionFactor, "modelName")
         db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
 
+      # Create system prompt token usage table
+      if not db.tableExists(SystemPromptTokenUsage):
+        db.createTable(SystemPromptTokenUsage)
+        db.createIndexIfNotExists(SystemPromptTokenUsage, "conversationId")
+        db.createIndexIfNotExists(SystemPromptTokenUsage, "messageId")
+        db.createIndexIfNotExists(SystemPromptTokenUsage, "createdAt")
+        db.createIndexIfNotExists(SystemPromptTokenUsage, "model")
+
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
   case backend.kind:
@@ -364,6 +387,7 @@ proc checkDatabase*(backend: DatabaseBackend) =
       db.checkTable(TodoList)
       db.checkTable(TodoItem)
       db.checkTable(TokenCorrectionFactor)
+      db.checkTable(SystemPromptTokenUsage)
   echo "Database checked"
 
 proc init*(backend: DatabaseBackend) =
@@ -549,17 +573,16 @@ proc startConversation*(backend: DatabaseBackend, sessionId: string, title: stri
   of dbkSQLite, dbkTiDB:
     let conv = Conversation(
       id: 0,
-      created_at: now(),
-      updated_at: now(),
+      created_at: now().utc(),
+      updated_at: now().utc(),
       sessionId: sessionId,
       title: title,
       isActive: true,
       mode: amCode,  # Default mode
       modelNickname: "default",  # Default model
       messageCount: 0,
-      lastActivity: now(),
+      lastActivity: now().utc(),
       planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
-      planModeProtectedFiles: "",  # Initialize to empty string (deprecated)
       planModeCreatedFiles: ""  # Initialize to empty string
     )
     backend.pool.insert(conv)
@@ -578,7 +601,7 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
-      created_at: now(),
+      created_at: now().utc(),
       role: role,
       content: content,
       toolCallId: toolCallId,
@@ -621,7 +644,7 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
       id: 0,
       conversationId: conversationId,
       messageId: messageId,
-      created_at: now(),
+      created_at: now().utc(),
       model: model,
       inputTokens: inputTokens,
       outputTokens: outputTokens,
@@ -731,6 +754,26 @@ proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: i
         else:
           0.0
 
+proc getConversationThinkingTokens*(backend: DatabaseBackend, conversationId: int): int =
+  ## Get total thinking tokens from conversation_thinking_token table
+  if backend == nil or conversationId == 0:
+    return 0
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      let query = """
+        SELECT SUM(token_count) as totalThinking
+        FROM conversation_thinking_token
+        WHERE conversation_id = ?
+      """
+      
+      let rows = db.query(query, conversationId)
+      if rows.len > 0 and rows[0][0] != "" and rows[0][0] != "NULL":
+        result = parseInt(rows[0][0])
+      else:
+        result = 0
+
 proc getConversationCostBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[totalCost: float, breakdown: seq[string]] =
   ## Calculate accurate cost breakdown by model for a conversation (legacy function)
   let detailedBreakdown = getConversationCostDetailed(backend, conversationId)
@@ -764,7 +807,7 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
         WHERE created_at >= ?
       """
       
-      let timestampStr = appStartTime.format("yyyy-MM-dd'T'HH:mm:ss")
+      let timestampStr = $appStartTime
       debug(fmt"Session cost query: timestamp={timestampStr}")
       let rows = db.query(query, timestampStr)
       debug(fmt"Session cost query returned {rows.len} rows")
@@ -813,7 +856,7 @@ proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int 
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
-      created_at: now(),
+      created_at: now().utc(),
       role: "user",
       content: content,
       toolCallId: none(string),
@@ -843,7 +886,7 @@ proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string,
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
-      created_at: now(),
+      created_at: now().utc(),
       role: "assistant",
       content: content,
       toolCallId: none(string),
@@ -866,7 +909,7 @@ proc addToolMessageToDb*(pool: Pool, conversationId: int, content: string,
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
-      created_at: now(),
+      created_at: now().utc(),
       role: "tool",
       content: content,
       toolCallId: some(toolCallId),
@@ -1113,6 +1156,40 @@ proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, con
     except Exception as e:
       error(fmt"Failed to log token usage: {e.msg}")
 
+proc logSystemPromptTokenUsage*(backend: DatabaseBackend, conversationId: int, messageId: int, 
+                               model: string, mode: string, basePromptTokens: int, modePromptTokens: int,
+                               environmentTokens: int, instructionFileTokens: int, toolInstructionTokens: int,
+                               availableToolsTokens: int, systemPromptTotal: int, toolSchemaTokens: int) =
+  ## Log system prompt token breakdown for overhead analysis
+  if backend == nil:
+    return
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let entry = SystemPromptTokenUsage(
+          conversationId: conversationId,
+          messageId: messageId,
+          createdAt: now().utc(),
+          model: model,
+          mode: mode,
+          basePromptTokens: basePromptTokens,
+          modePromptTokens: modePromptTokens,
+          environmentTokens: environmentTokens,
+          instructionFileTokens: instructionFileTokens,
+          toolInstructionTokens: toolInstructionTokens,
+          availableToolsTokens: availableToolsTokens,
+          systemPromptTotal: systemPromptTotal,
+          toolSchemaTokens: toolSchemaTokens,
+          totalOverhead: systemPromptTotal + toolSchemaTokens
+        )
+        
+        db.insert(entry)
+        debug(fmt"Logged system prompt token usage: {systemPromptTotal} system + {toolSchemaTokens} schemas = {entry.totalOverhead} total overhead")
+      except Exception as e:
+        error(fmt"Failed to log system prompt token usage: {e.msg}")
+
 proc createTodoList*(backend: DatabaseBackend, conversationId: int, title: string, description: string = ""): int =
   ## Create a new todo list and return its ID
   if backend == nil:
@@ -1126,8 +1203,8 @@ proc createTodoList*(backend: DatabaseBackend, conversationId: int, title: strin
         conversationId: conversationId,
         title: title,
         description: description,
-        createdAt: now(),
-        updatedAt: now(),
+        createdAt: now().utc(),
+        updatedAt: now().utc(),
         isActive: true
       )
       db.insert(todoList)
@@ -1152,8 +1229,8 @@ proc addTodoItem*(backend: DatabaseBackend, listId: int, content: string, priori
         content: content,
         state: tsPending,
         priority: priority,
-        createdAt: now(),
-        updatedAt: now(),
+        createdAt: now().utc(),
+        updatedAt: now().utc(),
         orderIndex: nextOrder
       )
       db.insert(todoItem)
@@ -1174,7 +1251,7 @@ proc updateTodoItem*(backend: DatabaseBackend, itemId: int, newState: Option[Tod
         return false
       
       var item = items[0]
-      item.updatedAt = now()
+      item.updatedAt = now().utc()
       
       if newState.isSome():
         item.state = newState.get()
@@ -1228,9 +1305,9 @@ proc setPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int, cre
         
         var conv = conversations[0]
         debug(fmt"Found conversation {conversationId}, setting created files")
-        conv.planModeEnteredAt = now()
+        conv.planModeEnteredAt = now().utc()
         conv.planModeCreatedFiles = $(%*createdFiles)  # Convert to JSON string
-        conv.updated_at = now()
+        conv.updated_at = now().utc()
         
         db.update(conv)
         debug(fmt"Plan mode created files set for conversation {conversationId} with {createdFiles.len} created files")
@@ -1255,7 +1332,7 @@ proc clearPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): 
         var conv = conversations[0]
         conv.planModeEnteredAt = fromUnix(0).utc()  # Set to epoch (indicates not in plan mode)
         conv.planModeCreatedFiles = ""  # Empty string indicates no created files
-        conv.updated_at = now()
+        conv.updated_at = now().utc()
         
         db.update(conv)
         debug(fmt"Plan mode created files cleared for conversation {conversationId}")
@@ -1281,8 +1358,7 @@ proc getPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): tu
         
         # Check if planModeEnteredAt is a valid DateTime (not epoch)
         try:
-          let unixTime = conv.planModeEnteredAt.toTime().toUnix()
-          if unixTime > 0:
+          if conv.planModeEnteredAt > fromUnix(0).utc():
             # Parse created files list (empty list if no files created yet)
             let createdFiles = if conv.planModeCreatedFiles.len > 0:
               to(parseJson(conv.planModeCreatedFiles), seq[string])
@@ -1323,7 +1399,7 @@ proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, file
         if filePath notin currentFiles:
           updatedFiles.add(filePath)
           conv.planModeCreatedFiles = $(%*updatedFiles)
-          conv.updated_at = now()
+          conv.updated_at = now().utc()
           
           db.update(conv)
           debug(fmt"Added file '{filePath}' to plan mode created files for conversation {conversationId}")
@@ -1354,7 +1430,7 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
           factor.totalSamples += 1
           factor.sumRatio += ratio
           factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
-          factor.updatedAt = now()
+          factor.updatedAt = now().utc()
           db.update(factor)
           
           debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
@@ -1366,8 +1442,8 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
             totalSamples: 1,
             sumRatio: ratio,
             avgCorrection: ratio,
-            createdAt: now(),
-            updatedAt: now()
+            createdAt: now().utc(),
+            updatedAt: now().utc()
           )
           db.insert(factor)
           

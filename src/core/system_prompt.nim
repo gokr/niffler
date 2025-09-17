@@ -14,7 +14,24 @@
 import std/[strformat, strutils, os, times, osproc, sequtils, options, tables]
 import ../types/[mode, messages]
 import ../tools/registry
+import ../tokenization/tokenizer
 import config
+
+type
+  SystemPromptTokens* = object
+    ## Token breakdown for system prompt components
+    basePrompt*: int          # Common system prompt template
+    modePrompt*: int          # Plan/Code mode specific instructions  
+    environmentInfo*: int     # Directory, git, OS, project info
+    instructionFiles*: int    # CLAUDE.md, README.md, etc.
+    toolInstructions*: int    # TodoList, thinking token guidance
+    availableTools*: int      # Tools list in prompt
+    total*: int              # Sum of all components
+  
+  SystemPromptResult* = object
+    ## Result of system prompt generation with token analysis
+    content*: string          # The actual system prompt
+    tokens*: SystemPromptTokens  # Token breakdown
 
 # Base system prompt templates
 const
@@ -468,11 +485,12 @@ proc findInstructionFiles*(): string =
   
   return instructionContent
 
-proc generateSystemPrompt*(mode: AgentMode): string =
-  ## Generate complete context-aware system prompt based on current mode and environment
+proc generateSystemPromptWithTokens*(mode: AgentMode, modelName: string = "default"): SystemPromptResult =
+  ## Generate complete context-aware system prompt with token breakdown
+  ## Uses the same logic as generateSystemPrompt but tracks token counts for each component
   let availableTools = getAvailableToolsList()
   let currentDir = getCurrentDirectoryInfo()
-  let currentTime = now().format("yyyy-MM-dd HH:mm:ss")
+  let currentTime = now().utc().format("yyyy-MM-dd HH:mm:ss 'UTC'")
   let osInfo = getOSInfo()
   let gitInfo = getGitInfo()
   let projectInfo = getProjectInfo()
@@ -485,6 +503,9 @@ proc generateSystemPrompt*(mode: AgentMode): string =
   let planPrompt = if nifflerPlan.len > 0: nifflerPlan else: PLAN_MODE_PROMPT
   let codePrompt = if nifflerCode.len > 0: nifflerCode else: CODE_MODE_PROMPT
   
+  # Build environment info string
+  let environmentInfo = fmt("Current environment:\n- Working directory: {currentDir}\n- Current time: {currentTime}\n- OS: {osInfo}\n{gitInfo}\n{projectInfo}")
+  
   # Build base prompt with context
   var systemPrompt = commonPrompt.multiReplace([
     ("{availableTools}", availableTools),
@@ -495,25 +516,57 @@ proc generateSystemPrompt*(mode: AgentMode): string =
     ("{projectInfo}", projectInfo)
   ])
   
-  # Add mode-specific instructions
+  # Count tokens for base prompt (template + environment)
+  let basePromptTokens = countTokensForModel(commonPrompt, modelName)
+  let environmentTokens = countTokensForModel(environmentInfo, modelName)
+  let availableToolsTokens = countTokensForModel(availableTools, modelName)
+  
+  # Add mode-specific instructions and count tokens
+  var modePromptTokens = 0
   case mode:
   of amPlan:
     systemPrompt.add("\n\n" & planPrompt)
+    modePromptTokens = countTokensForModel(planPrompt, modelName)
   of amCode:
     systemPrompt.add("\n\n" & codePrompt)
+    modePromptTokens = countTokensForModel(codePrompt, modelName)
   
-  # Add todolist instructions for all modes
+  # Add todolist instructions and count tokens
   systemPrompt.add("\n\n" & TODOLIST_INSTRUCTIONS)
+  let todoTokens = countTokensForModel(TODOLIST_INSTRUCTIONS, modelName)
   
-  # Add thinking token instructions for all modes
+  # Add thinking token instructions and count tokens  
   systemPrompt.add("\n\n" & THINKING_TOKEN_INSTRUCTIONS)
+  let thinkingTokens = countTokensForModel(THINKING_TOKEN_INSTRUCTIONS, modelName)
   
-  # Add instruction files if found
+  # Add instruction files and count tokens
+  var instructionTokens = 0
   if instructionFiles.len > 0:
     systemPrompt.add("\n\n**Project Instructions:**")
     systemPrompt.add(instructionFiles)
+    instructionTokens = countTokensForModel(instructionFiles, modelName)
   
-  return systemPrompt
+  # Calculate total tokens
+  let totalTokens = basePromptTokens + environmentTokens + availableToolsTokens + 
+                   modePromptTokens + todoTokens + thinkingTokens + instructionTokens
+  
+  result = SystemPromptResult(
+    content: systemPrompt,
+    tokens: SystemPromptTokens(
+      basePrompt: basePromptTokens,
+      modePrompt: modePromptTokens,
+      environmentInfo: environmentTokens,
+      instructionFiles: instructionTokens,
+      toolInstructions: todoTokens + thinkingTokens,
+      availableTools: availableToolsTokens,
+      total: totalTokens
+    )
+  )
+
+proc generateSystemPrompt*(mode: AgentMode): string =
+  ## Generate complete context-aware system prompt based on current mode and environment
+  ## This is the original function for backward compatibility
+  return generateSystemPromptWithTokens(mode, "default").content
 
 proc createSystemMessage*(mode: AgentMode): Message =
   ## Create a system message with generated prompt for the specified agent mode
@@ -521,3 +574,12 @@ proc createSystemMessage*(mode: AgentMode): Message =
     role: mrSystem,
     content: generateSystemPrompt(mode)
   )
+
+proc createSystemMessageWithTokens*(mode: AgentMode, modelName: string): tuple[message: Message, tokens: SystemPromptTokens] =
+  ## Create a system message with token breakdown tracking for API request analysis
+  let systemPromptResult = generateSystemPromptWithTokens(mode, modelName)
+  let message = Message(
+    role: mrSystem,
+    content: systemPromptResult.content
+  )
+  return (message, systemPromptResult.tokens)

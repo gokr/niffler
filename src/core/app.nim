@@ -22,6 +22,7 @@ import channels, conversation_manager, config, system_prompt, database, mode_sta
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
 import ../tools/common
+import ../tools/registry
 when defined(posix):
   import posix
 
@@ -223,9 +224,21 @@ proc restoreModeWithProtection*(targetMode: AgentMode) {.gcsafe.} =
   setCurrentMode(targetMode)
   
   # If restoring to plan mode, ensure created files tracking is active
-  if targetMode == amPlan and previousMode != amPlan:
-    handleModeToggleWithProtection(previousMode, targetMode)
-    debug(fmt"Restored to plan mode and initialized created files tracking")
+  if targetMode == amPlan:
+    # Check if plan mode protection is already active
+    {.gcsafe.}:
+      let currentSession = getCurrentSession()
+      if currentSession.isSome():
+        let database = getGlobalDatabase()
+        if database != nil:
+          let conversationId = currentSession.get().conversation.id
+          let createdFiles = getPlanModeCreatedFiles(database, conversationId)
+          if not createdFiles.enabled:
+            # Plan mode protection not active, initialize it
+            handleModeToggleWithProtection(previousMode, targetMode)
+            debug(fmt"Restored to plan mode and initialized created files tracking")
+          else:
+            debug(fmt"Restored to plan mode (protection already active)")
   elif previousMode == amPlan and targetMode != amPlan:
     # If leaving plan mode, clear created files
     handleModeToggleWithProtection(previousMode, targetMode)
@@ -273,15 +286,18 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
   
   return some(apiKey)
 
-proc prepareConversationMessages*(text: string): (seq[Message], string) =
+proc prepareConversationMessagesWithTokens*(text: string, modelName: string): (seq[Message], string, SystemPromptTokens, int) =
   ## Prepare conversation context with system prompt and process @ file references
-  ## Returns messages with context and unique request ID
+  ## Returns messages, request ID, system prompt tokens, and tool schema tokens
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
   
-  # Insert system message at the beginning based on current mode
-  let systemMsg = createSystemMessage(getCurrentMode())
+  # Insert system message at the beginning based on current mode and get token breakdown
+  let (systemMsg, systemTokens) = createSystemMessageWithTokens(getCurrentMode(), modelName)
   messages.insert(systemMsg, 0)
+  
+  # Count tool schema tokens
+  let toolSchemaTokens = countToolSchemaTokens(modelName)
   
   # Process @ file references in the user message
   let processed = processFileReferencesInText(text)
@@ -298,6 +314,12 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
   
   let requestId = fmt"req_{rand(100000)}"
   debug(fmt"Prepared {messages.len} messages for {getCurrentMode()} mode (including current user message)")
+  debug(fmt"System prompt tokens: {systemTokens.total}, Tool schema tokens: {toolSchemaTokens}")
+  return (messages, requestId, systemTokens, toolSchemaTokens)
+
+proc prepareConversationMessages*(text: string): (seq[Message], string) =
+  ## Backward-compatible wrapper for prepareConversationMessagesWithTokens
+  let (messages, requestId, _, _) = prepareConversationMessagesWithTokens(text, "default")
   return (messages, requestId)
 
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
@@ -316,7 +338,23 @@ proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.M
   if apiKeyOpt.isNone:
     return (false, "")
   
-  let (messages, requestId) = prepareConversationMessages(text)
+  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, modelConfig.model)
+  
+  # Log system prompt token usage if we can get conversation context
+  try:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        # We don't have messageId yet since the message hasn't been created, so use 0 for now
+        logSystemPromptTokenUsage(database, conversationId, 0, modelConfig.model, $getCurrentMode(),
+                                 systemTokens.basePrompt, systemTokens.modePrompt, systemTokens.environmentInfo,
+                                 systemTokens.instructionFiles, systemTokens.toolInstructions, systemTokens.availableTools,
+                                 systemTokens.total, toolSchemaTokens)
+  except Exception as e:
+    debug(fmt"Failed to log system prompt tokens: {e.msg}")
+  
   let success = sendChatRequestAsync(channels, messages, modelConfig, requestId, apiKeyOpt.get())
   return (success, requestId)
 
@@ -335,7 +373,23 @@ proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, stri
   let keyPreview = if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey
   info fmt"Using API key: {keyPreview} for {selectedModel.baseUrl}"
   
-  let (messages, requestId) = prepareConversationMessages(text)
+  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, selectedModel.model)
+  
+  # Log system prompt token usage if we can get conversation context
+  try:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        # We don't have messageId yet since the message hasn't been created, so use 0 for now
+        logSystemPromptTokenUsage(database, conversationId, 0, selectedModel.model, $getCurrentMode(),
+                                 systemTokens.basePrompt, systemTokens.modePrompt, systemTokens.environmentInfo,
+                                 systemTokens.instructionFiles, systemTokens.toolInstructions, systemTokens.availableTools,
+                                 systemTokens.total, toolSchemaTokens)
+  except Exception as e:
+    debug(fmt"Failed to log system prompt tokens: {e.msg}")
+  
   info fmt"Sending prompt to {selectedModel.nickname} with {messages.len} context messages"
   
   let success = sendChatRequestAsync(channels, messages, selectedModel, requestId, apiKey)
