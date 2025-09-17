@@ -9,3 +9,4 @@ tests/test_*
 !tests/test_*.nim
 .venv
 training_corpus.txt
+IDEAS.md
