@@ -8,6 +8,7 @@
 
 import std/[options, strformat, times, logging, locks, strutils, json]
 import ../types/[mode, messages, thinking_tokens]
+import ../tokenization/tokenizer
 import database
 import debby/pools
 import debby/sqlite
@@ -117,7 +118,8 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
         
         let query = fmt"""
           SELECT id, created_at, updated_at, session_id, title, is_active, 
-                 mode, model_nickname, message_count, last_activity
+                 mode, model_nickname, message_count, last_activity,
+                 plan_mode_entered_at, plan_mode_created_files
           FROM conversation 
           {whereClause}
           ORDER BY last_activity DESC
@@ -129,15 +131,17 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
         for row in rows:
           let conv = Conversation(
             id: parseInt(row[0]),
-            created_at: now(),  # Use current time for now, improve later
-            updated_at: now(),
+            created_at: now().utc(),  # Use current time for now, improve later
+            updated_at: now().utc(),
             sessionId: row[3],
             title: row[4],
             isActive: row[5] == "1",
             mode: if row[6] == "code": amCode else: amPlan,
             modelNickname: row[7],
             messageCount: parseInt(row[8]),
-            lastActivity: now()
+            lastActivity: now().utc(),
+            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
+            planModeCreatedFiles: row[11]
           )
           result.add(conv)
         
@@ -175,17 +179,16 @@ proc createConversation*(backend: DatabaseBackend, title: string = "",
   of dbkSQLite, dbkTiDB:
     var conversation = Conversation(
       id: 0,  # Will be set by database
-      created_at: now(),
-      updated_at: now(),
+      created_at: now().utc(),
+      updated_at: now().utc(),
       sessionId: fmt"conv_{epochTime().int64}",
       title: actualTitle,
       isActive: true,
       mode: mode,
       modelNickname: actualModelNickname,
       messageCount: 0,
-      lastActivity: now(),
-      planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
-      planModeProtectedFiles: "",  # Initialize to empty string (deprecated)
+      lastActivity: now().utc(),
+      planModeEnteredAt: if mode == amPlan: now().utc() else: fromUnix(0).utc(),  # Set to current time if creating in plan mode
       planModeCreatedFiles: ""  # Initialize to empty string
     )
     
@@ -208,7 +211,8 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
       backend.pool.withDb:
         let query = """
           SELECT id, created_at, updated_at, session_id, title, is_active, 
-                 mode, model_nickname, message_count, last_activity
+                 mode, model_nickname, message_count, last_activity,
+                 plan_mode_entered_at, plan_mode_created_files
           FROM conversation 
           WHERE id = ?
         """
@@ -218,15 +222,17 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
           let row = rows[0]
           let conv = Conversation(
             id: parseInt(row[0]),
-            created_at: now(),  # Use current time for now, improve later
-            updated_at: now(),
+            created_at: now().utc(),  # Use current time for now, improve later
+            updated_at: now().utc(),
             sessionId: row[3],
             title: row[4],
             isActive: row[5] == "1",
             mode: if row[6] == "code": amCode else: amPlan,
             modelNickname: row[7],
             messageCount: parseInt(row[8]),
-            lastActivity: now()
+            lastActivity: now(),
+            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
+            planModeCreatedFiles: row[11]
           )
           debug(fmt"Found conversation with ID {id}: {conv.title}")
           result = some(conv)
@@ -246,7 +252,7 @@ proc updateConversationActivity*(backend: DatabaseBackend, conversationId: int) 
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET last_activity = ?, updated_at = ? WHERE id = ?", 
                  currentTime, currentTime, conversationId)
         debug(fmt"Updated activity timestamp for conversation {conversationId}")
@@ -267,7 +273,7 @@ proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: i
         let messageCount = parseInt(countRows[0][0])
         
         # Update conversation message count
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET message_count = ?, updated_at = ? WHERE id = ?", 
                  messageCount, currentTime, conversationId)
         
@@ -284,7 +290,7 @@ proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET mode = ?, updated_at = ? WHERE id = ?", 
                  $mode, currentTime, conversationId)
         debug(fmt"Updated mode for conversation {conversationId} to {mode}")
@@ -300,7 +306,7 @@ proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, mod
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET model_nickname = ?, updated_at = ? WHERE id = ?", 
                  modelNickname, currentTime, conversationId)
         debug(fmt"Updated model nickname for conversation {conversationId} to {modelNickname}")
@@ -357,7 +363,7 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
           return false
         
         let title = existsRows[0][1]
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET is_active = 0, updated_at = ? WHERE id = ?", 
                  currentTime, conversationId)
         
@@ -376,7 +382,7 @@ proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool
   of dbkSQLite, dbkTiDB:
     try:
       backend.pool.withDb:
-        let currentTime = now().format("yyyy-MM-dd'T'HH:mm:ss")
+        let currentTime = utcNow()
         db.query("UPDATE conversation SET is_active = 1, updated_at = ? WHERE id = ?", 
                  currentTime, conversationId)
         
@@ -423,7 +429,8 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
         let queryPattern = fmt"%{query}%"
         let searchQuery = """
           SELECT DISTINCT c.id, c.created_at, c.updated_at, c.session_id, c.title, 
-                 c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity
+                 c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity,
+                 c.plan_mode_entered_at, c.plan_mode_created_files
           FROM conversation c
           LEFT JOIN conversation_message cm ON c.id = cm.conversation_id
           WHERE c.title LIKE ? OR cm.content LIKE ?
@@ -436,15 +443,17 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
         for row in rows:
           let conv = Conversation(
             id: parseInt(row[0]),
-            created_at: now(),  # Use current time for now, improve later
-            updated_at: now(),
+            created_at: now().utc(),  # Use current time for now, improve later
+            updated_at: now().utc(),
             sessionId: row[3],
             title: row[4],
             isActive: row[5] == "1",
             mode: if row[6] == "code": amCode else: amPlan,
             modelNickname: row[7],
             messageCount: parseInt(row[8]),
-            lastActivity: now()
+            lastActivity: now().utc(),
+            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
+            planModeCreatedFiles: row[11]
           )
           result.add(conv)
         
@@ -667,7 +676,7 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
       thinkingContent: $ %*thinkingContent,  # Serialize as JSON
       providerFormat: $format,
       importanceLevel: importance,
-      tokenCount: content.len div 4,  # Rough token estimate
+      tokenCount: estimateTokens(content),  # Proper token estimation
       keywords: "[]",  # Empty array for now
       contextId: fmt"ctx_{epochTime().int64}",
       reasoningId: thinkingContent.reasoningId
