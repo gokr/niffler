@@ -28,7 +28,6 @@ when defined(posix):
   import posix
 import linecross
 import ../core/[app, channels, conversation_manager, config, database, mode_state]
-import debby/pools
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools]
 import ../api/api
@@ -70,7 +69,7 @@ proc logToPromptHistory*(database: DatabaseBackend, input: string, output: strin
       let finalSessionId = if sessionId.len > 0: 
         sessionId 
       else: 
-        let dateStr = now().format("yyyy-MM-dd")
+        let dateStr = now().utc().format("yyyy-MM-dd")
         fmt"session_{getUserName()}_{dateStr}"
       logPromptHistory(database, input, output, modelNickname, finalSessionId)
       debug(fmt"Stored prompt in history: {input[0..min(50, input.len-1)]}")

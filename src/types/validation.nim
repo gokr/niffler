@@ -272,7 +272,7 @@ proc logTokenUsage*(logger: var TokenLogger, modelName: string, inputTokens: int
   
   let entry = database.TokenLogEntry(
     id: 0,  # Will be set by database if saved
-    created_at: now(),
+    created_at: now().utc(),
     model: modelName,  # Using 'model' field name to match database version
     inputTokens: inputTokens,
     outputTokens: outputTokens,

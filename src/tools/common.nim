@@ -131,7 +131,7 @@ proc formatTimestamp*(time: Time): string =
 proc createBackupPath*(originalPath: string): string =
   ## Create a backup file path
   let (dir, name, ext) = splitFile(originalPath)
-  let timestamp = now().format("yyyyMMddHHmmss")
+  let timestamp = now().utc().format("yyyyMMddHHmmss")
   return joinPath(dir, fmt"{name}.backup_{timestamp}{ext}")
 
 proc safeCreateDir*(path: string) =
