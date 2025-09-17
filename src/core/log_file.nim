@@ -37,7 +37,7 @@ proc activateLogFile*(manager: LogFileManager) =
     manager.fileHandle = open(manager.currentLogFile, fmWrite)
     manager.isActive = true
     manager.fileHandle.writeLine(fmt"=== Niffler Log File: {manager.currentLogFile} ===")
-    manager.fileHandle.writeLine(fmt"=== Started at: {now()} ===")
+    manager.fileHandle.writeLine(fmt"=== Started at: {now().utc()} ===")
     manager.fileHandle.writeLine("")
     manager.fileHandle.flushFile()
 
@@ -45,7 +45,7 @@ proc closeLogFile*(manager: LogFileManager) =
   ## Close the current log file and write session end marker
   if manager.isActive:
     manager.fileHandle.writeLine("")
-    manager.fileHandle.writeLine(fmt"=== Session ended at: {now()} ===")
+    manager.fileHandle.writeLine(fmt"=== Session ended at: {now().utc()} ===")
     manager.fileHandle.close()
     manager.isActive = false
 
