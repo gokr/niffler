@@ -10,9 +10,11 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient]
-import ../core/[conversation_manager, config, app, database, mode_state]
+import ../core/[conversation_manager, config, app, database, mode_state, system_prompt]
 import ../types/[config as configTypes, messages]
-import ../tokenization/tokenizer
+import ../tokenization/[tokenizer]
+import ../tools/registry
+import ../api/curlyStreaming
 import theme
 import table_utils
 # import linecross  # Used only in comments
@@ -240,61 +242,120 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     except Exception as e:
       debug(fmt"Failed to get conversation tokens: {e.msg}")
   
-  # Create and display context table with BPE token estimates
-  let contextTable = formatContextBreakdownTable(
-    userCount, assistantCount, toolCount,
-    userTokensEstimate, assistantTokensEstimate, toolTokensEstimate
-  )
-  message &= contextTable & "\n"
-  
-  # Add BPE estimation note
-  let totalEstimate = userTokensEstimate + assistantTokensEstimate + toolTokensEstimate
-  if totalEstimate > 0:
-    let estimateStr = if totalEstimate > 999: insertSep($totalEstimate, ',') else: $totalEstimate
-    message &= fmt"\n💡 BPE Token Estimate: ~{estimateStr} tokens (using {modelName} tokenizer with dynamic correction)\n"
-  
-  # Show tool calls if any
-  if toolCallCount > 0:
-    message &= fmt"\n🔧 Tool calls: {toolCallCount}\n"
-  
-  # Show reasoning token information
+  # Get reasoning token data (from both OpenAI-style and thinking token sources)
+  var reasoningTokens = 0
   if database != nil:
     try:
       let conversationId = getCurrentConversationId().int
+      # Get OpenAI-style reasoning tokens from model_token_usage
       let reasoningStats = getConversationReasoningTokens(database, conversationId)
-      if reasoningStats.totalReasoning > 0:
-        let reasoningStr = if reasoningStats.totalReasoning > 999:
-          insertSep($reasoningStats.totalReasoning, ',')
-        else:
-          $reasoningStats.totalReasoning
-        message &= fmt"\n🧠 Reasoning: {reasoningStr} tokens ({reasoningStats.reasoningPercent:.1f}% of assistant output)\n"
-        totalTokens += reasoningStats.totalReasoning
+      reasoningTokens = reasoningStats.totalReasoning
+      
+      # Add XML thinking tokens from conversation_thinking_token table
+      let thinkingTokens = getConversationThinkingTokens(database, conversationId)
+      reasoningTokens += thinkingTokens
     except Exception as e:
       debug(fmt"Failed to get reasoning tokens: {e.msg}")
-  
-  # Show context usage analysis
-  if totalTokens > 0 and currentModel.context > 0:
-    let usagePercent = (totalTokens * 100) div currentModel.context
-    let totalTokensStr = if totalTokens > 999: insertSep($totalTokens, ',') else: $totalTokens
-    let contextLimitStr = if currentModel.context > 999: insertSep($currentModel.context, ',') else: $currentModel.context
+
+  # Create and display combined context table
+  try:
+    let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), modelName)
+    let toolSchemaTokens = countToolSchemaTokens(modelName)
     
-    message &= fmt"\nContext Usage: {totalTokensStr} / {contextLimitStr} tokens ({usagePercent}%)"
+    let combinedTable = formatCombinedContextTable(
+      userCount, assistantCount, toolCount,
+      userTokensEstimate, assistantTokensEstimate, toolTokensEstimate,
+      reasoningTokens, systemPromptResult.tokens, toolSchemaTokens
+    )
+    message &= combinedTable & "\n"
     
-    if usagePercent > 80:
-      message &= " 🚨 High context usage - consider starting a new conversation\n"
-    elif usagePercent > 60:
-      message &= " ⚠️  Moderate context usage\n"
+    # Add correction factor info
+    var correctionFactorStr = ""
+    if database != nil:
+      let correctionFactor = getCorrectionFactorFromDB(database, modelName)
+      if correctionFactor.isSome():
+        let factor = correctionFactor.get()
+        correctionFactorStr = fmt("Using correction factor {factor:.3f}")
+      else:
+        correctionFactorStr = "No correction factor found"
     else:
-      message &= " ✅\n"
-  elif messages.len >= DEFAULT_MAX_CONTEXT_MESSAGES:
-    message &= fmt"\n📝 Context is at maximum size ({DEFAULT_MAX_CONTEXT_MESSAGES} messages)\n"
+      correctionFactorStr = "No correction factor found"
+    
+    message &= fmt("\n💡  {correctionFactorStr} for {modelName} \n")
+    
+    # Show tool calls if any
+    if toolCallCount > 0:
+      message &= fmt("\n🔧 Tool calls: {toolCallCount}\n")
   
+  
+  except Exception as e:
+    debug(fmt("Failed to calculate context breakdown: {e.msg}"))
+  
+
   return CommandResult(
     success: true,
     message: message,
     shouldExit: false,
     shouldContinue: true
   )
+
+proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Generate the HTTP JSON request that would be sent to the API
+  var outputFile: string = ""
+  
+  # Check if user provided a filename
+  if args.len > 0:
+    outputFile = args[0]
+  
+  try:
+    # Prepare conversation messages with empty user message
+    let (messages, _, _, _) = prepareConversationMessagesWithTokens("", currentModel.model)
+    
+    # Get tool schemas for the request
+    let toolSchemas = getAllToolSchemas()
+    
+    # Create the chat request using existing functions
+    let chatRequest = createChatRequest(currentModel, messages, false, some(toolSchemas))
+    
+    # Convert to JSON using the same function as the actual API call
+    let jsonRequest = toJson(chatRequest)
+    
+    # Pretty print the JSON
+    let prettyJson = jsonRequest.pretty(indent = 2)
+    
+    if outputFile.len > 0:
+      # Write to file
+      try:
+        writeFile(outputFile, prettyJson)
+        return CommandResult(
+          success: true,
+          message: fmt"HTTP request JSON written to: {outputFile}",
+          shouldExit: false,
+          shouldContinue: true
+        )
+      except IOError as e:
+        return CommandResult(
+          success: false,
+          message: fmt"Failed to write file: {e.msg}",
+          shouldExit: false,
+          shouldContinue: true
+        )
+    else:
+      # Display in terminal
+      return CommandResult(
+        success: true,
+        message: prettyJson,
+        shouldExit: false,
+        shouldContinue: true
+      )
+      
+  except Exception as e:
+    return CommandResult(
+      success: false,
+      message: fmt"Failed to generate request: {e.msg}",
+      shouldExit: false,
+      shouldContinue: true
+    )
 
 
 proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
@@ -441,14 +502,6 @@ proc markdownHandler(args: seq[string], currentModel: var configTypes.ModelConfi
       shouldContinue: true
     )
 
-proc pasteHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Handle the paste command - note: linecross handles clipboard automatically via Ctrl+V
-  return CommandResult(
-    success: true,
-    message: "Clipboard paste is available via Ctrl+V when typing. Linecross handles system clipboard integration automatically.",
-    shouldExit: false,
-    shouldContinue: true
-  )
 
 # Conversation Management Commands
 
@@ -816,10 +869,10 @@ proc initializeCommands*() =
   registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler)
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler)
+  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler)
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
   registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
-  registerCommand("paste", "Show clipboard contents", "", @[], pasteHandler)
   
   # Conversation management commands
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler)

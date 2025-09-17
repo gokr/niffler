@@ -5,7 +5,7 @@
 
 import std/[strformat, strutils, times, options, json]
 import nancy
-import ../core/database
+import ../core/[database, system_prompt]
 import ../types/[config, mode]
 
 # ANSI color helpers
@@ -254,10 +254,11 @@ proc formatCostBreakdownTable*(rows: seq[ConversationCostRow],
   return renderTableToString(table, maxWidth = 140, useBoxChars = true)
 
 proc formatContextBreakdownTable*(userCount: int, assistantCount: int, toolCount: int,
-                                  userTokens: int, assistantTokens: int, toolTokens: int): string =
+                                  userTokens: int, assistantTokens: int, toolTokens: int,
+                                  reasoningTokens: int = 0): string =
   ## Format conversation context breakdown as a table
   let totalCount = userCount + assistantCount + toolCount
-  let totalTokens = userTokens + assistantTokens + toolTokens
+  let totalOutputTokens = userTokens + assistantTokens + toolTokens
   
   if totalCount == 0:
     return "No messages in context"
@@ -265,25 +266,115 @@ proc formatContextBreakdownTable*(userCount: int, assistantCount: int, toolCount
   var table: TerminalTable
   
   # Add header
-  table.add bold("Message Type"), bold("Count"), bold("Total Tokens"), bold("Avg per Message")
+  table.add bold("Message Type"), bold("Count"), bold("Tokens"), bold("Reasoning Tokens"), bold("Avg per Message")
   
   # Helper function to calculate average
   proc avgTokens(tokens: int, count: int): string =
     if count > 0: $((tokens.float / count.float).int) else: dim("-")
   
+  # Helper function to format token numbers with thousands separators
+  proc formatTokenNumber(tokens: int): string =
+    if tokens > 999: insertSep($tokens, ',') else: $tokens
+  
   # Add rows for each message type (always show all types)
-  let userTokensStr = if userTokens > 999: insertSep($userTokens, ',') else: $userTokens
-  table.add "User", $userCount, userTokensStr, avgTokens(userTokens, userCount)
+  let userTokensStr = formatTokenNumber(userTokens)
+  table.add "User", $userCount, userTokensStr, dim("-"), avgTokens(userTokens, userCount)
   
-  let assistantTokensStr = if assistantTokens > 999: insertSep($assistantTokens, ',') else: $assistantTokens
-  table.add "Assistant", $assistantCount, assistantTokensStr, avgTokens(assistantTokens, assistantCount)
+  let assistantTokensStr = formatTokenNumber(assistantTokens)
+  let reasoningTokensStr = formatTokenNumber(reasoningTokens)
+  table.add "Assistant", $assistantCount, assistantTokensStr, reasoningTokensStr, avgTokens(assistantTokens, assistantCount)
   
-  let toolTokensStr = if toolTokens > 999: insertSep($toolTokens, ',') else: $toolTokens
-  table.add "Tool", $toolCount, toolTokensStr, avgTokens(toolTokens, toolCount)
+  let toolTokensStr = formatTokenNumber(toolTokens)
+  table.add "Tool", $toolCount, toolTokensStr, dim("-"), avgTokens(toolTokens, toolCount)
   
   # Add total row
-  let totalTokensStr = if totalTokens > 999: insertSep($totalTokens, ',') else: $totalTokens
-  table.add green(bold("TOTAL")), green(bold($totalCount)), green(bold(totalTokensStr)), 
-            green(bold(avgTokens(totalTokens, totalCount)))
+  let totalOutputTokensStr = formatTokenNumber(totalOutputTokens)
+  let totalReasoningTokensStr = formatTokenNumber(reasoningTokens)
+  table.add green(bold("TOTAL")), green(bold($totalCount)), green(bold(totalOutputTokensStr)), 
+            green(bold(totalReasoningTokensStr)), green(bold(avgTokens(totalOutputTokens, totalCount)))
+  
+  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
+
+proc formatSystemPromptBreakdownTable*(systemTokens: SystemPromptTokens, toolSchemaTokens: int): string =
+  ## Format system prompt token breakdown in a table
+  var table: TerminalTable
+  table.add "API Request Component", "Token Count"
+  table.add "─".repeat(20), "─".repeat(10)
+  
+  # Format with thousands separators for readability
+  proc formatTokens(count: int): string =
+    if count > 999: insertSep($count, ',') else: $count
+  
+  # System prompt breakdown
+  table.add "System Prompt", bold(formatTokens(systemTokens.total))
+  table.add "├ Base Instructions", formatTokens(systemTokens.basePrompt)
+  table.add "├ Mode-Specific Guide", formatTokens(systemTokens.modePrompt)
+  table.add "├ Environment Info", formatTokens(systemTokens.environmentInfo)
+  if systemTokens.instructionFiles > 0:
+    table.add "├ Instruction Files", formatTokens(systemTokens.instructionFiles)
+  table.add "├ Tool Instructions", formatTokens(systemTokens.toolInstructions)
+  table.add "└ Available Tools List", formatTokens(systemTokens.availableTools)
+  
+  # Tool schemas
+  table.add "Tool Schemas", formatTokens(toolSchemaTokens)
+  
+  # Total
+  let totalOverhead = systemTokens.total + toolSchemaTokens
+  table.add green(bold("ESTIMATED TOTAL")), green(bold(formatTokens(totalOverhead)))
   
   return renderTableToString(table, maxWidth = 120, useBoxChars = true)
+
+proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount: int,
+                                userTokens: int, assistantTokens: int, toolTokens: int,
+                                reasoningTokens: int, systemTokens: SystemPromptTokens, 
+                                toolSchemaTokens: int): string =
+  ## Format combined conversation and base context breakdown as a single table
+  let totalMessageCount = userCount + assistantCount + toolCount
+  let totalConversationTokens = userTokens + assistantTokens + toolTokens
+  let totalBaseTokens = systemTokens.total + toolSchemaTokens
+  let grandTotal = totalConversationTokens + totalBaseTokens
+  
+  var table: TerminalTable
+  
+  # Add header
+  table.add bold("Context Component"), bold("Count"), bold("Tokens"), bold("Reasoning Tokens")
+  
+  # Helper function to format token numbers with thousands separators
+  proc formatTokenNumber(tokens: int): string =
+    if tokens > 999: insertSep($tokens, ',') else: $tokens
+  
+  # Helper function for count display
+  proc formatCount(count: int): string =
+    if count > 0: $count else: dim("-")
+  
+  # Helper function for reasoning tokens display
+  proc formatReasoningTokens(tokens: int): string =
+    if tokens > 0: formatTokenNumber(tokens) else: dim("-")
+  
+  # Conversation Messages Section
+  table.add bold("CONVERSATION MESSAGES"), "", "", ""
+  table.add "├ User", formatCount(userCount), formatTokenNumber(userTokens), dim("-")
+  table.add "├ Assistant", formatCount(assistantCount), formatTokenNumber(assistantTokens), formatReasoningTokens(reasoningTokens)
+  table.add "└ Tool", formatCount(toolCount), formatTokenNumber(toolTokens), dim("-")
+  
+  # Section divider
+  table.add "─".repeat(35), "─".repeat(5), "─".repeat(6), "─".repeat(16)
+  
+  # Base Context Section
+  table.add bold("BASE CONTEXT"), "", "", ""
+  table.add "├ System Prompt", dim("-"), formatTokenNumber(systemTokens.total), dim("-")
+  table.add "│ ├ Base Instructions", dim("-"), formatTokenNumber(systemTokens.basePrompt), dim("-")
+  table.add "│ ├ Mode-Specific Guide", dim("-"), formatTokenNumber(systemTokens.modePrompt), dim("-")
+  table.add "│ ├ Environment Info", dim("-"), formatTokenNumber(systemTokens.environmentInfo), dim("-")
+  if systemTokens.instructionFiles > 0:
+    table.add "│ ├ Instruction Files", dim("-"), formatTokenNumber(systemTokens.instructionFiles), dim("-")
+  table.add "│ ├ Tool Instructions", dim("-"), formatTokenNumber(systemTokens.toolInstructions), dim("-")
+  table.add "│ └ Available Tools List", dim("-"), formatTokenNumber(systemTokens.availableTools), dim("-")
+  table.add "└ Tool Schemas", dim("-"), formatTokenNumber(toolSchemaTokens), dim("-")
+  
+  # Total row with special formatting
+  table.add "═".repeat(35), "═".repeat(5), "═".repeat(6), "═".repeat(16)
+  table.add green(bold("TOTAL")), green(bold(formatCount(totalMessageCount))), 
+            green(bold(formatTokenNumber(grandTotal))), green(bold(formatReasoningTokens(reasoningTokens)))
+  
+  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
