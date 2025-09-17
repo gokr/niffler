@@ -40,6 +40,7 @@ import ../ui/tool_visualizer
 import tool_call_parser
 import debby/pools
 
+
 type
   # Buffer for tracking incomplete tool calls during streaming
   ToolCallBuffer* = object
@@ -612,6 +613,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
       # Log token usage for tool conversations  
       let conversationId = getCurrentConversationId().int
       let messageId = getCurrentMessageId().int
+      
       logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
       
       let completeResponse = APIResponse(
@@ -750,6 +752,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var fullContent = ""
             var collectedToolCalls: seq[LLMToolCall] = @[]
             var hasToolCalls = false
+            var hasThinkingContent = false
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
@@ -784,7 +787,6 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     cleanupStaleBuffers(toolCallBuffers)
                 
                 # Handle thinking token processing from streaming chunks
-                var hasThinkingContent = false
                 var thinkingContentStr: Option[string] = none(string)
                 var isThinkingEncrypted: Option[bool] = none(bool)
                 
@@ -840,6 +842,21 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               streamUsage.get() 
             else: 
               TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
+            
+            # Add reasoning tokens from thinking content if missing from API response
+            if (finalUsage.reasoningTokens.isNone() or finalUsage.reasoningTokens.get() == 0) and hasThinkingContent:
+              # Count tokens from all thinking content in this response
+              {.gcsafe.}:
+                let database = getGlobalDatabase()
+                if database != nil:
+                  try:
+                    let conversationId = getCurrentConversationId().int
+                    let reasoningStats = getConversationReasoningTokens(database, conversationId)
+                    if reasoningStats.totalReasoning > 0:
+                      finalUsage.reasoningTokens = some(reasoningStats.totalReasoning)
+                      debug(fmt"Added {reasoningStats.totalReasoning} reasoning tokens from XML thinking content")
+                  except Exception as e:
+                    debug(fmt"Failed to add reasoning tokens from thinking content: {e.msg}")
             
             # After streaming completes, check for any remaining completed tool calls in buffers
             let remainingCompletedCalls = getCompletedToolCalls(toolCallBuffers)
@@ -902,6 +919,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               # Log token usage for regular (non-tool) conversations
               let conversationId = getCurrentConversationId().int
               let messageId = getCurrentMessageId().int
+              
               logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
               
               # Send completion response with extracted usage data
