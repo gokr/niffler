@@ -357,6 +357,10 @@ proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount:
   table.add "├ Assistant", formatCount(assistantCount), formatTokenNumber(assistantTokens), formatReasoningTokens(reasoningTokens)
   table.add "└ Tool", formatCount(toolCount), formatTokenNumber(toolTokens), dim("-")
   
+  # Conversation subtotal
+  table.add "│", "", "", ""
+  table.add "└ " & dim("Subtotal"), dim(formatCount(totalMessageCount)), dim(formatTokenNumber(totalConversationTokens)), dim(formatReasoningTokens(reasoningTokens))
+  
   # Section divider
   table.add "─".repeat(35), "─".repeat(5), "─".repeat(6), "─".repeat(16)
   
@@ -371,6 +375,10 @@ proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount:
   table.add "│ ├ Tool Instructions", dim("-"), formatTokenNumber(systemTokens.toolInstructions), dim("-")
   table.add "│ └ Available Tools List", dim("-"), formatTokenNumber(systemTokens.availableTools), dim("-")
   table.add "└ Tool Schemas", dim("-"), formatTokenNumber(toolSchemaTokens), dim("-")
+  
+  # Base context subtotal
+  table.add "│", "", "", ""
+  table.add "└ " & dim("Subtotal"), dim("-"), dim(formatTokenNumber(totalBaseTokens)), dim("-")
   
   # Total row with special formatting
   table.add "═".repeat(35), "═".repeat(5), "═".repeat(6), "═".repeat(16)
