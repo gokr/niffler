@@ -207,27 +207,27 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
   var assistantTokensEstimate = 0
   var toolTokensEstimate = 0
   
-  # Get model name for accurate token estimation
-  let modelName = currentModel.model
+  # Get model nickname for accurate token estimation and correction factor lookup
+  let modelNickname = currentModel.nickname
   
   for msg in messages:
     case msg.role:
     of mrUser: 
       inc userCount
-      userTokensEstimate += countTokensForModel(msg.content, modelName)
+      userTokensEstimate += countTokensForModel(msg.content, modelNickname)
     of mrAssistant: 
       inc assistantCount
-      assistantTokensEstimate += countTokensForModel(msg.content, modelName)
+      assistantTokensEstimate += countTokensForModel(msg.content, modelNickname)
       # Count tool calls in assistant messages
       if msg.toolCalls.isSome():
         toolCallCount += msg.toolCalls.get().len
         # Add token estimate for tool calls (JSON serialized)
         for toolCall in msg.toolCalls.get():
           let toolCallJson = fmt"""{{"name": "{toolCall.function.name}", "arguments": {toolCall.function.arguments}}}"""
-          assistantTokensEstimate += countTokensForModel(toolCallJson, modelName)
+          assistantTokensEstimate += countTokensForModel(toolCallJson, modelNickname)
     of mrTool: 
       inc toolCount
-      toolTokensEstimate += countTokensForModel(msg.content, modelName)
+      toolTokensEstimate += countTokensForModel(msg.content, modelNickname)
     else: discard
   
   # Get token data from conversation cost details (more reliable than message role breakdown)
@@ -259,8 +259,8 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
 
   # Create and display combined context table
   try:
-    let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), modelName)
-    let toolSchemaTokens = countToolSchemaTokens(modelName)
+    let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), modelNickname)
+    let toolSchemaTokens = countToolSchemaTokens(modelNickname)
     
     let combinedTable = formatCombinedContextTable(
       userCount, assistantCount, toolCount,
@@ -269,10 +269,10 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     )
     message &= combinedTable & "\n"
     
-    # Add correction factor info
+    # Add correction factor info using model nickname
     var correctionFactorStr = ""
     if database != nil:
-      let correctionFactor = getCorrectionFactorFromDB(database, modelName)
+      let correctionFactor = getCorrectionFactorFromDB(database, modelNickname)
       if correctionFactor.isSome():
         let factor = correctionFactor.get()
         correctionFactorStr = fmt("Using correction factor {factor:.3f}")
@@ -281,7 +281,7 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     else:
       correctionFactorStr = "No correction factor found"
     
-    message &= fmt("\n💡  {correctionFactorStr} for {modelName} \n")
+    message &= fmt("\n💡  {correctionFactorStr} for {modelNickname} \n")
     
     # Show tool calls if any
     if toolCallCount > 0:

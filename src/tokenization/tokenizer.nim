@@ -25,9 +25,10 @@ var
 
 # === Dynamic Correction Factor System (Database-backed) ===
 
-proc recordTokenCountCorrection*(modelName: string, estimatedTokens: int, actualTokens: int) =
+proc recordTokenCountCorrection*(modelNickname: string, estimatedTokens: int, actualTokens: int) =
   ## Record a correction sample to improve future estimates using database storage
   ## This should be called when we receive actual token counts from LLM APIs
+  ## Uses model nickname as the key for consistent lookup
   if estimatedTokens <= 0 or actualTokens <= 0:
     return  # Invalid data, skip
   
@@ -36,20 +37,23 @@ proc recordTokenCountCorrection*(modelName: string, estimatedTokens: int, actual
     debug("No database available for token correction recording")
     return
   
-  recordTokenCorrectionToDB(database, modelName, estimatedTokens, actualTokens)
+  recordTokenCorrectionToDB(database, modelNickname, estimatedTokens, actualTokens)
 
-proc applyCorrectionFactor*(modelName: string, estimatedTokens: int): int =
+proc applyCorrectionFactor*(modelNickname: string, estimatedTokens: int): int =
   ## Apply learned correction factor to improve token estimate using database
+  ## Uses model nickname as the key for lookup
   let database = getGlobalDatabase()
   if database == nil:
     return estimatedTokens  # No database, no correction
   
-  let correctionFactor = getCorrectionFactorFromDB(database, modelName)
+  let correctionFactor = getCorrectionFactorFromDB(database, modelNickname)
   if correctionFactor.isSome():
     let factor = correctionFactor.get()
     let correctedCount = (estimatedTokens.float * factor).int
-    debug(fmt("Applied {factor:.3f} correction factor to {modelName}: {estimatedTokens} -> {correctedCount}"))
+    debug(fmt("Applied {factor:.3f} correction factor to {modelNickname}: {estimatedTokens} -> {correctedCount}"))
     return correctedCount
+  else:
+    debug(fmt("No correction factor found for {modelNickname}"))
   
   return estimatedTokens  # No correction available
 
@@ -219,12 +223,13 @@ proc cleanupTokenizerCache*() =
 
 # Universal token counting with dynamic correction
 
-proc countTokensForModel*(text: string, modelName: string): int =
+proc countTokensForModel*(text: string, modelNickname: string): int =
   ## Universal token counting for any LLM model
   ## Uses heuristic estimation with model-specific dynamic correction factor
   ## This works for all modern LLMs by providing accurate base estimates + learned corrections
+  ## Uses model nickname as the key for correction factor lookup
   let baseCount = estimateTokens(text)
-  return applyCorrectionFactor(modelName, baseCount)
+  return applyCorrectionFactor(modelNickname, baseCount)
 
 when isMainModule:
   # Test the tokenizer API
