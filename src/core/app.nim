@@ -338,7 +338,7 @@ proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.M
   if apiKeyOpt.isNone:
     return (false, "")
   
-  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, modelConfig.model)
+  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, modelConfig.nickname)
   
   # Log system prompt token usage if we can get conversation context
   try:
@@ -373,7 +373,7 @@ proc sendSinglePromptAsyncWithId*(text: string, model: string = ""): (bool, stri
   let keyPreview = if apiKey.len > 8: apiKey[0..7] & "..." else: apiKey
   info fmt"Using API key: {keyPreview} for {selectedModel.baseUrl}"
   
-  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, selectedModel.model)
+  let (messages, requestId, systemTokens, toolSchemaTokens) = prepareConversationMessagesWithTokens(text, selectedModel.nickname)
   
   # Log system prompt token usage if we can get conversation context
   try:

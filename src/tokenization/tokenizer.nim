@@ -29,15 +29,21 @@ proc recordTokenCountCorrection*(modelNickname: string, estimatedTokens: int, ac
   ## Record a correction sample to improve future estimates using database storage
   ## This should be called when we receive actual token counts from LLM APIs
   ## Uses model nickname as the key for consistent lookup
+  echo fmt"🔍 recordTokenCountCorrection ENTRY: model={modelNickname}, estimated={estimatedTokens}, actual={actualTokens}"
+  
   if estimatedTokens <= 0 or actualTokens <= 0:
+    echo fmt"❌ Invalid parameters for recordTokenCountCorrection: model={modelNickname}, estimated={estimatedTokens}, actual={actualTokens}"
     return  # Invalid data, skip
   
+  echo fmt"✅ Parameters valid, getting database..."
   let database = getGlobalDatabase()
   if database == nil:
-    debug("No database available for token correction recording")
+    echo "❌ No database available for token correction recording"
     return
   
+  echo fmt"✅ Database available, calling recordTokenCorrectionToDB..."
   recordTokenCorrectionToDB(database, modelNickname, estimatedTokens, actualTokens)
+  echo fmt"✅ recordTokenCorrectionToDB call completed"
 
 proc applyCorrectionFactor*(modelNickname: string, estimatedTokens: int): int =
   ## Apply learned correction factor to improve token estimate using database

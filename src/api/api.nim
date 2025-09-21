@@ -39,6 +39,7 @@ import ../tools/[registry, common]
 import ../ui/tool_visualizer
 import tool_call_parser
 import debby/pools
+import ../tokenization/tokenizer
 
 
 type
@@ -616,6 +617,29 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
       
       logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
       
+      # Record token count correction for learning (tool conversation)
+      echo fmt"Initial content length for token correction (tools): {initialContent.len} and output tokens: {finalUsage.outputTokens}"
+      if initialContent.len > 0 and finalUsage.outputTokens > 0:
+        {.gcsafe.}:
+          # Use model nickname for consistent correction factor storage
+          let estimatedOutputTokens = countTokensForModel(initialContent, request.modelNickname)
+          
+          # Calculate actual content tokens by subtracting reasoning tokens
+          let reasoningTokenCount = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
+          let actualContentTokens = finalUsage.outputTokens - reasoningTokenCount
+          
+          debug(fmt"📊 API TOKEN COMPARISON (tools): content_length={initialContent.len}, estimated={estimatedOutputTokens}, raw_output={finalUsage.outputTokens}, reasoning={reasoningTokenCount}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
+          
+          # Only record correction if we have actual content tokens to compare
+          if actualContentTokens > 0:
+            debug(fmt"Token correction learning (tools): estimated={estimatedOutputTokens}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
+            recordTokenCountCorrection(request.modelNickname, estimatedOutputTokens, actualContentTokens)
+          else:
+            debug(fmt"⚠️  Skipping correction: no content tokens after subtracting reasoning tokens")
+      
+      # Store final assistant message in conversation history
+      discard conversation_manager.addAssistantMessage(content = followUpContent, toolCalls = none(seq[LLMToolCall]), outputTokens = finalUsage.outputTokens, modelName = request.model)
+      
       let completeResponse = APIResponse(
         requestId: request.requestId,
         kind: arkStreamComplete,
@@ -750,9 +774,23 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             
             # Handle streaming response with real-time chunks
             var fullContent = ""
+            var fullThinkingContent = ""  # Accumulate all thinking content for estimation
             var collectedToolCalls: seq[LLMToolCall] = @[]
             var hasToolCalls = false
+            
+            # Thinking token buffering to avoid storing tiny chunks
+            var thinkingTokenBuffer = ""
+            var lastThinkingFormat = ttfAnthropic
+            var lastThinkingEncrypted = false
+            const THINKING_TOKEN_MIN_LENGTH = 50  # Minimum chars before storing
             var hasThinkingContent = false
+            
+            proc flushThinkingBuffer() =
+              ## Store accumulated thinking token if it meets minimum length
+              if thinkingTokenBuffer.len >= THINKING_TOKEN_MIN_LENGTH:
+                discard storeThinkingTokenFromStreaming(thinkingTokenBuffer, lastThinkingFormat, none(int), lastThinkingEncrypted)
+                debug(fmt"Stored aggregated thinking token: {thinkingTokenBuffer.len} chars, format: {lastThinkingFormat}")
+                thinkingTokenBuffer = ""
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
@@ -799,15 +837,30 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                                   ttfAnthropic  # Default to Anthropic format, could enhance detection
                     let isEncrypted = chunk.isEncrypted.isSome() and chunk.isEncrypted.get()
                     
-                    # Store thinking token in database
-                    discard storeThinkingTokenFromStreaming(thinkingContent, format, none(int), isEncrypted)
+                    # Accumulate thinking content for estimation (unless encrypted)
+                    if not isEncrypted:
+                      fullThinkingContent.add(thinkingContent)
+                    
+                    # Buffer thinking tokens to avoid storing tiny chunks
+                    if isEncrypted != lastThinkingEncrypted or format != lastThinkingFormat:
+                      # Format or encryption changed, flush current buffer
+                      flushThinkingBuffer()
+                      lastThinkingFormat = format
+                      lastThinkingEncrypted = isEncrypted
+                    
+                    # Add to buffer instead of storing immediately
+                    thinkingTokenBuffer.add(thinkingContent)
+                    
+                    # Flush buffer if it gets too large (prevent memory issues)
+                    if thinkingTokenBuffer.len >= THINKING_TOKEN_MIN_LENGTH * 4:
+                      flushThinkingBuffer()
                     
                     # Prepare thinking content for UI display
                     hasThinkingContent = true
                     thinkingContentStr = some(thinkingContent)
                     isThinkingEncrypted = some(isEncrypted)
                     
-                    debug(fmt"Processed thinking token: {thinkingContent.len} chars, format: {format}, encrypted: {isEncrypted}")
+                    debug(fmt"Buffered thinking token: {thinkingContent.len} chars, buffer total: {thinkingTokenBuffer.len}, format: {format}, encrypted: {isEncrypted}")
                 
                 # Send content chunks in real-time (but coordinate with tool calls)
                 if delta.content.len > 0:
@@ -843,20 +896,21 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             else: 
               TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
             
+            # Flush any remaining thinking tokens in buffer
+            flushThinkingBuffer()
+            
             # Add reasoning tokens from thinking content if missing from API response
             if (finalUsage.reasoningTokens.isNone() or finalUsage.reasoningTokens.get() == 0) and hasThinkingContent:
-              # Count tokens from all thinking content in this response
-              {.gcsafe.}:
-                let database = getGlobalDatabase()
-                if database != nil:
-                  try:
-                    let conversationId = getCurrentConversationId().int
-                    let reasoningStats = getConversationReasoningTokens(database, conversationId)
-                    if reasoningStats.totalReasoning > 0:
-                      finalUsage.reasoningTokens = some(reasoningStats.totalReasoning)
-                      debug(fmt"Added {reasoningStats.totalReasoning} reasoning tokens from XML thinking content")
-                  except Exception as e:
-                    debug(fmt"Failed to add reasoning tokens from thinking content: {e.msg}")
+              # Count tokens from current response thinking content only
+              if fullThinkingContent.len > 0:
+                try:
+                  # Simple token estimation: ~4 chars per token (safe approximation)
+                  let reasoningTokenCount = max(1, fullThinkingContent.len div 4)
+                  if reasoningTokenCount > 0:
+                    finalUsage.reasoningTokens = some(reasoningTokenCount)
+                    debug(fmt"Added {reasoningTokenCount} reasoning tokens from current response thinking content ({fullThinkingContent.len} chars)")
+                except Exception as e:
+                  debug(fmt"Failed to estimate reasoning tokens from thinking content: {e.msg}")
             
             # After streaming completes, check for any remaining completed tool calls in buffers
             let remainingCompletedCalls = getCompletedToolCalls(toolCallBuffers)
@@ -914,14 +968,61 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 thinkingContent: none(string),
                 isEncrypted: none(bool)
               )
+              echo "Sending API final chunk response"
               sendAPIResponse(channels, finalChunkResponse)
               
               # Log token usage for regular (non-tool) conversations
               let conversationId = getCurrentConversationId().int
               let messageId = getCurrentMessageId().int
-              
+              debug("🚀 ABOUT TO LOG TOKEN USAGE FROM REQUEST")
               logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
+              debug("✅ COMPLETED logTokenUsageFromRequest")
               
+              # Record token count correction for learning (regular conversation)
+              debug(fmt"🔎 CHECKING TOKEN CORRECTION CONDITIONS: fullContent.len={fullContent.len}, finalUsage.outputTokens={finalUsage.outputTokens}, model={request.modelNickname}")
+              echo fmt"🔍 TOKEN CORRECTION CONDITION CHECK: fullContent.len={fullContent.len}, finalUsage.outputTokens={finalUsage.outputTokens}"
+
+              if fullContent.len == 0:
+                echo fmt"❌ TOKEN CORRECTION SKIPPED: fullContent is empty (len=0)"
+              elif finalUsage.outputTokens == 0:
+                echo fmt"❌ TOKEN CORRECTION SKIPPED: finalUsage.outputTokens is 0"
+              else:
+                echo "✅ TOKEN CORRECTION CONDITIONS MET - ENTERING CORRECTION BLOCK"
+              
+              if fullContent.len > 0 and finalUsage.outputTokens > 0:
+                {.gcsafe.}:
+                  # Use model nickname for consistent correction factor storage
+                  
+                  # Consistent estimation strategy: always estimate total content vs total output
+                  # Since outputTokens always includes visible + reasoning/thinking tokens
+                  let reasoningTokenCount = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
+                  
+                  var estimatedOutputTokens: int
+                  let actualContentTokens = finalUsage.outputTokens  # Always use full output tokens
+                  
+                  if fullThinkingContent.len > 0:
+                    # Model with thinking/reasoning content: estimate visible + thinking
+                    # Use RAW estimates (without correction) for recording new corrections
+                    let visibleEstimate = estimateTokens(fullContent)
+                    let thinkingEstimate = estimateTokens(fullThinkingContent)
+                    estimatedOutputTokens = visibleEstimate + thinkingEstimate
+                    debug(fmt"Raw estimation: visible+thinking content ({visibleEstimate}+{thinkingEstimate}={estimatedOutputTokens}) vs actual={actualContentTokens}")
+                  else:
+                    # No thinking content available: estimate visible only vs full output
+                    # Use RAW estimates (without correction) for recording new corrections
+                    estimatedOutputTokens = estimateTokens(fullContent)
+                    debug(fmt"Raw estimation: {estimatedOutputTokens} vs actual={actualContentTokens} (may include unextracted thinking)")
+                  
+                  debug(fmt"Token comparison: estimated={estimatedOutputTokens}, raw_output={finalUsage.outputTokens}, reasoning={reasoningTokenCount}, actual_content={actualContentTokens}, thinking_len={fullThinkingContent.len}, model={request.modelNickname}")
+                  
+                  # Record correction if we have valid tokens to compare
+                  if actualContentTokens > 0 and estimatedOutputTokens > 0:
+                    debug(fmt"🎯 ABOUT TO CALL recordTokenCountCorrection: estimated={estimatedOutputTokens}, actual={actualContentTokens}, nickname={request.modelNickname}")
+                    recordTokenCountCorrection(request.modelNickname, estimatedOutputTokens, actualContentTokens)
+                    debug(fmt"✅ CALLED recordTokenCountCorrection successfully")
+                  else:
+                    echo fmt"❌ SKIPPING CORRECTION: invalid token counts (estimated={estimatedOutputTokens}, actual={actualContentTokens})"
+
               # Send completion response with extracted usage data
               let completeResponse = APIResponse(
                 requestId: request.requestId,
@@ -1013,6 +1114,7 @@ proc sendChatRequestAsync*(channels: ptr ThreadChannels, messages: seq[Message],
     requestId: requestId,
     messages: messages,
     model: modelConfig.model,
+    modelNickname: modelConfig.nickname,
     maxTokens: maxTokens,
     temperature: temperature,
     baseUrl: modelConfig.baseUrl,
