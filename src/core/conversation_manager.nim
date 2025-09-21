@@ -523,14 +523,15 @@ proc addUserMessage*(content: string): Message =
     finally:
       release(globalSession.lock)
 
-proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall])): Message =
-  ## Add assistant message to current conversation with optional tool calls
+proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall]), 
+                          outputTokens: int = 0, modelName: string = ""): Message =
+  ## Add assistant message to current conversation with optional tool calls and token data
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
       # Add to database if pool is available
       if globalSession.pool != nil and globalSession.conversationId > 0:
-        discard addAssistantMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCalls, "")
+        discard addAssistantMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCalls, modelName, outputTokens)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:

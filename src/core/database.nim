@@ -80,10 +80,7 @@ type
     content*: string
     toolCallId*: Option[string]
     model*: string
-    inputTokens*: int
-    outputTokens*: int
-    inputCost*: float
-    outputCost*: float
+    outputTokens*: int          # Only output tokens for assistant messages
     # New fields for tool call storage
     toolCalls*: Option[string]  # JSON array of LLMToolCall
     sequenceId*: Option[int]    # Sequence ID for ordering
@@ -219,6 +216,8 @@ proc migrateConversationMessageSchema*(conn: sqlite.Db) =
     if not hasMessageType:
       debug("Adding message_type column to conversation_message table")
       conn.query("ALTER TABLE conversation_message ADD COLUMN message_type TEXT DEFAULT 'content'")
+    
+    # Note: Deprecated fields have been manually removed from conversation_message table
     
     debug("ConversationMessage schema migration completed")
   except Exception as e:
@@ -590,8 +589,7 @@ proc startConversation*(backend: DatabaseBackend, sessionId: string, title: stri
 
 proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role: string,
                            content: string, model: string, toolCallId: Option[string] = none(string),
-                           inputTokens: int = 0, outputTokens: int = 0,
-                           inputCost: float = 0.0, outputCost: float = 0.0) =
+                           outputTokens: int = 0) =
   ## Log a message in a conversation
   if backend == nil or conversationId == 0:
     return
@@ -606,10 +604,10 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
       content: content,
       toolCallId: toolCallId,
       model: model,
-      inputTokens: inputTokens,
       outputTokens: outputTokens,
-      inputCost: inputCost,
-      outputCost: outputCost
+      toolCalls: none(string),
+      sequenceId: none(int),
+      messageType: "content"
     )
     backend.pool.insert(msg)
 
@@ -861,10 +859,7 @@ proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int 
       content: content,
       toolCallId: none(string),
       model: "",
-      inputTokens: 0,
       outputTokens: 0,
-      inputCost: 0.0,
-      outputCost: 0.0,
       toolCalls: none(string),
       sequenceId: none(int),  # Let database handle ordering
       messageType: "content"
@@ -873,7 +868,7 @@ proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int 
     return msg.id
 
 proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string, 
-                             toolCalls: Option[seq[LLMToolCall]], model: string): int =
+                             toolCalls: Option[seq[LLMToolCall]], model: string, outputTokens: int = 0): int =
   ## Add assistant message to database and return message ID
   pool.withDb:
     let toolCallsJson = if toolCalls.isSome():
@@ -891,10 +886,7 @@ proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string,
       content: content,
       toolCallId: none(string),
       model: model,
-      inputTokens: 0,
-      outputTokens: 0,
-      inputCost: 0.0,
-      outputCost: 0.0,
+      outputTokens: outputTokens,
       toolCalls: toolCallsJson,
       sequenceId: none(int),  # Let database handle ordering
       messageType: messageType
@@ -914,10 +906,7 @@ proc addToolMessageToDb*(pool: Pool, conversationId: int, content: string,
       content: content,
       toolCallId: some(toolCallId),
       model: "",
-      inputTokens: 0,
       outputTokens: 0,
-      inputCost: 0.0,
-      outputCost: 0.0,
       toolCalls: none(string),
       sequenceId: none(int),  # Let database handle ordering
       messageType: "tool_result"
@@ -1113,8 +1102,9 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
     result = nil
 
 # Todo system database functions
-proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, conversationId: int, messageId: int) {.gcsafe.} =
+proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, conversationId: int, messageId: int, estimatedOutputTokens: int = 0) {.gcsafe.} =
   ## Centralized token logging that finds model config and logs usage - used from API worker
+  debug("logTokenUsageFromRequest called")
   {.gcsafe.}:
     if conversationId == 0:
       return
@@ -1411,11 +1401,27 @@ proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, file
 
 # Token correction factor database functions
 proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, estimatedTokens: int, actualTokens: int) =
+  echo "🚨 WE ARE HERE IN recordTokenCorrectionToDB"
   ## Record a token correction sample in the database
   if backend == nil or estimatedTokens <= 0 or actualTokens <= 0:
+    echo fmt"Invalid parameters for recordTokenCorrectionToDB: model={modelName}, estimated={estimatedTokens}, actual={actualTokens}"
     return
   
   let ratio = actualTokens.float / estimatedTokens.float
+  echo "🚨 WE ARE HERE IN recordTokenCorrectionToDB AFTER RATIO"  
+  debug(fmt"🔍 CORRECTION FACTOR DEBUG: model={modelName}")
+  debug(fmt"   📊 Estimated tokens: {estimatedTokens}")
+  debug(fmt"   📊 Actual tokens: {actualTokens}")
+  debug(fmt"   📊 Ratio (actual/estimated): {ratio:.6f}")
+  let logicCheck = if ratio > 1.0: "Actual > Estimated (we underestimated)" else: "Actual < Estimated (we overestimated)"
+  debug(fmt"   📊 Logic check: {logicCheck}")
+
+  # Skip correction for models with fundamentally incompatible tokenizers
+  if ratio > 5.0 or ratio < 0.2:
+    debug(fmt"Skipping token correction for {modelName}: ratio {ratio:.3f} indicates incompatible tokenizer (estimated={estimatedTokens}, actual={actualTokens})")
+    return  # Don't record corrections for incompatible tokenizers
+
+  debug(fmt"Recording token correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
   
   case backend.kind:
   of dbkSQLite, dbkTiDB:
@@ -1498,3 +1504,22 @@ proc clearAllCorrectionFactorsFromDB*(backend: DatabaseBackend) =
         debug("Cleared all token correction factors from database")
       except Exception as e:
         error(fmt"Failed to clear correction factors from database: {e.msg}")
+
+proc getAssistantTokensForConversation*(backend: DatabaseBackend, conversationId: int): Table[string, int] =
+  ## Get a table mapping assistant message content to actual output tokens for a conversation
+  result = initTable[string, int]()
+  
+  if backend == nil or conversationId == 0:
+    return
+  
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let assistantMessages = db.filter(ConversationMessage, 
+          it.conversationId == conversationId and it.role == "assistant")
+        for msg in assistantMessages:
+          if msg.outputTokens > 0:
+            result[msg.content] = msg.outputTokens
+      except Exception as e:
+        error(fmt"Failed to get assistant tokens for conversation: {e.msg}")

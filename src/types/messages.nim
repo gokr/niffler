@@ -76,6 +76,7 @@ type
       requestId*: string
       messages*: seq[Message] 
       model*: string
+      modelNickname*: string
       maxTokens*: int
       temperature*: float
       baseUrl*: string
