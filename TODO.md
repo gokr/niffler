@@ -1,6 +1,6 @@
 # Niffler Development Roadmap
 
-*Consolidated roadmap and implementation guide - Last updated: September 11, 2025*
+*Consolidated roadmap and implementation guide - Last updated: January 15, 2025*
 
 ## Project Overview
 
@@ -115,19 +115,31 @@ ex
 - ✅ **Test Infrastructure** - Comprehensive test suite for thinking token integration
 - ✅ **Configuration Support** - Model configuration for reasoning levels and visibility settings
 
-#### **8. Multiple Provider Support** *(MEDIUM PRIORITY)*
+#### **8. System Prompt Token Analysis** *(COMPLETED ✅)*
+*Critical for API cost optimization and overhead analysis*
+- ✅ **Token Breakdown Tracking** - Detailed analysis of system prompt components (base, mode, environment, tools)
+- ✅ **SystemPromptTokens Type** - Structured token counting for all prompt sections
+- ✅ **Database Integration** - SystemPromptTokenUsage table for overhead tracking across conversations
+- ✅ **Tool Schema Token Counting** - Accurate measurement of tool definition overhead
+- ✅ **Dynamic Correction Factors** - Model-specific token estimation improvements
+- ✅ **API Request Analysis** - Complete visibility into request composition and costs
+- ✅ **Enhanced /context Command** - Comprehensive token breakdown display with reasoning integration
+- ✅ **New /inspect Command** - Generate actual HTTP JSON requests for API debugging
+- ✅ **Cost Optimization Tools** - Detailed analysis for reducing API overhead
+
+#### **9. Multiple Provider Support** *(MEDIUM PRIORITY)*
 - ❌ **Anthropic Integration** - Dedicated Claude API client with thinking token support
 - ❌ **Provider-Specific Features** - Thinking tokens, reasoning content, encrypted content
 - ❌ **Reasoning Effort** - Configurable low/medium/high reasoning control
 
 ### **Lower Priority: Advanced Features**
 
-#### **9. File Enhancement Features**
+#### **10. File Enhancement Features**
 - ❌ **Advanced Change Detection** - Timestamp-based file modification tracking
 - ❌ **Git Integration** - Git-aware file operations and status
 - ❌ **Session Management** - Save/restore conversation sessions
 
-#### **10. MCP Integration** *(Future consideration)*
+#### **11. MCP Integration** *(Future consideration)*
 - ❌ **MCP Client** - Model Context Protocol support
 - ❌ **External Tools** - Dynamic tool loading from servers
 - ❌ **Service Discovery** - Automatic MCP server detection
@@ -216,22 +228,41 @@ ex
 - ✅ Integrate thinking token cost tracking with existing cost system
 - ✅ Create comprehensive integration tests for thinking tokens
 
-### **Phase 8: Provider Support (MEDIUM PRIORITY)**
+### **Phase 8: System Prompt Token Analysis (COMPLETED ✅)**
 
-#### 8.1: Anthropic Integration
+*All token analysis features have been successfully implemented*
+
+#### 8.1: Token Breakdown Infrastructure ✅
+- ✅ Implement SystemPromptTokens type with detailed component tracking
+- ✅ Add SystemPromptTokenUsage database table for overhead analysis
+- ✅ Create token counting functions for all system prompt components
+
+#### 8.2: API Integration and Analysis ✅
+- ✅ Integrate token counting into conversation preparation
+- ✅ Add tool schema token measurement capabilities
+- ✅ Create /inspect command for HTTP request generation and debugging
+
+#### 8.3: Enhanced Context Display ✅
+- ✅ Enhance /context command with comprehensive token breakdown
+- ✅ Integrate reasoning tokens from multiple sources (OpenAI + XML thinking)
+- ✅ Add correction factor display for estimation accuracy
+
+### **Phase 9: Provider Support (MEDIUM PRIORITY)**
+
+#### 9.1: Anthropic Integration
 - [ ] Add dedicated Claude API client with thinking token support
 - [ ] Create unified provider interface
 - [ ] Add provider-specific optimizations
 
-### **Phase 8: Advanced Features (LOWER PRIORITY)**
+### **Phase 10: Advanced Features (LOWER PRIORITY)**
 
-#### 8.1: File and Session Management
+#### 10.1: File and Session Management
 - [ ] Advanced file change detection and tracking
 - [ ] Git integration for repository awareness
 - [ ] Session save/restore functionality
 - [ ] Export capabilities for conversations
 
-#### 8.2: MCP Integration (Future)
+#### 10.2: MCP Integration (Future)
 - [ ] Model Context Protocol client implementation
 - [ ] Dynamic external tool loading
 - [ ] Service discovery and security model
@@ -267,14 +298,15 @@ ex
 ### **Agentic Capability Goal**
 Target: Full agentic coding assistant capability with Plan/Code workflow supporting complex multi-step development tasks.
 
-**Current Progress: ~85% Foundation Complete**
+**Current Progress: ~90% Foundation Complete**
 - ✅ Tool System: 100% (all 7 core tools implemented including todolist)
 - ✅ Threading Architecture: 100% (robust worker system)
 - ✅ LLM Integration: 100% (tool calling, real streaming, context management all working)
 - ✅ Agentic Features: 100% (Plan/Code modes and todolist tool fully implemented)
 - ✅ Dynamic Prompts: 100% (context-aware prompts with NIFFLER.md support)
+- ✅ Token Analysis: 100% (system prompt token tracking, estimation, correction factors)
 - ✅ Message Persistence: 90% (SQLite conversation management, missing rich tool metadata)
-- ✅ User Experience: 65% (markdown rendering, colored output, mode indicators implemented)
+- ✅ User Experience: 75% (markdown rendering, colored output, mode indicators, /inspect command)
 
 ## Immediate Next Steps
 
@@ -286,11 +318,12 @@ Target: Full agentic coding assistant capability with Plan/Code workflow support
 5. ✅ **Real Streaming & Tool Calling**: COMPLETED - Curly-based SSE with OpenAI compatibility
 6. ✅ **Basic UI Enhancements**: COMPLETED - Markdown rendering, colored output, mode indicators
 
-**Current High Priority (Updated September 2025):**
-1. ✅ **Thinking Token Support**: COMPLETED - Critical foundation for next-generation reasoning models (GPT-5, Claude 4)
-2. ✅ **Plan Mode File Protection**: COMPLETED - Prevents editing files that existed before entering plan mode
-3. **Enhanced Message Persistence**: Rich tool metadata storage and conversation summarization
-4. **Advanced Context Management**: User-controlled condensing and transparent operations
+**Current High Priority (Updated January 2025):**
+1. ✅ **Thinking Token Support**: COMPLETED - Critical foundation for next-generation reasoning models
+2. ✅ **Plan Mode File Protection**: COMPLETED - Prevents editing files that existed before entering plan mode  
+3. ✅ **System Prompt Token Analysis**: COMPLETED - Comprehensive token tracking and API overhead analysis
+4. **Enhanced Message Persistence**: Rich tool metadata storage and conversation summarization
+5. **Advanced Context Management**: User-controlled condensing and transparent operations
 
 **Next Phase Focus:**
 - Complete Phase 6: User Experience enhancements
@@ -393,32 +426,15 @@ type ToolCallTracker = object
 
 This roadmap represents a focused path toward creating a sophisticated agentic coding assistant while maintaining Niffler's core design principles and Nim-based architecture.
 
-## Phase 6 Completion: Immediate Implementation Tasks (September 2025)
+## Remaining Implementation Tasks (Updated January 2025)
 
-### **1. Plan Mode File Protection** *(CRITICAL - COMPLETED ✅)*
-*Essential for plan mode safety and user trust*
+### **COMPLETED FEATURES** ✅
+- Plan Mode File Protection - Prevents editing existing files in plan mode
+- System Prompt Token Analysis - Comprehensive API overhead tracking
+- Thinking Token Support - Full reasoning token integration
+- Enhanced Context/Inspect Commands - Detailed token breakdown and API debugging
 
-**Database Schema Extension:**
-- ✅ Add `planModeEnteredAt: Option[DateTime]` to conversation sessions
-- ✅ Add `planModeProtectedFiles: seq[string]` to track existing files  
-- ✅ Update database migration scripts for new fields
-
-**Mode Entry Tracking:**
-- ✅ Modify `setCurrentMode()` in `src/core/app.nim` to capture file state
-- ✅ Scan current directory when entering plan mode
-- ✅ Store existing file list in conversation session
-
-**Edit Tool Protection:**
-- ✅ Add `checkPlanModeProtection(path: string): bool` in `src/tools/edit.nim`
-- ✅ Integrate protection check into `executeEdit()` function
-- ✅ Provide clear error messages for protected files
-
-**Session Management:**
-- ✅ Add functions to store/retrieve plan mode protection state
-- ✅ Handle session cleanup when exiting plan mode
-- ✅ Update conversation manager for protection state
-
-### **2. Enhanced Message Persistence** *(HIGH PRIORITY)*
+### **1. Enhanced Message Persistence** *(HIGH PRIORITY)*
 *Building on solid SQLite foundation*
 
 **Tool Call Integration:**
@@ -441,7 +457,7 @@ This roadmap represents a focused path toward creating a sophisticated agentic c
 - [ ] Implement LLM-powered summarization integration
 - [ ] Track original vs summarized content relationships
 
-### **3. Advanced Context Management** *(HIGH PRIORITY)*
+### **2. Advanced Context Management** *(HIGH PRIORITY)*
 *User-controlled and transparent*
 
 **User-Controlled Condensing:**
@@ -464,7 +480,7 @@ This roadmap represents a focused path toward creating a sophisticated agentic c
 - [ ] Support glob patterns in @ references (@*.py, @src/*)
 - [ ] Add recursive directory inclusion capabilities
 
-### **4. UI/UX Polish** *(MEDIUM PRIORITY)*
+### **3. UI/UX Polish** *(MEDIUM PRIORITY)*
 *Completing the user experience layer*
 
 **Enhanced Help System:**
@@ -482,14 +498,22 @@ This roadmap represents a focused path toward creating a sophisticated agentic c
 - [ ] Add search functionality in command history
 - [ ] Persist command history across sessions
 
+### **4. Provider Support** *(MEDIUM PRIORITY)*
+*Multi-provider architecture*
+
+**Anthropic Integration:**
+- [ ] Add dedicated Claude API client with thinking token support
+- [ ] Create unified provider interface
+- [ ] Add provider-specific optimizations
+
 ### **Implementation Priority Order:**
-1. **Plan Mode File Protection** - Critical safety feature
-2. **Enhanced Message Persistence** - Foundation for advanced features
-3. **Advanced Context Management** - User experience improvements
-4. **UI/UX Polish** - Final user experience enhancements
+1. **Enhanced Message Persistence** - Foundation for advanced features
+2. **Advanced Context Management** - User experience improvements
+3. **UI/UX Polish** - Final user experience enhancements
+4. **Provider Support** - Multi-provider architecture
 
 ### **Success Criteria:**
-- Plan mode cannot accidentally modify existing files
 - Rich tool metadata available for debugging and analytics
 - Users have full control over context management operations
 - Professional-grade UI experience matching modern CLI tools
+- Support for multiple LLM providers with unified interface
