@@ -90,7 +90,7 @@ proc formatToolHeader*(toolName: string, args: JsonNode, config: ToolVisualizati
     of "bash":
       if args.hasKey("command"):
         let cmd = args["command"].getStr()
-        argParts.add(if cmd.len > 30: cmd[0..29] & "..." else: cmd)
+        argParts.add(if cmd.len > TOOL_ARGS_COMPACT_LENGTH: cmd[0..<TOOL_ARGS_COMPACT_LENGTH] & "..." else: cmd)
     of "fetch":
       if args.hasKey("url"):
         argParts.add(args["url"].getStr())
@@ -108,7 +108,7 @@ proc formatToolHeader*(toolName: string, args: JsonNode, config: ToolVisualizati
         of "add":
           if args.hasKey("content"):
             let content = args["content"].getStr()
-            let shortContent = if content.len > 30: content[0..29] & "..." else: content
+            let shortContent = if content.len > 150: content[0..149] & "..." else: content
             argParts.add("add(\"" & shortContent & "\")")
           else:
             argParts.add("add")
@@ -128,7 +128,7 @@ proc formatToolHeader*(toolName: string, args: JsonNode, config: ToolVisualizati
     # Fallback to "raw" key if no specific args were found and raw exists
     if argParts.len == 0 and args.hasKey("raw"):
       let rawArgs = args["raw"].getStr()
-      argParts.add(if rawArgs.len > 30: rawArgs[0..29] & "..." else: rawArgs)
+      argParts.add(if rawArgs.len > 150: rawArgs[0..149] & "..." else: rawArgs)
     
     let argStr = if argParts.len > 0: argParts.join(", ") else: ""
     return fmt"{toolName}({argStr})"
@@ -491,7 +491,7 @@ proc formatToolArgs*(toolName: string, args: JsonNode): string =
     of "bash":
       if args.hasKey("command"):
         let cmd = args["command"].getStr()
-        argParts.add(if cmd.len > 30: cmd[0..29] & "..." else: cmd)
+        argParts.add(if cmd.len > TOOL_ARGS_COMPACT_LENGTH: cmd[0..<TOOL_ARGS_COMPACT_LENGTH] & "..." else: cmd)
     of "fetch":
       if args.hasKey("url"):
         argParts.add(args["url"].getStr())
@@ -509,7 +509,7 @@ proc formatToolArgs*(toolName: string, args: JsonNode): string =
         of "add":
           if args.hasKey("content"):
             let content = args["content"].getStr()
-            let shortContent = if content.len > 30: content[0..29] & "..." else: content
+            let shortContent = if content.len > 150: content[0..149] & "..." else: content
             argParts.add("add(\"" & shortContent & "\")")
           else:
             argParts.add("add")
@@ -529,7 +529,7 @@ proc formatToolArgs*(toolName: string, args: JsonNode): string =
     # Fallback to "raw" key if no specific args were found and raw exists
     if argParts.len == 0 and args.hasKey("raw"):
       let rawArgs = args["raw"].getStr()
-      argParts.add(if rawArgs.len > 30: rawArgs[0..29] & "..." else: rawArgs)
+      argParts.add(if rawArgs.len > 150: rawArgs[0..149] & "..." else: rawArgs)
     
     let argStr = if argParts.len > 0: argParts.join(", ") else: ""
     return argStr

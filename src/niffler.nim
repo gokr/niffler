@@ -44,7 +44,7 @@ proc initializeAppSystems(level: Level, dump: bool = false, logFile: string = ""
     addHandler(logger)
   else:
     # Setup console-only logging
-    let consoleLogger = newConsoleLogger()
+    let consoleLogger = newConsoleLogger(useStderr = true)
     addHandler(consoleLogger)
   
   setLogFilter(level)
@@ -108,8 +108,8 @@ Options:
   -v --version           Show version of Niffler
   -m --model <nickname>  Select model by nickname
   -p --prompt "<text>"   Perform single prompt and exit
-  -i --info              Show info level logging
-  -d --debug             Show debug level logging
+  -i --info              Show info level logging (to stderr)
+  -d --debug             Show debug level logging  (to stderr)
   --dump                 Show HTTP requests & responses
   --log <filename>       Redirect debug/dump output to log files
 

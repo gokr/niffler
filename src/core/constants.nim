@@ -43,6 +43,7 @@ const
 const
   TOOL_RESULT_MAX_LENGTH_SHORT* = 2000   # Short tool result display limit
   TOOL_RESULT_MAX_LENGTH_LONG* = 5000    # Long tool result display limit
+  TOOL_ARGS_COMPACT_LENGTH* = 60         # Length limit for compact tool args display
   
 # === ERROR MESSAGES ===
 const

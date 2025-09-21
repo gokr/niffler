@@ -1,8 +1,8 @@
-import std/[unittest, options, json, asyncdispatch, times, strutils]
+import std/[unittest, options, json, strutils]
 import ../src/types/messages
 import ../src/ui/tool_visualizer
 import ../src/tools/common
-import ../src/api/api
+import ../src/core/constants
 
 suite "Continuous Streaming Tests":
   
@@ -87,9 +87,9 @@ suite "Continuous Streaming Tests":
     check bashFormatted == "echo hello world"
     
     # Test long bash command truncation
-    let longBashArgs = %*{"command": "echo " & "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    let longBashArgs = %*{"command": "echo " & "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
     let longBashFormatted = formatToolArgs("bash", longBashArgs)
-    check longBashFormatted.len == 33 # "echo " + 30 chars + "..."
+    check longBashFormatted.len == TOOL_ARGS_COMPACT_LENGTH + 3 # TOOL_ARGS_COMPACT_LENGTH chars + "..."
     check longBashFormatted[^3..^1] == "..."
 
   test "APIResponse with new tool call types":

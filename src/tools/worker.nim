@@ -53,7 +53,7 @@ type
 
 proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize logging for this thread
-  let consoleLogger = newConsoleLogger()
+  let consoleLogger = newConsoleLogger(useStderr = true)
   addHandler(consoleLogger)
   setLogFilter(params.level)
   

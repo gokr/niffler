@@ -198,17 +198,28 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
   
   var message = "Conversation Context:\n\n"
   
-  # Count messages by type and estimate tokens using BPE
+  # Count messages by type and use actual tokens where available, estimates elsewhere
   var userCount = 0
   var assistantCount = 0
   var toolCount = 0
   var toolCallCount = 0
   var userTokensEstimate = 0
-  var assistantTokensEstimate = 0
+  var assistantTokensActual = 0  # Use actual tokens for assistant messages
   var toolTokensEstimate = 0
   
   # Get model nickname for accurate token estimation and correction factor lookup
   let modelNickname = currentModel.nickname
+  
+  # Get actual assistant message tokens from database
+  let database = getGlobalDatabase()
+  var assistantActualTokens = initTable[string, int]()  # Map content hash to actual tokens
+  
+  if database != nil:
+    try:
+      let conversationId = getCurrentConversationId().int
+      assistantActualTokens = getAssistantTokensForConversation(database, conversationId)
+    except Exception as e:
+      debug(fmt"Failed to get assistant token data from database: {e.msg}")
   
   for msg in messages:
     case msg.role:
@@ -217,21 +228,25 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
       userTokensEstimate += countTokensForModel(msg.content, modelNickname)
     of mrAssistant: 
       inc assistantCount
-      assistantTokensEstimate += countTokensForModel(msg.content, modelNickname)
+      # Use actual tokens if available, otherwise fall back to estimate
+      if assistantActualTokens.hasKey(msg.content):
+        assistantTokensActual += assistantActualTokens[msg.content]
+      else:
+        assistantTokensActual += countTokensForModel(msg.content, modelNickname)
+      
       # Count tool calls in assistant messages
       if msg.toolCalls.isSome():
         toolCallCount += msg.toolCalls.get().len
         # Add token estimate for tool calls (JSON serialized)
         for toolCall in msg.toolCalls.get():
           let toolCallJson = fmt"""{{"name": "{toolCall.function.name}", "arguments": {toolCall.function.arguments}}}"""
-          assistantTokensEstimate += countTokensForModel(toolCallJson, modelNickname)
+          assistantTokensActual += countTokensForModel(toolCallJson, modelNickname)
     of mrTool: 
       inc toolCount
       toolTokensEstimate += countTokensForModel(msg.content, modelNickname)
     else: discard
   
   # Get token data from conversation cost details (more reliable than message role breakdown)
-  let database = getGlobalDatabase()
   var totalTokens = 0
   
   if database != nil:
@@ -264,12 +279,12 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     
     let combinedTable = formatCombinedContextTable(
       userCount, assistantCount, toolCount,
-      userTokensEstimate, assistantTokensEstimate, toolTokensEstimate,
+      userTokensEstimate, assistantTokensActual, toolTokensEstimate,
       reasoningTokens, systemPromptResult.tokens, toolSchemaTokens
     )
     message &= combinedTable & "\n"
     
-    # Add correction factor info using model nickname
+    # Add correction factor info using model nickname (consistent with storage)
     var correctionFactorStr = ""
     if database != nil:
       let correctionFactor = getCorrectionFactorFromDB(database, modelNickname)
@@ -309,7 +324,7 @@ proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig
   
   try:
     # Prepare conversation messages with empty user message
-    let (messages, _, _, _) = prepareConversationMessagesWithTokens("", currentModel.model)
+    let (messages, _, _, _) = prepareConversationMessagesWithTokens("", currentModel.nickname)
     
     # Get tool schemas for the request
     let toolSchemas = getAllToolSchemas()

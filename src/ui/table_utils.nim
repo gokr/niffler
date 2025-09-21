@@ -28,7 +28,6 @@ const boxSeps = (
 
 proc renderTableToString*(table: TerminalTable, maxWidth: int = 120, useBoxChars: bool = true): string =
   ## Render a Nancy TerminalTable to string with optional Unicode box drawing characters
-  ## Render a Nancy TerminalTable to string instead of stdout
   let sizes = table.getColumnSizes(maxWidth, padding = 1)
   var output = ""
   
@@ -251,7 +250,7 @@ proc formatCostBreakdownTable*(rows: seq[ConversationCostRow],
               green(bold(fmt"${totalInputCost:.4f}")), green(bold(fmt"${totalOutputCost:.4f}")),
               green(bold(fmt"${totalCost:.4f}"))
   
-  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
+  return renderTableToString(table, maxWidth = 100, useBoxChars = true)
 
 proc formatContextBreakdownTable*(userCount: int, assistantCount: int, toolCount: int,
                                   userTokens: int, assistantTokens: int, toolTokens: int,
@@ -293,7 +292,7 @@ proc formatContextBreakdownTable*(userCount: int, assistantCount: int, toolCount
   table.add green(bold("TOTAL")), green(bold($totalCount)), green(bold(totalOutputTokensStr)), 
             green(bold(totalReasoningTokensStr)), green(bold(avgTokens(totalOutputTokens, totalCount)))
   
-  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
+  return renderTableToString(table, maxWidth = 100, useBoxChars = true)
 
 proc formatSystemPromptBreakdownTable*(systemTokens: SystemPromptTokens, toolSchemaTokens: int): string =
   ## Format system prompt token breakdown in a table
@@ -337,7 +336,7 @@ proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount:
   var table: TerminalTable
   
   # Add header
-  table.add bold("Context Component"), bold("Count"), bold("Tokens"), bold("Reasoning Tokens")
+  table.add bold("Context Component"), bold("Cnt"), bold("Tkns"), bold("Reason")
   
   # Helper function to format token numbers with thousands separators
   proc formatTokenNumber(tokens: int): string =
@@ -362,7 +361,7 @@ proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount:
   table.add "└ " & dim("Subtotal"), dim(formatCount(totalMessageCount)), dim(formatTokenNumber(totalConversationTokens)), dim(formatReasoningTokens(reasoningTokens))
   
   # Section divider
-  table.add "─".repeat(35), "─".repeat(5), "─".repeat(6), "─".repeat(16)
+  table.add "─".repeat(25), "─".repeat(3), "─".repeat(4), "─".repeat(6)
   
   # Base Context Section
   table.add bold("BASE CONTEXT"), "", "", ""
@@ -381,8 +380,8 @@ proc formatCombinedContextTable*(userCount: int, assistantCount: int, toolCount:
   table.add "└ " & dim("Subtotal"), dim("-"), dim(formatTokenNumber(totalBaseTokens)), dim("-")
   
   # Total row with special formatting
-  table.add "═".repeat(35), "═".repeat(5), "═".repeat(6), "═".repeat(16)
+  table.add "═".repeat(25), "═".repeat(3), "═".repeat(4), "═".repeat(6)
   table.add green(bold("TOTAL")), green(bold(formatCount(totalMessageCount))), 
             green(bold(formatTokenNumber(grandTotal))), green(bold(formatReasoningTokens(reasoningTokens)))
   
-  return renderTableToString(table, maxWidth = 140, useBoxChars = true)
+  return renderTableToString(table, maxWidth = 90, useBoxChars = true)

@@ -842,7 +842,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               # (API worker already handles history for tool call conversations)
               if responseText.len > 0 and not hadToolCalls:
                 debug("DEBUG: Adding assistant message to history (no tool calls detected)")
-                discard addAssistantMessage(responseText)
+                discard addAssistantMessage(responseText, none(seq[LLMToolCall]), response.usage.outputTokens, currentModel.model)
               elif hadToolCalls:
                 debug("DEBUG: Skipping assistant message addition - tool calls already handled by API worker")
               
@@ -896,7 +896,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     addHandler(logger)
   else:
     # Setup console-only logging
-    let consoleLogger = newConsoleLogger()
+    let consoleLogger = newConsoleLogger(useStderr = true)
     addHandler(consoleLogger)
   
   setLogFilter(level)
