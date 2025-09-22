@@ -8,6 +8,7 @@ import hldiffpkg/edits
 import theme
 import diff_visualizer
 import diff_types
+import external_renderer
 import ../types/messages
 import ../core/constants
 
@@ -279,7 +280,23 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
                 let endLine = lineRange[1].getInt()
                 summary.add(fmt" (lines {startLine}-{endLine})")
             
-            formattedResult = summary
+            # Try to show external diff if diff content is available
+            if resultJson.hasKey("diff") and config.showDiffs:
+              let diffContent = resultJson["diff"].getStr()
+              if diffContent.len > 0:
+                try:
+                  let renderConfig = getCurrentExternalRenderingConfig()
+                  let diffResult = renderDiff(diffContent, renderConfig, diffContent)
+                  if diffResult.success and diffResult.usedExternal:
+                    formattedResult = summary & "\n\n" & diffResult.content
+                  else:
+                    formattedResult = summary & "\n\n" & diffContent
+                except:
+                  formattedResult = summary & "\n\n" & diffContent
+              else:
+                formattedResult = summary
+            else:
+              formattedResult = summary
           else:
             formattedResult = fmt"No changes made to {path}"
         else:
@@ -290,16 +307,32 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
       formattedResult = resultText
   
   of "read":
-    # For read tool, show file content summary
+    # For read tool, show file content with potential external rendering
     try:
       let resultJson = parseJson(toolInfo.result)
       if resultJson.hasKey("content"):
         let content = resultJson["content"].getStr()
         let lines = content.splitLines()
         let nonEmptyLines = lines.filterIt(it.strip().len > 0)
-        # Show first few lines as preview if content is short
-        if lines.len <= 10 and content.len <= 500:
+        
+        # If content appears to be already externally rendered (contains ANSI codes), use as-is
+        if content.contains("\e[") or content.contains("\x1b["):
           formattedResult = content
+        elif lines.len <= 10 and content.len <= 500:
+          # For small files, try external rendering if we have a file path
+          if resultJson.hasKey("path"):
+            let filePath = resultJson["path"].getStr()
+            try:
+              let renderConfig = getCurrentExternalRenderingConfig()
+              let renderResult = renderContentWithTempFile(content, splitFile(filePath).ext, renderConfig, content)
+              if renderResult.success and renderResult.usedExternal:
+                formattedResult = renderResult.content
+              else:
+                formattedResult = content
+            except:
+              formattedResult = content
+          else:
+            formattedResult = content
         else:
           formattedResult = fmt"Read {lines.len} lines ({nonEmptyLines.len} non-empty)"
       else:

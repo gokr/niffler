@@ -28,6 +28,7 @@ import std/[strutils, json, strformat, logging, os, options]
 import ../types/tools
 import ../types/mode
 import ../core/database, ../core/conversation_manager
+import ../ui/diff_visualizer
 import common
 
 type
@@ -329,6 +330,18 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
       except IOError as e:
         raise newToolExecutionError("edit", "Failed to write file: " & e.msg, -1, "")
     
+    # Generate unified diff if changes were made
+    var unifiedDiff = ""
+    if changesMade:
+      {.gcsafe.}:
+        try:
+          let diffResult = computeDiff(originalContent, newContent)
+          diffResult.filePath = sanitizedPath
+          unifiedDiff = renderDiff(diffResult)
+        except Exception as e:
+          debug("Failed to generate diff: " & e.msg)
+          # Continue without diff if generation fails
+    
     # Create result
     let resultJson = %*{
       "path": sanitizedPath,
@@ -338,7 +351,8 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
       "line_range": %*[actualLineRange.start, actualLineRange.`end`],
       "original_size": originalContent.len,
       "new_size": newContent.len,
-      "size_change": newContent.len - originalContent.len
+      "size_change": newContent.len - originalContent.len,
+      "diff": if unifiedDiff.len > 0: %*unifiedDiff else: newJNull()
     }
     
     return $resultJson

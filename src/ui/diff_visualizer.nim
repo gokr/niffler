@@ -7,6 +7,7 @@ import std/[strutils, tables]
 import hldiffpkg/edits
 import theme
 import diff_types
+import external_renderer
 
 proc getDiffColors*(theme: Theme): Table[DiffLineType, ThemeStyle] =
   ## Get diff-specific colors from theme
@@ -311,8 +312,33 @@ proc renderDiff*(diffResult: DiffResult, config: DiffConfig = getDefaultDiffConf
   for hunk in diffResult.hunks:
     result.add(formatDiffHunk(hunk, colors, config))
 
+proc renderDiffWithExternal*(original, modified: string, filePath: string = "", config: DiffConfig = getDefaultDiffConfig()): string =
+  ## Render diff using external tool if configured, with fallback to built-in rendering
+  # First create built-in rendering as fallback
+  let diffResult = computeDiff(original, modified, config)
+  let builtinRendered = renderDiff(diffResult, config)
+  
+  # Try external rendering if available (this may access global config, but function isn't marked gcsafe)
+  try:
+    let renderConfig = getCurrentExternalRenderingConfig()
+    if renderConfig.enabled:
+      let externalResult = renderDiff(builtinRendered, renderConfig, builtinRendered)
+      if externalResult.success:
+        return externalResult.content
+  except:
+    discard  # Fall back to built-in rendering
+  
+  # Fallback to built-in rendering
+  return builtinRendered
+
 proc displayDiff*(diffResult: DiffResult, config: DiffConfig = getDefaultDiffConfig()) =
   ## Display the diff result directly to terminal
   let rendered = renderDiff(diffResult, config)
+  if rendered.len > 0:
+    echo rendered
+
+proc displayDiffWithExternal*(original, modified: string, filePath: string = "", config: DiffConfig = getDefaultDiffConfig()) =
+  ## Display diff using external tool if configured, with fallback to built-in rendering
+  let rendered = renderDiffWithExternal(original, modified, filePath, config)
   if rendered.len > 0:
     echo rendered

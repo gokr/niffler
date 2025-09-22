@@ -117,6 +117,12 @@ type
     diffRemoved*: ThemeStyleConfig
     diffContext*: ThemeStyleConfig
 
+  ExternalRenderingConfig* = object
+    enabled*: bool
+    contentRenderer*: string  # Command template for file content (e.g., "batcat --color=always --style=numbers {file}")
+    diffRenderer*: string     # Command template for diffs (e.g., "delta --line-numbers --syntax-theme=auto")
+    fallbackToBuiltin*: bool  # Use built-in rendering if external command fails
+
   Config* = object
     yourName*: string
     models*: seq[ModelConfig]
@@ -133,6 +139,8 @@ type
     thinkingTokensEnabled*: Option[bool]
     defaultReasoningLevel*: Option[ReasoningLevel]
     defaultReasoningContentType*: Option[ReasoningContentType]
+    # External rendering configuration
+    externalRendering*: Option[ExternalRenderingConfig]
 
   KeyConfig* = Table[string, string]
 

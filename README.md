@@ -70,6 +70,12 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - Nim 2.2.4 or later
 - Git
 
+### Optional Prerequisites (Enhanced Rendering)
+- **[batcat](https://github.com/sharkdp/bat)**: For syntax-highlighted file content display
+- **[delta](https://github.com/dandavison/delta)**: For advanced diff visualization with side-by-side view and word-level highlighting
+
+If these tools are not installed, Niffler will automatically fall back to built-in rendering.
+
 ### Build and install from Source
 ```bash
 git clone https://github.com/gokr/niffler.git
@@ -366,6 +372,112 @@ You can configure API keys using environment variables:
 export OPENAI_API_KEY="your-openai-key"
 export ANTHROPIC_API_KEY="your-anthropic-key"
 ```
+
+### External Rendering Configuration
+
+Niffler supports configurable external tools for enhanced content and diff rendering. By default, it uses [batcat](https://github.com/sharkdp/bat) for syntax-highlighted file content and [delta](https://github.com/dandavison/delta) for advanced diff visualization.
+
+#### Default Configuration
+
+When you initialize Niffler, the following external rendering configuration is automatically added:
+
+```json
+{
+  "externalRendering": {
+    "enabled": true,
+    "contentRenderer": "batcat --color=always --style=numbers --theme=auto {file}",
+    "diffRenderer": "delta --line-numbers --syntax-theme=auto",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+#### Configuration Options
+
+- **`enabled`**: Enable/disable external rendering (boolean, default: true)
+- **`contentRenderer`**: Command template for file content rendering with placeholders:
+  - `{file}`: File path to render
+  - `{theme}`: Theme name (auto, dark, light, etc.)
+  - `{syntax}`: Syntax/language for highlighting
+  - `{line-numbers}`: Expands to `--line-numbers` flag
+- **`diffRenderer`**: Command template for diff rendering (stdin-based)
+- **`fallbackToBuiltin`**: Use built-in rendering if external tools fail (boolean, default: true)
+
+#### Template Placeholders
+
+External rendering commands support flexible placeholder substitution:
+
+| Placeholder | Description | Example Value |
+|-------------|-------------|---------------|
+| `{file}` | Absolute file path | `/home/user/project/src/main.nim` |
+| `{path}` | Alias for `{file}` | `/home/user/project/src/main.nim` |
+| `{theme}` | Theme name | `monokai`, `auto`, `dark` |
+| `{syntax}` | File language/syntax | `nim`, `python`, `javascript` |
+| `{language}` | Alias for `{syntax}` | `nim`, `python`, `javascript` |
+| `{line-numbers}` | Line numbers flag | `--line-numbers` (or empty) |
+
+#### Custom Tool Configuration
+
+You can customize external rendering to use different tools:
+
+```json
+{
+  "externalRendering": {
+    "enabled": true,
+    "contentRenderer": "highlight --syntax={syntax} --out-format=ansi {file}",
+    "diffRenderer": "diff-so-fancy",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+#### Features
+
+- **Automatic Tool Detection**: Niffler checks if external tools are available before using them
+- **Graceful Fallback**: If external tools fail or are unavailable, built-in rendering is used seamlessly
+- **Context-Aware**: File content rendering detects syntax from file extensions
+- **Performance Optimized**: External rendering is used intelligently (e.g., not for line range selections)
+- **Error Handling**: Comprehensive error handling with informative messages
+
+#### Installing External Tools
+
+**Install batcat:**
+```bash
+# Ubuntu/Debian
+sudo apt install bat
+
+# macOS
+brew install bat
+
+# Windows (via chocolatey)
+choco install bat
+
+# Note: On some systems, the command is 'bat' instead of 'batcat'
+# Update your config accordingly if needed
+```
+
+**Install delta:**
+```bash
+# Ubuntu/Debian (from releases)
+wget https://github.com/dandavison/delta/releases/download/0.17.0/git-delta_0.17.0_amd64.deb
+sudo dpkg -i git-delta_0.17.0_amd64.deb
+
+# macOS
+brew install git-delta
+
+# Windows (via chocolatey)
+choco install delta
+
+# Cargo (all platforms)
+cargo install git-delta
+```
+
+#### Benefits
+
+- **Enhanced Syntax Highlighting**: Rich color coding and theme support
+- **Advanced Diff Visualization**: Side-by-side view, word-level highlighting, and better formatting
+- **Consistent Terminal Experience**: Integrates seamlessly with your existing terminal workflow
+- **Customizable**: Full control over rendering commands and options
 ### Archive and Unarchive Commands
 
 Niffler provides conversation archiving functionality to help you organize your conversations while preserving them for future reference. Archived conversations are hidden from the main conversation list but can be restored when needed.

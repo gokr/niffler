@@ -138,6 +138,12 @@ proc parseMcpServerConfig(node: JsonNode): McpServerConfig =
       args.add(arg.getStr())
     result.args = some(args)
 
+proc parseExternalRenderingConfig(node: JsonNode): ExternalRenderingConfig =
+  result.enabled = node.getOrDefault("enabled").getBool(true)
+  result.contentRenderer = node.getOrDefault("contentRenderer").getStr("batcat --color=always --style=numbers --theme=auto {file}")
+  result.diffRenderer = node.getOrDefault("diffRenderer").getStr("delta --line-numbers --syntax-theme=auto")
+  result.fallbackToBuiltin = node.getOrDefault("fallbackToBuiltin").getBool(true)
+
 proc parseDatabaseConfig(node: JsonNode): DatabaseConfig =
   result.enabled = node.getOrDefault("enabled").getBool(true)
   
@@ -232,6 +238,9 @@ proc parseConfig(configJson: JsonNode): Config =
     for fileNode in configJson["instructionFiles"]:
       instructionFiles.add(fileNode.getStr())
     result.instructionFiles = some(instructionFiles)
+    
+  if configJson.hasKey("externalRendering"):
+    result.externalRendering = some(parseExternalRenderingConfig(configJson["externalRendering"]))
 
 proc readConfig*(path: string): Config =
   ## Read and parse configuration file from specified path
@@ -364,6 +373,15 @@ proc writeConfig*(config: Config, path: string) =
     for filename in config.instructionFiles.get():
       instructionFilesArray.add(newJString(filename))
     configJson["instructionFiles"] = instructionFilesArray
+  
+  if config.externalRendering.isSome():
+    var renderingObj = newJObject()
+    let renderingConfig = config.externalRendering.get()
+    renderingObj["enabled"] = newJBool(renderingConfig.enabled)
+    renderingObj["contentRenderer"] = newJString(renderingConfig.contentRenderer)
+    renderingObj["diffRenderer"] = newJString(renderingConfig.diffRenderer)
+    renderingObj["fallbackToBuiltin"] = newJBool(renderingConfig.fallbackToBuiltin)
+    configJson["externalRendering"] = renderingObj
   
   writeFile(path, pretty(configJson, 2))
 
@@ -621,7 +639,13 @@ proc initializeConfig*(path: string) =
     themes: some(createDefaultThemes()),
     currentTheme: some("default"),
     markdownEnabled: some(true),
-    instructionFiles: some(@["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"])
+    instructionFiles: some(@["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"]),
+    externalRendering: some(ExternalRenderingConfig(
+      enabled: true,
+      contentRenderer: "batcat --color=always --style=numbers --theme=auto {file}",
+      diffRenderer: "delta --line-numbers --syntax-theme=auto",
+      fallbackToBuiltin: true
+    ))
   )
   
   writeConfig(defaultConfig, path)
