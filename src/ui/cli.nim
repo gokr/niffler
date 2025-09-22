@@ -58,6 +58,9 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
 
+# State for cursor position tracking during streaming
+var streamStartCursorPos: (int, int) = (0, 0)  # Track cursor position at start of streaming
+
 proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
@@ -770,6 +773,11 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
               if response.content.len > 0:
                 # Reset thinking block flag when we get regular content
                 isInThinkingBlock = false
+                
+                # Save cursor position before first content chunk (for markdown overwrite)
+                if responseText.len == 0:
+                  streamStartCursorPos = linecross.getCursorPos()
+                
                 responseText.add(response.content)
                 # For interactive mode, we don't use streaming markdown to avoid broken rendering
                 # Markdown will be applied to the complete response at the end
@@ -818,14 +826,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
             of arkStreamComplete:
               # Apply markdown formatting to the complete response if enabled
               if markdownEnabled and responseText.len > 0:
-                # Move cursor up to overwrite the plain text with formatted markdown
-                let lines = responseText.split('\n')
-                let lineCount = lines.len
-                # Move up lineCount lines and clear each one
-                for i in 0..<lineCount:
-                  stdout.write("\r\e[K")  # Clear current line
-                  if i < lineCount - 1:
-                    stdout.write("\e[1A")   # Move up one line
+                # Restore cursor to start of streamed content and clear to end of screen
+                linecross.setCursorPos(streamStartCursorPos[0], streamStartCursorPos[1])
+                stdout.write("\x1b[0J")  # Clear from cursor to end of screen
                 stdout.flushFile()
                 # Now render the complete markdown
                 let renderedText = renderMarkdownTextCLI(responseText)
@@ -962,6 +965,11 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           if response.content.len > 0:
             # Reset thinking block flag when we get regular content
             isInThinkingBlock = false
+            
+            # Save cursor position before first content chunk (for potential markdown overwrite)
+            if responseText.len == 0:
+              streamStartCursorPos = linecross.getCursorPos()
+            
             # For single prompt mode, show plain text while streaming
             # and render markdown on the complete text at the end
             stdout.write(response.content)
