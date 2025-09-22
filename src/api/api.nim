@@ -56,53 +56,6 @@ type
     client: CurlyStreamingClient
     isRunning: bool
 
-# Helper functions for tool call buffering (now format-aware)
-proc isValidJson*(jsonStr: string): bool =
-  ## Check if a string is valid JSON (legacy function for compatibility)
-  try:
-    discard parseJson(jsonStr)
-    return true
-  except JsonParsingError:
-    return false
-
-proc isCompleteJson*(jsonStr: string): bool =
-  ## Check if JSON string is complete (legacy function for compatibility)
-  var braceCount = 0
-  var bracketCount = 0
-  var inString = false
-  var escapeNext = false
-  
-  # Must start with { or [ to be valid JSON object/array
-  if jsonStr.len == 0:
-    return false
-  
-  let firstChar = jsonStr[0]
-  if firstChar != '{' and firstChar != '[':
-    return false
-  
-  for i, c in jsonStr:
-    if escapeNext:
-      escapeNext = false
-      continue
-    
-    if c == '\\':
-      escapeNext = true
-      continue
-    
-    if c == '"' and not escapeNext:
-      inString = not inString
-      continue
-    
-    if not inString:
-      case c:
-      of '{': inc braceCount
-      of '}': dec braceCount
-      of '[': inc bracketCount
-      of ']': dec bracketCount
-      else: discard
-  
-  return braceCount == 0 and bracketCount == 0 and not inString
-
 # New format-aware validation functions
 proc detectAndValidateFormat*(content: string, buffer: var ToolCallBuffer): bool =
   ## Detect format and validate tool call content
@@ -235,155 +188,158 @@ proc cleanupStaleBuffers*(buffers: var Table[string, ToolCallBuffer], timeoutSec
   for id in toRemove:
     buffers.del(id)
 
-proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
-                                request: APIRequest, toolCalls: seq[LLMToolCall],
-                                initialContent: string, database: DatabaseBackend,
-                                recursionDepth: int = 0,
-                                executedCalls: seq[string] = @[]): bool =
-  ## Execute tool calls and continue conversation recursively
-  ## Returns true if successful, false if max recursion depth exceeded
-  const MAX_RECURSION_DEPTH = 20  # Reduced from 100 to prevent excessive loops
-  
-  if recursionDepth >= MAX_RECURSION_DEPTH:
-    debug(fmt"Max recursion depth ({MAX_RECURSION_DEPTH}) exceeded, stopping tool execution")
-    return false
-  
-  if toolCalls.len == 0:
-    return true
-    
-  debug(fmt"Executing {toolCalls.len} tool calls (recursion depth: {recursionDepth})")
-  
-  # Check for duplicate tool calls to prevent infinite loops
-  var filteredToolCalls: seq[LLMToolCall] = @[]
-  var updatedExecutedCalls = executedCalls
+# Helper procedures for tool execution refactoring
+proc filterDuplicateToolCalls(toolCalls: seq[LLMToolCall], executedCalls: seq[string]): tuple[filtered: seq[LLMToolCall], updated: seq[string]] =
+  ## Filter out duplicate tool calls to prevent infinite loops
+  result.filtered = @[]
+  result.updated = executedCalls
   
   for toolCall in toolCalls:
     # Create a normalized signature for better deduplication
     var normalizedArgs = ""
     try:
-      # Try to normalize JSON arguments to catch formatting differences
       let argsJson = parseJson(toolCall.function.arguments)
       normalizedArgs = $argsJson
     except:
-      # Fall back to original arguments if JSON parsing fails
       normalizedArgs = toolCall.function.arguments.strip()
     
     let toolSignature = fmt"{toolCall.function.name}({normalizedArgs})"
     
-    # Also check by tool call ID to prevent the same call being executed twice
+    # Check for duplicates by signature and ID
     var isDuplicate = false
     if toolSignature in executedCalls:
       isDuplicate = true
-      debug(fmt"DEBUG: Skipping duplicate tool call (signature match): {toolSignature}")
+      debug(fmt"Skipping duplicate tool call (signature match): {toolSignature}")
     else:
       # Additional check: same tool call ID indicates exact duplicate
-      for prevCall in filteredToolCalls:
+      for prevCall in result.filtered:
         if prevCall.id == toolCall.id and toolCall.id.len > 0:
           isDuplicate = true
-          debug(fmt"DEBUG: Skipping duplicate tool call (ID match): {toolCall.id}")
+          debug(fmt"Skipping duplicate tool call (ID match): {toolCall.id}")
           break
     
     if not isDuplicate:
-      filteredToolCalls.add(toolCall)
-      updatedExecutedCalls.add(toolSignature)
+      result.filtered.add(toolCall)
+      result.updated.add(toolSignature)
+
+proc createTempModelConfig(nickname: string, baseUrl: string, model: string,
+                          maxTokens: int, temperature: float, apiKey: string,
+                          recursionDepth: int = 0): ModelConfig =
+  ## Create a temporary ModelConfig for follow-up requests
+  ModelConfig(
+    nickname: fmt"{nickname}-{recursionDepth}",
+    baseUrl: baseUrl,
+    model: model,
+    context: 128000,
+    enabled: true,
+    maxTokens: some(maxTokens),
+    temperature: some(temperature),
+    apiKey: some(apiKey)
+  )
+
+proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                             request: APIRequest, toolCalls: seq[LLMToolCall],
+                             initialContent: string, recursionDepth: int,
+                             updatedExecutedCalls: seq[string]): bool =
+  ## Handle the case when all tool calls are duplicates by providing feedback to the model
+  debug("All tool calls were duplicates, sending feedback to model")
   
-  if filteredToolCalls.len == 0:
-    debug("DEBUG: All tool calls were duplicates, sending feedback to model")
-    # Instead of stopping, create a tool result indicating duplication
-    let duplicateResult = Message(
-      role: mrTool,
-      toolCallId: some(toolCalls[0].id),
-      content: "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
-    )
-    
-    # Add duplicate feedback and continue conversation using same pattern as normal tool results
-    var updatedMessages = request.messages
-    
-    # Add the assistant message with tool calls (even though duplicates)
-    let assistantWithTools = Message(
-      role: mrAssistant,
-      content: initialContent,
-      toolCalls: some(toolCalls)
-    )
-    updatedMessages.add(assistantWithTools)
-    updatedMessages.add(duplicateResult)
-    
-    # Create temporary ModelConfig to continue conversation  
-    let tempModelConfig = ModelConfig(
-      nickname: fmt"api-request-duplicate-{recursionDepth}",
-      baseUrl: request.baseUrl,
-      model: request.model,
-      context: 128000,
-      enabled: true,
-      maxTokens: some(request.maxTokens),
-      temperature: some(request.temperature),
-      apiKey: some(request.apiKey)
-    )
-    
-    let followUpRequest = createChatRequest(
-      tempModelConfig,
-      updatedMessages,
-      stream = true,
-      tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
-    )
-    
-    # Continue with streaming follow-up to let model respond to duplicate feedback
-    debug("Continuing conversation with duplicate feedback instead of stopping")
-    var followUpContent = ""
-    var followUpToolCalls: seq[LLMToolCall] = @[]
-    var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
-    
-    proc onDuplicateFollowUp(chunk: StreamChunk) {.gcsafe.} =
-      if chunk.choices.len > 0:
-        let choice = chunk.choices[0]
-        let delta = choice.delta
-        
-        # Handle content
-        if delta.content.len > 0:
-          followUpContent.add(delta.content)
-          let contentResponse = APIResponse(
-            requestId: request.requestId,
-            kind: arkStreamChunk,
-            content: delta.content,
-            done: false,
-            thinkingContent: none(string),
-            isEncrypted: none(bool)
-          )
-          sendAPIResponse(channels, contentResponse)
-        
-        # Buffer tool calls for recursive execution (same pattern as existing code)
-        if delta.toolCalls.isSome():
-          for toolCall in delta.toolCalls.get():
-            let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
-            if isComplete:
-              let completedCalls = getCompletedToolCalls(toolCallBuffers)
-              for completedCall in completedCalls:
-                followUpToolCalls.add(completedCall)
-                debug(fmt"Duplicate follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
-            cleanupStaleBuffers(toolCallBuffers)
-    
-    let (success, _) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
-    
-    # Get any remaining completed tool calls after streaming completes
-    let remainingCalls = getCompletedToolCalls(toolCallBuffers)
-    for completedCall in remainingCalls:
-      followUpToolCalls.add(completedCall)
-    
-    # Recursively execute any follow-up tool calls detected
-    if followUpToolCalls.len > 0:
-      debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
-      discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, followUpContent, database, recursionDepth + 1, updatedExecutedCalls)
-    
-    return success
+  # Create duplicate feedback message
+  let duplicateResult = Message(
+    role: mrTool,
+    toolCallId: some(toolCalls[0].id),
+    content: "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
+  )
   
-  debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
+  # Add duplicate feedback and continue conversation
+  var updatedMessages = request.messages
   
-  # Execute each unique tool call
-  var allToolResults: seq[Message] = @[]
-  for toolCall in filteredToolCalls:
+  # Add the assistant message with tool calls (even though duplicates)
+  let assistantWithTools = Message(
+    role: mrAssistant,
+    content: initialContent,
+    toolCalls: some(toolCalls)
+  )
+  updatedMessages.add(assistantWithTools)
+  updatedMessages.add(duplicateResult)
+  
+  # Create temporary ModelConfig to continue conversation  
+  let tempModelConfig = createTempModelConfig(
+    fmt"api-request-duplicate",
+    request.baseUrl,
+    request.model,
+    request.maxTokens,
+    request.temperature,
+    request.apiKey,
+    recursionDepth
+  )
+  
+  let followUpRequest = createChatRequest(
+    tempModelConfig,
+    updatedMessages,
+    stream = true,
+    tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
+  )
+  
+  # Handle streaming follow-up response
+  debug("Continuing conversation with duplicate feedback instead of stopping")
+  var followUpContent = ""
+  var followUpToolCalls: seq[LLMToolCall] = @[]
+  var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+  
+  proc onDuplicateFollowUp(chunk: StreamChunk) {.gcsafe.} =
+    if chunk.choices.len > 0:
+      let choice = chunk.choices[0]
+      let delta = choice.delta
+      
+      # Handle content
+      if delta.content.len > 0:
+        followUpContent.add(delta.content)
+        let contentResponse = APIResponse(
+          requestId: request.requestId,
+          kind: arkStreamChunk,
+          content: delta.content,
+          done: false,
+          thinkingContent: none(string),
+          isEncrypted: none(bool)
+        )
+        sendAPIResponse(channels, contentResponse)
+      
+      # Buffer tool calls for recursive execution
+      if delta.toolCalls.isSome():
+        for toolCall in delta.toolCalls.get():
+          let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
+          if isComplete:
+            let completedCalls = getCompletedToolCalls(toolCallBuffers)
+            for completedCall in completedCalls:
+              followUpToolCalls.add(completedCall)
+              debug(fmt"Duplicate follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
+          cleanupStaleBuffers(toolCallBuffers)
+  
+  let (success, _) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
+  
+  # Get any remaining completed tool calls after streaming completes
+  let remainingCalls = getCompletedToolCalls(toolCallBuffers)
+  for completedCall in remainingCalls:
+    followUpToolCalls.add(completedCall)
+  
+  # Recursively execute any follow-up tool calls detected
+  if followUpToolCalls.len > 0:
+    debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
+    discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+  
+  return success
+
+proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolCall], 
+                          request: APIRequest): seq[Message] =
+  ## Execute a batch of tool calls and return their results
+  result = @[]
+  
+  for toolCall in toolCalls:
     debug(fmt"Executing tool call: {toolCall.function.name}")
     
-    # Send tool request display to UI (needed for tool calls not announced during streaming)
+    # Send tool request display to UI
     var argsJson = newJObject()
     try:
       argsJson = parseJson(toolCall.function.arguments)
@@ -433,11 +389,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
             # Send compact tool result visualization to user
             try:
               let toolSuccess = toolResponse.kind == trkResult
-              # Use enhanced tool result summary from tool_visualizer
               let toolResult = if toolSuccess: toolResponse.output else: toolResponse.error
               let resultSummary = createToolResultSummary(toolCall.function.name, toolResult, toolSuccess)
               
-              # Get tool icon from centralized function
               let toolIcon = getToolIcon(toolCall.function.name)
               
               let toolResultInfo = CompactToolResultInfo(
@@ -457,7 +411,6 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
               sendAPIResponse(channels, toolResultResponse)
             except Exception as e:
               debug(fmt"Failed to format compact tool result: {e.msg}")
-              # Simple debug output fallback
               let status = if toolResponse.kind == trkResult: "success" else: "error"
               debug(fmt"Tool {toolCall.function.name} completed: {status}")
             
@@ -466,9 +419,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
               content: toolContent,
               toolCallId: some(toolCall.id)
             )
-            allToolResults.add(toolResultMsg)
+            result.add(toolResultMsg)
             
-            # Store tool result in conversation history (conversation_manager handles database/threadvar fallback)
+            # Store tool result in conversation history
             discard conversation_manager.addToolMessage(toolContent, toolCall.id)
             
             break
@@ -482,7 +435,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
           content: "Error: Tool execution timed out",
           toolCallId: some(toolCall.id)
         )
-        allToolResults.add(errorMsg)
+        result.add(errorMsg)
         discard conversation_manager.addToolMessage("Error: Tool execution timed out", toolCall.id)
     else:
       # Failed to send tool request
@@ -491,165 +444,199 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         content: "Error: Failed to send tool request",
         toolCallId: some(toolCall.id)
       )
-      allToolResults.add(errorMsg)
+      result.add(errorMsg)
       discard conversation_manager.addToolMessage("Error: Failed to send tool request", toolCall.id)
+
+proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                          request: APIRequest, toolCalls: seq[LLMToolCall], 
+                          allToolResults: seq[Message], initialContent: string,
+                          recursionDepth: int, updatedExecutedCalls: seq[string]): bool =
+  ## Handle follow-up LLM request after tool execution
+  debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
+  
+  # Add tool results to conversation and continue
+  var updatedMessages = request.messages
+  
+  # Add the assistant message with tool calls
+  let assistantWithTools = Message(
+    role: mrAssistant,
+    content: initialContent,
+    toolCalls: some(toolCalls)
+  )
+  updatedMessages.add(assistantWithTools)
+  
+  # Store assistant message with tool calls in conversation history
+  discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+  
+  # Add all tool result messages
+  for toolResult in allToolResults:
+    updatedMessages.add(toolResult)
+  
+  # Create follow-up request to continue conversation
+  debug(fmt"Creating follow-up request with {updatedMessages.len} messages (depth: {recursionDepth})")
+  
+  # Create a temporary ModelConfig from the API request
+  let tempModelConfig = createTempModelConfig(
+    "api-request-followup", request.baseUrl, request.model,
+    request.maxTokens, request.temperature, request.apiKey, recursionDepth
+  )
+  
+  let followUpRequest = createChatRequest(
+    tempModelConfig,
+    updatedMessages,
+    stream = true,
+    tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
+  )
+  
+  debug(fmt"Sending streaming follow-up request to LLM with tool results (depth: {recursionDepth})...")
+  
+  # Handle follow-up streaming response with recursive tool call support
+  var followUpContent = ""
+  var followUpToolCalls: seq[LLMToolCall] = @[]
+  var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+  
+  proc onFollowUpChunk(chunk: StreamChunk) {.gcsafe.} =
+    if chunk.choices.len > 0:
+      let choice = chunk.choices[0]
+      let delta = choice.delta
+      
+      # Debug finish reason
+      if choice.finishReason.isSome():
+        debug(fmt"DEBUG: Follow-up stream finish reason: '{choice.finishReason.get()}'")
+      
+      # Send follow-up content
+      if delta.content.len > 0:
+        followUpContent.add(delta.content)
+        let chunkResponse = APIResponse(
+          requestId: request.requestId,
+          kind: arkStreamChunk,
+          content: delta.content,
+          done: false,
+          thinkingContent: none(string),
+          isEncrypted: none(bool)
+        )
+        sendAPIResponse(channels, chunkResponse)
+      
+      # Buffer tool calls for recursive execution
+      if delta.toolCalls.isSome():
+        for toolCall in delta.toolCalls.get():
+          let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
+          if isComplete:
+            let completedCalls = getCompletedToolCalls(toolCallBuffers)
+            for completedCall in completedCalls:
+              followUpToolCalls.add(completedCall)
+              debug(fmt"Follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
+          cleanupStaleBuffers(toolCallBuffers)
+  
+  let (_, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+  
+  # Get any remaining completed tool calls
+  let remainingCalls = getCompletedToolCalls(toolCallBuffers)
+  for completedCall in remainingCalls:
+    followUpToolCalls.add(completedCall)
+  
+  cleanupStaleBuffers(toolCallBuffers)
+  
+  # If we have more tool calls, execute them recursively
+  if followUpToolCalls.len > 0:
+    debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
+    return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+                                     followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+  else:
+    # No more tool calls, send completion
+    debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
+    let finalChunkResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkStreamChunk,
+      content: "",
+      done: true,
+      thinkingContent: none(string),
+      isEncrypted: none(bool)
+    )
+    sendAPIResponse(channels, finalChunkResponse)
+    
+    # Use follow-up usage if available, otherwise default
+    var finalUsage = if followUpUsage.isSome(): 
+      followUpUsage.get() 
+    else: 
+      TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
+    
+    # Log token usage for tool conversations  
+    let conversationId = getCurrentConversationId().int
+    let messageId = getCurrentMessageId().int
+    
+    logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
+    
+    # Record token count correction for learning (tool conversation)
+    debug(fmt"Initial content length for token correction (tools): {initialContent.len} and output tokens: {finalUsage.outputTokens}")
+    if initialContent.len > 0 and finalUsage.outputTokens > 0:
+      {.gcsafe.}:
+        # Use model nickname for consistent correction factor storage
+        let estimatedOutputTokens = countTokensForModel(initialContent, request.modelNickname)
+        
+        # Calculate actual content tokens by subtracting reasoning tokens
+        let reasoningTokenCount = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
+        let actualContentTokens = finalUsage.outputTokens - reasoningTokenCount
+        
+        debug(fmt"📊 API TOKEN COMPARISON (tools): content_length={initialContent.len}, estimated={estimatedOutputTokens}, raw_output={finalUsage.outputTokens}, reasoning={reasoningTokenCount}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
+        
+        # Only record correction if we have actual content tokens to compare
+        if actualContentTokens > 0:
+          debug(fmt"Token correction learning (tools): estimated={estimatedOutputTokens}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
+          recordTokenCountCorrection(request.modelNickname, estimatedOutputTokens, actualContentTokens)
+        else:
+          debug(fmt"⚠️  Skipping correction: no content tokens after subtracting reasoning tokens")
+    
+    # Store final assistant message in conversation history
+    discard conversation_manager.addAssistantMessage(content = followUpContent, toolCalls = none(seq[LLMToolCall]), outputTokens = finalUsage.outputTokens, modelName = request.model)
+    
+    let completeResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkStreamComplete,
+      usage: finalUsage,
+      finishReason: "stop"
+    )
+    sendAPIResponse(channels, completeResponse)
+    
+    debug(fmt"Recursive tool execution completed at depth {recursionDepth}")
+    return true
+
+# Tool execution constants
+const MAX_RECURSION_DEPTH = 20  # Maximum recursion depth for tool calls
+
+proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                                request: APIRequest, toolCalls: seq[LLMToolCall],
+                                initialContent: string, database: DatabaseBackend,
+                                recursionDepth: int = 0,
+                                executedCalls: seq[string] = @[]): bool =
+  ## Execute tool calls and continue conversation recursively
+  ## Returns true if successful, false if max recursion depth exceeded
+  
+  if recursionDepth >= MAX_RECURSION_DEPTH:
+    debug(fmt"Max recursion depth ({MAX_RECURSION_DEPTH}) exceeded, stopping tool execution")
+    return false
+  
+  if toolCalls.len == 0:
+    return true
+    
+  debug(fmt"Executing {toolCalls.len} tool calls (recursion depth: {recursionDepth})")
+  
+  # Filter duplicate tool calls to prevent infinite loops
+  let (filteredToolCalls, updatedExecutedCalls) = filterDuplicateToolCalls(toolCalls, executedCalls)
+  
+  if filteredToolCalls.len == 0:
+    return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent, 
+                                   recursionDepth, updatedExecutedCalls)
+  
+  debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
+  
+  # Execute all unique tool calls using helper function
+  let allToolResults = executeToolCallsBatch(channels, filteredToolCalls, request)
   
   # Send tool results back to LLM for continuation
   if allToolResults.len > 0:
-    debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
-    
-    # Add tool results to conversation and continue
-    var updatedMessages = request.messages
-    
-    # Add the assistant message with tool calls
-    let assistantWithTools = Message(
-      role: mrAssistant,
-      content: initialContent,
-      toolCalls: some(toolCalls)
-    )
-    updatedMessages.add(assistantWithTools)
-    
-    # Store assistant message with tool calls in conversation history (conversation_manager handles database/threadvar fallback)
-    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-    
-    # Add all tool result messages
-    for toolResult in allToolResults:
-      updatedMessages.add(toolResult)
-    
-    # Create follow-up request to continue conversation
-    debug(fmt"Creating follow-up request with {updatedMessages.len} messages (depth: {recursionDepth})")
-    
-    # Create a temporary ModelConfig from the API request
-    let tempModelConfig = ModelConfig(
-      nickname: fmt"api-request-followup-{recursionDepth}",
-      baseUrl: request.baseUrl,
-      model: request.model,
-      context: 128000,  # Default context
-      enabled: true,
-      maxTokens: some(request.maxTokens),
-      temperature: some(request.temperature),
-      apiKey: some(request.apiKey)
-    )
-    
-    let followUpRequest = createChatRequest(
-      tempModelConfig,
-      updatedMessages,
-      stream = true,
-      tools = if request.enableTools: request.tools else: none(seq[ToolDefinition])
-    )
-    
-    debug(fmt"Sending streaming follow-up request to LLM with tool results (depth: {recursionDepth})...")
-    
-    # Handle follow-up streaming response with recursive tool call support
-    var followUpContent = ""
-    var followUpToolCalls: seq[LLMToolCall] = @[]
-    var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
-    
-    proc onFollowUpChunk(chunk: StreamChunk) {.gcsafe.} =
-      if chunk.choices.len > 0:
-        let choice = chunk.choices[0]
-        let delta = choice.delta
-        
-        # Debug finish reason
-        if choice.finishReason.isSome():
-          debug(fmt"DEBUG: Follow-up stream finish reason: '{choice.finishReason.get()}'")
-        
-        # Send follow-up content
-        if delta.content.len > 0:
-          followUpContent.add(delta.content)
-          let chunkResponse = APIResponse(
-            requestId: request.requestId,
-            kind: arkStreamChunk,
-            content: delta.content,
-            done: false,
-            thinkingContent: none(string),
-            isEncrypted: none(bool)
-          )
-          sendAPIResponse(channels, chunkResponse)
-        
-        # Buffer tool calls for recursive execution
-        if delta.toolCalls.isSome():
-          for toolCall in delta.toolCalls.get():
-            let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
-            if isComplete:
-              let completedCalls = getCompletedToolCalls(toolCallBuffers)
-              for completedCall in completedCalls:
-                followUpToolCalls.add(completedCall)
-                debug(fmt"Follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
-            cleanupStaleBuffers(toolCallBuffers)
-    
-    let (_, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
-    
-    # Get any remaining completed tool calls
-    let remainingCalls = getCompletedToolCalls(toolCallBuffers)
-    for completedCall in remainingCalls:
-      followUpToolCalls.add(completedCall)
-    
-    cleanupStaleBuffers(toolCallBuffers)
-    
-    # If we have more tool calls, execute them recursively
-    if followUpToolCalls.len > 0:
-      debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
-      return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
-                                       followUpContent, database, recursionDepth + 1, updatedExecutedCalls)
-    else:
-      # No more tool calls, send completion
-      debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
-      let finalChunkResponse = APIResponse(
-        requestId: request.requestId,
-        kind: arkStreamChunk,
-        content: "",
-        done: true,
-        thinkingContent: none(string),
-        isEncrypted: none(bool)
-      )
-      sendAPIResponse(channels, finalChunkResponse)
-      
-      # Use follow-up usage if available, otherwise default
-      var finalUsage = if followUpUsage.isSome(): 
-        followUpUsage.get() 
-      else: 
-        TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
-      
-      # Log token usage for tool conversations  
-      let conversationId = getCurrentConversationId().int
-      let messageId = getCurrentMessageId().int
-      
-      logTokenUsageFromRequest(request.model, finalUsage, conversationId, messageId)
-      
-      # Record token count correction for learning (tool conversation)
-      echo fmt"Initial content length for token correction (tools): {initialContent.len} and output tokens: {finalUsage.outputTokens}"
-      if initialContent.len > 0 and finalUsage.outputTokens > 0:
-        {.gcsafe.}:
-          # Use model nickname for consistent correction factor storage
-          let estimatedOutputTokens = countTokensForModel(initialContent, request.modelNickname)
-          
-          # Calculate actual content tokens by subtracting reasoning tokens
-          let reasoningTokenCount = if finalUsage.reasoningTokens.isSome(): finalUsage.reasoningTokens.get() else: 0
-          let actualContentTokens = finalUsage.outputTokens - reasoningTokenCount
-          
-          debug(fmt"📊 API TOKEN COMPARISON (tools): content_length={initialContent.len}, estimated={estimatedOutputTokens}, raw_output={finalUsage.outputTokens}, reasoning={reasoningTokenCount}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
-          
-          # Only record correction if we have actual content tokens to compare
-          if actualContentTokens > 0:
-            debug(fmt"Token correction learning (tools): estimated={estimatedOutputTokens}, actual_content={actualContentTokens}, nickname={request.modelNickname}")
-            recordTokenCountCorrection(request.modelNickname, estimatedOutputTokens, actualContentTokens)
-          else:
-            debug(fmt"⚠️  Skipping correction: no content tokens after subtracting reasoning tokens")
-      
-      # Store final assistant message in conversation history
-      discard conversation_manager.addAssistantMessage(content = followUpContent, toolCalls = none(seq[LLMToolCall]), outputTokens = finalUsage.outputTokens, modelName = request.model)
-      
-      let completeResponse = APIResponse(
-        requestId: request.requestId,
-        kind: arkStreamComplete,
-        usage: finalUsage,
-        finishReason: "stop"
-      )
-      sendAPIResponse(channels, completeResponse)
-      
-      debug(fmt"Recursive tool execution completed at depth {recursionDepth}")
-      return true
+    return handleFollowUpRequest(channels, client, request, toolCalls, allToolResults, 
+                                initialContent, recursionDepth, updatedExecutedCalls)
   
   return true
 
@@ -979,15 +966,14 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               debug("✅ COMPLETED logTokenUsageFromRequest")
               
               # Record token count correction for learning (regular conversation)
-              debug(fmt"🔎 CHECKING TOKEN CORRECTION CONDITIONS: fullContent.len={fullContent.len}, finalUsage.outputTokens={finalUsage.outputTokens}, model={request.modelNickname}")
-              echo fmt"🔍 TOKEN CORRECTION CONDITION CHECK: fullContent.len={fullContent.len}, finalUsage.outputTokens={finalUsage.outputTokens}"
+              debug(fmt"Checking token correction conditions: fullContent.len={fullContent.len}, finalUsage.outputTokens={finalUsage.outputTokens}, model={request.modelNickname}")
 
               if fullContent.len == 0:
-                echo fmt"❌ TOKEN CORRECTION SKIPPED: fullContent is empty (len=0)"
+                debug("Token correction skipped: fullContent is empty")
               elif finalUsage.outputTokens == 0:
-                echo fmt"❌ TOKEN CORRECTION SKIPPED: finalUsage.outputTokens is 0"
+                debug("Token correction skipped: finalUsage.outputTokens is 0")
               else:
-                echo "✅ TOKEN CORRECTION CONDITIONS MET - ENTERING CORRECTION BLOCK"
+                debug("Token correction conditions met - entering correction block")
               
               if fullContent.len > 0 and finalUsage.outputTokens > 0:
                 {.gcsafe.}:
@@ -1021,7 +1007,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     recordTokenCountCorrection(request.modelNickname, estimatedOutputTokens, actualContentTokens)
                     debug(fmt"✅ CALLED recordTokenCountCorrection successfully")
                   else:
-                    echo fmt"❌ SKIPPING CORRECTION: invalid token counts (estimated={estimatedOutputTokens}, actual={actualContentTokens})"
+                    debug(fmt"Skipping correction: invalid token counts (estimated={estimatedOutputTokens}, actual={actualContentTokens})")
 
               # Send completion response with extracted usage data
               let completeResponse = APIResponse(

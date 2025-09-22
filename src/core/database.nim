@@ -173,6 +173,18 @@ type
     toolSchemaTokens*: int       ## Tool schema JSON tokens
     totalOverhead*: int          ## Complete API request overhead
 
+template parseDbField*(value: string, T: typedesc): untyped =
+  ## Template for NULL-safe database field parsing
+  ## Handles the common pattern: if value == "" or value == "NULL": defaultValue else: parse(value)
+  when T is int:
+    if value == "" or value == "NULL": 0 else: parseInt(value)
+  elif T is float:
+    if value == "" or value == "NULL": 0.0 else: parseFloat(value)
+  elif T is string:
+    if value == "" or value == "NULL": "" else: value
+  else:
+    if value == "" or value == "NULL": default(T) else: value
+
 proc utcNow*(): string =
   ## Return current UTC time
   now().utc().format("yyyy-MM-dd'T'HH:mm:ss")
@@ -709,13 +721,13 @@ proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int)
       for row in rows:
         let modelRow = ConversationCostRow(
           model: row[0],
-          inputTokens: if row[1] == "": 0 else: parseInt(row[1]),
-          outputTokens: if row[2] == "": 0 else: parseInt(row[2]),
-          reasoningTokens: if row[3] == "": 0 else: parseInt(row[3]),
-          inputCost: if row[4] == "": 0.0 else: parseFloat(row[4]),
-          outputCost: if row[5] == "": 0.0 else: parseFloat(row[5]),
-          reasoningCost: if row[6] == "": 0.0 else: parseFloat(row[6]),
-          totalCost: if row[7] == "": 0.0 else: parseFloat(row[7])
+          inputTokens: parseDbField(row[1], int),
+          outputTokens: parseDbField(row[2], int),
+          reasoningTokens: parseDbField(row[3], int),
+          inputCost: parseDbField(row[4], float),
+          outputCost: parseDbField(row[5], float),
+          reasoningCost: parseDbField(row[6], float),
+          totalCost: parseDbField(row[7], float)
         )
         
         result.rows.add(modelRow)
@@ -745,8 +757,8 @@ proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: i
       let rows = db.query(query, conversationId)
       if rows.len > 0:
         let row = rows[0]
-        result.totalReasoning = if row[0] == "" or row[0] == "NULL": 0 else: parseInt(row[0])
-        result.totalOutput = if row[1] == "" or row[1] == "NULL": 0 else: parseInt(row[1])
+        result.totalReasoning = parseDbField(row[0], int)
+        result.totalOutput = parseDbField(row[1], int)
         result.reasoningPercent = if result.totalOutput > 0:
           (result.totalReasoning.float / result.totalOutput.float) * 100.0
         else:
@@ -812,13 +824,13 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
       if rows.len > 0:
         let row = rows[0]
         debug(fmt"Session cost raw data: {row}")
-        result.inputTokens = if row[0] == "" or row[0] == "NULL": 0 else: parseInt(row[0])
-        result.outputTokens = if row[1] == "" or row[1] == "NULL": 0 else: parseInt(row[1])
-        result.reasoningTokens = if row[2] == "" or row[2] == "NULL": 0 else: parseInt(row[2])
-        result.inputCost = if row[3] == "" or row[3] == "NULL": 0.0 else: parseFloat(row[3])
-        result.outputCost = if row[4] == "" or row[4] == "NULL": 0.0 else: parseFloat(row[4])
-        result.reasoningCost = if row[5] == "" or row[5] == "NULL": 0.0 else: parseFloat(row[5])
-        result.totalCost = if row[6] == "" or row[6] == "NULL": 0.0 else: parseFloat(row[6])
+        result.inputTokens = parseDbField(row[0], int)
+        result.outputTokens = parseDbField(row[1], int)
+        result.reasoningTokens = parseDbField(row[2], int)
+        result.inputCost = parseDbField(row[3], float)
+        result.outputCost = parseDbField(row[4], float)
+        result.reasoningCost = parseDbField(row[5], float)
+        result.totalCost = parseDbField(row[6], float)
         debug(fmt"Session cost breakdown: total={result.totalCost}, input={result.inputTokens}, output={result.outputTokens}")
 
 proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[userTokens: int, assistantTokens: int, toolTokens: int] =
@@ -841,7 +853,7 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
       let rows = db.query(query, conversationId)
       for row in rows:
         let role = row[0]
-        let tokens = if row[1] == "": 0 else: parseInt(row[1])
+        let tokens = parseDbField(row[1], int)
         case role:
         of "user": result.userTokens = tokens
         of "assistant": result.assistantTokens = tokens
@@ -1401,14 +1413,12 @@ proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, file
 
 # Token correction factor database functions
 proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, estimatedTokens: int, actualTokens: int) =
-  echo "🚨 WE ARE HERE IN recordTokenCorrectionToDB"
   ## Record a token correction sample in the database
   if backend == nil or estimatedTokens <= 0 or actualTokens <= 0:
-    echo fmt"Invalid parameters for recordTokenCorrectionToDB: model={modelName}, estimated={estimatedTokens}, actual={actualTokens}"
+    debug(fmt"Invalid parameters for recordTokenCorrectionToDB: model={modelName}, estimated={estimatedTokens}, actual={actualTokens}")
     return
   
-  let ratio = actualTokens.float / estimatedTokens.float
-  echo "🚨 WE ARE HERE IN recordTokenCorrectionToDB AFTER RATIO"  
+  let ratio = actualTokens.float / estimatedTokens.float  
   debug(fmt"🔍 CORRECTION FACTOR DEBUG: model={modelName}")
   debug(fmt"   📊 Estimated tokens: {estimatedTokens}")
   debug(fmt"   📊 Actual tokens: {actualTokens}")
@@ -1426,36 +1436,33 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
   case backend.kind:
   of dbkSQLite, dbkTiDB:
     backend.pool.withDb:
-      try:
-        # Check if correction factor exists for this model
-        let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+      # Check if correction factor exists for this model
+      let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+      
+      if existingFactors.len > 0:
+        # Update existing correction factor
+        var factor = existingFactors[0]
+        factor.totalSamples += 1
+        factor.sumRatio += ratio
+        factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
+        factor.updatedAt = now().utc()
+        db.update(factor)
         
-        if existingFactors.len > 0:
-          # Update existing correction factor
-          var factor = existingFactors[0]
-          factor.totalSamples += 1
-          factor.sumRatio += ratio
-          factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
-          factor.updatedAt = now().utc()
-          db.update(factor)
-          
-          debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
-        else:
-          # Create new correction factor
-          let factor = TokenCorrectionFactor(
-            id: 0,
-            modelName: modelName,
-            totalSamples: 1,
-            sumRatio: ratio,
-            avgCorrection: ratio,
-            createdAt: now().utc(),
-            updatedAt: now().utc()
-          )
-          db.insert(factor)
-          
-          debug(fmt"Created new correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
-      except Exception as e:
-        error(fmt"Failed to record token correction to database: {e.msg}")
+        debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
+      else:
+        # Create new correction factor
+        let factor = TokenCorrectionFactor(
+          id: 0,
+          modelName: modelName,
+          totalSamples: 1,
+          sumRatio: ratio,
+          avgCorrection: ratio,
+          createdAt: now().utc(),
+          updatedAt: now().utc()
+        )
+        db.insert(factor)
+        
+        debug(fmt"Created new correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
 
 proc getCorrectionFactorFromDB*(backend: DatabaseBackend, modelName: string): Option[float] =
   ## Get the correction factor for a model from database
