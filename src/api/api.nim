@@ -188,6 +188,13 @@ proc cleanupStaleBuffers*(buffers: var Table[string, ToolCallBuffer], timeoutSec
   for id in toRemove:
     buffers.del(id)
 
+# Forward declaration for recursive tool execution
+proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                                request: APIRequest, toolCalls: seq[LLMToolCall],
+                                initialContent: string, database: DatabaseBackend,
+                                recursionDepth: int = 0,
+                                executedCalls: seq[string] = @[]): bool
+
 # Helper procedures for tool execution refactoring
 proc filterDuplicateToolCalls(toolCalls: seq[LLMToolCall], executedCalls: seq[string]): tuple[filtered: seq[LLMToolCall], updated: seq[string]] =
   ## Filter out duplicate tool calls to prevent infinite loops
@@ -326,13 +333,14 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
   # Recursively execute any follow-up tool calls detected
   if followUpToolCalls.len > 0:
     debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
-    discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
-                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+    {.gcsafe.}:
+      discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+                                         followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
   
   return success
 
 proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolCall], 
-                          request: APIRequest): seq[Message] =
+                          request: APIRequest): seq[Message] {.gcsafe.} =
   ## Execute a batch of tool calls and return their results
   result = @[]
   
@@ -450,7 +458,7 @@ proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolC
 proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
                           request: APIRequest, toolCalls: seq[LLMToolCall], 
                           allToolResults: seq[Message], initialContent: string,
-                          recursionDepth: int, updatedExecutedCalls: seq[string]): bool =
+                          recursionDepth: int, updatedExecutedCalls: seq[string]): bool {.gcsafe.} =
   ## Handle follow-up LLM request after tool execution
   debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
   
@@ -540,8 +548,9 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
   # If we have more tool calls, execute them recursively
   if followUpToolCalls.len > 0:
     debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
-    return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
-                                     followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+    {.gcsafe.}:
+      return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
   else:
     # No more tool calls, send completion
     debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
@@ -640,7 +649,41 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   
   return true
 
-proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
+proc handleConfigureRequest(request: APIRequest): Option[CurlyStreamingClient] {.gcsafe.} =
+  ## Handle API client configuration requests
+  try:
+    result = some(newCurlyStreamingClient(
+      request.configBaseUrl,
+      request.configApiKey,
+      request.configModelName
+    ))
+    debug(fmt"API client configured for {request.configBaseUrl}")
+  except Exception as e:
+    debug(fmt"Failed to configure API client: {e.msg}")
+    result = none(CurlyStreamingClient)
+
+proc handleStreamCancellation(channels: ptr ThreadChannels, request: APIRequest, 
+                             activeRequests: var seq[string]) {.gcsafe.} =
+  ## Handle stream cancellation requests
+  debug(fmt"Canceling stream: {request.cancelRequestId}")
+  # Remove the request from active requests
+  for i in 0..<activeRequests.len:
+    if activeRequests[i] == request.cancelRequestId:
+      activeRequests.delete(i)
+      # Send cancellation response
+      let cancelResponse = APIResponse(
+        requestId: request.cancelRequestId,
+        kind: arkStreamError,
+        error: "Stream canceled by user"
+      )
+      sendAPIResponse(channels, cancelResponse)
+      debug(fmt"Stream {request.cancelRequestId} canceled successfully")
+      break
+
+proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChannels, database: DatabaseBackend, 
+                        currentClient: Option[CurlyStreamingClient], activeRequests: seq[string], 
+                        toolCallBuffers: Table[string, ToolCallBuffer]] {.gcsafe.} =
+  ## Initialize API worker thread with logging, parsing, and state
   # Initialize logging for this thread - use stderr to prevent stdout contamination
   let consoleLogger = newConsoleLogger(useStderr = true)
   addHandler(consoleLogger)
@@ -652,17 +695,23 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   let channels = params.channels
   let database = params.database
   
-  # Initialize conversation tracking
-  
   debug("API worker thread started")
   incrementActiveThreads(channels)
   
   # Initialize flexible parser for tool call format detection
   initGlobalParser()
   
-  var currentClient: Option[CurlyStreamingClient] = none(CurlyStreamingClient)
-  var activeRequests: seq[string] = @[]  # Track active request IDs for cancellation
-  var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()  # Buffer incomplete tool calls
+  let currentClient: Option[CurlyStreamingClient] = none(CurlyStreamingClient)
+  let activeRequests: seq[string] = @[]  # Track active request IDs for cancellation
+  let toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()  # Buffer incomplete tool calls
+  
+  return (channels, database, currentClient, activeRequests, toolCallBuffers)
+
+proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
+  let (channels, database, currentClient, activeRequests, toolCallBuffers) = initializeAPIWorker(params)
+  var mutableCurrentClient = currentClient
+  var mutableActiveRequests = activeRequests
+  var mutableToolCallBuffers = toolCallBuffers
   
   try:
     while not isShutdownSignaled(channels):
@@ -678,36 +727,28 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           break
           
         of arkConfigure:
-          try:
-            currentClient = some(newCurlyStreamingClient(
-              request.configBaseUrl,
-              request.configApiKey,
-              request.configModelName
-            ))
-            debug(fmt"API client configured for {request.configBaseUrl}")
-          except Exception as e:
-            debug(fmt"Failed to configure API client: {e.msg}")
+          mutableCurrentClient = handleConfigureRequest(request)
           
         of arkChatRequest:
           debug(fmt"Processing chat request: {request.requestId}")
           # Add to active requests for cancellation tracking
-          activeRequests.add(request.requestId)
+          mutableActiveRequests.add(request.requestId)
           
           # Initialize client with request parameters, or reconfigure if needed
           var needsNewClient = false
-          if currentClient.isNone():
+          if mutableCurrentClient.isNone():
             needsNewClient = true
           else:
             # Check if current client configuration matches request
-            var client = currentClient.get()
+            var client = mutableCurrentClient.get()
             if client.baseUrl != request.baseUrl or client.model != request.model:
               needsNewClient = true
               # Create new client for different configuration
-              currentClient = none(CurlyStreamingClient)
+              mutableCurrentClient = none(CurlyStreamingClient)
           
           if needsNewClient:
             try:
-              currentClient = some(newCurlyStreamingClient(
+              mutableCurrentClient = some(newCurlyStreamingClient(
                 request.baseUrl,
                 request.apiKey,
                 request.model
@@ -731,7 +772,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           
           try:
             # Create and send HTTP request
-            var client = currentClient.get()
+            var client = mutableCurrentClient.get()
             
             # Create a temporary ModelConfig from the API request
             let tempModelConfig = ModelConfig(
@@ -781,7 +822,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
-              if request.requestId notin activeRequests:
+              if request.requestId notin mutableActiveRequests:
                 debug(fmt"Request {request.requestId} was canceled, stopping chunk processing")
                 return
                 
@@ -796,11 +837,11 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   for toolCall in delta.toolCalls.get():
                     debug(fmt"Buffering tool call fragment: id='{toolCall.id}', name='{toolCall.function.name}', args='{toolCall.function.arguments}'")
                     # Buffer the tool call fragment
-                    let isComplete = bufferToolCallFragment(toolCallBuffers, toolCall)
+                    let isComplete = bufferToolCallFragment(mutableToolCallBuffers, toolCall)
                     debug(fmt"Tool call fragment complete: {isComplete}")
                     if isComplete:
                       # Tool call is complete, add to collected calls
-                      let completedCalls = getCompletedToolCalls(toolCallBuffers)
+                      let completedCalls = getCompletedToolCalls(mutableToolCallBuffers)
                       for completedCall in completedCalls:
                         collectedToolCalls.add(completedCall)
                         hasToolCalls = true
@@ -809,7 +850,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                         # Tool call request notification will be sent by main execution loop
                     
                     # Clean up stale buffers periodically
-                    cleanupStaleBuffers(toolCallBuffers)
+                    cleanupStaleBuffers(mutableToolCallBuffers)
                 
                 # Handle thinking token processing from streaming chunks
                 var thinkingContentStr: Option[string] = none(string)
@@ -900,14 +941,14 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   debug(fmt"Failed to estimate reasoning tokens from thinking content: {e.msg}")
             
             # After streaming completes, check for any remaining completed tool calls in buffers
-            let remainingCompletedCalls = getCompletedToolCalls(toolCallBuffers)
+            let remainingCompletedCalls = getCompletedToolCalls(mutableToolCallBuffers)
             for completedCall in remainingCompletedCalls:
               collectedToolCalls.add(completedCall)
               hasToolCalls = true
               debug(fmt"Final complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
             
             # Clean up any remaining stale buffers
-            cleanupStaleBuffers(toolCallBuffers)
+            cleanupStaleBuffers(mutableToolCallBuffers)
             
             # Process tool calls if any were collected
             if hasToolCalls and collectedToolCalls.len > 0:
@@ -940,9 +981,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   sendAPIResponse(channels, errorResponse)
                 
                 # Remove from active requests
-                for i in 0..<activeRequests.len:
-                  if activeRequests[i] == request.requestId:
-                    activeRequests.delete(i)
+                for i in 0..<mutableActiveRequests.len:
+                  if mutableActiveRequests[i] == request.requestId:
+                    mutableActiveRequests.delete(i)
                     break
             else:
               # No tool calls, regular streaming response (content was already streamed in onChunkReceived)
@@ -1019,18 +1060,18 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               sendAPIResponse(channels, completeResponse)
               
               # Remove from active requests
-              for i in 0..<activeRequests.len:
-                if activeRequests[i] == request.requestId:
-                  activeRequests.delete(i)
+              for i in 0..<mutableActiveRequests.len:
+                if mutableActiveRequests[i] == request.requestId:
+                  mutableActiveRequests.delete(i)
                   break
               
               debug(fmt"Streaming request {request.requestId} completed successfully")
             
           except Exception as e:
             # Remove from active requests on error
-            for i in 0..<activeRequests.len:
-              if activeRequests[i] == request.requestId:
-                activeRequests.delete(i)
+            for i in 0..<mutableActiveRequests.len:
+              if mutableActiveRequests[i] == request.requestId:
+                mutableActiveRequests.delete(i)
                 break
                 
             let errorResponse = APIResponse(
@@ -1042,20 +1083,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             debug(fmt"Request {request.requestId} failed: {e.msg}")
         
         of arkStreamCancel:
-          debug(fmt"Canceling stream: {request.cancelRequestId}")
-          # Remove the request from active requests
-          for i in 0..<activeRequests.len:
-            if activeRequests[i] == request.cancelRequestId:
-              activeRequests.delete(i)
-              # Send cancellation response
-              let cancelResponse = APIResponse(
-                requestId: request.cancelRequestId,
-                kind: arkStreamError,
-                error: "Stream canceled by user"
-              )
-              sendAPIResponse(channels, cancelResponse)
-              debug(fmt"Stream {request.cancelRequestId} canceled successfully")
-              break
+          handleStreamCancellation(channels, request, mutableActiveRequests)
           
       else:
         # No requests, sleep briefly

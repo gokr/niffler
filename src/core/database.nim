@@ -185,6 +185,19 @@ template parseDbField*(value: string, T: typedesc): untyped =
   else:
     if value == "" or value == "NULL": default(T) else: value
 
+# Database utility functions for query building and schema operations
+proc columnExists*(conn: sqlite.Db, tableName: string, columnName: string): bool =
+  ## Check if a column exists in a table
+  let tableInfo = conn.query(fmt"PRAGMA table_info({tableName})")
+  return tableInfo.anyIt(it[1] == columnName)
+
+proc addColumnIfNotExists*(conn: sqlite.Db, tableName: string, columnName: string, 
+                          columnDef: string) =
+  ## Add a column to a table if it doesn't already exist
+  if not columnExists(conn, tableName, columnName):
+    conn.query(fmt"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDef}")
+    debug(fmt"Added column {columnName} to table {tableName}")
+
 proc utcNow*(): string =
   ## Return current UTC time
   now().utc().format("yyyy-MM-dd'T'HH:mm:ss")
@@ -211,23 +224,10 @@ proc deserializeToolCalls*(jsonStr: string): seq[LLMToolCall] =
 proc migrateConversationMessageSchema*(conn: sqlite.Db) =
   ## Add new columns to ConversationMessage table for tool call storage
   try:
-    # Check if tool_calls column exists
-    let hasToolCalls = conn.query("PRAGMA table_info(conversation_message)").anyIt(it[1] == "tool_calls")
-    if not hasToolCalls:
-      debug("Adding tool_calls column to conversation_message table")
-      conn.query("ALTER TABLE conversation_message ADD COLUMN tool_calls TEXT")
-    
-    # Check if sequence_id column exists
-    let hasSequenceId = conn.query("PRAGMA table_info(conversation_message)").anyIt(it[1] == "sequence_id")
-    if not hasSequenceId:
-      debug("Adding sequence_id column to conversation_message table")
-      conn.query("ALTER TABLE conversation_message ADD COLUMN sequence_id INTEGER")
-    
-    # Check if message_type column exists
-    let hasMessageType = conn.query("PRAGMA table_info(conversation_message)").anyIt(it[1] == "message_type")
-    if not hasMessageType:
-      debug("Adding message_type column to conversation_message table")
-      conn.query("ALTER TABLE conversation_message ADD COLUMN message_type TEXT DEFAULT 'content'")
+    # Add new columns using utility functions
+    addColumnIfNotExists(conn, "conversation_message", "tool_calls", "TEXT")
+    addColumnIfNotExists(conn, "conversation_message", "sequence_id", "INTEGER")
+    addColumnIfNotExists(conn, "conversation_message", "message_type", "TEXT DEFAULT 'content'")
     
     # Note: Deprecated fields have been manually removed from conversation_message table
     
@@ -238,17 +238,9 @@ proc migrateConversationMessageSchema*(conn: sqlite.Db) =
 proc migrateModelTokenUsageSchema*(conn: sqlite.Db) =
   ## Add thinking token columns to ModelTokenUsage table
   try:
-    # Check if reasoning_tokens column exists
-    let hasReasoningTokens = conn.query("PRAGMA table_info(model_token_usage)").anyIt(it[1] == "reasoning_tokens")
-    if not hasReasoningTokens:
-      debug("Adding reasoning_tokens column to model_token_usage table")
-      conn.query("ALTER TABLE model_token_usage ADD COLUMN reasoning_tokens INTEGER DEFAULT 0")
-    
-    # Check if reasoning_cost column exists
-    let hasReasoningCost = conn.query("PRAGMA table_info(model_token_usage)").anyIt(it[1] == "reasoning_cost")
-    if not hasReasoningCost:
-      debug("Adding reasoning_cost column to model_token_usage table")
-      conn.query("ALTER TABLE model_token_usage ADD COLUMN reasoning_cost REAL DEFAULT 0.0")
+    # Add thinking token columns using utility functions
+    addColumnIfNotExists(conn, "model_token_usage", "reasoning_tokens", "INTEGER DEFAULT 0")
+    addColumnIfNotExists(conn, "model_token_usage", "reasoning_cost", "REAL DEFAULT 0.0")
     
     debug("ModelTokenUsage schema migration completed")
   except Exception as e:
@@ -257,43 +249,19 @@ proc migrateModelTokenUsageSchema*(conn: sqlite.Db) =
 proc migrateConversationSchema*(conn: sqlite.Db) =
   ## Add new columns to Conversation table for mode and model tracking
   try:
-    # Check if mode column exists
-    let hasMode = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "mode")
-    if not hasMode:
-      debug("Adding mode column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN mode TEXT DEFAULT 'plan'")
-    
-    # Check if model_nickname column exists  
-    let hasModelNickname = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "model_nickname")
-    if not hasModelNickname:
-      debug("Adding model_nickname column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN model_nickname TEXT DEFAULT ''")
-    
-    # Check if message_count column exists
-    let hasMessageCount = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "message_count")
-    if not hasMessageCount:
-      debug("Adding message_count column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN message_count INTEGER DEFAULT 0")
-    
-    # Check if last_activity column exists
-    let hasLastActivity = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "last_activity")
-    if not hasLastActivity:
-      debug("Adding last_activity column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN last_activity DATETIME DEFAULT CURRENT_TIMESTAMP")
-    
-    # Check if plan_mode_entered_at column exists
-    let hasPlanModeEnteredAt = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_entered_at")
-    if not hasPlanModeEnteredAt:
-      debug("Adding plan_mode_entered_at column to conversation table")
-      conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_entered_at DATETIME DEFAULT '1970-01-01T00:00:00'")
+    # Add new columns using utility functions
+    addColumnIfNotExists(conn, "conversation", "mode", "TEXT DEFAULT 'plan'")
+    addColumnIfNotExists(conn, "conversation", "model_nickname", "TEXT DEFAULT ''")
+    addColumnIfNotExists(conn, "conversation", "message_count", "INTEGER DEFAULT 0")
+    addColumnIfNotExists(conn, "conversation", "last_activity", "DATETIME DEFAULT CURRENT_TIMESTAMP")
+    addColumnIfNotExists(conn, "conversation", "plan_mode_entered_at", "DATETIME DEFAULT '1970-01-01T00:00:00'")
     
     # Update any existing records that have NULL or empty values
     debug("Updating any NULL or empty plan_mode_entered_at values")
     conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01T00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
     
     # Migrate to new plan_mode_created_files column (changed semantics)
-    let hasPlanModeCreatedFiles = conn.query("PRAGMA table_info(conversation)").anyIt(it[1] == "plan_mode_created_files")
-    if not hasPlanModeCreatedFiles:
+    if not columnExists(conn, "conversation", "plan_mode_created_files"):
       debug("Adding plan_mode_created_files column to conversation table")
       conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_created_files TEXT")
       # Clear old protection data since semantics changed completely
@@ -1113,6 +1081,32 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
     error(fmt"Failed to initialize database backend: {e.msg}")
     result = nil
 
+# Database utility functions for model lookup and query building
+proc findModelConfigByName*(modelName: string): Option[ModelConfig] =
+  ## Find a model configuration by model name
+  try:
+    let config = loadConfig()
+    for modelConfig in config.models:
+      if modelConfig.model == modelName:
+        return some(modelConfig)
+  except Exception as e:
+    debug(fmt"Failed to find model config for {modelName}: {e.msg}")
+  return none(ModelConfig)
+
+proc extractCostSettings*(modelConfig: Option[ModelConfig]): tuple[
+  inputCost: Option[float], outputCost: Option[float], reasoningCost: Option[float]] =
+  ## Extract cost settings from model config
+  if modelConfig.isSome():
+    let config = modelConfig.get()
+    result.inputCost = config.inputCostPerMToken
+    result.outputCost = config.outputCostPerMToken
+    result.reasoningCost = config.reasoningCostPerMToken
+  else:
+    result.inputCost = none(float)
+    result.outputCost = none(float)
+    result.reasoningCost = none(float)
+
+
 # Todo system database functions
 proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, conversationId: int, messageId: int, estimatedOutputTokens: int = 0) {.gcsafe.} =
   ## Centralized token logging that finds model config and logs usage - used from API worker
@@ -1126,21 +1120,10 @@ proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, con
       return
     
     try:
-      # Get the real model config to access cost information
-      let config = loadConfig()
-      var realModelConfig: ModelConfig
-      
-      # Find the model in config by matching the model name or base URL
-      var modelFound = false
-      for modelConfig in config.models:
-        if modelConfig.model == requestModel:
-          realModelConfig = modelConfig
-          modelFound = true
-          break
-      
-      let inputCostPerMToken = if modelFound: realModelConfig.inputCostPerMToken else: none(float)
-      let outputCostPerMToken = if modelFound: realModelConfig.outputCostPerMToken else: none(float)
-      let reasoningCostPerMToken = if modelFound: realModelConfig.reasoningCostPerMToken else: none(float)
+      # Get the real model config to access cost information using utility functions
+      let modelConfig = findModelConfigByName(requestModel)
+      let (inputCostPerMToken, outputCostPerMToken, reasoningCostPerMToken) = extractCostSettings(modelConfig)
+      let modelFound = modelConfig.isSome()
       
       debug(fmt"About to log token usage: conversationId={conversationId}, messageId={messageId}, model={requestModel}")
       debug(fmt"Token amounts: input={finalUsage.inputTokens}, output={finalUsage.outputTokens}")
