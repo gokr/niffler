@@ -26,8 +26,6 @@ type
     tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist
 
   Tool* = object
-    name*: string
-    description*: string
     requiresConfirmation*: bool
     schema*: ToolDefinition
     case kind*: ToolKind
@@ -45,6 +43,10 @@ type
       fetchExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTodolist:
       todolistExecute*: proc(args: JsonNode): string {.gcsafe.}
+
+# Accessor methods for Tool fields
+proc name*(tool: Tool): string = tool.schema.function.name
+proc description*(tool: Tool): string = tool.schema.function.description
 
 # Global tool registry
 var toolRegistry {.threadvar.}: Table[string, Tool]
@@ -74,8 +76,6 @@ proc createBashTool(): Tool =
   
   Tool(
     kind: tkBash,
-    name: "bash",
-    description: "Execute shell commands",
     requiresConfirmation: true,
     schema: schema,
     bashExecute: executeBash
@@ -103,8 +103,6 @@ proc createReadTool(): Tool =
   
   Tool(
     kind: tkRead,
-    name: "read",
-    description: "Read file contents",
     requiresConfirmation: false,
     schema: schema,
     readExecute: executeRead
@@ -132,8 +130,6 @@ proc createListTool(): Tool =
   
   Tool(
     kind: tkList,
-    name: "list",
-    description: "List directory contents",
     requiresConfirmation: false,
     schema: schema,
     listExecute: executeList
@@ -186,8 +182,6 @@ proc createEditTool(): Tool =
   
   Tool(
     kind: tkEdit,
-    name: "edit",
-    description: "Edit files with diff-based changes",
     requiresConfirmation: true,
     schema: schema,
     editExecute: executeEdit
@@ -219,8 +213,6 @@ proc createCreateTool(): Tool =
   
   Tool(
     kind: tkCreate,
-    name: "create",
-    description: "Create new files",
     requiresConfirmation: true,
     schema: schema,
     createExecute: executeCreate
@@ -248,8 +240,6 @@ proc createFetchTool(): Tool =
   
   Tool(
     kind: tkFetch,
-    name: "fetch",
-    description: "Fetch web content",
     requiresConfirmation: false,
     schema: schema,
     fetchExecute: executeFetch
@@ -300,8 +290,6 @@ proc createTodolistTool(): Tool =
   
   Tool(
     kind: tkTodolist,
-    name: "todolist",
-    description: "Manage todo lists and task tracking",
     requiresConfirmation: false,
     schema: schema,
     todolistExecute: executeTodolist
