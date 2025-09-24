@@ -3,7 +3,7 @@
 ## This module provides file completion functionality for the @ file referencing system,
 ## including recursive directory scanning and binary file filtering.
 
-import std/[os, strutils]
+import std/[os, strutils, algorithm]
 import ../tools/common
 import ../core/constants
 
@@ -123,6 +123,13 @@ proc scanFilesRecursively*(basePath: string, prefix: string = ""): seq[FileCompl
   except:
     # Return empty list on error
     return @[]
+  # Sort results alphabetically by path
+  result.sort(proc(a, b: FileCompletion): int =
+    return a.path.cmp(b.path)
+  )
+  # Limit to max completions
+  if result.len > MAX_FILE_COMPLETIONS:
+    result.setLen(MAX_FILE_COMPLETIONS)
 
 proc getFileCompletions*(prefix: string = ""): seq[FileCompletion] =
   ## Get file completions for @ references, filtering out binary files
