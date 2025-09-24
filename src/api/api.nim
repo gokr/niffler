@@ -996,7 +996,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 thinkingContent: none(string),
                 isEncrypted: none(bool)
               )
-              echo "Sending API final chunk response"
+              debug "Sending API final chunk response"
               sendAPIResponse(channels, finalChunkResponse)
               
               # Log token usage for regular (non-tool) conversations
