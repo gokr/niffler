@@ -776,14 +776,14 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
   of dbkSQLite, dbkTiDB:
     backend.pool.withDb:
       let query = """
-        SELECT SUM(input_tokens) as totalInputTokens,
-               SUM(output_tokens) as totalOutputTokens,
-               SUM(reasoning_tokens) as totalReasoningTokens,
-               SUM(input_cost) as totalInputCost,
-               SUM(output_cost) as totalOutputCost,
-               SUM(reasoning_cost) as totalReasoningCost,
-               SUM(total_cost) as totalCost,
-               COUNT(*) as rowCount
+        SELECT SUM(input_tokens) as total_input_tokens,
+               SUM(output_tokens) as total_output_tokens,
+               SUM(reasoning_tokens) as total_reasoning_tokens,
+               SUM(input_cost) as total_input_cost,
+               SUM(output_cost) as total_output_cost,
+               SUM(reasoning_cost) as total_reasoning_cost,
+               SUM(total_cost) as total_cost,
+               COUNT(*) as row_count
         FROM model_token_usage
         WHERE created_at >= ?
       """
