@@ -173,18 +173,6 @@ type
     toolSchemaTokens*: int       ## Tool schema JSON tokens
     totalOverhead*: int          ## Complete API request overhead
 
-template parseDbField*(value: string, T: typedesc): untyped =
-  ## Template for NULL-safe database field parsing
-  ## Handles the common pattern: if value == "" or value == "NULL": defaultValue else: parse(value)
-  when T is int:
-    if value == "" or value == "NULL": 0 else: parseInt(value)
-  elif T is float:
-    if value == "" or value == "NULL": 0.0 else: parseFloat(value)
-  elif T is string:
-    if value == "" or value == "NULL": "" else: value
-  else:
-    if value == "" or value == "NULL": default(T) else: value
-
 # Database utility functions for query building and schema operations
 proc columnExists*(conn: sqlite.Db, tableName: string, columnName: string): bool =
   ## Check if a column exists in a table
@@ -642,15 +630,43 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
       raise
 
 type
-  ConversationCostRow* = object
+  ConversationCostRow* = ref object of RootObj
     model*: string
-    inputTokens*: int
-    outputTokens*: int
-    reasoningTokens*: int
-    inputCost*: float
-    outputCost*: float
-    reasoningCost*: float
+    totalInputTokens*: int
+    totalOutputTokens*: int
+    totalReasoningTokens*: int
+    totalInputCost*: float
+    totalOutputCost*: float
+    totalReasoningCost*: float
+    totalModelCost*: float
+  
+  ReasoningTokenStats* = ref object of RootObj
+    totalReasoning*: int
+    totalOutput*: int
+  
+  SessionCostStats* = ref object of RootObj
+    totalInputTokens*: int
+    totalOutputTokens*: int
+    totalReasoningTokens*: int
+    totalInputCost*: float
+    totalOutputCost*: float
+    totalReasoningCost*: float
     totalCost*: float
+    rowCount*: int
+  
+  TokenBreakdownRow* = ref object of RootObj
+    role*: string
+    totalTokens*: int
+  
+  ThinkingTokenRow* = ref object of RootObj
+    thinkingContent*: string
+    providerFormat*: string
+    importanceLevel*: string
+    tokenCount*: int
+    keywords*: string
+    contextId*: string
+    reasoningId*: string
+    createdAt*: DateTime
 
 proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int): tuple[rows: seq[ConversationCostRow], totalCost: float, totalInput: int, totalOutput: int, totalReasoning: int, totalInputCost: float, totalOutputCost: float, totalReasoningCost: float] =
   ## Calculate detailed cost breakdown by model for a conversation with reasoning token analysis
@@ -663,21 +679,20 @@ proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int)
       # Group by model and sum costs including reasoning tokens
       let query = """
         SELECT model,
-              SUM(input_tokens) as totalInputTokens,
-              SUM(output_tokens) as totalOutputTokens,
-              SUM(reasoning_tokens) as totalReasoningTokens,
-              SUM(input_cost) as totalInputCost,
-              SUM(output_cost) as totalOutputCost,
-              SUM(reasoning_cost) as totalReasoningCost,
-              SUM(total_cost) as totalModelCost
+              SUM(input_tokens) as total_input_tokens,
+              SUM(output_tokens) as total_output_tokens,
+              SUM(reasoning_tokens) as total_reasoning_tokens,
+              SUM(input_cost) as total_input_cost,
+              SUM(output_cost) as total_output_cost,
+              SUM(reasoning_cost) as total_reasoning_cost,
+              SUM(total_cost) as total_model_cost
         FROM model_token_usage
         WHERE conversation_id = ?
         GROUP BY model
         ORDER BY SUM(total_cost) DESC
       """
       
-      let rows = db.query(query, conversationId)
-      result.rows = @[]
+      result.rows = db.query(ConversationCostRow, query, conversationId)
       result.totalCost = 0.0
       result.totalInput = 0
       result.totalOutput = 0
@@ -686,26 +701,14 @@ proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int)
       result.totalOutputCost = 0.0
       result.totalReasoningCost = 0.0
       
-      for row in rows:
-        let modelRow = ConversationCostRow(
-          model: row[0],
-          inputTokens: parseDbField(row[1], int),
-          outputTokens: parseDbField(row[2], int),
-          reasoningTokens: parseDbField(row[3], int),
-          inputCost: parseDbField(row[4], float),
-          outputCost: parseDbField(row[5], float),
-          reasoningCost: parseDbField(row[6], float),
-          totalCost: parseDbField(row[7], float)
-        )
-        
-        result.rows.add(modelRow)
-        result.totalCost += modelRow.totalCost
-        result.totalInput += modelRow.inputTokens
-        result.totalOutput += modelRow.outputTokens
-        result.totalReasoning += modelRow.reasoningTokens
-        result.totalInputCost += modelRow.inputCost
-        result.totalOutputCost += modelRow.outputCost
-        result.totalReasoningCost += modelRow.reasoningCost
+      for modelRow in result.rows:
+        result.totalCost += modelRow.totalModelCost
+        result.totalInput += modelRow.totalInputTokens
+        result.totalOutput += modelRow.totalOutputTokens
+        result.totalReasoning += modelRow.totalReasoningTokens
+        result.totalInputCost += modelRow.totalInputCost
+        result.totalOutputCost += modelRow.totalOutputCost
+        result.totalReasoningCost += modelRow.totalReasoningCost
 
 proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: int): tuple[totalReasoning: int, totalOutput: int, reasoningPercent: float] =
   ## Get reasoning token statistics for a conversation
@@ -722,11 +725,11 @@ proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: i
         WHERE conversation_id = ?
       """
       
-      let rows = db.query(query, conversationId)
-      if rows.len > 0:
-        let row = rows[0]
-        result.totalReasoning = parseDbField(row[0], int)
-        result.totalOutput = parseDbField(row[1], int)
+      let stats = db.query(ReasoningTokenStats, query, conversationId)
+      if stats.len > 0:
+        let stat = stats[0]
+        result.totalReasoning = stat.totalReasoning
+        result.totalOutput = stat.totalOutput
         result.reasoningPercent = if result.totalOutput > 0:
           (result.totalReasoning.float / result.totalOutput.float) * 100.0
         else:
@@ -759,10 +762,10 @@ proc getConversationCostBreakdown*(backend: DatabaseBackend, conversationId: int
   result.breakdown = @[]
   
   for row in detailedBreakdown.rows:
-    let reasoningInfo = if row.reasoningTokens > 0: 
-      fmt" + {row.reasoningTokens} reasoning (${row.reasoningCost:.4f})"
+    let reasoningInfo = if row.totalReasoningTokens > 0: 
+      fmt" + {row.totalReasoningTokens} reasoning (${row.totalReasoningCost:.4f})"
     else: ""
-    result.breakdown.add(fmt"{row.model}: {row.inputTokens} input (${row.inputCost:.4f}) + {row.outputTokens} output (${row.outputCost:.4f}){reasoningInfo} = ${row.totalCost:.4f}")
+    result.breakdown.add(fmt"{row.model}: {row.totalInputTokens} input (${row.totalInputCost:.4f}) + {row.totalOutputTokens} output (${row.totalOutputCost:.4f}){reasoningInfo} = ${row.totalModelCost:.4f}")
 
 proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime): tuple[totalCost: float, inputCost: float, outputCost: float, reasoningCost: float, inputTokens: int, outputTokens: int, reasoningTokens: int] =
   ## Calculate session cost breakdown since app start time
@@ -787,18 +790,18 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
       
       let timestampStr = $appStartTime
       debug(fmt"Session cost query: timestamp={timestampStr}")
-      let rows = db.query(query, timestampStr)
-      debug(fmt"Session cost query returned {rows.len} rows")
-      if rows.len > 0:
-        let row = rows[0]
-        debug(fmt"Session cost raw data: {row}")
-        result.inputTokens = parseDbField(row[0], int)
-        result.outputTokens = parseDbField(row[1], int)
-        result.reasoningTokens = parseDbField(row[2], int)
-        result.inputCost = parseDbField(row[3], float)
-        result.outputCost = parseDbField(row[4], float)
-        result.reasoningCost = parseDbField(row[5], float)
-        result.totalCost = parseDbField(row[6], float)
+      let stats = db.query(SessionCostStats, query, timestampStr)
+      debug(fmt"Session cost query returned {stats.len} rows")
+      if stats.len > 0:
+        let stat = stats[0]
+        debug(fmt"Session cost raw data: tokens=({stat.totalInputTokens}, {stat.totalOutputTokens}, {stat.totalReasoningTokens}), cost={stat.totalCost}")
+        result.inputTokens = stat.totalInputTokens
+        result.outputTokens = stat.totalOutputTokens
+        result.reasoningTokens = stat.totalReasoningTokens
+        result.inputCost = stat.totalInputCost
+        result.outputCost = stat.totalOutputCost
+        result.reasoningCost = stat.totalReasoningCost
+        result.totalCost = stat.totalCost
         debug(fmt"Session cost breakdown: total={result.totalCost}, input={result.inputTokens}, output={result.outputTokens}")
 
 proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[userTokens: int, assistantTokens: int, toolTokens: int] =
@@ -818,14 +821,12 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
         GROUP BY cm.role
       """
       
-      let rows = db.query(query, conversationId)
-      for row in rows:
-        let role = row[0]
-        let tokens = parseDbField(row[1], int)
-        case role:
-        of "user": result.userTokens = tokens
-        of "assistant": result.assistantTokens = tokens
-        of "tool": result.toolTokens = tokens
+      let tokenRows = db.query(TokenBreakdownRow, query, conversationId)
+      for tokenRow in tokenRows:
+        case tokenRow.role:
+        of "user": result.userTokens = tokenRow.totalTokens
+        of "assistant": result.assistantTokens = tokenRow.totalTokens
+        of "tool": result.toolTokens = tokenRow.totalTokens
 
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =

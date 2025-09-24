@@ -186,35 +186,35 @@ proc formatCostBreakdownTable*(rows: seq[ConversationCostRow],
   # Add model rows
   for row in rows:
     # Format token counts with thousands separator (manual formatting)
-    let inputStr = if row.inputTokens > 999: 
-      insertSep($row.inputTokens, ',') 
+    let inputStr = if row.totalInputTokens > 999: 
+      insertSep($row.totalInputTokens, ',') 
     else: 
-      $row.inputTokens
-    let outputStr = if row.outputTokens > 999: 
-      insertSep($row.outputTokens, ',') 
+      $row.totalInputTokens
+    let outputStr = if row.totalOutputTokens > 999: 
+      insertSep($row.totalOutputTokens, ',') 
     else: 
-      $row.outputTokens
+      $row.totalOutputTokens
     
     # Short model name (extract last part after /)
     let modelName = if "/" in row.model: row.model.split("/")[^1] else: row.model
     
     if totalReasoning > 0:
-      let reasoningStr = if row.reasoningTokens > 0:
-        if row.reasoningTokens > 999: 
-          insertSep($row.reasoningTokens, ',')
+      let reasoningStr = if row.totalReasoningTokens > 0:
+        if row.totalReasoningTokens > 999: 
+          insertSep($row.totalReasoningTokens, ',')
         else: 
-          $row.reasoningTokens
+          $row.totalReasoningTokens
       else: dim("0")
       
-      let reasoningCostStr = if row.reasoningCost > 0.0: fmt"${row.reasoningCost:.4f}" else: dim("$0.0000")
+      let reasoningCostStr = if row.totalReasoningCost > 0.0: fmt"${row.totalReasoningCost:.4f}" else: dim("$0.0000")
       
       table.add modelName, inputStr, outputStr, reasoningStr, 
-                fmt"${row.inputCost:.4f}", fmt"${row.outputCost:.4f}", reasoningCostStr,
-                fmt"${row.totalCost:.4f}"
+                fmt"${row.totalInputCost:.4f}", fmt"${row.totalOutputCost:.4f}", reasoningCostStr,
+                fmt"${row.totalModelCost:.4f}"
     else:
       table.add modelName, inputStr, outputStr,
-                fmt"${row.inputCost:.4f}", fmt"${row.outputCost:.4f}",
-                fmt"${row.totalCost:.4f}"
+                fmt"${row.totalInputCost:.4f}", fmt"${row.totalOutputCost:.4f}",
+                fmt"${row.totalModelCost:.4f}"
   
   # Add total row
   let totalInputStr = if totalInput > 999: 

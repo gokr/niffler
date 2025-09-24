@@ -125,25 +125,7 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
           ORDER BY last_activity DESC
         """
         
-        let rows = db.query(query)
-        result = @[]
-        
-        for row in rows:
-          let conv = Conversation(
-            id: parseInt(row[0]),
-            created_at: now().utc(),  # Use current time for now, improve later
-            updated_at: now().utc(),
-            sessionId: row[3],
-            title: row[4],
-            isActive: row[5] == "1",
-            mode: if row[6] == "code": amCode else: amPlan,
-            modelNickname: row[7],
-            messageCount: parseInt(row[8]),
-            lastActivity: now().utc(),
-            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
-            planModeCreatedFiles: row[11]
-          )
-          result.add(conv)
+        result = db.query(Conversation, query)
         
         let filterDesc = case filter:
           of cfActive: "active"
@@ -217,23 +199,9 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
           WHERE id = ?
         """
         
-        let rows = db.query(query, id)
-        if rows.len > 0:
-          let row = rows[0]
-          let conv = Conversation(
-            id: parseInt(row[0]),
-            created_at: now().utc(),  # Use current time for now, improve later
-            updated_at: now().utc(),
-            sessionId: row[3],
-            title: row[4],
-            isActive: row[5] == "1",
-            mode: if row[6] == "code": amCode else: amPlan,
-            modelNickname: row[7],
-            messageCount: parseInt(row[8]),
-            lastActivity: now(),
-            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
-            planModeCreatedFiles: row[11]
-          )
+        let conversations = db.query(Conversation, query, id)
+        if conversations.len > 0:
+          let conv = conversations[0]
           debug(fmt"Found conversation with ID {id}: {conv.title}")
           result = some(conv)
         else:
@@ -437,25 +405,7 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
           ORDER BY c.last_activity DESC
         """
         
-        let rows = db.query(searchQuery, queryPattern, queryPattern)
-        result = @[]
-        
-        for row in rows:
-          let conv = Conversation(
-            id: parseInt(row[0]),
-            created_at: now().utc(),  # Use current time for now, improve later
-            updated_at: now().utc(),
-            sessionId: row[3],
-            title: row[4],
-            isActive: row[5] == "1",
-            mode: if row[6] == "code": amCode else: amPlan,
-            modelNickname: row[7],
-            messageCount: parseInt(row[8]),
-            lastActivity: now().utc(),
-            planModeEnteredAt: if row[10].len > 0 and row[10] != "1970-01-01T00:00:00": parseTime(row[10], "yyyy-MM-dd'T'HH:mm:ss", utc()).utc() else: fromUnix(0).utc(),
-            planModeCreatedFiles: row[11]
-          )
-          result.add(conv)
+        result = db.query(Conversation, searchQuery, queryPattern, queryPattern)
         
         debug(fmt"Found {result.len} conversations matching '{query}'")
     except Exception as e:
@@ -700,11 +650,11 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
     """
     
     try:
-      let rows = db.query(query, conversationId, limit)
+      let thinkingRows = db.query(ThinkingTokenRow, query, conversationId, limit)
       
-      for row in rows:
+      for thinkingRow in thinkingRows:
         # Parse the JSON thinking content back to ThinkingContent
-        let thinkingJson = parseJson(row[0])
+        let thinkingJson = parseJson(thinkingRow.thinkingContent)
         
         let thinkingContent = ThinkingContent(
           reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
@@ -713,7 +663,7 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
           encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
                                        some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
                                      else: none(string),
-          reasoningId: if row[6].len > 0: some(row[6]) else: none(string),
+          reasoningId: if thinkingRow.reasoningId.len > 0: some(thinkingRow.reasoningId) else: none(string),
           providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
                               some(thinkingJson{"providerSpecific"})
                             else: none(JsonNode)
@@ -739,11 +689,11 @@ proc getThinkingTokensByImportance*(pool: Pool, conversationId: int,
     """
     
     try:
-      let rows = db.query(query, conversationId, importance, limit)
+      let thinkingRows = db.query(ThinkingTokenRow, query, conversationId, importance, limit)
       
-      for row in rows:
+      for thinkingRow in thinkingRows:
         # Parse the JSON thinking content back to ThinkingContent
-        let thinkingJson = parseJson(row[0])
+        let thinkingJson = parseJson(thinkingRow.thinkingContent)
         
         let thinkingContent = ThinkingContent(
           reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
@@ -752,7 +702,7 @@ proc getThinkingTokensByImportance*(pool: Pool, conversationId: int,
           encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
                                        some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
                                      else: none(string),
-          reasoningId: if row[6].len > 0: some(row[6]) else: none(string),
+          reasoningId: if thinkingRow.reasoningId.len > 0: some(thinkingRow.reasoningId) else: none(string),
           providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
                               some(thinkingJson{"providerSpecific"})
                             else: none(JsonNode)
