@@ -323,8 +323,13 @@ proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     outputFile = args[0]
   
   try:
-    # Prepare conversation messages with empty user message
-    let (messages, _, _, _) = prepareConversationMessagesWithTokens("", currentModel.nickname)
+    # Get existing conversation context without adding a new message
+    var messages = conversation_manager.getConversationContext()
+    messages = truncateContextIfNeeded(messages)
+    
+    # Insert system message at the beginning
+    let (systemMsg, _) = createSystemMessageWithTokens(getCurrentMode(), currentModel.nickname)
+    messages.insert(systemMsg, 0)
     
     # Get tool schemas for the request
     let toolSchemas = getAllToolSchemas()
@@ -709,7 +714,7 @@ proc conversationInfoHandler(args: seq[string], currentModel: var configTypes.Mo
   let info = fmt"""Current Conversation:
   ID: {conv.id}
   Title: {conv.title}
-  Mode: {conv.mode}
+  Mode: {getCurrentMode()}
   Model: {conv.modelNickname}
   Messages: {actualMessageCount}
   Created: {conv.created_at.format("yyyy-MM-dd HH:mm")}

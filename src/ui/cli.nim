@@ -26,7 +26,7 @@ import std/[os, strutils, strformat, terminal, options, times, math, tables]
 import std/logging
 when defined(posix):
   import posix
-import linecross
+import "../../../linecross/linecross"
 import ../core/[app, channels, conversation_manager, config, database, mode_state]
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools]
@@ -152,14 +152,12 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
   return ("none", "", -1)
 
 
-proc nifflerCompletionHook(buf: string, completions: var Completions) =
-  ## Completion hook for linecross that handles / and @ completion
-  debug(fmt"=== COMPLETION HOOK DEBUG ===")
-  debug(fmt"Buffer text received: '{buf}'")
-  debug(fmt"Text length: {buf.len}")
+proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool): string =
+  ## New completion callback for linecross that handles / and @ completion
+  debug(fmt"=== COMPLETION CALLBACK DEBUG ===")
+  debug(fmt"Buffer: '{buffer}', cursorPos: {cursorPos}, isSecondTab: {isSecondTab}")
   
-  let cursorPos = buf.len  # linecross gives us the current buffer
-  let (contextType, prefix, startPos) = detectCompletionContext(buf, cursorPos)
+  let (contextType, prefix, startPos) = detectCompletionContext(buffer, cursorPos)
   
   debug(fmt"Context type: '{contextType}', prefix: '{prefix}', startPos: {startPos}")
   debug(fmt"==============================")
@@ -172,9 +170,26 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
       # Just completing the command name
       let commandCompletions = getCommandCompletions(parts[0])
       debug(fmt"Found {commandCompletions.len} command completions for prefix '{parts[0]}'")
-      for cmd in commandCompletions:
-        debug(fmt"Adding completion: '{cmd.name}'")
-        addCompletion(completions, cmd.name, cmd.description)
+      
+      if commandCompletions.len == 1:
+        # Single match - complete it with space
+        let completion = commandCompletions[0].name
+        let suffix = completion[parts[0].len..^1] & " "
+        debug(fmt"Single command match: returning '{suffix}'")
+        clearInfo()  # Clear any existing completion info
+        return suffix
+      elif commandCompletions.len > 1:
+        if isSecondTab:
+          # Show command options in info area
+          var infoLines: seq[string] = @["Available commands:"]
+          for cmd in commandCompletions:
+            infoLines.add(fmt"  /{cmd.name} - {cmd.description}")
+          setInfo(infoLines)
+          redraw()
+          debug(fmt"Showing {commandCompletions.len} command options in info area")
+        return ""  # Multiple matches - first tab silent, second tab shows options
+      else:
+        return ""  # No matches
     else:
       # Completing command arguments
       let command = parts[0]
@@ -183,36 +198,65 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
       
       case command:
       of "model":
-        # Show Nancy table for model selection and individual completions
+        # Model completion with Nancy table
         let config = loadConfig()
         debug(fmt"Found {config.models.len} models in config")
-        var filteredModels: seq[configTypes.ModelConfig] = @[]
+        var matchedModels: seq[configTypes.ModelConfig] = @[]
         
         for model in config.models:
           let matchesNickname = model.nickname.toLower().startsWith(argPrefix.toLower())
           let matchesModel = model.model.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
-          debug(fmt"Model '{model.nickname}': matchesNickname={matchesNickname}, matchesModel={matchesModel}")
           
           if matchesNickname or matchesModel:
-            filteredModels.add(model)
-            debug(fmt"Added model '{model.nickname}' to filtered list")
-            # Also add individual completion
-            addCompletion(completions, model.nickname, model.model)
+            matchedModels.add(model)
         
-        debug(fmt"Filtered models count: {filteredModels.len}")
-        if filteredModels.len > 0:
-          let tableOutput = formatModelsTable(filteredModels)
-          debug(fmt"Generated table output, length: {tableOutput.len}")
-          addCompletion(completions, "\n" & tableOutput, "")
+        if matchedModels.len == 1:
+          # Single match - complete it with space
+          let model = matchedModels[0]
+          let suffix = model.nickname[argPrefix.len..^1] & " "
+          debug(fmt"Single model match: returning '{suffix}'")
+          clearInfo()  # Clear any existing completion info
+          return suffix
+        elif matchedModels.len > 1:
+          if isSecondTab:
+            # Show Nancy table in info area
+            let tableOutput = formatModelsTable(matchedModels)
+            let tableLines = tableOutput.split('\n')
+            setInfo(tableLines)
+            redraw()
+            debug(fmt"Showing model table with {matchedModels.len} models in info area")
+          return ""
+        else:
+          return ""
       of "theme":
-        # Complete theme names
+        # Theme completion
         let availableThemes = getAvailableThemes()
+        var matchedThemes: seq[string] = @[]
+        
         for themeName in availableThemes:
           if themeName.toLower().startsWith(argPrefix.toLower()):
-            debug(fmt"Adding theme completion: '{themeName}'")
-            addCompletion(completions, themeName, "Theme: " & themeName)
+            matchedThemes.add(themeName)
+        
+        if matchedThemes.len == 1:
+          # Single match - complete it with space
+          let suffix = matchedThemes[0][argPrefix.len..^1] & " "
+          debug(fmt"Single theme match: returning '{suffix}'")
+          clearInfo()  # Clear any existing completion info
+          return suffix
+        elif matchedThemes.len > 1:
+          if isSecondTab:
+            # Show theme options in info area
+            var infoLines: seq[string] = @["Available themes:"]
+            for theme in matchedThemes:
+              infoLines.add(fmt"  {theme}")
+            setInfo(infoLines)
+            redraw()
+            debug(fmt"Showing {matchedThemes.len} theme options in info area")
+          return ""
+        else:
+          return ""
       of "conv", "archive":
-        # Show ONLY Nancy table for conversation selection
+        # Conversation completion with Nancy table
         try:
           let database = getGlobalDatabase()
           if database != nil:
@@ -230,14 +274,30 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
               if matchesId or matchesTitle:
                 filteredConversations.add(conv)
             
-            # Show ONLY the Nancy table with proper spacing
-            if filteredConversations.len > 0:
-              let tableOutput = formatConversationTable(filteredConversations, activeId, showArchived = false)
-              addCompletion(completions, "\n" & tableOutput, "")
+            if filteredConversations.len == 1:
+              # Single match - complete with conversation ID and space
+              let conv = filteredConversations[0]
+              let idStr = $conv.id
+              let suffix = idStr[argPrefix.len..^1] & " "
+              debug(fmt"Single conversation match: returning '{suffix}'")
+              clearInfo()  # Clear any existing completion info
+              return suffix
+            elif filteredConversations.len > 1:
+              if isSecondTab:
+                # Show Nancy table in info area
+                let tableOutput = formatConversationTable(filteredConversations, activeId, showArchived = false)
+                let tableLines = tableOutput.split('\n')
+                setInfo(tableLines)
+                redraw()
+                debug(fmt"Showing conversation table with {filteredConversations.len} conversations in info area")
+              return ""
+            else:
+              return ""
         except Exception as e:
           debug(fmt"Error getting conversation completions: {e.msg}")
+          return ""
       of "unarchive":
-        # Show ONLY Nancy table for archived conversation selection
+        # Archived conversation completion with Nancy table
         try:
           let database = getGlobalDatabase()
           if database != nil:
@@ -253,46 +313,101 @@ proc nifflerCompletionHook(buf: string, completions: var Completions) =
               if matchesId or matchesTitle:
                 filteredConversations.add(conv)
             
-            # Show ONLY the Nancy table with proper spacing  
-            if filteredConversations.len > 0:
-              let tableOutput = formatConversationTable(filteredConversations, currentId = -1, showArchived = true)
-              addCompletion(completions, "\n" & tableOutput, "")
+            if filteredConversations.len == 1:
+              # Single match - complete with conversation ID and space
+              let conv = filteredConversations[0]
+              let idStr = $conv.id
+              let suffix = idStr[argPrefix.len..^1] & " "
+              debug(fmt"Single archived conversation match: returning '{suffix}'")
+              clearInfo()  # Clear any existing completion info
+              return suffix
+            elif filteredConversations.len > 1:
+              if isSecondTab:
+                # Show Nancy table in info area
+                let tableOutput = formatConversationTable(filteredConversations, currentId = -1, showArchived = true)
+                let tableLines = tableOutput.split('\n')
+                setInfo(tableLines)
+                redraw()
+                debug(fmt"Showing archived conversation table with {filteredConversations.len} conversations in info area")
+              return ""
+            else:
+              return ""
         except Exception as e:
           debug(fmt"Error getting archived conversation completions: {e.msg}")
+          return ""
       else:
         # No argument completion for this command
         debug(fmt"No argument completion available for command '{command}'")
+        return ""
   of "mention":
     # User/mention completion for @
-    # For now, add some example mentions - this could be extended
     let mentions = @["user", "assistant", "system", "claude", "gpt"]
+    var matchedMentions: seq[string] = @[]
+    
     for mention in mentions:
       if mention.startsWith(prefix.toLower()):
-        debug(fmt"Adding mention completion: {mention}")
-        addCompletion(completions, mention, "Mention: " & mention)
+        matchedMentions.add(mention)
+    
+    if matchedMentions.len == 1:
+      # Single match - complete it with space
+      let suffix = matchedMentions[0][prefix.len..^1] & " "
+      debug(fmt"Single mention match: returning '{suffix}'")
+      clearInfo()  # Clear any existing completion info
+      return suffix
+    elif matchedMentions.len > 1:
+      if isSecondTab:
+        # Show mention options in info area
+        var infoLines: seq[string] = @["Available mentions:"]
+        for mention in matchedMentions:
+          infoLines.add(fmt"  @{mention}")
+        setInfo(infoLines)
+        redraw()
+        debug(fmt"Showing {matchedMentions.len} mention options in info area")
+      return ""
+    else:
+      return ""
   of "file":
     # File completion for @
     try:
       let fileCompletions = getFileCompletions(prefix)
       debug(fmt"Found {fileCompletions.len} file completions for prefix '{prefix}'")
-      for file in fileCompletions:
-        if file.isDir:
-          addCompletion(completions, file.path & "/", file.path & "/")
-        else:
-          addCompletion(completions, file.path, file.path)
+      
+      if fileCompletions.len == 1:
+        # Single match - complete it
+        let file = fileCompletions[0]
+        let completePath = if file.isDir: file.path & "/" else: file.path
+        let suffix = completePath[prefix.len..^1]
+        debug(fmt"Single file match: returning '{suffix}'")
+        clearInfo()  # Clear any existing completion info
+        return suffix
+      elif fileCompletions.len > 1:
+        if isSecondTab:
+          # Show file options in info area
+          var infoLines: seq[string] = @["Available files:"]
+          for file in fileCompletions:
+            let displayPath = if file.isDir: file.path & "/" else: file.path
+            infoLines.add(fmt"  @{displayPath}")
+          setInfo(infoLines)
+          redraw()
+          debug(fmt"Showing {fileCompletions.len} file options in info area")
+        return ""
+      else:
+        return ""
     except Exception as e:
       debug(fmt"Error getting file completions: {e.msg}")
+      return ""
   else:
     debug("No completion context found")
+    return ""
 
 proc initializeLinecrossInput(database: DatabaseBackend): bool =
   ## Initialize linecross with history and completion support
   try:
     # Initialize linecross with full features for good editing experience
-    initLinecross(FullFeatures)
+    initLinecross(enableHistory = true, enableHistorySearch = false, moveCursorOnEnter = true)
     
     # Set up completion callback for commands and mentions
-    registerCompletionCallback(nifflerCompletionHook)
+    registerCompletionCallback(nifflerCompletionCallback)
     
     # Configure prompt colors to match current blue style
     updatePromptState()
@@ -450,7 +565,7 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
 proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()) =
   ## Update prompt color and text based on current mode and model  
   setPromptColor(getModePromptColor(), {styleBright})
-  setPrompt(generatePrompt(modelConfig))
+  # Note: linecross doesn't have setPrompt - prompt is set dynamically in readline() calls
 
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
@@ -505,10 +620,14 @@ proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
 
 proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   ## Custom key hook for handling special key combinations like Shift+Tab
-  if keyCode == ShiftTab:
+  if keyCode == ord(ShiftTab):
     # Toggle mode and immediately update prompt, it is refreshed by linecross
     discard toggleModeWithProtection()
     updatePromptState()
+    # Generate new prompt with updated mode and set it, then redraw
+    let newPrompt = generatePrompt()
+    setPrompt(newPrompt)
+    redraw()
     return true  # Key was handled
   return false  # Key not handled, continue with default processing
 
@@ -662,6 +781,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
       # Read user input with dynamic prompt
       let input = readInputWithPrompt(currentModel)
       
+      # Clear any completion info from previous tab operations
+      clearInfo()
+      
       if input.len == 0:
         continue
       
@@ -723,6 +845,7 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
         var responseText = ""
         var responseReceived = false
         var hadToolCalls = false  # Track if this conversation involved tool calls
+        streamStartCursorPos = (0, 0)  # Reset cursor position for new request
         
         # Show processing status
         isProcessing = true
@@ -759,7 +882,10 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
                 
                 if not isInThinkingBlock:
-                  # Start of thinking block - show emoji prefix and set flag
+                  # Start of thinking block - capture cursor position before any output if this is the first content
+                  if responseText.len == 0 and streamStartCursorPos == (0, 0):
+                    streamStartCursorPos = linecross.getCursorPos()
+                  # Show emoji prefix and set flag
                   let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
                   let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
                   stdout.write(emojiPrefix & styledContent)
@@ -774,8 +900,8 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 # Reset thinking block flag when we get regular content
                 isInThinkingBlock = false
                 
-                # Save cursor position before first content chunk (for markdown overwrite)
-                if responseText.len == 0:
+                # Save cursor position before first content chunk (for markdown overwrite) if not already set
+                if responseText.len == 0 and streamStartCursorPos == (0, 0):
                   streamStartCursorPos = linecross.getCursorPos()
                 
                 responseText.add(response.content)
@@ -934,6 +1060,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     # Wait for response with timeout
     var responseReceived = false
     var responseText = ""
+    streamStartCursorPos = (0, 0)  # Reset cursor position for new request
     
     while not responseReceived:
       var response: APIResponse
