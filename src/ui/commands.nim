@@ -889,21 +889,21 @@ proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): C
   {.gcsafe.}:
     if args.len == 0 or args[0] == "status":
       # Show status of all MCP servers
-      let manager = mcp.getMcpManager()
-      if manager == nil:
-        return CommandResult(
-          success: false,
-          message: "MCP manager not initialized",
-          shouldExit: false,
-          shouldContinue: true,
-          shouldResetUI: false
-        )
-
       let serverList = mcp.listMcpServers()
       if serverList.len == 0:
         return CommandResult(
           success: true,
           message: "No MCP servers configured",
+          shouldExit: false,
+          shouldContinue: true,
+          shouldResetUI: false
+        )
+
+      let manager = mcp.getMcpManager()
+      if manager == nil:
+        return CommandResult(
+          success: false,
+          message: "MCP worker not available",
           shouldExit: false,
           shouldContinue: true,
           shouldResetUI: false

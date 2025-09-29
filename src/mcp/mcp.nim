@@ -26,7 +26,6 @@ type
     channels*: ptr ThreadChannels
     state*: McpWorkerState
     manager*: McpManager
-    logger*: Logger
 
   McpWorker* = object
     thread*: Thread[ThreadParams]
@@ -39,8 +38,7 @@ proc newMcpWorkerInternal*(channels: ptr ThreadChannels): McpWorkerInternal =
   result = McpWorkerInternal(
     channels: channels,
     state: mwsIdle,
-    manager: newMcpManager(),
-    logger: newConsoleLogger()
+    manager: newMcpManager()
   )
 
 proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
@@ -49,15 +47,15 @@ proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
     if config.mcpServers.isNone():
       return
 
-    worker.logger.log(lvlInfo, "Initializing MCP servers")
+    debug("Initializing MCP servers")
 
     for serverName, serverConfig in config.mcpServers.get():
       if serverConfig.enabled:
         try:
           worker.manager.addServer(serverName, serverConfig)
-          worker.logger.log(lvlInfo, fmt("Added MCP server: {serverName}"))
+          debug(fmt("Added MCP server: {serverName}"))
         except Exception as e:
-          worker.logger.log(lvlError, fmt("Failed to add MCP server {serverName}: {e.msg}"))
+          debug(fmt("Failed to add MCP server {serverName}: {e.msg}"))
 
 proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
   ## Process an MCP request and send response
@@ -71,7 +69,7 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
         worker.channels.sendMcpResponse(response)
 
       of mcrkInitialize:
-        worker.logger.log(lvlInfo, fmt("Initializing MCP server: {request.serverName}"))
+        debug(fmt("Initializing MCP server: {request.serverName}"))
         let config = McpServerConfig(
           command: request.command,
           args: request.args,
@@ -86,14 +84,14 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
           let success = worker.manager.isServerAvailable(request.serverName)
           let response = McpResponse(kind: mcrrkReady, serverName: request.serverName)
           worker.channels.sendMcpResponse(response)
-          worker.logger.log(lvlInfo, fmt("MCP server {request.serverName} initialized: {success}"))
+          debug(fmt("MCP server {request.serverName} initialized: {success}"))
         except Exception as e:
-          worker.logger.log(lvlError, fmt("Failed to initialize MCP server {request.serverName}: {e.msg}"))
+          debug(fmt("Failed to initialize MCP server {request.serverName}: {e.msg}"))
           let response = McpResponse(kind: mcrrkError, serverName: request.serverName, error: e.msg)
           worker.channels.sendMcpResponse(response)
 
       of mcrkListTools:
-        worker.logger.log(lvlInfo, fmt("Listing tools from MCP server: {request.serverName}"))
+        debug(fmt("Listing tools from MCP server: {request.serverName}"))
         let client = worker.manager.getClient(request.serverName)
         if client.isSome():
           let mcpTools = client.get().listTools()
@@ -107,13 +105,13 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
           )
           let response = McpResponse(kind: mcrrkToolsList, toolsList: toolsList)
           worker.channels.sendMcpResponse(response)
-          worker.logger.log(lvlInfo, fmt("Listed {tools.len} tools from {request.serverName}"))
+          debug(fmt("Listed {tools.len} tools from {request.serverName}"))
         else:
           let response = McpResponse(kind: mcrrkError, serverName: request.serverName, error: "Server not found")
           worker.channels.sendMcpResponse(response)
 
       of mcrkCallTool:
-        worker.logger.log(lvlInfo, fmt("Calling tool {request.toolName} on MCP server: {request.serverName}"))
+        debug(fmt("Calling tool {request.toolName} on MCP server: {request.serverName}"))
         let client = worker.manager.getClient(request.serverName)
         if client.isSome():
           let result = client.get().callTool(request.toolName, request.arguments)
@@ -124,13 +122,13 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
           )
           let response = McpResponse(kind: mcrrkToolResult, toolResult: toolResult)
           worker.channels.sendMcpResponse(response)
-          worker.logger.log(lvlInfo, fmt("Tool {request.toolName} executed on {request.serverName}"))
+          debug(fmt("Tool {request.toolName} executed on {request.serverName}"))
         else:
           let response = McpResponse(kind: mcrrkError, serverName: request.serverName, error: "Server not found")
           worker.channels.sendMcpResponse(response)
 
       of mcrkShutdown:
-        worker.logger.log(lvlInfo, fmt("Shutting down MCP server: {request.serverName}"))
+        debug(fmt("Shutting down MCP server: {request.serverName}"))
         if request.serverName == "all":
           worker.manager.shutdownAll()
         else:
@@ -139,19 +137,24 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
         worker.channels.sendMcpResponse(response)
 
     except Exception as e:
-      worker.logger.log(lvlError, fmt("Error processing MCP request: {e.msg}"))
+      debug(fmt("Error processing MCP request: {e.msg}"))
       let response = McpResponse(kind: mcrrkError, serverName: request.serverName, error: e.msg)
       worker.channels.sendMcpResponse(response)
 
 proc mcpWorkerMain*(params: ThreadParams) {.thread.} =
   ## Main MCP worker thread function
+  # Initialize logging for this thread
+  let consoleLogger = newConsoleLogger(useStderr = true)
+  addHandler(consoleLogger)
+  setLogFilter(params.level)
+
   {.gcsafe.}:
     try:
       # Initialize worker
       mcpWorkerInternal = newMcpWorkerInternal(params.channels)
       params.channels.incrementActiveThreads()
 
-      mcpWorkerInternal.logger.log(lvlInfo, "MCP worker thread started")
+      debug("MCP worker thread started")
 
       # Load config and initialize servers
       let config = configLoader.loadConfig()
@@ -189,17 +192,17 @@ proc mcpWorkerMain*(params: ThreadParams) {.thread.} =
 
       # Shutdown sequence
       mcpWorkerInternal.state = mwsShuttingDown
-      mcpWorkerInternal.logger.log(lvlInfo, "MCP worker shutting down")
+      debug("MCP worker shutting down")
 
       # Shutdown all MCP servers
       mcpWorkerInternal.manager.shutdownAll()
 
     except Exception as e:
-      mcpWorkerInternal.logger.log(lvlError, fmt("MCP worker error: {e.msg}"))
+      debug(fmt("MCP worker error: {e.msg}"))
 
     finally:
       params.channels.decrementActiveThreads()
-      mcpWorkerInternal.logger.log(lvlInfo, "MCP worker thread stopped")
+      debug("MCP worker thread stopped")
 
 proc startMcpWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): McpWorker =
   ## Start the MCP worker thread
