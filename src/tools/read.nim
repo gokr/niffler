@@ -16,7 +16,6 @@
 import std/[os, streams, times, strutils, json, strformat]
 import ../types/tools
 import ../core/constants
-import ../ui/external_renderer
 import common
 
 proc detectFileEncoding*(path: string): string =
@@ -172,23 +171,15 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
     if lineRange.len > 0:
       content = extractLinesByRange(fullContent, lineRange)
     
-    # Try external rendering for file content display
-    var displayContent = content
-    {.gcsafe.}:
-      let renderConfig = getCurrentExternalRenderingConfig()
-      
-      # Only use external rendering if no line range is specified (external tools handle full files better)
-      if lineRange.len == 0:
-        let renderResult = renderFileContent(sanitizedPath, renderConfig, content)
-        if renderResult.success:
-          displayContent = renderResult.content
+    # Note: Content is returned raw for tool results
+    # External rendering (batcat) is applied at UI display layer only
     
     # Get file modification time
     let modTime = fileInfo.lastWriteTime
     
     # Create result JSON
     let resultJson = %*{
-      "content": displayContent,
+      "content": content,
       "path": sanitizedPath,
       "size": fileInfo.size,
       "encoding": detectedEncoding,
