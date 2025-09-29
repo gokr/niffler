@@ -10,7 +10,7 @@
 ## - Error handling and reconnection logic
 ## - Integration with existing threading architecture
 
-import std/[options, json, tables, strutils, strformat, logging, os]
+import std/[options, json, tables, strformat, logging, os]
 import debby/pools
 import ../core/[channels, database]
 import ../types/[config, messages]

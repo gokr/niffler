@@ -189,7 +189,7 @@ proc performHealthCheck*(manager: McpManager, name: string): bool {.gcsafe.} =
       return false
 
     # Simple health check - try to list tools
-    let tools = client.listTools()
+    discard client.listTools()
     server.lastActivity = getMonoTime()
     return true
 

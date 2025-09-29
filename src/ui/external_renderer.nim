@@ -9,7 +9,7 @@
 ## - Error handling and tool availability checking
 ## - Support for both file-based and stdin-based rendering
 
-import std/[os, osproc, strutils, strformat, json, options, streams, tempfiles]
+import std/[os, osproc, strutils, strformat, json, options, streams]
 import ../types/config
 import ../core/config
 

@@ -15,9 +15,8 @@
 ## - Schema conversion ensures compatibility with OpenAI function calling
 ## - Error handling maintains Niffler's tool execution patterns
 
-import std/[options, json, tables, sequtils, strutils, strformat, logging]
+import std/[options, json, tables, strutils, strformat, logging]
 import ../types/[config, messages]
-import ../tools/registry
 import ../core/config as configLoader
 import protocol
 import mcp
@@ -130,17 +129,17 @@ proc executeMcpTool*(toolName: string, args: JsonNode): string =
       if not isMcpServerAvailable(wrapper.serverName):
         return fmt("Error: MCP server {wrapper.serverName} is not available")
 
-      let result = callMcpTool(wrapper.serverName, toolName, args)
+      let toolResult = callMcpTool(wrapper.serverName, toolName, args)
 
       # Check for errors in the result
-      if result.hasKey("error"):
-        return fmt("Error: {result[\"error\"].getStr()}")
-      elif result.hasKey("content"):
+      if toolResult.hasKey("error"):
+        return fmt("Error: {toolResult[\"error\"].getStr()}")
+      elif toolResult.hasKey("content"):
         # Format content for display
-        let content = result["content"]
+        let content = toolResult["content"]
         return $content
       else:
-        return $result
+        return $toolResult
 
     except Exception as e:
       return fmt("Error executing MCP tool {toolName}: {e.msg}")
