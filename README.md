@@ -64,6 +64,135 @@ Niffler includes a tool system that enables AI assistants to interact with your 
 - **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
 - **todolist**: Task management and todo tracking with persistent state and progress monitoring
 
+### MCP (Model Context Protocol) Integration
+
+Niffler supports the Model Context Protocol (MCP), allowing you to extend the AI assistant's capabilities with external MCP servers. MCP servers can provide additional tools, resources, and context to enhance your development workflow.
+
+#### Configuring MCP Servers
+
+Add MCP server configurations to your `config.json` file under the `mcpServers` section:
+
+```json
+{
+  "models": [
+    // ... your model configurations
+  ],
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"],
+      "enabled": true
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "your-github-token"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+#### Configuration Options
+
+Each MCP server supports the following fields:
+
+- **command**: The executable to run (e.g., "npx", "node", "/usr/local/bin/mcp-server")
+- **args**: Array of command-line arguments (optional)
+- **env**: Environment variables as key-value pairs (optional)
+- **workingDir**: Working directory for the server process (optional)
+- **timeout**: Timeout in milliseconds for server operations (optional)
+- **enabled**: Whether this server is active (default: true)
+
+#### Using MCP Tools
+
+Once configured, MCP tools are automatically discovered at startup and integrated with Niffler's built-in tools. The AI assistant can use them just like any other tool.
+
+**Check MCP Status:**
+```bash
+# View all MCP servers and available tools
+/mcp status
+```
+
+The status command shows:
+- Configured MCP servers with their status
+- Number of errors and restarts per server
+- Last activity timestamp
+- Available MCP tools with descriptions
+
+**Example MCP Server Output:**
+```
+MCP Servers (2 configured):
+
+  filesystem:
+    Status: mssRunning
+    Errors: 0
+    Restarts: 1
+    Last Activity: 15s ago
+
+  github:
+    Status: mssRunning
+    Errors: 0
+    Restarts: 1
+    Last Activity: 8s ago
+
+MCP Tools: 12 available
+
+  read_file (filesystem) - Read contents of a file
+  write_file (filesystem) - Write content to a file
+  list_directory (filesystem) - List directory contents
+  create_repository (github) - Create a new GitHub repository
+  ...
+```
+
+#### Architecture
+
+- **Dedicated MCP Worker Thread**: MCP servers run in a separate thread for non-blocking operation
+- **Automatic Discovery**: Tools are discovered and registered at startup
+- **Graceful Degradation**: If an MCP server fails, built-in tools continue working
+- **Health Monitoring**: Automatic health checks and restart attempts for failed servers
+
+#### Example: Filesystem MCP Server
+
+The official `@modelcontextprotocol/server-filesystem` provides secure file operations:
+
+```bash
+# Install and configure
+npm install -g @modelcontextprotocol/server-filesystem
+```
+
+Add to config.json:
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/home/user/projects"],
+      "enabled": true
+    }
+  }
+}
+```
+
+The AI can then use filesystem tools like `read_file`, `write_file`, `list_directory`, etc.
+
+#### Troubleshooting
+
+**Server not starting:**
+- Verify the command and arguments are correct
+- Check that the executable is in your PATH
+- Review environment variables (especially API keys)
+- Use `/mcp status` to see error counts and messages
+
+**Tools not appearing:**
+- Ensure the server status is "mssRunning" in `/mcp status`
+- Restart Niffler to re-initialize MCP servers
+- Check server logs for initialization errors
+
+For more details on MCP and available servers, see the [Model Context Protocol documentation](https://modelcontextprotocol.io/).
+
 ## 📦 Installation
 
 ### Prerequisites
