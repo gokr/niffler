@@ -3,7 +3,7 @@
 ## Provides terminal-based colored diff visualization with unified diff format
 ## and line numbers, similar to git diff --color.
 
-import std/[strutils, tables]
+import std/[strutils, tables, json]
 import hldiffpkg/edits
 import theme
 import diff_types
@@ -299,6 +299,39 @@ proc formatDiffHunk*(hunk: DiffHunk, colors: Table[DiffLineType, ThemeStyle], co
     result.add(formatDiffLine(line, colors, config) & "\n")
   
   return result
+
+proc toStructuredDiff*(diffResult: DiffResult): seq[JsonNode] =
+  ## Convert DiffResult to structured JSON format for LLM consumption
+  ## Returns array of { "type": "added|removed|unchanged", "line_number": int, "content": string }
+  result = @[]
+  
+  if diffResult.hunks.len == 0:
+    return result
+  
+  for hunk in diffResult.hunks:
+    for line in hunk.lines:
+      var diffType: string
+      var lineNum: int
+      
+      case line.lineType:
+        of Added:
+          diffType = "added"
+          lineNum = line.newLineNum
+        of Removed:
+          diffType = "removed"
+          lineNum = line.originalLineNum
+        of Context:
+          diffType = "unchanged"
+          # For context lines, prefer new line number if available, fall back to original
+          lineNum = if line.newLineNum != -1: line.newLineNum else: line.originalLineNum
+        of Header:
+          continue  # Skip header lines in structured output
+      
+      result.add(%*{
+        "type": diffType,
+        "line_number": lineNum,
+        "content": line.content
+      })
 
 proc renderDiff*(diffResult: DiffResult, config: DiffConfig = getDefaultDiffConfig()): string =
   ## Render the complete diff result as a formatted string

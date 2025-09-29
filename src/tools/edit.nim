@@ -330,14 +330,15 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
       except IOError as e:
         raise newToolExecutionError("edit", "Failed to write file: " & e.msg, -1, "")
     
-    # Generate unified diff if changes were made
-    var unifiedDiff = ""
+    # Generate structured diff if changes were made
+    var structuredDiff: JsonNode = newJNull()
     if changesMade:
       {.gcsafe.}:
         try:
           let diffResult = computeDiff(originalContent, newContent)
           diffResult.filePath = sanitizedPath
-          unifiedDiff = renderDiff(diffResult)
+          let diffArray = toStructuredDiff(diffResult)
+          structuredDiff = %*diffArray
         except Exception as e:
           debug("Failed to generate diff: " & e.msg)
           # Continue without diff if generation fails
@@ -352,7 +353,7 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
       "original_size": originalContent.len,
       "new_size": newContent.len,
       "size_change": newContent.len - originalContent.len,
-      "diff": if unifiedDiff.len > 0: %*unifiedDiff else: newJNull()
+      "diff": structuredDiff
     }
     
     return $resultJson
