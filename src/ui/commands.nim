@@ -15,6 +15,7 @@ import ../types/[config as configTypes, messages]
 import ../tokenization/[tokenizer]
 import ../tools/registry
 import ../api/curlyStreaming
+import ../mcp/[mcp, manager, tools as mcpTools]
 import theme
 import table_utils
 # import linecross  # Used only in comments
@@ -883,6 +884,79 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
           shouldContinue: true
         )
 
+proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle /mcp command for showing MCP server status
+  {.gcsafe.}:
+    if args.len == 0 or args[0] == "status":
+      # Show status of all MCP servers
+      let manager = mcp.getMcpManager()
+      if manager == nil:
+        return CommandResult(
+          success: false,
+          message: "MCP manager not initialized",
+          shouldExit: false,
+          shouldContinue: true,
+          shouldResetUI: false
+        )
+
+      let serverList = mcp.listMcpServers()
+      if serverList.len == 0:
+        return CommandResult(
+          success: true,
+          message: "No MCP servers configured",
+          shouldExit: false,
+          shouldContinue: true,
+          shouldResetUI: false
+        )
+
+      var statusLines: seq[string] = @[]
+      statusLines.add(fmt"MCP Servers ({serverList.len} configured):")
+      statusLines.add("")
+
+      for serverName in serverList:
+        let info = manager.getServerInfo(serverName)
+        let status = info["status"].getStr()
+        let errorCount = info["errorCount"].getInt()
+        let restartCount = info["restartCount"].getInt()
+        let lastActivity = info["lastActivitySeconds"].getInt()
+
+        statusLines.add(fmt"  {serverName}:")
+        statusLines.add(fmt"    Status: {status}")
+        statusLines.add(fmt"    Errors: {errorCount}")
+        statusLines.add(fmt"    Restarts: {restartCount}")
+        statusLines.add(fmt"    Last Activity: {lastActivity}s ago")
+        statusLines.add("")
+
+      # Show MCP tools
+      let toolCount = mcpTools.getMcpToolsCount()
+      statusLines.add(fmt("MCP Tools: {toolCount} available"))
+
+      if toolCount > 0:
+        statusLines.add("")
+        let toolNames = mcpTools.getMcpToolNames()
+        for toolName in toolNames:
+          let toolInfo = mcpTools.getMcpToolInfo(toolName)
+          if toolInfo.hasKey("serverName") and toolInfo.hasKey("description"):
+            let server = toolInfo["serverName"].getStr()
+            let desc = toolInfo["description"].getStr()
+            statusLines.add(fmt"  {toolName} ({server}) - {desc}")
+
+      return CommandResult(
+        success: true,
+        message: statusLines.join("\n"),
+        shouldExit: false,
+        shouldContinue: true,
+        shouldResetUI: false
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: "Usage: /mcp [status]",
+        shouldExit: false,
+        shouldContinue: true,
+        shouldResetUI: false
+      )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   registerCommand("help", "Show help and available commands", "", @[], helpHandler)
@@ -893,7 +967,8 @@ proc initializeCommands*() =
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
   registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
-  
+  registerCommand("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler)
+
   # Conversation management commands
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler)
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler)
