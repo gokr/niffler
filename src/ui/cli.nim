@@ -26,7 +26,7 @@ import std/[os, strutils, strformat, terminal, options, times, math, tables]
 import std/logging
 when defined(posix):
   import posix
-import "../../../linecross/linecross"
+import linecross # "../../../linecross/linecross"
 import ../core/[app, channels, conversation_manager, config, database, mode_state]
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools]
@@ -905,10 +905,10 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                   streamStartCursorPos = linecross.getCursorPos()
                 
                 responseText.add(response.content)
-                # For interactive mode, we don't use streaming markdown to avoid broken rendering
-                # Markdown will be applied to the complete response at the end
-                stdout.write(response.content)
-                stdout.flushFile()
+                # Only show streaming content if markdown is disabled to prevent double rendering
+                if not markdownEnabled:
+                  stdout.write(response.content)
+                  stdout.flushFile()
                 # Track that output occurred after tool call for progressive rendering
                 outputAfterToolCall = true
             of arkToolCallRequest:
@@ -952,15 +952,11 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
             of arkStreamComplete:
               # Apply markdown formatting to the complete response if enabled
               if markdownEnabled and responseText.len > 0:
-                # Restore cursor to start of streamed content and clear to end of screen
-                linecross.setCursorPos(streamStartCursorPos[0], streamStartCursorPos[1])
-                stdout.write("\x1b[0J")  # Clear from cursor to end of screen
-                stdout.flushFile()
-                # Now render the complete markdown
+                # For markdown mode, render the complete response since we didn't stream it
                 let renderedText = renderMarkdownTextCLI(responseText)
                 echo renderedText
               elif responseText.len > 0:
-                # Just add final newline if no markdown or tool calls were involved
+                # Just add final newline if no markdown was used (content was already streamed)
                 echo ""
               
               # Update token counts with new response (prompt will show tokens)
@@ -1093,25 +1089,22 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
             # Reset thinking block flag when we get regular content
             isInThinkingBlock = false
             
-            # Save cursor position before first content chunk (for potential markdown overwrite)
-            if responseText.len == 0:
-              streamStartCursorPos = linecross.getCursorPos()
-            
-            # For single prompt mode, show plain text while streaming
-            # and render markdown on the complete text at the end
-            stdout.write(response.content)
-            stdout.flushFile()
             responseText.add(response.content)
+            # Only show streaming content if markdown is disabled to prevent double rendering
+            if not markdownEnabled:
+              stdout.write(response.content)
+              stdout.flushFile()
             # Track that output occurred after tool call for progressive rendering
             outputAfterToolCall = true
         of arkStreamComplete:
           # Apply markdown formatting to the complete response if enabled
           if markdownEnabled and responseText.len > 0:
-            echo "\n--- Formatted Output ---"
+            # For markdown mode, render the complete response since we didn't stream it
             let renderedText = renderMarkdownTextCLI(responseText)
             echo renderedText
-          else:
-            echo "\n"
+          elif responseText.len > 0:
+            # Just add final newline if no markdown was used (content was already streamed)
+            echo ""
           info fmt"Tokens used: {response.usage.totalTokens}"
           
           # Log the prompt exchange to database
