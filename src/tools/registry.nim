@@ -20,6 +20,7 @@ import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
 import ../tokenization/tokenizer
 import bash, create, edit, fetch, list, read, todolist
+import ../mcp/tools as mcpTools
 
 type
   ToolKind* = enum
@@ -348,8 +349,15 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
 
 proc getAllToolSchemas*(): seq[ToolDefinition] =
   ## Get JSON schemas for all registered tools (for LLM function calling)
+  ## Includes both built-in tools and MCP tools
   initializeRegistry()
-  return toolSeq.mapIt(it.schema)
+  var schemas = toolSeq.mapIt(it.schema)
+
+  # Add MCP tool schemas
+  {.gcsafe.}:
+    schemas.add(mcpTools.getMcpToolSchemas())
+
+  return schemas
 
 proc countToolSchemaTokens*(modelName: string = "default"): int =
   ## Count tokens used by all tool schemas when sent to LLM

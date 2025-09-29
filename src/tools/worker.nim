@@ -33,6 +33,7 @@ else:
 import ../types/[tools, messages]
 import ../core/[channels, database]
 import registry
+import ../mcp/tools as mcpTools
 import debby/pools
 
 
@@ -89,12 +90,15 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)
             
             var toolSuccess = false
-            let output = 
+            let output =
               try:
                 # Execute the tool using registry lookup
                 let maybeTool = getTool(toolCall.name)
                 let result = if maybeTool.isSome():
                   executeTool(maybeTool.get(), toolCall.arguments)
+                elif mcpTools.isMcpTool(toolCall.name):
+                  # Execute MCP tool
+                  mcpTools.executeMcpTool(toolCall.name, toolCall.arguments)
                 else:
                   raise newToolValidationError(toolCall.name, "name", "supported tool", toolCall.name)
                 
