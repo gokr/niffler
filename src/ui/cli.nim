@@ -33,6 +33,7 @@ import ../types/[messages, config as configTypes, tools]
 import ../api/api
 import ../api/curlyStreaming
 import ../tools/[worker, common]
+import ../mcp/[mcp, tools as mcpTools]
 import commands
 import theme
 import table_utils
@@ -86,16 +87,17 @@ proc initializeSystemComponents*(): (configTypes.Config, bool) =
   let markdownEnabled = isMarkdownEnabled(config)
   return (config, markdownEnabled)
 
-proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, database: DatabaseBackend) =
+proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, mcpWorker: var McpWorker, database: DatabaseBackend) =
   ## Perform system cleanup: shutdown workers, close database and log files
   signalShutdown(channels)
   stopAPIWorker(apiWorker)
   stopToolWorker(toolWorker)
+  stopMcpWorker(mcpWorker)
   closeChannels(channels[])
-  
+
   if database != nil:
     database.close()
-  
+
   if logFileModule.isLoggingActive():
     let logManager = logFileModule.getGlobalLogManager()
     logManager.closeLogFile()
@@ -763,10 +765,31 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
   
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
-  
+
+  # Start MCP worker with pool
+  var mcpWorker = startMcpWorker(channels, level, dump, database, pool)
+
+  # Wait for MCP ready signal
+  var mcpReady = false
+  while not mcpReady:
+    let maybeResponse = tryReceiveMcpResponse(channels)
+    if maybeResponse.isSome():
+      let response = maybeResponse.get()
+      if response.kind == mcrrkReady:
+        mcpReady = true
+        debug("MCP worker ready")
+    if not mcpReady:
+      sleep(10)
+
+  # Discover and integrate MCP tools
+  mcpTools.discoverMcpTools()
+  let mcpToolCount = mcpTools.getMcpToolsCount()
+  if mcpToolCount > 0:
+    debug(fmt("Discovered {mcpToolCount} MCP tools"))
+
   # Start tool worker with pool
   var toolWorker = startToolWorker(channels, level, dump, database, pool)
-  
+
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
@@ -999,10 +1022,10 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
-  
+
   # Cleanup
-  cleanupSystem(channels, apiWorker, toolWorker, database)
-  
+  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, database)
+
   # Linecross cleanup is automatic
 
 proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false, logFile: string = "") =
@@ -1042,13 +1065,30 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   initSessionManager(pool, epochTime().int)
   
   let channels = getChannels()
-  
+
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
-  
+
+  # Start MCP worker with pool
+  var mcpWorker = startMcpWorker(channels, level, dump, database, pool)
+
+  # Wait for MCP ready signal
+  var mcpReady = false
+  while not mcpReady:
+    let maybeResponse = tryReceiveMcpResponse(channels)
+    if maybeResponse.isSome():
+      let response = maybeResponse.get()
+      if response.kind == mcrrkReady:
+        mcpReady = true
+    if not mcpReady:
+      sleep(10)
+
+  # Discover MCP tools
+  mcpTools.discoverMcpTools()
+
   # Start tool worker with pool
   var toolWorker = startToolWorker(channels, level, dump, database, pool)
-  
+
   let (success, requestId) = sendSinglePromptAsyncWithId(text, model)
   if success:
     debug "Request sent, waiting for response..."
@@ -1167,8 +1207,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
         sleep(5)
   else:
     echo "Failed to send request"
-    
+
   # Cleanup
-  cleanupSystem(channels, apiWorker, toolWorker, database)
-  
+  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, database)
+
   # Linecross cleanup is automatic
