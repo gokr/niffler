@@ -899,11 +899,11 @@ proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): C
           shouldResetUI: false
         )
 
-      let manager = mcp.getMcpManager()
-      if manager == nil:
+      let allServersInfo = mcp.getMcpAllServersInfo()
+      if allServersInfo == nil or allServersInfo.kind != JArray:
         return CommandResult(
           success: false,
-          message: "MCP worker not available",
+          message: "MCP server information not available",
           shouldExit: false,
           shouldContinue: true,
           shouldResetUI: false
@@ -913,8 +913,9 @@ proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): C
       statusLines.add(fmt"MCP Servers ({serverList.len} configured):")
       statusLines.add("")
 
-      for serverName in serverList:
-        let info = manager.getServerInfo(serverName)
+      for infoNode in allServersInfo:
+        let serverName = infoNode["name"].getStr()
+        let info = infoNode
         let status = info["status"].getStr()
         let errorCount = info["errorCount"].getInt()
         let restartCount = info["restartCount"].getInt()

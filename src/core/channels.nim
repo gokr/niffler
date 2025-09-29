@@ -15,7 +15,7 @@
 ## - UI Update channel for progress notifications
 ## - Shutdown signaling for clean termination
 
-import std/[locks, atomics, options, logging]
+import std/[locks, atomics, options, logging, times, os]
 import ../types/messages
 import queue
 import database
@@ -169,3 +169,20 @@ proc trySendToolRequest*(channels: ptr ThreadChannels, request: ToolRequest): bo
 
 proc trySendMcpRequest*(channels: ptr ThreadChannels, request: McpRequest): bool =
   return channels.mcpRequestChan.trySend(request)
+
+# Blocking MCP status request
+proc requestMcpStatus*(channels: ptr ThreadChannels, timeoutMs: int = 1000): Option[McpStatusInfo] =
+  ## Send status request and wait for response (blocking with timeout)
+  let request = McpRequest(kind: mcrkStatus, serverName: "status")
+  if not channels.mcpRequestChan.trySend(request):
+    return none(McpStatusInfo)
+
+  # Wait for response with timeout
+  let startTime = epochTime()
+  while (epochTime() - startTime) * 1000 < float(timeoutMs):
+    let maybeResponse = channels.tryReceiveMcpResponse()
+    if maybeResponse.isSome() and maybeResponse.get().kind == mcrrkStatus:
+      return some(maybeResponse.get().statusInfo)
+    sleep(10)  # Small sleep to avoid busy waiting
+
+  return none(McpStatusInfo)

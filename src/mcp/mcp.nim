@@ -10,7 +10,7 @@
 ## - Error handling and reconnection logic
 ## - Integration with existing threading architecture
 
-import std/[options, json, tables, strformat, logging, os]
+import std/[options, json, tables, strformat, logging, os, locks]
 import debby/pools
 import ../core/[channels, database]
 import ../types/[config, messages]
@@ -33,6 +33,19 @@ type
 
 var mcpWorkerInternal {.threadvar.}: McpWorkerInternal
 
+# Shared state for cross-thread access (protected by lock)
+var mcpStatusLock: Lock
+var mcpCachedServerList: seq[string]
+var mcpCachedServerInfo: JsonNode
+
+initLock(mcpStatusLock)
+
+proc updateCachedStatus(manager: McpManager) =
+  ## Update the cached server status (called from MCP worker thread)
+  withLock(mcpStatusLock):
+    mcpCachedServerList = manager.listServers()
+    mcpCachedServerInfo = manager.getAllServersInfo()
+
 proc newMcpWorkerInternal*(channels: ptr ThreadChannels): McpWorkerInternal =
   ## Create a new MCP worker internal instance
   result = McpWorkerInternal(
@@ -45,6 +58,7 @@ proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
   ## Initialize MCP servers from configuration
   {.gcsafe.}:
     if config.mcpServers.isNone():
+      updateCachedStatus(worker.manager)
       return
 
     debug("Initializing MCP servers")
@@ -56,6 +70,9 @@ proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
           debug(fmt("Added MCP server: {serverName}"))
         except Exception as e:
           debug(fmt("Failed to add MCP server {serverName}: {e.msg}"))
+
+    # Update cached status after initialization
+    updateCachedStatus(worker.manager)
 
 proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
   ## Process an MCP request and send response
@@ -136,6 +153,17 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
         let response = McpResponse(kind: mcrrkReady, serverName: request.serverName)
         worker.channels.sendMcpResponse(response)
 
+      of mcrkStatus:
+        debug("Querying MCP server status")
+        let serverList = worker.manager.listServers()
+        let allServersInfo = worker.manager.getAllServersInfo()
+        let statusInfo = McpStatusInfo(
+          serverList: serverList,
+          serverInfo: allServersInfo
+        )
+        let response = McpResponse(kind: mcrrkStatus, serverName: "status", statusInfo: statusInfo)
+        worker.channels.sendMcpResponse(response)
+
     except Exception as e:
       debug(fmt("Error processing MCP request: {e.msg}"))
       let response = McpResponse(kind: mcrrkError, serverName: request.serverName, error: e.msg)
@@ -207,7 +235,12 @@ proc mcpWorkerMain*(params: ThreadParams) {.thread.} =
 proc startMcpWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): McpWorker =
   ## Start the MCP worker thread
   result.isRunning = true
-  let params = ThreadParams(channels: channels)
+  var params = new(ThreadParams)
+  params.channels = channels
+  params.level = level  
+  params.dump = dump
+  params.database = database
+  params.pool = pool
   createThread(result.thread, mcpWorkerMain, params)
 
 proc stopMcpWorker*(worker: var McpWorker) =
@@ -248,14 +281,20 @@ proc isMcpServerAvailable*(serverName: string): bool =
     return false
 
 proc listMcpServers*(): seq[string] =
-  ## List all configured MCP servers
+  ## List all configured MCP servers (thread-safe)
   {.gcsafe.}:
-    if mcpWorkerInternal != nil:
-      return mcpWorkerInternal.manager.listServers()
-    return @[]
+    withLock(mcpStatusLock):
+      return mcpCachedServerList
+
+proc getMcpAllServersInfo*(): JsonNode =
+  ## Get all server info as JSON (thread-safe)
+  {.gcsafe.}:
+    withLock(mcpStatusLock):
+      return mcpCachedServerInfo
 
 proc getMcpManager*(): McpManager =
   ## Get the MCP manager instance (for status commands)
+  ## NOTE: This only works from MCP worker thread
   {.gcsafe.}:
     if mcpWorkerInternal != nil:
       return mcpWorkerInternal.manager

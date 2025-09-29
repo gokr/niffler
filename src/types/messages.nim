@@ -202,6 +202,7 @@ type
     mcrkListTools
     mcrkCallTool
     mcrkShutdown
+    mcrkStatus  # Query server status
 
   McpRequest* = object
     serverName*: string
@@ -218,12 +219,15 @@ type
       arguments*: JsonNode
     of mcrkShutdown:
       discard
+    of mcrkStatus:
+      discard
 
   McpResponseKind* = enum
     mcrrkToolsList
     mcrrkToolResult
     mcrrkError
     mcrrkReady
+    mcrrkStatus
 
   McpToolsList* = object
     serverName*: string
@@ -233,6 +237,10 @@ type
     serverName*: string
     toolName*: string
     result*: JsonNode
+
+  McpStatusInfo* = object
+    serverList*: seq[string]
+    serverInfo*: JsonNode  # All servers info as JSON
 
   McpResponse* = object
     serverName*: string
@@ -245,6 +253,8 @@ type
       error*: string
     of mcrrkReady:
       discard
+    of mcrrkStatus:
+      statusInfo*: McpStatusInfo
 
   # UI Thread Communication
   UIUpdateKind* = enum
