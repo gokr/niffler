@@ -132,11 +132,26 @@ proc parseSpecialModelConfig(node: JsonNode): SpecialModelConfig =
 
 proc parseMcpServerConfig(node: JsonNode): McpServerConfig =
   result.command = node["command"].getStr()
+  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
+  result.name = if node.hasKey("name"): node["name"].getStr() else: ""
+
   if node.hasKey("args"):
     var args: seq[string] = @[]
     for arg in node["args"]:
       args.add(arg.getStr())
     result.args = some(args)
+
+  if node.hasKey("env"):
+    var envTable = initTable[string, string]()
+    for key, val in node["env"]:
+      envTable[key] = val.getStr()
+    result.env = some(envTable)
+
+  if node.hasKey("workingDir"):
+    result.workingDir = some(node["workingDir"].getStr())
+
+  if node.hasKey("timeout"):
+    result.timeout = some(node["timeout"].getInt())
 
 proc parseExternalRenderingConfig(node: JsonNode): ExternalRenderingConfig =
   result.enabled = node.getOrDefault("enabled").getBool(true)

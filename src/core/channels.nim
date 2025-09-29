@@ -21,6 +21,9 @@ import queue
 import database
 import debby/pools
 
+# MCP support
+import ../mcp/protocol as mcpProtocol
+
 type
   ThreadParams* = ref object
     channels*: ptr ThreadChannels
@@ -33,14 +36,18 @@ type
     # API Thread Communication
     apiRequestChan*: ThreadSafeQueue[APIRequest]
     apiResponseChan*: ThreadSafeQueue[APIResponse]
-    
-    # Tool Thread Communication  
+
+    # Tool Thread Communication
     toolRequestChan*: ThreadSafeQueue[ToolRequest]
     toolResponseChan*: ThreadSafeQueue[ToolResponse]
-    
+
+    # MCP Thread Communication
+    mcpRequestChan*: ThreadSafeQueue[McpRequest]
+    mcpResponseChan*: ThreadSafeQueue[McpResponse]
+
     # UI Thread Communication
     uiUpdateChan*: ThreadSafeQueue[UIUpdate]
-    
+
     # Thread Management
     shutdownSignal*: Atomic[bool]
     threadsActive*: Atomic[int]
@@ -57,8 +64,10 @@ proc initializeChannels*(): ThreadChannels =
   result.apiResponseChan = initThreadSafeQueue[APIResponse]()
   result.toolRequestChan = initThreadSafeQueue[ToolRequest]()
   result.toolResponseChan = initThreadSafeQueue[ToolResponse]()
+  result.mcpRequestChan = initThreadSafeQueue[McpRequest]()
+  result.mcpResponseChan = initThreadSafeQueue[McpResponse]()
   result.uiUpdateChan = initThreadSafeQueue[UIUpdate]()
-  
+
   result.shutdownSignal.store(false)
   result.threadsActive.store(0)
 
@@ -78,19 +87,23 @@ proc closeChannels*(channels: var ThreadChannels) =
   channels.apiRequestChan.close()
   channels.apiResponseChan.close()
   channels.toolRequestChan.close()
-  channels.toolResponseChan.close() 
+  channels.toolResponseChan.close()
+  channels.mcpRequestChan.close()
+  channels.mcpResponseChan.close()
   channels.uiUpdateChan.close()
 
 proc signalShutdown*(channels: ptr ThreadChannels) =
   ## Signal shutdown to all worker threads and send shutdown messages
   channels.shutdownSignal.store(true)
-  
+
   # Send shutdown messages to all worker threads
   var apiShutdown = APIRequest(kind: arkShutdown)
   var toolShutdown = ToolRequest(kind: trkShutdown)
-  
+  var mcpShutdown = McpRequest(kind: mcrkShutdown, serverName: "all")
+
   discard channels.apiRequestChan.trySend(apiShutdown)
   discard channels.toolRequestChan.trySend(toolShutdown)
+  discard channels.mcpRequestChan.trySend(mcpShutdown)
 
 proc isShutdownSignaled*(channels: ptr ThreadChannels): bool =
   ## Check if shutdown has been signaled to workers
@@ -125,6 +138,12 @@ proc tryReceiveToolRequest*(channels: ptr ThreadChannels): Option[ToolRequest] =
 proc tryReceiveToolResponse*(channels: ptr ThreadChannels): Option[ToolResponse] =
   return channels.toolResponseChan.tryReceive()
 
+proc tryReceiveMcpRequest*(channels: ptr ThreadChannels): Option[McpRequest] =
+  return channels.mcpRequestChan.tryReceive()
+
+proc tryReceiveMcpResponse*(channels: ptr ThreadChannels): Option[McpResponse] =
+  return channels.mcpResponseChan.tryReceive()
+
 proc tryReceiveUIUpdate*(channels: ptr ThreadChannels): Option[UIUpdate] =
   return channels.uiUpdateChan.tryReceive()
 
@@ -135,6 +154,9 @@ proc sendAPIResponse*(channels: ptr ThreadChannels, response: APIResponse) =
 proc sendToolResponse*(channels: ptr ThreadChannels, response: ToolResponse) =
   channels.toolResponseChan.send(response)
 
+proc sendMcpResponse*(channels: ptr ThreadChannels, response: McpResponse) =
+  channels.mcpResponseChan.send(response)
+
 proc sendUIUpdate*(channels: ptr ThreadChannels, update: UIUpdate) =
   channels.uiUpdateChan.send(update)
 
@@ -144,3 +166,6 @@ proc trySendAPIRequest*(channels: ptr ThreadChannels, request: APIRequest): bool
 
 proc trySendToolRequest*(channels: ptr ThreadChannels, request: ToolRequest): bool =
   return channels.toolRequestChan.trySend(request)
+
+proc trySendMcpRequest*(channels: ptr ThreadChannels, request: McpRequest): bool =
+  return channels.mcpRequestChan.trySend(request)

@@ -74,8 +74,13 @@ type
     enabled*: bool
 
   McpServerConfig* = object
-    command*: string
-    args*: Option[seq[string]]
+    command*: string                    # Command to start the server
+    args*: Option[seq[string]]         # Command arguments
+    env*: Option[Table[string, string]] # Environment variables
+    workingDir*: Option[string]        # Working directory
+    timeout*: Option[int]             # Timeout in seconds
+    enabled*: bool                    # Enable/disable specific servers
+    name*: string                     # Human-readable name
 
   DatabaseType* = enum
     dtSQLite = "sqlite"

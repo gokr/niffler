@@ -193,6 +193,59 @@ type
     of trkReady:
       discard
 
+  # MCP Thread Communication
+  # Note: McpRequest/McpResponse are simplified for channel communication
+  # Full MCP protocol types are in src/mcp/protocol.nim
+  McpRequestKind* = enum
+    mcrkInitialize
+    mcrkInitializeAll  # Initialize all servers from config
+    mcrkListTools
+    mcrkCallTool
+    mcrkShutdown
+
+  McpRequest* = object
+    serverName*: string
+    case kind*: McpRequestKind
+    of mcrkInitialize:
+      command*: string
+      args*: Option[seq[string]]
+    of mcrkInitializeAll:
+      discard  # Config will be loaded in worker thread
+    of mcrkListTools:
+      discard
+    of mcrkCallTool:
+      toolName*: string
+      arguments*: JsonNode
+    of mcrkShutdown:
+      discard
+
+  McpResponseKind* = enum
+    mcrrkToolsList
+    mcrrkToolResult
+    mcrrkError
+    mcrrkReady
+
+  McpToolsList* = object
+    serverName*: string
+    tools*: seq[ToolDefinition]
+
+  McpToolResult* = object
+    serverName*: string
+    toolName*: string
+    result*: JsonNode
+
+  McpResponse* = object
+    serverName*: string
+    case kind*: McpResponseKind
+    of mcrrkToolsList:
+      toolsList*: McpToolsList
+    of mcrrkToolResult:
+      toolResult*: McpToolResult
+    of mcrrkError:
+      error*: string
+    of mcrrkReady:
+      discard
+
   # UI Thread Communication
   UIUpdateKind* = enum
     uukStateChange
