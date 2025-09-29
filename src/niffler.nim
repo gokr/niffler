@@ -1,13 +1,25 @@
 ## Main CLI Entry Point
 ##
 ## This is the primary entry point for Niffler, an AI-powered terminal assistant.
-## It provides command-line interface handling using docopt for elegant subcommand parsing.
+## It orchestrates the complete application lifecycle from command parsing to system initialization.
 ##
 ## Design Decisions:
-## - Uses docopt for self-documenting command-line interface
-## - Default behavior (no subcommand) starts interactive mode
-## - Single prompts can be sent via --prompt/-p option
-## - Supports multiple logging levels (debug, info, dump)
+## - Uses docopt for self-documenting command-line interface with subcommand support
+## - Dual-mode operation: interactive CLI (default) and single-prompt execution
+## - Comprehensive system initialization: logging, thread-safe channels, database, session management
+## - Model selection from configuration with fallback to default and error handling
+## - Flexible logging system supporting console-only and file+console output modes
+## - Thread-safe architecture with dedicated channels for inter-worker communication
+##
+## Command Structure:
+## - init: Initialize configuration at specified or default path
+## - model list: Display configured models with their base URLs
+## - Default: Start interactive mode or execute single prompt with --prompt
+##
+## System Integration:
+## - Coordinates core modules: config, channels, conversation_manager, database
+## - Bridges CLI interface with API worker and tool execution systems
+## - Handles graceful shutdown and error recovery for all application modes
 
 
 import std/[os, tables, logging, strformat]

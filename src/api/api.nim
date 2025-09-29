@@ -293,6 +293,14 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
   var followUpContent = ""
   var followUpToolCalls: seq[LLMToolCall] = @[]
   var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+  var isFirstContentChunk = true  # Track first content chunk for newline stripping
+  
+  proc stripLeadingNewlines(content: string): string =
+    ## Strip leading newlines and whitespace from content
+    var i = 0
+    while i < content.len and content[i] in {'\n', '\r'}:
+      inc i
+    return content[i..^1]
   
   proc onDuplicateFollowUp(chunk: StreamChunk) {.gcsafe.} =
     if chunk.choices.len > 0:
@@ -301,11 +309,22 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
       
       # Handle content
       if delta.content.len > 0:
-        followUpContent.add(delta.content)
+        var processedContent = delta.content
+        
+        # Strip leading newlines from first content chunk only
+        if isFirstContentChunk:
+          let strippedContent = stripLeadingNewlines(delta.content)
+          if strippedContent.len == 0:
+            # Skip chunks that are only newlines
+            return
+          processedContent = strippedContent
+          isFirstContentChunk = false
+        
+        followUpContent.add(processedContent)
         let contentResponse = APIResponse(
           requestId: request.requestId,
           kind: arkStreamChunk,
-          content: delta.content,
+          content: processedContent,
           done: false,
           thinkingContent: none(string),
           isEncrypted: none(bool)
@@ -473,9 +492,6 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
   )
   updatedMessages.add(assistantWithTools)
   
-  # Store assistant message with tool calls in conversation history
-  discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-  
   # Add all tool result messages
   for toolResult in allToolResults:
     updatedMessages.add(toolResult)
@@ -502,6 +518,14 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
   var followUpContent = ""
   var followUpToolCalls: seq[LLMToolCall] = @[]
   var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
+  var isFirstContentChunk = true  # Track first content chunk for newline stripping
+  
+  proc stripLeadingNewlines(content: string): string =
+    ## Strip leading newlines and whitespace from content
+    var i = 0
+    while i < content.len and content[i] in {'\n', '\r'}:
+      inc i
+    return content[i..^1]
   
   proc onFollowUpChunk(chunk: StreamChunk) {.gcsafe.} =
     if chunk.choices.len > 0:
@@ -514,11 +538,22 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
       
       # Send follow-up content
       if delta.content.len > 0:
-        followUpContent.add(delta.content)
+        var processedContent = delta.content
+        
+        # Strip leading newlines from first content chunk only
+        if isFirstContentChunk:
+          let strippedContent = stripLeadingNewlines(delta.content)
+          if strippedContent.len == 0:
+            # Skip chunks that are only newlines
+            return
+          processedContent = strippedContent
+          isFirstContentChunk = false
+        
+        followUpContent.add(processedContent)
         let chunkResponse = APIResponse(
           requestId: request.requestId,
           kind: arkStreamChunk,
-          content: delta.content,
+          content: processedContent,
           done: false,
           thinkingContent: none(string),
           isEncrypted: none(bool)
@@ -638,6 +673,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                    recursionDepth, updatedExecutedCalls)
   
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
+  
+  # Store assistant message with tool calls BEFORE executing tools to maintain correct order
+  discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
   
   # Execute all unique tool calls using helper function
   let allToolResults = executeToolCallsBatch(channels, filteredToolCalls, request)
@@ -812,6 +850,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var lastThinkingEncrypted = false
             const THINKING_TOKEN_MIN_LENGTH = 50  # Minimum chars before storing
             var hasThinkingContent = false
+            var isFirstContentChunk = true  # Track first content chunk for newline stripping
             
             proc flushThinkingBuffer() =
               ## Store accumulated thinking token if it meets minimum length
@@ -819,6 +858,13 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 discard storeThinkingTokenFromStreaming(thinkingTokenBuffer, lastThinkingFormat, none(int), lastThinkingEncrypted)
                 debug(fmt"Stored aggregated thinking token: {thinkingTokenBuffer.len} chars, format: {lastThinkingFormat}")
                 thinkingTokenBuffer = ""
+            
+            proc stripLeadingNewlines(content: string): string =
+              ## Strip leading newlines and whitespace from content
+              var i = 0
+              while i < content.len and content[i] in {'\n', '\r'}:
+                inc i
+              return content[i..^1]
             
             proc onChunkReceived(chunk: StreamChunk) {.gcsafe.} =
               # Check for cancellation before processing chunk
@@ -892,13 +938,24 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 
                 # Send content chunks in real-time (but coordinate with tool calls)
                 if delta.content.len > 0:
-                  fullContent.add(delta.content)
+                  var processedContent = delta.content
+                  
+                  # Strip leading newlines from first content chunk only
+                  if isFirstContentChunk:
+                    let strippedContent = stripLeadingNewlines(delta.content)
+                    if strippedContent.len == 0:
+                      # Skip chunks that are only newlines
+                      return
+                    processedContent = strippedContent
+                    isFirstContentChunk = false
+                  
+                  fullContent.add(processedContent)
                   # Only send content if this chunk doesn't contain tool calls or if we're not actively processing tool calls
                   if not chunkHasToolCalls or not hasToolCalls:
                     let chunkResponse = APIResponse(
                       requestId: request.requestId,
                       kind: arkStreamChunk,
-                      content: delta.content,
+                      content: processedContent,
                       done: false,
                       thinkingContent: thinkingContentStr,
                       isEncrypted: isThinkingEncrypted
