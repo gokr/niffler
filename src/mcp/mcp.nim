@@ -37,6 +37,8 @@ var mcpWorkerInternal {.threadvar.}: McpWorkerInternal
 var mcpStatusLock: Lock
 var mcpCachedServerList: seq[string]
 var mcpCachedServerInfo: JsonNode
+var mcpCachedTools: Table[string, seq[ToolDefinition]]  # serverName -> tools
+var mcpCachedClients: Table[string, McpClient]  # serverName -> client
 
 initLock(mcpStatusLock)
 
@@ -45,6 +47,16 @@ proc updateCachedStatus(manager: McpManager) =
   withLock(mcpStatusLock):
     mcpCachedServerList = manager.listServers()
     mcpCachedServerInfo = manager.getAllServersInfo()
+
+proc updateCachedTools(serverName: string, tools: seq[ToolDefinition]) =
+  ## Update the cached tools for a server (called from MCP worker thread)
+  withLock(mcpStatusLock):
+    mcpCachedTools[serverName] = tools
+
+proc updateCachedClient(serverName: string, client: McpClient) =
+  ## Update the cached client for a server (called from MCP worker thread)
+  withLock(mcpStatusLock):
+    mcpCachedClients[serverName] = client
 
 proc newMcpWorkerInternal*(channels: ptr ThreadChannels): McpWorkerInternal =
   ## Create a new MCP worker internal instance
@@ -58,18 +70,41 @@ proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
   ## Initialize MCP servers from configuration
   {.gcsafe.}:
     if config.mcpServers.isNone():
+      debug("No MCP servers configured")
       updateCachedStatus(worker.manager)
       return
 
     debug("Initializing MCP servers")
 
     for serverName, serverConfig in config.mcpServers.get():
+      debug(fmt("Processing MCP server: {serverName}, enabled: {serverConfig.enabled}"))
       if serverConfig.enabled:
         try:
           worker.manager.addServer(serverName, serverConfig)
           debug(fmt("Added MCP server: {serverName}"))
+
+          # Try to start the server
+          debug(fmt("Starting MCP server: {serverName}"))
+          worker.manager.startServer(serverName)
+
+          let status = worker.manager.getServerStatus(serverName)
+          debug(fmt("MCP server {serverName} status after start: {status}"))
+
+          # Discover and cache tools and client if server started successfully
+          if status == mssRunning:
+            let client = worker.manager.getClient(serverName)
+            if client.isSome():
+              # Cache the client for cross-thread access
+              updateCachedClient(serverName, client.get())
+
+              var tools: seq[ToolDefinition] = @[]
+              let mcpTools = client.get().listTools()
+              for mcpTool in mcpTools:
+                tools.add(convertMcpToolToOpenai(mcpTool))
+              updateCachedTools(serverName, tools)
+              debug(fmt("Discovered {tools.len} tools from MCP server: {serverName}"))
         except Exception as e:
-          debug(fmt("Failed to add MCP server {serverName}: {e.msg}"))
+          debug(fmt("Failed to initialize MCP server {serverName}: {e.msg}"))
 
     # Update cached status after initialization
     updateCachedStatus(worker.manager)
@@ -252,18 +287,44 @@ proc stopMcpWorker*(worker: var McpWorker) =
 # Public API for MCP operations
 
 proc getMcpTools*(serverName: string): seq[ToolDefinition] =
-  ## Get available tools from an MCP server
+  ## Get available tools from an MCP server (thread-safe via cache)
   {.gcsafe.}:
+    # Try cached version first (works from any thread)
+    withLock(mcpStatusLock):
+      if serverName in mcpCachedTools:
+        return mcpCachedTools[serverName]
+
+    # If called from MCP worker thread, fetch directly
     if mcpWorkerInternal != nil:
       let client = mcpWorkerInternal.manager.getClient(serverName)
       if client.isSome():
+        var tools: seq[ToolDefinition] = @[]
         let mcpTools = client.get().listTools()
         for mcpTool in mcpTools:
-          result.add(convertMcpToolToOpenai(mcpTool))
+          tools.add(convertMcpToolToOpenai(mcpTool))
+
+        # Update cache
+        updateCachedTools(serverName, tools)
+        return tools
+
+    return @[]
 
 proc callMcpTool*(serverName: string, toolName: string, arguments: JsonNode): JsonNode =
-  ## Call a tool on an MCP server
+  ## Call a tool on an MCP server (thread-safe via cached client)
   {.gcsafe.}:
+    # First try cached client (works from any thread)
+    var cachedClient: McpClient
+    var foundClient = false
+
+    withLock(mcpStatusLock):
+      if serverName in mcpCachedClients:
+        cachedClient = mcpCachedClients[serverName]
+        foundClient = true
+
+    if foundClient:
+      return cachedClient.callTool(toolName, arguments)
+
+    # Fallback: if called from MCP worker thread, try direct access
     if mcpWorkerInternal != nil:
       let client = mcpWorkerInternal.manager.getClient(serverName)
       if client.isSome():
@@ -271,13 +332,24 @@ proc callMcpTool*(serverName: string, toolName: string, arguments: JsonNode): Js
       else:
         return %*{"error": fmt("MCP server {serverName} not available")}
     else:
-      return %*{"error": "MCP worker not initialized"}
+      return %*{"error": fmt("MCP server {serverName} not available (no cached client)")}
 
 proc isMcpServerAvailable*(serverName: string): bool =
-  ## Check if an MCP server is available
+  ## Check if an MCP server is available (thread-safe via cache)
   {.gcsafe.}:
+    # First check cached server info (works from any thread)
+    withLock(mcpStatusLock):
+      if mcpCachedServerInfo != nil:
+        for serverInfo in mcpCachedServerInfo:
+          if serverInfo.hasKey("name") and serverInfo["name"].getStr() == serverName:
+            if serverInfo.hasKey("status"):
+              let status = serverInfo["status"].getStr()
+              return status == "mssRunning"
+
+    # If called from MCP worker thread, check directly
     if mcpWorkerInternal != nil:
       return mcpWorkerInternal.manager.isServerAvailable(serverName)
+
     return false
 
 proc listMcpServers*(): seq[string] =

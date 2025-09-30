@@ -15,7 +15,7 @@ import ../types/[config as configTypes, messages]
 import ../tokenization/[tokenizer]
 import ../tools/registry
 import ../api/curlyStreaming
-import ../mcp/[mcp, manager, tools as mcpTools]
+import ../mcp/[mcp, tools as mcpTools]
 import theme
 import table_utils
 # import linecross  # Used only in comments
@@ -884,6 +884,16 @@ proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
           shouldContinue: true
         )
 
+proc formatMcpStatus(status: string): string =
+  ## Convert MCP status enum to user-friendly string
+  case status
+  of "mssStopped": "Stopped"
+  of "mssStarting": "Starting"
+  of "mssRunning": "Running"
+  of "mssStopping": "Stopping"
+  of "mssError": "Error"
+  else: status
+
 proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /mcp command for showing MCP server status
   {.gcsafe.}:
@@ -920,9 +930,10 @@ proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): C
         let errorCount = info["errorCount"].getInt()
         let restartCount = info["restartCount"].getInt()
         let lastActivity = info["lastActivitySeconds"].getInt()
+        let friendlyStatus = formatMcpStatus(status)
 
         statusLines.add(fmt"  {serverName}:")
-        statusLines.add(fmt"    Status: {status}")
+        statusLines.add(fmt"    Status: {friendlyStatus}")
         statusLines.add(fmt"    Errors: {errorCount}")
         statusLines.add(fmt"    Restarts: {restartCount}")
         statusLines.add(fmt"    Last Activity: {lastActivity}s ago")

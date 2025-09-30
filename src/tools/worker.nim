@@ -57,9 +57,9 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   let consoleLogger = newConsoleLogger(useStderr = true)
   addHandler(consoleLogger)
   setLogFilter(params.level)
-  
+
   let channels = params.channels
-  
+
   debug("Tool worker thread started")
     
   try:

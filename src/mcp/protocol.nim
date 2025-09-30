@@ -15,7 +15,7 @@
 ## - Tool execution with result handling
 ## - Connection lifecycle management
 
-import std/[options, json, osproc, streams, os, tables, strtabs, strformat]
+import std/[options, json, osproc, streams, os, tables, strtabs, strformat, logging]
 import ../types/[config, messages]
 
 type
@@ -236,12 +236,14 @@ proc startMcpProcess*(client: McpClient, config: McpServerConfig) {.gcsafe.} =
   let workingDir = if config.workingDir.isSome(): config.workingDir.get() else: getCurrentDir()
 
   try:
+    # Don't redirect stderr to stdout - MCP servers use stderr for logging
+    # and stdout for JSON-RPC messages
     client.process = osproc.startProcess(
       command = config.command,
       args = args,
       workingDir = workingDir,
       env = envTable,
-      options = {poStdErrToStdOut, poUsePath}
+      options = {poUsePath}
     )
 
     client.inputStream = client.process.outputStream()
@@ -305,7 +307,7 @@ proc initialize*(client: McpClient): bool {.gcsafe.} =
 
     if response.error.isSome():
       let error = response.error.get()
-      echo fmt("MCP initialization error for {client.serverName}: {error.message}")
+      debug(fmt("MCP initialization error for {client.serverName}: {error.message}"))
       return false
 
     if response.result.isSome():
@@ -316,7 +318,7 @@ proc initialize*(client: McpClient): bool {.gcsafe.} =
     return false
 
   except Exception as e:
-    echo fmt("MCP initialization failed for {client.serverName}: {e.msg}")
+    debug(fmt("MCP initialization failed for {client.serverName}: {e.msg}"))
     return false
 
 proc listTools*(client: McpClient): seq[McpTool] {.gcsafe.} =
@@ -328,7 +330,7 @@ proc listTools*(client: McpClient): seq[McpTool] {.gcsafe.} =
 
     if response.error.isSome():
       let error = response.error.get()
-      echo fmt("MCP list tools error for {client.serverName}: {error.message}")
+      debug(fmt("MCP list tools error for {client.serverName}: {error.message}"))
       return @[]
 
     if response.result.isSome():
@@ -342,7 +344,7 @@ proc listTools*(client: McpClient): seq[McpTool] {.gcsafe.} =
     return @[]
 
   except Exception as e:
-    echo fmt("MCP list tools failed for {client.serverName}: {e.msg}")
+    debug(fmt("MCP list tools failed for {client.serverName}: {e.msg}"))
     return @[]
 
 proc callTool*(client: McpClient, toolName: string, arguments: JsonNode): JsonNode {.gcsafe.} =
@@ -378,7 +380,7 @@ proc shutdown*(client: McpClient): bool {.gcsafe.} =
     return response.error.isNone()
 
   except Exception as e:
-    echo fmt("MCP shutdown failed for {client.serverName}: {e.msg}")
+    debug(fmt("MCP shutdown failed for {client.serverName}: {e.msg}"))
     return false
 
 proc close*(client: McpClient) {.gcsafe.} =
@@ -392,7 +394,7 @@ proc close*(client: McpClient) {.gcsafe.} =
       client.process.close()
 
   except Exception as e:
-    echo fmt("Error closing MCP client {client.serverName}: {e.msg}")
+    debug(fmt("Error closing MCP client {client.serverName}: {e.msg}"))
 
 proc isConnected*(client: McpClient): bool =
   ## Check if the MCP client is connected

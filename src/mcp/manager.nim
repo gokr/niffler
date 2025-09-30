@@ -83,14 +83,17 @@ proc startServer*(manager: McpManager, name: string) {.gcsafe.} =
   let server = manager.servers[name]
 
   if server.status == mssRunning:
+    server.logger.log(lvlInfo, fmt("MCP server {name} already running"))
     return  # Already running
 
   server.status = mssStarting
-  server.logger.log(lvlInfo, fmt("Starting MCP server: {name}"))
+  server.logger.log(lvlInfo, fmt("Starting MCP server: {name} with command: {server.config.command}"))
 
   try:
     let client = newMcpClient(name)
+    server.logger.log(lvlInfo, fmt("Starting MCP process for {name}"))
     client.startMcpProcess(server.config)
+    server.logger.log(lvlInfo, fmt("MCP process started, initializing client for {name}"))
 
     if client.initialize():
       server.client = some(client)

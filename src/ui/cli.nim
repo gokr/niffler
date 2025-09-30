@@ -781,6 +781,9 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
     if not mcpReady:
       sleep(10)
 
+  # Give MCP servers time to fully initialize
+  sleep(100)
+
   # Discover and integrate MCP tools
   mcpTools.discoverMcpTools()
   let mcpToolCount = mcpTools.getMcpToolsCount()

@@ -33,8 +33,14 @@ type
     toolKind*: McpToolKind
     requiresConfirmation*: bool
 
-var mcpTools {.threadvar.}: Table[string, McpToolWrapper]
-var mcpToolsInitialized {.threadvar.}: bool
+import std/locks
+
+# Shared state for cross-thread access (protected by lock)
+var mcpToolsLock: Lock
+var mcpTools: Table[string, McpToolWrapper]
+var mcpToolsInitialized: bool
+
+initLock(mcpToolsLock)
 
 proc newMcpToolWrapper*(serverName: string, mcpTool: McpTool): McpToolWrapper =
   ## Create a new MCP tool wrapper
@@ -78,52 +84,65 @@ proc convertMcpToolRegistry*(wrapper: McpToolWrapper): ToolDefinition {.gcsafe.}
 proc discoverMcpTools*() =
   ## Discover and register tools from all available MCP servers (called once at initialization)
   {.gcsafe.}:
-    if mcpToolsInitialized:
-      return
+    withLock(mcpToolsLock):
+      if mcpToolsInitialized:
+        return
 
-    let servers = listMcpServers()
+      let servers = listMcpServers()
+      let logger = newConsoleLogger()
+      logger.log(lvlDebug, fmt("Discovering MCP tools from {servers.len} servers: {servers}"))
 
-    for serverName in servers:
-      if isMcpServerAvailable(serverName):
-        try:
-          let config = configLoader.loadConfig()
-          if config.mcpServers.isSome():
-            let serverConfigs = config.mcpServers.get()
-            if serverName notin serverConfigs:
-              continue
-            let serverConfig = serverConfigs[serverName]
-            if not serverConfig.enabled:
-              continue
+      for serverName in servers:
+        logger.log(lvlDebug, fmt("Checking MCP server: {serverName}, available: {isMcpServerAvailable(serverName)}"))
+        if isMcpServerAvailable(serverName):
+          try:
+            let config = configLoader.loadConfig()
+            if config.mcpServers.isSome():
+              let serverConfigs = config.mcpServers.get()
+              if serverName notin serverConfigs:
+                logger.log(lvlDebug, fmt("Server {serverName} not in config"))
+                continue
+              let serverConfig = serverConfigs[serverName]
+              if not serverConfig.enabled:
+                logger.log(lvlDebug, fmt("Server {serverName} not enabled"))
+                continue
 
-          let discoveredTools = getMcpTools(serverName)
-          for mcpTool in discoveredTools:
-            let wrapper = newMcpToolWrapper(serverName, McpTool(
-              name: mcpTool.function.name,
-              description: mcpTool.function.description,
-              inputSchema: McpToolInputSchema(
-                `type`: mcpTool.function.parameters["type"].getStr(),
-                properties: mcpTool.function.parameters["properties"],
-                required: @[]
-              )
-            ))
-            mcpTools[wrapper.name] = wrapper
+            let discoveredTools = getMcpTools(serverName)
+            logger.log(lvlDebug, fmt("Got {discoveredTools.len} tools from {serverName}"))
+            for mcpTool in discoveredTools:
+              let wrapper = newMcpToolWrapper(serverName, McpTool(
+                name: mcpTool.function.name,
+                description: mcpTool.function.description,
+                inputSchema: McpToolInputSchema(
+                  `type`: mcpTool.function.parameters["type"].getStr(),
+                  properties: mcpTool.function.parameters["properties"],
+                  required: @[]
+                )
+              ))
+              mcpTools[wrapper.name] = wrapper
 
-        except KeyError as e:
-          let logger = newConsoleLogger()
-          logger.log(lvlError, fmt("MCP server {serverName} not found in config: {e.msg}"))
-        except Exception as e:
-          let logger = newConsoleLogger()
-          logger.log(lvlError, fmt("Failed to discover tools from MCP server {serverName}: {e.msg}"))
+          except KeyError as e:
+            let logger = newConsoleLogger()
+            logger.log(lvlError, fmt("MCP server {serverName} not found in config: {e.msg}"))
+          except Exception as e:
+            let logger = newConsoleLogger()
+            logger.log(lvlError, fmt("Failed to discover tools from MCP server {serverName}: {e.msg}"))
 
-    mcpToolsInitialized = true
+      mcpToolsInitialized = true
 
 proc executeMcpTool*(toolName: string, args: JsonNode): string =
   ## Execute an MCP tool and return the result
   {.gcsafe.}:
-    if toolName notin mcpTools:
-      return fmt("Error: MCP tool {toolName} not found")
+    var wrapper: McpToolWrapper
+    var found = false
 
-    let wrapper = mcpTools[toolName]
+    withLock(mcpToolsLock):
+      if toolName in mcpTools:
+        wrapper = mcpTools[toolName]
+        found = true
+
+    if not found:
+      return fmt("Error: MCP tool {toolName} not found")
 
     try:
       if not isMcpServerAvailable(wrapper.serverName):
@@ -154,22 +173,25 @@ proc getMcpToolSchemas*(): seq[ToolDefinition] =
   ## Get all MCP tool schemas for OpenAI function calling
   {.gcsafe.}:
     result = @[]
-    for wrapper in mcpTools.values:
-      result.add(convertMcpToolRegistry(wrapper))
+    withLock(mcpToolsLock):
+      for wrapper in mcpTools.values:
+        result.add(convertMcpToolRegistry(wrapper))
 
 proc getMcpToolNames*(): seq[string] =
   ## Get all MCP tool names
   {.gcsafe.}:
     result = @[]
-    for name in mcpTools.keys:
-      result.add(name)
+    withLock(mcpToolsLock):
+      for name in mcpTools.keys:
+        result.add(name)
 
 proc getMcpToolDescriptions*(): string =
   ## Get comma-separated list of MCP tools with descriptions
   {.gcsafe.}:
     var descriptions: seq[string] = @[]
-    for wrapper in mcpTools.values:
-      descriptions.add(fmt("{wrapper.name} (MCP) - {wrapper.description}"))
+    withLock(mcpToolsLock):
+      for wrapper in mcpTools.values:
+        descriptions.add(fmt("{wrapper.name} (MCP) - {wrapper.description}"))
 
     if descriptions.len > 0:
       return descriptions.join(", ")
@@ -179,20 +201,23 @@ proc getMcpToolDescriptions*(): string =
 proc isMcpTool*(toolName: string): bool =
   ## Check if a tool name corresponds to an MCP tool
   {.gcsafe.}:
-    return toolName in mcpTools
+    withLock(mcpToolsLock):
+      return toolName in mcpTools
 
 proc getMcpToolServer*(toolName: string): Option[string] =
   ## Get the server name for an MCP tool
   {.gcsafe.}:
-    if toolName in mcpTools:
-      return some(mcpTools[toolName].serverName)
+    withLock(mcpToolsLock):
+      if toolName in mcpTools:
+        return some(mcpTools[toolName].serverName)
     return none(string)
 
 proc doesMcpToolRequireConfirmation*(toolName: string): bool =
   ## Check if an MCP tool requires user confirmation
   {.gcsafe.}:
-    if toolName in mcpTools:
-      return mcpTools[toolName].requiresConfirmation
+    withLock(mcpToolsLock):
+      if toolName in mcpTools:
+        return mcpTools[toolName].requiresConfirmation
     return false
 
 proc getMcpToolInfo*(toolName: string): JsonNode =
@@ -200,24 +225,26 @@ proc getMcpToolInfo*(toolName: string): JsonNode =
   {.gcsafe.}:
     result = newJObject()
 
-    if toolName in mcpTools:
-      let wrapper = mcpTools[toolName]
-      result["name"] = newJString(wrapper.name)
-      result["description"] = newJString(wrapper.description)
-      result["serverName"] = newJString(wrapper.serverName)
-      result["toolKind"] = newJString($wrapper.toolKind)
-      result["requiresConfirmation"] = newJBool(wrapper.requiresConfirmation)
-      result["inputSchema"] = wrapper.mcpTool.inputSchema.properties
-    else:
-      result["error"] = newJString(fmt("MCP tool {toolName} not found"))
+    withLock(mcpToolsLock):
+      if toolName in mcpTools:
+        let wrapper = mcpTools[toolName]
+        result["name"] = newJString(wrapper.name)
+        result["description"] = newJString(wrapper.description)
+        result["serverName"] = newJString(wrapper.serverName)
+        result["toolKind"] = newJString($wrapper.toolKind)
+        result["requiresConfirmation"] = newJBool(wrapper.requiresConfirmation)
+        result["inputSchema"] = wrapper.mcpTool.inputSchema.properties
+      else:
+        result["error"] = newJString(fmt("MCP tool {toolName} not found"))
 
 proc getAllMcpToolsInfo*(): JsonNode =
   ## Get information about all MCP tools
   {.gcsafe.}:
     result = newJArray()
 
-    for name in mcpTools.keys:
-      result.add(getMcpToolInfo(name))
+    withLock(mcpToolsLock):
+      for name in mcpTools.keys:
+        result.add(getMcpToolInfo(name))
 
 # Tool execution functions that integrate with Niffler's tool registry
 
@@ -245,6 +272,27 @@ proc executeMcpFetchTool*(args: JsonNode): string {.gcsafe.} =
   ## Execute MCP-based web fetching tool
   return executeMcpTool("fetch", args)
 
+# Utility procedures
+
+proc getMcpToolsCount*(): int =
+  ## Get the number of discovered MCP tools
+  {.gcsafe.}:
+    withLock(mcpToolsLock):
+      return mcpTools.len
+
+proc clearMcpToolsCache*() =
+  ## Clear the MCP tools cache to force rediscovery
+  {.gcsafe.}:
+    withLock(mcpToolsLock):
+      mcpTools.clear()
+      mcpToolsInitialized = false
+
+proc refreshMcpTools*() =
+  ## Refresh MCP tools by clearing cache and rediscovering
+  {.gcsafe.}:
+    clearMcpToolsCache()
+    discoverMcpTools()
+
 # Integration with existing tool registry
 
 proc integrateMcpToolsWithRegistry*() =
@@ -256,33 +304,22 @@ proc integrateMcpToolsWithRegistry*() =
     # For now, this is a placeholder - actual integration happens at runtime
     # through the API worker's tool selection logic
 
+    let toolCount = getMcpToolsCount()
     let logger = newConsoleLogger()
-    logger.log(lvlInfo, fmt("Discovered {mcpTools.len} MCP tools for integration"))
-
-# Utility procedures
-
-proc clearMcpToolsCache*() =
-  ## Clear the MCP tools cache to force rediscovery
-  {.gcsafe.}:
-    mcpTools.clear()
-    mcpToolsInitialized = false
-
-proc refreshMcpTools*() =
-  ## Refresh MCP tools by clearing cache and rediscovering
-  {.gcsafe.}:
-    clearMcpToolsCache()
-    discoverMcpTools()
-
-proc getMcpToolsCount*(): int =
-  ## Get the number of discovered MCP tools
-  {.gcsafe.}:
-    return mcpTools.len
+    logger.log(lvlInfo, fmt("Discovered {toolCount} MCP tools for integration"))
 
 proc isMcpToolAvailable*(toolName: string): bool =
   ## Check if a specific MCP tool is available
   {.gcsafe.}:
-    if toolName notin mcpTools:
+    var wrapper: McpToolWrapper
+    var found = false
+
+    withLock(mcpToolsLock):
+      if toolName in mcpTools:
+        wrapper = mcpTools[toolName]
+        found = true
+
+    if not found:
       return false
 
-    let wrapper = mcpTools[toolName]
     return isMcpServerAvailable(wrapper.serverName)
