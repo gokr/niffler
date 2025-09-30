@@ -473,7 +473,7 @@ proc addUserMessage*(content: string): Message =
     finally:
       release(globalSession.lock)
 
-proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall]), 
+proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall]),
                           outputTokens: int = 0, modelName: string = ""): Message =
   ## Add assistant message to current conversation with optional tool calls and token data
   {.gcsafe.}:

@@ -101,6 +101,6 @@ method log*(logger: FileAndConsoleLogger, level: Level, args: varargs[string, `$
 proc logEcho*(message: string) {.gcsafe.} =
   ## Echo that redirects to log file when active
   echo message
-  # Note: This is simplified for thread safety. 
+  # Note: This is simplified for thread safety.
   # File logging happens via the main logger for debug/info messages.
   # HTTP dump messages go only to console to avoid GC safety issues.

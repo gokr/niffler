@@ -174,15 +174,6 @@ type
     totalOverhead*: int          ## Complete API request overhead
 
 # Database utility functions for query building and schema operations
-proc validateContentForDatabase*(content: string, context: string = ""): string =
-  ## Validate content for database insertion, ensuring it's never NULL
-  ## Convert NULL-like values to empty string and log when this happens
-  if content == nil:
-    warn(fmt"NULL content detected in {context} - converting to empty string")
-    return ""
-  else:
-    return content
-
 proc columnExists*(conn: sqlite.Db, tableName: string, columnName: string): bool =
   ## Check if a column exists in a table
   let tableInfo = conn.query(fmt"PRAGMA table_info({tableName})")
@@ -570,9 +561,8 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
   ## Log a message in a conversation
   if backend == nil or conversationId == 0:
     return
-  
-  let validatedContent = validateContentForDatabase(content, fmt"logConversationMessage(role={role})")
-  
+
+  # First ensure content is not nil before validation
   case backend.kind:
   of dbkSQLite, dbkTiDB:
     let msg = ConversationMessage(
@@ -580,7 +570,7 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
       conversationId: conversationId,
       created_at: now().utc(),
       role: role,
-      content: validatedContent,
+      content: content,
       toolCallId: toolCallId,
       model: model,
       outputTokens: outputTokens,
@@ -842,15 +832,13 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =
   ## Add user message to database and return message ID
-  let validatedContent = validateContentForDatabase(content, "addUserMessageToDb")
-  
   pool.withDb:
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
       created_at: now().utc(),
       role: "user",
-      content: validatedContent,
+      content: content,
       toolCallId: none(string),
       model: "",
       outputTokens: 0,
@@ -861,25 +849,25 @@ proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int 
     db.insert(msg)
     return msg.id
 
-proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string, 
+proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string,
                              toolCalls: Option[seq[LLMToolCall]], model: string, outputTokens: int = 0): int =
   ## Add assistant message to database and return message ID
-  let validatedContent = validateContentForDatabase(content, "addAssistantMessageToDb")
-  
   pool.withDb:
     let toolCallsJson = if toolCalls.isSome():
       some(serializeToolCalls(toolCalls.get()))
     else:
       none(string)
-    
+
     let messageType = if toolCalls.isSome(): "tool_call" else: "content"
-    
+
+    debug(fmt("addAssistantMessageToDb: content='{content}', len={content.len}, toolCalls={toolCalls.isSome()}, messageType={messageType}"))
+
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
       created_at: now().utc(),
       role: "assistant",
-      content: validatedContent,
+      content: content,
       toolCallId: none(string),
       model: model,
       outputTokens: outputTokens,
@@ -887,21 +875,26 @@ proc addAssistantMessageToDb*(pool: Pool, conversationId: int, content: string,
       sequenceId: none(int),  # Let database handle ordering
       messageType: messageType
     )
-    db.insert(msg)
-    return msg.id
+    try:
+      db.insert(msg)
+      debug(fmt("Successfully inserted assistant message, id={msg.id}"))
+      return msg.id
+    except Exception as e:
+      warn(fmt("Failed to insert assistant message: {e.msg}"))
+      warn(fmt("  content='{content}', len={content.len}"))
+      warn(fmt("  model={model}, conversationId={conversationId}"))
+      raise
 
-proc addToolMessageToDb*(pool: Pool, conversationId: int, content: string, 
+proc addToolMessageToDb*(pool: Pool, conversationId: int, content: string,
                         toolCallId: string): int =
-  ## Add tool result message to database and return message ID  
-  let validatedContent = validateContentForDatabase(content, fmt"addToolMessageToDb(toolCallId={toolCallId})")
-  
+  ## Add tool result message to database and return message ID
   pool.withDb:
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
       created_at: now().utc(),
       role: "tool",
-      content: validatedContent,
+      content: content,
       toolCallId: some(toolCallId),
       model: "",
       outputTokens: 0,

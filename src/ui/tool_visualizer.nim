@@ -670,7 +670,7 @@ proc createToolResultSummary*(toolName: string, toolResult: string, success: boo
     # Check if result is JSON with exit code info
     try:
       let resultJson = parseJson(toolResult)
-      if resultJson.hasKey("exit_code"):
+      if resultJson.kind == JObject and resultJson.hasKey("exit_code"):
         let exitCode = resultJson["exit_code"].getInt()
         let output = resultJson{"output"}.getStr("")
         let outputLines = if output.len > 0: output.splitLines().filterIt(it.strip().len > 0) else: @[]
