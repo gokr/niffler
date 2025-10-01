@@ -396,7 +396,8 @@ proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolC
       kind: trkExecute,
       requestId: toolCall.id,
       toolName: toolCall.function.name,
-      arguments: toolCall.function.arguments
+      arguments: toolCall.function.arguments,
+      agentName: ""  # Empty = main agent with full access
     )
     debug("Tool request: " & $toolRequest)
     

@@ -175,6 +175,7 @@ type
       requestId*: string
       toolName*: string
       arguments*: string
+      agentName*: string  ## Name of agent executing (empty = main agent with full access)
     of trkShutdown:
       discard
 

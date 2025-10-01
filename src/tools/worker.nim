@@ -24,14 +24,14 @@
 ## - Tool registry pattern for extensible tool system
 ## - Thread-safe channel communication with API worker
 
-import std/[options, os, json, logging, strformat]
+import std/[options, os, json, logging, strformat, strutils]
 when compileOption("threads"):
   import std/typedthreads
 else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 
-import ../types/[tools, messages]
-import ../core/[channels, database]
+import ../types/[tools, messages, agents]
+import ../core/[channels, database, config]
 import registry
 import ../mcp/tools as mcpTools
 import debby/pools
@@ -86,9 +86,30 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               arguments: toolCallJson
             )
 
+            # Validate tool access based on agent context
+            let agentContext = if request.agentName.len > 0:
+              # Task agent - load its definition and check permissions
+              {.gcsafe.}:
+                let agentsDir = getAgentsDir()
+                let agents = loadAgentDefinitions(agentsDir)
+                let agent = agents.findAgent(request.agentName)
+                if agent.name.len == 0:
+                  raise newToolValidationError(toolCall.name, "agent", request.agentName, "not found")
+                createAgentContext(agent)
+            else:
+              # Main agent - full access
+              createMainAgentContext()
+
+            # Check if tool is allowed for this agent
+            if not isToolAllowed(agentContext, toolCall.name):
+              let allowedTools = agentContext.agent.allowedTools.join(", ")
+              let errorMsg = fmt("Tool '{toolCall.name}' not allowed for agent '{agentContext.agent.name}'. Allowed tools: {allowedTools}")
+              debug(errorMsg)
+              raise newToolValidationError(toolCall.name, "access", "allowed tool", errorMsg)
+
             # Execute the tool call
             debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)
-            
+
             var toolSuccess = false
             let output =
               try:
@@ -198,15 +219,16 @@ proc stopToolWorker*(worker: var ToolWorker) =
     joinThread(worker.thread)
     worker.isRunning = false
 
-proc executeToolAsync*(channels: ptr ThreadChannels, toolCall: tools.ToolCall, 
-                       requireConfirmation: bool = false): bool =
+proc executeToolAsync*(channels: ptr ThreadChannels, toolCall: tools.ToolCall,
+                       requireConfirmation: bool = false, agentName: string = ""): bool =
   let request = ToolRequest(
     kind: trkExecute,
     requestId: toolCall.id,
     toolName: toolCall.name,
-    arguments: $toolCall.arguments
+    arguments: $toolCall.arguments,
+    agentName: agentName  # Empty = main agent with full access
   )
-  
+
   return trySendToolRequest(channels, request)
 
 proc sendToolReady*(channels: ptr ThreadChannels) =
