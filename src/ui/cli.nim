@@ -26,10 +26,10 @@ import std/[os, strutils, strformat, terminal, options, times, math, tables]
 import std/logging
 when defined(posix):
   import posix
-import linecross # "../../../linecross/linecross"
+import ../../../linecross/linecross
 import ../core/[app, channels, conversation_manager, config, database, mode_state]
 import ../core/log_file as logFileModule
-import ../types/[messages, config as configTypes, tools]
+import ../types/[messages, config as configTypes, tools, agents]
 import ../api/api
 import ../api/curlyStreaming
 import ../tools/[worker, common]
@@ -257,6 +257,34 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
           return ""
         else:
           return ""
+      of "agent":
+        # Agent completion
+        let agentsDir = getAgentsDir()
+        let agents = loadAgentDefinitions(agentsDir)
+        var matchedAgents: seq[AgentDefinition] = @[]
+
+        for agent in agents:
+          if agent.name.toLower().startsWith(argPrefix.toLower()):
+            matchedAgents.add(agent)
+
+        if matchedAgents.len == 1:
+          # Single match - complete it with space
+          let suffix = matchedAgents[0].name[argPrefix.len..^1] & " "
+          debug(fmt"Single agent match: returning '{suffix}'")
+          clearInfo()
+          return suffix
+        elif matchedAgents.len > 1:
+          if isSecondTab:
+            # Show agent options in info area
+            var infoLines: seq[string] = @["Available agents:"]
+            for agent in matchedAgents:
+              infoLines.add(fmt"  {agent.name}")
+            setInfo(infoLines)
+            redraw()
+            debug(fmt"Showing {matchedAgents.len} agent options in info area")
+          return ""
+        else:
+          return ""
       of "conv", "archive":
         # Conversation completion with Nancy table
         try:
@@ -265,23 +293,48 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
             let allConversations = listActiveConversations(database)
             let currentSession = getCurrentSession()
             let activeId = if currentSession.isSome(): currentSession.get().conversation.id else: -1
-            
+
             # Filter conversations based on argPrefix
             var filteredConversations: seq[Conversation] = @[]
             for conv in allConversations:
               let idStr = $conv.id
               let matchesId = idStr.startsWith(argPrefix)
-              let matchesTitle = conv.title.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
-              
-              if matchesId or matchesTitle:
+              let matchesTitle = conv.title.toLower().startsWith(argPrefix.toLower())
+
+              if matchesId or (matchesTitle and argPrefix.len > 0):
                 filteredConversations.add(conv)
             
             if filteredConversations.len == 1:
-              # Single match - complete with conversation ID and space
+              # Single match - complete it with space
               let conv = filteredConversations[0]
               let idStr = $conv.id
-              let suffix = idStr[argPrefix.len..^1] & " "
-              debug(fmt"Single conversation match: returning '{suffix}'")
+
+              # Determine what we matched on and complete accordingly
+              let matchedById = idStr.startsWith(argPrefix)
+              let matchedByTitle = conv.title.toLower().startsWith(argPrefix.toLower())
+
+              debug(fmt"CONV COMPLETION: conv.id={conv.id}, title='{conv.title}', argPrefix='{argPrefix}'")
+              debug(fmt"CONV COMPLETION: matchedById={matchedById}, matchedByTitle={matchedByTitle}")
+
+              # For title matching, we need to return the full title with proper casing
+              # since we matched case-insensitively but want to replace with correct case
+              let suffix = if matchedById and not matchedByTitle:
+                # Only matched by ID - complete the ID
+                idStr[argPrefix.len..^1] & " "
+              elif matchedByTitle:
+                # Matched by title - return rest of title with correct case
+                # First, calculate how many chars of argPrefix matched (case-insensitive)
+                let matchLen = argPrefix.len
+                # Return the correctly-cased prefix + rest of title
+                # But we only want to add the suffix, so we need to figure out what to add
+                # The user typed "pi", the title is "Pizza" - we need to add "zza "
+                # But the case might be different, so we return: title[matchLen..^1]
+                conv.title[matchLen..^1] & " "
+              else:
+                # Shouldn't happen, but fallback to ID
+                idStr[argPrefix.len..^1] & " "
+
+              debug(fmt"CONV COMPLETION: calculated suffix='{suffix}'")
               clearInfo()  # Clear any existing completion info
               return suffix
             elif filteredConversations.len > 1:
@@ -304,22 +357,36 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
           let database = getGlobalDatabase()
           if database != nil:
             let allConversations = listArchivedConversations(database)
-            
+
             # Filter conversations based on argPrefix
             var filteredConversations: seq[Conversation] = @[]
             for conv in allConversations:
               let idStr = $conv.id
               let matchesId = idStr.startsWith(argPrefix)
-              let matchesTitle = conv.title.toLower().contains(argPrefix.toLower()) or argPrefix.len == 0
-              
-              if matchesId or matchesTitle:
+              let matchesTitle = conv.title.toLower().startsWith(argPrefix.toLower())
+
+              if matchesId or (matchesTitle and argPrefix.len > 0):
                 filteredConversations.add(conv)
             
             if filteredConversations.len == 1:
               # Single match - complete with conversation ID and space
               let conv = filteredConversations[0]
               let idStr = $conv.id
-              let suffix = idStr[argPrefix.len..^1] & " "
+
+              # Determine what we matched on and complete accordingly
+              let matchedById = idStr.startsWith(argPrefix)
+              let matchedByTitle = conv.title.toLower().startsWith(argPrefix.toLower())
+
+              let suffix = if matchedById and not matchedByTitle:
+                # Only matched by ID - complete the ID
+                idStr[argPrefix.len..^1] & " "
+              elif matchedByTitle:
+                # Matched by title - return rest of title with correct case
+                conv.title[argPrefix.len..^1] & " "
+              else:
+                # Shouldn't happen, but fallback to ID
+                idStr[argPrefix.len..^1] & " "
+
               debug(fmt"Single archived conversation match: returning '{suffix}'")
               clearInfo()  # Clear any existing completion info
               return suffix
@@ -520,49 +587,65 @@ proc formatCostRounded*(cost: float): string =
       finalResult = finalResult[0..^2]
   return finalResult
 
-proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Generate a rich prompt string with token counts, context info, cost, and conversation info
-  let contextMessages = conversation_manager.getConversationContext()
-  let contextSize = estimateTokenCount(contextMessages)
-  let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
+proc updateStatusLine*() =
+  ## Update status line with token counts, context info, and cost
   let sessionTotal = inputTokens + outputTokens
-  let statusIndicator = if isProcessing: "⚡" else: ""
-  
+
+  if sessionTotal > 0:
+    # Get model config from current session or load from config
+    let config = loadConfig()
+    let modelConfig = if currentModelName.len > 0:
+      getModelFromConfig(config, currentModelName)
+    else:
+      config.models[0]
+
+    let contextMessages = conversation_manager.getConversationContext()
+    let contextSize = estimateTokenCount(contextMessages)
+    let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
+    let statusIndicator = if isProcessing: "⚡" else: ""
+
+    # Calculate context percentage and format max context
+    let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
+    let contextInfo = fmt"{contextPercent}% of {formatTokenAmount(maxContext)}"
+
+    # Format token amounts with new formatting
+    let formattedInputTokens = formatTokenAmount(inputTokens)
+    let formattedOutputTokens = formatTokenAmount(outputTokens)
+
+    # Calculate session cost if available using real token data
+    let sessionTokens = getSessionTokens()
+    var sessionCost = 0.0
+
+    if modelConfig.inputCostPerMToken.isSome() and sessionTokens.inputTokens > 0:
+      let inputCostPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
+      sessionCost += sessionTokens.inputTokens.float * inputCostPerToken
+
+    if modelConfig.outputCostPerMToken.isSome() and sessionTokens.outputTokens > 0:
+      let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
+      sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
+
+    let costInfo = if sessionCost > 0: fmt" {formatCostRounded(sessionCost)}" else: ""
+    let statusLine = fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo}"
+    setStatus(@[statusLine])
+    # Don't call redraw() here - let readline() handle it
+  else:
+    # Clear status line when no tokens yet
+    clearStatus()
+    # Don't call redraw() here - let readline() handle it
+
+proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
+  ## Generate a simplified prompt with model name, mode, and conversation ID
   # Get conversation info and build model name with conversation context
   let currentSession = getCurrentSession()
   let modelNameWithContext = if currentSession.isSome():
     let conv = currentSession.get().conversation
-    let runtimeMode = getCurrentMode()  # Use actual runtime mode instead of stored mode
+    let runtimeMode = getCurrentMode()
     fmt"{currentModelName}({runtimeMode}, {conv.id})"
   else:
     debug("generatePrompt: currentSession is None, using plain model name")
     currentModelName
 
-  if sessionTotal > 0:
-    # Calculate context percentage and format max context
-    let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
-    let contextInfo = fmt"{contextPercent}% of {formatTokenAmount(maxContext)}"
-    
-    # Format token amounts with new formatting
-    let formattedInputTokens = formatTokenAmount(inputTokens)
-    let formattedOutputTokens = formatTokenAmount(outputTokens)
-    
-    # Calculate session cost if available using real token data
-    let sessionTokens = getSessionTokens()
-    var sessionCost = 0.0
-    
-    if modelConfig.inputCostPerMToken.isSome() and sessionTokens.inputTokens > 0:
-      let inputCostPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
-      sessionCost += sessionTokens.inputTokens.float * inputCostPerToken
-    
-    if modelConfig.outputCostPerMToken.isSome() and sessionTokens.outputTokens > 0:
-      let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
-      sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
-    
-    let costInfo = if sessionCost > 0: fmt" {formatCostRounded(sessionCost)}" else: ""
-    return fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo} {modelNameWithContext} > "
-  else:
-    return fmt"{statusIndicator}{modelNameWithContext} > "
+  return fmt"{modelNameWithContext} > "
 
 proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()) =
   ## Update prompt color and text based on current mode and model  
@@ -619,6 +702,7 @@ proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
   # Also update UI state for prompt display
   inputTokens = newInputTokens
   outputTokens = newOutputTokens
+  # Note: Status line will be updated on next prompt display
 
 proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   ## Custom key hook for handling special key combinations like Shift+Tab
@@ -626,7 +710,8 @@ proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
     # Toggle mode and immediately update prompt, it is refreshed by linecross
     discard toggleModeWithProtection()
     updatePromptState()
-    # Generate new prompt with updated mode and set it, then redraw
+    # Update status line and generate new prompt with updated mode
+    updateStatusLine()
     let newPrompt = generatePrompt()
     setPrompt(newPrompt)
     redraw()
@@ -634,7 +719,8 @@ proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   return false  # Key not handled, continue with default processing
 
 proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Read input with prompt showing current state  
+  ## Read input with prompt showing current state
+  updateStatusLine()  # Just sets the status, readline() will refresh
   let prompt = generatePrompt(modelConfig)
   currentInputText = readInputLine(prompt).strip()
   return currentInputText
@@ -923,13 +1009,16 @@ proc startCLIMode*(modelConfig: configTypes.ModelConfig, database: DatabaseBacke
                 stdout.flushFile()
               
               if response.content.len > 0:
-                # Reset thinking block flag when we get regular content
-                isInThinkingBlock = false
-                
+                # Add separator when transitioning from thinking to regular content
+                if isInThinkingBlock:
+                  stdout.write("\n\n")
+                  stdout.flushFile()
+                  isInThinkingBlock = false
+
                 # Save cursor position before first content chunk (for markdown overwrite) if not already set
                 if responseText.len == 0 and streamStartCursorPos == (0, 0):
                   streamStartCursorPos = linecross.getCursorPos()
-                
+
                 responseText.add(response.content)
                 # Only show streaming content if markdown is disabled to prevent double rendering
                 if not markdownEnabled:
@@ -1129,9 +1218,12 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
             stdout.flushFile()
           
           if response.content.len > 0:
-            # Reset thinking block flag when we get regular content
-            isInThinkingBlock = false
-            
+            # Add separator when transitioning from thinking to regular content
+            if isInThinkingBlock:
+              stdout.write("\n\n")
+              stdout.flushFile()
+              isInThinkingBlock = false
+
             responseText.add(response.content)
             # Only show streaming content if markdown is disabled to prevent double rendering
             if not markdownEnabled:

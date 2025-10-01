@@ -359,6 +359,15 @@ proc getAllToolSchemas*(): seq[ToolDefinition] =
 
   return schemas
 
+proc getAllToolNames*(): seq[string] =
+  ## Get names of all registered tools (built-in and MCP)
+  initializeRegistry()
+  result = toolSeq.mapIt(it.name)
+
+  # Add MCP tool names
+  {.gcsafe.}:
+    result.add(mcpTools.getMcpToolNames())
+
 proc countToolSchemaTokens*(modelName: string = "default"): int =
   ## Count tokens used by all tool schemas when sent to LLM
   ## This estimates the overhead of including tool definitions in API requests

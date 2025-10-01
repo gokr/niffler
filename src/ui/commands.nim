@@ -9,15 +9,16 @@
 ## - Unified command execution interface
 ## - Extensible command registration system
 
-import std/[strutils, strformat, tables, times, options, logging, json, httpclient]
+import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt]
-import ../types/[config as configTypes, messages]
+import ../types/[config as configTypes, messages, agents]
 import ../tokenization/[tokenizer]
 import ../tools/registry
 import ../api/curlyStreaming
 import ../mcp/[mcp, tools as mcpTools]
 import theme
 import table_utils
+import nancy
 # import linecross  # Used only in comments
 
 type
@@ -894,6 +895,89 @@ proc formatMcpStatus(status: string): string =
   of "mssError": "Error"
   else: status
 
+proc agentHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle /agent command for showing agent definitions
+  let agentsDir = getAgentsDir()
+  let agents = loadAgentDefinitions(agentsDir)
+  let knownTools = getAllToolNames()
+
+  if args.len == 0:
+    # Show table of all agents
+    if agents.len == 0:
+      return CommandResult(
+        success: true,
+        message: fmt("No agents found in {agentsDir}\nAgents will be created on next startup."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    var table: TerminalTable
+    table.add(bold("Name"), bold("Description"), bold("Tools"), bold("Status"))
+
+    for agent in agents:
+      let status = validateAgentDefinition(agent, knownTools)
+      let statusIcon = if status.valid:
+                         green("✓")
+                       elif status.unknownTools.len > 0:
+                         yellow("⚠")
+                       else:
+                         red("✗")
+      table.add(
+        agent.name,
+        truncate(agent.description, 50),
+        $agent.allowedTools.len,
+        statusIcon
+      )
+
+    let tableOutput = renderTableToString(table, maxWidth = 120)
+
+    return CommandResult(
+      success: true,
+      message: tableOutput & "\n\nUse /agent <name> to view details",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  else:
+    # Show specific agent details
+    let agentName = args[0]
+    let agentOpt = agents.filterIt(it.name == agentName)
+
+    if agentOpt.len == 0:
+      return CommandResult(
+        success: false,
+        message: fmt("Agent '{agentName}' not found. Use /agent to list all agents."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    let agent = agentOpt[0]
+    let status = validateAgentDefinition(agent, knownTools)
+
+    var message = fmt("┌─ {agent.name} ") & "─".repeat(max(0, 70 - agent.name.len - 3)) & "┐\n"
+    message &= fmt("│ Description: {agent.description}\n")
+    message &= "│\n"
+    message &= fmt("│ Allowed Tools: {agent.allowedTools.join(\", \")}\n")
+    message &= "│\n"
+
+    if status.valid:
+      if status.unknownTools.len > 0:
+        message &= fmt("│ Status: ⚠ Valid (unknown tools: {status.unknownTools.join(\", \")})\n")
+      else:
+        message &= "│ Status: ✓ Valid\n"
+    else:
+      message &= fmt("│ Status: ✗ {status.error}\n")
+
+    message &= "│\n"
+    message &= fmt("│ File: {agent.filePath}\n")
+    message &= "└" & "─".repeat(70) & "┘"
+
+    return CommandResult(
+      success: true,
+      message: message,
+      shouldExit: false,
+      shouldContinue: true
+    )
+
 proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /mcp command for showing MCP server status
   {.gcsafe.}:
@@ -980,6 +1064,7 @@ proc initializeCommands*() =
   registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
   registerCommand("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler)
+  registerCommand("agent", "List/view agent definitions", "[name]", @[], agentHandler)
 
   # Conversation management commands
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler)

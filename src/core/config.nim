@@ -17,10 +17,12 @@
 
 import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
 import ../types/[config, messages]
+import agent_defaults
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.json"
 const SQLITE_FILE_NAME = "niffler.db"
+const AGENTS_DIR_NAME = "agents"
 
 proc getConfigDir*(): string =
   ## Get platform-appropriate config directory for niffler
@@ -40,8 +42,12 @@ proc getDefaultSqlitePath*(): string =
   joinPath(getConfigDir(), SQLITE_FILE_NAME)
 
 proc getDefaultKeyPath*(): string =
-  ## Get default path for API key storage file 
+  ## Get default path for API key storage file
   joinPath(getConfigDir(), KEY_FILE_NAME)
+
+proc getAgentsDir*(): string =
+  ## Get path for agents directory
+  joinPath(getConfigDir(), AGENTS_DIR_NAME)
 
 # Global config manager
 var globalConfigManager: ConfigManager
@@ -513,13 +519,28 @@ proc createDefaultThemes(): Table[string, ThemeConfig] =
     normal: ThemeStyleConfig(color: "white", style: "bright")
   )
 
+proc initializeAgentDefaults*() =
+  ## Create default agent definitions if they don't exist
+  let agentsDir = getAgentsDir()
+
+  if not dirExists(agentsDir):
+    createDir(agentsDir)
+
+  for (name, content) in getDefaultAgents():
+    let agentFile = agentsDir / (name & ".md")
+    if not fileExists(agentFile):
+      try:
+        writeFile(agentFile, content)
+      except Exception as e:
+        echo "Warning: Could not create agent file ", agentFile, ": ", e.msg
+
 proc createDefaultNifflerMd*(configDir: string) =
   ## Create default NIFFLER.md system prompt file if it doesn't exist
   let nifflerPath = configDir / "NIFFLER.md"
-  
+
   if fileExists(nifflerPath):
     return
-    
+
   let defaultNifflerContent = """# Common System Prompt
 
 You are Niffler, an AI-powered terminal assistant built in Nim. You provide conversational assistance with software development tasks while supporting tool calling for file operations, command execution, and web fetching.
@@ -665,20 +686,26 @@ proc initializeConfig*(path: string) =
   
   writeConfig(defaultConfig, path)
   echo "Configuration initialized at: ", path
-  
+
   # Also create default NIFFLER.md
   let configDir = path.parentDir()
   createDefaultNifflerMd(configDir)
+
+  # Initialize default agent definitions
+  initializeAgentDefaults()
 
 proc loadConfig*(): Config =
   ## Load configuration from default path (thread-safe, creates if missing)
   if globalConfigManager.configPath.len == 0:
     initializeConfigManager()
-    
+
   acquire(globalConfigManager.lock)
   try:
     if not fileExists(globalConfigManager.configPath):
       initializeConfig(globalConfigManager.configPath)
+    else:
+      # Even if config exists, ensure agents are initialized
+      initializeAgentDefaults()
     globalConfigManager.config = readConfig(globalConfigManager.configPath)
     result = globalConfigManager.config
   finally:

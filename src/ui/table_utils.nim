@@ -10,13 +10,30 @@ import ../types/[config, mode]
 
 # ANSI color helpers
 proc green*(s: string): string = "\e[32m" & s & "\e[0m"
-proc red*(s: string): string = "\e[31m" & s & "\e[0m"  
+proc red*(s: string): string = "\e[31m" & s & "\e[0m"
 proc blue*(s: string): string = "\e[34m" & s & "\e[0m"
 proc yellow*(s: string): string = "\e[33m" & s & "\e[0m"
 proc cyan*(s: string): string = "\e[36m" & s & "\e[0m"
 proc magenta*(s: string): string = "\e[35m" & s & "\e[0m"
 proc bold*(s: string): string = "\e[1m" & s & "\e[0m"
 proc dim*(s: string): string = "\e[2m" & s & "\e[0m"
+
+# String utilities
+proc truncate*(s: string, maxLen: int, ellipsis: string = "..."): string =
+  ## Truncate a string to maxLen characters, adding ellipsis if truncated
+  ## Handles multi-line strings by taking only the first line
+  if s.len == 0:
+    return ""
+
+  # Take first line only
+  let firstLine = s.split('\n')[0]
+
+  # Truncate if needed
+  if firstLine.len <= maxLen:
+    return firstLine
+  else:
+    let truncLen = max(0, maxLen - ellipsis.len)
+    return firstLine[0..<truncLen] & ellipsis
 
 # Unicode box drawing characters for professional tables
 const boxSeps = (
