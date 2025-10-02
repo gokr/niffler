@@ -17,7 +17,7 @@
 ## - Collects metrics (tokens, tool calls, artifacts)
 ## - Asks LLM to summarize results before returning to main agent
 
-import std/[logging, strformat, json, times, options, os]
+import std/[logging, strformat, times, options, os]
 import ../types/[messages, config, agents]
 import channels
 import config as configModule

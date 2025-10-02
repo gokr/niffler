@@ -10,7 +10,7 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
-import ../core/[conversation_manager, config, app, database, mode_state, system_prompt]
+import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session]
 import ../types/[config as configTypes, messages, agents]
 import ../tokenization/[tokenizer]
 import ../tools/registry
@@ -35,7 +35,7 @@ type
     usage*: string
     aliases*: seq[string]
 
-  CommandHandler* = proc(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult
+  CommandHandler* = proc(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
 
 var commandRegistry = initTable[string, tuple[info: CommandInfo, handler: CommandHandler]]()
 
@@ -99,8 +99,8 @@ proc parseCommand*(input: string): tuple[command: string, args: seq[string]] =
   result.command = parts[0].toLower()
   result.args = if parts.len > 1: parts[1..^1] else: @[]
 
-proc executeCommand*(command: string, args: seq[string], 
-                    currentModel: var configTypes.ModelConfig): CommandResult =
+proc executeCommand*(command: string, args: seq[string],
+                    session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Execute a command with the given arguments
   if not commandRegistry.hasKey(command):
     return CommandResult(
@@ -110,12 +110,12 @@ proc executeCommand*(command: string, args: seq[string],
       shouldContinue: true,
       shouldResetUI: false
     )
-  
+
   let (_, handler) = commandRegistry[command]
-  return handler(args, currentModel)
+  return handler(args, session, currentModel)
 
 # Built-in command handlers
-proc helpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc helpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   var message = """
 Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.
 
@@ -139,7 +139,7 @@ Available commands:
     shouldContinue: true
   )
 
-proc exitHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc exitHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   return CommandResult(
     success: true,
     message: "Goodbye!",
@@ -148,7 +148,7 @@ proc exitHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
   )
 
 
-proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc modelHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   if args.len == 0:
     # Show current model
     return CommandResult(
@@ -194,7 +194,7 @@ proc modelHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
   )
 
 
-proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc contextHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Show current conversation context information using Nancy table
   let messages = conversation_manager.getConversationContext()
   
@@ -276,7 +276,8 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
 
   # Create and display combined context table
   try:
-    let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), modelNickname)
+    let sess = initSession()
+    let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), sess, modelNickname)
     let toolSchemaTokens = countToolSchemaTokens(modelNickname)
     
     let combinedTable = formatCombinedContextTable(
@@ -316,7 +317,7 @@ proc contextHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     shouldContinue: true
   )
 
-proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc inspectHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Generate the HTTP JSON request that would be sent to the API
   var outputFile: string = ""
   
@@ -328,9 +329,10 @@ proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     # Get existing conversation context without adding a new message
     var messages = conversation_manager.getConversationContext()
     messages = truncateContextIfNeeded(messages)
-    
+
     # Insert system message at the beginning
-    let (systemMsg, _) = createSystemMessageWithTokens(getCurrentMode(), currentModel.nickname)
+    let sess = initSession()
+    let (systemMsg, _) = createSystemMessageWithTokens(getCurrentMode(), sess, currentModel.nickname)
     messages.insert(systemMsg, 0)
     
     # Get tool schemas for the request
@@ -380,7 +382,7 @@ proc inspectHandler(args: seq[string], currentModel: var configTypes.ModelConfig
     )
 
 
-proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc costHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Show session and conversation cost breakdown with detailed token analysis
   var message = ""
   
@@ -455,7 +457,7 @@ proc costHandler(args: seq[string], currentModel: var configTypes.ModelConfig): 
   )
 
 
-proc themeHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc themeHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to a different theme or show current theme
   if args.len == 0:
     # Show current theme
@@ -484,7 +486,7 @@ proc themeHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
       shouldContinue: true
     )
 
-proc markdownHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc markdownHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Toggle markdown rendering or show current status
   if args.len == 0:
     # Show current status
@@ -529,7 +531,7 @@ proc markdownHandler(args: seq[string], currentModel: var configTypes.ModelConfi
 
 
 
-proc newConversationHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc newConversationHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Create a new conversation
   let database = getGlobalDatabase()
   if database == nil:
@@ -565,7 +567,7 @@ proc newConversationHandler(args: seq[string], currentModel: var configTypes.Mod
       shouldResetUI: false
     )
 
-proc archiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc archiveHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Archive a conversation
   if args.len == 0:
     return CommandResult(
@@ -608,7 +610,7 @@ proc archiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig
       shouldContinue: true
     )
 
-proc unarchiveHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc unarchiveHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Unarchive a conversation
   if args.len == 0:
     return CommandResult(
@@ -651,7 +653,7 @@ proc unarchiveHandler(args: seq[string], currentModel: var configTypes.ModelConf
       shouldContinue: true
     )
 
-proc searchConversationsHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc searchConversationsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Search conversations by title or content
   if args.len == 0:
     return CommandResult(
@@ -694,7 +696,7 @@ proc searchConversationsHandler(args: seq[string], currentModel: var configTypes
     shouldContinue: true
   )
 
-proc conversationInfoHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc conversationInfoHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Show current conversation info
   let currentSession = getCurrentSession()
   if currentSession.isNone():
@@ -730,7 +732,7 @@ proc conversationInfoHandler(args: seq[string], currentModel: var configTypes.Mo
     shouldContinue: true
   )
 
-proc modelsHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc modelsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## List available models from the API endpoint
   try:
     let client = newHttpClient()
@@ -764,7 +766,7 @@ proc modelsHandler(args: seq[string], currentModel: var configTypes.ModelConfig)
       shouldContinue: true
     )
 
-proc convHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc convHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Unified conversation command - list when no args, switch when args provided
   let database = getGlobalDatabase()
   if database == nil:
@@ -895,9 +897,9 @@ proc formatMcpStatus(status: string): string =
   of "mssError": "Error"
   else: status
 
-proc agentHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc agentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /agent command for showing agent definitions
-  let agentsDir = getAgentsDir()
+  let agentsDir = session.getAgentsDir()
   let agents = loadAgentDefinitions(agentsDir)
   let knownTools = getAllToolNames()
 
@@ -978,7 +980,7 @@ proc agentHandler(args: seq[string], currentModel: var configTypes.ModelConfig):
       shouldContinue: true
     )
 
-proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): CommandResult =
+proc mcpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /mcp command for showing MCP server status
   {.gcsafe.}:
     if args.len == 0 or args[0] == "status":
@@ -1053,11 +1055,70 @@ proc mcpHandler(args: seq[string], currentModel: var configTypes.ModelConfig): C
         shouldResetUI: false
       )
 
+proc configHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle config command - list or switch configurations
+  if args.len == 0:
+    # List available configs
+    let configs = listAvailableConfigs(session)
+    var output = "Available configs:\n"
+
+    if configs.global.len > 0:
+      output.add("  Global:\n")
+      for cfg in configs.global:
+        let marker = if cfg == session.currentConfig: " (active)" else: ""
+        output.add(fmt"    - {cfg}{marker}\n")
+
+    if configs.project.len > 0:
+      output.add("  Project:\n")
+      for cfg in configs.project:
+        let marker = if cfg == session.currentConfig: " (active)" else: ""
+        output.add(fmt"    - {cfg}{marker}\n")
+
+    output.add("\n")
+    displayConfigInfo(session)
+
+    return CommandResult(
+      success: true,
+      message: output,
+      shouldExit: false,
+      shouldContinue: true,
+      shouldResetUI: false
+    )
+  else:
+    # Switch or reload config
+    let targetConfig = args[0]
+    let (success, reloaded) = switchConfig(session, targetConfig)
+
+    if not success:
+      return CommandResult(
+        success: false,
+        message: fmt"Config '{targetConfig}' not found",
+        shouldExit: false,
+        shouldContinue: true,
+        shouldResetUI: false
+      )
+
+    if reloaded:
+      echo fmt"Reloaded config: {targetConfig}"
+    else:
+      echo fmt"Switched to config: {targetConfig}"
+
+    displayConfigInfo(session)
+
+    return CommandResult(
+      success: true,
+      message: "",
+      shouldExit: false,
+      shouldContinue: true,
+      shouldResetUI: true  # Reload prompts
+    )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   registerCommand("help", "Show help and available commands", "", @[], helpHandler)
   registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler)
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler)
+  registerCommand("config", "Switch or list configs", "[name]", @[], configHandler)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler)
   registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler)
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)

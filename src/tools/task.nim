@@ -17,7 +17,7 @@
 
 import std/[json, logging, strformat, strutils]
 import ../types/[agents, config]
-import ../core/[config as configModule, task_executor, channels]
+import ../core/[config as configModule, task_executor, channels, session as sessionMod]
 
 # Thread-local storage for channels (set by tool worker)
 var taskToolChannels* {.threadvar.}: ptr ThreadChannels
@@ -47,7 +47,7 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
 
       # Handle special "list" command to show available agents
       if agentType == "list":
-        let agentsDir = getAgentsDir()
+        let agentsDir = sessionMod.getAgentsDir()
         let agents = loadAgentDefinitions(agentsDir)
         var agentList = "Available agents:\n\n"
         for agent in agents:
@@ -60,7 +60,7 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
         }
 
       # Load agent definition
-      let agentsDir = getAgentsDir()
+      let agentsDir = sessionMod.getAgentsDir()
       let agents = loadAgentDefinitions(agentsDir)
       let agent = agents.findAgent(agentType)
 

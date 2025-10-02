@@ -146,6 +146,8 @@ type
     defaultReasoningContentType*: Option[ReasoningContentType]
     # External rendering configuration
     externalRendering*: Option[ExternalRenderingConfig]
+    # Active config directory selection
+    config*: Option[string]
 
   KeyConfig* = Table[string, string]
 

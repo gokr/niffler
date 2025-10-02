@@ -30,8 +30,9 @@ when compileOption("threads"):
 else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 
-import ../types/[tools, messages, agents]
-import ../core/[channels, database, config]
+import ../types/[tools, messages, agents, config as configTypes]
+import ../core/[channels, database]
+import ../core/session as sessionMod
 import registry
 import task
 import ../mcp/tools as mcpTools
@@ -64,7 +65,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   # Initialize task tool context with channels
   # Model config will be set to empty initially, can be overridden by task tool parameter
   {.gcsafe.}:
-    setTaskToolContext(channels, ModelConfig())
+    setTaskToolContext(channels, configTypes.ModelConfig())
 
   debug("Tool worker thread started")
     
@@ -96,7 +97,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             let agentContext = if request.agentName.len > 0:
               # Task agent - load its definition and check permissions
               {.gcsafe.}:
-                let agentsDir = getAgentsDir()
+                let agentsDir = sessionMod.getAgentsDir()
                 let agents = loadAgentDefinitions(agentsDir)
                 let agent = agents.findAgent(request.agentName)
                 if agent.name.len == 0:

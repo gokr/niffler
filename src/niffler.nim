@@ -25,7 +25,7 @@
 import std/[os, tables, logging, strformat]
 import docopt
 
-import core/[config, channels, conversation_manager, database]
+import core/[config, channels, conversation_manager, database, session]
 import core/log_file as logFileModule
 import api/curlyStreaming
 import ui/cli
@@ -92,14 +92,19 @@ proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: 
   ## Start interactive CLI mode with specified model and logging configuration
   # Initialize app systems and get database
   let databaseBackend = initializeAppSystems(level, dump, logFile)
-  
+
+  # Initialize session
+  var sess = initSession()
+  displayConfigInfo(sess)
+  echo ""
+
   # Load configuration and select model
   let config = loadConfig()
   let selectedModel = selectModelFromConfig(modelName, config)
-  
+
   # Start CLI mode (database already initialized earlier)
   try:
-    startCLIMode(selectedModel, databaseBackend, level, dump)
+    startCLIMode(sess, selectedModel, databaseBackend, level, dump)
   except Exception as e:
     echo fmt"CLI mode failed: {e.msg}"
     echo "CLI requires linecross library for enhanced input"

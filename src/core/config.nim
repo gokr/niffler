@@ -18,6 +18,7 @@
 import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
 import ../types/[config, messages]
 import agent_defaults
+import templates
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.json"
@@ -46,7 +47,9 @@ proc getDefaultKeyPath*(): string =
   joinPath(getConfigDir(), KEY_FILE_NAME)
 
 proc getAgentsDir*(): string =
-  ## Get path for agents directory
+  ## DEPRECATED: Get path for default agents directory (~/.niffler/agents)
+  ## For config-aware agent directory, use session.getAgentsDir() instead
+  ## This function exists for backward compatibility and is NOT config-aware
   joinPath(getConfigDir(), AGENTS_DIR_NAME)
 
 # Global config manager
@@ -259,15 +262,23 @@ proc parseConfig(configJson: JsonNode): Config =
     for fileNode in configJson["instructionFiles"]:
       instructionFiles.add(fileNode.getStr())
     result.instructionFiles = some(instructionFiles)
-    
+
   if configJson.hasKey("externalRendering"):
     result.externalRendering = some(parseExternalRenderingConfig(configJson["externalRendering"]))
+
+  if configJson.hasKey("config"):
+    result.config = some(configJson["config"].getStr())
 
 proc readConfig*(path: string): Config =
   ## Read and parse configuration file from specified path
   let content = readFile(path)
   let configJson = parseJson(content)
   return parseConfig(configJson)
+
+proc loadConfigFromPath*(path: string): Config =
+  ## Load configuration from an arbitrary path (for project-level configs)
+  ## This is an exported version of readConfig for external use
+  return readConfig(path)
 
 proc writeConfig*(config: Config, path: string) =
   ## Write configuration to JSON file with proper formatting
@@ -403,7 +414,10 @@ proc writeConfig*(config: Config, path: string) =
     renderingObj["diffRenderer"] = newJString(renderingConfig.diffRenderer)
     renderingObj["fallbackToBuiltin"] = newJBool(renderingConfig.fallbackToBuiltin)
     configJson["externalRendering"] = renderingObj
-  
+
+  if config.config.isSome():
+    configJson["config"] = newJString(config.config.get())
+
   writeFile(path, pretty(configJson, 2))
 
 proc readKeys*(): KeyConfig =
@@ -616,14 +630,42 @@ This NIFFLER.md file provides system-wide defaults for all projects, see the NIF
     echo "Warning: Could not create NIFFLER.md at: ", nifflerPath
 
 proc initializeConfig*(path: string) =
-  ## Initialize configuration with sensible defaults and create directory structure
+  ## Initialize configuration with sensible defaults and create config directories
+  ## Creates both "default" and "cc" config directories directly under ~/.niffler/
   if fileExists(path):
     echo "Configuration file already exists: ", path
-    # Even if config exists, create NIFFLER.md if it doesn't
-    let configDir = path.parentDir()
-    createDefaultNifflerMd(configDir)
     return
-    
+
+  let configDir = path.parentDir()
+
+  # Create config directories directly under ~/.niffler/
+  createDir(configDir / "default")
+  createDir(configDir / "default" / "agents")
+  createDir(configDir / "cc")
+  createDir(configDir / "cc" / "agents")
+
+  # Write minimal template to default config
+  try:
+    writeFile(configDir / "default" / "NIFFLER.md", MINIMAL_TEMPLATE)
+    echo "Created minimal config at: ", configDir / "default" / "NIFFLER.md"
+  except:
+    echo "Warning: Could not create default NIFFLER.md"
+
+  # Write Claude Code template to cc config
+  try:
+    writeFile(configDir / "cc" / "NIFFLER.md", CLAUDE_CODE_TEMPLATE)
+    echo "Created Claude Code config at: ", configDir / "cc" / "NIFFLER.md"
+  except:
+    echo "Warning: Could not create cc NIFFLER.md"
+
+  # Write default agent definition to both configs
+  try:
+    writeFile(configDir / "default" / "agents" / "general-purpose.md", DEFAULT_AGENT_MD)
+    writeFile(configDir / "cc" / "agents" / "general-purpose.md", DEFAULT_AGENT_MD)
+    echo "Created default agent definitions"
+  except:
+    echo "Warning: Could not create agent definitions"
+
   let defaultConfig = Config(
     yourName: "User",
     models: @[
@@ -634,16 +676,14 @@ proc initializeConfig*(path: string) =
         context: 262144,
         `type`: some(mtStandard),
         enabled: true,
-        # OpenAI protocol parameters
         temperature: some(0.7),
         topP: some(0.8),
         topK: some(20),
         maxTokens: some(65536),
         presencePenalty: some(0.0),
         frequencyPenalty: some(1.05),
-        # Cost tracking parameters (example rates for GPT-4o)
-        inputCostPerMToken: some(0.4),  # $2.50 per million tokens
-        outputCostPerMToken: some(1.6),   # $10.00 per million tokens
+        inputCostPerMToken: some(0.4),
+        outputCostPerMToken: some(1.6),
         apiEnvVar: some("REQUESTY_API_KEY")
       ),
       ModelConfig(
@@ -681,17 +721,15 @@ proc initializeConfig*(path: string) =
       contentRenderer: "batcat --color=always --style=numbers --theme=auto {file}",
       diffRenderer: "delta --line-numbers --syntax-theme=auto",
       fallbackToBuiltin: true
-    ))
+    )),
+    config: some("default")
   )
-  
+
   writeConfig(defaultConfig, path)
   echo "Configuration initialized at: ", path
+  echo "Active config: default (change with /config command or edit config.json)"
 
-  # Also create default NIFFLER.md
-  let configDir = path.parentDir()
-  createDefaultNifflerMd(configDir)
-
-  # Initialize default agent definitions
+  # Initialize default agent definitions (legacy support)
   initializeAgentDefaults()
 
 proc loadConfig*(): Config =

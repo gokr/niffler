@@ -16,6 +16,7 @@ import ../types/[mode, messages]
 import ../tools/registry
 import ../tokenization/tokenizer
 import config
+import session
 
 type
   SystemPromptTokens* = object
@@ -379,28 +380,28 @@ proc processFileIncludes*(content: string, basePath: string): string =
   
   result = processedLines.join("\n")
 
-proc extractSystemPromptsFromNiffler*(): tuple[common: string, planMode: string, codeMode: string] =
-  ## Extract custom system prompts from NIFFLER.md searching project hierarchy then config dir
+proc extractSystemPromptsFromNiffler*(sess: Session): tuple[common: string, planMode: string, codeMode: string] =
+  ## Extract custom system prompts from NIFFLER.md in active config or project hierarchy
   var searchPaths: seq[string] = @[]
-  
-  # First search up the project hierarchy
+
+  # First search active config directory
+  try:
+    let activeConfigDir = getActiveConfigDir(sess)
+    searchPaths.add(activeConfigDir)
+  except:
+    discard
+
+  # Then search up the project hierarchy (for project-specific overrides)
   var searchPath = getCurrentDir()
-  let maxDepth = 3  # Search up to 3 levels
-  
+  let maxDepth = 3
+
   for depth in 0..<maxDepth:
     searchPaths.add(searchPath)
     let parentPath = searchPath.parentDir()
     if parentPath == searchPath:  # Reached root
       break
     searchPath = parentPath
-  
-  # Then search in config directory (~/.niffler)
-  try:
-    let configDir = getDefaultConfigPath().parentDir()
-    searchPaths.add(configDir)
-  except:
-    discard
-  
+
   # Search all paths for NIFFLER.md
   for searchDir in searchPaths:
     let nifflerPath = searchDir / "NIFFLER.md"
@@ -410,47 +411,51 @@ proc extractSystemPromptsFromNiffler*(): tuple[common: string, planMode: string,
         # Process any @include directives
         let content = processFileIncludes(rawContent, searchDir)
         let sections = parseMarkdownSections(content)
-        
+
         let commonPrompt = sections.getOrDefault("Common System Prompt", "")
         let planPrompt = sections.getOrDefault("Plan Mode Prompt", "")
         let codePrompt = sections.getOrDefault("Code Mode Prompt", "")
-        
+
         return (commonPrompt, planPrompt, codePrompt)
       except:
         discard
-  
+
   return ("", "", "")
 
-proc findInstructionFiles*(): string =
-  ## Find and include instruction files (CLAUDE.md, OCTO.md, etc.) from project or config directory
+proc findInstructionFiles*(sess: Session): string =
+  ## Find and include instruction files from active config directory or project hierarchy
   var instructionContent = ""
-  
+
   # Get instruction files from config, or use defaults
   let config = loadConfig()
   let instructionFiles = if config.instructionFiles.isSome():
     config.instructionFiles.get()
   else:
     @["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"]
-  
-  # Build search paths - project hierarchy first, then config directory
+
+  # Build search paths with priority:
+  # 1. Active config directory (for global config)
+  # 2. Project hierarchy (for project-specific overrides)
   var searchPaths: seq[string] = @[]
+
+  # Add active config directory first
+  try:
+    let activeConfigDir = getActiveConfigDir(sess)
+    searchPaths.add(activeConfigDir)
+  except:
+    discard
+
+  # Add current project hierarchy
   var searchPath = getCurrentDir()
-  let maxDepth = 3  # Search up to 3 levels
-  
+  let maxDepth = 3
+
   for depth in 0..<maxDepth:
     searchPaths.add(searchPath)
     let parentPath = searchPath.parentDir()
     if parentPath == searchPath:  # Reached root
       break
     searchPath = parentPath
-  
-  # Add config directory to search paths
-  try:
-    let configDir = getDefaultConfigPath().parentDir()
-    searchPaths.add(configDir)
-  except:
-    discard
-  
+
   # Search all paths for instruction files
   for depth, searchDir in searchPaths:
     for filename in instructionFiles:
@@ -459,33 +464,33 @@ proc findInstructionFiles*(): string =
         try:
           let rawContent = readFile(fullPath)
           let relativePath = if depth == 0: filename else: "../".repeat(depth) & filename
-          
+
           # For NIFFLER.md, exclude the system prompt sections but include everything else
           if filename == "NIFFLER.md":
             # Process includes first
             let contentWithIncludes = processFileIncludes(rawContent, searchDir)
             let sections = parseMarkdownSections(contentWithIncludes)
             var filteredContent = ""
-            
+
             for heading, sectionContent in sections:
               # Skip the system prompt sections
-              if heading notin ["Common System Prompt", "Plan Mode Prompt", "Code Mode Prompt"]:
+              if heading notin ["Common System Prompt", "Plan Mode Prompt", "Code Mode Prompt", "Tool Descriptions"]:
                 filteredContent.add(fmt("# {heading}\n\n{sectionContent}\n\n"))
-            
+
             if filteredContent.len > 0:
               instructionContent.add(fmt("\n\n--- {relativePath} ---\n{filteredContent}"))
           else:
             # Process includes for non-NIFFLER.md files too
             let contentWithIncludes = processFileIncludes(rawContent, searchDir)
             instructionContent.add(fmt("\n\n--- {relativePath} ---\n{contentWithIncludes}"))
-          
+
           return instructionContent  # Return after finding the first instruction file
         except:
           continue
-  
+
   return instructionContent
 
-proc generateSystemPromptWithTokens*(mode: AgentMode, modelName: string = "default"): SystemPromptResult =
+proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: string = "default"): SystemPromptResult =
   ## Generate complete context-aware system prompt with token breakdown
   ## Uses the same logic as generateSystemPrompt but tracks token counts for each component
   let availableTools = getAvailableToolsList()
@@ -494,10 +499,10 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, modelName: string = "defau
   let osInfo = getOSInfo()
   let gitInfo = getGitInfo()
   let projectInfo = getProjectInfo()
-  let instructionFiles = findInstructionFiles()
-  
+  let instructionFiles = findInstructionFiles(sess)
+
   # Try to extract prompts from NIFFLER.md, fallback to hardcoded
-  let (nifflerCommon, nifflerPlan, nifflerCode) = extractSystemPromptsFromNiffler()
+  let (nifflerCommon, nifflerPlan, nifflerCode) = extractSystemPromptsFromNiffler(sess)
   
   let commonPrompt = if nifflerCommon.len > 0: nifflerCommon else: COMMON_SYSTEM_PROMPT
   let planPrompt = if nifflerPlan.len > 0: nifflerPlan else: PLAN_MODE_PROMPT
@@ -563,21 +568,20 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, modelName: string = "defau
     )
   )
 
-proc generateSystemPrompt*(mode: AgentMode): string =
+proc generateSystemPrompt*(mode: AgentMode, sess: Session): string =
   ## Generate complete context-aware system prompt based on current mode and environment
-  ## This is the original function for backward compatibility
-  return generateSystemPromptWithTokens(mode, "default").content
+  return generateSystemPromptWithTokens(mode, sess, "default").content
 
-proc createSystemMessage*(mode: AgentMode): Message =
+proc createSystemMessage*(mode: AgentMode, sess: Session): Message =
   ## Create a system message with generated prompt for the specified agent mode
   return Message(
     role: mrSystem,
-    content: generateSystemPrompt(mode)
+    content: generateSystemPrompt(mode, sess)
   )
 
-proc createSystemMessageWithTokens*(mode: AgentMode, modelName: string): tuple[message: Message, tokens: SystemPromptTokens] =
+proc createSystemMessageWithTokens*(mode: AgentMode, sess: Session, modelName: string): tuple[message: Message, tokens: SystemPromptTokens] =
   ## Create a system message with token breakdown tracking for API request analysis
-  let systemPromptResult = generateSystemPromptWithTokens(mode, modelName)
+  let systemPromptResult = generateSystemPromptWithTokens(mode, sess, modelName)
   let message = Message(
     role: mrSystem,
     content: systemPromptResult.content

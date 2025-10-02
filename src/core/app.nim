@@ -18,7 +18,7 @@
 ## - Provides both interactive and single-shot execution modes
 
 import std/[strformat, logging, options, strutils, terminal, random, os, re, json, times]
-import channels, conversation_manager, config, system_prompt, database, mode_state
+import channels, conversation_manager, config, system_prompt, database, mode_state, session
 import ../types/[messages, config as configTypes, mode]
 import ../api/api
 import ../tools/common
@@ -291,9 +291,10 @@ proc prepareConversationMessagesWithTokens*(text: string, modelName: string): (s
   ## Returns messages, request ID, system prompt tokens, and tool schema tokens
   var messages = getConversationContext()
   messages = truncateContextIfNeeded(messages)
-  
+
   # Insert system message at the beginning based on current mode and get token breakdown
-  let (systemMsg, systemTokens) = createSystemMessageWithTokens(getCurrentMode(), modelName)
+  let sess = initSession()
+  let (systemMsg, systemTokens) = createSystemMessageWithTokens(getCurrentMode(), sess, modelName)
   messages.insert(systemMsg, 0)
   
   # Count tool schema tokens
