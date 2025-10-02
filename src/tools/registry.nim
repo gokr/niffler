@@ -19,18 +19,18 @@
 import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
 import ../tokenization/tokenizer
-import bash, create, edit, fetch, list, read, todolist
+import bash, create, edit, fetch, list, read, todolist, task
 import ../mcp/tools as mcpTools
 
 type
   ToolKind* = enum
-    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist
+    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask
 
   Tool* = object
     requiresConfirmation*: bool
     schema*: ToolDefinition
     case kind*: ToolKind
-    of tkBash: 
+    of tkBash:
       bashExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkRead:
       readExecute*: proc(args: JsonNode): string {.gcsafe.}
@@ -44,6 +44,8 @@ type
       fetchExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTodolist:
       todolistExecute*: proc(args: JsonNode): string {.gcsafe.}
+    of tkTask:
+      taskExecute*: proc(args: JsonNode): string {.gcsafe.}
 
 # Accessor methods for Tool fields
 proc name*(tool: Tool): string = tool.schema.function.name
@@ -296,23 +298,60 @@ proc createTodolistTool(): Tool =
     todolistExecute: executeTodolist
   )
 
+proc createTaskTool(): Tool =
+  let parameters = %*{
+    "type": "object",
+    "properties": {
+      "agent_type": {
+        "type": "string",
+        "description": "Name of agent to execute the task (e.g., 'general-purpose', 'code-focused'). Use 'list' to see available agents."
+      },
+      "description": {
+        "type": "string",
+        "description": "Detailed task description including context and expected outcome"
+      },
+      "estimated_complexity": {
+        "type": "string",
+        "description": "Complexity estimate for token budget planning",
+        "enum": ["simple", "moderate", "complex"]
+      }
+    },
+    "required": ["agent_type", "description"]
+  }
+  let schema = ToolDefinition(
+    `type`: "function",
+    function: ToolFunction(
+      name: "task",
+      description: "Create an autonomous task for a specialized agent to execute. Agents have restricted tool access based on their type.",
+      parameters: parameters
+    )
+  )
+
+  Tool(
+    kind: tkTask,
+    requiresConfirmation: false,
+    schema: schema,
+    taskExecute: executeTask
+  )
+
 proc initializeRegistry() =
   ## Initialize the tool registry with all available tools (thread-safe, idempotent)
   if registryInitialized:
     return
-    
+
   toolRegistry = initTable[string, Tool]()
   toolSeq = @[]
-  
+
   # Create and register all tools
   let tools = @[
     createBashTool(),
-    createReadTool(), 
+    createReadTool(),
     createListTool(),
     createEditTool(),
     createCreateTool(),
     createFetchTool(),
-    createTodolistTool()
+    createTodolistTool(),
+    createTaskTool()
   ]
   
   for tool in tools:
@@ -346,6 +385,7 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
   of tkCreate: tool.createExecute(args)
   of tkFetch: tool.fetchExecute(args)
   of tkTodolist: tool.todolistExecute(args)
+  of tkTask: tool.taskExecute(args)
 
 proc getAllToolSchemas*(): seq[ToolDefinition] =
   ## Get JSON schemas for all registered tools (for LLM function calling)
