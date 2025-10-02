@@ -57,6 +57,32 @@ proc isToolAllowed*(context: AgentContext, toolName: string): bool =
   # For task agents, check the whitelist
   return toolName in context.agent.allowedTools
 
+# Task execution types
+type
+  TaskStatus* = enum
+    tsPending = "pending"
+    tsRunning = "running"
+    tsCompleted = "completed"
+    tsFailed = "failed"
+
+  TaskResult* = object
+    success*: bool
+    summary*: string              ## LLM-generated summary of findings
+    artifacts*: seq[string]       ## File paths created/read
+    toolCalls*: int               ## Number of tool calls made
+    tokensUsed*: int              ## Total tokens consumed
+    error*: string                ## Error message if failed
+
+  TaskExecution* = object
+    id*: int                      ## Database ID
+    conversationId*: int          ## Parent conversation ID
+    agentName*: string            ## Agent executing the task
+    description*: string          ## Task description
+    status*: TaskStatus           ## Current status
+    startedAt*: string            ## ISO timestamp
+    completedAt*: string          ## ISO timestamp
+    result*: TaskResult           ## Final result
+
 proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition =
   ## Parse markdown file into agent definition
   result.filePath = filePath
