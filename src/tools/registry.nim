@@ -310,6 +310,10 @@ proc createTaskTool(): Tool =
         "type": "string",
         "description": "Detailed task description including context and expected outcome"
       },
+      "model_nickname": {
+        "type": "string",
+        "description": "Model to use for task execution (optional, defaults to current model)"
+      },
       "estimated_complexity": {
         "type": "string",
         "description": "Complexity estimate for token budget planning",

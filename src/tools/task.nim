@@ -17,7 +17,16 @@
 
 import std/[json, logging, strformat, strutils]
 import ../types/[agents, config]
-import ../core/[config as configModule]
+import ../core/[config as configModule, task_executor, channels]
+
+# Thread-local storage for channels (set by tool worker)
+var taskToolChannels* {.threadvar.}: ptr ThreadChannels
+var taskToolModelConfig* {.threadvar.}: ModelConfig
+
+proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig) =
+  ## Set the context needed for task execution (called by tool worker)
+  taskToolChannels = channels
+  taskToolModelConfig = modelConfig
 
 proc getArgStr(args: JsonNode, key: string): string =
   ## Extract string argument from JSON node
@@ -60,26 +69,39 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
           "error": fmt("Agent '{agentType}' not found. Use agent_type='list' to see available agents.")
         }
 
-      # Get current model config (TODO: make this accessible from gcsafe context)
-      # For now, use a placeholder - this will be improved when we integrate with the full system
-      let modelConfig = ModelConfig(
-        nickname: "placeholder",
-        baseUrl: "",
-        model: "",
-        context: 0,
-        enabled: true
-      )
+      # Check if we have the required context for task execution
+      if taskToolChannels.isNil:
+        return $ %*{
+          "error": "Task execution context not available. Task tool requires channels to be set."
+        }
 
-      # Execute the task (placeholder for now)
-      # TODO: Get actual channels pointer and execute task
-      let taskResult = TaskResult(
-        success: true,
-        summary: fmt("Task execution for agent '{agentType}' not yet fully implemented. Task description: {description}"),
-        artifacts: @[],
-        toolCalls: 0,
-        tokensUsed: 0,
-        error: ""
-      )
+      # Get model configuration
+      let modelNickname = if args.hasKey("model_nickname"): args["model_nickname"].getStr() else: ""
+      let modelConfig = if modelNickname.len > 0:
+        # User specified a model
+        let config = configModule.loadConfig()
+        var foundModel: ModelConfig
+        var found = false
+        for m in config.models:
+          if m.nickname == modelNickname:
+            foundModel = m
+            found = true
+            break
+        if not found:
+          return $ %*{
+            "error": fmt("Model '{modelNickname}' not found in configuration")
+          }
+        foundModel
+      elif taskToolModelConfig.nickname.len > 0:
+        # Use the stored model config from context
+        taskToolModelConfig
+      else:
+        return $ %*{
+          "error": "No model specified and no default model available"
+        }
+
+      # Execute the task using the task executor
+      let taskResult = task_executor.executeTask(agent, description, modelConfig, taskToolChannels)
 
       # Return the result
       return $ %*{

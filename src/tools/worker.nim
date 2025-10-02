@@ -33,6 +33,7 @@ else:
 import ../types/[tools, messages, agents]
 import ../core/[channels, database, config]
 import registry
+import task
 import ../mcp/tools as mcpTools
 import debby/pools
 
@@ -59,6 +60,11 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   setLogFilter(params.level)
 
   let channels = params.channels
+
+  # Initialize task tool context with channels
+  # Model config will be set to empty initially, can be overridden by task tool parameter
+  {.gcsafe.}:
+    setTaskToolContext(channels, ModelConfig())
 
   debug("Tool worker thread started")
     
