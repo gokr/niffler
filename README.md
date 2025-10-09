@@ -202,6 +202,7 @@ For more details on MCP and available servers, see the [Model Context Protocol d
 ### Optional Prerequisites (Enhanced Rendering)
 - **[batcat](https://github.com/sharkdp/bat)**: For syntax-highlighted file content display
 - **[delta](https://github.com/dandavison/delta)**: For advanced diff visualization with side-by-side view and word-level highlighting
+- **[trafilatura](https://trafilatura.readthedocs.io/)**: For enhanced web content extraction with the fetch tool
 
 If these tools are not installed, Niffler will automatically fall back to built-in rendering.
 
@@ -601,12 +602,124 @@ choco install delta
 cargo install git-delta
 ```
 
+**Install trafilatura:**
+```bash
+# Using pipx (recommended for CLI tools)
+sudo apt install pipx
+pipx install trafilatura
+
+# Using pip in a virtual environment
+python3 -m venv ~/venv
+~/venv/bin/pip install trafilatura
+
+# System-wide (if available)
+sudo apt install python3-trafilatura
+```
+
 #### Benefits
 
 - **Enhanced Syntax Highlighting**: Rich color coding and theme support
 - **Advanced Diff Visualization**: Side-by-side view, word-level highlighting, and better formatting
 - **Consistent Terminal Experience**: Integrates seamlessly with your existing terminal workflow
 - **Customizable**: Full control over rendering commands and options
+
+### Text Extraction Configuration
+
+Niffler supports configurable external tools for enhanced web content text extraction. By default, it uses a built-in HTML parser, but you can configure external tools like [trafilatura](https://trafilatura.readthedocs.io/) for superior text extraction quality.
+
+#### Default Configuration
+
+Without configuration, Niffler uses its built-in HTML-to-text converter. To enable external text extraction:
+
+```json
+{
+  "textExtraction": {
+    "enabled": true,
+    "command": "trafilatura -u {url}",
+    "mode": "url",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+#### Configuration Options
+
+- **`enabled`**: Enable/disable external text extraction (boolean, default: false)
+- **`command`**: Command template for text extraction tool
+  - Use `{url}` placeholder for URL-based mode
+  - Command alone for stdin-based mode
+- **`mode`**: How to pass content to the external tool:
+  - `"url"`: Pass URL as command argument (e.g., `trafilatura -u {url}`)
+  - `"stdin"`: Pipe HTML content via stdin (e.g., `trafilatura`)
+- **`fallbackToBuiltin`**: Use built-in extraction if external tool fails (boolean, default: true)
+
+#### Example Configurations
+
+**URL Mode (recommended for trafilatura):**
+```json
+{
+  "textExtraction": {
+    "enabled": true,
+    "command": "trafilatura -u {url}",
+    "mode": "url",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+**Stdin Mode (pipe HTML content):**
+```json
+{
+  "textExtraction": {
+    "enabled": true,
+    "command": "trafilatura",
+    "mode": "stdin",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+**Custom Tool Example:**
+```json
+{
+  "textExtraction": {
+    "enabled": true,
+    "command": "html2text",
+    "mode": "stdin",
+    "fallbackToBuiltin": true
+  }
+}
+```
+
+#### Features
+
+- **Automatic Tool Detection**: Checks if external tools are available before using them
+- **Graceful Fallback**: Uses built-in extraction if external tool fails or is unavailable
+- **Two Operating Modes**: URL-based or stdin-based depending on tool capabilities
+- **Enhanced Quality**: External tools like trafilatura provide superior text extraction with better content detection
+- **Fetch Tool Integration**: Automatically used by the `fetch` tool when processing HTML content
+
+#### How It Works
+
+When the AI uses the `fetch` tool to retrieve web content:
+
+1. **HTML Detection**: If the response is HTML and text conversion is enabled
+2. **External Extraction** (if configured): Attempts to use the configured external tool
+3. **Fallback**: If external tool fails and `fallbackToBuiltin` is true, uses built-in parser
+4. **Result**: Returns extracted text with `extraction_method` field indicating which method was used
+
+The `extraction_method` in fetch results can be:
+- `"external"`: Successfully used external tool
+- `"builtin"`: Used built-in HTML parser
+- `"builtin-fallback"`: External tool failed, fell back to builtin
+- `"none"`: No text extraction performed
+
+#### Benefits
+
+- **Better Content Extraction**: Tools like trafilatura excel at identifying main content and removing boilerplate
+- **Configurable**: Choose the tool that best fits your needs
+- **Reliable**: Automatic fallback ensures fetch always works
+- **Flexible**: Supports both URL-passing and stdin-piping modes for different tools
 ### Archive and Unarchive Commands
 
 Niffler provides conversation archiving functionality to help you organize your conversations while preserving them for future reference. Archived conversations are hidden from the main conversation list but can be restored when needed.
