@@ -168,6 +168,19 @@ proc parseExternalRenderingConfig(node: JsonNode): ExternalRenderingConfig =
   result.diffRenderer = node.getOrDefault("diffRenderer").getStr("delta --line-numbers --syntax-theme=auto")
   result.fallbackToBuiltin = node.getOrDefault("fallbackToBuiltin").getBool(true)
 
+proc parseTextExtractionConfig(node: JsonNode): TextExtractionConfig =
+  result.enabled = node.getOrDefault("enabled").getBool(false)
+  result.command = node.getOrDefault("command").getStr("trafilatura -u {url}")
+  result.fallbackToBuiltin = node.getOrDefault("fallbackToBuiltin").getBool(true)
+
+  if node.hasKey("mode"):
+    case node["mode"].getStr():
+    of "url": result.mode = temUrl
+    of "stdin": result.mode = temStdin
+    else: result.mode = temUrl
+  else:
+    result.mode = temUrl
+
 proc parseDatabaseConfig(node: JsonNode): DatabaseConfig =
   result.enabled = node.getOrDefault("enabled").getBool(true)
   
@@ -265,6 +278,9 @@ proc parseConfig(configJson: JsonNode): Config =
 
   if configJson.hasKey("externalRendering"):
     result.externalRendering = some(parseExternalRenderingConfig(configJson["externalRendering"]))
+
+  if configJson.hasKey("textExtraction"):
+    result.textExtraction = some(parseTextExtractionConfig(configJson["textExtraction"]))
 
   if configJson.hasKey("config"):
     result.config = some(configJson["config"].getStr())
@@ -414,6 +430,15 @@ proc writeConfig*(config: Config, path: string) =
     renderingObj["diffRenderer"] = newJString(renderingConfig.diffRenderer)
     renderingObj["fallbackToBuiltin"] = newJBool(renderingConfig.fallbackToBuiltin)
     configJson["externalRendering"] = renderingObj
+
+  if config.textExtraction.isSome():
+    var textExtObj = newJObject()
+    let textExtConfig = config.textExtraction.get()
+    textExtObj["enabled"] = newJBool(textExtConfig.enabled)
+    textExtObj["command"] = newJString(textExtConfig.command)
+    textExtObj["mode"] = newJString($textExtConfig.mode)
+    textExtObj["fallbackToBuiltin"] = newJBool(textExtConfig.fallbackToBuiltin)
+    configJson["textExtraction"] = textExtObj
 
   if config.config.isSome():
     configJson["config"] = newJString(config.config.get())
@@ -632,39 +657,80 @@ This NIFFLER.md file provides system-wide defaults for all projects, see the NIF
 proc initializeConfig*(path: string) =
   ## Initialize configuration with sensible defaults and create config directories
   ## Creates both "default" and "cc" config directories directly under ~/.niffler/
-  if fileExists(path):
-    echo "Configuration file already exists: ", path
-    return
-
   let configDir = path.parentDir()
 
   # Create config directories directly under ~/.niffler/
-  createDir(configDir / "default")
-  createDir(configDir / "default" / "agents")
-  createDir(configDir / "cc")
-  createDir(configDir / "cc" / "agents")
+  if dirExists(configDir / "default"):
+    echo "Directory already exists: ", configDir / "default"
+  else:
+    createDir(configDir / "default")
+    echo "Created directory: ", configDir / "default"
+
+  if dirExists(configDir / "default" / "agents"):
+    echo "Directory already exists: ", configDir / "default" / "agents"
+  else:
+    createDir(configDir / "default" / "agents")
+    echo "Created directory: ", configDir / "default" / "agents"
+
+  if dirExists(configDir / "cc"):
+    echo "Directory already exists: ", configDir / "cc"
+  else:
+    createDir(configDir / "cc")
+    echo "Created directory: ", configDir / "cc"
+
+  if dirExists(configDir / "cc" / "agents"):
+    echo "Directory already exists: ", configDir / "cc" / "agents"
+  else:
+    createDir(configDir / "cc" / "agents")
+    echo "Created directory: ", configDir / "cc" / "agents"
 
   # Write minimal template to default config
-  try:
-    writeFile(configDir / "default" / "NIFFLER.md", MINIMAL_TEMPLATE)
-    echo "Created minimal config at: ", configDir / "default" / "NIFFLER.md"
-  except:
-    echo "Warning: Could not create default NIFFLER.md"
+  let defaultNifflerPath = configDir / "default" / "NIFFLER.md"
+  if fileExists(defaultNifflerPath):
+    echo "File already exists: ", defaultNifflerPath
+  else:
+    try:
+      writeFile(defaultNifflerPath, MINIMAL_TEMPLATE)
+      echo "Created file: ", defaultNifflerPath
+    except:
+      echo "Warning: Could not create default NIFFLER.md"
 
   # Write Claude Code template to cc config
-  try:
-    writeFile(configDir / "cc" / "NIFFLER.md", CLAUDE_CODE_TEMPLATE)
-    echo "Created Claude Code config at: ", configDir / "cc" / "NIFFLER.md"
-  except:
-    echo "Warning: Could not create cc NIFFLER.md"
+  let ccNifflerPath = configDir / "cc" / "NIFFLER.md"
+  if fileExists(ccNifflerPath):
+    echo "File already exists: ", ccNifflerPath
+  else:
+    try:
+      writeFile(ccNifflerPath, CLAUDE_CODE_TEMPLATE)
+      echo "Created file: ", ccNifflerPath
+    except:
+      echo "Warning: Could not create cc NIFFLER.md"
 
   # Write default agent definition to both configs
-  try:
-    writeFile(configDir / "default" / "agents" / "general-purpose.md", DEFAULT_AGENT_MD)
-    writeFile(configDir / "cc" / "agents" / "general-purpose.md", DEFAULT_AGENT_MD)
-    echo "Created default agent definitions"
-  except:
-    echo "Warning: Could not create agent definitions"
+  let defaultAgentPath = configDir / "default" / "agents" / "general-purpose.md"
+  if fileExists(defaultAgentPath):
+    echo "File already exists: ", defaultAgentPath
+  else:
+    try:
+      writeFile(defaultAgentPath, DEFAULT_AGENT_MD)
+      echo "Created file: ", defaultAgentPath
+    except:
+      echo "Warning: Could not create default agent definition"
+
+  let ccAgentPath = configDir / "cc" / "agents" / "general-purpose.md"
+  if fileExists(ccAgentPath):
+    echo "File already exists: ", ccAgentPath
+  else:
+    try:
+      writeFile(ccAgentPath, DEFAULT_AGENT_MD)
+      echo "Created file: ", ccAgentPath
+    except:
+      echo "Warning: Could not create cc agent definition"
+
+  # Handle main config file
+  if fileExists(path):
+    echo "Configuration file already exists: ", path
+    return
 
   let defaultConfig = Config(
     yourName: "User",

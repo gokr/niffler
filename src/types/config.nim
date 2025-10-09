@@ -128,6 +128,16 @@ type
     diffRenderer*: string     # Command template for diffs (e.g., "delta --line-numbers --syntax-theme=auto")
     fallbackToBuiltin*: bool  # Use built-in rendering if external command fails
 
+  TextExtractionMode* = enum
+    temUrl = "url"        # Pass URL as argument to external command
+    temStdin = "stdin"    # Pipe HTML content via stdin to external command
+
+  TextExtractionConfig* = object
+    enabled*: bool              # Enable external text extraction tool
+    command*: string            # Command template (e.g., "trafilatura -u {url}" or "trafilatura")
+    mode*: TextExtractionMode   # How to pass content: url argument or stdin
+    fallbackToBuiltin*: bool    # Use built-in htmlToText if external command fails
+
   Config* = object
     yourName*: string
     models*: seq[ModelConfig]
@@ -146,6 +156,8 @@ type
     defaultReasoningContentType*: Option[ReasoningContentType]
     # External rendering configuration
     externalRendering*: Option[ExternalRenderingConfig]
+    # Text extraction configuration for web fetch tool
+    textExtraction*: Option[TextExtractionConfig]
     # Active config directory selection
     config*: Option[string]
 

@@ -18,6 +18,7 @@ import std/[strutils, json, httpclient, uri, xmltree, strformat]
 import pkg/htmlparser
 import ../types/tools
 import ../core/constants
+import text_extraction
 
 
 proc htmlToText*(html: string): string =
@@ -130,14 +131,24 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
     # Convert HTML to text if requested
     var content = response.body
     var contentType = "text/plain"
-    
+
     if response.headers.hasKey("Content-Type"):
       contentType = response.headers["Content-Type"]
-    
+
     var convertedToText = false
+    var extractionMethod = "none"
     if convertToText and contentType.toLowerAscii().contains("text/html"):
-      content = htmlToText(response.body)
-      convertedToText = true
+      let textExtConfig = getCurrentTextExtractionConfig()
+      let extractionResult = extractText(response.body, url, textExtConfig)
+
+      if extractionResult.success:
+        content = extractionResult.content
+        convertedToText = true
+        extractionMethod = if extractionResult.usedExternal: "external" else: "builtin"
+      else:
+        content = htmlToText(response.body)
+        convertedToText = true
+        extractionMethod = "builtin-fallback"
     
     # Create result
     let resultJson = %*{
@@ -148,6 +159,7 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
       "content_length": response.body.len,
       "headers": %*{},
       "converted_to_text": convertedToText,
+      "extraction_method": extractionMethod,
       "method": httpMethod,
       "timeout": timeout,
       "max_size": maxSize
