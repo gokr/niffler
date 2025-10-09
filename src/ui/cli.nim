@@ -59,6 +59,11 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
 
+# Streaming buffer for batching output
+var streamingBuffer: string = ""
+const STREAMING_FLUSH_THRESHOLD = 200  # Increased threshold to reduce fragmentation
+const STREAMING_MAX_BUFFER = 500  # Force flush at this size regardless of word boundaries
+
 proc getUserName*(): string =
   ## Get the current user's name
   result = getEnv("USER", getEnv("USERNAME", "User"))
@@ -554,14 +559,55 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
   stdout.styledWrite(color, style, text)
   stdout.flushFile()
 
-proc writeStreamingContent*(text: string) =
-  ## Write streaming content using linecross writeOutput (keeps prompt intact)
+proc flushStreamingBuffer*(redraw: bool = true) =
+  ## Flush any buffered streaming content to output
+  ## Use redraw=false when the caller will handle redrawing (e.g., writeCompleteLine)
+  if streamingBuffer.len > 0:
+    writeOutputRaw(streamingBuffer, addNewline = false, redraw = redraw)
+    streamingBuffer = ""
+
+proc shouldFlushBuffer(): bool =
+  ## Determine if buffer should be flushed based on size and word boundaries
+  ## Flush on whitespace to avoid breaking words mid-stream
+  if streamingBuffer.len >= STREAMING_MAX_BUFFER:
+    return true
+
+  if streamingBuffer.len >= STREAMING_FLUSH_THRESHOLD:
+    # Check if last character is whitespace (safe flush point)
+    if streamingBuffer.len > 0:
+      let lastChar = streamingBuffer[^1]
+      if lastChar in {' ', '\n', '\t', '.', ',', '!', '?', ':', ';'}:
+        return true
+
+  return false
+
+proc writeStreamingChunk*(text: string) =
+  ## Write streaming content chunk - buffers and flushes on word boundaries
+  streamingBuffer.add(text)
+  if shouldFlushBuffer():
+    flushStreamingBuffer(redraw = true)
+
+proc writeStreamingChunkStyled*(text: string, style: ThemeStyle) =
+  ## Write styled streaming content chunk - buffers and flushes on word boundaries
+  let styledText = formatWithStyle(text, style)
+  streamingBuffer.add(styledText)
+  if shouldFlushBuffer():
+    flushStreamingBuffer(redraw = true)
+
+proc writeCompleteLine*(text: string) =
+  ## Write complete line - flushes buffer first, then writes with newline
+  flushStreamingBuffer(redraw = false)  # Don't redraw yet - writeOutput will do it
   writeOutput(text)
 
-proc writeStreamingContentStyled*(text: string, style: ThemeStyle) =
-  ## Write styled streaming content using linecross writeOutput with theme colors
-  let styledText = formatWithStyle(text, style)
-  writeOutput(styledText)
+proc finishStreaming*() =
+  ## Call after streaming chunks are done to flush remaining content
+  flushStreamingBuffer()
+
+proc writeUserInput*(text: string) =
+  ## Write user input to scrollback with "> " prefix and theme styling
+  ## Adds blank line before for separation, then writes user input
+  let formattedInput = formatWithStyle(fmt"> {text}", currentTheme.userInput)
+  writeOutput("\n" & formattedInput)
 
 proc formatTokenAmount*(tokens: int): string =
   ## Format token amounts with appropriate units (0-1000, 1.0k-20.0k, 20k-999k, 1.0M+)
@@ -735,10 +781,9 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
   ## Execute a bash command directly and display the output
   try:
     let output = getCommandOutput(command, timeout = 30000)
-    writeStreamingContentStyled(fmt"$ {command}", currentTheme.toolCall)
+    writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
     if output.len > 0:
-      writeStreamingContent(output)
-    writeStreamingContent("")
+      writeCompleteLine(output)
 
     # Store command in prompt history (bash-style history) but NOT in LLM conversation
     let fullCommand = "!" & command
@@ -746,28 +791,24 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
 
   except ToolExecutionError as e:
     # Non-zero exit code - show command, output, and exit code
-    writeStreamingContentStyled(fmt"$ {command}", currentTheme.toolCall)
+    writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
     if e.output.len > 0:
-      writeStreamingContent(e.output)
-    writeStreamingContentStyled(fmt"Exit code: {e.exitCode}", currentTheme.error)
-    writeStreamingContent("")
+      writeCompleteLine(e.output)
+    writeCompleteLine(formatWithStyle(fmt"Exit code: {e.exitCode}", currentTheme.error))
 
     # Store failed command in history too
     let fullCommand = "!" & command
     logToPromptHistory(database, fullCommand, "", currentModel.nickname)
 
   except ToolTimeoutError:
-    writeStreamingContentStyled(fmt"$ {command}", currentTheme.toolCall)
-    writeStreamingContentStyled("Command timed out after 30 seconds", currentTheme.error)
-    writeStreamingContent("")
+    writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
+    writeCompleteLine(formatWithStyle("Command timed out after 30 seconds", currentTheme.error))
   except ToolError as e:
-    writeStreamingContentStyled(fmt"$ {command}", currentTheme.toolCall)
-    writeStreamingContentStyled(fmt"Error: {e.msg}", currentTheme.error)
-    writeStreamingContent("")
+    writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
+    writeCompleteLine(formatWithStyle(fmt"Error: {e.msg}", currentTheme.error))
   except Exception as e:
-    writeStreamingContentStyled(fmt"$ {command}", currentTheme.toolCall)
-    writeStreamingContentStyled(fmt"Unexpected error: {e.msg}", currentTheme.error)
-    writeStreamingContent("")
+    writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
+    writeCompleteLine(formatWithStyle(fmt"Unexpected error: {e.msg}", currentTheme.error))
 
 proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
   ## Start the CLI mode with enhanced interface
@@ -801,9 +842,9 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   var currentModel = modelConfig
   
   # Display welcome message in conversation area
-  writeStreamingContentStyled("Welcome to Niffler!", currentTheme.success)
-  writeStreamingContent("Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.")
-  writeStreamingContent("Press Ctrl+C to stop stream display or exit.")
+  writeCompleteLine(formatWithStyle("Welcome to Niffler!", currentTheme.success))
+  writeCompleteLine("Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.")
+  writeCompleteLine("Press Ctrl+C to stop stream display or exit.")
   
   # Initialize global state for enhanced CLI
   currentModelName = currentModel.nickname
@@ -848,12 +889,10 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
     initSessionManager(pool, epochTime().int)
   
   # Display final model after all conversation loading and restoration
-  writeStreamingContentStyled(fmt"Using model: {currentModel.nickname} ({currentModel.model})", currentTheme.success)
+  writeCompleteLine(formatWithStyle(fmt"Using model: {currentModel.nickname} ({currentModel.model})", currentTheme.success))
 
   # Update prompt color to reflect the restored mode
   updatePromptState()
-
-  writeStreamingContent("")
   
   # Start API worker with pool
   var apiWorker = startAPIWorker(channels, level, dump, database, pool)
@@ -909,40 +948,42 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       if input.startsWith("/"):
         let (command, args) = parseCommand(input)
         if command.len > 0:
+          # Show user input in scrollback
+          writeUserInput(input)
+
           let res = executeCommand(command, args, session, currentModel)
 
           # Display command result with markdown if enabled
           if markdownEnabled:
             let renderedText = renderMarkdownTextCLI(res.message)
-            writeStreamingContent(renderedText)
+            writeCompleteLine(renderedText)
           else:
-            writeStreamingContent(res.message)
-          writeStreamingContent("")
-          
+            writeCompleteLine(res.message)
+
           # Store command in prompt history (input only, like bash history)
           logToPromptHistory(database, input, "", currentModel.nickname)
-          
+
           # Handle special commands that need additional actions
           if res.success:
             if command == "model":
               # Reconfigure API worker with new model
               currentModelName = currentModel.nickname
               if not configureAPIWorker(currentModel):
-                writeStreamingContentStyled(fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key.", currentTheme.error)
-                writeStreamingContent("")
-          
+                writeCompleteLine(formatWithStyle(fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key.", currentTheme.error))
+
           if res.shouldExit:
             running = false
-          
+
           # Reset UI state if requested by command (e.g., after conversation switching)
           when compiles(res.shouldResetUI):
             if res.shouldResetUI:
               resetUIState()
-          
+
           continue
         else:
-          writeStreamingContentStyled("Invalid command format", currentTheme.error)
-          writeStreamingContent("")
+          # Show user input even for invalid commands
+          writeUserInput(input)
+          writeCompleteLine(formatWithStyle("Invalid command format", currentTheme.error))
           continue
 
       # Handle bash commands with ! prefix
@@ -951,23 +992,25 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
         if command.len > 0:
           executeBashCommand(command, database, currentModel, markdownEnabled)
         else:
-          writeStreamingContentStyled("Empty command after '!'", currentTheme.error)
-          writeStreamingContent("")
+          writeCompleteLine(formatWithStyle("Empty command after '!'", currentTheme.error))
         continue
       
       # Regular message - send to API
+      # Show user input in scrollback
+      writeUserInput(input)
+
       let (success, requestId) = sendSinglePromptInteractiveWithId(input, currentModel)
       if success:
         # Track the request for cancellation
         when defined(posix):
           currentActiveRequestId = requestId
           streamCancellationRequested = false
-        
+
         # Wait for response and display it
         var responseText = ""
         var responseReceived = false
         var hadToolCalls = false  # Track if this conversation involved tool calls
-        
+
         # Show processing status
         isProcessing = true
         
@@ -1006,59 +1049,64 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
                   # Start of thinking block - show emoji prefix and set flag
                   let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
                   let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-                  writeStreamingContent(emojiPrefix & styledContent)
+                  writeStreamingChunk(emojiPrefix & styledContent)
                   isInThinkingBlock = true
                 else:
                   # Continuing thinking block - just show content without emoji
-                  writeStreamingContentStyled(thinkingContent, currentTheme.thinking)
+                  writeStreamingChunkStyled(thinkingContent, currentTheme.thinking)
 
               if response.content.len > 0:
                 # Add separator when transitioning from thinking to regular content
                 if isInThinkingBlock:
-                  writeStreamingContent("\n")
+                  finishStreaming()  # Flush thinking content first
+                  writeCompleteLine("")  # Add blank line separator
                   isInThinkingBlock = false
 
                 responseText.add(response.content)
                 # Only show streaming content if markdown is disabled to prevent double rendering
                 if not markdownEnabled:
-                  writeStreamingContent(response.content)
+                  writeStreamingChunk(response.content)
                 # Track that output occurred after tool call for progressive rendering
                 outputAfterToolCall = true
             of arkToolCallRequest:
-              # Display tool request immediately with hourglass indicator
+              # Flush any pending thinking content before displaying tool call
+              finishStreaming()
+
+              # Display tool request immediately without hourglass
               let toolRequest = response.toolRequestInfo
               pendingToolCalls[toolRequest.toolCallId] = toolRequest
 
-              # Reset output tracking and display tool call with hourglass
+              # Reset output tracking and display tool call
               outputAfterToolCall = false
               let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-              writeStreamingContent(formattedRequest & " ⏳")
+              writeCompleteLine(formattedRequest)
             of arkToolCallResult:
-              # Handle tool result display - always show complete request + result
+              # Handle tool result display - only show result line (request already displayed)
               let toolResult = response.toolResultInfo
               if pendingToolCalls.hasKey(toolResult.toolCallId):
-                let toolRequest = pendingToolCalls[toolResult.toolCallId]
-                let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
                 let formattedResult = formatCompactToolResultWithIndent(toolResult)
 
-                # Write complete tool call and result (writeOutput adds its own newline)
-                writeStreamingContent(formattedRequest & "\n" & formattedResult)
+                # Write only the result line (request was already written)
+                writeCompleteLine(formattedResult)
 
                 # Remove from pending
                 pendingToolCalls.del(toolResult.toolCallId)
               else:
                 # Fallback if request wasn't tracked
                 let formattedResult = formatCompactToolResult(toolResult)
-                writeStreamingContent(formattedResult)
+                writeCompleteLine(formattedResult)
             of arkStreamComplete:
               # Apply markdown formatting to the complete response if enabled
               if markdownEnabled and responseText.len > 0:
                 # For markdown mode, render the complete response since we didn't stream it
                 let renderedText = renderMarkdownTextCLI(responseText)
-                writeStreamingContent(renderedText)
+                writeCompleteLine(renderedText)
               elif responseText.len > 0:
                 # Just add final newline if no markdown was used (content was already streamed)
-                writeStreamingContent("")
+                writeCompleteLine("")
+              else:
+                # No content but we may have had streaming - redraw UI
+                finishStreaming()
 
               # Update token counts with new response (prompt will show tokens)
               isProcessing = false
@@ -1078,7 +1126,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
               when defined(posix):
                 currentActiveRequestId = ""
             of arkStreamError:
-              writeStreamingContentStyled(fmt"Error: {response.error}", currentTheme.error)
+              writeCompleteLine(formatWithStyle(fmt"Error: {response.error}", currentTheme.error))
               isProcessing = false
               isInThinkingBlock = false  # Reset thinking block flag on error
               responseReceived = true
@@ -1091,12 +1139,12 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
             sleep(5)
 
         if not responseReceived:
-          writeStreamingContentStyled("Timeout waiting for response", currentTheme.error)
+          writeCompleteLine(formatWithStyle("Timeout waiting for response", currentTheme.error))
           isProcessing = false
           when defined(posix):
             currentActiveRequestId = ""
       else:
-        writeStreamingContentStyled("Failed to send message", currentTheme.error)
+        writeCompleteLine(formatWithStyle("Failed to send message", currentTheme.error))
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
@@ -1194,22 +1242,22 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
               # Start of thinking block - show emoji prefix and set flag
               let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
               let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-              writeStreamingContent(emojiPrefix & styledContent)
+              writeStreamingChunk(emojiPrefix & styledContent)
               isInThinkingBlock = true
             else:
               # Continuing thinking block - just show content without emoji
-              writeStreamingContentStyled(thinkingContent, currentTheme.thinking)
+              writeStreamingChunkStyled(thinkingContent, currentTheme.thinking)
 
           if response.content.len > 0:
             # Add separator when transitioning from thinking to regular content
             if isInThinkingBlock:
-              writeStreamingContent("\n")
+              writeCompleteLine("\n")
               isInThinkingBlock = false
 
             responseText.add(response.content)
             # Only show streaming content if markdown is disabled to prevent double rendering
             if not markdownEnabled:
-              writeStreamingContent(response.content)
+              writeStreamingChunk(response.content)
             # Track that output occurred after tool call for progressive rendering
             outputAfterToolCall = true
         of arkStreamComplete:
@@ -1217,10 +1265,13 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           if markdownEnabled and responseText.len > 0:
             # For markdown mode, render the complete response since we didn't stream it
             let renderedText = renderMarkdownTextCLI(responseText)
-            writeStreamingContent(renderedText)
+            writeCompleteLine(renderedText)
           elif responseText.len > 0:
             # Just add final newline if no markdown was used (content was already streamed)
-            writeStreamingContent("")
+            writeCompleteLine("")
+          else:
+            # No content but we may have had streaming - redraw UI
+            finishStreaming()
           info fmt"Tokens used: {response.usage.totalTokens}"
           
           # Log the prompt exchange to database
@@ -1235,7 +1286,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           isInThinkingBlock = false  # Reset thinking block flag when stream completes
           responseReceived = true
         of arkStreamError:
-          writeStreamingContentStyled(fmt"Error: {response.error}", currentTheme.error)
+          writeCompleteLine(formatWithStyle(fmt"Error: {response.error}", currentTheme.error))
           isInThinkingBlock = false  # Reset thinking block flag on error
           responseReceived = true
         of arkToolCallRequest:
@@ -1246,7 +1297,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           # Reset output tracking and display tool call with hourglass
           outputAfterToolCall = false
           let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-          writeStreamingContent(formattedRequest & " ⏳")
+          writeCompleteLine(formattedRequest & " ⏳")
         of arkToolCallResult:
           # Handle tool result display - always show complete request + result
           let toolResult = response.toolResultInfo
@@ -1256,14 +1307,15 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
             let formattedResult = formatCompactToolResultWithIndent(toolResult)
 
             # Write complete tool call and result
-            writeStreamingContent(formattedRequest & "\n" & formattedResult)
+            writeCompleteLine(formattedRequest)
+            writeCompleteLine(formattedResult)
 
             # Remove from pending
             pendingToolCalls.del(toolResult.toolCallId)
           else:
             # Fallback if request wasn't tracked
             let formattedResult = formatCompactToolResult(toolResult)
-            writeStreamingContent(formattedResult)
+            writeCompleteLine(formattedResult)
         of arkReady:
           discard  # Just ignore ready responses
       
