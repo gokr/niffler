@@ -40,6 +40,8 @@ import table_utils
 import markdown_cli
 import tool_visualizer
 import file_completion
+import output_handler
+import output_shared
 
 # Forward declarations for helper functions called early in the file
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string
@@ -47,7 +49,7 @@ proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.Model
 
 # State for input box rendering
 var currentInputText: string = ""
-var currentModelName: string = ""
+var currentModelName*: string = ""  # Export for output_handler
 var isProcessing: bool = false
 var inputTokens: int = 0
 var outputTokens: int = 0
@@ -59,10 +61,7 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
 
-# Streaming buffer for batching output
-var streamingBuffer: string = ""
-const STREAMING_FLUSH_THRESHOLD = 200  # Increased threshold to reduce fragmentation
-const STREAMING_MAX_BUFFER = 500  # Force flush at this size regardless of word boundaries
+# Note: Streaming output functions are now in output_shared.nim to avoid circular imports
 
 proc getUserName*(): string =
   ## Get the current user's name
@@ -89,12 +88,13 @@ proc initializeSystemComponents*(): (configTypes.Config, bool) =
   let markdownEnabled = isMarkdownEnabled(config)
   return (config, markdownEnabled)
 
-proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, mcpWorker: var McpWorker, database: DatabaseBackend) =
+proc cleanupSystem*(channels: ptr ThreadChannels, apiWorker: var APIWorker, toolWorker: var ToolWorker, mcpWorker: var McpWorker, outputHandler: var OutputHandlerWorker, database: DatabaseBackend) =
   ## Perform system cleanup: shutdown workers, close database and log files
   signalShutdown(channels)
   stopAPIWorker(apiWorker)
   stopToolWorker(toolWorker)
   stopMcpWorker(mcpWorker)
+  stopOutputHandlerWorker(outputHandler)
   closeChannels(channels[])
 
   if database != nil:
@@ -559,55 +559,11 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
   stdout.styledWrite(color, style, text)
   stdout.flushFile()
 
-proc flushStreamingBuffer*(redraw: bool = true) =
-  ## Flush any buffered streaming content to output
-  ## Use redraw=false when the caller will handle redrawing (e.g., writeCompleteLine)
-  if streamingBuffer.len > 0:
-    writeOutputRaw(streamingBuffer, addNewline = false, redraw = redraw)
-    streamingBuffer = ""
-
-proc shouldFlushBuffer(): bool =
-  ## Determine if buffer should be flushed based on size and word boundaries
-  ## Flush on whitespace to avoid breaking words mid-stream
-  if streamingBuffer.len >= STREAMING_MAX_BUFFER:
-    return true
-
-  if streamingBuffer.len >= STREAMING_FLUSH_THRESHOLD:
-    # Check if last character is whitespace (safe flush point)
-    if streamingBuffer.len > 0:
-      let lastChar = streamingBuffer[^1]
-      if lastChar in {' ', '\n', '\t', '.', ',', '!', '?', ':', ';'}:
-        return true
-
-  return false
-
-proc writeStreamingChunk*(text: string) =
-  ## Write streaming content chunk - buffers and flushes on word boundaries
-  streamingBuffer.add(text)
-  if shouldFlushBuffer():
-    flushStreamingBuffer(redraw = true)
-
-proc writeStreamingChunkStyled*(text: string, style: ThemeStyle) =
-  ## Write styled streaming content chunk - buffers and flushes on word boundaries
-  let styledText = formatWithStyle(text, style)
-  streamingBuffer.add(styledText)
-  if shouldFlushBuffer():
-    flushStreamingBuffer(redraw = true)
-
-proc writeCompleteLine*(text: string) =
-  ## Write complete line - flushes buffer first, then writes with newline
-  flushStreamingBuffer(redraw = false)  # Don't redraw yet - writeOutput will do it
-  writeOutput(text)
-
-proc finishStreaming*() =
-  ## Call after streaming chunks are done to flush remaining content
-  flushStreamingBuffer()
-
-proc writeUserInput*(text: string) =
-  ## Write user input to scrollback with "> " prefix and theme styling
-  ## Adds blank line before for separation, then writes user input
-  let formattedInput = formatWithStyle(fmt"> {text}", currentTheme.userInput)
-  writeOutput("\n" & formattedInput)
+# Note: Output functions (writeStreamingChunk, writeCompleteLine, etc.) are now in output_shared.nim
+# and are re-exported here for compatibility
+export output_shared.writeStreamingChunk, output_shared.writeStreamingChunkStyled,
+       output_shared.writeCompleteLine, output_shared.finishStreaming,
+       output_shared.writeUserInput, output_shared.flushStreamingBuffer
 
 proc formatTokenAmount*(tokens: int): string =
   ## Format token amounts with appropriate units (0-1000, 1.0k-20.0k, 20k-999k, 1.0M+)
@@ -924,10 +880,13 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   # Start tool worker with pool
   var toolWorker = startToolWorker(channels, level, dump, database, pool)
 
+  # Start output handler worker to display API responses
+  var outputHandlerWorker = startOutputHandlerWorker(channels, level)
+
   # Configure API worker with initial model
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
-  
+
   # Set up custom key callback for shift-tab etc
   registerCustomKeyCallback(nifflerCustomKeyHook)  # TODO: Fix this - function may not exist
 
@@ -999,6 +958,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       # Show user input in scrollback
       writeUserInput(input)
 
+      # Send request and immediately return to readline - output handler will display response
       let (success, requestId) = sendSinglePromptInteractiveWithId(input, currentModel)
       if success:
         # Track the request for cancellation
@@ -1006,143 +966,14 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
           currentActiveRequestId = requestId
           streamCancellationRequested = false
 
-        # Wait for response and display it
-        var responseText = ""
-        var responseReceived = false
-        var hadToolCalls = false  # Track if this conversation involved tool calls
-
-        # Show processing status
+        # Set processing status
         isProcessing = true
-        
-        # Write model name in conversation area (nim-noise already showed user input)
-        # Not needed since we now have it in the prompt: writeToConversationArea(fmt"{currentModel.nickname}: ", fgGreen)
-        
-        while not responseReceived:
-          # Check for cancellation request
-          when defined(posix):
-            if streamCancellationRequested:
-              responseReceived = true
-              isProcessing = false  # Reset processing state
-              currentActiveRequestId = ""
-              break
-          
-          var response: APIResponse
-          if tryReceiveAPIResponse(channels, response):
-            # Validate that this response belongs to our current request
-            if response.requestId != requestId:
-              debug(fmt"Ignoring response from request {response.requestId} (current: {requestId})")
-              continue  # Skip processing this response
-            
-            case response.kind:
-            of arkStreamChunk:
-              # Check if this chunk contains tool calls
-              if response.toolCalls.isSome():
-                hadToolCalls = true
-                debug("DEBUG: Tool calls detected in UI - will not add duplicate assistant message to history")
-              
-              # Handle thinking content display
-              if response.thinkingContent.isSome():
-                let thinkingContent = response.thinkingContent.get()
-                let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
 
-                if not isInThinkingBlock:
-                  # Start of thinking block - show emoji prefix and set flag
-                  let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
-                  let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-                  writeStreamingChunk(emojiPrefix & styledContent)
-                  isInThinkingBlock = true
-                else:
-                  # Continuing thinking block - just show content without emoji
-                  writeStreamingChunkStyled(thinkingContent, currentTheme.thinking)
+        # Log user input to prompt history (bash-style history)
+        logToPromptHistory(database, input, "", currentModel.nickname)
 
-              if response.content.len > 0:
-                # Add separator when transitioning from thinking to regular content
-                if isInThinkingBlock:
-                  finishStreaming()  # Flush thinking content first
-                  writeCompleteLine("")  # Add blank line separator
-                  isInThinkingBlock = false
-
-                responseText.add(response.content)
-                # Only show streaming content if markdown is disabled to prevent double rendering
-                if not markdownEnabled:
-                  writeStreamingChunk(response.content)
-                # Track that output occurred after tool call for progressive rendering
-                outputAfterToolCall = true
-            of arkToolCallRequest:
-              # Flush any pending thinking content before displaying tool call
-              finishStreaming()
-
-              # Display tool request immediately without hourglass
-              let toolRequest = response.toolRequestInfo
-              pendingToolCalls[toolRequest.toolCallId] = toolRequest
-
-              # Reset output tracking and display tool call
-              outputAfterToolCall = false
-              let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-              writeCompleteLine(formattedRequest)
-            of arkToolCallResult:
-              # Handle tool result display - only show result line (request already displayed)
-              let toolResult = response.toolResultInfo
-              if pendingToolCalls.hasKey(toolResult.toolCallId):
-                let formattedResult = formatCompactToolResultWithIndent(toolResult)
-
-                # Write only the result line (request was already written)
-                writeCompleteLine(formattedResult)
-
-                # Remove from pending
-                pendingToolCalls.del(toolResult.toolCallId)
-              else:
-                # Fallback if request wasn't tracked
-                let formattedResult = formatCompactToolResult(toolResult)
-                writeCompleteLine(formattedResult)
-            of arkStreamComplete:
-              # Apply markdown formatting to the complete response if enabled
-              if markdownEnabled and responseText.len > 0:
-                # For markdown mode, render the complete response since we didn't stream it
-                let renderedText = renderMarkdownTextCLI(responseText)
-                writeCompleteLine(renderedText)
-              elif responseText.len > 0:
-                # Just add final newline if no markdown was used (content was already streamed)
-                writeCompleteLine("")
-              else:
-                # No content but we may have had streaming - redraw UI
-                finishStreaming()
-
-              # Update token counts with new response (prompt will show tokens)
-              isProcessing = false
-              isInThinkingBlock = false  # Reset thinking block flag when stream completes
-              updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
-              # Add assistant response to history only if no tool calls were involved
-              # (API worker already handles history for tool call conversations)
-              if responseText.len > 0 and not hadToolCalls:
-                debug("DEBUG: Adding assistant message to history (no tool calls detected)")
-                discard addAssistantMessage(responseText, none(seq[LLMToolCall]), response.usage.outputTokens, currentModel.model)
-              elif hadToolCalls:
-                debug("DEBUG: Skipping assistant message addition - tool calls already handled by API worker")
-              
-              # Log user input to prompt history (bash-style history)
-              logToPromptHistory(database, input, "", currentModel.nickname)
-              responseReceived = true
-              when defined(posix):
-                currentActiveRequestId = ""
-            of arkStreamError:
-              writeCompleteLine(formatWithStyle(fmt"Error: {response.error}", currentTheme.error))
-              isProcessing = false
-              isInThinkingBlock = false  # Reset thinking block flag on error
-              responseReceived = true
-              when defined(posix):
-                currentActiveRequestId = ""
-            of arkReady:
-              discard  # Just ignore ready responses
-
-          if not responseReceived:
-            sleep(5)
-
-        if not responseReceived:
-          writeCompleteLine(formatWithStyle("Timeout waiting for response", currentTheme.error))
-          isProcessing = false
-          when defined(posix):
-            currentActiveRequestId = ""
+        # Output handler thread will display the response
+        # Main thread continues to next readline() call immediately
       else:
         writeCompleteLine(formatWithStyle("Failed to send message", currentTheme.error))
     except EOFError:
@@ -1150,7 +981,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       running = false
 
   # Cleanup
-  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, database)
+  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, outputHandlerWorker, database)
 
   # Linecross cleanup is automatic
 
@@ -1324,7 +1155,8 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   else:
     echo "Failed to send request"
 
-  # Cleanup
-  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, database)
+  # Cleanup (sendSinglePrompt doesn't use output handler, so pass a dummy)
+  var dummyOutputHandler = OutputHandlerWorker()
+  cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, dummyOutputHandler, database)
 
   # Linecross cleanup is automatic
