@@ -2,53 +2,57 @@
 
 Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workflow.
 
+## Recently Completed ✅
+
+### **MCP Integration**
+- ✅ Model Context Protocol client implementation
+- ✅ MCP worker thread with dedicated message processing
+- ✅ Dynamic external tool loading from MCP servers
+- ✅ Service discovery and configuration (src/mcp/*)
+- ✅ Cross-thread accessibility with caching
+- ✅ `/mcp status` command for monitoring
+
+### **Task & Agent System**
+- ✅ Soft agent type system with markdown-based definitions (src/types/agents.nim)
+- ✅ Default agents: general-purpose, code-focused (src/core/agent_defaults.nim)
+- ✅ Tool access control for agent-based restrictions
+- ✅ Task tool for autonomous agent execution (src/tools/task.nim)
+- ✅ Task executor with isolated execution context (src/core/task_executor.nim)
+- ⚠️ Basic conversation loop (tool execution integration still pending)
+
+### **Todolist Tool**
+- ✅ Database-backed todo persistence (src/tools/todolist.nim)
+- ✅ Markdown checklist parsing and generation
+- ✅ State tracking (pending, in_progress, completed, cancelled)
+- ✅ Priority support (low, medium, high)
+- ✅ Bulk update operations
+
+### **CLI & Output Improvements**
+- ✅ Buffered streaming output with user input display
+- ✅ Tool visualization with progress indicators
+- ✅ Thinking token display and storage
+- ✅ Enhanced markdown rendering
+
+### **Database & Persistence**
+- ✅ Conversation tracking with metadata
+- ✅ Message persistence with basic tool call support
+- ✅ Token usage logging and cost tracking
+- ✅ Thinking token storage (conversation_thinking_token table)
+- ✅ Todo system database schema
+
 ## Remaining Tasks
 
-### **1. Enhanced Message Persistence** *(HIGH PRIORITY)*
+### **1. Complete Task Tool Integration** *(HIGH PRIORITY)*
 
-**Tool Call Integration:**
-- [ ] Extend database schema to store tool calls with rich metadata
-- [ ] Track tool execution time, success/failure, parameters
-- [ ] Link tool calls to specific messages and conversations
+**Missing Functionality:**
+- [ ] Integrate tool execution into task executor conversation loop (currently returns "integration pending" error)
+- [ ] Extract artifacts (file paths) from task conversations
+- [ ] Add task result visualization in main conversation
+- [ ] Support nested task spawning with depth limits
 
-**Message Metadata Support:**
-- [ ] Add summary flags to mark condensed messages
-- [ ] Store tool metadata (execution context, timing, results)
-- [ ] Support multiple content blocks per message
+**Current Status:** Framework exists (src/core/task_executor.nim) but tool calls during task execution are not yet handled (line 244).
 
-**Rich Content Support:**
-- [ ] Handle multi-part messages (text + code + images)
-- [ ] Store content type metadata for different message parts
-- [ ] Support message threading and reply structures
-
-**Conversation Summarization:**
-- [ ] Add marking system for condensed summaries
-- [ ] Implement LLM-powered summarization integration
-- [ ] Track original vs summarized content relationships
-
-### **2. Advanced Context Management** *(HIGH PRIORITY)*
-
-**User-Controlled Condensing:**
-- [ ] Add user preference for condensing vs sliding window
-- [ ] Implement interactive condensing approval flow
-- [ ] Provide context size indicators and warnings
-
-**LLM-Powered Summarization:**
-- [ ] Create summarization tool for context condensing
-- [ ] Implement fallback to sliding window if summarization fails
-- [ ] Track summarization quality and user feedback
-
-**Transparent Management:**
-- [ ] Add clear indicators when context operations occur
-- [ ] Show before/after token counts for context changes
-- [ ] Provide undo/restore options for context modifications
-
-**Advanced @ Referencing:**
-- [ ] Extend @ syntax for folder references (@folder/)
-- [ ] Support glob patterns in @ references (@*.py, @src/*)
-- [ ] Fix the search and completion to be smarter
-
-### **3. User Message Queue & Always-There Input** *(HIGH PRIORITY)*
+### **2. User Message Queue & Always-There Input** *(HIGH PRIORITY)*
 
 **Message Queueing System:**
 - [ ] Implement user message queue for background processing
@@ -58,21 +62,40 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Prevent message loss during streaming
 
 **Always-There Input Prompt:**
-- [ ] Persistent input field that's always available
-- [ ] Allow typing while model is streaming/responding
-- [ ] Non-blocking input collection
 - [ ] Visual indicator for queued messages
-- [ ] Hotkey to interrupt current response and send queued input
 
 **Input State Management:**
 - [ ] Track input state across conversation turns
 - [ ] Preserve partial input during interruptions
 - [ ] Auto-save draft messages
-- [ ] Input history separate from conversation history
-- [ ] Multi-line input support with proper formatting
 
-### **4. Multi-Config System** *(MEDIUM PRIORITY)*
-*Based on IDEAS.md*
+**Current Status:** Not implemented.
+
+### **3. Enhanced Message Persistence** *(MEDIUM PRIORITY)*
+
+**Rich Metadata (Partially Implemented):**
+- ⚠️ Extend tool call metadata tracking (basic schema exists in conversation_message.toolCalls)
+- [ ] Track tool execution time, success/failure rates
+- [ ] Add summary flags to mark condensed messages
+- [ ] Support multiple content blocks per message
+
+**Current Status:** Basic tool call storage exists but lacks rich metadata and summarization.
+
+### **4. Advanced Context Management** *(MEDIUM PRIORITY)*
+
+**User-Controlled Condensing:**
+- [ ] Implement a /condense command that takes a <strategy> parameter that controls how a new conversation is created from the current (and linked to parent)
+- [ ] Create a /summarize tool that takes a <filename> parameter into which the conversation is summarized
+- [ ] Provide context size warning
+
+**Advanced @ Referencing:**
+- ⚠️ Extend @ syntax for folder references (@folder/)
+- ⚠️ Support glob patterns in @ references (@*.py, @src/*)
+- [ ] Improve file completion search intelligence
+
+**Current Status:** Basic file completion exists (src/ui/file_completion.nim) but no folder/glob pattern support.
+
+### **5. Multi-Config System** *(MEDIUM PRIORITY)*
 
 **Three-Model Configs:**
 - [ ] Plan model with default reasoning level
@@ -81,8 +104,8 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Hotkey Support:**
 - [ ] Switch model (rotate within current mode)
-- [ ] Switch plan/code mode
-- [ ] Switch config (rotate among full configs)  
+- [ ] Switch plan/code mode (currently requires `/plan` and `/code` commands)
+- [ ] Switch config (rotate among full configs)
 - [ ] Switch reasoning level
 
 **Dynamic System Prompt Selection:**
@@ -90,7 +113,9 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Select appropriate system prompt based on context
 - [ ] Multiple specialized system prompts available
 
-### **5. UI/UX Polish** *(MEDIUM PRIORITY)*
+**Current Status:** Basic model switching exists via `/model` command but no hotkey support or multi-config profiles.
+
+### **6. UI/UX Polish** *(MEDIUM PRIORITY)*
 
 **Enhanced Help System:**
 - [ ] Update `/help` command for Plan/Code workflow
@@ -98,12 +123,12 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Document plan mode file protection behavior
 
 **Status Indicators:**
-- [ ] Show current model in prompt/status line
+- ⚠️ Show current model in prompt (partially implemented)
 - [ ] Display token count and context window usage
 - [ ] Add connection status indicators
 
 **History Navigation:**
-- [ ] Implement arrow key navigation through command history
+- ⚠️ Basic history exists via linecross
 - [ ] Add search functionality in command history
 - [ ] Persist command history across sessions
 
@@ -112,7 +137,9 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Command registration and dispatch system
 - [ ] Parameterized command support
 
-### **6. Advanced Features** *(MEDIUM PRIORITY)*
+**Current Status:** Basic commands exist (src/ui/commands.nim) but no user-defined command support.
+
+### **7. Advanced Features** *(LOW PRIORITY)*
 
 **Content Visualization:**
 - [ ] Use delta for git-style diff visualization
@@ -125,34 +152,26 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Preserve important context during squash
 
 **Sub-Task Spawning:**
-- [ ] Spawn "self" instances for sub-tasks
-- [ ] Built-in tool call for task delegation
-- [ ] New context per sub-task
+- ⚠️ Task tool provides delegation (src/tools/task.nim)
+- [ ] Support recursive task spawning with depth limits
+- [ ] Automatic context inheritance from parent task
 
-### **7. Provider Support** *(LOW PRIORITY)*
+### **8. Provider Support** *(LOW PRIORITY)*
 
 **Anthropic Integration:**
-- [ ] Add dedicated Claude API client with thinking token support
+- ⚠️ Thinking token support exists via OpenAI-compatible API
+- [ ] Add dedicated Claude API client
 - [ ] Create unified provider interface
 - [ ] Add provider-specific optimizations
 
-### **8. Advanced File Features** *(LOW PRIORITY)*
+### **9. Advanced File Features** *(LOW PRIORITY)*
 
 - [ ] Advanced change detection with timestamps
-- [ ] Git integration for repository awareness
+- [ ] Enhanced git integration for repository awareness
 - [ ] Session save/restore functionality
-- [ ] Export capabilities for conversations
-
-### **9. MCP Integration** *(FUTURE)*
-
-- [ ] Model Context Protocol client implementation
-- [ ] Dynamic external tool loading
-- [ ] Service discovery and security model
+- [ ] Export capabilities for conversations (current: SQLite database access)
 
 ## Fun Easter Eggs *(LOW PRIORITY)*
 
 - [ ] `/niffler` - ASCII art niffler creature
-- [ ] `/magic` - Magic mode with sparkles
 - [ ] `/coffee` - Coffee break messages
-- [ ] Seasonal surprises and developer humor
-- [ ] Configuration toggle for easter eggs
