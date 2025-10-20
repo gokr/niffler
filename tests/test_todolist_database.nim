@@ -86,41 +86,30 @@ suite "Todolist Database Integration Tests":
 
   test "Todo item state transitions":
     # Add separate items for each state to test
-    let addResult1 = parseJson(executeTodolist(%*{"operation": "add", "content": "Pending test"}))
-    let addResult2 = parseJson(executeTodolist(%*{"operation": "add", "content": "Progress test"}))
-    let addResult3 = parseJson(executeTodolist(%*{"operation": "add", "content": "Complete test"}))
-    let addResult4 = parseJson(executeTodolist(%*{"operation": "add", "content": "Cancel test"}))
-    
-    let itemIds = [
-      addResult1["itemId"].getInt(),
-      addResult2["itemId"].getInt(),
-      addResult3["itemId"].getInt(),
-      addResult4["itemId"].getInt()
-    ]
-    
-    # Test all state transitions on different items
+    discard executeTodolist(%*{"operation": "add", "content": "Pending test"})
+    discard executeTodolist(%*{"operation": "add", "content": "Progress test"})
+    discard executeTodolist(%*{"operation": "add", "content": "Complete test"})
+    discard executeTodolist(%*{"operation": "add", "content": "Cancel test"})
+
+    # Test all state transitions on different items using item numbers (1-4)
     let states = ["pending", "in_progress", "completed", "cancelled"]
     let stateMarkers = ["[ ]", "[~]", "[x]", "[-]"]
-    
+
     for i, state in states:
+      let itemNumber = i + 1  # Item numbers are 1-based
       let updateArgs = %*{
         "operation": "update",
-        "itemId": itemIds[i],
+        "itemNumber": itemNumber,
         "state": state
       }
-      
+
       let result = parseJson(executeTodolist(updateArgs))
       check result["success"].getBool() == true
-      
+
       let todoList = result["todoList"].getStr()
-      
-      # Note: cancelled items are filtered out by formatTodoList to avoid showing duplicates
-      if state == "cancelled":
-        # For cancelled items, just verify the operation succeeded
-        # The item won't appear in the list because it's filtered out
-        check result["success"].getBool() == true
-      else:
-        check todoList.contains(stateMarkers[i])
+
+      # Cancelled items are still shown with [-] marker (soft delete)
+      check todoList.contains(stateMarkers[i])
 
   test "Priority persistence and formatting":
     # Add items with different priorities
@@ -180,20 +169,20 @@ suite "Todolist Database Integration Tests":
 
   test "Concurrent modifications handling":
     # Add base item
-    let addResult = parseJson(executeTodolist(%*{"operation": "add", "content": "Concurrent test"}))
-    let itemId = addResult["itemId"].getInt()
-    
+    discard executeTodolist(%*{"operation": "add", "content": "Concurrent test"})
+
     # Simulate concurrent updates (this tests database locking/consistency)
-    let update1 = %*{"operation": "update", "itemId": itemId, "state": "in_progress"}
-    let update2 = %*{"operation": "update", "itemId": itemId, "priority": "high"}
-    
+    # Item is at position 1
+    let update1 = %*{"operation": "update", "itemNumber": 1, "state": "in_progress"}
+    let update2 = %*{"operation": "update", "itemNumber": 1, "priority": "high"}
+
     let result1 = parseJson(executeTodolist(update1))
     let result2 = parseJson(executeTodolist(update2))
-    
+
     # Both should succeed
     check result1["success"].getBool() == true
     check result2["success"].getBool() == true
-    
+
     # Final state should have both changes
     let final = parseJson(executeTodolist(%*{"operation": "list"}))
     let todoList = final["todoList"].getStr()

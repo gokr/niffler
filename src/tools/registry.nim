@@ -261,9 +261,9 @@ proc createTodolistTool(): Tool =
         "type": "string",
         "description": "Todo item content (for add operation)"
       },
-      "itemId": {
+      "itemNumber": {
         "type": "integer",
-        "description": "Todo item ID (for update/delete operations)"
+        "description": "Item position in the list (1-N, including cancelled items). Used for update/delete operations"
       },
       "state": {
         "type": "string",

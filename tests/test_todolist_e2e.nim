@@ -45,20 +45,17 @@ suite "Todolist End-to-End Workflow Tests":
     listResult = parseJson(executeTodolist(%*{"operation": "list"}))
     check listResult["itemCount"].getInt() == 4
     
-    # 4. Start working on first task
-    let designResult = parseJson(executeTodolist(%*{"operation": "add", "content": "Design system", "priority": "high"}))
-    let designId = designResult["itemId"].getInt()
-    
+    # 4. Start working on first task (item number 1)
     discard executeTodolist(%*{
-      "operation": "update", 
-      "itemId": designId, 
+      "operation": "update",
+      "itemNumber": 1,
       "state": "in_progress"
     })
-    
+
     # 5. Complete first task
     discard executeTodolist(%*{
-      "operation": "update", 
-      "itemId": designId, 
+      "operation": "update",
+      "itemNumber": 1,
       "state": "completed"
     })
     

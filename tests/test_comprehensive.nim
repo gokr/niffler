@@ -9,7 +9,7 @@ suite "Comprehensive Tool Tests":
   
   test "All tool schemas exist and are valid":
     let allSchemas = getAllToolSchemas()
-    check allSchemas.len == 7
+    check allSchemas.len == 8
     
     # Check each tool individually
     for schema in allSchemas:
@@ -63,7 +63,7 @@ suite "Comprehensive Tool Tests":
     check request.model == "gpt-4"
     check request.messages.len == 1
     check request.tools.isSome()
-    check request.tools.get().len == 7
+    check request.tools.get().len == 8
 
   test "JSON serialization works":
     let messages = @[Message(role: mrUser, content: "Test")]

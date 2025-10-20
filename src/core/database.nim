@@ -1263,12 +1263,27 @@ proc getTodoItems*(backend: DatabaseBackend, listId: int): seq[TodoItem] =
   ## Get all todo items for a list, sorted by order index
   if backend == nil:
     return @[]
-  
+
   case backend.kind:
   of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:    
+    backend.pool.withDb:
       let items = db.filter(TodoItem, it.listId == listId)
       return items.sortedByIt(it.orderIndex)
+
+proc deleteTodoItem*(backend: DatabaseBackend, itemId: int): bool =
+  ## Delete a todo item from the database (hard delete)
+  if backend == nil:
+    return false
+
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      let items = db.filter(TodoItem, it.id == itemId)
+      if items.len == 0:
+        return false
+
+      db.delete(items[0])
+      return true
 
 proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[TodoList] =
   ## Get the active todo list for a conversation
