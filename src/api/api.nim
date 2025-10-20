@@ -633,6 +633,7 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
           debug(fmt"⚠️  Skipping correction: no content tokens after subtracting reasoning tokens")
     
     # Store final assistant message in conversation history
+    # Empty content is allowed for messages after tool execution
     discard conversation_manager.addAssistantMessage(content = followUpContent, toolCalls = none(seq[LLMToolCall]), outputTokens = finalUsage.outputTokens, modelName = request.model)
     
     let completeResponse = APIResponse(
@@ -674,8 +675,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                    recursionDepth, updatedExecutedCalls)
   
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
-  
+
   # Store assistant message with tool calls BEFORE executing tools to maintain correct order
+  # Empty content is allowed when tool calls are present (messageType = "tool_call")
   discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
   
   # Execute all unique tool calls using helper function
