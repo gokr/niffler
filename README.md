@@ -198,6 +198,60 @@ For more details on MCP and available servers, see the [Model Context Protocol d
 ### Prerequisites
 - Nim 2.2.4 or later
 - Git
+- **NATS Server**: Required for multi-agent IPC and will be automatically started by Niffler
+
+#### NATS Server Installation
+
+Niffler requires a NATS server for communication between agents. You have several options:
+
+**Option 1: Docker (Recommended)**
+```bash
+# Pull and run NATS server
+docker run -d --name nats -p 4222:4222 nats:latest
+
+# Or using docker-compose
+echo 'version: "3.7"
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+    command: ["-js"]  # Enable JetStream for persistence
+' > docker-compose.yml
+docker-compose up -d
+```
+
+**Option 2: Binary Download**
+```bash
+# Download the latest NATS server binary
+curl -L https://github.com/nats-io/nats-server/releases/latest/download/nats-server-linux-amd64.tar.gz | tar xz
+sudo mv nats-server-*/nats-server /usr/local/bin/nats-server
+
+# Or download specific version
+OS=linux ARCH=amd64 VERSION=2.10.7
+wget https://github.com/nats-io/nats-server/releases/download/v${VERSION}/nats-server-${VERSION}-${OS}-${ARCH}.tar.gz
+tar xzf nats-server-${VERSION}-${OS}-${ARCH}.tar.gz
+sudo mv nats-server-${VERSION}-${OS}-${ARCH}/nats-server /usr/local/bin/
+```
+
+**Option 3: Package Manager**
+```bash
+# Ubuntu/Debian
+sudo apt update && sudo apt install -y nats-server
+
+# macOS
+brew install nats-server
+
+# Windows (using Chocolatey)
+choco install nats-server
+```
+
+Once installed, you can start NATS with:
+```bash
+nats-server -js  # -js enables JetStream for persistence
+```
+
+**Note**: Niffler will automatically detect and connect to a running NATS server on `localhost:4222`. If no server is running, Niffler will attempt to start one automatically.
 
 ### Optional Prerequisites (Enhanced Rendering)
 - **[batcat](https://github.com/sharkdp/bat)**: For syntax-highlighted file content display
@@ -205,6 +259,32 @@ For more details on MCP and available servers, see the [Model Context Protocol d
 - **[trafilatura](https://trafilatura.readthedocs.io/)**: For enhanced web content extraction with the fetch tool
 
 If these tools are not installed, Niffler will automatically fall back to built-in rendering.
+
+### System Libraries
+
+Before building, ensure you have the required system libraries installed:
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt update
+sudo apt install -y libnats3.7t64 libnats-dev
+```
+
+**Linux (CentOS/RHEL/Fedora):**
+```bash
+# For CentOS/RHEL
+sudo yum install nats-devel
+# Or for Fedora
+sudo dnf install nats-devel
+```
+
+**macOS:**
+```bash
+brew install nats
+```
+
+**Windows:**
+> The NATS library is typically bundled with the Nim package on Windows.
 
 ### Build and install from Source
 ```bash
