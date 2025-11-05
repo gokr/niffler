@@ -7,8 +7,8 @@ This document outlines the design for implementing a multi-agent system using ni
 ## Concept Overview
 
 The multi-agent system consists of:
-1. **Master Niffler** - Main interface for entering prompts with agent routing via `@agent:` syntax
-2. **Sub-Niffler Instances** - Long-running specialized agents, each displaying their own work in separate terminals
+1. **Master Niffler** - Main interface for entering prompts with agent routing via `@agent:` syntax. Started without mode flags
+2. **Agent Niffler** - Long-running specialized agents, each displaying their own work in separate terminals. Started with `--agent <name>` flag (implies `--agent-mode`)
 3. **NATS Message Bus** - Inter-process communication using JSON messages over NATS subjects
 4. **Task vs Ask Semantics** - Clear distinction between isolated tasks and conversational asks
 
@@ -44,7 +44,7 @@ Both task and ask conversations are **always persisted** in the database for his
 
 **Message Types**: Well-defined message protocols in `src/types/messages.nim` for API requests/responses and tool execution will be extended with NATS message types for inter-agent communication.
 
-**CLI Framework**: Uses cligen for command parsing - will be extended with `--master` and `--agent-mode` flags for different process modes.
+**CLI Framework**: Uses cligen for command parsing - extended with `--agent <name>` flag for agent mode (implies `--agent-mode`) and master mode when no flags specified.
 
 ### Current Components Relevant to Multi-Agent
 
@@ -463,7 +463,7 @@ CREATE INDEX idx_conversations_status ON conversations(status);
 **Goal**: Sub-niffler can receive and process task/ask requests.
 
 1. **Agent Mode CLI**
-   - Add `--agent-mode --agent-name <name>` flags
+   - Add `--agent <name>` flag (implies `--agent-mode`)
    - Read agent config from TOML
    - Validate agent exists and is properly configured
    - Initialize NATS connection
@@ -516,7 +516,7 @@ CREATE INDEX idx_conversations_status ON conversations(status);
 **Goal**: Master can route requests to agents and manage their lifecycle.
 
 1. **Master Mode CLI**
-   - Add `--master` flag
+   - Run master mode when no flags specified (default behavior)
    - Simplified input loop: read stdin, parse, route
    - No streaming output handling
    - Display routing confirmations and completions
@@ -527,11 +527,11 @@ CREATE INDEX idx_conversations_status ON conversations(status);
    - Parse `@agent: prompt` (default to 'ask')
    - Fallback to default_agent or local processing
 
-3. **Agent Routing** (`src/core/router.nim`)
-   - Validate agent exists in config
-   - Check if agent is running (via heartbeat)
-   - Auto-start if needed and `auto_start = true`
-   - Build appropriate task/ask message
+3. **Agent Auto-Start**
+   - Master reads agents with `auto_start = true` on startup
+   - Spawn agent processes: `niffler --agent <name>` (implies `--agent-mode`)
+   - Wait for heartbeats to confirm ready
+   - Report startup failures
 
 4. **NATS Request/Reply**
    - Publish to `niffler.agent.<name>.request`
@@ -548,7 +548,7 @@ CREATE INDEX idx_conversations_status ON conversations(status);
    - `/agents health` - Show health status table
 
 6. **Process Management** (`src/core/agent_manager.nim`)
-   - Spawn agent processes: `niffler --agent-mode --agent-name <name>`
+   - Spawn agent processes: `niffler --agent <name>`
    - Track PIDs of spawned agents
    - Monitor agent health via heartbeats
    - Handle agent crashes and restarts
@@ -556,7 +556,7 @@ CREATE INDEX idx_conversations_status ON conversations(status);
 7. **Backward Compatibility**
    - Input without `@` → route to default_agent
    - Or process locally if no agents configured
-   - Single-agent mode still works
+   - Single-agent mode still works with `--single` flag
 
 ### Phase 4: Agent Lifecycle (1-2 weeks)
 
