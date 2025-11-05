@@ -14,9 +14,7 @@ import ../types/[messages]
 import theme
 import tool_visualizer
 import output_shared
-
-# Note: We don't need to update token counts here - the main CLI thread will do it
-# when it processes status line updates
+import ui_state
 
 type
   OutputHandlerWorker* = object
@@ -98,7 +96,11 @@ proc outputHandlerProc(params: ThreadParams) {.thread, gcsafe.} =
             if accumulatedResponse.len > 0:
               writeCompleteLine("")
 
-            # Note: Token counts will be updated by main CLI thread via status line
+            # Update token counts (thread-safe, no UI calls)
+            updateTokenCounts(response.usage.inputTokens, response.usage.outputTokens)
+
+            # Clear processing indicator (next prompt will show without ⚡)
+            ui_state.isProcessing = false
 
             # Reset state for next request
             currentRequestId = ""

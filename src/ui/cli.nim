@@ -42,17 +42,10 @@ import tool_visualizer
 import file_completion
 import output_handler
 import output_shared
-
-# Forward declarations for helper functions called early in the file
-proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string
-proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig())
+import ui_state
 
 # State for input box rendering
 var currentInputText: string = ""
-var currentModelName*: string = ""  # Export for output_handler
-var isProcessing: bool = false
-var inputTokens: int = 0
-var outputTokens: int = 0
 
 # State for tool call display with progressive rendering
 var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
@@ -539,7 +532,7 @@ when defined(posix):
     if currentActiveRequestId.len > 0 and currentChannels != nil:
       # We have an active stream, cancel it
       streamCancellationRequested = true
-      isProcessing = false  # Reset processing state
+      ui_state.isProcessing = false  # Reset processing state
       let cancelRequest = APIRequest(
         kind: arkStreamCancel,
         cancelRequestId: currentActiveRequestId
@@ -564,101 +557,9 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
 export output_shared.writeStreamingChunk, output_shared.writeStreamingChunkStyled,
        output_shared.writeCompleteLine, output_shared.finishStreaming,
        output_shared.writeUserInput, output_shared.flushStreamingBuffer
-
-proc formatTokenAmount*(tokens: int): string =
-  ## Format token amounts with appropriate units (0-1000, 1.0k-20.0k, 20k-999k, 1.0M+)
-  if tokens < 1000:
-    return $tokens
-  elif tokens < 20000:
-    let k = tokens.float / 1000.0
-    return fmt"{k:.1f}k"
-  elif tokens < 1000000:
-    let k = tokens div 1000
-    return fmt"{k}k"
-  else:
-    let m = tokens.float / 1000000.0
-    return fmt"{m:.1f}M"
-
-proc formatCostRounded*(cost: float): string =
-  ## Format cost rounded to 3 decimals with no trailing zeros
-  let rounded = round(cost, 3)
-  if rounded == 0.0:
-    return "$0"
-  
-  let formatted = fmt"${rounded:.3f}"
-  # Remove trailing zeros after decimal point
-  var finalResult = formatted
-  if '.' in finalResult:
-    while finalResult.endsWith("0"):
-      finalResult = finalResult[0..^2]
-    if finalResult.endsWith("."):
-      finalResult = finalResult[0..^2]
-  return finalResult
-
-proc updateStatusLine*() =
-  ## Update status line with token counts, context info, and cost
-  let sessionTotal = inputTokens + outputTokens
-
-  if sessionTotal > 0:
-    # Get model config from current session or load from config
-    let config = loadConfig()
-    let modelConfig = if currentModelName.len > 0:
-      getModelFromConfig(config, currentModelName)
-    else:
-      config.models[0]
-
-    let contextMessages = conversation_manager.getConversationContext()
-    let contextSize = estimateTokenCount(contextMessages)
-    let maxContext = if modelConfig.context > 0: modelConfig.context else: 128000
-    let statusIndicator = if isProcessing: "⚡" else: ""
-
-    # Calculate context percentage and format max context
-    let contextPercent = if maxContext > 0: min(100, (contextSize * 100) div maxContext) else: 0
-    let contextInfo = fmt"{contextPercent}% of {formatTokenAmount(maxContext)}"
-
-    # Format token amounts with new formatting
-    let formattedInputTokens = formatTokenAmount(inputTokens)
-    let formattedOutputTokens = formatTokenAmount(outputTokens)
-
-    # Calculate session cost if available using real token data
-    let sessionTokens = getSessionTokens()
-    var sessionCost = 0.0
-
-    if modelConfig.inputCostPerMToken.isSome() and sessionTokens.inputTokens > 0:
-      let inputCostPerToken = modelConfig.inputCostPerMToken.get() / 1_000_000.0
-      sessionCost += sessionTokens.inputTokens.float * inputCostPerToken
-
-    if modelConfig.outputCostPerMToken.isSome() and sessionTokens.outputTokens > 0:
-      let outputCostPerToken = modelConfig.outputCostPerMToken.get() / 1_000_000.0
-      sessionCost += sessionTokens.outputTokens.float * outputCostPerToken
-
-    let costInfo = if sessionCost > 0: fmt" {formatCostRounded(sessionCost)}" else: ""
-    let statusLine = fmt"{statusIndicator}↑{formattedInputTokens} ↓{formattedOutputTokens} {contextInfo}{costInfo}"
-    setStatus(@[statusLine])
-    # Don't call redraw() here - let readline() handle it
-  else:
-    # Clear status line when no tokens yet
-    clearStatus()
-    # Don't call redraw() here - let readline() handle it
-
-proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Generate a simplified prompt with model name, mode, and conversation ID
-  # Get conversation info and build model name with conversation context
-  let currentSession = getCurrentSession()
-  let modelNameWithContext = if currentSession.isSome():
-    let conv = currentSession.get().conversation
-    let runtimeMode = getCurrentMode()
-    fmt"{currentModelName}({runtimeMode}, {conv.id})"
-  else:
-    debug("generatePrompt: currentSession is None, using plain model name")
-    currentModelName
-
-  return fmt"{modelNameWithContext} > "
-
-proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()) =
-  ## Update prompt color and text based on current mode and model  
-  setPromptColor(getModePromptColor(), {styleBright})
-  # Note: linecross doesn't have setPrompt - prompt is set dynamically in readline() calls
+export ui_state.updateTokenCounts, ui_state.updateStatusLine, ui_state.generatePrompt,
+       ui_state.updatePromptState, ui_state.resetUIState, ui_state.currentModelName,
+       ui_state.inputTokens, ui_state.outputTokens, ui_state.isProcessing
 
 proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, style: Style = styleBright, useMarkdown: bool = false) =
   ## Write text to conversation area with automatic newline and optional markdown rendering
@@ -671,46 +572,9 @@ proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, st
   else:
     stdout.write(text & "\n")
   stdout.flushFile()
-  
+
   # Track that output occurred after tool call for progressive rendering
   outputAfterToolCall = true
-
-proc resetUIState*() =
-  ## Reset UI-specific state (tokens, pending tool calls) - used when switching conversations
-  inputTokens = 0
-  outputTokens = 0
-  pendingToolCalls.clear()
-  
-  # Sync currentModelName with the current session's model
-  let currentSession = getCurrentSession()
-  if currentSession.isSome():
-    let conv = currentSession.get().conversation
-    currentModelName = conv.modelNickname
-    debug(fmt"UI state reset: tokens/tool calls cleared, model synced to {currentModelName}")
-  else:
-    debug("UI state reset: tokens and pending tool calls cleared")
-  
-  # Update prompt color to reflect current mode (fixes conversation switching color bug)
-  updatePromptState()
-    
-proc resetUIState*(modelName: string) =
-  ## Reset UI-specific state and set specific model name (for cases with known model)
-  inputTokens = 0
-  outputTokens = 0
-  pendingToolCalls.clear()
-  
-  # Update prompt color to reflect current mode (fixes conversation switching color bug)
-  updatePromptState()
-  currentModelName = modelName
-  debug(fmt"UI state reset: tokens/tool calls cleared, model set to {modelName}")
-
-proc updateTokenCounts*(newInputTokens: int, newOutputTokens: int) =
-  ## Update token counts in central history storage
-  updateSessionTokens(newInputTokens, newOutputTokens)
-  # Also update UI state for prompt display
-  inputTokens = newInputTokens
-  outputTokens = newOutputTokens
-  # Note: Status line will be updated on next prompt display
 
 proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
   ## Custom key hook for handling special key combinations like Shift+Tab
@@ -803,11 +667,11 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   writeCompleteLine("Press Ctrl+C to stop stream display or exit.")
   
   # Initialize global state for enhanced CLI
-  currentModelName = currentModel.nickname
+  ui_state.currentModelName = currentModel.nickname
   currentInputText = ""
-  isProcessing = false
-  inputTokens = 0
-  outputTokens = 0
+  ui_state.isProcessing = false
+  ui_state.inputTokens = 0
+  ui_state.outputTokens = 0
   
   initializeModeState()
   
@@ -834,7 +698,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
         for model in config.models:
           if model.nickname == conversation.modelNickname:
             currentModel = model
-            currentModelName = model.nickname
+            ui_state.currentModelName = model.nickname
             debug(fmt"Restored model from conversation: {model.nickname}")
             break
     else:
@@ -926,7 +790,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
           if res.success:
             if command == "model":
               # Reconfigure API worker with new model
-              currentModelName = currentModel.nickname
+              ui_state.currentModelName = currentModel.nickname
               if not configureAPIWorker(currentModel):
                 writeCompleteLine(formatWithStyle(fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key.", currentTheme.error))
 
@@ -967,7 +831,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
           streamCancellationRequested = false
 
         # Set processing status
-        isProcessing = true
+        ui_state.isProcessing = true
 
         # Log user input to prompt history (bash-style history)
         logToPromptHistory(database, input, "", currentModel.nickname)
