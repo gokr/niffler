@@ -45,12 +45,15 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 ### **1. Complete Task Tool Integration** *(HIGH PRIORITY)*
 
 **Missing Functionality:**
-- [ ] Integrate tool execution into task executor conversation loop (currently returns "integration pending" error)
+- [ ] Integrate tool execution into task executor conversation loop
+      (src/core/task_executor.nim:244 - currently returns "integration pending")
+- [ ] Resolve circular import issues blocking tool execution
 - [ ] Extract artifacts (file paths) from task conversations
 - [ ] Add task result visualization in main conversation
-- [ ] Support nested task spawning with depth limits
+- [ ] Support nested task spawning with depth limits (if desired)
 
-**Current Status:** Framework exists (src/core/task_executor.nim) but tool calls during task execution are not yet handled (line 244).
+**Current Status:** Framework exists, tool call handling during tasks needs implementation
+**Documented in:** doc/TASK.md (comprehensive implementation guide)
 
 ### **2. User Message Queue & Always-There Input** *(HIGH PRIORITY)*
 
@@ -164,12 +167,54 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Create unified provider interface
 - [ ] Add provider-specific optimizations
 
-### **9. Advanced File Features** *(LOW PRIORITY)*
+### **9. Thread Channel Communication Optimization** *(MEDIUM PRIORITY)*
+
+**Background:** Currently uses polling with artificial delays (doc/THREADS.md)
+
+**Missing:**
+- [ ] Replace `tryReceive` + `sleep(10)` in API worker (src/api/worker.nim:80)
+- [ ] Replace `tryReceive` + `sleep(10)` in tool worker (src/tools/worker.nim:60)
+- [ ] Replace `sleep(5)` in CLI response polling (src/ui/cli.nim:314)
+- [ ] Use blocking `receive` or timeout-based blocking instead
+- [ ] Maintain graceful shutdown capabilities
+
+**Expected Impact:** 20-50ms latency reduction per multi-turn conversation
+
+**Current Status:** Documented analysis complete (doc/THREADS.md), implementation pending
+
+### **10. Advanced File Features** *(LOW PRIORITY)*
 
 - [ ] Advanced change detection with timestamps
 - [ ] Enhanced git integration for repository awareness
 - [ ] Session save/restore functionality
 - [ ] Export capabilities for conversations (current: SQLite database access)
+
+### **11. Multi-Agent Architecture Research** *(LOW PRIORITY / FUTURE)*
+
+**Note:** doc/MULTIAGENT.md describes process-per-agent IPC system
+
+**Current Status:**
+- Single-process task execution works well
+- Inter-process communication not needed for current use cases
+- Document describes advanced vision beyond current scope
+
+**If Implemented:**
+- [ ] Process-per-agent architecture
+- [ ] Unix socket / TCP communication
+- [ ] Agent discovery and registration
+- [ ] Master UI with `@agent_name:` routing
+- [ ] Health monitoring and auto-restart
+
+**Recommendation:** Current single-process approach is simpler and sufficient
+
+## Documentation Cleanup *(LOW PRIORITY)*
+
+- [ ] Expand doc/MODELS.md into full model configuration guide (currently just JSON snippet)
+- [ ] Update doc/CCPROMPTS.md with context about Niffler's cc config usage
+- [ ] Audit doc/CONFIG.md for path consistency (verify no intermediate `config/` paths)
+- [ ] Move doc/OCTO-THINKING.md to doc/research/ with context note (analyzes Octofriend, not Niffler)
+- [ ] Add header to doc/STREAM-BPE.md clarifying it's background education
+- [ ] Update or archive doc/MULTIAGENT.md as "future vision" vs current implementation
 
 ## Fun Easter Eggs *(LOW PRIORITY)*
 
