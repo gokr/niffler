@@ -97,6 +97,23 @@ proc writeKeys*(keys: KeyConfig) =
   # Set restrictive permissions (owner read/write only)
   setFilePermissions(keyPath, {fpUserRead, fpUserWrite})
 
+proc readKeyForModel*(modelConfig: config.ModelConfig): string =
+  ## Read API key for a specific model from key storage
+  let keys = readKeys()
+  let nickname = modelConfig.nickname
+
+  if keys.hasKey(nickname):
+    return keys[nickname]
+
+  # Fallback to environment variable
+  let envVar = modelConfig.apiEnvVar.get("")
+  if envVar.len > 0:
+    let envValue = getEnv(envVar)
+    if envValue.len > 0:
+      return envValue
+
+  return ""
+
 # Cost calculation helpers
 proc calculateCosts*(cost: var CostTracking, usage: TokenUsage) =
   ## Calculate and populate cost totals based on token usage and per-token rates

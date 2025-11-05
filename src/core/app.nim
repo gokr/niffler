@@ -326,9 +326,17 @@ proc prepareConversationMessages*(text: string): (seq[Message], string) =
 proc selectModelFromConfig*(config: configTypes.Config, model: string): configTypes.ModelConfig =
   ## Select model from config based on parameter or return default model
   if model.len > 0:
-    return getModelFromConfig(config, model)
-  else:
+    # Find model by nickname
+    for m in config.models:
+      if m.nickname == model:
+        return m
+    echo fmt"Warning: Model '{model}' not found, using default: {config.models[0].nickname}"
+
+  if config.models.len > 0:
     return config.models[0]
+  else:
+    echo "Error: No models configured"
+    raise newException(ValueError, "No models configured")
 
 
 proc sendSinglePromptInteractiveWithId*(text: string, modelConfig: configTypes.ModelConfig): (bool, string) =

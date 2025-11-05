@@ -17,7 +17,7 @@
 ## - Collects metrics (tokens, tool calls, artifacts)
 ## - Asks LLM to summarize results before returning to main agent
 
-import std/[logging, strformat, times, options, os]
+import std/[logging, strformat, times, options, os, strutils]
 import ../types/[messages, config, agents]
 import channels
 import config as configModule
@@ -126,14 +126,21 @@ proc executeTask*(agent: AgentDefinition, description: string,
     # Get API key for the model
     let apiKey = configModule.readKeyForModel(modelConfig)
     if apiKey.len == 0:
-      return TaskResult(
-        success: false,
-        summary: "",
-        artifacts: @[],
-        toolCalls: 0,
-        tokensUsed: 0,
-        error: fmt("No API key configured for model '{modelConfig.nickname}'")
-      )
+      # Check if this is a local server that doesn't require authentication
+      let baseUrl = modelConfig.baseUrl.toLower()
+      if baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1"):
+        # Local server - use empty string as valid key
+        discard
+      else:
+        # Remote server - API key required but not found
+        return TaskResult(
+          success: false,
+          summary: "",
+          artifacts: @[],
+          toolCalls: 0,
+          tokensUsed: 0,
+          error: fmt("No API key configured for model '{modelConfig.nickname}'")
+        )
 
     # Build task-specific system prompt
     let systemPrompt = buildTaskSystemPrompt(agent, description)
