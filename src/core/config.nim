@@ -1,27 +1,26 @@
 ## Configuration Management Module
 ##
-## This module handles all configuration-related functionality for Niffler:
-## - Loading and saving JSON configuration files
+## This module handles configuration-related functionality for Niffler:
+## - Loading TOML configuration files (main entry point)
 ## - Managing API keys securely with file permissions
 ## - Platform-appropriate config directory detection
 ## - Model configuration with OpenAI protocol parameters
 ## - Database configuration (SQLite/TiDB)
 ## - Theme configuration and built-in themes
-## - Cost tracking and token usage calculation
 ##
 ## Configuration Structure:
-## - Main config: ~/.niffler/config.json (Unix) or %APPDATA%/niffler/config.json (Windows)
+## - Main config: ~/.niffler/config.toml (Unix) or %APPDATA%/niffler/config.toml (Windows)
 ## - API keys: ~/.niffler/keys (with restricted permissions)
 ## - Database: ~/.niffler/niffler.db (SQLite)
 ## - System prompts: ~/.niffler/NIFFLER.md
 
-import std/[os, appdirs, json, tables, options, locks, strformat, strutils]
-import ../types/[config, messages]
+import std/[os, appdirs, tables, options, locks, strformat, strutils, sugar]
+import ../types/[config, messages, nats_messages]
+import config_toml
 import agent_defaults
-import templates
 
 const KEY_FILE_NAME = "keys"
-const CONFIG_FILE_NAME = "config.json"
+const CONFIG_FILE_NAME = "config.toml"
 const SQLITE_FILE_NAME = "niffler.db"
 const AGENTS_DIR_NAME = "agents"
 
@@ -48,426 +47,53 @@ proc getDefaultKeyPath*(): string =
 
 proc getAgentsDir*(): string =
   ## DEPRECATED: Get path for default agents directory (~/.niffler/agents)
-  ## For config-aware agent directory, use session.getAgentsDir() instead
-  ## This function exists for backward compatibility and is NOT config-aware
   joinPath(getConfigDir(), AGENTS_DIR_NAME)
 
-# Global config manager
+# Global configuration manager instance
 var globalConfigManager: ConfigManager
 
-proc initializeConfigManager() =
-  globalConfigManager.configPath = getDefaultConfigPath()
+proc initializeConfigManager*() =
+  ## Initialize global config manager
+  withLock(globalConfigManager.lock):
+    if globalConfigManager.config.config.isNone():
+      globalConfigManager.config.config = some(getDefaultConfigPath())
   initLock(globalConfigManager.lock)
 
-proc parseModelConfig(node: JsonNode): ModelConfig =
-  ## Parse a model configuration from JSON node with OpenAI protocol parameters
-  result.nickname = node["nickname"].getStr()
-  result.baseUrl = node["baseUrl"].getStr()
-  result.model = node["model"].getStr()
-  result.context = node["context"].getInt()
-  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
-  
-  if node.hasKey("type"):
-    case node["type"].getStr():
-    of "standard": result.`type` = some(mtStandard)
-    of "openai-responses": result.`type` = some(mtOpenAIResponses)
-    of "anthropic": result.`type` = some(mtAnthropic)
-  
-  if node.hasKey("apiEnvVar"):
-    result.apiEnvVar = some(node["apiEnvVar"].getStr())
-    
-  if node.hasKey("apiKey"):
-    result.apiKey = some(node["apiKey"].getStr())
-    
-  if node.hasKey("reasoning"):
-    case node["reasoning"].getStr():
-    of "low": result.reasoning = some(rlLow)
-    of "medium": result.reasoning = some(rlMedium)
-    of "high": result.reasoning = some(rlHigh)
-    
-  # OpenAI protocol parameters
-  if node.hasKey("temperature"):
-    result.temperature = some(node["temperature"].getFloat())
-    
-  if node.hasKey("topP"):
-    result.topP = some(node["topP"].getFloat())
-    
-  if node.hasKey("topK"):
-    result.topK = some(node["topK"].getInt())
-    
-  if node.hasKey("maxTokens"):
-    result.maxTokens = some(node["maxTokens"].getInt())
-    
-  if node.hasKey("stop"):
-    var stopSeq: seq[string] = @[]
-    for stopItem in node["stop"]:
-      stopSeq.add(stopItem.getStr())
-    result.stop = some(stopSeq)
-    
-  if node.hasKey("presencePenalty"):
-    result.presencePenalty = some(node["presencePenalty"].getFloat())
-    
-  if node.hasKey("frequencyPenalty"):
-    result.frequencyPenalty = some(node["frequencyPenalty"].getFloat())
-    
-  if node.hasKey("logitBias"):
-    var biasTable = initTable[int, float]()
-    for key, val in node["logitBias"]:
-      biasTable[parseInt(key)] = val.getFloat()
-    result.logitBias = some(biasTable)
-    
-  if node.hasKey("seed"):
-    result.seed = some(node["seed"].getInt())
-    
-  # Cost tracking parameters
-  if node.hasKey("inputCostPerMToken"):
-    result.inputCostPerMToken = some(node["inputCostPerMToken"].getFloat())
-  elif node.hasKey("inputCostPerToken"):  # Backward compatibility
-    result.inputCostPerMToken = some(node["inputCostPerToken"].getFloat() * 1_000_000.0)
-    
-  if node.hasKey("outputCostPerMToken"):
-    result.outputCostPerMToken = some(node["outputCostPerMToken"].getFloat())
-  elif node.hasKey("outputCostPerToken"):  # Backward compatibility
-    result.outputCostPerMToken = some(node["outputCostPerToken"].getFloat() * 1_000_000.0)
-
-proc parseSpecialModelConfig(node: JsonNode): SpecialModelConfig =
-  result.baseUrl = node["baseUrl"].getStr()
-  result.model = node["model"].getStr()
-  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
-  if node.hasKey("apiEnvVar"):
-    result.apiEnvVar = some(node["apiEnvVar"].getStr())
-  if node.hasKey("apiKey"):
-    result.apiKey = some(node["apiKey"].getStr())
-
-proc parseMcpServerConfig(node: JsonNode): McpServerConfig =
-  result.command = node["command"].getStr()
-  result.enabled = if node.hasKey("enabled"): node["enabled"].getBool() else: true
-  result.name = if node.hasKey("name"): node["name"].getStr() else: ""
-
-  if node.hasKey("args"):
-    var args: seq[string] = @[]
-    for arg in node["args"]:
-      args.add(arg.getStr())
-    result.args = some(args)
-
-  if node.hasKey("env"):
-    var envTable = initTable[string, string]()
-    for key, val in node["env"]:
-      envTable[key] = val.getStr()
-    result.env = some(envTable)
-
-  if node.hasKey("workingDir"):
-    result.workingDir = some(node["workingDir"].getStr())
-
-  if node.hasKey("timeout"):
-    result.timeout = some(node["timeout"].getInt())
-
-proc parseExternalRenderingConfig(node: JsonNode): ExternalRenderingConfig =
-  result.enabled = node.getOrDefault("enabled").getBool(true)
-  result.contentRenderer = node.getOrDefault("contentRenderer").getStr("batcat --color=always --style=numbers --theme=auto {file}")
-  result.diffRenderer = node.getOrDefault("diffRenderer").getStr("delta --line-numbers --syntax-theme=auto")
-  result.fallbackToBuiltin = node.getOrDefault("fallbackToBuiltin").getBool(true)
-
-proc parseTextExtractionConfig(node: JsonNode): TextExtractionConfig =
-  result.enabled = node.getOrDefault("enabled").getBool(false)
-  result.command = node.getOrDefault("command").getStr("trafilatura -u {url}")
-  result.fallbackToBuiltin = node.getOrDefault("fallbackToBuiltin").getBool(true)
-
-  if node.hasKey("mode"):
-    case node["mode"].getStr():
-    of "url": result.mode = temUrl
-    of "stdin": result.mode = temStdin
-    else: result.mode = temUrl
-  else:
-    result.mode = temUrl
-
-proc parseDatabaseConfig(node: JsonNode): DatabaseConfig =
-  result.enabled = node.getOrDefault("enabled").getBool(true)
-  
-  # Parse database type
-  if node.hasKey("type"):
-    case node["type"].getStr():
-    of "sqlite": result.`type` = dtSQLite
-    of "tidb": result.`type` = dtTiDB
-    else: result.`type` = dtSQLite  # Default to SQLite
-  
-  # SQLite specific settings
-  if node.hasKey("path"):
-    result.path = some(node["path"].getStr())
-  else:
-    result.path = some(getDefaultSqlitePath())
-
-  # TiDB specific settings
-  if node.hasKey("host"):
-    result.host = some(node["host"].getStr())
-  if node.hasKey("port"):
-    result.port = some(node["port"].getInt())
-  if node.hasKey("database"):
-    result.database = some(node["database"].getStr())
-  if node.hasKey("username"):
-    result.username = some(node["username"].getStr())
-  if node.hasKey("password"):
-    result.password = some(node["password"].getStr())
-  
-  # Common settings
-  result.walMode = node.getOrDefault("walMode").getBool(true)
-  result.busyTimeout = node.getOrDefault("busyTimeout").getInt(5000)
-  result.poolSize = node.getOrDefault("poolSize").getInt(10)
-
-proc parseThemeStyleConfig(node: JsonNode): ThemeStyleConfig =
-  result.color = node.getOrDefault("color").getStr("white")
-  result.style = node.getOrDefault("style").getStr("bright")
-
-proc parseThemeConfig(node: JsonNode): ThemeConfig =
-  result.name = node.getOrDefault("name").getStr()
-  result.header1 = parseThemeStyleConfig(node.getOrDefault("header1"))
-  result.header2 = parseThemeStyleConfig(node.getOrDefault("header2"))
-  result.header3 = parseThemeStyleConfig(node.getOrDefault("header3"))
-  result.bold = parseThemeStyleConfig(node.getOrDefault("bold"))
-  result.italic = parseThemeStyleConfig(node.getOrDefault("italic"))
-  result.code = parseThemeStyleConfig(node.getOrDefault("code"))
-  result.link = parseThemeStyleConfig(node.getOrDefault("link"))
-  result.listBullet = parseThemeStyleConfig(node.getOrDefault("listBullet"))
-  result.codeBlock = parseThemeStyleConfig(node.getOrDefault("codeBlock"))
-  result.normal = parseThemeStyleConfig(node.getOrDefault("normal"))
-
-proc parseConfig(configJson: JsonNode): Config =
-  ## Parse complete configuration from JSON with all sections
-  result.yourName = configJson["yourName"].getStr()
-  
-  for modelNode in configJson["models"]:
-    let model = parseModelConfig(modelNode)
-    if model.enabled:
-      result.models.add(model)
-  
-  if configJson.hasKey("diffApply"):
-    result.diffApply = some(parseSpecialModelConfig(configJson["diffApply"]))
-    
-  if configJson.hasKey("fixJson"):
-    result.fixJson = some(parseSpecialModelConfig(configJson["fixJson"]))
-    
-  if configJson.hasKey("defaultApiKeyOverrides"):
-    result.defaultApiKeyOverrides = some(initTable[string, string]())
-    for key, val in configJson["defaultApiKeyOverrides"]:
-      result.defaultApiKeyOverrides.get()[key] = val.getStr()
-      
-  if configJson.hasKey("mcpServers"):
-    result.mcpServers = some(initTable[string, McpServerConfig]())
-    for key, val in configJson["mcpServers"]:
-      result.mcpServers.get()[key] = parseMcpServerConfig(val)
-      
-  if configJson.hasKey("database"):
-    result.database = some(parseDatabaseConfig(configJson["database"]))
-    
-  if configJson.hasKey("themes"):
-    result.themes = some(initTable[string, ThemeConfig]())
-    for key, val in configJson["themes"]:
-      result.themes.get()[key] = parseThemeConfig(val)
-      
-  if configJson.hasKey("currentTheme"):
-    result.currentTheme = some(configJson["currentTheme"].getStr())
-    
-  if configJson.hasKey("markdownEnabled"):
-    result.markdownEnabled = some(configJson["markdownEnabled"].getBool())
-    
-  if configJson.hasKey("instructionFiles"):
-    var instructionFiles: seq[string] = @[]
-    for fileNode in configJson["instructionFiles"]:
-      instructionFiles.add(fileNode.getStr())
-    result.instructionFiles = some(instructionFiles)
-
-  if configJson.hasKey("externalRendering"):
-    result.externalRendering = some(parseExternalRenderingConfig(configJson["externalRendering"]))
-
-  if configJson.hasKey("textExtraction"):
-    result.textExtraction = some(parseTextExtractionConfig(configJson["textExtraction"]))
-
-  if configJson.hasKey("config"):
-    result.config = some(configJson["config"].getStr())
-
 proc readConfig*(path: string): Config =
-  ## Read and parse configuration file from specified path
-  let content = readFile(path)
-  let configJson = parseJson(content)
-  return parseConfig(configJson)
+  ## Read and parse TOML configuration file from specified path
+  let tomlConfig = loadTomlConfig(path)
+  return tomlConfigToConfig(tomlConfig)
 
 proc loadConfigFromPath*(path: string): Config =
   ## Load configuration from an arbitrary path (for project-level configs)
   ## This is an exported version of readConfig for external use
   return readConfig(path)
 
-proc writeConfig*(config: Config, path: string) =
-  ## Write configuration to JSON file with proper formatting
-  let dir = parentDir(path)
-  createDir(dir)
-  
-  var configJson = newJObject()
-  configJson["yourName"] = newJString(config.yourName)
-  
-  var modelsArray = newJArray()
-  for model in config.models:
-    var modelObj = newJObject()
-    modelObj["nickname"] = newJString(model.nickname)
-    modelObj["baseUrl"] = newJString(model.baseUrl)
-    modelObj["model"] = newJString(model.model)
-    modelObj["context"] = newJInt(model.context)
-    modelObj["enabled"] = newJBool(model.enabled)
-    
-    if model.`type`.isSome():
-      modelObj["type"] = newJString($model.`type`.get())
-    if model.apiEnvVar.isSome():
-      modelObj["apiEnvVar"] = newJString(model.apiEnvVar.get())
-    if model.apiKey.isSome():
-      modelObj["apiKey"] = newJString(model.apiKey.get())
-    if model.reasoning.isSome():
-      modelObj["reasoning"] = newJString($model.reasoning.get())
-      
-    # OpenAI protocol parameters
-    if model.temperature.isSome():
-      modelObj["temperature"] = newJFloat(model.temperature.get())
-    if model.topP.isSome():
-      modelObj["topP"] = newJFloat(model.topP.get())
-    if model.topK.isSome():
-      modelObj["topK"] = newJInt(model.topK.get())
-    if model.maxTokens.isSome():
-      modelObj["maxTokens"] = newJInt(model.maxTokens.get())
-    if model.stop.isSome():
-      var stopArray = newJArray()
-      for stopItem in model.stop.get():
-        stopArray.add(newJString(stopItem))
-      modelObj["stop"] = stopArray
-    if model.presencePenalty.isSome():
-      modelObj["presencePenalty"] = newJFloat(model.presencePenalty.get())
-    if model.frequencyPenalty.isSome():
-      modelObj["frequencyPenalty"] = newJFloat(model.frequencyPenalty.get())
-    if model.logitBias.isSome():
-      var biasObj = newJObject()
-      for key, val in model.logitBias.get():
-        biasObj[$key] = newJFloat(val)
-      modelObj["logitBias"] = biasObj
-    if model.seed.isSome():
-      modelObj["seed"] = newJInt(model.seed.get())
-      
-    # Cost tracking parameters
-    if model.inputCostPerMToken.isSome():
-      modelObj["inputCostPerMToken"] = newJFloat(model.inputCostPerMToken.get())
-    if model.outputCostPerMToken.isSome():
-      modelObj["outputCostPerMToken"] = newJFloat(model.outputCostPerMToken.get())
-      
-    modelsArray.add(modelObj)
-  configJson["models"] = modelsArray
-  
-  # Add database configuration if present
-  if config.database.isSome():
-    var dbObj = newJObject()
-    let dbConfig = config.database.get()
-    dbObj["type"] = newJString($dbConfig.`type`)
-    dbObj["enabled"] = newJBool(dbConfig.enabled)
-    dbObj["walMode"] = newJBool(dbConfig.walMode)
-    dbObj["busyTimeout"] = newJInt(dbConfig.busyTimeout)
-    dbObj["poolSize"] = newJInt(dbConfig.poolSize)
-    
-    if dbConfig.path.isSome():
-      dbObj["path"] = newJString(dbConfig.path.get())
-    if dbConfig.host.isSome():
-      dbObj["host"] = newJString(dbConfig.host.get())
-    if dbConfig.port.isSome():
-      dbObj["port"] = newJInt(dbConfig.port.get())
-    if dbConfig.database.isSome():
-      dbObj["database"] = newJString(dbConfig.database.get())
-    if dbConfig.username.isSome():
-      dbObj["username"] = newJString(dbConfig.username.get())
-    if dbConfig.password.isSome():
-      dbObj["password"] = newJString(dbConfig.password.get())
-    
-    configJson["database"] = dbObj
-  
-  # Add theme configurations if present
-  if config.themes.isSome():
-    var themesObj = newJObject()
-    for themeName, themeConfig in config.themes.get():
-      var themeObj = newJObject()
-      themeObj["name"] = newJString(themeConfig.name)
-      
-      # Helper proc to create theme style JSON
-      proc createThemeStyleJson(style: ThemeStyleConfig): JsonNode =
-        var styleObj = newJObject()
-        styleObj["color"] = newJString(style.color)
-        styleObj["style"] = newJString(style.style)
-        return styleObj
-      
-      themeObj["header1"] = createThemeStyleJson(themeConfig.header1)
-      themeObj["header2"] = createThemeStyleJson(themeConfig.header2)
-      themeObj["header3"] = createThemeStyleJson(themeConfig.header3)
-      themeObj["bold"] = createThemeStyleJson(themeConfig.bold)
-      themeObj["italic"] = createThemeStyleJson(themeConfig.italic)
-      themeObj["code"] = createThemeStyleJson(themeConfig.code)
-      themeObj["link"] = createThemeStyleJson(themeConfig.link)
-      themeObj["listBullet"] = createThemeStyleJson(themeConfig.listBullet)
-      themeObj["codeBlock"] = createThemeStyleJson(themeConfig.codeBlock)
-      themeObj["normal"] = createThemeStyleJson(themeConfig.normal)
-      
-      themesObj[themeName] = themeObj
-    configJson["themes"] = themesObj
-  
-  if config.currentTheme.isSome():
-    configJson["currentTheme"] = newJString(config.currentTheme.get())
-    
-  if config.markdownEnabled.isSome():
-    configJson["markdownEnabled"] = newJBool(config.markdownEnabled.get())
-    
-  if config.instructionFiles.isSome():
-    var instructionFilesArray = newJArray()
-    for filename in config.instructionFiles.get():
-      instructionFilesArray.add(newJString(filename))
-    configJson["instructionFiles"] = instructionFilesArray
-  
-  if config.externalRendering.isSome():
-    var renderingObj = newJObject()
-    let renderingConfig = config.externalRendering.get()
-    renderingObj["enabled"] = newJBool(renderingConfig.enabled)
-    renderingObj["contentRenderer"] = newJString(renderingConfig.contentRenderer)
-    renderingObj["diffRenderer"] = newJString(renderingConfig.diffRenderer)
-    renderingObj["fallbackToBuiltin"] = newJBool(renderingConfig.fallbackToBuiltin)
-    configJson["externalRendering"] = renderingObj
-
-  if config.textExtraction.isSome():
-    var textExtObj = newJObject()
-    let textExtConfig = config.textExtraction.get()
-    textExtObj["enabled"] = newJBool(textExtConfig.enabled)
-    textExtObj["command"] = newJString(textExtConfig.command)
-    textExtObj["mode"] = newJString($textExtConfig.mode)
-    textExtObj["fallbackToBuiltin"] = newJBool(textExtConfig.fallbackToBuiltin)
-    configJson["textExtraction"] = textExtObj
-
-  if config.config.isSome():
-    configJson["config"] = newJString(config.config.get())
-
-  writeFile(path, pretty(configJson, 2))
-
 proc readKeys*(): KeyConfig =
   ## Read API keys from secure key file (creates empty table if file doesn't exist)
   let keyPath = getDefaultKeyPath()
   if not fileExists(keyPath):
     return initTable[string, string]()
-    
-  let content = readFile(keyPath)
-  let keysJson = parseJson(content)
-  
-  for key, val in keysJson:
-    result[key] = val.getStr()
+
+  # Simple key=value line format for now (can be migrated to TOML later)
+  result = initTable[string, string]()
+  for line in lines(keyPath):
+    let parts = line.split('=', maxsplit=1)
+    if parts.len == 2:
+      result[parts[0].strip()] = parts[1].strip()
 
 proc writeKeys*(keys: KeyConfig) =
   ## Write API keys to secure key file with restrictive permissions
   let keyPath = getDefaultKeyPath()
   let dir = parentDir(keyPath)
   createDir(dir)
-  
-  var keysJson = newJObject()
+
+  # Simple key=value line format for now (can be migrated to TOML later)
+  var content = ""
   for key, val in keys:
-    keysJson[key] = newJString(val)
-    
-  writeFile(keyPath, $keysJson)
+    content &= key & "=" & val & "\n"
+
+  writeFile(keyPath, content)
   # Set restrictive permissions (owner read/write only)
   setFilePermissions(keyPath, {fpUserRead, fpUserWrite})
 
@@ -480,374 +106,210 @@ proc calculateCosts*(cost: var CostTracking, usage: TokenUsage) =
     cost.totalInputCost = float(usage.inputTokens) * costPerToken
   else:
     cost.totalInputCost = 0.0
+
   if cost.outputCostPerMToken.isSome():
     let costPerToken = cost.outputCostPerMToken.get() / 1_000_000.0
     cost.totalOutputCost = float(usage.outputTokens) * costPerToken
   else:
     cost.totalOutputCost = 0.0
+
   cost.totalCost = cost.totalInputCost + cost.totalOutputCost
 
-proc addUsage*(cost: var CostTracking, inputTokens: int, outputTokens: int) =
-  ## Add token usage and update running totals and costs
-  cost.usage.inputTokens = cost.usage.inputTokens + inputTokens
-  cost.usage.outputTokens = cost.usage.outputTokens + outputTokens
-  cost.usage.totalTokens = cost.usage.inputTokens + cost.usage.outputTokens
-  calculateCosts(cost, cost.usage)
+# Configuration access functions
+proc getGlobalConfigManager*(): var ConfigManager =
+  ## Get global configuration manager instance
+  result = globalConfigManager
 
-proc createDefaultThemes(): Table[string, ThemeConfig] =
-  ## Create built-in themes (default, dark, light, minimal)
+proc getGlobalConfig*(): Config =
+  ## Get current configuration from global manager
+  withLock(globalConfigManager.lock):
+    result = globalConfigManager.config
+
+proc setGlobalConfig*(config: Config) =
+  ## Set configuration in global manager
+  withLock(globalConfigManager.lock):
+    globalConfigManager.config = config
+
+proc reloadConfig*(): bool =
+  ## Reload configuration from file
+  try:
+    let newConfig = readConfig(getDefaultConfigPath())
+    setGlobalConfig(newConfig)
+    return true
+  except:
+    return false
+
+proc getModels*(): seq[ModelConfig] =
+  ## Get all configured models, filtering enabled ones and applying defaults
+  let globalConfig = getGlobalConfig()
+  result = @[]
+  for model in globalConfig.models:
+    if model.enabled:
+      result.add(model)
+
+proc getModel*(nickname: string): Option[ModelConfig] =
+  ## Get model configuration by nickname
+  let models = getModels()
+  for model in models:
+    if model.nickname == nickname:
+      return some(model)
+  return none(ModelConfig)
+
+proc getDefaultModel*(): ModelConfig =
+  ## Get default model (first enabled model)
+  let models = getModels()
+  if models.len > 0:
+    return models[0]
+
+  # Fallback to default configuration if no models configured
+  let fallbackModel = ModelConfig(
+    nickname: "default",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4",
+    context: 4096,
+    enabled: true
+  )
+  fallbackModel
+
+proc getDatabaseConfig*(): DatabaseConfig =
+  ## Get database configuration with defaults
+  let globalConfig = getGlobalConfig()
+  if globalConfig.database.isSome():
+    return globalConfig.database.get()
+
+  # Default SQLite configuration
+  return DatabaseConfig(
+    `type`: dtSQLite,
+    enabled: true,
+    path: some(getDefaultSqlitePath()),
+    host: none(string),
+    port: none(int),
+    database: none(string),
+    username: none(string),
+    password: none(string),
+    walMode: true,
+    busyTimeout: 5000,
+    poolSize: 10
+  )
+
+proc getCurrentTheme*(): string =
+  ## Get current theme name with default
+  let globalConfig = getGlobalConfig()
+  if globalConfig.currentTheme.isSome():
+    return globalConfig.currentTheme.get()
+  return "default"
+
+proc getThemes*(): Table[string, ThemeConfig] =
+  ## Get all configured themes with minimal defaults
+  let globalConfig = getGlobalConfig()
   result = initTable[string, ThemeConfig]()
-  
-  # Default theme with standard terminal colors
+
+  # Add basic default theme
   result["default"] = ThemeConfig(
     name: "default",
-    header1: ThemeStyleConfig(color: "yellow", style: "bright"),
-    header2: ThemeStyleConfig(color: "yellow", style: "bright"),
-    header3: ThemeStyleConfig(color: "yellow", style: "dim"),
+    header1: ThemeStyleConfig(color: "cyan", style: "bright"),
+    header2: ThemeStyleConfig(color: "blue", style: "bright"),
+    header3: ThemeStyleConfig(color: "magenta", style: "bright"),
     bold: ThemeStyleConfig(color: "white", style: "bright"),
-    italic: ThemeStyleConfig(color: "cyan", style: "bright"),
-    code: ThemeStyleConfig(color: "green", style: "dim"),
-    link: ThemeStyleConfig(color: "blue", style: "bright"),
-    listBullet: ThemeStyleConfig(color: "white", style: "bright"),
-    codeBlock: ThemeStyleConfig(color: "cyan", style: "bright"),
-    normal: ThemeStyleConfig(color: "white", style: "bright")
-  )
-  
-  # Dark theme
-  result["dark"] = ThemeConfig(
-    name: "dark",
-    header1: ThemeStyleConfig(color: "blue", style: "bright"),
-    header2: ThemeStyleConfig(color: "cyan", style: "bright"),
-    header3: ThemeStyleConfig(color: "cyan", style: "dim"),
-    bold: ThemeStyleConfig(color: "white", style: "bright"),
-    italic: ThemeStyleConfig(color: "yellow", style: "bright"),
-    code: ThemeStyleConfig(color: "green", style: "bright"),
-    link: ThemeStyleConfig(color: "magenta", style: "bright"),
-    listBullet: ThemeStyleConfig(color: "cyan", style: "bright"),
-    codeBlock: ThemeStyleConfig(color: "blue", style: "dim"),
-    normal: ThemeStyleConfig(color: "white", style: "bright")
-  )
-  
-  # Light theme
-  result["light"] = ThemeConfig(
-    name: "light",
-    header1: ThemeStyleConfig(color: "blue", style: "bright"),
-    header2: ThemeStyleConfig(color: "magenta", style: "bright"),
-    header3: ThemeStyleConfig(color: "magenta", style: "dim"),
-    bold: ThemeStyleConfig(color: "black", style: "bright"),
-    italic: ThemeStyleConfig(color: "blue", style: "dim"),
-    code: ThemeStyleConfig(color: "green", style: "dim"),
-    link: ThemeStyleConfig(color: "blue", style: "bright"),
-    listBullet: ThemeStyleConfig(color: "black", style: "bright"),
-    codeBlock: ThemeStyleConfig(color: "magenta", style: "dim"),
-    normal: ThemeStyleConfig(color: "black", style: "bright")
-  )
-  
-  # Minimal theme
-  result["minimal"] = ThemeConfig(
-    name: "minimal",
-    header1: ThemeStyleConfig(color: "white", style: "bright"),
-    header2: ThemeStyleConfig(color: "white", style: "bright"),
-    header3: ThemeStyleConfig(color: "white", style: "dim"),
-    bold: ThemeStyleConfig(color: "white", style: "bright"),
-    italic: ThemeStyleConfig(color: "white", style: "dim"),
-    code: ThemeStyleConfig(color: "white", style: "dim"),
-    link: ThemeStyleConfig(color: "white", style: "underscore"),
-    listBullet: ThemeStyleConfig(color: "white", style: "bright"),
-    codeBlock: ThemeStyleConfig(color: "white", style: "dim"),
-    normal: ThemeStyleConfig(color: "white", style: "bright")
+    italic: ThemeStyleConfig(color: "white", style: "italic"),
+    code: ThemeStyleConfig(color: "yellow", style: ""),
+    link: ThemeStyleConfig(color: "blue", style: "underline"),
+    listBullet: ThemeStyleConfig(color: "green", style: "bright"),
+    codeBlock: ThemeStyleConfig(color: "yellow", style: ""),
+    normal: ThemeStyleConfig(color: "white", style: "")
   )
 
-proc initializeAgentDefaults*() =
-  ## Create default agent definitions if they don't exist
-  let agentsDir = getAgentsDir()
+  if globalConfig.themes.isSome():
+    for name, themeConfig in globalConfig.themes.get():
+      result[name] = themeConfig
 
-  if not dirExists(agentsDir):
-    createDir(agentsDir)
+# Configuration validation
+proc validateConfig*(config: Config): seq[string] =
+  ## Validate configuration and return list of issues
+  result = @[]
 
-  for (name, content) in getDefaultAgents():
-    let agentFile = agentsDir / (name & ".md")
-    if not fileExists(agentFile):
-      try:
-        writeFile(agentFile, content)
-      except Exception as e:
-        echo "Warning: Could not create agent file ", agentFile, ": ", e.msg
+  # Check required fields
+  if config.yourName.len == 0:
+    result.add("yourName is required")
 
-proc createDefaultNifflerMd*(configDir: string) =
-  ## Create default NIFFLER.md system prompt file if it doesn't exist
-  let nifflerPath = configDir / "NIFFLER.md"
-
-  if fileExists(nifflerPath):
-    return
-
-  let defaultNifflerContent = """# Common System Prompt
-
-You are Niffler, an AI-powered terminal assistant built in Nim. You provide conversational assistance with software development tasks while supporting tool calling for file operations, command execution, and web fetching.
-
-Available tools: {availableTools}
-
-Current environment:
-- Working directory: {currentDir}
-- Current time: {currentTime}
-- OS: {osInfo}
-{gitInfo}
-{projectInfo}
-
-General guidelines:
-- Be concise and direct in responses
-- Use tools when needed to gather information or make changes
-- Follow project conventions and coding standards
-- Always validate information before making changes
-
-# Plan Mode Prompt
-
-**PLAN MODE ACTIVE**
-
-You are in Plan mode - focus on analysis, research, and breaking down tasks into actionable steps.
-
-Plan mode priorities:
-1. **Research thoroughly** before suggesting implementation
-2. **Break down complex tasks** into smaller, manageable steps
-3. **Identify dependencies** and potential challenges
-4. **Suggest approaches** and gather requirements
-5. **Use read/list tools extensively** to understand the codebase
-6. **Create detailed plans** before moving to implementation
-
-In Plan mode:
-- Read files to understand current implementation
-- List directories to explore project structure
-- Research existing patterns and conventions
-- Ask clarifying questions when requirements are unclear
-- Propose step-by-step implementation plans
-- Avoid making changes until the plan is clear
-
-# Code Mode Prompt
-
-**CODE MODE ACTIVE**
-
-You are in Code mode - focus on implementation and execution of planned tasks.
-
-Code mode priorities:
-1. **Execute plans efficiently** and make concrete changes
-2. **Implement solutions** using edit/create/bash tools
-3. **Test implementations** and verify functionality
-4. **Fix issues** as they arise during implementation
-5. **Complete tasks systematically** following established plans
-6. **Document changes** when significant
-
-In Code mode:
-- Make file edits and create new files as needed
-- Execute commands to test and verify changes
-- Implement features following the established plan
-- Address errors and edge cases proactively
-- Focus on working, tested solutions
-- Be decisive in implementation choices
-
-# System-Wide Configuration
-
-This NIFFLER.md file provides system-wide defaults for all projects, see the NIFFLER-FEATURES.md documentation.
-"""
-  
-  try:
-    writeFile(nifflerPath, defaultNifflerContent)
-    echo "Default NIFFLER.md created at: ", nifflerPath
-  except:
-    echo "Warning: Could not create NIFFLER.md at: ", nifflerPath
-
-proc initializeConfig*(path: string) =
-  ## Initialize configuration with sensible defaults and create config directories
-  ## Creates both "default" and "cc" config directories directly under ~/.niffler/
-  let configDir = path.parentDir()
-
-  # Create config directories directly under ~/.niffler/
-  if dirExists(configDir / "default"):
-    echo "Directory already exists: ", configDir / "default"
-  else:
-    createDir(configDir / "default")
-    echo "Created directory: ", configDir / "default"
-
-  if dirExists(configDir / "default" / "agents"):
-    echo "Directory already exists: ", configDir / "default" / "agents"
-  else:
-    createDir(configDir / "default" / "agents")
-    echo "Created directory: ", configDir / "default" / "agents"
-
-  if dirExists(configDir / "cc"):
-    echo "Directory already exists: ", configDir / "cc"
-  else:
-    createDir(configDir / "cc")
-    echo "Created directory: ", configDir / "cc"
-
-  if dirExists(configDir / "cc" / "agents"):
-    echo "Directory already exists: ", configDir / "cc" / "agents"
-  else:
-    createDir(configDir / "cc" / "agents")
-    echo "Created directory: ", configDir / "cc" / "agents"
-
-  # Write minimal template to default config
-  let defaultNifflerPath = configDir / "default" / "NIFFLER.md"
-  if fileExists(defaultNifflerPath):
-    echo "File already exists: ", defaultNifflerPath
-  else:
-    try:
-      writeFile(defaultNifflerPath, MINIMAL_TEMPLATE)
-      echo "Created file: ", defaultNifflerPath
-    except:
-      echo "Warning: Could not create default NIFFLER.md"
-
-  # Write Claude Code template to cc config
-  let ccNifflerPath = configDir / "cc" / "NIFFLER.md"
-  if fileExists(ccNifflerPath):
-    echo "File already exists: ", ccNifflerPath
-  else:
-    try:
-      writeFile(ccNifflerPath, CLAUDE_CODE_TEMPLATE)
-      echo "Created file: ", ccNifflerPath
-    except:
-      echo "Warning: Could not create cc NIFFLER.md"
-
-  # Write default agent definition to both configs
-  let defaultAgentPath = configDir / "default" / "agents" / "general-purpose.md"
-  if fileExists(defaultAgentPath):
-    echo "File already exists: ", defaultAgentPath
-  else:
-    try:
-      writeFile(defaultAgentPath, DEFAULT_AGENT_MD)
-      echo "Created file: ", defaultAgentPath
-    except:
-      echo "Warning: Could not create default agent definition"
-
-  let ccAgentPath = configDir / "cc" / "agents" / "general-purpose.md"
-  if fileExists(ccAgentPath):
-    echo "File already exists: ", ccAgentPath
-  else:
-    try:
-      writeFile(ccAgentPath, DEFAULT_AGENT_MD)
-      echo "Created file: ", ccAgentPath
-    except:
-      echo "Warning: Could not create cc agent definition"
-
-  # Handle main config file
-  if fileExists(path):
-    echo "Configuration file already exists: ", path
-    return
-
-  let defaultConfig = Config(
-    yourName: "User",
-    models: @[
-      ModelConfig(
-        nickname: "qwen3coder",
-        baseUrl: "https://router.requesty.ai/v1",
-        model: "deepinfra/Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        context: 262144,
-        `type`: some(mtStandard),
-        enabled: true,
-        temperature: some(0.7),
-        topP: some(0.8),
-        topK: some(20),
-        maxTokens: some(65536),
-        presencePenalty: some(0.0),
-        frequencyPenalty: some(1.05),
-        inputCostPerMToken: some(0.4),
-        outputCostPerMToken: some(1.6),
-        apiEnvVar: some("REQUESTY_API_KEY")
-      ),
-      ModelConfig(
-        nickname: "kimi",
-        baseUrl: "https://openrouter.ai/api/v1",
-        model: "moonshotai/kimi-k2:free",
-        context: 128000,
-        `type`: some(mtAnthropic),
-        apiEnvVar: some("OPENROUTER_API_KEY"),
-        enabled: true
-      ),
-      ModelConfig(
-        nickname: "qwen3",
-        baseUrl: "http://localhost:1234/v1",
-        model: "qwen3:1.7b",
-        context: 8192,
-        `type`: some(mtStandard),
-        enabled: true
-      )
-    ],
-    database: some(DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(getDefaultSqlitePath()),
-      walMode: true,
-      busyTimeout: 5000,
-      poolSize: 10
-    )),
-    themes: some(createDefaultThemes()),
-    currentTheme: some("default"),
-    markdownEnabled: some(true),
-    instructionFiles: some(@["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"]),
-    externalRendering: some(ExternalRenderingConfig(
-      enabled: true,
-      contentRenderer: "batcat --color=always --style=numbers --theme=auto {file}",
-      diffRenderer: "delta --line-numbers --syntax-theme=auto",
-      fallbackToBuiltin: true
-    )),
-    config: some("default")
-  )
-
-  writeConfig(defaultConfig, path)
-  echo "Configuration initialized at: ", path
-  echo "Active config: default (change with /config command or edit config.json)"
-
-  # Initialize default agent definitions (legacy support)
-  initializeAgentDefaults()
-
-proc loadConfig*(): Config =
-  ## Load configuration from default path (thread-safe, creates if missing)
-  if globalConfigManager.configPath.len == 0:
-    initializeConfigManager()
-
-  acquire(globalConfigManager.lock)
-  try:
-    if not fileExists(globalConfigManager.configPath):
-      initializeConfig(globalConfigManager.configPath)
-    else:
-      # Even if config exists, ensure agents are initialized
-      initializeAgentDefaults()
-    globalConfigManager.config = readConfig(globalConfigManager.configPath)
-    result = globalConfigManager.config
-  finally:
-    release(globalConfigManager.lock)
-
-proc getModelFromConfig*(config: Config, modelOverride: string): ModelConfig =
-  ## Select model from config by nickname or return first model as default
-  if modelOverride.len == 0:
-    return config.models[0]
-    
+  # Check models
+  var enabledModels: seq[ModelConfig] = @[]
   for model in config.models:
-    if model.nickname == modelOverride:
-      return model
-      
-  return config.models[0]
+    if model.enabled:
+      enabledModels.add(model)
+  if enabledModels.len == 0:
+    result.add("At least one enabled model is required")
 
-proc readKeyForModel*(model: ModelConfig): string =
-  ## Get API key for model (checks env vars, model config, then key file)
-  if model.apiEnvVar.isSome():
-    let envKey = getEnv(model.apiEnvVar.get())
-    if envKey.len > 0:
-      return envKey
-      
-  if model.apiKey.isSome():
-    return model.apiKey.get()
-      
-  let keys = readKeys()
-  return keys.getOrDefault(model.baseUrl, "")
+  for i, model in enabledModels:
+    if model.nickname.len == 0:
+      result.add(fmt"Model {i+1}: nickname is required")
+    if model.baseUrl.len == 0:
+      result.add(fmt"Model {i+1}: baseUrl is required")
+    if model.model.len == 0:
+      result.add(fmt"Model {i+1}: model name is required")
+    if model.context <= 0:
+      result.add(fmt"Model {i+1}: context must be positive")
 
-proc assertKeyForModel*(model: ModelConfig): string =
-  ## Get API key for model or raise exception if not found
-  let key = readKeyForModel(model)
-  if key.len == 0:
-    raise newException(ValueError, fmt"No API key defined for {model.baseUrl}")
-  return key
+    # Validate model-specific settings
+    if model.temperature.isSome() and (model.temperature.get() < 0.0 or model.temperature.get() > 2.0):
+      result.add(fmt"Model {i+1}: temperature must be between 0.0 and 2.0")
 
-proc writeKeyForModel*(model: ModelConfig, apiKey: string) =
-  ## Store API key for a specific model's base URL
-  var keys = readKeys()
-  keys[model.baseUrl] = apiKey
-  writeKeys(keys)
+    if model.topP.isSome() and (model.topP.get() < 0.0 or model.topP.get() > 1.0):
+      result.add(fmt"Model {i+1}: topP must be between 0.0 and 1.0")
+
+    if model.topK.isSome() and model.topK.get() < 0:
+      result.add(fmt"Model {i+1}: topK must be non-negative")
+
+    if model.maxTokens.isSome() and model.maxTokens.get() <= 0:
+      result.add(fmt"Model {i+1}: maxTokens must be positive")
+
+  # Check database configuration
+  if config.database.isSome():
+    let dbConfig = config.database.get()
+    if dbConfig.`type` == dtSqlite:
+      if not dbConfig.path.isSome():
+        result.add("SQLite mode requires database path")
+    elif dbConfig.`type` == dtTiDB:
+      if not dbConfig.host.isSome():
+        result.add("TiDB mode requires host")
+      if not dbConfig.port.isSome():
+        result.add("TiDB mode requires port")
+      if not dbConfig.database.isSome():
+        result.add("TiDB mode requires database name")
+
+# Create default configuration file if it doesn't exist
+proc createDefaultConfigFile*(): void =
+  let configPath = getDefaultConfigPath()
+  if not fileExists(configPath):
+    echo fmt"Creating default configuration at {configPath}"
+    echo "Please edit the file to add your models and preferences"
+
+# Load configuration with fallback to defaults
+proc loadConfig*(): Config =
+  ## Load configuration from file, falling back to defaults
+  try:
+    let configPath = getDefaultConfigPath()
+    if fileExists(configPath):
+      return readConfig(configPath)
+    else:
+      createDefaultConfigFile()
+      return Config(
+        yourName: "User",
+        models: @[],
+        themes: some(initTable[string, ThemeConfig]()),
+        currentTheme: some("default"),
+        markdownEnabled: some(true)
+      )
+  except:
+    echo "Warning: Failed to load configuration, using defaults"
+    return Config(
+      yourName: "User",
+      models: @[],
+      themes: some(initTable[string, ThemeConfig]()),
+      currentTheme: some("default"),
+      markdownEnabled: some(true)
+    )
+
+# Configuration utilities
+# Note: TOML writing functionality would be implemented here as needed
+# For now, users can manually edit TOML files
