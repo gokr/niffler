@@ -3,7 +3,7 @@
 ## This module contains output functions that are shared between
 ## the main CLI and the output handler thread. This avoids circular imports.
 
-import std/[strformat]
+import std/strutils
 import ../../../linecross/linecross
 import theme
 
@@ -33,30 +33,33 @@ proc flushStreamingBuffer*(redraw: bool = true) =
 
 proc writeStreamingChunk*(text: string) =
   ## Write streaming content chunk - buffers and flushes on word boundaries
-  streamingBuffer.add(text)
+  ## Converts LF to CRLF for proper terminal display
+  let normalizedText = text.replace("\n", "\r\n")
+  streamingBuffer.add(normalizedText)
   if shouldFlushBuffer():
     flushStreamingBuffer(redraw = true)
 
 proc writeStreamingChunkStyled*(text: string, style: ThemeStyle) =
   ## Write styled streaming content chunk - buffers and flushes on word boundaries
-  let styledText = formatWithStyle(text, style)
+  ## Converts LF to CRLF for proper terminal display
+  let normalizedText = text.replace("\n", "\r\n")
+  let styledText = formatWithStyle(normalizedText, style)
   streamingBuffer.add(styledText)
   if shouldFlushBuffer():
     flushStreamingBuffer(redraw = true)
 
 proc writeCompleteLine*(text: string) =
-  ## Write complete line - flushes buffer first, then writes with newline
+  ## Write complete line - flushes buffer first, then writes with newline and redraws prompt
   flushStreamingBuffer(redraw = false)
-  # Use writeLine for proper CR+LF handling
-  writeLine(text)
+  # Use writeOutputRaw with redraw=true to ensure prompt is redrawn after the line
+  writeOutputRaw(text, addNewline = true, redraw = true)
 
 proc finishStreaming*() =
   ## Call after streaming chunks are done to flush remaining content
   flushStreamingBuffer()
 
 proc writeUserInput*(text: string) =
-  ## Write user input to scrollback with "> " prefix and theme styling
-  let formattedInput = formatWithStyle(fmt"> {text}", currentTheme.userInput)
-  # Write blank line then user input, using writeLine for proper CR+LF
-  writeLine("")  # Blank line for separation
-  writeLine(formattedInput)
+  ## Add visual separation before assistant response
+  ## Note: User input is already visible in the readline prompt,
+  ## so we just add a blank line for visual separation and redraw prompt
+  writeOutputRaw("", addNewline = true, redraw = true)

@@ -45,7 +45,7 @@ proc formatTodoList*(db: DatabaseBackend, listId: int): string =
 
     lines.add(fmt"{itemNumber}. {checkbox} {item.content}{priorityIndicator}")
 
-  return lines.join("\n")
+  return lines.join("\r\n")
 
 proc getItemByNumber*(db: DatabaseBackend, listId: int, itemNumber: int): Option[int] =
   ## Map item number (1-N position) to database ID

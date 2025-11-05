@@ -1041,7 +1041,7 @@ proc mcpHandler(args: seq[string], session: var Session, currentModel: var confi
 
       return CommandResult(
         success: true,
-        message: statusLines.join("\n"),
+        message: statusLines.join("\r\n"),
         shouldExit: false,
         shouldContinue: true,
         shouldResetUI: false

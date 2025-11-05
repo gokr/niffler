@@ -168,7 +168,7 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
             originalLineNum: i + 1,
             newLineNum: -1
           )
-          diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
+          diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\r\n")
     of ekIns:
       # Inserted lines
       for i in edit.t:
@@ -180,7 +180,7 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
             originalLineNum: -1,
             newLineNum: i + 1
           )
-          diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+          diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\r\n")
     of ekSub:
       # Substituted lines - show with character-level inline diff
       var newIdx = edit.t.a
@@ -210,8 +210,8 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
               newLineNum: newIdx
             )
             
-            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
-            diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\r\n")
+            diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\r\n")
           else:
             # Line only removed
             let segments = @[DiffSegment(content: originalLines[i], segmentType: Unchanged)]
@@ -221,7 +221,7 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
               originalLineNum: i + 1,
               newLineNum: -1
             )
-            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\n")
+            diffResult.add("  " & formatInlineDiffLine(removedLine, lineColors, segmentColors, config) & "\r\n")
       
       # Handle any remaining new lines in the substitution
       while newIdx < edit.t.b and newIdx < newLines.len:
@@ -232,7 +232,7 @@ proc createInlineDiffFromEditResult*(editResult: string, originalContent: string
           originalLineNum: -1,
           newLineNum: newIdx + 1
         )
-        diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\n")
+        diffResult.add("  " & formatInlineDiffLine(addedLine, lineColors, segmentColors, config) & "\r\n")
         inc newIdx
   
   return diffResult.strip()
@@ -369,7 +369,7 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
             let entryType = entry["type"].getStr()
             let typeChar = if entryType == "directory": "📁" else: "📄"
             contentLines.add(fmt"{typeChar} {name}")
-          formattedResult = contentLines.join("\n")
+          formattedResult = contentLines.join("\r\n")
         else:
           formattedResult = fmt"Listed {entries.len} items"
       else:
@@ -454,13 +454,13 @@ proc formatToolResult*(toolInfo: ToolDisplayInfo, config: ToolVisualizationConfi
   
   # Apply styling if enabled
   if config.useColors and config.indentResults:
-    let indentedResult = formattedResult.splitLines().mapIt("  " & it).join("\n")
+    let indentedResult = formattedResult.splitLines().mapIt("  " & it).join("\r\n")
     if toolInfo.success:
       return formatWithStyle(indentedResult, currentTheme.success)
     else:
       return formatWithStyle(indentedResult, currentTheme.error)
   elif config.indentResults:
-    return formattedResult.splitLines().mapIt("  " & it).join("\n")
+    return formattedResult.splitLines().mapIt("  " & it).join("\r\n")
   else:
     return formattedResult
 
