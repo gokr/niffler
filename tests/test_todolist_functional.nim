@@ -68,13 +68,12 @@ suite "Todolist Tool Functional Tests":
   test "Update todo item state":
     # First add an item
     let addArgs = %*{"operation": "add", "content": "Test item"}
-    let addResult = parseJson(executeTodolist(addArgs))
-    let itemId = addResult["itemId"].getInt()
-    
+    discard executeTodolist(addArgs)  # We add one item, so it will be itemNumber 1
+
     # Update its state to in_progress
     let updateArgs = %*{
       "operation": "update",
-      "itemId": itemId,
+      "itemNumber": 1,
       "state": "in_progress"
     }
     
@@ -87,13 +86,12 @@ suite "Todolist Tool Functional Tests":
   test "Update todo item content":
     # Add an item
     let addArgs = %*{"operation": "add", "content": "Original content"}
-    let addResult = parseJson(executeTodolist(addArgs))
-    let itemId = addResult["itemId"].getInt()
-    
+    discard executeTodolist(addArgs)  # We add one item, so it will be itemNumber 1
+
     # Update content
     let updateArgs = %*{
       "operation": "update",
-      "itemId": itemId,
+      "itemNumber": 1,
       "content": "Updated content"
     }
     
@@ -107,13 +105,12 @@ suite "Todolist Tool Functional Tests":
   test "Update todo item priority":
     # Add an item
     let addArgs = %*{"operation": "add", "content": "Test item", "priority": "medium"}
-    let addResult = parseJson(executeTodolist(addArgs))
-    let itemId = addResult["itemId"].getInt()
-    
+    discard executeTodolist(addArgs)  # We add one item, so it will be itemNumber 1
+
     # Update priority to high
     let updateArgs = %*{
       "operation": "update",
-      "itemId": itemId,
+      "itemNumber": 1,
       "priority": "high"
     }
     
@@ -219,14 +216,14 @@ suite "Todolist Tool Functional Tests":
   test "Error handling - update non-existent item":
     let args = %*{
       "operation": "update",
-      "itemId": 99999,
+      "itemNumber": 99999,
       "state": "completed"
     }
     
     let result = executeTodolist(args)
     let response = parseJson(result)
-    
+
     check response.hasKey("error")
-    check response["error"].getStr().contains("Failed to update")
+    check response["error"].getStr().contains("No active todo list found")
 
 echo "Running todolist functional tests..."

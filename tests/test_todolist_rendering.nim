@@ -1,11 +1,10 @@
-import std/[json, strutils]
+import std/[json, strutils, logging]
 import ../src/tools/todolist
 import ../src/core/database
 import ../src/ui/tool_visualizer
 
 # Initialize a test database
-initGlobalDatabase(":memory:")
-let db = getGlobalDatabase()
+let db = initializeGlobalDatabase(lvlInfo)
 
 # Create a todo list and add items
 let listId = createTodoList(db, 1, "Test List")
