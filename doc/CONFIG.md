@@ -379,3 +379,21 @@ If you have an existing `~/.niffler/NIFFLER.md`:
 3. Or create a custom config directory for your setup
 
 The old system still works for backward compatibility, but the new config system takes priority.
+
+## Implementation Status
+
+### Completed Features
+- ✅ Session management with active config tracking (`src/core/session.nim`)
+- ✅ Config directory structure (`~/.niffler/{name}/`)
+- ✅ Layered config resolution (project > user > default)
+- ✅ `/config` command for listing and switching configs
+- ✅ Agent loading from active config directory
+- ✅ Runtime config diagnostics and validation
+- ✅ Session-aware system prompt generation
+
+### Remaining Work
+- ⚠️ **Session threading** - Session parameter needs to be threaded through all of `cli.nim`
+- ⚠️ **Command handlers** - All command handlers need session parameter in signature
+- ⚠️ **Conversation manager** - Session threading through conversation manager functions
+
+See TODO.md for priority and detailed tasks.

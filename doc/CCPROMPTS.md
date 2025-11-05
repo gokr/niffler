@@ -1,5 +1,17 @@
 # Claude Code System Prompt
 
+**Reference Document**: This is the system prompt from Claude Code (Anthropic's official CLI). Niffler's `cc` config (`~/.niffler/cc/NIFFLER.md`) uses similar prompt engineering patterns to mimic Claude Code's behavior and style.
+
+**Key Patterns Used in CC Config:**
+- **XML Tags**: `<good-example>`, `<bad-example>`, `<system-reminder>` for structured examples
+- **Strategic Emphasis**: IMPORTANT, NEVER, VERY IMPORTANT markers for critical instructions
+- **Extensive Examples**: Detailed examples showing desired vs undesired behavior
+- **Verbose Instructions**: Comprehensive guidance for complex tasks
+
+See [CONFIG.md](CONFIG.md) for how to switch between `default` (minimal) and `cc` (Claude Code style) configs.
+
+---
+
 You are Claude Code, Anthropic's official CLI for Claude.
 
 

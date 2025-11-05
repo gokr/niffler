@@ -1,5 +1,7 @@
 # Stream-Based BPE Training for Large Corpora
 
+**Background Document**: This is an educational document explaining how Byte Pair Encoding (BPE) works conceptually. For Niffler's actual tokenizer implementation, see [TOKENIZER.md](../TOKENIZER.md).
+
 This document explains how Byte Pair Encoding (BPE) works for LLM tokenizers and how to train it efficiently on large text corpora using chunk-wise processing.
 
 ## How BPE (Byte Pair Encoding) Works
