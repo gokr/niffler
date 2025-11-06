@@ -8,12 +8,125 @@
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
+## 🏗️ Distributed Architecture
+
+Niffler features a unique **distributed multi-agent architecture** where specialized AI agents run as separate processes, communicating through NATS messaging while sharing a centralized SQLite database for persistence.
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    %% Main Process
+    Main[Main Niffler Process<br/>CLI Interface]
+
+    %% Database (shared)
+    DB[(SQLite Database<br/>Conversations & State)]
+
+    %% NATS Message Bus
+    NATS[NATS Message Bus<br/>nats://localhost:4222]
+
+    %% Agent Processes
+    Agent1[Code Agent Process<br/>Specialized in coding<br/>Claude Sonnet]
+    Agent2[Research Agent Process<br/>Specialized in research<br/>GPT-4o]
+    Agent3[Testing Agent Process<br/>Specialized in testing<br/>Claude Haiku]
+
+    %% Connections
+    Main <--> NATS
+    Main <--> DB
+    Agent1 <--> NATS
+    Agent1 <--> DB
+    Agent2 <--> NATS
+    Agent2 <--> DB
+    Agent3 <--> NATS
+    Agent3 <--> DB
+
+    %%
+    classDef mainProcess fill:#e1f5fe
+    classDef agentProcess fill:#f3e5f5
+    classDef storage fill:#e8f5e8
+    classDef messaging fill:#fff3e0
+
+    class Main mainProcess
+    class Agent1,Agent2,Agent3 agentProcess
+    class DB storage
+    class NATS messaging
+```
+
+### Multi-Agent Communication Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Main as Main Process
+    participant NATS as NATS Bus
+    participant DB as SQLite DB
+    participant CodeAgent as Code Agent
+    participant ResearchAgent as Research Agent
+
+    User->>Main: /code "Add validation function"
+    Main->>DB: Log request
+    Main->>NATS: Route to Code Agent
+    NATS->>CodeAgent: Forward request
+
+    CodeAgent->>DB: Store context
+    CodeAgent->>Main: Response with result
+    Main->>User: Display result
+
+    User->>Main: /research "Best validation patterns"
+    Main->>NATS: Route to Research Agent
+    NATS->>ResearchAgent: Forward request
+
+    ResearchAgent->>DB: Access conversation history
+    ResearchAgent->>Main: Research results
+    Main->>User: Display findings
+```
+
+### Key Architectural Benefits
+
+**🔄 Process Isolation**
+- Each agent runs in its own process with dedicated memory and resources
+- Agent failures don't affect other agents or the main process
+- True parallel processing with independent CPU scheduling
+
+**📡 NATS Communication**
+- Lightweight, high-performance messaging between processes
+- Automatic load balancing and message queuing
+- Health monitoring with automatic agent recovery
+
+**💾 Shared State**
+- Centralized SQLite database provides persistent conversation history
+- All agents share access to user context and token usage data
+- Cross-agent conversation continuity and context preservation
+
+**🧠 Specialized Intelligence**
+- Each agent optimized for specific tasks (coding, research, testing, etc.)
+- Dedicated AI model assignments per agent specialization
+- Tool permissions tailored to agent capabilities
+
+### Agent Lifecycle Management
+
+```mermaid
+stateDiagram-v2
+    [*] --> Initialized: Agent Config Loaded
+    Initialized --> Starting: Master Start Command
+    Starting --> Running: Process Started
+    Running --> Active: NATS Connection Ready
+    Active --> Idle: No Active Requests
+    Idle --> Active: Request Received
+    Active --> Error: Process Failure
+    Error --> Restarting: Health Check Failed
+    Restarting --> Running: Recovery Complete
+    Running --> Shutdown: Master Stop Command
+    Shutdown --> [*]: Process Terminated
+```
+
 Niffler is a work-in-progress. Some of the things that perhaps **stand out** are these:
 
-- **Native multithreaded**. The tool executions are in one thread. The UI is in one thread. The communication with the LLM is in one thread.
-- **CLI Interface**. Built on linecross for input handling with tab completion, history and more. A bit less polished as Ink-based tools but very terminal friendly and *cross platform* including copy paste support.
-- **Has a client side database**. Niffler has a single Sqlite3 database where conversations are persisted and helps with tracking token use etc. It can use a remote server as well.
-- **Single binary and portable between Linux, OSX and Windows**. Libraries are chosen to make sure it works on all three platforms.
+- **Distributed Multi-Agent Architecture**: Specialized AI agents run as separate processes with NATS communication and shared database state
+- **Native multithreaded**: Each process uses multi-threading for UI, tool execution, and API communication
+- **CLI Interface**: Built on linecross for input handling with tab completion, history, and cross-platform support
+- **Persistent Database**: Centralized SQLite database for conversation history and token tracking
+- **Single Binary**: Portable across Linux, macOS, and Windows with self-contained deployment
 
 
 ## AI Capabilities
