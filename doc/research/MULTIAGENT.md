@@ -403,32 +403,6 @@ CREATE INDEX idx_conversations_status ON conversations(status);
 
 ## Implementation Phases
 
-### Phase 0: Configuration Migration (3-5 days)
-
-**Goal**: Migrate from JSON to TOML configuration with backward compatibility.
-
-1. **Add TOML Parser**
-   - Evaluate Nim TOML libraries (`parsetoml`, `toml-serialization`)
-   - Add dependency to nimble file
-   - Create `src/core/config_toml.nim`
-
-2. **Configuration Loader**
-   - Check for `config.toml` first, then `config.json`
-   - Parse TOML with agent definitions
-   - Map to existing Config types
-   - Validation and error reporting
-
-3. **Migration Utility**
-   - Add `niffler --migrate-config` command
-   - Read existing JSON config
-   - Generate TOML with comments
-   - Backup JSON before migration
-
-4. **Documentation**
-   - Document TOML format
-   - Provide migration guide
-   - Update example configs
-
 ### Phase 1: NATS Foundation (1-2 weeks)
 
 **Goal**: Establish NATS communication infrastructure.

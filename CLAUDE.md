@@ -81,7 +81,7 @@ nimble install cligen sunny
 Configuration system (`src/core/config.nim`):
 - Model definitions with nicknames, base URLs, and API keys
 - Environment variable support for API keys
-- Config file location: `~/.config/niffler/config.toml`
+- Config file location: `~/.niffler/config.yaml`
 
 ### Database Access
 

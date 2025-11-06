@@ -95,5 +95,5 @@ when isMainModule:
 
   echo "\n\nTo use delta in Niffler, make sure:"
   echo "1. Delta is installed (cargo install git-delta)"
-  echo "2. External rendering is enabled in config.toml"
+  echo "2. External rendering is enabled in config.yaml"
   echo "3. Edit tool operations will automatically use delta for diff visualization"
