@@ -141,18 +141,19 @@ Niffler is a work-in-progress. Some of the things that perhaps **stand out** are
 
 ## Token Counting & Cost Tracking
 
-Niffler features a **BPE (Byte Pair Encoding) tokenization implementation** with dynamic correction factors for accurate token estimation and cost tracking across LLMs.
+Niffler features a **heuristic token estimation system** with dynamic correction factors for accurate token estimation and cost tracking across LLMs.
 
 ### Key Features
-- **Universal BPE Tokenization**: Works with any LLM model since all modern models use BPE-based tokenization
+- **Heuristic-Based Estimation**: Uses intelligent language-specific heuristics to provide 7-16% accuracy without requiring tokenizer training
 - **Dynamic Correction Factor**: Learns from actual API responses to improve estimate accuracy over time, each model gets its own correction factor based on real usage data
 - **Cost Optimization**: More accurate token estimates lead to better cost predictions
+- **Language-Aware**: Different estimation patterns for code, natural language, and mixed content
 
 ### How It Works
 
-**Initial Estimation**: Niffler uses a ported version of Karpathy's **minbpe** (minimal BPE tokenizer) to provide baseline token estimates that are much more accurate than simple character-based counting.
+**Initial Estimation**: Niffler uses a lightweight heuristic approach based on the tokenx library methodology. The system analyzes text patterns and applies language-specific rules to estimate token counts based on average characters per token for different content types.
 
-**Dynamic Learning**: When you receive responses from LLM APIs, Niffler automatically compares the estimated token count with the actual count returned by the API and records the difference.
+**Dynamic Learning**: When you receive responses from LLM APIs, Niffler automatically compares the estimated token count with the actual count returned by the API and records the correction difference in the database.
 
 **Automatic Improvement**: Future token estimates for that specific model are automatically adjusted using the learned correction factor, becoming more accurate with each API call.
 
@@ -235,13 +236,13 @@ The status command shows:
 MCP Servers (2 configured):
 
   filesystem:
-    Status: mssRunning
+    Status: Running
     Errors: 0
     Restarts: 1
     Last Activity: 15s ago
 
   github:
-    Status: mssRunning
+    Status: Running
     Errors: 0
     Restarts: 1
     Last Activity: 8s ago
@@ -291,7 +292,7 @@ The AI can then use filesystem tools like `read_file`, `write_file`, `list_direc
 - Use `/mcp status` to see error counts and messages
 
 **Tools not appearing:**
-- Ensure the server status is "mssRunning" in `/mcp status`
+- Ensure the server status is "Running" in `/mcp status`
 - Restart Niffler to re-initialize MCP servers
 - Check server logs for initialization errors
 
