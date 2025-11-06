@@ -9,7 +9,7 @@
 ## - Theme configuration and built-in themes
 ##
 ## Configuration Structure:
-## - Main config: ~/.niffler/config.toml (Unix) or %APPDATA%/niffler/config.toml (Windows)
+## - Main config: ~/.niffler/config.yaml (Unix) or %APPDATA%/niffler/config.yaml (Windows)
 ## - API keys: ~/.niffler/keys (with restricted permissions)
 ## - Database: ~/.niffler/niffler.db (SQLite)
 ## - System prompts: ~/.niffler/NIFFLER.md

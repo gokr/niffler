@@ -40,7 +40,7 @@ Both task and ask conversations are **always persisted** in the database for his
 
 **Thread-based Architecture**: Niffler uses dedicated worker threads (API worker, Tool worker) with thread-safe channel communication via `src/core/channels.nim`. This architecture remains **unchanged within each agent process** - NATS is used only for inter-process communication, not replacing internal threading.
 
-**Configuration System**: The configuration in `src/core/config.nim` will be migrated from JSON to TOML for better readability, structure, and commenting. This supports multiple AI providers and enables rich agent definitions.
+**Configuration System**: The configuration in `src/core/config.nim` has been migrated from JSON to YAML for better readability, structure, and commenting. This supports multiple AI providers and enables rich agent definitions.
 
 **Message Types**: Well-defined message protocols in `src/types/messages.nim` for API requests/responses and tool execution will be extended with NATS message types for inter-agent communication.
 
@@ -52,7 +52,7 @@ Both task and ask conversations are **always persisted** in the database for his
 - **CLI Interface** (`src/ui/cli.nim`): Interactive terminal UI - master mode simplified, agent mode displays work
 - **Threading System** (`src/core/channels.nim`): Internal thread communication - preserved as-is
 - **API Worker** (`src/api/api.nim`): LLM communication - each agent has its own instance
-- **Configuration** (`src/core/config.nim`): Will be extended with TOML support and agent definitions
+- **Configuration** (`src/core/config.nim`): Extended with YAML support and agent definitions
 
 ## Multi-Agent Implementation Strategy
 
@@ -246,114 +246,140 @@ Added logging using Nim's logging module...
 ```
 **Subject**: `niffler.agent.coder.heartbeat` (published every 30 seconds)
 
-### 4. Configuration: TOML Format
+### 4. Configuration: YAML Format
 
-Niffler will migrate from JSON to TOML configuration for better readability, structure, and commenting.
+Niffler has been migrated from JSON to YAML configuration for better readability, structure, and commenting.
 
-**Location**: `~/.config/niffler/config.toml`
+**Location**: `~/.niffler/config.yaml`
 
 **Example Configuration**:
-```toml
+```yaml
 # Niffler Multi-Agent Configuration
 # See https://docs.niffler.dev/config for complete documentation
 
-[nats]
 # NATS server connection settings
-server = "nats://localhost:4222"
-timeout_ms = 30000
-reconnect_attempts = 5
-reconnect_delay_ms = 1000
+nats:
+  server: "nats://localhost:4222"
+  timeout_ms: 30000
+  reconnect_attempts: 5
+  reconnect_delay_ms: 1000
 
-[master]
 # Master mode settings (when running with --master flag)
-enabled = false
-default_agent = "coder"  # Agent to use when no @agent: specified
-auto_start_agents = true  # Auto-start agents with auto_start=true
-heartbeat_check_interval = 30  # Seconds between health checks
+master:
+  enabled: false
+  default_agent: "coder"  # Agent to use when no @agent: specified
+  auto_start_agents: true  # Auto-start agents with auto_start=true
+  heartbeat_check_interval: 30  # Seconds between health checks
 
 # Agent Definitions
 # Each agent is a specialized worker with its own model and permissions
 
-[[agents]]
-id = "coder"
-name = "Code Expert"
-description = "Specialized in code analysis, debugging, and implementation"
+agents:
+  - id: "coder"
+    name: "Code Expert"
+    description: "Specialized in code analysis, debugging, and implementation"
 
-# Model configuration
-model = "claude-3.5-sonnet"
+    # Model configuration
+    model: "claude-3.5-sonnet"
 
-# Capabilities (used for smart routing and UI hints)
-capabilities = ["coding", "debugging", "architecture", "refactoring", "testing"]
+    # Capabilities (used for smart routing and UI hints)
+    capabilities:
+      - "coding"
+      - "debugging"
+      - "architecture"
+      - "refactoring"
+      - "testing"
 
-# Tool permissions (enforced by agent - only these tools can execute)
-tool_permissions = ["read", "edit", "create", "bash", "list", "fetch"]
+    # Tool permissions (enforced by agent - only these tools can execute)
+    tool_permissions:
+      - "read"
+      - "edit"
+      - "create"
+      - "bash"
+      - "list"
+      - "fetch"
 
-# Lifecycle settings
-auto_start = true  # Master will start this agent automatically
-persistent = true  # Keep running when idle (don't shutdown)
+    # Lifecycle settings
+    auto_start: true  # Master will start this agent automatically
+    persistent: true  # Keep running when idle (don't shutdown)
 
-[[agents]]
-id = "researcher"
-name = "Research Assistant"
-description = "Fast research, documentation lookup, and web search"
+  - id: "researcher"
+    name: "Research Assistant"
+    description: "Fast research, documentation lookup, and web search"
 
-model = "claude-3-haiku"  # Cheaper model for simple research tasks
-capabilities = ["research", "documentation", "web_search", "analysis"]
-tool_permissions = ["read", "list", "fetch"]  # Read-only, no modifications
+    model: "claude-3-haiku"  # Cheaper model for simple research tasks
+    capabilities:
+      - "research"
+      - "documentation"
+      - "web_search"
+      - "analysis"
+    tool_permissions:  # Read-only, no modifications
+      - "read"
+      - "list"
+      - "fetch"
 
-auto_start = false  # Start manually when needed
-persistent = false  # Ephemeral - shutdown after idle timeout
-max_idle_seconds = 600  # Shutdown after 10 minutes idle
+    auto_start: false  # Start manually when needed
+    persistent: false  # Ephemeral - shutdown after idle timeout
+    max_idle_seconds: 600  # Shutdown after 10 minutes idle
 
-[[agents]]
-id = "bash_helper"
-name = "Bash Helper"
-description = "System commands, testing, and DevOps operations"
+  - id: "bash_helper"
+    name: "Bash Helper"
+    description: "System commands, testing, and DevOps operations"
 
-model = "gpt-4o"
-capabilities = ["system", "commands", "testing", "devops", "monitoring"]
-tool_permissions = ["bash", "read", "list"]  # Bash + read-only files
+    model: "gpt-4o"
+    capabilities:
+      - "system"
+      - "commands"
+      - "testing"
+      - "devops"
+      - "monitoring"
+    tool_permissions:  # Bash + read-only files
+      - "bash"
+      - "read"
+      - "list"
 
-auto_start = true
-persistent = true
+    auto_start: true
+    persistent: true
 
-[[agents]]
-id = "reviewer"
-name = "Code Reviewer"
-description = "Code review, security analysis, and best practices"
+  - id: "reviewer"
+    name: "Code Reviewer"
+    description: "Code review, security analysis, and best practices"
 
-model = "claude-opus-4"  # Most powerful model for thorough reviews
-capabilities = ["review", "security", "quality", "best_practices"]
-tool_permissions = ["read", "list"]  # Read-only for reviews
+    model: "claude-opus-4"  # Most powerful model for thorough reviews
+    capabilities:
+      - "review"
+      - "security"
+      - "quality"
+      - "best_practices"
+    tool_permissions:  # Read-only for reviews
+      - "read"
+      - "list"
 
-auto_start = false
-persistent = false
-max_idle_seconds = 1800  # 30 minutes
+    auto_start: false
+    persistent: false
+    max_idle_seconds: 1800  # 30 minutes
 
 # Model definitions (shared across agents)
-[[models]]
-id = "claude-3.5-sonnet"
-nickname = "sonnet"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+models:
+  - id: "claude-3.5-sonnet"
+    nickname: "sonnet"
+    base_url: "https://api.anthropic.com/v1"
+    api_env_var: "ANTHROPIC_API_KEY"
 
-[[models]]
-id = "claude-opus-4"
-nickname = "opus"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+  - id: "claude-opus-4"
+    nickname: "opus"
+    base_url: "https://api.anthropic.com/v1"
+    api_env_var: "ANTHROPIC_API_KEY"
 
-[[models]]
-id = "claude-3-haiku"
-nickname = "haiku"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
+  - id: "claude-3-haiku"
+    nickname: "haiku"
+    base_url: "https://api.anthropic.com/v1"
+    api_env_var: "ANTHROPIC_API_KEY"
 
-[[models]]
-id = "gpt-4o"
-nickname = "gpt4o"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+  - id: "gpt-4o"
+    nickname: "gpt4o"
+    base_url: "https://api.openai.com/v1"
+    api_env_var: "OPENAI_API_KEY"
 ```
 
 ### 5. Database Context Management
@@ -438,7 +464,7 @@ CREATE INDEX idx_conversations_status ON conversations(status);
 
 1. **Agent Mode CLI**
    - Add `--agent <name>` flag (implies `--agent-mode`)
-   - Read agent config from TOML
+   - Read agent config from YAML
    - Validate agent exists and is properly configured
    - Initialize NATS connection
 
@@ -723,10 +749,10 @@ proc toJson*(req: AgentRequest): string
 proc fromJson*(json: string): AgentRequest
 ```
 
-**TOML Configuration** (`src/core/config_toml.nim`):
+**YAML Configuration** (`src/core/config_yaml.nim`):
 ```nim
 type
-  TomlConfig* = object
+  YamlConfig* = object
     nats*: NatsConfig
     master*: MasterConfig
     agents*: seq[AgentConfig]
@@ -753,9 +779,9 @@ type
     persistent*: bool
     maxIdleSeconds*: Option[int]
 
-proc loadTomlConfig*(path: string): TomlConfig
-proc migrateFromJson*(jsonPath: string, tomlPath: string)
-proc validateConfig*(config: TomlConfig): bool
+proc loadYamlConfig*(path: string): YamlConfig
+proc migrateFromJson*(jsonPath: string, yamlPath: string)
+proc validateConfig*(config: YamlConfig): bool
 ```
 
 ### Extensions to Existing Modules
@@ -999,7 +1025,7 @@ All agents healthy (2/3 running)
 ## Migration Path
 
 ### Phase 0: Configuration
-1. TOML support added alongside JSON
+1. YAML support added alongside JSON
 2. `niffler --migrate-config` utility provided
 3. Both formats work during transition
 4. Documentation guides migration
@@ -1022,7 +1048,7 @@ All agents healthy (2/3 running)
 
 **Gradual Adoption**: Users can start with master + one agent, expand as needed.
 
-**Configuration Evolution**: JSON configs continue to work, TOML optional but recommended.
+**Configuration Evolution**: JSON configs continue to work, YAML optional but recommended.
 
 ## Future Extensions
 
@@ -1075,7 +1101,7 @@ This multi-agent architecture transforms Niffler from a single-agent CLI tool in
 3. **Simplified Master**: Classic CLI without streaming complexity
 4. **Task vs Ask**: Clear semantics for context management
 5. **NATS Messaging**: Battle-tested infrastructure for IPC
-6. **TOML Configuration**: Readable, structured agent definitions
+6. **YAML Configuration**: Readable, structured agent definitions
 7. **Persistent Specialization**: Agents build expertise over time
 8. **Mix-and-Match Economics**: Optimize costs with different models per agent
 
