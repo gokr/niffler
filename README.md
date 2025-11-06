@@ -2,7 +2,7 @@
 
 ![Nim](https://img.shields.io/badge/Nim-2.2.4-yellow.svg)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version](https://img.shields.io/badge/Version-0.2.2-green.svg)
+![Version](https://img.shields.io/badge/Version-0.4.0-green.svg)
 
 **Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using Sqlite3. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
 
@@ -70,29 +70,24 @@ Niffler supports the Model Context Protocol (MCP), allowing you to extend the AI
 
 #### Configuring MCP Servers
 
-Add MCP server configurations to your `config.json` file under the `mcpServers` section:
+Add MCP server configurations to your `config.yaml` file under the `mcpServers` section:
 
-```json
-{
-  "models": [
-    // ... your model configurations
-  ],
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"],
-      "enabled": true
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_TOKEN": "your-github-token"
-      },
-      "enabled": true
-    }
-  }
-}
+```yaml
+models:
+  # ... your model configurations
+
+mcpServers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"]
+    enabled: true
+
+  github:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: "your-github-token"
+    enabled: true
 ```
 
 #### Configuration Options
@@ -163,17 +158,13 @@ The official `@modelcontextprotocol/server-filesystem` provides secure file oper
 npm install -g @modelcontextprotocol/server-filesystem
 ```
 
-Add to config.json:
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "mcp-server-filesystem",
-      "args": ["/home/user/projects"],
-      "enabled": true
-    }
-  }
-}
+Add to config.yaml:
+```yaml
+mcpServers:
+  filesystem:
+    command: "mcp-server-filesystem"
+    args: ["/home/user/projects"]
+    enabled: true
 ```
 
 The AI can then use filesystem tools like `read_file`, `write_file`, `list_directory`, etc.
@@ -286,17 +277,156 @@ brew install nats
 **Windows:**
 > The NATS library is typically bundled with the Nim package on Windows.
 
-### Build and install from Source
+## 🏗️ Building Niffler
+
+Niffler needs to be built from source at this time. Follow these steps to build and install the application on your system.
+
+### Prerequisites
+
+- **Nim 2.2.4 or later** - Install from https://nim-lang.org/install.html
+- **Git** - For cloning the repository
+- **Build tools** - Platform-specific compilers (GCC/Clang on Linux, Visual Studio on Windows)
+
+### Build Steps
+
+**1. Clone the Repository**
 ```bash
 git clone https://github.com/gokr/niffler.git
 cd niffler
+```
+
+**2. Install Dependencies**
+```bash
 nimble install
 ```
 
-### Build Optimized Release
+**3. Build Niffler**
 ```bash
+# Development build
+nim c src/niffler.nim
+
+# Optimized release build
 nimble build
 ```
+
+**4. Verify Installation**
+```bash
+./src/niffler --version
+```
+
+### Build Notes
+
+- All compilation requires `--threads:on -d:ssl` flags (automatically set in build configuration)
+- The optimized build (`nimble build`) creates a single static binary
+- Windows users may need to install Visual Studio Build Tools for native compilation
+
+## 🚀 Multi-Agent System
+
+Niffler features a powerful multi-agent architecture enabled by NATS (Network Advertised Transport System), allowing you to run specialized AI agents as persistent processes with unique capabilities and tool permissions.
+
+### Architecture Overview
+
+**Master-Agent Pattern**: Niffler can run in either:
+- **Master Mode** (`niffler --master`): Coordinates multiple agents and routes requests intelligently
+- **Single Agent Mode** (`niffler`): Traditional single-agent operation
+
+**Agent Types**:
+- **Code Expert**: Specialized in coding, debugging, and architecture
+- **Research Specialist**: Optimized for documentation and web research
+- **Testing Agent**: Focused on test creation and validation
+- **Custom Agents**: Define your own specialized agents
+
+### Multi-Agent Configuration
+
+Configure agents in your `config.yaml`:
+
+```yaml
+# NATS server for inter-process communication
+nats:
+  server: "nats://localhost:4222"
+  timeout_ms: 30000
+  reconnect_attempts: 5
+  reconnect_delay_ms: 1000
+
+# Master mode settings
+master:
+  enabled: true
+  default_agent: "coder"
+  auto_start_agents: true
+  heartbeat_check_interval: 30
+
+# Define specialized agents
+agents:
+  - id: "coder"
+    name: "Code Expert"
+    description: "Specialized in code analysis, debugging, and implementation"
+    model: "claude-sonnet"  # Use model nickname from models section
+
+    capabilities:
+      - "coding"
+      - "debugging"
+      - "architecture"
+      - "refactoring"
+      - "testing"
+
+    tool_permissions:
+      - "read"
+      - "edit"
+      - "create"
+      - "bash"
+      - "list"
+      - "fetch"
+
+    auto_start: true
+    persistent: true
+
+  - id: "researcher"
+    name: "Research Specialist"
+    description: "Expert in documentation, web research, and analysis"
+    model: "gpt-4o"
+
+    capabilities:
+      - "research"
+      - "documentation"
+      - "analysis"
+      - "planning"
+
+    tool_permissions:
+      - "read"
+      - "list"
+      - "fetch"
+      - "bash"  # Limited for research
+
+    auto_start: false  # Start on demand
+    persistent: false
+```
+
+### Using Multi-Agent System
+
+**Start Master Mode**:
+```bash
+niffler --master
+```
+
+**Agent Features**:
+- **Smart Routing**: Master automatically routes requests to the most suitable agent based on capabilities
+- **Persistent State**: Each agent maintains its own conversation history and context
+- **Resource Isolation**: Agents run in separate processes with dedicated memory and tool permissions
+- **Hot Swapping**: Add, remove, or reconfigure agents without stopping the system
+
+**Benefits**:
+- **Specialization**: Each agent can be optimized for specific tasks
+- **Parallel Processing**: Multiple agents can work simultaneously on different tasks
+- **Scalability**: Add more agents as your workflow grows
+- **Reliability**: If one agent fails, others continue operating
+
+### Agent Communication
+
+Agents communicate through NATS with:
+- **Message Queuing**: Reliable message delivery between agents
+- **Health Monitoring**: Automatic heartbeat checking and recovery
+- **Load Balancing**: Distribute requests across available agents
+- **Cross-Agent Collaboration**: Agents can delegate subtasks to other specialists
 
 ## 🎯 Quick Start
 
@@ -305,25 +435,20 @@ nimble build
 niffler init
 ```
 This creates default configuration files:
-- **Linux/macOS**: `~/.niffler/config.json` and `~/.niffler/NIFFLER.md`
-- **Windows**: `%APPDATA%\niffler\config.json` and `%APPDATA%\niffler\NIFFLER.md`
+- **Linux/macOS**: `~/.niffler/config.yaml` and `~/.niffler/NIFFLER.md`
+- **Windows**: `%APPDATA%\niffler\config.yaml` and `%APPDATA%\niffler\NIFFLER.md`
 
 The NIFFLER.md file contains customizable system prompts that you can edit to tailor Niffler's behavior to your preferences.
 
 ### 2. Configure Your AI Model
 Edit the configuration file to add (or enable) at least one AI model and API key:
-```json
-{
-  "models": [
-    {
-      "nickname": "gpt4",
-      "baseUrl": "https://api.openai.com/v1",
-      "model": "gpt-4",
-      "apiKey": "your-api-key-here",
-      "enabled": true
-    }
-  ]
-}
+```yaml
+models:
+  - nickname: "gpt4"
+    baseUrl: "https://api.openai.com/v1"
+    model: "gpt-4"
+    apiKey: "your-api-key-here"
+    enabled: true
 ```
 
 ### 3. Start Interactive Mode
@@ -397,22 +522,18 @@ Niffler includes cutting-edge support for **thinking tokens** (reasoning tokens)
 
 **Configuration:**
 Add reasoning capabilities to your model configuration:
-```json
-{
-  "models": [
-    {
-      "nickname": "gpt5-reasoning",
-      "baseUrl": "https://api.openai.com/v1",
-      "model": "gpt-5-turbo",
-      "reasoning": "high",
-      "reasoningContent": "visible",
-      "reasoningCostPerMToken": 10.0,
-      "enabled": true
-    }
-  ],
-  "thinkingTokensEnabled": true,
-  "defaultReasoningLevel": "medium"
-}
+```yaml
+models:
+  - nickname: "gpt5-reasoning"
+    baseUrl: "https://api.openai.com/v1"
+    model: "gpt-5-turbo"
+    reasoning: "high"
+    reasoningContent: "visible"
+    reasoningCostPerMToken: 10.0
+    enabled: true
+
+thinkingTokensEnabled: true
+defaultReasoningLevel: "medium"
 ```
 
 **Benefits:**
@@ -497,7 +618,7 @@ All conversations are automatically saved to a SQLite database located at:
 niffler init
 
 # Initialize with custom path
-niffler init --config-path /path/to/config.json
+niffler init --config-path /path/to/config.yaml
 ```
 
 ## 🔧 Configuration
@@ -505,49 +626,42 @@ niffler init --config-path /path/to/config.json
 ### Configuration File Location
 
 **Linux/macOS:**
-- Default: `~/.niffler/config.json`
+- Default: `~/.niffler/config.yaml`
 - Directory: `~/.niffler/` (hidden directory)
 
 **Windows:**
-- Default: `%APPDATA%\niffler\config.json`
+- Default: `%APPDATA%\niffler\config.yaml`
 - Directory: `%APPDATA%\niffler\` (e.g., `C:\Users\Username\AppData\Roaming\niffler\`)
 
 **Custom:**
 - Can be specified via `--config-path` argument for any platform
 
 ### Configuration Structure
-```json
-{
-  "models": [
-    {
-      "nickname": "gpt4o",
-      "baseUrl": "https://api.openai.com/v1",
-      "model": "gpt-4o",
-      "apiEnvVar": "OPENAI_API_KEY",
-      "enabled": true
-    },
-    {
-      "nickname": "claude",
-      "baseUrl": "https://api.anthropic.com/v1",
-      "model": "claude-3-sonnet-20240229",
-      "apiKey": "sk-ant-api03-...",
-      "enabled": true
-    },
-    {
-      "nickname": "local-llm",
-      "baseUrl": "http://localhost:1234/v1",
-      "model": "llama-3.2-3b-instruct",
-      "apiKey": "not-needed",
-      "enabled": false
-    }
-  ],
-  "instructionFiles": [
-    "NIFFLER.md",
-    "CLAUDE.md",
-    "OCTO.md",
-    "AGENT.md"
-  ]
-}
+```yaml
+models:
+  - nickname: "gpt4o"
+    baseUrl: "https://api.openai.com/v1"
+    model: "gpt-4o"
+    apiEnvVar: "OPENAI_API_KEY"
+    enabled: true
+
+  - nickname: "claude"
+    baseUrl: "https://api.anthropic.com/v1"
+    model: "claude-3-sonnet-20240229"
+    apiKey: "sk-ant-api03-..."
+    enabled: true
+
+  - nickname: "local-llm"
+    baseUrl: "http://localhost:1234/v1"
+    model: "llama-3.2-3b-instruct"
+    apiKey: "not-needed"
+    enabled: false
+
+instructionFiles:
+  - "NIFFLER.md"
+  - "CLAUDE.md"
+  - "OCTO.md"
+  - "AGENT.md"
 ```
 
 ### Model Configuration Options
@@ -591,15 +705,12 @@ Niffler supports configurable external tools for enhanced content and diff rende
 
 When you initialize Niffler, the following external rendering configuration is automatically added:
 
-```json
-{
-  "externalRendering": {
-    "enabled": true,
-    "contentRenderer": "batcat --color=always --style=numbers --theme=auto {file}",
-    "diffRenderer": "delta --line-numbers --syntax-theme=auto",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+externalRendering:
+  enabled: true
+  contentRenderer: "batcat --color=always --style=numbers --theme=auto {file}"
+  diffRenderer: "delta --line-numbers --syntax-theme=auto"
+  fallbackToBuiltin: true
 ```
 
 #### Configuration Options
@@ -630,15 +741,12 @@ External rendering commands support flexible placeholder substitution:
 
 You can customize external rendering to use different tools:
 
-```json
-{
-  "externalRendering": {
-    "enabled": true,
-    "contentRenderer": "highlight --syntax={syntax} --out-format=ansi {file}",
-    "diffRenderer": "diff-so-fancy",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+externalRendering:
+  enabled: true
+  contentRenderer: "highlight --syntax={syntax} --out-format=ansi {file}"
+  diffRenderer: "diff-so-fancy"
+  fallbackToBuiltin: true
 ```
 
 #### Features
@@ -711,15 +819,12 @@ Niffler supports configurable external tools for enhanced web content text extra
 
 Without configuration, Niffler uses its built-in HTML-to-text converter. To enable external text extraction:
 
-```json
-{
-  "textExtraction": {
-    "enabled": true,
-    "command": "trafilatura -u {url}",
-    "mode": "url",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+textExtraction:
+  enabled: true
+  command: "trafilatura -u {url}"
+  mode: "url"
+  fallbackToBuiltin: true
 ```
 
 #### Configuration Options
@@ -736,39 +841,30 @@ Without configuration, Niffler uses its built-in HTML-to-text converter. To enab
 #### Example Configurations
 
 **URL Mode (recommended for trafilatura):**
-```json
-{
-  "textExtraction": {
-    "enabled": true,
-    "command": "trafilatura -u {url}",
-    "mode": "url",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+textExtraction:
+  enabled: true
+  command: "trafilatura -u {url}"
+  mode: "url"
+  fallbackToBuiltin: true
 ```
 
 **Stdin Mode (pipe HTML content):**
-```json
-{
-  "textExtraction": {
-    "enabled": true,
-    "command": "trafilatura",
-    "mode": "stdin",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+textExtraction:
+  enabled: true
+  command: "trafilatura"
+  mode: "stdin"
+  fallbackToBuiltin: true
 ```
 
 **Custom Tool Example:**
-```json
-{
-  "textExtraction": {
-    "enabled": true,
-    "command": "html2text",
-    "mode": "stdin",
-    "fallbackToBuiltin": true
-  }
-}
+```yaml
+textExtraction:
+  enabled: true
+  command: "html2text"
+  mode: "stdin"
+  fallbackToBuiltin: true
 ```
 
 #### Features
@@ -938,7 +1034,7 @@ The archive system integrates seamlessly with Niffler's conversation management:
 niffler init
 
 # Initialize with custom path
-niffler init --config-path /path/to/config.json
+niffler init --config-path /path/to/config.yaml
 ```
 
 ### NIFFLER.md System Prompt Customization
