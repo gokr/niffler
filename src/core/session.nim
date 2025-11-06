@@ -6,11 +6,11 @@
 ##
 ## Key Features:
 ## - Tracks current active config (default, cc, custom)
-## - Initialized from config.json files (project or user level)
+## - Initialized from config.yaml files (project or user level)
 ## - Can be switched dynamically via /config command (in-memory only)
 ## - Provides config directory resolution for prompts and agents
 
-import std/[options, os, strformat, json, appdirs]
+import std/[options, os, strformat, json, appdirs, strutils]
 
 type
   Session* = object
@@ -35,19 +35,22 @@ proc getConfigDir(): string =
 
 proc getDefaultConfigPath(): string =
   ## Get default path for main configuration file (duplicated to avoid circular import)
-  joinPath(getConfigDir(), "config.json")
+  joinPath(getConfigDir(), "config.yaml")
 
 proc readConfigField(path: string): Option[string] =
-  ## Read just the "config" field from a config.json file
+  ## Read just the "config" field from a config.yaml file
   ## Returns None if file doesn't exist or doesn't have the field
   if not fileExists(path):
     return none(string)
 
   try:
+    # Simple YAML parsing for just the "config" field
     let content = readFile(path)
-    let configJson = parseJson(content)
-    if configJson.hasKey("config"):
-      return some(configJson["config"].getStr())
+    for line in content.splitLines():
+      if line.startsWith("config:") or line.startsWith("config "):
+        let parts = line.split(':', 1)
+        if parts.len == 2:
+          return some(parts[1].strip().strip(chars={'"'}))
   except:
     discard
 
@@ -55,10 +58,10 @@ proc readConfigField(path: string): Option[string] =
 
 proc loadActiveConfig*(): string =
   ## Determine which config to use at startup with layered resolution
-  ## Priority: .niffler/config.json (project) > ~/.niffler/config.json (user)
+  ## Priority: .niffler/config.yaml (project) > ~/.niffler/config.yaml (user)
 
   # Check for project-level config override
-  let projectConfigField = readConfigField(".niffler/config.json")
+  let projectConfigField = readConfigField(".niffler/config.yaml")
   if projectConfigField.isSome():
     return projectConfigField.get()
 
@@ -141,8 +144,8 @@ proc listAvailableConfigs*(session: Session): tuple[global: seq[string], project
 
 proc getConfigSource*(): string =
   ## Determine where the current config selection comes from
-  ## Returns "project" if .niffler/config.json exists, otherwise "user"
-  if fileExists(".niffler/config.json"):
+  ## Returns "project" if .niffler/config.yaml exists, otherwise "user"
+  if fileExists(".niffler/config.yaml"):
     return "project"
   else:
     return "user"
@@ -221,7 +224,7 @@ proc displayConfigInfo*(session: Session) =
   let diag = diagnoseConfig(session)
   let source = getConfigSource()
 
-  echo fmt"Loaded config: {session.currentConfig} (from {source} config.json)"
+  echo fmt"Loaded config: {session.currentConfig} (from {source} config.yaml)"
 
   if not diag.configExists:
     for err in diag.errors:

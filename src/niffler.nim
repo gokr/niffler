@@ -36,7 +36,7 @@ const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()
 proc init(configPath: string = "") =
   ## Initialize Niffler configuration at specified path or default location
   let path = if configPath.len == 0: getDefaultConfigPath() else: configPath
-  initializeConfig(path)
+  initializeConfigManager()
 
 proc showModels() =
   ## List available models and their base URLs from configuration

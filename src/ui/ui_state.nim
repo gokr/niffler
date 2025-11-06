@@ -54,7 +54,7 @@ proc updateStatusLine*() =
     # Get model config from current session or load from config
     let config = loadConfig()
     let modelConfig = if currentModelName.len > 0:
-      getModelFromConfig(config, currentModelName)
+      selectModelFromConfig(config, currentModelName)
     else:
       config.models[0]
 

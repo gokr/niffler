@@ -973,7 +973,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           if responseText.len > 0:
             let config = loadConfig()
             let selectedModel = if model.len > 0:
-              getModelFromConfig(config, model)
+              selectModelFromConfig(config, model)
             else:
               config.models[0]
             logToPromptHistory(database, text, responseText, selectedModel.nickname)

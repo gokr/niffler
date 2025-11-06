@@ -19,7 +19,7 @@ requires "https://github.com/gokr/linecross"         # For readline-like input w
 requires "hldiff"                                    # For improved diff calculations
 requires "unittest2 >= 0.2.4"
 requires "nancy"                                     # For nice tabular output formatting
-requires "parsetoml"                                 # For TOML configuration parsing
+requires "yaml"                                      # For YAML configuration parsing
 requires "https://github.com/deem0n/nim-nats"        # For NATS messaging (multi-agent IPC)
 
 task test, "Run all tests":

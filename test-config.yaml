@@ -1,0 +1,18 @@
+your_name: "Developer"
+models:
+  - nickname: "claude-sonnet"
+    base_url: "https://api.anthropic.com/v1"
+    model: "claude-3-5-sonnet-20241022"
+    context: 200000
+    enabled: true
+    api_env_var: "ANTHROPIC_API_KEY"
+    input_cost_per_mtoken: 0.003
+    output_cost_per_mtoken: 0.015
+database:
+  type: "sqlite"
+  enabled: true
+  path: "~/.niffler/niffler.db"
+  wal_mode: true
+  busy_timeout: 5000
+  pool_size: 10
+markdown_enabled: true

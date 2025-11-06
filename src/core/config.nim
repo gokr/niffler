@@ -16,11 +16,11 @@
 
 import std/[os, appdirs, tables, options, locks, strformat, strutils, sugar]
 import ../types/[config, messages, nats_messages]
-import config_toml
+import config_yaml
 import agent_defaults
 
 const KEY_FILE_NAME = "keys"
-const CONFIG_FILE_NAME = "config.toml"
+const CONFIG_FILE_NAME = "config.yaml"
 const SQLITE_FILE_NAME = "niffler.db"
 const AGENTS_DIR_NAME = "agents"
 
@@ -60,9 +60,9 @@ proc initializeConfigManager*() =
   initLock(globalConfigManager.lock)
 
 proc readConfig*(path: string): Config =
-  ## Read and parse TOML configuration file from specified path
-  let tomlConfig = loadTomlConfig(path)
-  return tomlConfigToConfig(tomlConfig)
+  ## Read and parse YAML configuration file from specified path
+  let yamlConfig = loadYamlConfig(path)
+  return yamlConfigToConfig(yamlConfig)
 
 proc loadConfigFromPath*(path: string): Config =
   ## Load configuration from an arbitrary path (for project-level configs)
