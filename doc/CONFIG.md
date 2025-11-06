@@ -8,7 +8,7 @@ Niffler uses a flexible configuration system with multiple config directories:
 
 ```
 ~/.niffler/
-├── config.json              # Main config with model settings and active config selection
+├── config.yaml              # Main config with model settings and active config selection
 ├── niffler.db              # SQLite database for conversations
 ├── default/                # Minimal, concise prompts (default config)
 │   ├── NIFFLER.md          # System prompts and tool descriptions
@@ -29,7 +29,7 @@ niffler init
 ```
 
 This creates:
-- `~/.niffler/config.json` with default settings and `"config": "default"`
+- `~/.niffler/config.yaml` with default settings and `"config": "default"`
 - `~/.niffler/default/` with minimal prompts
 - `~/.niffler/cc/` with Claude Code style prompts
 - Default agent definitions in both config directories
@@ -41,21 +41,19 @@ This creates:
 Niffler uses a layered approach to determine which config directory to use:
 
 **Priority (highest to lowest):**
-1. **Project-level**: `.niffler/config.json` in current directory
-2. **User-level**: `~/.niffler/config.json`
+1. **Project-level**: `.niffler/config.yaml` in current directory
+2. **User-level**: `~/.niffler/config.yaml`
 3. **Default fallback**: `"default"` if no config specified
 
-### Config.json Structure
+### Config.yaml Structure
 
-The `config` field in `config.json` selects the active config directory:
+The `config` field in `config.yaml` selects the active config directory:
 
-```json
-{
-  "yourName": "User",
-  "config": "default",
-  "models": [ ... ],
-  ...
-}
+```yaml
+yourName: "User"
+config: "default"
+models: [ ... ]
+# ...
 ```
 
 Valid values for `config`:
@@ -65,19 +63,17 @@ Valid values for `config`:
 
 ### Project-Level Override
 
-Create `.niffler/config.json` in your project to override the config:
+Create `.niffler/config.yaml` in your project to override the config:
 
 ```bash
 mkdir .niffler
-cat > .niffler/config.json << 'EOF'
-{
-  "config": "cc"
-}
+cat > .niffler/config.yaml << 'EOF'
+config: "cc"
 EOF
 ```
 
 Now when you run `niffler` in this project, it will:
-1. Load `.niffler/config.json` → sees `"config": "cc"`
+1. Load `.niffler/config.yaml` → sees `"config": "cc"`
 2. Use prompts from `~/.niffler/cc/NIFFLER.md`
 3. Load agents from `~/.niffler/cc/agents/`
 
@@ -93,7 +89,7 @@ Use the `/config` slash command to switch configs temporarily (in-memory only):
 /config default      # Switch back to default
 ```
 
-**Important:** `/config` does NOT modify any config.json files. It only changes the active config for the current session.
+**Important:** `/config` does NOT modify any config.yaml files. It only changes the active config for the current session.
 
 ## NIFFLER.md Files
 
@@ -227,10 +223,8 @@ cp ~/.niffler/default/NIFFLER.md ~/.niffler/myteam/
 ```
 
 Then use it:
-```json
-{
-  "config": "myteam"
-}
+```yaml
+config: "myteam"
 ```
 
 ## Integration with Other Tools
@@ -263,27 +257,22 @@ System-wide instructions for all projects.
 @include ~/dev/standards/coding-guidelines.md
 ```
 
-Individual projects can override by having their own `.niffler/config.json`:
+Individual projects can override by having their own `.niffler/config.yaml`:
 
-```json
-{
-  "config": "myorg"
-}
+```yaml
+config: "myorg"
 ```
 
 ## Configuration Fields
 
-Control which instruction files are searched via config.json:
+Control which instruction files are searched via config.yaml:
 
-```json
-{
-  "instructionFiles": [
-    "NIFFLER.md",
-    "CLAUDE.md",
-    "OCTO.md",
-    "AGENT.md"
-  ]
-}
+```yaml
+instructionFiles:
+  - "NIFFLER.md"
+  - "CLAUDE.md"
+  - "OCTO.md"
+  - "AGENT.md"
 ```
 
 ## Config Override Examples
@@ -292,12 +281,10 @@ Control which instruction files are searched via config.json:
 
 **Scenario:** Your team wants all projects to use Claude Code style by default.
 
-**Solution:** Edit `~/.niffler/config.json`:
-```json
-{
-  "config": "cc",
-  ...
-}
+**Solution:** Edit `~/.niffler/config.yaml`:
+```yaml
+config: "cc"
+# ...
 ```
 
 Now all projects use CC style unless they override it.
@@ -309,7 +296,7 @@ Now all projects use CC style unless they override it.
 **Solution:** In that project:
 ```bash
 mkdir .niffler
-echo '{"config": "default"}' > .niffler/config.json
+echo '{"config": "default"}' > .niffler/config.yaml
 ```
 
 ### Example 3: Testing New Prompts
@@ -329,7 +316,7 @@ Changes are session-only and don't persist.
 ### Config Organization
 
 1. **Use config directories for global styles** - `~/.niffler/{name}/`
-2. **Use project .niffler/config.json for selection** - Just specify which config to use
+2. **Use project .niffler/config.yaml for selection** - Just specify which config to use
 3. **Use project NIFFLER.md for overrides** - Project-specific prompt tweaks
 4. **Create team configs** - Share a config directory across team members
 
@@ -338,7 +325,7 @@ Changes are session-only and don't persist.
 1. **Start with default** - Test with minimal prompts first
 2. **Upgrade to cc when needed** - For complex projects requiring high steerability
 3. **Create custom configs** - For specific workflows or teams
-4. **Version control** - Commit `.niffler/config.json` to git
+4. **Version control** - Commit `.niffler/config.yaml` to git
 5. **Test changes** - System prompts affect LLM behavior significantly
 
 ### File Inclusion
@@ -353,8 +340,8 @@ Changes are session-only and don't persist.
 ### Config not loading
 
 Check the resolution order:
-1. Is there a `.niffler/config.json` in current directory?
-2. Does `~/.niffler/config.json` have a valid `"config"` field?
+1. Is there a `.niffler/config.yaml` in current directory?
+2. Does `~/.niffler/config.yaml` have a valid `"config"` field?
 3. Does the config directory exist in `~/.niffler/{name}/`?
 
 ### Prompts not applying
@@ -366,7 +353,7 @@ Check the resolution order:
 
 ### Project override not working
 
-1. Ensure `.niffler/config.json` is in the project root
+1. Ensure `.niffler/config.yaml` is in the project root
 2. Verify JSON syntax is correct
 3. Check that the specified config exists in `~/.niffler/`
 

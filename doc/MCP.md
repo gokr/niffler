@@ -12,7 +12,7 @@ MCP server support will allow Niffler to communicate with external MCP servers t
 
 Niffler already has a solid foundation for MCP integration:
 
-- **Configuration System**: Global config at `~/.niffler/config.json` with `McpServerConfig` type already defined
+- **Configuration System**: Global config at `~/.niffler/config.yaml` with `McpServerConfig` type already defined
 - **Tool Registry**: Extensible system in `src/tools/registry.nim` supporting object variant-based tools
 - **Thread-based Architecture**: Multi-threaded design with dedicated workers for API, tools, and UI
 - **Channel Communication**: Thread-safe message passing between workers via `src/core/channels.nim`
@@ -56,15 +56,15 @@ McpServerConfig* = object
 ### Repository-Specific Configuration
 
 **Multi-layered Configuration Priority:**
-1. Repository-local `.niffler/config.json` (highest priority)
-2. User global `~/.niffler/config.json` (fallback)
+1. Repository-local `.niffler/config.yaml` (highest priority)
+2. User global `~/.niffler/config.yaml` (fallback)
 3. Built-in defaults (lowest priority)
 
 **Repository Structure:**
 ```
 .git/
 .niffler/
-├── config.json          # Repository-specific MCP servers and overrides
+├── config.yaml          # Repository-specific MCP servers and overrides
 ├── tools/              # Repository-specific tools (optional)
 │   └── custom_tools.nim
 └── prompts/            # Repository-specific system prompts (optional)
@@ -79,28 +79,23 @@ McpServerConfig* = object
 
 ### Example Repository Configuration
 
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
-      "workingDir": "/Users/gokr/projects",
-      "enabled": true,
-      "name": "Filesystem Access"
-    },
-    "git": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-git"],
-      "workingDir": ".",
-      "env": {
-        "GIT_REPO_PATH": "."
-      },
-      "enabled": true,
-      "name": "Git Operations"
-    }
-  }
-}
+```yaml
+mcpServers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem"]
+    workingDir: "/Users/gokr/projects"
+    enabled: true
+    name: "Filesystem Access"
+
+  git:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-git"]
+    workingDir: "."
+    env:
+      GIT_REPO_PATH: "."
+    enabled: true
+    name: "Git Operations"
 ```
 
 ### Repository Configuration Discovery
@@ -108,7 +103,7 @@ McpServerConfig* = object
 Configuration discovery works by:
 1. Starting at current working directory
 2. Traversing up until finding `.git/` (repo root) or filesystem root
-3. Looking for `.niffler/config.json` at detected repo root
+3. Looking for `.niffler/config.yaml` at detected repo root
 4. Merging with global configuration using priority rules
 
 ## Implementation Plan

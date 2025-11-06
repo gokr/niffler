@@ -4,24 +4,19 @@ This document describes how to configure AI models in Niffler, including API pro
 
 ## Configuration Location
 
-Model configurations are stored in `~/.niffler/config.json`:
+Model configurations are stored in `~/.niffler/config.yaml`:
 
-```json
-{
-  "yourName": "User",
-  "config": "default",
-  "models": [
-    {
-      "nickname": "sonnet",
-      "base_url": "https://api.anthropic.com/v1",
-      "api_key_env": "ANTHROPIC_API_KEY",
-      "model": "claude-sonnet-4-5-20250929",
-      "context": 200000,
-      "inputCostPerMToken": 3000,
-      "outputCostPerMToken": 15000
-    }
-  ]
-}
+```yaml
+yourName: "User"
+config: "default"
+models:
+  - nickname: "sonnet"
+    base_url: "https://api.anthropic.com/v1"
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: "claude-sonnet-4-5-20250929"
+    context: 200000
+    inputCostPerMToken: 3000
+    outputCostPerMToken: 15000
 ```
 
 ## Model Fields
@@ -46,16 +41,14 @@ Niffler supports any OpenAI-compatible API endpoint. Common providers:
 
 ### Anthropic Claude
 
-```json
-{
-  "nickname": "sonnet",
-  "base_url": "https://api.anthropic.com/v1",
-  "api_key_env": "ANTHROPIC_API_KEY",
-  "model": "claude-sonnet-4-5-20250929",
-  "context": 200000,
-  "inputCostPerMToken": 3000,
-  "outputCostPerMToken": 15000
-}
+```yaml
+nickname: "sonnet"
+base_url: "https://api.anthropic.com/v1"
+api_key_env: "ANTHROPIC_API_KEY"
+model: "claude-sonnet-4-5-20250929"
+context: 200000
+inputCostPerMToken: 3000
+outputCostPerMToken: 15000
 ```
 
 **Available Models:**
@@ -70,16 +63,14 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ### OpenAI
 
-```json
-{
-  "nickname": "gpt4o",
-  "base_url": "https://api.openai.com/v1",
-  "api_key_env": "OPENAI_API_KEY",
-  "model": "gpt-4o",
-  "context": 128000,
-  "inputCostPerMToken": 250,
-  "outputCostPerMToken": 1000
-}
+```yaml
+nickname: "gpt4o"
+base_url: "https://api.openai.com/v1"
+api_key_env: "OPENAI_API_KEY"
+model: "gpt-4o"
+context: 128000
+inputCostPerMToken: 250
+outputCostPerMToken: 1000
 ```
 
 **Available Models:**
@@ -96,7 +87,7 @@ export OPENAI_API_KEY="sk-proj-..."
 
 OpenRouter provides access to multiple model providers through a unified API:
 
-```json
+```yaml
 {
   "nickname": "deepseek",
   "base_url": "https://openrouter.ai/api/v1",
@@ -117,7 +108,7 @@ export OPENROUTER_API_KEY="sk-or-..."
 
 For local inference servers using OpenAI-compatible APIs:
 
-```json
+```yaml
 {
   "nickname": "llama",
   "base_url": "http://localhost:11434/v1",
@@ -138,7 +129,7 @@ For local inference servers using OpenAI-compatible APIs:
 
 Any OpenAI-compatible endpoint works. Example for GLM-4.6 via Z.AI:
 
-```json
+```yaml
 {
   "nickname": "glm",
   "base_url": "https://api.z.ai/api/paas/v4",
@@ -206,7 +197,7 @@ LIMIT 10;
 
 The first model in the `models` array is the default:
 
-```json
+```yaml
 {
   "models": [
     {"nickname": "sonnet", ...},    // Default
@@ -232,7 +223,7 @@ Model switches are conversation-scoped and persisted to the database.
 
 Configure multiple models for different use cases:
 
-```json
+```yaml
 {
   "models": [
     {
@@ -325,7 +316,7 @@ If empty, the key is not set or not exported.
 
 Some models (Claude, OpenAI o1) support thinking tokens for reasoning. Configure budgets:
 
-```json
+```yaml
 {
   "nickname": "sonnet",
   "model": "claude-sonnet-4-5-20250929",
@@ -347,7 +338,7 @@ See [THINK.md](THINK.md) for more details on thinking tokens.
 
 Prioritize cost efficiency:
 
-```json
+```yaml
 {
   "models": [
     {"nickname": "haiku", "model": "claude-3-5-haiku-20241022", ...},
@@ -360,7 +351,7 @@ Prioritize cost efficiency:
 
 Prioritize capability:
 
-```json
+```yaml
 {
   "models": [
     {"nickname": "opus", "model": "claude-opus-4-20250514", ...},
@@ -373,7 +364,7 @@ Prioritize capability:
 
 Use best models from each provider:
 
-```json
+```yaml
 {
   "models": [
     {"nickname": "sonnet", "model": "claude-sonnet-4-5-20250929", ...},
@@ -425,9 +416,9 @@ Use best models from each provider:
 
 ### From Claude Code
 
-Claude Code uses similar model configuration. Copy your model settings to `~/.niffler/config.json`:
+Claude Code uses similar model configuration. Copy your model settings to `~/.niffler/config.yaml`:
 
-```json
+```yaml
 {
   "models": [
     {
@@ -454,7 +445,7 @@ model: claude-sonnet-4
 
 Niffler equivalent:
 
-```json
+```yaml
 {
   "models": [{
     "nickname": "sonnet",
