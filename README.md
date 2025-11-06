@@ -8,166 +8,102 @@
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
-## 🏗️ Distributed Architecture
+## 🏗️ Architecture & Design
 
-Niffler features a unique **distributed multi-agent architecture** where specialized AI agents run as separate processes, communicating through NATS messaging while sharing a centralized SQLite database for persistence.
+Niffler features a **multi-threaded single-process architecture** with a foundation for future distributed multi-agent capabilities.
 
-### Architecture Overview
+**Current Architecture:**
+- Multi-threaded design with dedicated workers for UI, API, and tool execution
+- Thread-safe channels for inter-component communication
+- Persistent SQLite database for conversation history and state
+- NATS infrastructure ready for future multi-agent expansion
 
-```mermaid
-graph TB
-    %% Main Process
-    Main[Main Niffler Process<br/>CLI Interface]
+**Key Features:**
+- 🧵 **Multi-threaded**: UI, API, and tool operations run in separate threads
+- 💾 **Persistent Storage**: SQLite database for conversations, messages, and usage tracking
+- 🛠️ **Tool System**: Extensible architecture with built-in tools for development tasks
+- 🔄 **Security**: Sanitized paths, timeout controls, and permission management
+- 📡 **NATS Ready**: Foundation for distributed multi-agent expansion
 
-    %% Database (shared)
-    DB[(SQLite Database<br/>Conversations & State)]
-
-    %% NATS Message Bus
-    NATS[NATS Message Bus<br/>nats://localhost:4222]
-
-    %% Agent Processes
-    Agent1[Code Agent Process<br/>Specialized in coding<br/>Claude Sonnet]
-    Agent2[Research Agent Process<br/>Specialized in research<br/>GPT-4o]
-    Agent3[Testing Agent Process<br/>Specialized in testing<br/>Claude Haiku]
-
-    %% Connections
-    Main <--> NATS
-    Main <--> DB
-    Agent1 <--> NATS
-    Agent1 <--> DB
-    Agent2 <--> NATS
-    Agent2 <--> DB
-    Agent3 <--> NATS
-    Agent3 <--> DB
-
-    %%
-    classDef mainProcess fill:#e1f5fe
-    classDef agentProcess fill:#f3e5f5
-    classDef storage fill:#e8f5e8
-    classDef messaging fill:#fff3e0
-
-    class Main mainProcess
-    class Agent1,Agent2,Agent3 agentProcess
-    class DB storage
-    class NATS messaging
-```
-
-### Multi-Agent Communication Flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Main as Main Process
-    participant NATS as NATS Bus
-    participant DB as SQLite DB
-    participant CodeAgent as Code Agent
-    participant ResearchAgent as Research Agent
-
-    User->>Main: /code "Add validation function"
-    Main->>DB: Log request
-    Main->>NATS: Route to Code Agent
-    NATS->>CodeAgent: Forward request
-
-    CodeAgent->>DB: Store context
-    CodeAgent->>Main: Response with result
-    Main->>User: Display result
-
-    User->>Main: /research "Best validation patterns"
-    Main->>NATS: Route to Research Agent
-    NATS->>ResearchAgent: Forward request
-
-    ResearchAgent->>DB: Access conversation history
-    ResearchAgent->>Main: Research results
-    Main->>User: Display findings
-```
-
-### Key Architectural Benefits
-
-**🔄 Process Isolation**
-- Each agent runs in its own process with dedicated memory and resources
-- Agent failures don't affect other agents or the main process
-- True parallel processing with independent CPU scheduling
-
-**📡 NATS Communication**
-- Lightweight, high-performance messaging between processes
-- Automatic load balancing and message queuing
-- Health monitoring with automatic agent recovery
-
-**💾 Shared State**
-- Centralized SQLite database provides persistent conversation history
-- All agents share access to user context and token usage data
-- Cross-agent conversation continuity and context preservation
-
-**🧠 Specialized Intelligence**
-- Each agent optimized for specific tasks (coding, research, testing, etc.)
-- Dedicated AI model assignments per agent specialization
-- Tool permissions tailored to agent capabilities
-
-### Agent Lifecycle Management
-
-```mermaid
-stateDiagram-v2
-    [*] --> Initialized: Agent Config Loaded
-    Initialized --> Starting: Master Start Command
-    Starting --> Running: Process Started
-    Running --> Active: NATS Connection Ready
-    Active --> Idle: No Active Requests
-    Idle --> Active: Request Received
-    Active --> Error: Process Failure
-    Error --> Restarting: Health Check Failed
-    Restarting --> Running: Recovery Complete
-    Running --> Shutdown: Master Stop Command
-    Shutdown --> [*]: Process Terminated
-```
-
-Niffler is a work-in-progress. Some of the things that perhaps **stand out** are these:
-
-- **Distributed Multi-Agent Architecture**: Specialized AI agents run as separate processes with NATS communication and shared database state
-- **Native multithreaded**: Each process uses multi-threading for UI, tool execution, and API communication
-- **CLI Interface**: Built on linecross for input handling with tab completion, history, and cross-platform support
-- **Persistent Database**: Centralized SQLite database for conversation history and token tracking
-- **Single Binary**: Portable across Linux, macOS, and Windows with self-contained deployment
+Learn more about the architecture and future multi-agent plans in **[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)**.
 
 
-## AI Capabilities
+## 🤖 AI Capabilities
+
 - **Multi-Model Support**: Seamlessly switch between different AI models (OpenAI, Anthropic, and other OpenAI-compatible APIs)
 - **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
 - **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
-- **Single Prompt Mode**: Can be used in scripting to send one shot prompts and get an immediate response
+- **Single Prompt Mode**: Scripting support for one-shot prompts with immediate responses
 - **Model Management**: Easy configuration and switching between AI models
-- **Thinking Token Support**: Manages, shows and stores thinking tokens separately  
-- **NIFFLER.md handling**: Customizable system prompts and instruction files with include directive support
+- **Thinking Token Support**: Manages, shows and stores reasoning tokens separately
+- **Custom Instructions**: NIFFLER.md handling with include directive support
+
+## 💰 Token Counting & Cost Tracking
+
+Niffler features an intelligent token estimation system with dynamic correction factors that learns from actual API usage to provide increasingly accurate cost predictions.
+
+**Features:**
+- **Heuristic-Based Estimation**: 7-16% accuracy using language-specific heuristics without heavy tokenizers
+- **Dynamic Learning**: Automatically improves accuracy through comparison with actual API responses
+- **Cost Optimization**: Better estimates lead to more accurate cost predictions
+- **Model-Specific**: Each model gets its own correction factor based on real usage data
+
+**Learn More:** Complete details about the token estimation system and cost tracking in **[doc/TOKEN_COUNTING.md](doc/TOKEN_COUNTING.md)**.
 
 
-## Token Counting & Cost Tracking
+## 🛠️ Tool System & Extensions
 
-Niffler features a **heuristic token estimation system** with dynamic correction factors for accurate token estimation and cost tracking across LLMs.
+Niffler includes a comprehensive tool system that enables AI assistants to safely interact with your development environment.
 
-### Key Features
-- **Heuristic-Based Estimation**: Uses intelligent language-specific heuristics to provide 7-16% accuracy without requiring tokenizer training
-- **Dynamic Correction Factor**: Learns from actual API responses to improve estimate accuracy over time, each model gets its own correction factor based on real usage data
-- **Cost Optimization**: More accurate token estimates lead to better cost predictions
-- **Language-Aware**: Different estimation patterns for code, natural language, and mixed content
+### Core Tools
+- **bash**: Execute shell commands with timeout control and process management
+- **read**: Read file contents with encoding detection and size limits
+- **list**: Directory listing with filtering, sorting, and metadata display
+- **edit**: Advanced file editing with diff-based operations and backup creation
+- **create**: Safe file creation with directory management and permission control
+- **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
+- **todolist**: Task management and todo tracking with persistent state
 
-### How It Works
+**Learn More:** Complete documentation of the tool system, security features, and custom tool development in **[doc/TOOLS.md](doc/TOOLS.md)**.
 
-**Initial Estimation**: Niffler uses a lightweight heuristic approach based on the tokenx library methodology. The system analyzes text patterns and applies language-specific rules to estimate token counts based on average characters per token for different content types.
+### MCP (Model Context Protocol) Integration
 
-**Dynamic Learning**: When you receive responses from LLM APIs, Niffler automatically compares the estimated token count with the actual count returned by the API and records the correction difference in the database.
+Extend Niffler's capabilities with external MCP servers that provide additional specialized tools and resources for your development workflow.
 
-**Automatic Improvement**: Future token estimates for that specific model are automatically adjusted using the learned correction factor, becoming more accurate with each API call.
+**Key Features:**
+- **External Server Support**: Integration with any MCP-compatible server
+- **Automatic Discovery**: Tools are automatically discovered at startup
+- **Flexible Configuration**: Easy YAML-based server setup
+- **Health Monitoring**: Automatic server health checks and recovery
 
-### Example Usage
-```nim
-# Count tokens for any model with correction factor
-let tokens = countTokensForModel("Hello world!", "gpt-4")
+**Popular MCP Servers:**
+- **Filesystem**: Secure file operations with directory access controls
+- **GitHub**: Repository management, issue tracking, and PR operations
+- **Git**: Version control operations and repository management
 
-# The system automatically improves over time as you use different models
+**Quick Setup:**
+```yaml
+mcpServers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/projects"]
+    enabled: true
+
+  github:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: "your-github-token"
+    enabled: true
 ```
 
+**Check Status:**
+```bash
+# View all MCP servers and available tools
+/mcp status
+```
 
-### Tool System
-Niffler includes a tool system that enables AI assistants to interact with your development environment. All tool executions are being run in a separate thread. It should be easy to add more builtin tools:
+**Learn More:** Complete MCP setup guide with installation, configuration, and troubleshooting in **[doc/MCP_SETUP.md](doc/MCP_SETUP.md)**.
 
 #### 🛠️ Core Tools
 - **bash**: Execute shell commands with timeout control and process management
