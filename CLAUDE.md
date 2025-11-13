@@ -23,18 +23,15 @@ nimble build
 nimble test
 
 # Run individual test suites
-nim c -r --threads:on -d:ssl test_tool_calling.nim
-nim c -r --threads:on -d:ssl test_api_integration.nim
-nim c -r --threads:on -d:ssl test_tool_execution.nim
+nim c -r test_tool_calling.nim
+nim c -r test_api_integration.nim
+nim c -r test_tool_execution.nim
 ```
 
 ### Dependencies
 ```bash
-# Install dependencies
-nimble install cligen sunny
-
-# Required Nim version: >= 2.2.4
-# Compile with: --threads:on -d:ssl (set in config.nims)
+# Install dependencies, they are all listed in niffler.nimble
+nimble install sunny
 ```
 
 ## Architecture
@@ -68,7 +65,7 @@ nimble install cligen sunny
 
 ### Key Files
 
-- `src/niffler.nim`: CLI entry point with cligen command dispatch
+- `src/niffler.nim`: CLI entry point with docopt command dispatch
 - `src/core/app.nim`: Application lifecycle and coordination
 - `src/api/api.nim`: LLM API integration with tool calling support
 - `src/api/http_client.nim`: OpenAI-compatible HTTP client
@@ -124,9 +121,8 @@ The tool calling system follows OpenAI's function calling specification:
 
 ## Dependencies and Libraries
 
-- **cligen**: Command line argument parsing
-- **sunny**: JSON Schema validation
-- **JsonSchemaValidator**: Additional schema validation support
+- **docopt**: Command line argument parsing
+- **sunny**: JSON handling
 
 ## Development Notes
 
