@@ -35,6 +35,7 @@
 ## - is_dir, is_file, is_link: Boolean flags for type
 import std/[os, strutils, times, json, algorithm]
 import ../types/tools
+import ../types/tool_args
 import common
 
 type
@@ -145,39 +146,30 @@ proc sortEntries*(entries: var seq[ListEntry], sortBy: string, sortOrder: string
 
 proc executeList*(args: JsonNode): string {.gcsafe.} =
   ## Execute list directory operation
-  # Validate arguments
-  validateArgs(args, @["path"])
-  
-  let path = getArgStr(args, "path")
-  let recursive = if args.hasKey("recursive"): getArgBool(args, "recursive") else: false
-  let maxDepth = if args.hasKey("max_depth"): getArgInt(args, "max_depth") else: 10
-  let includeHidden = if args.hasKey("include_hidden"): getArgBool(args, "include_hidden") else: false
-  let sortBy = if args.hasKey("sort_by"): getArgStr(args, "sort_by") else: "name"
-  let sortOrder = if args.hasKey("sort_order"): getArgStr(args, "sort_order") else: "asc"
-  let filterType = if args.hasKey("filter_type"): getArgStr(args, "filter_type") else: ""
-  
+  var parsedArgs = parseWithDefaults(ListArgs, args, "list")
+
   # Validate path
-  if path.len == 0:
+  if parsedArgs.path.len == 0:
     raise newToolValidationError("list", "path", "non-empty string", "empty string")
-  
+
   # Validate max_depth
-  if maxDepth <= 0:
-    raise newToolValidationError("list", "max_depth", "positive integer", $maxDepth)
-  
-  if maxDepth > 100:
-    raise newToolValidationError("list", "max_depth", "depth under 100", $maxDepth)
-  
+  if parsedArgs.maxDepth <= 0:
+    raise newToolValidationError("list", "max_depth", "positive integer", $parsedArgs.maxDepth)
+
+  if parsedArgs.maxDepth > 100:
+    raise newToolValidationError("list", "max_depth", "depth under 100", $parsedArgs.maxDepth)
+
   # Validate sort_by
   let validSortBy = ["name", "size", "modified", "type"]
-  if sortBy notin validSortBy:
-    raise newToolValidationError("list", "sort_by", "one of: " & validSortBy.join(", "), sortBy)
-  
+  if parsedArgs.sortBy notin validSortBy:
+    raise newToolValidationError("list", "sort_by", "one of: " & validSortBy.join(", "), parsedArgs.sortBy)
+
   # Validate sort_order
   let validSortOrder = ["asc", "desc"]
-  if sortOrder notin validSortOrder:
-    raise newToolValidationError("list", "sort_order", "one of: " & validSortOrder.join(", "), sortOrder)
-  
-  let sanitizedPath = sanitizePath(path)
+  if parsedArgs.sortOrder notin validSortOrder:
+    raise newToolValidationError("list", "sort_order", "one of: " & validSortOrder.join(", "), parsedArgs.sortOrder)
+
+  let sanitizedPath = sanitizePath(parsedArgs.path)
   
   # Check if directory exists
   validateDirectoryExists(sanitizedPath)
@@ -185,21 +177,21 @@ proc executeList*(args: JsonNode): string {.gcsafe.} =
   try:
     # Get directory entries
     var entries: seq[ListEntry]
-    if recursive:
-      entries = listDirectoryRecursive(sanitizedPath, maxDepth, includeHidden)
+    if parsedArgs.recursive:
+      entries = listDirectoryRecursive(sanitizedPath, parsedArgs.maxDepth, parsedArgs.includeHidden)
     else:
-      entries = listDirectory(sanitizedPath, includeHidden)
-    
+      entries = listDirectory(sanitizedPath, parsedArgs.includeHidden)
+
     # Apply type filter if specified
-    if filterType.len > 0:
+    if parsedArgs.filterType.len > 0:
       var filteredEntries: seq[ListEntry] = @[]
       for entry in entries:
-        if entry.`type` == filterType:
+        if entry.`type` == parsedArgs.filterType:
           filteredEntries.add(entry)
       entries = filteredEntries
-    
+
     # Sort entries
-    sortEntries(entries, sortBy, sortOrder)
+    sortEntries(entries, parsedArgs.sortBy, parsedArgs.sortOrder)
     
     # Convert to JSON
     var jsonEntries = newJArray()
@@ -222,12 +214,12 @@ proc executeList*(args: JsonNode): string {.gcsafe.} =
       "path": sanitizedPath,
       "entries": jsonEntries,
       "total_count": entries.len,
-      "recursive": recursive,
-      "max_depth": maxDepth,
-      "include_hidden": includeHidden,
-      "sort_by": sortBy,
-      "sort_order": sortOrder,
-      "filter_type": if filterType.len > 0: %*filterType else: newJNull()
+      "recursive": parsedArgs.recursive,
+      "max_depth": parsedArgs.maxDepth,
+      "include_hidden": parsedArgs.includeHidden,
+      "sort_by": parsedArgs.sortBy,
+      "sort_order": parsedArgs.sortOrder,
+      "filter_type": if parsedArgs.filterType.len > 0: %*parsedArgs.filterType else: newJNull()
     }
     
     return $resultJson

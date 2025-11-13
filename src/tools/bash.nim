@@ -12,22 +12,21 @@
 
 import std/json
 import ../types/tools
-import ../core/constants
+import ../types/tool_args
 import common
 
 proc executeBash*(args: JsonNode): string =
   ## Execute bash command with timeout and exit code handling
   ## Returns output on success or JSON with exit code info on failure
-  let command = getArgStr(args, "command")
-  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: DEFAULT_TIMEOUT
-    
-  if command.len == 0:
+  var parsedArgs = parseWithDefaults(BashArgs, args, "bash")
+
+  if parsedArgs.command.len == 0:
     raise newToolValidationError("bash", "command", "non-empty string", "empty string")
-  
-  validateTimeout(timeout)
+
+  validateTimeout(parsedArgs.timeout)
 
   try:
-    let output = getCommandOutput(command, timeout = timeout)
+    let output = getCommandOutput(parsedArgs.command, timeout = parsedArgs.timeout)
     # Success case (exit code 0) - return output as before
     return output
   except ToolExecutionError as e:
@@ -36,7 +35,7 @@ proc executeBash*(args: JsonNode): string =
       "output": e.output,
       "exit_code": e.exitCode,
       "success": false,
-      "command": command
+      "command": parsedArgs.command
     }
     return $resultJson
   except ToolError as e:

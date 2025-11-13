@@ -15,6 +15,7 @@
 
 import std/[os, streams, times, strutils, json, strformat]
 import ../types/tools
+import ../types/tool_args
 import ../core/constants
 import common
 
@@ -104,30 +105,24 @@ proc extractLinesByRange*(content: string, rangeStr: string): string =
 
 proc executeRead*(args: JsonNode): string {.gcsafe.} =
   ## Execute read file operation
-  # Validate arguments
-  validateArgs(args, @["path"])
-  
-  let path = getArgStr(args, "path")
-  let encoding = getOptArgStr(args, "encoding", "auto")
-  let maxSize = getOptArgInt(args, "max_size", MAX_FILE_SIZE)
-  let lineRange = if args.hasKey("linerange"): args["linerange"].getStr() else: ""
-  
+  var parsedArgs = parseWithDefaults(ReadArgs, args, "read")
+
   # Validate path
-  if path.len == 0:
+  if parsedArgs.path.len == 0:
     raise newToolValidationError("read", "path", "non-empty string", "empty string")
-  
+
   # Validate max_size
-  if maxSize <= 0:
-    raise newToolValidationError("read", "max_size", "positive integer", $maxSize)
-  
-  if maxSize > MAX_FETCH_SIZE_LIMIT:
-    raise newToolValidationError("read", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $maxSize)
-  
+  if parsedArgs.maxSize <= 0:
+    raise newToolValidationError("read", "max_size", "positive integer", $parsedArgs.maxSize)
+
+  if parsedArgs.maxSize > MAX_FETCH_SIZE_LIMIT:
+    raise newToolValidationError("read", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $parsedArgs.maxSize)
+
   # Validate encoding
-  if encoding != "auto" and encoding notin ["utf-8", "utf-16", "utf-32", "ascii", "latin1"]:
-    raise newToolValidationError("read", "encoding", "valid encoding", encoding)
-  
-  let sanitizedPath = sanitizePath(path)
+  if parsedArgs.encoding != "auto" and parsedArgs.encoding notin ["utf-8", "utf-16", "utf-32", "ascii", "latin1"]:
+    raise newToolValidationError("read", "encoding", "valid encoding", parsedArgs.encoding)
+
+  let sanitizedPath = sanitizePath(parsedArgs.path)
   
   # Check if file exists
   validateFileExists(sanitizedPath)
@@ -135,13 +130,13 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
   try:
     # Get file info for metadata
     let fileInfo = attemptUntrackedStat(sanitizedPath)
-    
+
     # Check file size
-    validateFileSize(sanitizedPath, maxSize)
-    
+    validateFileSize(sanitizedPath, parsedArgs.maxSize)
+
     # Determine encoding
-    let detectedEncoding = if encoding == "auto": detectFileEncoding(sanitizedPath) else: encoding
-    
+    let detectedEncoding = if parsedArgs.encoding == "auto": detectFileEncoding(sanitizedPath) else: parsedArgs.encoding
+
     # Read file content
     var fullContent: string
     case detectedEncoding.toLowerAscii():
@@ -165,11 +160,11 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
         fullContent = attemptUntrackedRead(sanitizedPath)
       else:
         raise newToolExecutionError("read", "Unsupported encoding: " & detectedEncoding, -1, "")
-    
+
     # Process line range if specified
     var content = fullContent
-    if lineRange.len > 0:
-      content = extractLinesByRange(fullContent, lineRange)
+    if parsedArgs.linerange.len > 0:
+      content = extractLinesByRange(fullContent, parsedArgs.linerange)
     
     # Note: Content is returned raw for tool results
     # External rendering (batcat) is applied at UI display layer only
