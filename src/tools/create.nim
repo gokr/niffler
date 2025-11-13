@@ -13,7 +13,7 @@
 ## - Error handling with detailed feedback
 
 import std/[os, json, times, logging, strformat, options]
-import ../types/tools, ../types/mode
+import ../types/tools, ../types/mode, ../types/tool_args
 import ../core/database, ../core/conversation_manager, ../core/mode_state
 import common
 
@@ -43,50 +43,48 @@ proc createFileWithContent*(path: string, content: string, permissions: string) 
 
 proc executeCreate*(args: JsonNode): string =
   ## Execute file creation operation with validation and error handling
-  validateArgs(args, @["path", "content"])
-  let path = getArgStr(args, "path")
-  let content = getArgStr(args, "content")
-  let overwrite = if args.hasKey("overwrite"): getArgBool(args, "overwrite") else: false
-  let createDirs = if args.hasKey("create_dirs"): getArgBool(args, "create_dirs") else: true
-  let permissions = if args.hasKey("permissions"): getArgStr(args, "permissions") else: "644"
-  
+  var parsedArgs = parseWithDefaults(CreateArgs, args, "create")
+
+  # Handle create_dirs special case - defaults to true
+  let createDirs = if args.hasKey("create_dirs"): parsedArgs.createDirs else: true
+
   # Validate path
-  if path.len == 0:
+  if parsedArgs.path.len == 0:
     raise newToolValidationError("create", "path", "non-empty string", "empty string")
-  
-  let sanitizedPath = sanitizePath(path)
-  
+
+  let sanitizedPath = sanitizePath(parsedArgs.path)
+
   # Check if file exists
-  if fileExists(sanitizedPath) and not overwrite:
+  if fileExists(sanitizedPath) and not parsedArgs.overwrite:
     raise newToolValidationError("create", "path", "non-existent path", "file already exists")
-  
+
   # Validate permissions format
-  if permissions.len != 3:
-    raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", permissions)
-  
+  if parsedArgs.permissions.len != 3:
+    raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", parsedArgs.permissions)
+
   # Validate permission values
   var validOctal = true
-  for c in permissions:
+  for c in parsedArgs.permissions:
     if c notin "01234567":
       validOctal = false
       break
-  
+
   if not validOctal:
-    raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", permissions)
+    raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", parsedArgs.permissions)
 
   try:
     # Check if file exists
     let fileExistsBefore = fileExists(sanitizedPath)
-    
-    if fileExistsBefore and not overwrite:
+
+    if fileExistsBefore and not parsedArgs.overwrite:
       raise newToolExecutionError("create", "File already exists and overwrite is false", -1, "")
-    
+
     # Create parent directories if requested
     if createDirs:
       createDirectories(sanitizedPath)
-    
+
     # Create the file
-    createFileWithContent(sanitizedPath, content, permissions)
+    createFileWithContent(sanitizedPath, parsedArgs.content, parsedArgs.permissions)
     
     # Track file creation in plan mode
     {.gcsafe.}:
@@ -115,11 +113,11 @@ proc executeCreate*(args: JsonNode): string =
     let resultJson = %*{
       "path": sanitizedPath,
       "created": not fileExistsBefore,
-      "overwritten": fileExistsBefore and overwrite,
+      "overwritten": fileExistsBefore and parsedArgs.overwrite,
       "size": fileInfo.size,
-      "permissions": permissions,
+      "permissions": parsedArgs.permissions,
       "modified": fileInfo.lastWriteTime.toUnix(),
-      "content_length": content.len
+      "content_length": parsedArgs.content.len
     }
     
     return $resultJson

@@ -17,6 +17,7 @@
 import std/[strutils, json, httpclient, uri, xmltree, strformat]
 import pkg/htmlparser
 import ../types/tools
+import ../types/tool_args
 import ../core/constants
 import text_extraction
 
@@ -61,55 +62,46 @@ proc addCustomHeaders*(client: var HttpClient, headers: JsonNode) =
 
 proc executeFetch*(args: JsonNode): string {.gcsafe.} =
   ## Execute fetch HTTP/HTTPS content operation
-  # Validate arguments
-  validateArgs(args, @["url"])
-  
-  let url = getArgStr(args, "url")
-  let timeout = if args.hasKey("timeout"): getArgInt(args, "timeout") else: DEFAULT_TIMEOUT
-  let maxSize = if args.hasKey("max_size"): getArgInt(args, "max_size") else: MAX_FETCH_SIZE
-  let httpMethod = if args.hasKey("method"): getArgStr(args, "method") else: "GET"
-  let headers = if args.hasKey("headers"): args["headers"] else: newJObject()
-  let body = if args.hasKey("body"): getArgStr(args, "body") else: ""
-  let convertToText = if args.hasKey("convert_to_text"): getArgBool(args, "convert_to_text") else: true
-  
+  var parsedArgs = parseWithDefaults(FetchArgs, args, "fetch")
+
   # Validate URL
-  if url.len == 0:
+  if parsedArgs.url.len == 0:
     raise newToolValidationError("fetch", "url", "non-empty string", "empty string")
-  
+
   try:
-    let parsedUri = parseUri(url)
+    let parsedUri = parseUri(parsedArgs.url)
     if parsedUri.scheme notin ["http", "https"]:
-      raise newToolValidationError("fetch", "url", "HTTP/HTTPS URL", url)
+      raise newToolValidationError("fetch", "url", "HTTP/HTTPS URL", parsedArgs.url)
   except:
-    raise newToolValidationError("fetch", "url", "valid URL", url)
-  
+    raise newToolValidationError("fetch", "url", "valid URL", parsedArgs.url)
+
   # Validate timeout
-  if timeout <= 0:
-    raise newToolValidationError("fetch", "timeout", "positive integer", $timeout)
-  
-  if timeout > MAX_TIMEOUT:
-    raise newToolValidationError("fetch", "timeout", fmt"timeout under {MAX_TIMEOUT}ms", $timeout)
-  
+  if parsedArgs.timeout <= 0:
+    raise newToolValidationError("fetch", "timeout", "positive integer", $parsedArgs.timeout)
+
+  if parsedArgs.timeout > MAX_TIMEOUT:
+    raise newToolValidationError("fetch", "timeout", fmt"timeout under {MAX_TIMEOUT}ms", $parsedArgs.timeout)
+
   # Validate max_size
-  if maxSize <= 0:
-    raise newToolValidationError("fetch", "max_size", "positive integer", $maxSize)
-  
-  if maxSize > MAX_FETCH_SIZE_LIMIT:
-    raise newToolValidationError("fetch", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $maxSize)
-  
+  if parsedArgs.maxSize <= 0:
+    raise newToolValidationError("fetch", "max_size", "positive integer", $parsedArgs.maxSize)
+
+  if parsedArgs.maxSize > MAX_FETCH_SIZE_LIMIT:
+    raise newToolValidationError("fetch", "max_size", fmt"size under {MAX_FETCH_SIZE_LIMIT} bytes", $parsedArgs.maxSize)
+
   # Validate method
   let validMethods = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
-  if httpMethod.toUpperAscii() notin validMethods:
-    raise newToolValidationError("fetch", "method", "one of: " & validMethods.join(", "), httpMethod)
+  if parsedArgs.`method`.toUpperAscii() notin validMethods:
+    raise newToolValidationError("fetch", "method", "one of: " & validMethods.join(", "), parsedArgs.`method`)
   
   try:
     # Create HTTP client
-    var client = createHttpClient(timeout)
-    addCustomHeaders(client, headers)
-    
+    var client = createHttpClient(parsedArgs.timeout)
+    addCustomHeaders(client, parsedArgs.headers)
+
     # Make request
     var response: Response
-    let requestMethod = case httpMethod.toUpperAscii():
+    let requestMethod = case parsedArgs.`method`.toUpperAscii():
       of "GET": HttpGet
       of "POST": HttpPost
       of "PUT": HttpPut
@@ -118,15 +110,15 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
       of "OPTIONS": HttpOptions
       of "PATCH": HttpPatch
       else: HttpGet
-    
-    if httpMethod.toUpperAscii() in ["POST", "PUT", "PATCH"]:
-      response = client.request(url, requestMethod, body = body)
+
+    if parsedArgs.`method`.toUpperAscii() in ["POST", "PUT", "PATCH"]:
+      response = client.request(parsedArgs.url, requestMethod, body = parsedArgs.body)
     else:
-      response = client.request(url, requestMethod)
-    
+      response = client.request(parsedArgs.url, requestMethod)
+
     # Check response size
-    if response.body.len > maxSize:
-      raise newToolExecutionError("fetch", "Response size exceeds limit: " & $response.body.len & " > " & $maxSize, -1, "")
+    if response.body.len > parsedArgs.maxSize:
+      raise newToolExecutionError("fetch", "Response size exceeds limit: " & $response.body.len & " > " & $parsedArgs.maxSize, -1, "")
     
     # Convert HTML to text if requested
     var content = response.body
@@ -137,9 +129,9 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
 
     var convertedToText = false
     var extractionMethod = "none"
-    if convertToText and contentType.toLowerAscii().contains("text/html"):
+    if parsedArgs.convertToText and contentType.toLowerAscii().contains("text/html"):
       let textExtConfig = getCurrentTextExtractionConfig()
-      let extractionResult = extractText(response.body, url, textExtConfig)
+      let extractionResult = extractText(response.body, parsedArgs.url, textExtConfig)
 
       if extractionResult.success:
         content = extractionResult.content
@@ -152,7 +144,7 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
     
     # Create result
     let resultJson = %*{
-      "url": url,
+      "url": parsedArgs.url,
       "status_code": response.status,
       "content": content,
       "content_type": contentType,
@@ -160,9 +152,9 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
       "headers": %*{},
       "converted_to_text": convertedToText,
       "extraction_method": extractionMethod,
-      "method": httpMethod,
-      "timeout": timeout,
-      "max_size": maxSize
+      "method": parsedArgs.`method`,
+      "timeout": parsedArgs.timeout,
+      "max_size": parsedArgs.maxSize
     }
     
     return $resultJson
