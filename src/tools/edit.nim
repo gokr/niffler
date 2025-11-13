@@ -25,7 +25,7 @@
 ## - Comprehensive error handling with specific error types
 
 import std/[strutils, json, strformat, logging, os, options]
-import ../types/tools
+import ../types/tools, ../types/tool_args
 import ../types/mode
 import ../core/database, ../core/conversation_manager
 import ../ui/diff_visualizer
@@ -176,27 +176,20 @@ proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
       return false  # On error, allow the operation (fail open)
 
 proc executeEdit*(args: JsonNode): string {.gcsafe.} =
-  ## Execute edit file operation
-  # Validate arguments
-  validateArgs(args, @["path", "operation"])
-  
-  let path = getArgStr(args, "path")
-  let operation = getArgStr(args, "operation")
-  let oldText = if args.hasKey("old_text"): getArgStr(args, "old_text") else: ""
-  let newText = if args.hasKey("new_text"): getArgStr(args, "new_text") else: ""
-  let createBackup = if args.hasKey("create_backup"): getArgBool(args, "create_backup") else: false
-  
+  ## Execute edit file parsedArgs.operation
+  var parsedArgs = parseWithDefaults(EditArgs, args, "edit")
+
   # Validate path
-  if path.len == 0:
+  if parsedArgs.path.len == 0:
     raise newToolValidationError("edit", "path", "non-empty string", "empty string")
   
-  # Validate operation
+  # Validate parsedArgs.operation
   let validOperations = ["replace", "insert", "delete", "append", "prepend", "rewrite"]
-  if operation.toLowerAscii() notin validOperations:
-    raise newToolValidationError("edit", "operation", "one of: " & validOperations.join(", "), operation)
+  if parsedArgs.operation.toLowerAscii() notin validOperations:
+    raise newToolValidationError("edit", "operation", "one of: " & validOperations.join(", "), parsedArgs.operation)
   
   # Validate operation-specific arguments
-  case operation.toLowerAscii():
+  case parsedArgs.operation.toLowerAscii():
     of "replace":
       if not args.hasKey("old_text") or not args.hasKey("new_text"):
         raise newToolValidationError("edit", "old_text/new_text", "required for replace operation", "missing")
@@ -235,7 +228,7 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     let lr = args["line_range"]
     lineRange = (start: lr[0].getInt(), `end`: lr[1].getInt())
   
-  let sanitizedPath = sanitizePath(path)
+  let sanitizedPath = sanitizePath(parsedArgs.path)
   
   # File must exist for edit operations
   validateFileExists(sanitizedPath)
@@ -253,9 +246,9 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     let originalContent = attemptUntrackedRead(sanitizedPath)
     
     # Debug logging for content reading issues
-    debug fmt"Edit operation: path={sanitizedPath}, op={operation}"
+    debug fmt"Edit operation: path={sanitizedPath},op={parsedArgs.operation}"
     debug fmt"Working directory: {getCurrentDir()}"
-    debug fmt"Input path: {path}"
+    debug fmt"Input path: {parsedArgs.path}"
     debug fmt"Sanitized path: {sanitizedPath}"
     debug fmt"Original content length: {originalContent.len}"
     if originalContent.len == 0:
@@ -264,61 +257,61 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     
     # Create backup if requested
     var backupPath = ""
-    if createBackup:
+    if parsedArgs.createBackup:
       backupPath = createBackup(sanitizedPath)
     
-    # Parse operation
-    let op = case operation.toLowerAscii():
+    # Parse parsedArgs.operation
+    let op = case parsedArgs.operation.toLowerAscii():
       of "replace": Replace
       of "insert": Insert
       of "delete": Delete
       of "append": Append
       of "prepend": Prepend
       of "rewrite": Rewrite
-      else: raise newToolExecutionError("edit", "Invalid operation: " & operation, -1, "")
+      else: raise newToolExecutionError("edit", "Invalid operation: " & parsedArgs.operation, -1, "")
     
-    # Apply edit operation
+    # Apply edit parsedArgs.operation
     var newContent: string
     var changesMade = false
     var actualLineRange: tuple[start: int, `end`: int] = (0, 0)
     
     case op:
       of Replace:
-        if oldText notin originalContent:
+        if parsedArgs.oldText notin originalContent:
           raise newToolExecutionError("edit", "Text to replace not found in file", -1, "")
-        newContent = replaceText(originalContent, oldText, newText)
+        newContent = replaceText(originalContent, parsedArgs.oldText, parsedArgs.newText)
         changesMade = newContent != originalContent
-        let found = findTextInFile(sanitizedPath, oldText)
+        let found = findTextInFile(sanitizedPath, parsedArgs.oldText)
         if found.found:
           actualLineRange = found.lineRange
       
       of Insert:
-        newContent = insertText(originalContent, newText, lineRange)
+        newContent = insertText(originalContent, parsedArgs.newText, lineRange)
         changesMade = true
         actualLineRange = lineRange
       
       of Delete:
-        if oldText notin originalContent:
+        if parsedArgs.oldText notin originalContent:
           raise newToolExecutionError("edit", "Text to delete not found in file", -1, "")
-        newContent = deleteText(originalContent, oldText)
+        newContent = deleteText(originalContent, parsedArgs.oldText)
         changesMade = newContent != originalContent
-        let found = findTextInFile(sanitizedPath, oldText)
+        let found = findTextInFile(sanitizedPath, parsedArgs.oldText)
         if found.found:
           actualLineRange = found.lineRange
       
       of Append:
-        newContent = appendText(originalContent, newText)
+        newContent = appendText(originalContent, parsedArgs.newText)
         changesMade = true
         let lines = originalContent.splitLines()
-        actualLineRange = (start: lines.len + 1, `end`: lines.len + newText.splitLines().len)
+        actualLineRange = (start: lines.len + 1, `end`: lines.len + parsedArgs.newText.splitLines().len)
       
       of Prepend:
-        newContent = prependText(originalContent, newText)
+        newContent = prependText(originalContent, parsedArgs.newText)
         changesMade = true
-        actualLineRange = (start: 1, `end`: newText.splitLines().len)
+        actualLineRange = (start: 1, `end`: parsedArgs.newText.splitLines().len)
       
       of Rewrite:
-        newContent = rewriteFile(sanitizedPath, newText)
+        newContent = rewriteFile(sanitizedPath, parsedArgs.newText)
         changesMade = true
         let lines = newContent.splitLines()
         actualLineRange = (start: 1, `end`: lines.len)
@@ -346,7 +339,7 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     # Create result
     let resultJson = %*{
       "path": sanitizedPath,
-      "operation": operation,
+      "operation": parsedArgs.operation,
       "changes_made": changesMade,
       "backup_path": if backupPath.len > 0: %*backupPath else: newJNull(),
       "line_range": %*[actualLineRange.start, actualLineRange.`end`],
