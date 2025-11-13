@@ -16,7 +16,7 @@
 ## }
 
 import std/[json, logging, strformat, strutils]
-import ../types/[agents, config]
+import ../types/[agents, config, tool_args]
 import ../core/[config as configModule, task_executor, channels, session as sessionMod]
 
 # Thread-local storage for channels (set by tool worker)
@@ -39,14 +39,12 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
   {.gcsafe.}:
     try:
       # Parse arguments
-      let agentType = getArgStr(args, "agent_type")
-      let description = getArgStr(args, "description")
-      let complexity = if args.hasKey("estimated_complexity"): args["estimated_complexity"].getStr() else: "moderate"
+      var parsedArgs = parseWithDefaults(TaskArgs, args, "task")
 
-      debug(fmt("Task tool called: agent={agentType}, complexity={complexity}"))
+      debug(fmt("Task tool called: agent={parsedArgs.agentType}, complexity={parsedArgs.estimatedComplexity}"))
 
       # Handle special "list" command to show available agents
-      if agentType == "list":
+      if parsedArgs.agentType == "list":
         let agentsDir = sessionMod.getAgentsDir()
         let agents = loadAgentDefinitions(agentsDir)
         var agentList = "Available agents:\n\n"
@@ -62,11 +60,11 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
       # Load agent definition
       let agentsDir = sessionMod.getAgentsDir()
       let agents = loadAgentDefinitions(agentsDir)
-      let agent = agents.findAgent(agentType)
+      let agent = agents.findAgent(parsedArgs.agentType)
 
       if agent.name.len == 0:
         return $ %*{
-          "error": fmt("Agent '{agentType}' not found. Use agent_type='list' to see available agents.")
+          "error": fmt("Agent '{parsedArgs.agentType}' not found. Use agent_type='list' to see available agents.")
         }
 
       # Check if we have the required context for task execution
@@ -101,7 +99,7 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
         }
 
       # Execute the task using the task executor
-      let taskResult = task_executor.executeTask(agent, description, modelConfig, taskToolChannels)
+      let taskResult = task_executor.executeTask(agent, parsedArgs.description, modelConfig, taskToolChannels)
 
       # Return the result
       return $ %*{

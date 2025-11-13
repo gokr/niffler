@@ -12,7 +12,7 @@
 ## - Plan mode integration for comprehensive task breakdown
 
 import std/[json, options, strformat, strutils, logging]
-import ../types/tools
+import ../types/tools, ../types/tool_args
 import ../core/database
 
 type
@@ -99,17 +99,16 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
   ## Execute todolist tool operations
   {.gcsafe.}:
     try:
-      let operation = getArgStr(args, "operation")
+      var parsedArgs = parseWithDefaults(TodolistArgs, args, "todolist")
       let db = getGlobalDatabase()
-      
+
       if db == nil:
         return $ %*{"error": "Database not available"}
-      
-      case operation:
+
+      case parsedArgs.operation:
       of "add":
-        let content = getArgStr(args, "content")
-        let priority = if args.hasKey("priority"): 
-          case getArgStr(args, "priority"):
+        let priority = if parsedArgs.priority.len > 0:
+          case parsedArgs.priority:
             of "high": tpHigh
             of "low": tpLow
             else: tpMedium
@@ -125,18 +124,18 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
         else:
           listId = createTodoList(db, conversationId, "Current Tasks")
         
-        let itemId = addTodoItem(db, listId, content, priority)
+        let itemId = addTodoItem(db, listId, parsedArgs.content, priority)
         let formattedList = formatTodoList(db, listId)
-        
+
         return $ %*{
           "success": true,
           "itemId": itemId,
-          "message": fmt"Added todo item: {content}",
+          "message": fmt"Added todo item: {parsedArgs.content}",
           "todoList": formattedList
         }
-      
+
       of "update":
-        let itemNumber = getArgInt(args, "itemNumber")
+        let itemNumber = parsedArgs.itemNumber
 
         # Get or create active todo list
         let conversationId = 1
@@ -168,19 +167,19 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
         var newContent = none(string)
         var newPriority = none(TodoPriority)
 
-        if args.hasKey("state"):
-          newState = some(case getArgStr(args, "state"):
+        if parsedArgs.state.len > 0:
+          newState = some(case parsedArgs.state:
             of "pending": tsPending
             of "in_progress": tsInProgress
             of "completed": tsCompleted
             of "cancelled": tsCancelled
             else: tsPending)
 
-        if args.hasKey("content"):
-          newContent = some(getArgStr(args, "content"))
+        if parsedArgs.content.len > 0:
+          newContent = some(parsedArgs.content)
 
-        if args.hasKey("priority"):
-          newPriority = some(case getArgStr(args, "priority"):
+        if parsedArgs.priority.len > 0:
+          newPriority = some(case parsedArgs.priority:
             of "high": tpHigh
             of "low": tpLow
             else: tpMedium)
@@ -199,7 +198,7 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
           return $ %*{"error": fmt"Failed to update item {itemNumber}"}
 
       of "delete":
-        let itemNumber = getArgInt(args, "itemNumber")
+        let itemNumber = parsedArgs.itemNumber
 
         # Get active todo list
         let conversationId = 1
@@ -265,8 +264,7 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
           }
       
       of "bulk_update":
-        let markdownContent = getArgStr(args, "todos")
-        let updates = parseTodoUpdates(markdownContent)
+        let updates = parseTodoUpdates(parsedArgs.todos)
         
         let conversationId = 1
         var listId = 0
@@ -298,7 +296,7 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
         }
       
       else:
-        return $ %*{"error": fmt"Unknown operation: {operation}"}
+        return $ %*{"error": fmt"Unknown operation: {parsedArgs.operation}"}
       
     except Exception as e:
       error(fmt"Todolist tool error: {e.msg}")
