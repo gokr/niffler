@@ -126,5 +126,5 @@ After all tests pass, Phase 5 is complete and you can proceed with:
 
 ### Missing Dependencies
 ```bash
-nimble install illwill cligen sunny
+nimble install sunny
 ```
