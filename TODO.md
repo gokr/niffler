@@ -50,36 +50,31 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Tasks:**
 
-- [ ] **1.1 Resolve circular import issues** (`src/core/task_executor.nim`)
-      - Problem: task_executor.nim cannot import tool execution logic (circular dependency)
-      - Solution: Extract tool execution interface to `src/tools/execution_interface.nim`
-      - Define ToolExecutor trait/interface with execute() method
-      - Use dependency injection pattern: pass tool executor callback to executeTask()
-      - Update lines 27-35 (placeholder implementations) with actual interface
+- [x] **1.1 Resolve circular import issues** (`src/core/task_executor.nim`)
+      - ✅ COMPLETED: Tool execution via channels (lines 329-383)
+      - ✅ Uses existing tool worker with thread-safe communication
+      - ✅ No circular dependency - clean architecture
 
-- [ ] **1.2 Integrate tool execution into task conversation loop** (`src/core/task_executor.nim:244-258`)
-      - When LLM returns tool calls in response, collect them
-      - For each tool call: validate against agent.allowedTools whitelist
-      - Execute allowed tools via tool worker (reuse existing worker)
-      - Reject unauthorized tools with clear error message
-      - Format tool results as messages (role: tool, content: result JSON)
-      - Append tool result messages to conversation history
-      - Continue conversation loop with tool results until task completes
-      - Handle tool execution errors gracefully (don't crash task)
+- [x] **1.2 Integrate tool execution into task conversation loop** (`src/core/task_executor.nim:308-386`)
+      - ✅ COMPLETED: Full tool execution loop implemented
+      - ✅ Tool call collection from LLM responses (lines 262-266)
+      - ✅ Tool access validation against agent.allowedTools (lines 318-327)
+      - ✅ Tool execution via tool worker (lines 329-383)
+      - ✅ Tool result formatting and conversation continuation (lines 358-385)
+      - ✅ Graceful error handling for tool failures
 
-- [ ] **1.3 Extract artifacts from task conversations**
-      - Parse tool calls for file operations (read, create, edit, list)
-      - Extract file paths from tool call arguments
-      - Track unique file paths in TaskResult.artifacts seq[string]
-      - Include artifact list in task summary for main agent
-      - Display artifacts in UI when showing task results
+- [x] **1.3 Extract artifacts from task conversations**
+      - ✅ COMPLETED: `extractArtifacts()` function implemented (lines 25-62)
+      - ✅ Parses file operations (read, create, edit, list)
+      - ✅ Extracts file paths from tool arguments
+      - ✅ Returns sorted unique file paths
+      - ✅ Called during task completion (line 402)
 
 - [ ] **1.4 Task result visualization** (`src/ui/cli.nim`)
-      - Display task approval prompt: agent name, description, tools allowed, estimated complexity
-      - Show task progress indicator during execution (spinner or dots)
       - Render task results with formatting (success/failure, summary, artifacts, metrics)
-      - Display artifacts as file paths (with click support if terminal supports it)
-      - Show error details if task failed
+      - Display artifacts as file paths
+      - Show error details if failed
+      - Note: Skip approval prompt and progress indicator (not needed for multi-process architecture)
 
 - [ ] **1.5 Test end-to-end task execution**
       - Unit test: tool call parsing and validation against whitelist

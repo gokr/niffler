@@ -723,7 +723,50 @@ proc createToolResultSummary*(toolName: string, toolResult: string, success: boo
         return "Todo list operation failed"
     except:
       return "Todo list updated"
-  
+
+  of "task":
+    # Format task execution results
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("success") and resultJson["success"].getBool():
+        var output = "\nTask completed successfully\n"
+
+        # Add summary if available
+        if resultJson.hasKey("summary"):
+          let summary = resultJson["summary"].getStr().strip()
+          if summary.len > 0:
+            output.add("\nSummary:\n" & summary & "\n")
+
+        # Add artifacts if any
+        if resultJson.hasKey("artifacts"):
+          let artifacts = resultJson["artifacts"].getElems()
+          if artifacts.len > 0:
+            output.add("\nArtifacts:\n")
+            for artifact in artifacts:
+              output.add("  • " & artifact.getStr() & "\n")
+
+        # Add metrics
+        if resultJson.hasKey("tool_calls") or resultJson.hasKey("tokens_used"):
+          output.add("\nMetrics:\n")
+          if resultJson.hasKey("tool_calls"):
+            let toolCalls = resultJson["tool_calls"].getInt()
+            output.add(fmt"  • Tool calls: {toolCalls}\n")
+          if resultJson.hasKey("tokens_used"):
+            let tokensUsed = resultJson["tokens_used"].getInt()
+            output.add(fmt"  • Tokens used: {tokensUsed}\n")
+
+        return output.strip()
+      else:
+        # Task failed
+        var output = "\nTask failed\n"
+        if resultJson.hasKey("error"):
+          let error = resultJson["error"].getStr()
+          if error.len > 0:
+            output.add("\nError:\n" & error & "\n")
+        return output.strip()
+    except:
+      return "Task execution error"
+
   else:
     return "Completed"
 
