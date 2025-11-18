@@ -17,24 +17,51 @@
 ## - Collects metrics (tokens, tool calls, artifacts)
 ## - Asks LLM to summarize results before returning to main agent
 
-import std/[logging, strformat, times, options, os, strutils]
+import std/[logging, strformat, times, options, os, strutils, sets, json, algorithm]
 import ../types/[messages, config, agents]
 import channels
 import config as configModule
 
-# Placeholder implementations to avoid circular imports
-# The real implementations will be available when linked with api.nim
-proc sendChatRequestAsync(channels: ptr ThreadChannels, messages: seq[Message],
-                          modelConfig: ModelConfig, requestId: string, apiKey: string,
-                          maxTokens: int = 8192, temperature: float = 0.7): bool =
-  error("sendChatRequestAsync placeholder called - should be linked from api.nim")
-  return false
+proc extractArtifacts*(messages: seq[Message]): seq[string] =
+  ## Extract file paths from tool calls in the conversation
+  var fileSet = initHashSet[string]()
 
-proc tryRecvAPIResponse(channels: ptr ThreadChannels, response: var APIResponse): bool =
-  error("tryRecvAPIResponse placeholder called - should be linked from api.nim")
-  return false
+  for msg in messages:
+    if msg.role == mrAssistant and msg.toolCalls.isSome():
+      for toolCall in msg.toolCalls.get():
+        # Extract file paths from file operation tools
+        case toolCall.function.name:
+        of "read", "create", "edit":
+          # These tools have a "path" or "file_path" argument
+          try:
+            let args = parseJson(toolCall.function.arguments)
+            if args.hasKey("path"):
+              fileSet.incl(args["path"].getStr())
+            elif args.hasKey("file_path"):
+              fileSet.incl(args["file_path"].getStr())
+          except JsonParsingError, KeyError:
+            # Invalid JSON or missing key, skip
+            discard
+        of "list":
+          # List tool has a "directory" argument
+          try:
+            let args = parseJson(toolCall.function.arguments)
+            if args.hasKey("directory"):
+              fileSet.incl(args["directory"].getStr())
+            elif args.hasKey("path"):
+              fileSet.incl(args["path"].getStr())
+          except JsonParsingError, KeyError:
+            discard
+        else:
+          discard
 
-proc buildTaskSystemPrompt(agent: AgentDefinition, taskDescription: string): string =
+  # Convert set to sorted list
+  result = @[]
+  for path in fileSet:
+    result.add(path)
+  result.sort()
+
+proc buildTaskSystemPrompt*(agent: AgentDefinition, taskDescription: string): string =
   ## Build system prompt for task execution combining agent prompt and task context
   result = agent.systemPrompt
   result.add("\n\n## Your Assigned Task\n\n")
@@ -50,7 +77,8 @@ proc buildTaskSystemPrompt(agent: AgentDefinition, taskDescription: string): str
   result.add("4. Any blockers or limitations\n")
 
 proc generateSummary(conversationMessages: seq[Message], modelConfig: ModelConfig,
-                     channels: ptr ThreadChannels, apiKey: string): string =
+                     channels: ptr ThreadChannels, apiKey: string,
+                     toolSchemas: seq[ToolDefinition]): string =
   ## Ask LLM to summarize task results
   debug("Generating task summary")
 
@@ -79,9 +107,23 @@ Keep the summary brief (2-4 sentences) but informative."""
     content: "Please provide a brief summary of what was accomplished in this task."
   ))
 
-  # Send summary request
+  # Send summary request via channels
   let requestId = "task_summary_" & $epochTime()
-  if not sendChatRequestAsync(channels, summaryMessages, modelConfig, requestId, apiKey):
+  let request = APIRequest(
+    kind: arkChatRequest,
+    requestId: requestId,
+    messages: summaryMessages,
+    model: modelConfig.model,
+    modelNickname: modelConfig.nickname,
+    maxTokens: 2048,  # Summaries don't need many tokens
+    temperature: 0.7,
+    baseUrl: modelConfig.baseUrl,
+    apiKey: apiKey,
+    enableTools: false,  # No tools needed for summarization
+    tools: some(toolSchemas)
+  )
+
+  if not trySendAPIRequest(channels, request):
     return "Failed to send summary request"
 
   # Collect summary response
@@ -92,7 +134,7 @@ Keep the summary brief (2-4 sentences) but informative."""
 
   while attempts < maxAttempts and not responseComplete:
     var response: APIResponse
-    if tryRecvAPIResponse(channels, response):
+    if tryReceiveAPIResponse(channels, response):
       if response.requestId == requestId:
         case response.kind:
         of arkReady:
@@ -118,7 +160,8 @@ Keep the summary brief (2-4 sentences) but informative."""
   return summary
 
 proc executeTask*(agent: AgentDefinition, description: string,
-                  modelConfig: ModelConfig, channels: ptr ThreadChannels): TaskResult =
+                  modelConfig: ModelConfig, channels: ptr ThreadChannels,
+                  toolSchemas: seq[ToolDefinition]): TaskResult =
   ## Execute a task with the given agent in an isolated context
   debug(fmt("Starting task execution with agent '{agent.name}': {description}"))
 
@@ -173,9 +216,23 @@ proc executeTask*(agent: AgentDefinition, description: string,
       turn.inc()
       debug(fmt("Task turn {turn}/{maxTurns}"))
 
-      # Send request
+      # Send request via channels
       let requestId = fmt("task_{agent.name}_{turn}_{epochTime()}")
-      if not sendChatRequestAsync(channels, conversationMessages, modelConfig, requestId, apiKey):
+      let request = APIRequest(
+        kind: arkChatRequest,
+        requestId: requestId,
+        messages: conversationMessages,
+        model: modelConfig.model,
+        modelNickname: modelConfig.nickname,
+        maxTokens: 8192,
+        temperature: 0.7,
+        baseUrl: modelConfig.baseUrl,
+        apiKey: apiKey,
+        enableTools: true,  # Enable tools for task execution
+        tools: some(toolSchemas)
+      )
+
+      if not trySendAPIRequest(channels, request):
         return TaskResult(
           success: false,
           summary: "",
@@ -194,7 +251,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
 
       while attempts < maxAttempts and not responseComplete:
         var response: APIResponse
-        if tryRecvAPIResponse(channels, response):
+        if tryReceiveAPIResponse(channels, response):
           if response.requestId == requestId:
             case response.kind:
             of arkReady:
@@ -240,22 +297,92 @@ proc executeTask*(agent: AgentDefinition, description: string,
       if assistantContent.len > 0:
         conversationMessages.add(Message(
           role: mrAssistant,
-          content: assistantContent
+          content: assistantContent,
+          toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
         ))
 
       # Check if task is complete
       if toolCalls.len == 0:
         taskComplete = true
       else:
-        # Tool execution required - not yet implemented
-        return TaskResult(
-          success: false,
-          summary: "",
-          artifacts: @[],
-          toolCalls: totalToolCalls,
-          tokensUsed: totalTokens,
-          error: fmt("Task requires tool execution ({toolCalls.len} calls) - integration pending")
+        # Execute tools and add results to conversation
+        let agentContext = AgentContext(
+          isMainAgent: false,
+          agent: agent
         )
+
+        for toolCall in toolCalls:
+          debug(fmt("Executing tool: {toolCall.function.name}"))
+
+          # Validate tool is allowed for this agent
+          if not isToolAllowed(agentContext, toolCall.function.name):
+            let allowedTools = agent.allowedTools.join(", ")
+            let errorMsg = fmt("Tool '{toolCall.function.name}' not allowed for agent '{agent.name}'. Allowed tools: {allowedTools}")
+            warn(errorMsg)
+            conversationMessages.add(Message(
+              role: mrTool,
+              content: fmt("Error: {errorMsg}"),
+              toolCallId: some(toolCall.id)
+            ))
+            continue
+
+          # Send tool request to tool worker
+          let toolRequest = ToolRequest(
+            kind: trkExecute,
+            requestId: toolCall.id,
+            toolName: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            agentName: agent.name  # Pass agent name for permission validation
+          )
+
+          if not trySendToolRequest(channels, toolRequest):
+            warn(fmt("Failed to send tool request for {toolCall.function.name}"))
+            conversationMessages.add(Message(
+              role: mrTool,
+              content: "Error: Failed to send tool request",
+              toolCallId: some(toolCall.id)
+            ))
+            continue
+
+          # Wait for tool response with timeout
+          var toolResponseReceived = false
+          var toolAttempts = 0
+          const maxToolAttempts = 3000  # 5 minutes per tool
+
+          while toolAttempts < maxToolAttempts and not toolResponseReceived:
+            let maybeResponse = tryReceiveToolResponse(channels)
+            if maybeResponse.isSome():
+              let toolResponse = maybeResponse.get()
+              if toolResponse.requestId == toolCall.id:
+                # Add tool result to conversation
+                let toolContent = if toolResponse.kind == trkResult:
+                  toolResponse.output
+                else:
+                  fmt("Error: {toolResponse.error}")
+
+                conversationMessages.add(Message(
+                  role: mrTool,
+                  content: toolContent,
+                  toolCallId: some(toolCall.id)
+                ))
+
+                toolResponseReceived = true
+                debug(fmt("Tool {toolCall.function.name} completed successfully"))
+                break
+
+            sleep(100)
+            toolAttempts.inc()
+
+          if not toolResponseReceived:
+            warn(fmt("Tool execution timed out for {toolCall.function.name}"))
+            conversationMessages.add(Message(
+              role: mrTool,
+              content: "Error: Tool execution timed out",
+              toolCallId: some(toolCall.id)
+            ))
+
+        # Continue conversation with tool results (don't mark as complete)
+        taskComplete = false
 
     if not taskComplete:
       return TaskResult(
@@ -269,12 +396,16 @@ proc executeTask*(agent: AgentDefinition, description: string,
 
     # Generate summary of results
     debug("Generating summary")
-    let summary = generateSummary(conversationMessages, modelConfig, channels, apiKey)
+    let summary = generateSummary(conversationMessages, modelConfig, channels, apiKey, toolSchemas)
+
+    # Extract artifacts (file paths) from conversation
+    let artifacts = extractArtifacts(conversationMessages)
+    debug(fmt("Extracted {artifacts.len} artifacts: {artifacts.join(\", \")}"))
 
     return TaskResult(
       success: true,
       summary: summary,
-      artifacts: @[],  # TODO: Extract file references from conversation
+      artifacts: artifacts,
       toolCalls: totalToolCalls,
       tokensUsed: totalTokens,
       error: ""
