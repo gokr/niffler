@@ -1,112 +1,152 @@
-## NATS Message Type Definitions
+## NATS Message Types
 ##
-## Defines all message types used for inter-process communication
-## between multi-agent niffler processes via NATS.
+## Simplified message protocol for agent communication over NATS.
+## All messages use JSON serialization via Sunny.
+##
+## Message Flow:
+## 1. Master sends Request to agent via niffler.agent.<name>.request
+## 2. Agent sends multiple Response messages (streaming) with done=false
+## 3. Agent sends final Response with done=true
+## 4. Agent sends StatusUpdate messages for state changes
+## 5. Agent publishes Heartbeat to presence KV store
+##
+## Design Principles:
+## - Single generic Request type (agent parses commands from input)
+## - Streaming responses via done flag
+## - Agent maintains its own conversation state (no conversationId in Request)
+## - Commands like /plan, /model xxx parsed by agent from input string
 
-import std/[json, options, times, tables]
+import std/[json, times]
+import sunny
 
 type
-  RequestType* = enum
-    rtTask = "task"
-    rtAsk = "ask"
+  NatsRequest* = object
+    ## Generic request sent to an agent
+    ## Agent parses commands from input string (e.g., "/plan", "/model xxx")
+    requestId*: string      # Unique request identifier
+    agentName*: string      # Target agent name
+    input*: string          # Full input including commands and prompt
 
-  ResponseStatus* = enum
-    rsCompleted = "completed"
-    rsError = "error"
-    rsProcessing = "processing"
-    rsTimeout = "timeout"
+  NatsResponse* = object
+    ## Streaming response from agent
+    ## Multiple responses can be sent per request with done=false
+    ## Final response must have done=true
+    requestId*: string      # Matching request ID
+    content*: string        # Response content
+    done*: bool            # True if this is the final response
 
-  AgentRequest* = object
-    requestType*: RequestType
-    requestId*: string
-    agentName*: string
-    prompt*: string
-    conversationId*: Option[string]
-    context*: Option[seq[JsonNode]]
-    metadata*: Table[string, string]
+  NatsStatusUpdate* = object
+    ## Status update from agent (e.g., "Switching to plan mode")
+    requestId*: string      # Related request ID (optional)
+    agentName*: string      # Agent sending the update
+    status*: string         # Status message
 
-  AgentResponse* = object
-    requestId*: string
-    agentName*: string
-    content*: string
-    conversationId*: string
-    toolCalls*: seq[JsonNode]
-    tokensUsed*: JsonNode
-    status*: ResponseStatus
-    metadata*: Table[string, string]
+  NatsHeartbeat* = object
+    ## Heartbeat for presence tracking
+    ## Published to JetStream KV store: niffler_presence
+    ## Key format: presence.<agentName>
+    agentName*: string      # Agent name
+    timestamp*: int64       # Unix timestamp in seconds
 
-  AgentStatus* = object
-    requestId*: string
-    agentName*: string
-    status*: string
-    data*: JsonNode
-    timestamp*: string
+# JSON Serialization using Sunny
 
-  AgentHeartbeat* = object
-    agentName*: string
-    status*: string
-    uptime*: int
-    requestsProcessed*: int
-    currentConversationId*: Option[string]
-    timestamp*: string
-
-# JSON serialization helpers
-proc toJson*(req: AgentRequest): string =
-  let jsonNode = %*{
-    "type": if req.requestType == rtTask: "task_request" else: "ask_request",
-    "requestId": req.requestId,
-    "agentName": req.agentName,
-    "prompt": req.prompt,
-    "metadata": req.metadata
+proc toJson*(req: NatsRequest): JsonNode =
+  ## Serialize request to JSON
+  result = %*{
+    "request_id": req.requestId,
+    "agent_name": req.agentName,
+    "input": req.input
   }
 
-  if req.conversationId.isSome():
-    jsonNode["conversationId"] = %*req.conversationId.get()
+proc fromJson*(json: JsonNode, T: typedesc[NatsRequest]): NatsRequest =
+  ## Deserialize request from JSON
+  result.requestId = json["request_id"].getStr()
+  result.agentName = json["agent_name"].getStr()
+  result.input = json["input"].getStr()
 
-  if req.context.isSome():
-    jsonNode["context"] = %*req.context.get()
-
-  $jsonNode
-
-proc toJson*(resp: AgentResponse): string =
-  $ %*{
-    "type": "response",
-    "requestId": resp.requestId,
-    "agentName": resp.agentName,
+proc toJson*(resp: NatsResponse): JsonNode =
+  ## Serialize response to JSON
+  result = %*{
+    "request_id": resp.requestId,
     "content": resp.content,
-    "conversationId": resp.conversationId,
-    "toolCalls": resp.toolCalls,
-    "tokensUsed": resp.tokensUsed,
-    "status": $resp.status,
-    "metadata": resp.metadata,
-    "timestamp": getClockStr()
+    "done": resp.done
   }
 
-proc getClockStr*(): string =
-  ## Get current ISO timestamp
-  now().format("yyyy-MM-dd'T'HH:mm:sszzz")
+proc fromJson*(json: JsonNode, T: typedesc[NatsResponse]): NatsResponse =
+  ## Deserialize response from JSON
+  result.requestId = json["request_id"].getStr()
+  result.content = json["content"].getStr()
+  result.done = json["done"].getBool()
 
-proc toJson*(status: AgentStatus): string =
-  $ %*{
-    "type": "status",
-    "requestId": status.requestId,
-    "agentName": status.agentName,
-    "status": status.status,
-    "data": status.data,
-    "timestamp": status.timestamp
+proc toJson*(update: NatsStatusUpdate): JsonNode =
+  ## Serialize status update to JSON
+  result = %*{
+    "request_id": update.requestId,
+    "agent_name": update.agentName,
+    "status": update.status
   }
 
-proc toJson*(heartbeat: AgentHeartbeat): string =
-  let jsonNode = %*{
-    "type": "heartbeat",
-    "agentName": heartbeat.agentName,
-    "status": heartbeat.status,
-    "uptime": heartbeat.uptime,
-    "requestsProcessed": heartbeat.requestsProcessed,
-    "timestamp": heartbeat.timestamp
+proc fromJson*(json: JsonNode, T: typedesc[NatsStatusUpdate]): NatsStatusUpdate =
+  ## Deserialize status update from JSON
+  result.requestId = json["request_id"].getStr()
+  result.agentName = json["agent_name"].getStr()
+  result.status = json["status"].getStr()
+
+proc toJson*(hb: NatsHeartbeat): JsonNode =
+  ## Serialize heartbeat to JSON
+  result = %*{
+    "agent_name": hb.agentName,
+    "timestamp": hb.timestamp
   }
 
-  if heartbeat.currentConversationId.isSome():
-    jsonNode["currentConversationId"] = %*heartbeat.currentConversationId.get()
+proc fromJson*(json: JsonNode, T: typedesc[NatsHeartbeat]): NatsHeartbeat =
+  ## Deserialize heartbeat from JSON
+  result.agentName = json["agent_name"].getStr()
+  result.timestamp = json["timestamp"].getInt()
 
-  $jsonNode
+# Convenience functions
+
+proc createRequest*(requestId: string, agentName: string, input: string): NatsRequest =
+  ## Create a new request
+  NatsRequest(
+    requestId: requestId,
+    agentName: agentName,
+    input: input
+  )
+
+proc createResponse*(requestId: string, content: string, done: bool = false): NatsResponse =
+  ## Create a response
+  NatsResponse(
+    requestId: requestId,
+    content: content,
+    done: done
+  )
+
+proc createStatusUpdate*(requestId: string, agentName: string, status: string): NatsStatusUpdate =
+  ## Create a status update
+  NatsStatusUpdate(
+    requestId: requestId,
+    agentName: agentName,
+    status: status
+  )
+
+proc createHeartbeat*(agentName: string): NatsHeartbeat =
+  ## Create a heartbeat with current timestamp
+  NatsHeartbeat(
+    agentName: agentName,
+    timestamp: getTime().toUnix()
+  )
+
+# String conversion for convenience
+
+proc `$`*(req: NatsRequest): string =
+  $req.toJson()
+
+proc `$`*(resp: NatsResponse): string =
+  $resp.toJson()
+
+proc `$`*(update: NatsStatusUpdate): string =
+  $update.toJson()
+
+proc `$`*(hb: NatsHeartbeat): string =
+  $hb.toJson()

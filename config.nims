@@ -3,6 +3,9 @@ switch("d", "ssl")
 #switch("passL", "-lcrypto")
 #switch("tlsEmulation", "off")
 
+# Add path to natswrapper (sibling directory)
+switch("path", "../natswrapper/src")
+
 # Nim compiler settings
 #switch("warning", "[LockLevel]:off")
 #switch("hints", "off")
