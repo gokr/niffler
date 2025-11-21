@@ -74,6 +74,40 @@ Some `inline code` here."""
     check result.contains("italic")
     check result.contains("code")
 
+  test "Streaming markdown handles partial content":
+    # Test with incomplete markdown
+    let partialText = "**Partial"
+    let result = renderMarkdownTextCLIStream(partialText)
+    check result.len >= 0  # Should handle partial content gracefully
+
+  test "comprehensive markdown elements rendering":
+    let comprehensiveMarkdown = """# Main Header
+## Sub Header
+### Small Header
+
+**Bold text** and *italic text* and ***bold italic***
+
+`inline code` and [link](http://example.com)
+
+- Bullet 1
+- Bullet 2
+
+1. Numbered 1
+2. Numbered 2
+
+| Col1 | Col2 |
+|------|------|
+| Cell1| Cell2|
+
+> Blockquote text
+"""
+
+    let result = renderMarkdownTextCLI(comprehensiveMarkdown)
+    check result.len > 0
+    check result.contains("Main Header")
+    check result.contains("Bold text")
+    check result.contains("inline code")
+
   test "sample-markdown.md processing":
     let samplePath = "sample-markdown.md"
     if fileExists(samplePath):

@@ -180,12 +180,39 @@ suite "Todolist Tool Functional Tests":
 - [~] Progress task (low)
 - [-] Cancelled task
 """)
-    
+
     check todos.len == 4
     check todos[0] == ("Basic task", tsPending, tpMedium)
     check todos[1] == ("Completed task", tsCompleted, tpHigh)
     check todos[2] == ("Progress task", tsInProgress, tpLow)
     check todos[3] == ("Cancelled task", tsCancelled, tpMedium)
+
+  test "Markdown parsing handles malformed content":
+    let malformedContent = """
+Not a todo item
+- This is not a checkbox
+- [ Invalid checkbox format
+- [y] Invalid state marker
+- [ ] Valid task only
+Random text here
+"""
+
+    let todos = parseTodoUpdates(malformedContent)
+    check todos.len == 1
+    check todos[0].content == "Valid task only"
+
+  test "Markdown parsing handles empty and edge cases":
+    # Empty content
+    var todos = parseTodoUpdates("")
+    check todos.len == 0
+
+    # Only whitespace
+    todos = parseTodoUpdates("   \n  \n  ")
+    check todos.len == 0
+
+    # Mixed with empty lines
+    todos = parseTodoUpdates("- [ ] Task 1\n\n- [x] Task 2\n  \n")
+    check todos.len == 2
 
   test "Format todo list display":
     # Add items with different states and priorities
