@@ -88,7 +88,7 @@ proc selectModelFromConfig(modelName: string, config: configTypes.Config): confi
     echo "Error: No models configured. Please run 'niffler init' first."
     quit(1)
 
-proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "") =
+proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start interactive CLI mode with specified model and logging configuration
   # Initialize app systems and get database
   let databaseBackend = initializeAppSystems(level, dump, logFile)
@@ -104,7 +104,7 @@ proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: 
 
   # Start CLI mode (database already initialized earlier)
   try:
-    startCLIMode(sess, selectedModel, databaseBackend, level, dump)
+    startCLIMode(sess, selectedModel, databaseBackend, level, dump, natsUrl)
   except Exception as e:
     echo fmt"CLI mode failed: {e.msg}"
     echo "CLI requires linecross library for enhanced input"
@@ -183,8 +183,8 @@ when isMainModule:
     # Start agent mode
     startAgentMode(agentName, natsUrl, model, level)
   elif prompt.len == 0:
-    # Start interactive mode (master mode)
-    startInteractiveMode(model, level, dump, logFile)
+    # Start interactive mode (master mode with agent routing)
+    startInteractiveMode(model, level, dump, logFile, natsUrl)
   else:
     # Send single prompt
     sendSinglePrompt(prompt, model, level, dump, logFile)

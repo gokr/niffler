@@ -215,7 +215,7 @@ proc listenForRequests(state: var AgentState) =
 
       try:
         # Deserialize request using Sunny
-        let request = NatsRequest.fromJson(msg.data)
+        let request = fromJson(NatsRequest, msg.data)
 
         info(fmt"Received request: {request.requestId}")
         echo fmt"[REQUEST] {request.input}"

@@ -4,6 +4,13 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 ## Recently Completed ✅
 
+### **Master Mode (Phase 3.3)**
+- ✅ Master mode CLI with NATS connection (`src/ui/master_cli.nim`)
+- ✅ `@agent` routing syntax for directing requests to agents
+- ✅ NATS request/reply with status updates and responses
+- ✅ `/agents` command to list running agents via presence tracking
+- ✅ Integrated into main CLI input loop
+
 ### **Conversation Condensation**
 - ✅ `/condense` command for LLM-based conversation summarization
 - ✅ Database schema with parent conversation linking
@@ -339,11 +346,11 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 ./src/niffler --agent researcher --model haiku  # Research agent with specific model
 ```
 
-#### **Phase 3.3: Master Mode** *(1-2 weeks)* 🎯 **NEXT PRIORITY**
+#### **Phase 3.3: Master Mode** ✅ **CORE COMPLETE**
 
 **Goal:** Coordinator that routes requests to agents and manages lifecycle
 
-**Current Status:** Phase 3.1 and 3.2 complete. Agent mode is ready to receive requests. Now we need master mode to send them!
+**Current Status:** Core master mode implemented! Master can route requests to agents via NATS.
 
 **What's Working:**
 - ✅ Agents can start and listen: `./src/niffler --agent coder`
@@ -351,39 +358,35 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - ✅ Agents parse commands and execute tasks
 - ✅ Agents send NatsResponse messages back
 - ✅ Agents publish heartbeats for presence tracking
+- ✅ **Master mode integrated into CLI with @agent routing**
+- ✅ **Master mode discovers agents via NATS presence**
+- ✅ **Master mode sends requests and receives responses**
+- ✅ **`/agents` command to list running agents**
 
-**What's Needed:**
-- ⏳ Master mode to parse `@agent prompt` syntax
-- ⏳ Master mode to send NatsRequest to agents
-- ⏳ Master mode to receive and display NatsResponse
-- ⏳ Master mode to show streaming responses from agents
+**Minimal Viable Goal:** ✅ Agent in one terminal, master in another, communicate via NATS
 
-**Minimal Viable Goal:** Agent in one terminal, master in another, communicate via NATS
+- [x] **3.3.1 Master Mode CLI** (`src/ui/master_cli.nim` - 301 lines)
+      - ✅ Detect master mode: no `--agent` flag specified
+      - ✅ Initialize NATS connection in CLI startup
+      - ✅ Display agent discovery on startup
+      - ✅ MasterState object with NATS client, pending requests tracking
 
-- [ ] **3.3.1 Master Mode CLI** (`src/ui/master_cli.nim` - new file)
-      - Detect master mode: no `--agent` flag specified
-      - Simplified input loop: read stdin, parse, route (no streaming output)
-      - Initialize NATS connection
-      - Load agent configurations from config
-      - Display startup: "Master mode initialized"
+- [x] **3.3.2 Input Parsing and Routing** (`src/ui/master_cli.nim`)
+      - ✅ Parse `@agent prompt` syntax via `parseAgentInput()`
+      - ✅ Parse `@agent /task prompt` for task requests
+      - ✅ Validate agent exists before routing via `isAgentAvailable()`
+      - ⚠️ Default agent fallback not yet implemented
+      - ⚠️ Tab completion for agent names not yet implemented
 
-- [ ] **3.3.2 Input Parsing and Routing** (`src/ui/master_cli.nim`)
-      - Parse `@agent /task prompt` syntax (task request)
-      - Parse `@agent prompt` syntax (ask request - default)
-      - Fallback to default_agent if no `@agent` specified (from config)
-      - Tab completion for agent names (from config)
-      - Validate agent exists before routing
-
-- [ ] **3.3.3 NATS Request/Reply** (`src/ui/master_cli.nim`)
-      - Build TaskRequest or AskRequest message based on input syntax
-      - Generate unique requestId (UUID)
-      - For AskRequest: include conversationId if tracking agent conversations
-      - Publish to `niffler.agent.<name>.request`
-      - Subscribe to `niffler.agent.<name>.response` (with timeout)
-      - Display routing confirmation: "→ Sent to @coder (task)" or "→ Sent to @coder (ask)"
-      - Wait for response with 30s timeout (or configured timeout)
-      - Display completion: "✓ @coder completed" or "✗ @coder failed/timeout"
-      - Show condensed result summary with artifacts
+- [x] **3.3.3 NATS Request/Reply** (`src/ui/master_cli.nim`)
+      - ✅ Build NatsRequest with generated requestId
+      - ✅ Publish to `niffler.agent.<name>.request`
+      - ✅ Subscribe to `niffler.master.response` for responses
+      - ✅ Subscribe to `niffler.master.status` for status updates
+      - ✅ Display routing confirmation: "→ Sending to @agent..."
+      - ✅ Wait for response with 30s timeout
+      - ✅ Display completion: "✓ @agent completed" or "✗ @agent failed"
+      - ✅ Show agent response content
 
 - [ ] **3.3.4 Agent Auto-Start** (`src/core/agent_manager.nim` - new file)
       - Read agents with `auto_start: true` from config on master startup
@@ -393,15 +396,30 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
       - Report startup: "✓ @coder started (pid: 12345)"
       - Report failures: "✗ @coder failed to start"
 
-- [ ] **3.3.5 Agent Management Commands** (`src/ui/master_cli.nim`)
-      - `/agents list` - Query active agents via NATS heartbeats
-      - `/agents start <name>` - Spawn agent process manually
-      - `/agents stop <name>` - Publish graceful shutdown message
-      - `/agents restart <name>` - Stop and start sequence
-      - `/agents health` - Show health status table (nancy)
-      - Tab completion for agent names
+- [x] **3.3.5 Agent Management Commands** (`src/ui/commands.nim`)
+      - ✅ `/agents` - Query active agents via NATS heartbeats
+      - ⚠️ `/agents start <name>` - Not yet implemented
+      - ⚠️ `/agents stop <name>` - Not yet implemented
+      - ⚠️ `/agents restart <name>` - Not yet implemented
+      - ⚠️ Tab completion for agent names - Not yet implemented
 
-**Deliverable:** Master coordinates agent processes via NATS
+**Deliverable:** ✅ Master coordinates agent processes via NATS
+
+**Usage:**
+```bash
+# Terminal 1: Start an agent
+./src/niffler --agent coder
+
+# Terminal 2: Start master mode (default)
+./src/niffler
+
+# In master mode, route to agents:
+@coder fix the bug in main.nim
+@coder /task refactor the database module
+
+# Check available agents:
+/agents
+```
 
 #### **Phase 3.4: Process Management** *(1 week)*
 

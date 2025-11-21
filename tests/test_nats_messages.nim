@@ -9,14 +9,15 @@ suite "NATS Message Serialization":
     check req.agentName == "coder"
     check req.input == "/plan Create a new feature"
 
-    # Serialize to JSON
-    let jsonNode = req.toJson()
+    # Serialize to JSON string
+    let jsonStr = $req
+    let jsonNode = parseJson(jsonStr)
     check jsonNode["request_id"].getStr() == "req-123"
     check jsonNode["agent_name"].getStr() == "coder"
     check jsonNode["input"].getStr() == "/plan Create a new feature"
 
     # Deserialize back
-    let req2 = fromJson(jsonNode, NatsRequest)
+    let req2 = fromJson(NatsRequest, jsonStr)
     check req2.requestId == req.requestId
     check req2.agentName == req.agentName
     check req2.input == req.input
@@ -28,14 +29,15 @@ suite "NATS Message Serialization":
     check resp.content == "Here is the plan..."
     check resp.done == false
 
-    # Serialize to JSON
-    let jsonNode = resp.toJson()
+    # Serialize to JSON string
+    let jsonStr = $resp
+    let jsonNode = parseJson(jsonStr)
     check jsonNode["request_id"].getStr() == "req-123"
     check jsonNode["content"].getStr() == "Here is the plan..."
     check jsonNode["done"].getBool() == false
 
     # Deserialize back
-    let resp2 = fromJson(jsonNode, NatsResponse)
+    let resp2 = fromJson(NatsResponse, jsonStr)
     check resp2.requestId == resp.requestId
     check resp2.content == resp.content
     check resp2.done == resp.done
@@ -45,7 +47,8 @@ suite "NATS Message Serialization":
 
     check resp.done == true
 
-    let jsonNode = resp.toJson()
+    let jsonStr = $resp
+    let jsonNode = parseJson(jsonStr)
     check jsonNode["done"].getBool() == true
 
   test "NatsStatusUpdate serialization and deserialization":
@@ -55,14 +58,15 @@ suite "NATS Message Serialization":
     check update.agentName == "coder"
     check update.status == "Switching to plan mode"
 
-    # Serialize to JSON
-    let jsonNode = update.toJson()
+    # Serialize to JSON string
+    let jsonStr = $update
+    let jsonNode = parseJson(jsonStr)
     check jsonNode["request_id"].getStr() == "req-789"
     check jsonNode["agent_name"].getStr() == "coder"
     check jsonNode["status"].getStr() == "Switching to plan mode"
 
     # Deserialize back
-    let update2 = fromJson(jsonNode, NatsStatusUpdate)
+    let update2 = fromJson(NatsStatusUpdate, jsonStr)
     check update2.requestId == update.requestId
     check update2.agentName == update.agentName
     check update2.status == update.status
@@ -73,13 +77,14 @@ suite "NATS Message Serialization":
     check hb.agentName == "coder"
     check hb.timestamp > 0
 
-    # Serialize to JSON
-    let jsonNode = hb.toJson()
+    # Serialize to JSON string
+    let jsonStr = $hb
+    let jsonNode = parseJson(jsonStr)
     check jsonNode["agent_name"].getStr() == "coder"
     check jsonNode["timestamp"].getInt() > 0
 
     # Deserialize back
-    let hb2 = fromJson(jsonNode, NatsHeartbeat)
+    let hb2 = fromJson(NatsHeartbeat, jsonStr)
     check hb2.agentName == hb.agentName
     check hb2.timestamp == hb.timestamp
 
@@ -117,39 +122,39 @@ suite "NATS Message Serialization":
   test "Round-trip serialization preserves data":
     # Request
     let req = createRequest("id1", "coder", "/model gpt-4 Write tests")
-    let reqJson = req.toJson()
-    let req2 = fromJson(reqJson, NatsRequest)
+    let reqJson = $req
+    let req2 = fromJson(NatsRequest, reqJson)
     check req2.requestId == req.requestId
     check req2.agentName == req.agentName
     check req2.input == req.input
 
     # Response
     let resp = createResponse("id2", "Content here", done = false)
-    let respJson = resp.toJson()
-    let resp2 = fromJson(respJson, NatsResponse)
+    let respJson = $resp
+    let resp2 = fromJson(NatsResponse, respJson)
     check resp2.requestId == resp.requestId
     check resp2.content == resp.content
     check resp2.done == resp.done
 
     # Status update
     let update = createStatusUpdate("id3", "planner", "Planning...")
-    let updateJson = update.toJson()
-    let update2 = fromJson(updateJson, NatsStatusUpdate)
+    let updateJson = $update
+    let update2 = fromJson(NatsStatusUpdate, updateJson)
     check update2.requestId == update.requestId
     check update2.agentName == update.agentName
     check update2.status == update.status
 
     # Heartbeat
     let hb = createHeartbeat("worker")
-    let hbJson = hb.toJson()
-    let hb2 = fromJson(hbJson, NatsHeartbeat)
+    let hbJson = $hb
+    let hb2 = fromJson(NatsHeartbeat, hbJson)
     check hb2.agentName == hb.agentName
     check hb2.timestamp == hb.timestamp
 
   test "Message types handle special characters":
     let req = createRequest("id-with-dashes", "agent-name", "/plan \"quoted\" 'string' with\nnewlines")
-    let jsonNode = req.toJson()
-    let req2 = fromJson(jsonNode, NatsRequest)
+    let jsonStr = $req
+    let req2 = fromJson(NatsRequest, jsonStr)
 
     check req2.input == req.input
     check req2.input.contains("\"quoted\"")
@@ -158,8 +163,8 @@ suite "NATS Message Serialization":
 
   test "Empty content is preserved":
     let resp = createResponse("id1", "", done = true)
-    let jsonNode = resp.toJson()
-    let resp2 = fromJson(jsonNode, NatsResponse)
+    let jsonStr = $resp
+    let resp2 = fromJson(NatsResponse, jsonStr)
 
     check resp2.content == ""
     check resp2.content.len == 0

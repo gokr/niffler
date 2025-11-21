@@ -43,6 +43,7 @@ import file_completion
 import output_handler
 import output_shared
 import ui_state
+import master_cli
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -630,7 +631,7 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
     writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
     writeCompleteLine(formatWithStyle(fmt"Unexpected error: {e.msg}", currentTheme.error))
 
-proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false) =
+proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false, natsUrl: string = "nats://localhost:4222") =
   ## Start the CLI mode with enhanced interface
 
   # Load configuration to get theme settings
@@ -754,6 +755,17 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   # Set up custom key callback for shift-tab etc
   registerCustomKeyCallback(nifflerCustomKeyHook)  # TODO: Fix this - function may not exist
 
+  # Initialize master mode for agent routing
+  var masterState = initializeMaster(natsUrl)
+  if masterState.connected:
+    writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
+    let agents = masterState.discoverAgents()
+    if agents.len > 0:
+      let agentsStr = "Available agents: " & agents.join(", ")
+      writeCompleteLine(formatWithStyle(agentsStr, currentTheme.normal))
+  else:
+    writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
+
   # Interactive loop
   var running = true
   while running:
@@ -817,7 +829,21 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
         else:
           writeCompleteLine(formatWithStyle("Empty command after '!'", currentTheme.error))
         continue
-      
+
+      # Handle @agent routing
+      if input.startsWith("@"):
+        writeUserInput(input)
+        let (handled, output) = masterState.handleAgentRequest(input)
+        if handled:
+          if markdownEnabled:
+            let renderedText = renderMarkdownTextCLI(output)
+            writeCompleteLine(renderedText)
+          else:
+            writeCompleteLine(output)
+          logToPromptHistory(database, input, output, currentModel.nickname)
+          continue
+        # If not handled (no agent found), fall through to local processing
+
       # Regular message - send to API
       # Show user input in scrollback
       writeUserInput(input)
@@ -843,6 +869,9 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
+
+  # Cleanup master mode
+  masterState.cleanup()
 
   # Cleanup
   cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, outputHandlerWorker, database)

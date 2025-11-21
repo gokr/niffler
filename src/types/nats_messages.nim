@@ -98,3 +98,7 @@ proc `$`*(update: NatsStatusUpdate): string =
 
 proc `$`*(hb: NatsHeartbeat): string =
   hb.toJson()
+
+# Deserialization from JSON strings - uses Sunny's fromJson[T](typedesc[T], string)
+# Export sunny for consumers to use sunny.fromJson(NatsRequest, data)
+export sunny
