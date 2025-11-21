@@ -16,17 +16,19 @@
 ## }
 
 import std/[json, logging, strformat, strutils]
-import ../types/[agents, config, tool_args]
+import ../types/[agents, config, tool_args, messages]
 import ../core/[config as configModule, task_executor, channels, session as sessionMod]
 
-# Thread-local storage for channels (set by tool worker)
+# Thread-local storage for task tool context (set by tool worker)
 var taskToolChannels* {.threadvar.}: ptr ThreadChannels
 var taskToolModelConfig* {.threadvar.}: ModelConfig
+var taskToolSchemas* {.threadvar.}: seq[ToolDefinition]
 
-proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig) =
+proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig, toolSchemas: seq[ToolDefinition]) =
   ## Set the context needed for task execution (called by tool worker)
   taskToolChannels = channels
   taskToolModelConfig = modelConfig
+  taskToolSchemas = toolSchemas
 
 proc getArgStr(args: JsonNode, key: string): string =
   ## Extract string argument from JSON node
@@ -99,7 +101,7 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
         }
 
       # Execute the task using the task executor
-      let taskResult = task_executor.executeTask(agent, parsedArgs.description, modelConfig, taskToolChannels)
+      let taskResult = task_executor.executeTask(agent, parsedArgs.description, modelConfig, taskToolChannels, taskToolSchemas)
 
       # Return the result
       return $ %*{

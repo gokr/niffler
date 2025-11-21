@@ -15,6 +15,7 @@
 ## - Streaming responses via done flag
 ## - Agent maintains its own conversation state (no conversationId in Request)
 ## - Commands like /plan, /model xxx parsed by agent from input string
+## - Uses Sunny for automatic JSON serialization/deserialization
 
 import std/[json, times]
 import sunny
@@ -23,86 +24,33 @@ type
   NatsRequest* = object
     ## Generic request sent to an agent
     ## Agent parses commands from input string (e.g., "/plan", "/model xxx")
-    requestId*: string      # Unique request identifier
-    agentName*: string      # Target agent name
-    input*: string          # Full input including commands and prompt
+    requestId* {.json: "request_id".}: string      # Unique request identifier
+    agentName* {.json: "agent_name".}: string      # Target agent name
+    input*: string                                  # Full input including commands and prompt
 
   NatsResponse* = object
     ## Streaming response from agent
     ## Multiple responses can be sent per request with done=false
     ## Final response must have done=true
-    requestId*: string      # Matching request ID
-    content*: string        # Response content
-    done*: bool            # True if this is the final response
+    requestId* {.json: "request_id".}: string      # Matching request ID
+    content*: string                                # Response content
+    done*: bool                                     # True if this is the final response
 
   NatsStatusUpdate* = object
     ## Status update from agent (e.g., "Switching to plan mode")
-    requestId*: string      # Related request ID (optional)
-    agentName*: string      # Agent sending the update
-    status*: string         # Status message
+    requestId* {.json: "request_id".}: string      # Related request ID (optional)
+    agentName* {.json: "agent_name".}: string      # Agent sending the update
+    status*: string                                 # Status message
 
   NatsHeartbeat* = object
     ## Heartbeat for presence tracking
     ## Published to JetStream KV store: niffler_presence
     ## Key format: presence.<agentName>
-    agentName*: string      # Agent name
-    timestamp*: int64       # Unix timestamp in seconds
+    agentName* {.json: "agent_name".}: string      # Agent name
+    timestamp*: int64                               # Unix timestamp in seconds
 
-# JSON Serialization using Sunny
-
-proc toJson*(req: NatsRequest): JsonNode =
-  ## Serialize request to JSON
-  result = %*{
-    "request_id": req.requestId,
-    "agent_name": req.agentName,
-    "input": req.input
-  }
-
-proc fromJson*(json: JsonNode, T: typedesc[NatsRequest]): NatsRequest =
-  ## Deserialize request from JSON
-  result.requestId = json["request_id"].getStr()
-  result.agentName = json["agent_name"].getStr()
-  result.input = json["input"].getStr()
-
-proc toJson*(resp: NatsResponse): JsonNode =
-  ## Serialize response to JSON
-  result = %*{
-    "request_id": resp.requestId,
-    "content": resp.content,
-    "done": resp.done
-  }
-
-proc fromJson*(json: JsonNode, T: typedesc[NatsResponse]): NatsResponse =
-  ## Deserialize response from JSON
-  result.requestId = json["request_id"].getStr()
-  result.content = json["content"].getStr()
-  result.done = json["done"].getBool()
-
-proc toJson*(update: NatsStatusUpdate): JsonNode =
-  ## Serialize status update to JSON
-  result = %*{
-    "request_id": update.requestId,
-    "agent_name": update.agentName,
-    "status": update.status
-  }
-
-proc fromJson*(json: JsonNode, T: typedesc[NatsStatusUpdate]): NatsStatusUpdate =
-  ## Deserialize status update from JSON
-  result.requestId = json["request_id"].getStr()
-  result.agentName = json["agent_name"].getStr()
-  result.status = json["status"].getStr()
-
-proc toJson*(hb: NatsHeartbeat): JsonNode =
-  ## Serialize heartbeat to JSON
-  result = %*{
-    "agent_name": hb.agentName,
-    "timestamp": hb.timestamp
-  }
-
-proc fromJson*(json: JsonNode, T: typedesc[NatsHeartbeat]): NatsHeartbeat =
-  ## Deserialize heartbeat from JSON
-  result.agentName = json["agent_name"].getStr()
-  result.timestamp = json["timestamp"].getInt()
+# JSON Serialization - Sunny provides automatic serialization via toJson/fromJson
+# The {.json.} pragmas above handle field name mapping automatically
 
 # Convenience functions
 
@@ -137,16 +85,16 @@ proc createHeartbeat*(agentName: string): NatsHeartbeat =
     timestamp: getTime().toUnix()
   )
 
-# String conversion for convenience
+# String conversion for convenience - uses Sunny's automatic toJson
 
 proc `$`*(req: NatsRequest): string =
-  $req.toJson()
+  req.toJson()
 
 proc `$`*(resp: NatsResponse): string =
-  $resp.toJson()
+  resp.toJson()
 
 proc `$`*(update: NatsStatusUpdate): string =
-  $update.toJson()
+  update.toJson()
 
 proc `$`*(hb: NatsHeartbeat): string =
-  $hb.toJson()
+  hb.toJson()

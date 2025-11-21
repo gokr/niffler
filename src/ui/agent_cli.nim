@@ -102,9 +102,7 @@ proc initializeAgent(agentName: string, natsUrl: string, modelName: string, leve
 proc sendResponse(state: var AgentState, requestId: string, content: string, done: bool = false) =
   ## Send a response message back to master
   let response = createResponse(requestId, content, done)
-  let responseJson = $response.toJson()
-
-  state.natsClient.publish("niffler.master.response", responseJson)
+  state.natsClient.publish("niffler.master.response", $response)
 
   if done:
     debug(fmt"Sent final response for request {requestId}")
@@ -114,9 +112,7 @@ proc sendResponse(state: var AgentState, requestId: string, content: string, don
 proc sendStatusUpdate(state: var AgentState, requestId: string, status: string) =
   ## Send a status update message to master
   let update = createStatusUpdate(requestId, state.name, status)
-  let updateJson = $update.toJson()
-
-  state.natsClient.publish("niffler.master.status", updateJson)
+  state.natsClient.publish("niffler.master.status", $update)
   debug(fmt"Sent status update: {status}")
 
 proc processRequest(state: var AgentState, request: NatsRequest) =
@@ -218,9 +214,8 @@ proc listenForRequests(state: var AgentState) =
       let msg = maybeMsg.get()
 
       try:
-        # Deserialize request
-        let json = parseJson(msg.data)
-        let request = fromJson(json, NatsRequest)
+        # Deserialize request using Sunny
+        let request = NatsRequest.fromJson(msg.data)
 
         info(fmt"Received request: {request.requestId}")
         echo fmt"[REQUEST] {request.input}"

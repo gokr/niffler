@@ -10,7 +10,7 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
-import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session]
+import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense]
 import ../types/[config as configTypes, messages, agents]
 import ../tokenization/[tokenizer]
 import ../tools/registry
@@ -377,6 +377,114 @@ proc inspectHandler(args: seq[string], session: var Session, currentModel: var c
     return CommandResult(
       success: false,
       message: fmt"Failed to generate request: {e.msg}",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+proc condenseHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Condense current conversation by creating a new conversation with LLM-generated summary
+  var strategy = csLlmSummary
+
+  # Parse strategy argument if provided
+  if args.len > 0:
+    let strategyStr = args[0].toLowerAscii()
+    case strategyStr:
+    of "llm", "llm_summary", "llm-summary":
+      strategy = csLlmSummary
+    of "truncate":
+      return CommandResult(
+        success: false,
+        message: "Truncate strategy not yet implemented",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    of "smart", "smart_window", "smart-window":
+      return CommandResult(
+        success: false,
+        message: "Smart window strategy not yet implemented",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: fmt"Unknown condensation strategy: {args[0]}. Use: llm_summary (default), truncate, or smart_window",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+  try:
+    # Get current conversation info
+    let currentConvId = getCurrentConversationId()
+    if currentConvId <= 0:
+      return CommandResult(
+        success: false,
+        message: "No active conversation to condense",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    # Get message count for progress display
+    let messageCount = getConversationContext().len
+    if messageCount == 0:
+      return CommandResult(
+        success: false,
+        message: "Cannot condense empty conversation",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    info(fmt("Condensing conversation {currentConvId} ({messageCount} messages) using {strategy} strategy..."))
+
+    # Get database backend
+    let backend = getGlobalDatabase()
+    if backend == nil:
+      return CommandResult(
+        success: false,
+        message: "Database not available",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    # Create condensed conversation
+    let result = createCondensedConversation(backend, strategy, currentModel)
+
+    if result.success:
+      var message = fmt"""Conversation condensed successfully!
+
+Original conversation: {currentConvId} ({result.originalMessageCount} messages)
+New conversation: {result.newConversationId}
+Strategy: {strategy}
+
+Summary length: {result.summary.len} characters
+
+The conversation has been switched to the new condensed conversation.
+You can return to the original with: /switch {currentConvId}
+
+Summary (first 500 chars):
+{result.summary[0..min(499, result.summary.len-1)]}"""
+
+      if result.summary.len > 500:
+        message &= "\n..."
+
+      return CommandResult(
+        success: true,
+        message: message,
+        shouldExit: false,
+        shouldContinue: true
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: fmt"Failed to condense conversation: {result.errorMessage}",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+  except Exception as e:
+    return CommandResult(
+      success: false,
+      message: fmt"Error condensing conversation: {e.msg}",
       shouldExit: false,
       shouldContinue: true
     )
@@ -1121,6 +1229,7 @@ proc initializeCommands*() =
   registerCommand("config", "Switch or list configs", "[name]", @[], configHandler)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler)
   registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler)
+  registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler)
   registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
   registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
   registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)

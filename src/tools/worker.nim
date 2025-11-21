@@ -62,10 +62,11 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
 
   let channels = params.channels
 
-  # Initialize task tool context with channels
+  # Initialize task tool context with channels and tool schemas
   # Model config will be set to empty initially, can be overridden by task tool parameter
   {.gcsafe.}:
-    setTaskToolContext(channels, configTypes.ModelConfig())
+    let toolSchemas = getAllToolSchemas()
+    setTaskToolContext(channels, configTypes.ModelConfig(), toolSchemas)
 
   debug("Tool worker thread started")
     

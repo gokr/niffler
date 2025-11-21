@@ -66,6 +66,10 @@ type
     lastActivity*: DateTime
     planModeEnteredAt*: DateTime  # When plan mode was entered (default epoch if never entered)
     planModeCreatedFiles*: string  # JSON array of files created during this plan mode session
+    parentConversationId*: Option[int]  # Link to parent conversation if this is a condensed conversation
+    condensedFromMessageCount*: int  # Number of messages in original before condensation
+    condensationStrategy*: string  # Strategy used: "llm_summary", "truncate", "smart_window"
+    condensationMetadata*: string  # JSON metadata: timestamp, token savings, etc.
 
   ConversationSession* = object
     conversation*: Conversation
@@ -179,6 +183,11 @@ proc columnExists*(conn: sqlite.Db, tableName: string, columnName: string): bool
   let tableInfo = conn.query(fmt"PRAGMA table_info({tableName})")
   return tableInfo.anyIt(it[1] == columnName)
 
+proc indexExists*(conn: sqlite.Db, indexName: string): bool =
+  ## Check if an index exists in the database
+  let indexList = conn.query(fmt"SELECT name FROM sqlite_master WHERE type='index' AND name='{indexName}'")
+  return indexList.len > 0
+
 proc addColumnIfNotExists*(conn: sqlite.Db, tableName: string, columnName: string, 
                           columnDef: string) =
   ## Add a column to a table if it doesn't already exist
@@ -255,7 +264,18 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
       # Clear old protection data since semantics changed completely
       debug("Clearing old plan mode protection data due to semantic change")
       conn.query("UPDATE conversation SET plan_mode_created_files = '', plan_mode_entered_at = '1970-01-01T00:00:00'")
-    
+
+    # Add condensation support columns
+    addColumnIfNotExists(conn, "conversation", "parent_conversation_id", "INTEGER")
+    addColumnIfNotExists(conn, "conversation", "condensed_from_message_count", "INTEGER DEFAULT 0")
+    addColumnIfNotExists(conn, "conversation", "condensation_strategy", "TEXT DEFAULT ''")
+    addColumnIfNotExists(conn, "conversation", "condensation_metadata", "TEXT DEFAULT '{}'")
+
+    # Create index for parent conversation lookups
+    if not indexExists(conn, "idx_conversation_parent_id"):
+      debug("Creating index idx_conversation_parent_id")
+      conn.query("CREATE INDEX IF NOT EXISTS idx_conversation_parent_id ON conversation(parent_conversation_id)")
+
     debug("Conversation schema migration completed")
   except Exception as e:
     error(fmt"Failed to migrate Conversation schema: {e.msg}")
@@ -1350,6 +1370,36 @@ proc clearPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): 
         return true
       except Exception as e:
         error(fmt"Failed to clear plan mode created files: {e.msg}")
+        return false
+
+proc setConversationCondensationInfo*(backend: DatabaseBackend, conversationId: int,
+                                      parentConvId: int, messageCount: int,
+                                      strategy: string, metadata: string): bool =
+  ## Set condensation information for a conversation
+  if backend == nil or conversationId == 0:
+    return false
+
+  case backend.kind:
+  of dbkSQLite, dbkTiDB:
+    backend.pool.withDb:
+      try:
+        let conversations = db.filter(Conversation, it.id == conversationId)
+        if conversations.len == 0:
+          debug(fmt"Conversation {conversationId} not found")
+          return false
+
+        var conv = conversations[0]
+        conv.parentConversationId = some(parentConvId)
+        conv.condensedFromMessageCount = messageCount
+        conv.condensationStrategy = strategy
+        conv.condensationMetadata = metadata
+        conv.updated_at = now().utc()
+
+        db.update(conv)
+        debug(fmt"Condensation info set for conversation {conversationId}")
+        return true
+      except Exception as e:
+        error(fmt"Failed to set condensation info: {e.msg}")
         return false
 
 proc getPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): tuple[enabled: bool, createdFiles: seq[string]] =

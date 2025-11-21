@@ -128,27 +128,15 @@ proc applyDefaults*(args: var CreateArgs) =
   ## Apply default values for optional CreateArgs fields
   if args.permissions.len == 0:
     args.permissions = "644"
-  # createDirs defaults to false in Sunny (bool zero value), but we want true
-  # This requires checking if it was explicitly set, which Sunny doesn't track
-  # So we'll handle this differently - just document that true is the default
 
 proc applyDefaults*(args: var TaskArgs) =
   ## Apply default values for optional TaskArgs fields
   if args.estimatedComplexity.len == 0:
     args.estimatedComplexity = "moderate"
 
-proc applyDefaults*(args: var EditArgs) =
-  ## Apply default values for optional EditArgs fields
-  # No defaults needed for EditArgs - all optional fields default to empty string or false
-  discard
-
-proc applyDefaults*(args: var TodolistArgs) =
-  ## Apply default values for optional TodolistArgs fields
-  # No defaults needed - fields have appropriate zero values
-  discard
-
 proc parseWithDefaults*[T](argsType: typedesc[T], args: JsonNode, toolName: string): T =
   ## Parse JSON arguments and apply default values
   ## This is the recommended way to parse tool arguments
   result = parseArgs(T, args, toolName)
-  applyDefaults(result)
+  when compiles(applyDefaults(result)):
+    applyDefaults(result)

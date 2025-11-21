@@ -4,6 +4,12 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 ## Recently Completed ✅
 
+### **Conversation Condensation**
+- ✅ `/condense` command for LLM-based conversation summarization
+- ✅ Database schema with parent conversation linking
+- ✅ Condensation module (`src/core/condense.nim`)
+- ✅ Strategy framework (LLM summary implemented, truncate/smart_window planned)
+
 ### **MCP Integration**
 - ✅ Model Context Protocol client implementation
 - ✅ MCP worker thread with dedicated message processing
@@ -111,7 +117,12 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 ### **4. Advanced Context Management** *(MEDIUM PRIORITY)*
 
 **User-Controlled Condensing:**
-- [ ] Implement a /condense command that takes a <strategy> parameter that controls how a new conversation is created from the current (and linked to parent)
+- [x] Implement a /condense command that takes a <strategy> parameter that controls how a new conversation is created from the current (and linked to parent)
+      - ✅ COMPLETED: `/condense [strategy]` command in `src/ui/commands.nim`
+      - ✅ LLM summary strategy implemented (`csLlmSummary` - default)
+      - ✅ Database schema extended with condensation support columns (`src/core/database.nim`)
+      - ✅ Parent conversation linking and metadata tracking
+      - ⚠️ `truncate` and `smart_window` strategies not yet implemented
 - [ ] Create a /summarize tool that takes a <filename> parameter into which the conversation is summarized
 - [ ] Provide context size warning
 
@@ -238,9 +249,9 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
       - ✅ Synchronous subscriptions with timeout support
       - ✅ Path configured in config.nims for natswrapper import
 
-- [x] **3.1.2 Message Type Definitions** (`src/types/nats_messages.nim` - 152 lines)
+- [x] **3.1.2 Message Type Definitions** (`src/types/nats_messages.nim` - ~60 lines)
       - ✅ **Simplified protocol** with single generic Request type (agent parses commands)
-      - ✅ Complete JSON serialization/deserialization via sunny
+      - ✅ **Automatic JSON serialization** via Sunny `{.json:}` pragmas (no manual toJson/fromJson)
       - ✅ NatsRequest (requestId, agentName, input) - agent parses /plan, /task, /model from input
       - ✅ NatsResponse (requestId, content, done flag for streaming)
       - ✅ NatsStatusUpdate (requestId, agentName, status)

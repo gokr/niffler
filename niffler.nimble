@@ -21,7 +21,7 @@ requires "nancy"                                     # For nice tabular output f
 requires "yaml"                                      # For YAML configuration parsing
 requires "https://github.com/gokr/natswrapper"       # For NATS messaging (multi-agent IPC)
 
-task test, "Run all tests":
+task testament, "Run all tests":
   exec "nimble install -d"
   exec "testament --colors:on pattern 'tests/test_*.nim'"
 
