@@ -117,10 +117,12 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
           of cfAll: ""
         
         let query = fmt"""
-          SELECT id, created_at, updated_at, session_id, title, is_active, 
+          SELECT id, created_at, updated_at, session_id, title, is_active,
                  mode, model_nickname, message_count, last_activity,
-                 plan_mode_entered_at, plan_mode_created_files
-          FROM conversation 
+                 plan_mode_entered_at, plan_mode_created_files,
+                 parent_conversation_id, condensed_from_message_count,
+                 condensation_strategy, condensation_metadata
+          FROM conversation
           {whereClause}
           ORDER BY last_activity DESC
         """
@@ -192,10 +194,12 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
     try:
       backend.pool.withDb:
         let query = """
-          SELECT id, created_at, updated_at, session_id, title, is_active, 
+          SELECT id, created_at, updated_at, session_id, title, is_active,
                  mode, model_nickname, message_count, last_activity,
-                 plan_mode_entered_at, plan_mode_created_files
-          FROM conversation 
+                 plan_mode_entered_at, plan_mode_created_files,
+                 parent_conversation_id, condensed_from_message_count,
+                 condensation_strategy, condensation_metadata
+          FROM conversation
           WHERE id = ?
         """
         
@@ -396,9 +400,11 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
         # Search in conversation titles and message content
         let queryPattern = fmt"%{query}%"
         let searchQuery = """
-          SELECT DISTINCT c.id, c.created_at, c.updated_at, c.session_id, c.title, 
+          SELECT DISTINCT c.id, c.created_at, c.updated_at, c.session_id, c.title,
                  c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity,
-                 c.plan_mode_entered_at, c.plan_mode_created_files
+                 c.plan_mode_entered_at, c.plan_mode_created_files,
+                 c.parent_conversation_id, c.condensed_from_message_count,
+                 c.condensation_strategy, c.condensation_metadata
           FROM conversation c
           LEFT JOIN conversation_message cm ON c.id = cm.conversation_id
           WHERE c.title LIKE ? OR cm.content LIKE ?

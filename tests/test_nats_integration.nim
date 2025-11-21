@@ -192,8 +192,7 @@ suite "NATS Client Integration":
       check msg.isSome()
 
       if msg.isSome():
-        let receivedJson = parseJson(msg.get().data)
-        let receivedReq = fromJson(receivedJson, NatsRequest)
+        let receivedReq = fromJson(NatsRequest, msg.get().data)
 
         check receivedReq.requestId == "req-123"
         check receivedReq.agentName == "coder"
@@ -226,8 +225,7 @@ suite "NATS Client Integration":
       check msg.isSome()
 
       if msg.isSome():
-        let receivedJson = parseJson(msg.get().data)
-        let receivedResp = fromJson(receivedJson, NatsResponse)
+        let receivedResp = fromJson(NatsResponse, msg.get().data)
 
         check receivedResp.requestId == "req-123"
         check receivedResp.content == "Here is the result"
