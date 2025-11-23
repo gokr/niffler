@@ -91,17 +91,27 @@ proc updateStatusLine*() =
     clearStatus()
 
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
-  ## Generate a simplified prompt with model name, mode, and conversation ID
-  # Get conversation info and build model name with conversation context
-  let currentSession = getCurrentSession()
-  let modelNameWithContext = if currentSession.isSome():
-    let conv = currentSession.get().conversation
-    let runtimeMode = getCurrentMode()
-    fmt"{currentModelName}({runtimeMode}, {conv.id})"
+  ## Generate prompt based on runtime mode:
+  ## - Master mode: shows focused agent or just "niffler"
+  ## - Agent mode: shows model, plan/code mode, and conversation ID
+  if isMasterMode():
+    # Master mode - show focused agent
+    let agent = getCurrentAgentForPrompt()
+    if agent.len > 0:
+      return fmt("@{agent} > ")
+    else:
+      return "niffler > "
   else:
-    currentModelName
+    # Agent mode - show detailed context
+    let currentSession = getCurrentSession()
+    let modelNameWithContext = if currentSession.isSome():
+      let conv = currentSession.get().conversation
+      let agentMode = getCurrentMode()
+      fmt("{currentModelName}({agentMode}, {conv.id})")
+    else:
+      currentModelName
 
-  return fmt"{modelNameWithContext} > "
+    return fmt("{modelNameWithContext} > ")
 
 proc updatePromptState*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()) =
   ## Update prompt color and text based on current mode and model

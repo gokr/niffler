@@ -219,33 +219,40 @@ proc diagnoseConfig*(session: Session): ConfigDiagnostics =
 
   return result
 
-proc displayConfigInfo*(session: Session) =
-  ## Display current config status with diagnostics
+proc getConfigInfoString*(session: Session): string =
+  ## Get current config status as a formatted string
   let diag = diagnoseConfig(session)
   let source = getConfigSource()
+  var lines: seq[string] = @[]
 
-  echo fmt"Loaded config: {session.currentConfig} (from {source} config.yaml)"
+  lines.add(fmt("Loaded config: {session.currentConfig} (from {source} config.yaml)"))
 
   if not diag.configExists:
     for err in diag.errors:
-      echo fmt"  ✗ {err}"
-    return
+      lines.add(fmt("  ✗ {err}"))
+    return lines.join("\n")
 
   # Show config source
-  echo fmt"  Source: {diag.configSource}"
+  lines.add(fmt("  Source: {diag.configSource}"))
 
   # Show NIFFLER.md status
   if diag.nifflerMdExists:
-    echo fmt"  ✓ System prompts: {diag.nifflerMdPath}"
+    lines.add(fmt("  ✓ System prompts: {diag.nifflerMdPath}"))
   else:
-    echo fmt"  ✗ System prompts: {diag.nifflerMdPath} (not found)"
+    lines.add(fmt("  ✗ System prompts: {diag.nifflerMdPath} (not found)"))
 
   # Show agents status
   if diag.agentCount > 0:
-    echo fmt"  ✓ Agents: {diag.agentCount} found in {diag.agentsDir}"
+    lines.add(fmt("  ✓ Agents: {diag.agentCount} found in {diag.agentsDir}"))
   else:
-    echo fmt"  ⚠ Agents: 0 found in {diag.agentsDir}"
+    lines.add(fmt("  ⚠ Agents: 0 found in {diag.agentsDir}"))
 
   # Show warnings
   for warning in diag.warnings:
-    echo fmt"  ⚠ {warning}"
+    lines.add(fmt("  ⚠ {warning}"))
+
+  return lines.join("\n")
+
+proc displayConfigInfo*(session: Session) =
+  ## Display current config status with diagnostics (prints to stdout)
+  echo getConfigInfoString(session)

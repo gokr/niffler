@@ -44,6 +44,7 @@ import output_handler
 import output_shared
 import ui_state
 import master_cli
+import nats_listener
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -557,7 +558,8 @@ proc writeColored*(text: string, color: ForegroundColor, style: Style = styleBri
 # and are re-exported here for compatibility
 export output_shared.writeStreamingChunk, output_shared.writeStreamingChunkStyled,
        output_shared.writeCompleteLine, output_shared.finishStreaming,
-       output_shared.writeUserInput, output_shared.flushStreamingBuffer
+       output_shared.writeUserInput, output_shared.flushStreamingBuffer,
+       output_shared.finishCommandOutput
 export ui_state.updateTokenCounts, ui_state.updateStatusLine, ui_state.generatePrompt,
        ui_state.updatePromptState, ui_state.resetUIState, ui_state.currentModelName,
        ui_state.inputTokens, ui_state.outputTokens, ui_state.isProcessing
@@ -576,20 +578,6 @@ proc writeToConversationArea*(text: string, color: ForegroundColor = fgWhite, st
 
   # Track that output occurred after tool call for progressive rendering
   outputAfterToolCall = true
-
-proc nifflerCustomKeyHook(keyCode: int, buffer: string): bool =
-  ## Custom key hook for handling special key combinations like Shift+Tab
-  if keyCode == ord(ShiftTab):
-    # Toggle mode and immediately update prompt, it is refreshed by linecross
-    discard toggleModeWithProtection()
-    updatePromptState()
-    # Update status line and generate new prompt with updated mode
-    updateStatusLine()
-    let newPrompt = generatePrompt()
-    setPrompt(newPrompt)
-    redraw()
-    return true  # Key was handled
-  return false  # Key not handled, continue with default processing
 
 proc readInputWithPrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Read input with prompt showing current state
@@ -752,17 +740,20 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
 
-  # Set up custom key callback for shift-tab etc
-  registerCustomKeyCallback(nifflerCustomKeyHook)  # TODO: Fix this - function may not exist
+  # Initialize runtime mode as master
+  initializeRuntimeMode(rmMaster)
 
   # Initialize master mode for agent routing
   var masterState = initializeMaster(natsUrl)
+  var natsListenerWorker: NatsListenerWorker
   if masterState.connected:
     writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
     let agents = masterState.discoverAgents()
     if agents.len > 0:
       let agentsStr = "Available agents: " & agents.join(", ")
       writeCompleteLine(formatWithStyle(agentsStr, currentTheme.normal))
+    # Start NATS listener for async agent responses
+    natsListenerWorker = startNatsListenerWorker(natsUrl, level)
   else:
     writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
 
@@ -785,6 +776,48 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
         if command.len > 0:
           # Show user input in scrollback
           writeUserInput(input)
+
+          # Handle /focus specially - needs masterState access
+          if command == "focus":
+            if args.len == 0:
+              # Show current agent
+              let current = masterState.getCurrentAgent()
+              if current.len > 0:
+                writeCompleteLine(fmt("Current agent: @{current}"))
+              else:
+                writeCompleteLine("No agent focused. Use /focus <agent> to set one.")
+            else:
+              let agentName = args[0]
+              if agentName == "none" or agentName == "clear":
+                masterState.setCurrentAgent("")
+                setCurrentAgentForPrompt("")  # Update prompt
+                writeCompleteLine("Agent focus cleared")
+              elif masterState.isAgentAvailable(agentName):
+                masterState.setCurrentAgent(agentName)
+                setCurrentAgentForPrompt(agentName)  # Update prompt
+                writeCompleteLine(fmt("Focused on agent: @{agentName}"))
+              else:
+                let available = masterState.discoverAgents()
+                if available.len > 0:
+                  writeCompleteLine(fmt("Agent '{agentName}' not available. Available: {available.join(\", \")}"))
+                else:
+                  writeCompleteLine(fmt("Agent '{agentName}' not available. No agents found."))
+            finishCommandOutput()
+            continue
+
+          # Route agent commands to current agent if one is set
+          if isAgentCommand(command):
+            let currentAgent = masterState.getCurrentAgent()
+            if currentAgent.len > 0 and masterState.isAgentAvailable(currentAgent):
+              # Route the command to the agent
+              let (handled, output) = masterState.handleAgentRequest(input)
+              if handled:
+                if output.len > 0:
+                  writeCompleteLine(output)
+                finishCommandOutput()
+                logToPromptHistory(database, input, "", currentModel.nickname)
+                continue
+              # If not handled, fall through to local execution
 
           let res = executeCommand(command, args, session, currentModel)
 
@@ -814,11 +847,14 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
             if res.shouldResetUI:
               resetUIState()
 
+          # Reset output position so readline doesn't clear our output
+          finishCommandOutput()
           continue
         else:
           # Show user input even for invalid commands
           writeUserInput(input)
           writeCompleteLine(formatWithStyle("Invalid command format", currentTheme.error))
+          finishCommandOutput()
           continue
 
       # Handle bash commands with ! prefix
@@ -828,49 +864,49 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
           executeBashCommand(command, database, currentModel, markdownEnabled)
         else:
           writeCompleteLine(formatWithStyle("Empty command after '!'", currentTheme.error))
+        finishCommandOutput()
         continue
 
-      # Handle @agent routing
-      if input.startsWith("@"):
+      # Handle @agent routing (async - responses arrive via NATS listener)
+      # Route to agent if: explicit @agent prefix OR currentAgent is set
+      let currentAgent = masterState.getCurrentAgent()
+      if input.startsWith("@") or currentAgent.len > 0:
         writeUserInput(input)
         let (handled, output) = masterState.handleAgentRequest(input)
         if handled:
-          if markdownEnabled:
-            let renderedText = renderMarkdownTextCLI(output)
-            writeCompleteLine(renderedText)
-          else:
+          # Sync prompt with current agent (handleAgentRequest updates masterState.currentAgent)
+          setCurrentAgentForPrompt(masterState.getCurrentAgent())
+          # Only show output if there's an error message
+          if output.len > 0:
             writeCompleteLine(output)
-          logToPromptHistory(database, input, output, currentModel.nickname)
+            finishCommandOutput()
+          # Log the request (response will be logged separately when it arrives)
+          logToPromptHistory(database, input, "", currentModel.nickname)
           continue
-        # If not handled (no agent found), fall through to local processing
+        # If not handled (no agent found), fall through to show helpful message
 
-      # Regular message - send to API
-      # Show user input in scrollback
+      # No agent focused - check if any agents are available
       writeUserInput(input)
-
-      # Send request and immediately return to readline - output handler will display response
-      let (success, requestId) = sendSinglePromptInteractiveWithId(input, currentModel)
-      if success:
-        # Track the request for cancellation
-        when defined(posix):
-          currentActiveRequestId = requestId
-          streamCancellationRequested = false
-
-        # Set processing status
-        ui_state.isProcessing = true
-
-        # Log user input to prompt history (bash-style history)
-        logToPromptHistory(database, input, "", currentModel.nickname)
-
-        # Output handler thread will display the response
-        # Main thread continues to next readline() call immediately
+      let availableAgents = masterState.discoverAgents()
+      if availableAgents.len == 0:
+        writeCompleteLine(formatWithStyle("No agents are running. Start an agent with: niffler --agent <name>", currentTheme.error))
+        finishCommandOutput()
+        continue
       else:
-        writeCompleteLine(formatWithStyle("Failed to send message", currentTheme.error))
+        # Agents exist but none focused
+        let agentList = availableAgents.join(", ")
+        writeCompleteLine(formatWithStyle(fmt("No agent in focus. Available agents: {agentList}"), currentTheme.toolCall))
+        writeCompleteLine(formatWithStyle("Use /focus <agent> to select one, or @<agent> to send directly", currentTheme.normal))
+        finishCommandOutput()
+        continue
+
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
 
-  # Cleanup master mode
+  # Cleanup NATS listener and master mode
+  if natsListenerWorker.isRunning:
+    stopNatsListenerWorker(natsListenerWorker)
   masterState.cleanup()
 
   # Cleanup

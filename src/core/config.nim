@@ -99,6 +99,11 @@ proc writeKeys*(keys: KeyConfig) =
 
 proc readKeyForModel*(modelConfig: config.ModelConfig): string =
   ## Read API key for a specific model from key storage
+  # First check if api_key is directly configured in the model config
+  if modelConfig.apiKey.isSome() and modelConfig.apiKey.get().len > 0:
+    return modelConfig.apiKey.get()
+
+  # Then check the keys file
   let keys = readKeys()
   let nickname = modelConfig.nickname
 

@@ -22,6 +22,10 @@ import nancy
 # import linecross  # Used only in comments
 
 type
+  CommandCategory* = enum
+    ccGlobal = "global"    ## Commands that run in master niffler only
+    ccAgent = "agent"      ## Commands that run in agent context
+
   CommandResult* = object
     success*: bool
     message*: string
@@ -34,23 +38,25 @@ type
     description*: string
     usage*: string
     aliases*: seq[string]
+    category*: CommandCategory
 
   CommandHandler* = proc(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
 
 var commandRegistry = initTable[string, tuple[info: CommandInfo, handler: CommandHandler]]()
 
-proc registerCommand*(name: string, description: string, usage: string, 
-                     aliases: seq[string], handler: CommandHandler) =
+proc registerCommand*(name: string, description: string, usage: string,
+                     aliases: seq[string], handler: CommandHandler,
+                     category: CommandCategory = ccGlobal) =
   ## Register a new command with its handler and aliases in the command system
-  ## Register a new command
   let info = CommandInfo(
     name: name,
-    description: description, 
+    description: description,
     usage: usage,
-    aliases: aliases
+    aliases: aliases,
+    category: category
   )
   commandRegistry[name] = (info, handler)
-  
+
   # Register aliases
   for alias in aliases:
     commandRegistry[alias] = (info, handler)
@@ -59,11 +65,32 @@ proc getAvailableCommands*(): seq[CommandInfo] =
   ## Get list of all available commands (excluding aliases)
   result = @[]
   var seen = initTable[string, bool]()
-  
+
   for name, (info, handler) in commandRegistry:
     if not seen.hasKey(info.name):
       result.add(info)
       seen[info.name] = true
+
+proc getCommandsByCategory*(category: CommandCategory): seq[CommandInfo] =
+  ## Get list of commands filtered by category (excluding aliases)
+  result = @[]
+  var seen = initTable[string, bool]()
+
+  for name, (info, handler) in commandRegistry:
+    if not seen.hasKey(info.name) and info.category == category:
+      result.add(info)
+      seen[info.name] = true
+
+proc getCommandCategory*(commandName: string): Option[CommandCategory] =
+  ## Get the category of a command by name
+  if commandRegistry.hasKey(commandName):
+    return some(commandRegistry[commandName].info.category)
+  return none(CommandCategory)
+
+proc isAgentCommand*(commandName: string): bool =
+  ## Check if a command is an agent command
+  let cat = getCommandCategory(commandName)
+  result = cat.isSome() and cat.get() == ccAgent
 
 proc getCommandCompletions*(input: string): seq[CommandInfo] =
   ## Get command completions for the given input
@@ -118,20 +145,30 @@ proc executeCommand*(command: string, args: seq[string],
 proc helpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   var message = """
 Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.
+Use '@agent prompt' to send to an agent, or '/focus agent' to set default.
 
-Press Ctrl+C to stop streaming display or exit. Ctrl-Z to suspend.
-Press Shift+Tab to switch between Plan and Code mode.
+Press Ctrl+C to stop streaming or exit. Ctrl-Z to suspend.
 
-Available commands:
 """
-  let commands = getAvailableCommands()
-  
-  for cmd in commands:
+  # Group commands by category
+  let globalCommands = getCommandsByCategory(ccGlobal)
+  let agentCommands = getCommandsByCategory(ccAgent)
+
+  message &= "Global commands:\n"
+  for cmd in globalCommands:
     message &= "  /{cmd.name}".fmt
     if cmd.usage.len > 0:
       message &= " {cmd.usage}".fmt
     message &= " - {cmd.description}\n".fmt
-  
+
+  if agentCommands.len > 0:
+    message &= "\nAgent commands (use @agent /cmd or /focus to set default):\n"
+    for cmd in agentCommands:
+      message &= "  /{cmd.name}".fmt
+      if cmd.usage.len > 0:
+        message &= " {cmd.usage}".fmt
+      message &= " - {cmd.description}\n".fmt
+
   return CommandResult(
     success: true,
     message: message,
@@ -1217,28 +1254,32 @@ proc mcpHandler(args: seq[string], session: var Session, currentModel: var confi
 proc configHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle config command - list or switch configurations
   if args.len == 0:
-    # List available configs
+    # List available configs - build complete output as single string
     let configs = listAvailableConfigs(session)
-    var output = "Available configs:\n"
+    var lines: seq[string] = @[]
+
+    # First show current config info
+    lines.add(getConfigInfoString(session))
+    lines.add("")
+
+    # Then show available configs
+    lines.add("Available configs:")
 
     if configs.global.len > 0:
-      output.add("  Global:\n")
+      lines.add("  Global:")
       for cfg in configs.global:
         let marker = if cfg == session.currentConfig: " (active)" else: ""
-        output.add(fmt"    - {cfg}{marker}\n")
+        lines.add(fmt("    - {cfg}{marker}"))
 
     if configs.project.len > 0:
-      output.add("  Project:\n")
+      lines.add("  Project:")
       for cfg in configs.project:
         let marker = if cfg == session.currentConfig: " (active)" else: ""
-        output.add(fmt"    - {cfg}{marker}\n")
-
-    output.add("\n")
-    displayConfigInfo(session)
+        lines.add(fmt("    - {cfg}{marker}"))
 
     return CommandResult(
       success: true,
-      message: output,
+      message: lines.join("\n"),
       shouldExit: false,
       shouldContinue: true,
       shouldResetUI: false
@@ -1251,48 +1292,60 @@ proc configHandler(args: seq[string], session: var Session, currentModel: var co
     if not success:
       return CommandResult(
         success: false,
-        message: fmt"Config '{targetConfig}' not found",
+        message: fmt("Config '{targetConfig}' not found"),
         shouldExit: false,
         shouldContinue: true,
         shouldResetUI: false
       )
 
+    var lines: seq[string] = @[]
     if reloaded:
-      echo fmt"Reloaded config: {targetConfig}"
+      lines.add(fmt("Reloaded config: {targetConfig}"))
     else:
-      echo fmt"Switched to config: {targetConfig}"
+      lines.add(fmt("Switched to config: {targetConfig}"))
 
-    displayConfigInfo(session)
+    lines.add(getConfigInfoString(session))
 
     return CommandResult(
       success: true,
-      message: "",
+      message: lines.join("\n"),
       shouldExit: false,
       shouldContinue: true,
       shouldResetUI: true  # Reload prompts
     )
 
+proc focusPlaceholder(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Placeholder - /focus is handled specially in cli.nim with masterState access
+  return CommandResult(
+    success: true,
+    message: "Focus command handled in CLI",
+    shouldExit: false,
+    shouldContinue: true
+  )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
-  registerCommand("help", "Show help and available commands", "", @[], helpHandler)
-  registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler)
-  registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler)
-  registerCommand("config", "Switch or list configs", "[name]", @[], configHandler)
-  registerCommand("context", "Show conversation context information", "", @[], contextHandler)
-  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler)
-  registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler)
-  registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler)
-  registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler)
-  registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler)
-  registerCommand("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler)
-  registerCommand("agent", "List/view agent definitions", "[name]", @[], agentHandler)
-  registerCommand("agents", "Show running agents via NATS", "", @[], agentsHandler)
+  # Global commands - run in master niffler only
+  registerCommand("help", "Show help and available commands", "", @[], helpHandler, ccGlobal)
+  registerCommand("focus", "Set/show focused agent for commands", "[agent|none]", @[], focusPlaceholder, ccGlobal)
+  registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler, ccGlobal)
+  registerCommand("config", "Switch or list configs", "[name]", @[], configHandler, ccGlobal)
+  registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler, ccGlobal)
+  registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler, ccGlobal)
+  registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler, ccGlobal)
+  registerCommand("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler, ccGlobal)
+  registerCommand("agent", "List/view agent definitions", "[name]", @[], agentHandler, ccGlobal)
+  registerCommand("agents", "Show running agents via NATS", "", @[], agentsHandler, ccGlobal)
+  registerCommand("archive", "Archive a conversation", "<id>", @[], archiveHandler, ccGlobal)
+  registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
+  registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
+  registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
 
-  # Conversation management commands
-  registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler)
-  registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler)
-  registerCommand("archive", "Archive a conversation", "<id>", @[], archiveHandler)
-  registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler)
-  registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler)
-  registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler)
-  registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler)
+  # Agent commands - run in agent context
+  registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
+  registerCommand("context", "Show conversation context information", "", @[], contextHandler, ccAgent)
+  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler, ccAgent)
+  registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent)
+  registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent)
+  registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)
+  registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent)

@@ -1,7 +1,10 @@
 ## Shared Output Functions
 ##
 ## This module contains output functions that are shared between
-## the main CLI and the output handler thread. This avoids circular imports.
+## the main CLI and the output handler thread.
+##
+## Design: Simple bash-like output where everything flows down the terminal.
+## After readline returns, output appears below the input line, then new prompt.
 
 import std/strutils
 import ../../../linecross/linecross
@@ -25,7 +28,7 @@ proc shouldFlushBuffer(): bool =
 
   return false
 
-proc flushStreamingBuffer*(redraw: bool = true) =
+proc flushStreamingBuffer*(redraw: bool = false) =
   ## Flush any buffered streaming content to output
   if streamingBuffer.len > 0:
     writeOutputRaw(streamingBuffer, addNewline = false, redraw = redraw)
@@ -37,7 +40,7 @@ proc writeStreamingChunk*(text: string) =
   let normalizedText = text.replace("\n", "\r\n")
   streamingBuffer.add(normalizedText)
   if shouldFlushBuffer():
-    flushStreamingBuffer(redraw = true)
+    flushStreamingBuffer(redraw = false)
 
 proc writeStreamingChunkStyled*(text: string, style: ThemeStyle) =
   ## Write styled streaming content chunk - buffers and flushes on word boundaries
@@ -46,20 +49,28 @@ proc writeStreamingChunkStyled*(text: string, style: ThemeStyle) =
   let styledText = formatWithStyle(normalizedText, style)
   streamingBuffer.add(styledText)
   if shouldFlushBuffer():
-    flushStreamingBuffer(redraw = true)
+    flushStreamingBuffer(redraw = false)
 
 proc writeCompleteLine*(text: string) =
-  ## Write complete line - flushes buffer first, then writes with newline and redraws prompt
+  ## Write complete line with newline - simple bash-like output
   flushStreamingBuffer(redraw = false)
-  # Use writeOutputRaw with redraw=true to ensure prompt is redrawn after the line
-  writeOutputRaw(text, addNewline = true, redraw = true)
+  writeOutputRaw(text, addNewline = true, redraw = false)
 
 proc finishStreaming*() =
-  ## Call after streaming chunks are done to flush remaining content
-  flushStreamingBuffer()
+  ## Call after async streaming is done to flush buffer and redraw prompt
+  ## Use this for streaming responses that preserve the input area
+  flushStreamingBuffer(redraw = false)
+  # Redraw prompt at the end of streaming
+  redraw()
 
-proc writeUserInput*(text: string) =
-  ## Add visual separation before assistant response
-  ## Note: User input is already visible in the readline prompt,
-  ## so we just add a blank line for visual separation and redraw prompt
-  writeOutputRaw("", addNewline = true, redraw = true)
+proc finishCommandOutput*() =
+  ## Call after synchronous command output to reset position tracking
+  ## This allows the next readline() to start fresh without clearing our output
+  resetOutputPosition()
+
+proc writeUserInput*(text: string, prompt: string = "") =
+  ## Move to next line after user input - the input line is already visible
+  ## This just ensures we're on a new line before showing output
+  # The prompt+input is already visible, just move to next line
+  stdout.write("\n")
+  stdout.flushFile()
