@@ -17,11 +17,16 @@
 ## 4. Send NatsResponse messages (streaming)
 ## 5. Send final response with done=true
 
-import std/[logging, strformat, times, os, options, strutils, json]
-import ../core/[nats_client, command_parser, config, database, channels]
+import std/[logging, strformat, times, os, options, strutils, json, random]
+import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager]
 import ../core/task_executor
-import ../types/[nats_messages, agents, config as configTypes, messages]
-import ../api/curlyStreaming
+import ../types/[nats_messages, agents, config as configTypes, messages, tools, mode]
+import ../api/[api, curlyStreaming]
+import ../tools/[worker, registry]
+import ../mcp/[mcp, tools as mcpTools]
+import output_shared
+import tool_visualizer
+import theme
 
 type
   AgentState = object
@@ -35,10 +40,17 @@ type
     running: bool
     requestCount: int
     startTime: Time
+    conversationId: int  # Active conversation for Ask mode
+    # Worker threads
+    apiWorker: APIWorker
+    toolWorker: ToolWorker
+    mcpWorker: MCPWorker
+    toolSchemas: seq[ToolDefinition]
 
 proc loadAgentDefinition(agentName: string): AgentDefinition =
-  ## Load agent definition from ~/.niffler/agents/<name>.md
-  let agentsDir = getHomeDir() / ".niffler" / "agents"
+  ## Load agent definition from the active config's agents directory
+  ## Uses the session system to determine the correct path (e.g., ~/.niffler/default/agents/)
+  let agentsDir = session.getAgentsDir()
   let agentFile = agentsDir / agentName & ".md"
 
   if not fileExists(agentFile):
@@ -55,6 +67,9 @@ proc loadAgentDefinition(agentName: string): AgentDefinition =
 proc initializeAgent(agentName: string, natsUrl: string, modelName: string, level: Level): AgentState =
   ## Initialize agent state and connect to NATS
   info(fmt"Initializing agent '{agentName}'...")
+
+  # Initialize runtime mode as agent
+  initializeRuntimeMode(rmAgent)
 
   # Load agent definition
   result.name = agentName
@@ -95,6 +110,20 @@ proc initializeAgent(agentName: string, natsUrl: string, modelName: string, leve
   initThreadSafeChannels()
   result.channels = getChannels()
 
+  # Get tool schemas (this also initializes the registry)
+  info("Loading tool schemas...")
+  result.toolSchemas = getAllToolSchemas()
+  info(fmt"Loaded {result.toolSchemas.len} tools")
+
+  # Initialize session manager for thread-safe operations
+  # Pass database pool if available
+  let pool = if result.database != nil: result.database.pool else: nil
+  initSessionManager(pool, epochTime().int)
+  info("Session manager initialized")
+
+  # NOTE: Workers are started in startAgentMode AFTER this function returns
+  # This is important because AgentState is returned by value, and copying
+  # Thread objects after createThread corrupts them
   result.running = true
 
   info(fmt"Agent '{agentName}' initialized successfully")
@@ -114,6 +143,265 @@ proc sendStatusUpdate(state: var AgentState, requestId: string, status: string) 
   let update = createStatusUpdate(requestId, state.name, status)
   state.natsClient.publish("niffler.master.status", $update)
   debug(fmt"Sent status update: {status}")
+
+proc ensureAgentConversation(state: var AgentState): bool =
+  ## Ensure agent has an active conversation for Ask mode
+  ## Creates a new conversation if needed, or uses existing one
+  ## Returns true if conversation is ready, false on error
+  if state.conversationId > 0:
+    # Already have an active conversation
+    debug(fmt"Using existing conversation: {state.conversationId}")
+    # Make sure session is pointing to this conversation
+    try:
+      discard switchToConversation(state.database, state.conversationId)
+      return true
+    except Exception as e:
+      warn(fmt"Failed to switch to conversation {state.conversationId}: {e.msg}")
+      # Try to create a new one
+      state.conversationId = 0
+
+  # Create a new conversation for this agent
+  let title = fmt"Agent: {state.name}"
+
+  try:
+    let convOpt = createConversation(state.database, title, amCode, state.modelConfig.nickname)
+
+    if convOpt.isNone():
+      warn("Failed to create conversation for agent")
+      return false
+
+    let conv = convOpt.get()
+    state.conversationId = conv.id
+
+    # Switch session to this conversation
+    discard switchToConversation(state.database, conv.id)
+
+    info(fmt"Created new conversation {conv.id} for agent '{state.name}'")
+    return true
+  except Exception as e:
+    warn(fmt"Database error creating conversation: {e.msg}")
+    return false
+
+proc executeAskMode(state: var AgentState, prompt: string, requestId: string): tuple[success: bool, summary: string] =
+  ## Execute Ask mode: continue conversation with context
+  ## Displays streaming output to agent terminal, sends completion to master
+
+  # Ensure we have an active conversation
+  if not ensureAgentConversation(state):
+    return (false, "Failed to create or access conversation (database may be locked)")
+
+  # Get API key
+  let apiKeyOpt = app.validateApiKey(state.modelConfig)
+  if apiKeyOpt.isNone():
+    return (false, "No API key configured")
+  let apiKey = apiKeyOpt.get()
+
+  # Build messages with conversation context
+  var messages = getConversationContext()
+
+  # Use agent's system prompt from definition
+  let systemPromptText = state.definition.systemPrompt
+  if systemPromptText.len > 0:
+    let systemMsg = Message(role: mrSystem, content: systemPromptText)
+    messages.insert(systemMsg, 0)
+
+  # Add user message to conversation (persists to DB)
+  let userMsg = conversation_manager.addUserMessage(prompt)
+  messages.add(userMsg)
+
+  echo fmt"[PROCESSING] {prompt}"
+  echo ""
+
+  # Prepare tool schemas filtered by agent's allowed tools
+  var agentToolSchemas: seq[ToolDefinition] = @[]
+  for tool in state.toolSchemas:
+    if tool.function.name in state.definition.allowedTools:
+      agentToolSchemas.add(tool)
+
+  # Conversation loop (handle tool calls)
+  const maxTurns = 20
+  var turn = 0
+  var totalTokens = 0
+  var totalToolCalls = 0
+  var finalResponse = ""
+
+  while turn < maxTurns:
+    turn.inc()
+    debug(fmt"Ask turn {turn}/{maxTurns}")
+
+    # Create and send API request
+    let turnRequestId = fmt"ask_{state.name}_{turn}_{rand(100000)}"
+    let request = APIRequest(
+      kind: arkChatRequest,
+      requestId: turnRequestId,
+      messages: messages,
+      model: state.modelConfig.model,
+      modelNickname: state.modelConfig.nickname,
+      maxTokens: 8192,
+      temperature: 0.7,
+      baseUrl: state.modelConfig.baseUrl,
+      apiKey: apiKey,
+      enableTools: agentToolSchemas.len > 0,
+      tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition])
+    )
+
+    if not trySendAPIRequest(state.channels, request):
+      return (false, "Failed to send API request")
+
+    # Collect and display streaming response
+    var assistantContent = ""
+    var toolCalls: seq[LLMToolCall] = @[]
+    var responseComplete = false
+    var attempts = 0
+    const maxAttempts = 3000  # 5 minutes per turn
+
+    while attempts < maxAttempts and not responseComplete:
+      var response: APIResponse
+      if tryReceiveAPIResponse(state.channels, response):
+        if response.requestId == turnRequestId:
+          case response.kind:
+          of arkReady:
+            discard
+          of arkStreamChunk:
+            # Display streaming content to agent terminal
+            if response.content.len > 0:
+              assistantContent.add(response.content)
+              writeStreamingChunk(response.content)
+            # Collect tool calls
+            if response.toolCalls.isSome():
+              for tc in response.toolCalls.get():
+                toolCalls.add(tc)
+                totalToolCalls.inc()
+          of arkStreamComplete:
+            finishStreaming()
+            if assistantContent.len > 0:
+              writeCompleteLine("")
+            totalTokens += response.usage.inputTokens + response.usage.outputTokens
+            responseComplete = true
+          of arkStreamError:
+            finishStreaming()
+            return (false, fmt"API error: {response.error}")
+          else:
+            discard
+
+      sleep(10)
+      attempts.inc()
+
+    if not responseComplete:
+      return (false, "Response timed out")
+
+    # Store final response for summary
+    finalResponse = assistantContent
+
+    # Add assistant message to conversation (persists to DB)
+    if assistantContent.len > 0:
+      var assistantMsg = conversation_manager.addAssistantMessage(assistantContent)
+      if toolCalls.len > 0:
+        assistantMsg.toolCalls = some(toolCalls)
+      messages.add(Message(
+        role: mrAssistant,
+        content: assistantContent,
+        toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
+      ))
+
+    # If no tool calls, conversation turn is complete
+    if toolCalls.len == 0:
+      break
+
+    # Execute tool calls
+    let agentContext = AgentContext(
+      isMainAgent: false,
+      agent: state.definition
+    )
+
+    for toolCall in toolCalls:
+      # Display tool call - parse args string to JsonNode
+      let argsJson = try:
+        parseJson(toolCall.function.arguments)
+      except:
+        newJObject()
+
+      let toolRequest = CompactToolRequestInfo(
+        toolCallId: toolCall.id,
+        toolName: toolCall.function.name,
+        args: argsJson
+      )
+      let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+      writeCompleteLine(formattedRequest & " ⏳")
+
+      # Validate tool is allowed
+      if not isToolAllowed(agentContext, toolCall.function.name):
+        let errorMsg = fmt"Tool '{toolCall.function.name}' not allowed for agent '{state.name}'"
+        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
+        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
+        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+        continue
+
+      # Send to tool worker
+      let toolReq = ToolRequest(
+        kind: trkExecute,
+        requestId: toolCall.id,
+        toolName: toolCall.function.name,
+        arguments: toolCall.function.arguments,
+        agentName: state.name
+      )
+
+      if not trySendToolRequest(state.channels, toolReq):
+        let errorMsg = "Failed to send tool request"
+        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
+        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
+        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+        continue
+
+      # Wait for tool response
+      var toolResponseReceived = false
+      var toolAttempts = 0
+      const maxToolAttempts = 3000
+
+      while toolAttempts < maxToolAttempts and not toolResponseReceived:
+        let maybeResponse = tryReceiveToolResponse(state.channels)
+        if maybeResponse.isSome():
+          let toolResponse = maybeResponse.get()
+          if toolResponse.requestId == toolCall.id:
+            let toolContent = if toolResponse.kind == trkResult:
+              toolResponse.output
+            else:
+              fmt"Error: {toolResponse.error}"
+
+            # Display tool result
+            let resultInfo = CompactToolResultInfo(
+              toolCallId: toolCall.id,
+              toolName: toolCall.function.name,
+              resultSummary: toolContent,
+              success: toolResponse.kind == trkResult
+            )
+            let formattedResult = formatCompactToolResultWithIndent(resultInfo)
+            writeCompleteLine(formattedResult)
+
+            # Add to conversation
+            messages.add(Message(role: mrTool, content: toolContent, toolCallId: some(toolCall.id)))
+            discard conversation_manager.addToolMessage(toolCall.id, toolContent)
+
+            toolResponseReceived = true
+            break
+
+        sleep(10)
+        toolAttempts.inc()
+
+      if not toolResponseReceived:
+        let errorMsg = "Tool execution timed out"
+        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
+        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
+        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+
+  # Generate brief summary for master
+  let summary = if finalResponse.len > 200:
+    finalResponse[0..199] & "..."
+  else:
+    finalResponse
+
+  info(fmt"Ask completed: {totalToolCalls} tool calls, {totalTokens} tokens")
+  return (true, summary)
 
 proc processRequest(state: var AgentState, request: NatsRequest) =
   ## Process an incoming request from master
@@ -140,10 +428,6 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
       # TODO: Update modelConfig based on nickname
       # For now, just send status
 
-    # Get tool schemas for task execution
-    # TODO: Get actual tool schemas from tool registry
-    let toolSchemas: seq[ToolDefinition] = @[]
-
     # Execute the request based on conversation type
     if parsed.conversationType.isSome() and parsed.conversationType.get() == ctTask:
       # Task mode: Fresh isolated context
@@ -154,7 +438,7 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
         parsed.prompt,
         state.modelConfig,
         state.channels,
-        toolSchemas
+        state.toolSchemas
       )
 
       if taskResult.success:
@@ -168,9 +452,17 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
       # Ask mode: Continue/create conversation
       sendStatusUpdate(state, request.requestId, "Processing ask (building context)...")
 
-      # TODO: Implement ask mode with conversation continuation
-      # For now, just send a placeholder response
-      sendResponse(state, request.requestId, "Ask mode not yet implemented", done = true)
+      let askResult = executeAskMode(state, parsed.prompt, request.requestId)
+
+      if askResult.success:
+        sendResponse(state, request.requestId, askResult.summary, done = true)
+        echo ""
+        echo "[COMPLETED ✓]"
+      else:
+        sendResponse(state, request.requestId, fmt"Ask failed: {askResult.summary}", done = true)
+        echo ""
+        echo fmt"[FAILED ✗] {askResult.summary}"
+        warn(fmt"Ask failed: {askResult.summary}")
 
   except Exception as e:
     error(fmt"Error processing request: {e.msg}")
@@ -240,6 +532,19 @@ proc cleanup(state: var AgentState) =
   ## Cleanup agent resources
   info("Cleaning up agent...")
 
+  # Stop worker threads
+  info("Stopping worker threads...")
+  signalShutdown(state.channels)
+
+  stopMcpWorker(state.mcpWorker)
+  info("MCP worker stopped")
+
+  stopToolWorker(state.toolWorker)
+  info("Tool worker stopped")
+
+  stopAPIWorker(state.apiWorker)
+  info("API worker stopped")
+
   # Remove presence
   state.natsClient.removePresence()
 
@@ -261,6 +566,25 @@ proc startAgentMode*(agentName: string, natsUrl: string = "nats://localhost:4222
   try:
     # Initialize agent
     state = initializeAgent(agentName, natsUrl, modelName, level)
+
+    # Start worker threads AFTER initializeAgent returns
+    # Workers must be started here, not in initializeAgent, because AgentState
+    # is returned by value and copying Thread objects after createThread corrupts them
+    info("Starting worker threads...")
+    let pool = if state.database != nil: state.database.pool else: nil
+
+    state.apiWorker = startAPIWorker(state.channels, level, dump = false, database = state.database, pool = pool)
+    info("API worker started")
+
+    # Configure API worker with model
+    if not configureAPIWorker(state.modelConfig):
+      warn(fmt("Failed to configure API worker with model {state.modelConfig.nickname}"))
+
+    state.toolWorker = startToolWorker(state.channels, level, dump = false, database = state.database)
+    info("Tool worker started")
+
+    state.mcpWorker = startMcpWorker(state.channels, level)
+    info("MCP worker started")
 
     # Start listening for requests
     listenForRequests(state)

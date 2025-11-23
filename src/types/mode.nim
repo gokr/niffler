@@ -4,14 +4,11 @@
 ## Inspired by Claude Code's Plan/Code workflow.
 ##
 ## Mode Types:
-## - Plan: Analysis, research, planning, and todo generation
+## - Plan: Analysis, research, planning (no editing allowed)
 ## - Code: Implementation, execution, and completing todos
 ##
-## Design Philosophy:
-## - Simple two-mode system (avoid complexity of multi-mode systems)
-## - Mode switching via Shift+Tab for seamless workflow
-## - Both modes have access to all tools (no artificial restrictions)
-## - Mode affects system prompts and behavior, not capabilities
+## In multi-agent architecture, mode is set via /plan command prefix
+## sent to agents (e.g., "@coder /plan Design the architecture")
 
 import std/strutils
 
