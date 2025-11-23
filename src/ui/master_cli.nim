@@ -31,7 +31,8 @@ type
   MasterState* = object
     ## Runtime state for master coordinator
     natsClient*: NifflerNatsClient
-    defaultAgent*: string
+    defaultAgent*: string         ## Initial default agent from config/args
+    currentAgent*: string         ## Currently focused agent (updated on @agent usage)
     pendingRequests*: Table[string, PendingRequest]
     running*: bool
     connected*: bool
@@ -79,6 +80,7 @@ proc initializeMaster*(natsUrl: string, defaultAgent: string = ""): MasterState 
   info("Initializing master mode...")
 
   result.defaultAgent = defaultAgent
+  result.currentAgent = defaultAgent  # Start with default agent as current
   result.pendingRequests = initTable[string, PendingRequest]()
   result.running = true
   result.connected = false
@@ -92,6 +94,18 @@ proc initializeMaster*(natsUrl: string, defaultAgent: string = ""): MasterState 
   except Exception as e:
     warn(fmt("Failed to connect to NATS: {e.msg}"))
     warn("Master mode will operate in local-only mode")
+
+proc setCurrentAgent*(state: var MasterState, agentName: string) =
+  ## Set the current/focused agent for command routing
+  state.currentAgent = agentName
+  if agentName.len > 0:
+    info(fmt("Current agent set to: @{agentName}"))
+  else:
+    info("Current agent cleared")
+
+proc getCurrentAgent*(state: MasterState): string =
+  ## Get the current/focused agent name
+  result = state.currentAgent
 
 proc discoverAgents*(state: MasterState): seq[string] =
   ## Discover available agents via NATS presence
@@ -116,10 +130,10 @@ proc isAgentAvailable*(state: MasterState, agentName: string): bool =
     warn(fmt("Failed to check agent availability: {e.msg}"))
     result = false
 
-proc sendToAgent*(state: var MasterState, agentName: string, input: string,
-                  timeoutMs: int = 30000): tuple[success: bool, response: string, error: string] =
-  ## Send a request to an agent and wait for response
-  ## Returns success status, response content, and error message
+proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string): tuple[success: bool, requestId: string, error: string] =
+  ## Send a request to an agent asynchronously (fire and forget)
+  ## Returns success status, request ID, and error message
+  ## Responses will arrive via the NATS listener thread
   if not state.connected:
     return (false, "", "Not connected to NATS")
 
@@ -139,87 +153,38 @@ proc sendToAgent*(state: var MasterState, agentName: string, input: string,
     input: input
   )
 
-  info(fmt("Sending request {requestId} to agent '{agentName}'"))
+  info(fmt("Sending async request {requestId} to agent '{agentName}'"))
 
-  # Publish request
+  # Publish request and return immediately
   try:
     state.natsClient.publish(subject, $request)
+    return (true, requestId, "")
   except Exception as e:
     state.pendingRequests.del(requestId)
     return (false, "", fmt("Failed to send request: {e.msg}"))
 
-  # Subscribe to response channel
-  let responseSubject = "niffler.master.response"
-  var subscription = state.natsClient.subscribe(responseSubject)
-  defer: subscription.unsubscribe()
-
-  # Also subscribe to status updates
-  let statusSubject = "niffler.master.status"
-  var statusSubscription = state.natsClient.subscribe(statusSubject)
-  defer: statusSubscription.unsubscribe()
-
-  # Wait for responses
-  var accumulatedResponse = ""
-  let startTime = getTime()
-  let deadline = startTime + initDuration(milliseconds = timeoutMs)
-
-  while getTime() < deadline:
-    # Check for status updates
-    let maybeStatus = statusSubscription.nextMsg(timeoutMs = 100)
-    if maybeStatus.isSome():
-      try:
-        let status = fromJson(NatsStatusUpdate, maybeStatus.get().data)
-        if status.requestId == requestId:
-          echo fmt("  [{status.agentName}] {status.status}")
-      except Exception as e:
-        debug(fmt("Failed to parse status update: {e.msg}"))
-
-    # Check for response
-    let maybeMsg = subscription.nextMsg(timeoutMs = 100)
-    if maybeMsg.isSome():
-      try:
-        let response = fromJson(NatsResponse, maybeMsg.get().data)
-        if response.requestId == requestId:
-          accumulatedResponse &= response.content
-
-          if response.done:
-            state.pendingRequests.del(requestId)
-            let elapsed = (getTime() - startTime).inMilliseconds()
-            info(fmt("Request {requestId} completed in {elapsed}ms"))
-            return (true, accumulatedResponse, "")
-      except Exception as e:
-        debug(fmt("Failed to parse response: {e.msg}"))
-
-  # Timeout
-  state.pendingRequests.del(requestId)
-  return (false, accumulatedResponse, fmt("Request timed out after {timeoutMs}ms"))
-
 proc formatAgentResponse*(agentName: string, response: string, success: bool): string =
-  ## Format agent response for display
+  ## Format agent response for display (chat-room style)
   if success:
-    result = """
-─────────────────────────────────────────
-✓ @""" & agentName & """ completed
-─────────────────────────────────────────
-""" & response & """
-─────────────────────────────────────────"""
+    result = fmt("@{agentName}: {response}")
   else:
-    result = """
-─────────────────────────────────────────
-✗ @""" & agentName & """ failed
-─────────────────────────────────────────
-""" & response & """
-─────────────────────────────────────────"""
+    result = fmt("@{agentName}: ❌ {response}")
 
 proc handleAgentRequest*(state: var MasterState, input: string): tuple[handled: bool, output: string] =
   ## Handle input that may be routed to an agent
   ## Returns whether it was handled and any output to display
+  ## Note: This is now async - responses arrive via NATS listener thread
   let parsed = parseAgentInput(input)
 
-  # If no agent specified, check for default
+  # Track if user explicitly targeted an agent
+  let explicitAgent = parsed.agentName.len > 0
+
+  # If no agent specified, check for currentAgent (then default)
   var targetAgent = parsed.agentName
   if targetAgent.len == 0:
-    if state.defaultAgent.len > 0:
+    if state.currentAgent.len > 0:
+      targetAgent = state.currentAgent
+    elif state.defaultAgent.len > 0:
       targetAgent = state.defaultAgent
     else:
       # No agent routing - return unhandled
@@ -236,15 +201,18 @@ proc handleAgentRequest*(state: var MasterState, input: string): tuple[handled: 
     else:
       return (true, fmt("Error: Agent '{targetAgent}' is not available. No agents found."))
 
-  # Send to agent
-  echo fmt("→ Sending to @{targetAgent}...")
-  let (success, response, error) = state.sendToAgent(targetAgent, parsed.input)
+  # Update currentAgent if user explicitly targeted one
+  if explicitAgent:
+    state.currentAgent = targetAgent
+
+  # Send to agent asynchronously - responses will arrive via NATS listener
+  let (success, requestId, error) = state.sendToAgentAsync(targetAgent, parsed.input)
 
   if success:
-    return (true, formatAgentResponse(targetAgent, response, true))
+    # Request sent successfully - no output needed, responses will stream in
+    return (true, "")
   else:
-    let errMsg = if error.len > 0: error else: response
-    return (true, formatAgentResponse(targetAgent, errMsg, false))
+    return (true, fmt("@{targetAgent}: ❌ {error}"))
 
 proc showAgentStatus*(state: MasterState) =
   ## Display status of available agents

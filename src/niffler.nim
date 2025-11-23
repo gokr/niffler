@@ -28,7 +28,7 @@ import docopt
 import core/[config, channels, conversation_manager, database, session]
 import core/log_file as logFileModule
 import api/curlyStreaming
-import ui/[cli, agent_cli]
+import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
 
 const VERSION* = staticExec("cd " & (currentSourcePath().parentDir().parentDir()) & " && nimble dump | grep '^version:' | cut -d'\"' -f2") 
@@ -116,6 +116,7 @@ Niffler - your friendly magical AI buddy
 Usage:
   niffler [--model <nickname>] [--prompt <text>] [options]
   niffler --agent <name> [--model <nickname>] [options]
+  niffler --nats-monitor [options]
   niffler init [<path>] [options]
   niffler model list [options]
   niffler --version
@@ -132,6 +133,7 @@ Options:
   --dump                 Show HTTP requests & responses
   --log <filename>       Redirect debug/dump output to log files
   --nats <url>           NATS server URL [default: nats://localhost:4222]
+  --nats-monitor         Start NATS traffic monitor for debugging
 
 Commands:
   init                   Initialize configuration
@@ -177,6 +179,11 @@ when isMainModule:
   let natsUrl = if args["--nats"] and args["--nats"].kind != vkNone: $args["--nats"] else: "nats://localhost:4222"
   let dump = args["--dump"]
   let logFile = if args["--log"] and args["--log"].kind != vkNone: $args["--log"] else: ""
+
+  # Check for NATS monitor mode
+  if args["--nats-monitor"]:
+    startNatsMonitor(natsUrl, level)
+    quit(0)
 
   # Check for agent mode
   if agentName.len > 0:
