@@ -16,6 +16,9 @@ import natswrapper
 
 export NatsConnection, checkStatus, getErrorString, natsStatus
 
+# Track library initialization state - nats_Open/nats_Close should only be called once
+var natsLibraryInitialized = false
+
 type
   NifflerNatsClient* = object
     ## Main NATS client for Niffler
@@ -41,10 +44,12 @@ proc initNatsClient*(url: string = "nats://localhost:4222",
   result.clientId = clientId
   result.presenceTTL = presenceTTL.int64 * 1_000_000_000  # Convert to nanoseconds
 
-  # Initialize NATS library
-  var status = nats_Open(-1)
-  if not checkStatus(status):
-    raise newException(IOError, "Failed to initialize NATS: " & getErrorString(status))
+  # Initialize NATS library only once per process
+  if not natsLibraryInitialized:
+    var status = nats_Open(-1)
+    if not checkStatus(status):
+      raise newException(IOError, "Failed to initialize NATS: " & getErrorString(status))
+    natsLibraryInitialized = true
 
   # Connect to NATS server
   result.nc = connect(url)
@@ -53,7 +58,7 @@ proc initNatsClient*(url: string = "nats://localhost:4222",
   # Initialize JetStream if presence tracking is needed
   if clientId.len > 0:
     var js: ptr jsCtx
-    status = natsConnection_JetStream(addr js, result.nc.conn, nil)
+    var status = natsConnection_JetStream(addr js, result.nc.conn, nil)
     if not checkStatus(status):
       warn(fmt"Failed to get JetStream context: {getErrorString(status)}")
       warn("Presence tracking will not be available")
@@ -83,6 +88,7 @@ proc initNatsClient*(url: string = "nats://localhost:4222",
 
 proc close*(client: var NifflerNatsClient) =
   ## Close NATS connection and cleanup
+  ## Note: Does NOT call nats_Close() as that shuts down the entire library
   if client.kv != nil:
     kvStore_Destroy(client.kv)
     client.kv = nil
@@ -90,8 +96,14 @@ proc close*(client: var NifflerNatsClient) =
     jsCtx_Destroy(client.js)
     client.js = nil
   client.nc.close()
-  nats_Close()
   debug("NATS client closed")
+
+proc shutdownNatsLibrary*() =
+  ## Shutdown the NATS library - call only at application exit
+  if natsLibraryInitialized:
+    nats_Close()
+    natsLibraryInitialized = false
+    debug("NATS library shut down")
 
 proc publish*(client: NifflerNatsClient, subject: string, data: string) =
   ## Publish a message to a subject

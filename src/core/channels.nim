@@ -56,7 +56,8 @@ type
     channels: ThreadChannels
     lock: Lock
 
-var globalChannels {.threadvar.}: ThreadSafeChannels
+# NOTE: This must NOT be threadvar - channels are shared between threads
+var globalChannels: ThreadSafeChannels
 
 proc initializeChannels*(): ThreadChannels =
   ## Initialize all thread communication channels with empty queues

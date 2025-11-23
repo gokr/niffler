@@ -55,10 +55,9 @@ type
     success*: bool
 
 proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
-  # Initialize logging for this thread
-  let consoleLogger = newConsoleLogger(useStderr = true)
-  addHandler(consoleLogger)
-  setLogFilter(params.level)
+  # NOTE: Don't modify logging state - the logging module is not thread-safe
+  # Worker threads inherit logging settings from main thread
+  discard # setLogFilter not thread safe
 
   let channels = params.channels
 

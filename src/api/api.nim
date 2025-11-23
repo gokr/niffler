@@ -721,14 +721,13 @@ proc handleStreamCancellation(channels: ptr ThreadChannels, request: APIRequest,
       debug(fmt"Stream {request.cancelRequestId} canceled successfully")
       break
 
-proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChannels, database: DatabaseBackend, 
-                        currentClient: Option[CurlyStreamingClient], activeRequests: seq[string], 
+proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChannels, database: DatabaseBackend,
+                        currentClient: Option[CurlyStreamingClient], activeRequests: seq[string],
                         toolCallBuffers: Table[string, ToolCallBuffer]] {.gcsafe.} =
   ## Initialize API worker thread with logging, parsing, and state
-  # Initialize logging for this thread - use stderr to prevent stdout contamination
-  let consoleLogger = newConsoleLogger(useStderr = true)
-  addHandler(consoleLogger)
-  setLogFilter(params.level)
+  # NOTE: Don't modify logging state - the logging module is not thread-safe
+  # Worker threads inherit logging settings from main thread
+  discard # setLogFilter(params.level) - not thread safe
   
   # Initialize dump flag for this thread
   setDumpEnabled(params.dump)

@@ -32,10 +32,9 @@ proc outputHandlerProc(params: ThreadParams) {.thread, gcsafe.} =
   {.gcsafe.}:
     let channels = params.channels
 
-    # Initialize logging for this thread
-    let consoleLogger = newConsoleLogger(useStderr = true)
-    addHandler(consoleLogger)
-    setLogFilter(params.level)
+    # NOTE: Don't modify logging state - the logging module is not thread-safe
+    # Worker threads inherit logging settings from main thread
+    discard # setLogFilter not thread safe
 
     debug("Output handler thread started")
     incrementActiveThreads(channels)
