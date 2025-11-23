@@ -148,39 +148,55 @@ proc ensureAgentConversation(state: var AgentState): bool =
   ## Ensure agent has an active conversation for Ask mode
   ## Creates a new conversation if needed, or uses existing one
   ## Returns true if conversation is ready, false on error
+  ## Retries on database lock errors
+  const maxRetries = 5
+  const retryDelayMs = 200
+
   if state.conversationId > 0:
     # Already have an active conversation
     debug(fmt"Using existing conversation: {state.conversationId}")
     # Make sure session is pointing to this conversation
-    try:
-      discard switchToConversation(state.database, state.conversationId)
-      return true
-    except Exception as e:
-      warn(fmt"Failed to switch to conversation {state.conversationId}: {e.msg}")
-      # Try to create a new one
-      state.conversationId = 0
+    for attempt in 1..maxRetries:
+      try:
+        discard switchToConversation(state.database, state.conversationId)
+        return true
+      except Exception as e:
+        if "locked" in e.msg and attempt < maxRetries:
+          debug(fmt"Database locked, retry {attempt}/{maxRetries}")
+          sleep(retryDelayMs * attempt)
+        else:
+          warn(fmt"Failed to switch to conversation {state.conversationId}: {e.msg}")
+          state.conversationId = 0
+          break
 
   # Create a new conversation for this agent
   let title = fmt"Agent: {state.name}"
 
-  try:
-    let convOpt = createConversation(state.database, title, amCode, state.modelConfig.nickname)
+  for attempt in 1..maxRetries:
+    try:
+      let convOpt = createConversation(state.database, title, amCode, state.modelConfig.nickname)
 
-    if convOpt.isNone():
-      warn("Failed to create conversation for agent")
-      return false
+      if convOpt.isNone():
+        warn("Failed to create conversation for agent")
+        return false
 
-    let conv = convOpt.get()
-    state.conversationId = conv.id
+      let conv = convOpt.get()
+      state.conversationId = conv.id
 
-    # Switch session to this conversation
-    discard switchToConversation(state.database, conv.id)
+      # Switch session to this conversation
+      discard switchToConversation(state.database, conv.id)
 
-    info(fmt"Created new conversation {conv.id} for agent '{state.name}'")
-    return true
-  except Exception as e:
-    warn(fmt"Database error creating conversation: {e.msg}")
-    return false
+      info(fmt"Created new conversation {conv.id} for agent '{state.name}'")
+      return true
+    except Exception as e:
+      if "locked" in e.msg and attempt < maxRetries:
+        echo fmt"[DEBUG] Database locked, retry {attempt}/{maxRetries}"
+        sleep(retryDelayMs * attempt)
+      else:
+        warn(fmt"Database error creating conversation: {e.msg}")
+        return false
+
+  return false
 
 proc executeAskMode(state: var AgentState, prompt: string, requestId: string): tuple[success: bool, summary: string] =
   ## Execute Ask mode: continue conversation with context
@@ -209,7 +225,6 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
   let userMsg = conversation_manager.addUserMessage(prompt)
   messages.add(userMsg)
 
-  echo fmt"[PROCESSING] {prompt}"
   echo ""
 
   # Prepare tool schemas filtered by agent's allowed tools
@@ -252,6 +267,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
     var assistantContent = ""
     var toolCalls: seq[LLMToolCall] = @[]
     var responseComplete = false
+    var isInThinkingBlock = false
     var attempts = 0
     const maxAttempts = 3000  # 5 minutes per turn
 
@@ -263,15 +279,38 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
           of arkReady:
             discard
           of arkStreamChunk:
-            # Display streaming content to agent terminal
+            # Handle thinking content display (like CLI)
+            if response.thinkingContent.isSome():
+              let thinkingContent = response.thinkingContent.get()
+              let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
+
+              if not isInThinkingBlock:
+                # First thinking chunk - show emoji prefix
+                let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
+                let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+                writeStreamingChunk(emojiPrefix & styledContent)
+                isInThinkingBlock = true
+              else:
+                # Continuing thinking - just show content
+                writeStreamingChunkStyled(thinkingContent, currentTheme.thinking)
+
+            # Display regular content
             if response.content.len > 0:
+              if isInThinkingBlock:
+                # Transition from thinking to regular content
+                finishStreaming()
+                writeCompleteLine("")
+                isInThinkingBlock = false
+
               assistantContent.add(response.content)
               writeStreamingChunk(response.content)
+
             # Collect tool calls
             if response.toolCalls.isSome():
               for tc in response.toolCalls.get():
                 toolCalls.add(tc)
                 totalToolCalls.inc()
+
           of arkStreamComplete:
             finishStreaming()
             if assistantContent.len > 0:
@@ -281,6 +320,17 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
           of arkStreamError:
             finishStreaming()
             return (false, fmt"API error: {response.error}")
+          of arkToolCallRequest:
+            # Display tool request from API (different from our tool execution)
+            finishStreaming()
+            let toolRequest = response.toolRequestInfo
+            let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+            writeCompleteLine(formattedRequest & " ⏳")
+          of arkToolCallResult:
+            # Display tool result from API
+            let toolResult = response.toolResultInfo
+            let formattedResult = formatCompactToolResultWithIndent(toolResult)
+            writeCompleteLine(formattedResult)
           else:
             discard
 
