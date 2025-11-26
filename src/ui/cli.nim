@@ -56,6 +56,9 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
 
+# Global master state reference for completion callback access
+var globalMasterState: ptr MasterState = nil
+
 # Note: Streaming output functions are now in output_shared.nim to avoid circular imports
 
 proc getUserName*(): string =
@@ -111,9 +114,9 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
     # Special case: just a slash, show all commands
     return ("command", "", 0)
   elif text.len > 0 and text[0] == '@':
-    # File completion - remove the leading @
+    # Agent completion (with fallback to file if no agents match) - remove the leading @
     let prefix = if text.len > 1: text[1..^1] else: ""
-    return ("file", prefix, 0)
+    return ("agent", prefix, 0)
   
   # Fallback: look backward from cursor to find completion triggers
   var searchPos = min(cursorPos - 1, text.len - 1)
@@ -143,9 +146,9 @@ proc detectCompletionContext*(text: string, cursorPos: int): tuple[contextType: 
         let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
         return ("command", prefix, searchPos)
     elif ch == '@':
-      # File completion context
+      # Agent completion context (with fallback to file if no agents match)
       let prefix = if searchPos + 1 < text.len: text[searchPos + 1..min(cursorPos - 1, text.len - 1)] else: ""
-      return ("file", prefix, searchPos)
+      return ("agent", prefix, searchPos)
     searchPos -= 1
   
   return ("none", "", -1)
@@ -405,6 +408,63 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
         # No argument completion for this command
         debug(fmt"No argument completion available for command '{command}'")
         return ""
+  of "agent":
+    # Agent completion for @ prefix - query running agents via NATS
+    if globalMasterState != nil:
+      let agents = globalMasterState[].discoverAgents()
+      var matchedAgents: seq[string] = @[]
+
+      for agent in agents:
+        if agent.toLower().startsWith(prefix.toLower()):
+          matchedAgents.add(agent)
+
+      if matchedAgents.len == 1:
+        # Single match - complete it with space
+        let suffix = matchedAgents[0][prefix.len..^1] & " "
+        debug(fmt"Single agent match: returning '{suffix}'")
+        clearInfo()
+        return suffix
+      elif matchedAgents.len > 1:
+        if isSecondTab:
+          # Show agent options in info area
+          var infoLines: seq[string] = @["Running agents:"]
+          for agent in matchedAgents:
+            infoLines.add(fmt"  @{agent}")
+          setInfo(infoLines)
+          redraw()
+          debug(fmt"Showing {matchedAgents.len} agent options in info area")
+        return ""
+      # No agent matches - fall through to file completion below
+
+    # Fall back to file completion if no agents matched or masterState not available
+    try:
+      let fileCompletions = getFileCompletions(prefix)
+      debug(fmt"Found {fileCompletions.len} file completions for prefix '{prefix}'")
+
+      if fileCompletions.len == 1:
+        # Single match - complete it
+        let file = fileCompletions[0]
+        let completePath = if file.isDir: file.path & "/" else: file.path
+        let suffix = completePath[prefix.len..^1]
+        debug(fmt"Single file match: returning '{suffix}'")
+        clearInfo()
+        return suffix
+      elif fileCompletions.len > 1:
+        if isSecondTab:
+          # Show file options in info area
+          var infoLines: seq[string] = @["Available files:"]
+          for file in fileCompletions:
+            let displayPath = if file.isDir: file.path & "/" else: file.path
+            infoLines.add(fmt"  @{displayPath}")
+          setInfo(infoLines)
+          redraw()
+          debug(fmt"Showing {fileCompletions.len} file options in info area")
+        return ""
+      else:
+        return ""
+    except Exception as e:
+      debug(fmt"Error getting file completions: {e.msg}")
+      return ""
   of "mention":
     # User/mention completion for @
     let mentions = @["user", "assistant", "system", "claude", "gpt"]
@@ -745,6 +805,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
 
   # Initialize master mode for agent routing
   var masterState = initializeMaster(natsUrl)
+  globalMasterState = addr masterState  # Make available for completion callback
   var natsListenerWorker: NatsListenerWorker
   if masterState.connected:
     writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
@@ -908,6 +969,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   if natsListenerWorker.isRunning:
     stopNatsListenerWorker(natsListenerWorker)
   masterState.cleanup()
+  globalMasterState = nil  # Clear global reference
 
   # Cleanup
   cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, outputHandlerWorker, database)
