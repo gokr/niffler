@@ -82,31 +82,32 @@ Configuration system (`src/core/config.nim`):
 
 ### Database Access
 
-Niffler uses SQLite for persistent storage of conversations, messages, and token usage data.
+Niffler uses TiDB (MySQL-compatible) for persistent storage of conversations, messages, and token usage data.
 
-**Database Location**: `~/.niffler/niffler.db`
+**Database Configuration**: See `~/.niffler/config.yaml` for database connection settings (host, port, database name, etc.)
 
 **Direct Access**:
 ```bash
-# Connect to database for queries
-sqlite3 ~/.niffler/niffler.db
+# Connect to database for queries (using MySQL client)
+mysql -h 127.0.0.1 -P 4000 -u root niffler
 
 # View database schema
-sqlite3 ~/.niffler/niffler.db ".schema"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SHOW TABLES"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "DESCRIBE conversation"
 
 # Example queries
-sqlite3 ~/.niffler/niffler.db "SELECT * FROM conversations ORDER BY created_at DESC LIMIT 5"
-sqlite3 ~/.niffler/niffler.db "SELECT created_at, model, input_tokens, output_tokens, total_cost FROM model_token_usage ORDER BY created_at DESC LIMIT 10"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SELECT * FROM conversation ORDER BY created_at DESC LIMIT 5"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SELECT created_at, model, input_tokens, output_tokens, total_cost FROM model_token_usage ORDER BY created_at DESC LIMIT 10"
 ```
 
 **Key Tables**:
-- `conversations`: Conversation metadata and settings
+- `conversation`: Conversation metadata and settings
 - `conversation_message`: Individual messages in conversations
 - `model_token_usage`: Token usage and cost tracking per API call
 - `conversation_thinking_token`: Reasoning/thinking token storage
 
 **Debugging Tips**:
-- Use `sqlite3 ~/.niffler/niffler.db ".tables"` to list all tables
+- Use `SHOW TABLES` to list all tables in TiDB
 - Token costs are tracked per API call with ISO timestamp format (`2025-01-15T14:30:45`)
 - Session costs use `WHERE created_at >= ?` with current app start time for filtering
 

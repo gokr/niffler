@@ -135,8 +135,6 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Advanced @ Referencing:**
 - ⚠️ Extend @ syntax for folder references (@folder/)
-- ⚠️ Support glob patterns in @ references (@*.py, @src/*)
-- [ ] Improve file completion search intelligence
 
 **Current Status:** Basic file completion exists (src/ui/file_completion.nim) but no folder/glob pattern support.
 
@@ -220,7 +218,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - [ ] Advanced change detection with timestamps
 - [ ] Enhanced git integration for repository awareness
 - [ ] Session save/restore functionality
-- [ ] Export capabilities for conversations (current: SQLite database access)
+- [ ] Export capabilities for conversations
 
 ### **11. Multi-Process Agent Architecture (Phase 3)** *(HIGH PRIORITY)*
 

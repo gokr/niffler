@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/Version-0.4.0-green.svg)
 
-**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using Sqlite3. Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
+**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using TiDB (MySQL-compatible distributed database). Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/).
 
 **NOTE: Niffler is to a large extent vibe coded using Claude Code and RooCode!**
 
@@ -15,12 +15,12 @@ Niffler features a **multi-threaded single-process architecture** with a foundat
 **Current Architecture:**
 - Multi-threaded design with dedicated workers for UI, API, and tool execution
 - Thread-safe channels for inter-component communication
-- Persistent SQLite database for conversation history and state
+- Persistent TiDB database for conversation history and state
 - NATS infrastructure ready for future multi-agent expansion
 
 **Key Features:**
 - 🧵 **Multi-threaded**: UI, API, and tool operations run in separate threads
-- 💾 **Persistent Storage**: SQLite database for conversations, messages, and usage tracking
+- 💾 **Persistent Storage**: TiDB (MySQL-compatible) database for conversations, messages, and usage tracking
 - 🛠️ **Tool System**: Extensible architecture with built-in tools for development tasks
 - 🔄 **Security**: Sanitized paths, timeout controls, and permission management
 - 📡 **NATS Ready**: Foundation for distributed multi-agent expansion
@@ -384,13 +384,11 @@ Niffler implements intelligent file protection to maintain clear separation betw
 **Visual Enhancements:**
 - **Colored Prompts**: Username appears in blue and cannot be backspaced over
 - **Mode Indicators**: Current mode (plan/code) with color coding in prompt
-- **History Persistence**: Your conversation history is saved to a SQLite database and restored between sessions
+- **History Persistence**: Your conversation history is saved to a TiDB database and restored between sessions
 - **Cross-Platform**: Works consistently on Windows, Linux, and macOS
 
 **Database Integration:**
-All conversations are automatically saved to a SQLite database located at:
-- **Linux/macOS**: `~/.niffler/niffler.db`
-- **Windows**: `%APPDATA%\niffler\niffler.db`
+All conversations are automatically saved to a TiDB database. See the Database Setup section below for configuration.
 
 ### Configuration Management
 ```bash
@@ -415,6 +413,47 @@ niffler init --config-path /path/to/config.yaml
 
 **Custom:**
 - Can be specified via `--config-path` argument for any platform
+
+### Database Setup (TiDB)
+
+Niffler requires TiDB for persistent storage of conversations, messages, and usage data.
+
+**Quick Start (Local Development):**
+
+1. Install TiUP (TiDB package manager):
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+```
+
+2. Start local TiDB playground:
+```bash
+tiup playground
+```
+
+3. Configure database in `~/.niffler/config.yaml`:
+```yaml
+database:
+  enabled: true
+  host: "127.0.0.1"
+  port: 4000
+  database: "niffler"
+  username: "root"
+  password: ""
+  poolSize: 10
+```
+
+**Production Setup:**
+
+For production deployments, refer to the official TiDB documentation at https://docs.pingcap.com/tidb/stable for cluster setup and management. Or just use the serverless option for free (up to a certain size) at https://tidbcloud.com
+
+**Database Configuration Options:**
+- **enabled**: Enable/disable database persistence (default: true)
+- **host**: TiDB server host (default: "127.0.0.1")
+- **port**: TiDB server port (default: 4000)
+- **database**: Database name (default: "niffler")
+- **username**: Database username (default: "root")
+- **password**: Database password (default: "")
+- **poolSize**: Connection pool size (default: 10)
 
 ### Configuration Structure
 ```yaml
@@ -769,14 +808,11 @@ The `/search` command includes both active and archived conversations, making it
 
 #### Database Integration
 
-Archived conversations are managed through Niffler's SQLite database system:
+Archived conversations are managed through Niffler's TiDB database system:
 
-- **Storage Location**: 
-  - Linux/macOS: `~/.niffler/niffler.db`
-  - Windows: `%APPDATA%\niffler\niffler.db`
 - **Data Structure**: Uses `is_active` boolean field in `conversation` table
 - **Performance**: Lightweight boolean toggle operation
-- **Persistence**: Archive status survives application restarts
+- **Persistence**: Archive status survives application restarts and is stored in TiDB
 
 #### Best Practices
 
