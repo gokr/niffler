@@ -9,10 +9,11 @@ models:
     input_cost_per_mtoken: 0.003
     output_cost_per_mtoken: 0.015
 database:
-  type: "sqlite"
   enabled: true
-  path: "~/.niffler/niffler.db"
-  wal_mode: true
-  busy_timeout: 5000
+  host: "127.0.0.1"
+  port: 4000
+  database: "niffler_test"
+  username: "root"
+  password: ""
   pool_size: 10
 markdown_enabled: true
