@@ -14,7 +14,7 @@ graph TB
     CLI --> Channels[Thread-Safe Channels]
     Channels --> API[API Worker Thread]
     Channels --> Tools[Tool Worker Thread]
-    API --> DB[(SQLite Database)]
+    API --> DB[(TiDB Database)]
     Tools --> DB
     Tools --> FileSystem[File System]
     API --> LLM[LLM APIs]
@@ -43,7 +43,7 @@ sequenceDiagram
     participant CLI as Main Thread
     participant API as API Worker
     participant Tools as Tool Worker
-    participant DB as SQLite DB
+    participant DB as TiDB
 
     User->>CLI: User input
     CLI->>API: Send via channel
@@ -72,7 +72,7 @@ Niffler has the foundation for a distributed multi-agent system using NATS messa
 graph TB
     Main[Main Niffler Process]
     NATS[NATS Message Bus]
-    DB[(Shared SQLite DB)]
+    DB[(Shared TiDB)]
 
     %% Agent Processes (Planned)
     Agent1[Specialized Agent 1]
@@ -115,13 +115,14 @@ graph TB
 
 ## Data Persistence
 
-### SQLite Database
-- **Location**: `~/.niffler/niffler.db` (Linux/macOS) or `%APPDATA%\niffler\niffler.db` (Windows)
+### TiDB Database
+- **Configuration**: See `~/.niffler/config.yaml` for database connection settings
 - **Purpose**: Persistent storage for conversations, messages, and token usage
 - **Thread Safety**: Connection pooling ensures safe access across threads
+- **Scalability**: TiDB provides distributed, MySQL-compatible storage
 
 ### Key Tables
-- `conversations`: Conversation metadata and settings
+- `conversation`: Conversation metadata and settings
 - `conversation_message`: Individual messages in conversations
 - `model_token_usage`: Token usage and cost tracking per API call
 - `conversation_thinking_token`: Reasoning token storage
