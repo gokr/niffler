@@ -8,7 +8,7 @@ import ../src/core/[database, conversation_manager, config, app, mode_state]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 import test_utils
-import debby/sqlite
+import debby/mysql
 import debby/pools
 
 type

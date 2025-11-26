@@ -2,7 +2,7 @@
 ##
 ## This module defines all configuration-related types for Niffler:
 ## - Model configurations with OpenAI protocol parameters
-## - Database configuration for SQLite/TiDB backends
+## - Database configuration for TiDB backend
 ## - Theme and UI configuration settings
 ## - Cost tracking and token usage types
 ##

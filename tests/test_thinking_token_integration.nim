@@ -9,7 +9,7 @@ import ../src/types/[messages, thinking_tokens, config]
 import ../src/core/[database, conversation_manager]
 import ../src/api/thinking_token_parser
 import test_utils
-import debby/[pools, sqlite]
+import debby/[pools, mysql]
 
 suite "Thinking Token Integration Tests":
   var testDb: DatabaseBackend

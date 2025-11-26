@@ -11,7 +11,7 @@ import ../types/[mode, messages, thinking_tokens]
 import ../tokenization/tokenizer
 import database
 import debby/pools
-import debby/sqlite
+import debby/mysql
 
 # Global conversation session state
 var currentSession: Option[ConversationSession]
