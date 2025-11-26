@@ -106,41 +106,39 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
   ## List conversations with optional filtering, ordered by last activity descending
   if backend == nil:
     return @[]
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let whereClause = case filter:
-          of cfActive: "WHERE is_active = 1"
-          of cfArchived: "WHERE is_active = 0"
-          of cfAll: ""
-        
-        let query = fmt"""
-          SELECT id, created_at, updated_at, session_id, title, is_active,
-                 mode, model_nickname, message_count, last_activity,
-                 plan_mode_entered_at, plan_mode_created_files,
-                 parent_conversation_id, condensed_from_message_count,
-                 condensation_strategy, condensation_metadata
-          FROM conversation
-          {whereClause}
-          ORDER BY last_activity DESC
-        """
-        
-        result = db.query(Conversation, query)
-        
-        let filterDesc = case filter:
-          of cfActive: "active"
-          of cfArchived: "archived" 
-          of cfAll: "total"
-        debug(fmt"Retrieved {result.len} {filterDesc} conversations from database")
-    except Exception as e:
+
+  try:
+    backend.pool.withDb:
+      let whereClause = case filter:
+        of cfActive: "WHERE is_active = 1"
+        of cfArchived: "WHERE is_active = 0"
+        of cfAll: ""
+
+      let query = fmt"""
+        SELECT id, created_at, updated_at, session_id, title, is_active,
+               mode, model_nickname, message_count, last_activity,
+               plan_mode_entered_at, plan_mode_created_files,
+               parent_conversation_id, condensed_from_message_count,
+               condensation_strategy, condensation_metadata
+        FROM conversation
+        {whereClause}
+        ORDER BY last_activity DESC
+      """
+
+      result = db.query(Conversation, query)
+
       let filterDesc = case filter:
         of cfActive: "active"
         of cfArchived: "archived"
-        of cfAll: "all"
-      error(fmt"Failed to list {filterDesc} conversations: {e.msg}")
-      result = @[]
+        of cfAll: "total"
+      debug(fmt"Retrieved {result.len} {filterDesc} conversations from database")
+  except Exception as e:
+    let filterDesc = case filter:
+      of cfActive: "active"
+      of cfArchived: "archived"
+      of cfAll: "all"
+    error(fmt"Failed to list {filterDesc} conversations: {e.msg}")
+    result = @[]
 
 proc listActiveConversations*(backend: DatabaseBackend): seq[Conversation] =
   ## List only active conversations, ordered by last activity
@@ -150,140 +148,128 @@ proc listArchivedConversations*(backend: DatabaseBackend): seq[Conversation] =
   ## List only archived conversations, ordered by last activity
   listConversations(backend, cfArchived)
 
-proc createConversation*(backend: DatabaseBackend, title: string = "", 
+proc createConversation*(backend: DatabaseBackend, title: string = "",
                         mode: AgentMode = amPlan, modelNickname: string = ""): Option[Conversation] =
   ## Create a new conversation with specified parameters, returns the created conversation
   if backend == nil:
     return none(Conversation)
-  
+
   let actualTitle = if title.len > 0: title else: "Conversation " & $epochTime().int64
   let actualModelNickname = if modelNickname.len > 0: modelNickname else: "default"
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    var conversation = Conversation(
-      id: 0,  # Will be set by database
-      created_at: now().utc(),
-      updated_at: now().utc(),
-      sessionId: fmt"conv_{epochTime().int64}",
-      title: actualTitle,
-      isActive: true,
-      mode: mode,
-      modelNickname: actualModelNickname,
-      messageCount: 0,
-      lastActivity: now().utc(),
-      planModeEnteredAt: if mode == amPlan: now().utc() else: fromUnix(0).utc(),  # Set to current time if creating in plan mode
-      planModeCreatedFiles: ""  # Initialize to empty string
-    )
-    
-    try:
-      backend.pool.insert(conversation)
-      info(fmt"Created conversation: {conversation.title} (ID: {conversation.id})")
-      result = some(conversation)
-    except Exception as e:
-      error(fmt"Failed to create conversation: {e.msg}")
-      result = none(Conversation)
+
+  var conversation = Conversation(
+    id: 0,  # Will be set by database
+    created_at: now().utc(),
+    updated_at: now().utc(),
+    sessionId: fmt"conv_{epochTime().int64}",
+    title: actualTitle,
+    isActive: true,
+    mode: mode,
+    modelNickname: actualModelNickname,
+    messageCount: 0,
+    lastActivity: now().utc(),
+    planModeEnteredAt: if mode == amPlan: now().utc() else: fromUnix(0).utc(),  # Set to current time if creating in plan mode
+    planModeCreatedFiles: ""  # Initialize to empty string
+  )
+
+  try:
+    backend.pool.insert(conversation)
+    info(fmt"Created conversation: {conversation.title} (ID: {conversation.id})")
+    result = some(conversation)
+  except Exception as e:
+    error(fmt"Failed to create conversation: {e.msg}")
+    result = none(Conversation)
 
 proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversation] =
   ## Retrieve a conversation by its unique ID
   if backend == nil:
     return none(Conversation)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let query = """
-          SELECT id, created_at, updated_at, session_id, title, is_active,
-                 mode, model_nickname, message_count, last_activity,
-                 plan_mode_entered_at, plan_mode_created_files,
-                 parent_conversation_id, condensed_from_message_count,
-                 condensation_strategy, condensation_metadata
-          FROM conversation
-          WHERE id = ?
-        """
-        
-        let conversations = db.query(Conversation, query, id)
-        if conversations.len > 0:
-          let conv = conversations[0]
-          debug(fmt"Found conversation with ID {id}: {conv.title}")
-          result = some(conv)
-        else:
-          debug(fmt"No conversation found with ID {id}")
-          result = none(Conversation)
-    except Exception as e:
-      error(fmt"Failed to get conversation by ID {id}: {e.msg}")
-      result = none(Conversation)
+
+  try:
+    backend.pool.withDb:
+      let query = """
+        SELECT id, created_at, updated_at, session_id, title, is_active,
+               mode, model_nickname, message_count, last_activity,
+               plan_mode_entered_at, plan_mode_created_files,
+               parent_conversation_id, condensed_from_message_count,
+               condensation_strategy, condensation_metadata
+        FROM conversation
+        WHERE id = ?
+      """
+
+      let conversations = db.query(Conversation, query, id)
+      if conversations.len > 0:
+        let conv = conversations[0]
+        debug(fmt"Found conversation with ID {id}: {conv.title}")
+        result = some(conv)
+      else:
+        debug(fmt"No conversation found with ID {id}")
+        result = none(Conversation)
+  except Exception as e:
+    error(fmt"Failed to get conversation by ID {id}: {e.msg}")
+    result = none(Conversation)
 
 proc updateConversationActivity*(backend: DatabaseBackend, conversationId: int) =
   ## Update the last activity timestamp for a conversation
   if backend == nil or conversationId == 0:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET last_activity = ?, updated_at = ? WHERE id = ?", 
-                 currentTime, currentTime, conversationId)
-        debug(fmt"Updated activity timestamp for conversation {conversationId}")
-    except Exception as e:
-      error(fmt"Failed to update conversation activity: {e.msg}")
+
+  try:
+    backend.pool.withDb:
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET last_activity = ?, updated_at = ? WHERE id = ?",
+               currentTime, currentTime, conversationId)
+      debug(fmt"Updated activity timestamp for conversation {conversationId}")
+  except Exception as e:
+    error(fmt"Failed to update conversation activity: {e.msg}")
 
 proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: int) =
   ## Recalculate and update the message count for a conversation
   if backend == nil or conversationId == 0:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        # Count messages for this conversation
-        let countRows = db.query("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = ?", conversationId)
-        let messageCount = parseInt(countRows[0][0])
-        
-        # Update conversation message count
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET message_count = ?, updated_at = ? WHERE id = ?", 
-                 messageCount, currentTime, conversationId)
-        
-        debug(fmt"Updated message count for conversation {conversationId} to {messageCount}")
-    except Exception as e:
-      error(fmt"Failed to update conversation message count: {e.msg}")
+
+  try:
+    backend.pool.withDb:
+      # Count messages for this conversation
+      let countRows = db.query("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = ?", conversationId)
+      let messageCount = parseInt(countRows[0][0])
+
+      # Update conversation message count
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET message_count = ?, updated_at = ? WHERE id = ?",
+               messageCount, currentTime, conversationId)
+
+      debug(fmt"Updated message count for conversation {conversationId} to {messageCount}")
+  except Exception as e:
+    error(fmt"Failed to update conversation message count: {e.msg}")
 
 proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode: AgentMode) =
   ## Update the agent mode (Plan/Code) for a conversation
   if backend == nil or conversationId == 0:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET mode = ?, updated_at = ? WHERE id = ?", 
-                 $mode, currentTime, conversationId)
-        debug(fmt"Updated mode for conversation {conversationId} to {mode}")
-    except Exception as e:
-      error(fmt"Failed to update conversation mode: {e.msg}")
+
+  try:
+    backend.pool.withDb:
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET mode = ?, updated_at = ? WHERE id = ?",
+               $mode, currentTime, conversationId)
+      debug(fmt"Updated mode for conversation {conversationId} to {mode}")
+  except Exception as e:
+    error(fmt"Failed to update conversation mode: {e.msg}")
 
 proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, modelNickname: string) =
   ## Update the model nickname for a conversation
   if backend == nil or conversationId == 0:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET model_nickname = ?, updated_at = ? WHERE id = ?", 
-                 modelNickname, currentTime, conversationId)
-        debug(fmt"Updated model nickname for conversation {conversationId} to {modelNickname}")
-    except Exception as e:
-      error(fmt"Failed to update conversation model: {e.msg}")
+
+  try:
+    backend.pool.withDb:
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET model_nickname = ?, updated_at = ? WHERE id = ?",
+               modelNickname, currentTime, conversationId)
+      debug(fmt"Updated model nickname for conversation {conversationId} to {modelNickname}")
+  except Exception as e:
+    error(fmt"Failed to update conversation model: {e.msg}")
 
 proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Switch to a specific conversation and restore its context/mode/model settings
@@ -323,100 +309,92 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Archive a conversation (set isActive = false) to hide it from main list
   if backend == nil:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        # First check if the conversation exists
-        let existsRows = db.query("SELECT id, title FROM conversation WHERE id = ?", conversationId)
-        if existsRows.len == 0:
-          debug(fmt"Cannot archive conversation {conversationId}: conversation not found")
-          return false
-        
-        let title = existsRows[0][1]
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET is_active = 0, updated_at = ? WHERE id = ?", 
-                 currentTime, conversationId)
-        
-        info(fmt"Archived conversation {conversationId}: {title}")
-        result = true
-    except Exception as e:
-      error(fmt"Failed to archive conversation {conversationId}: {e.msg}")
-      result = false
+
+  try:
+    backend.pool.withDb:
+      # First check if the conversation exists
+      let existsRows = db.query("SELECT id, title FROM conversation WHERE id = ?", conversationId)
+      if existsRows.len == 0:
+        debug(fmt"Cannot archive conversation {conversationId}: conversation not found")
+        return false
+
+      let title = existsRows[0][1]
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET is_active = 0, updated_at = ? WHERE id = ?",
+               currentTime, conversationId)
+
+      info(fmt"Archived conversation {conversationId}: {title}")
+      result = true
+  except Exception as e:
+    error(fmt"Failed to archive conversation {conversationId}: {e.msg}")
+    result = false
 
 proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Unarchive a conversation (set isActive = true) to restore it to main list
   if backend == nil:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        let currentTime = utcNow()
-        db.query("UPDATE conversation SET is_active = 1, updated_at = ? WHERE id = ?", 
-                 currentTime, conversationId)
-        
-        # Get conversation title for logging
-        let titleRows = db.query("SELECT title FROM conversation WHERE id = ?", conversationId)
-        let title = if titleRows.len > 0: titleRows[0][0] else: "Unknown"
-        
-        info(fmt"Unarchived conversation {conversationId}: {title}")
-        result = true
-    except Exception as e:
-      error(fmt"Failed to unarchive conversation {conversationId}: {e.msg}")
-      result = false
+
+  try:
+    backend.pool.withDb:
+      let currentTime = utcNow()
+      db.query("UPDATE conversation SET is_active = 1, updated_at = ? WHERE id = ?",
+               currentTime, conversationId)
+
+      # Get conversation title for logging
+      let titleRows = db.query("SELECT title FROM conversation WHERE id = ?", conversationId)
+      let title = if titleRows.len > 0: titleRows[0][0] else: "Unknown"
+
+      info(fmt"Unarchived conversation {conversationId}: {title}")
+      result = true
+  except Exception as e:
+    error(fmt"Failed to unarchive conversation {conversationId}: {e.msg}")
+    result = false
 
 proc deleteConversation*(backend: DatabaseBackend, conversationId: int): bool =
   ## Permanently delete a conversation and all its messages (cannot be undone)
   if backend == nil:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      # Delete all messages first
-      backend.pool.withDb:
-        db.query("DELETE FROM conversation_message WHERE conversation_id = ?", conversationId)
-        db.query("DELETE FROM model_token_usage WHERE conversation_id = ?", conversationId)
-        db.query("DELETE FROM conversation WHERE id = ?", conversationId)
-      
-      info(fmt"Deleted conversation {conversationId} and all associated messages")
-      result = true
-    except Exception as e:
-      error(fmt"Failed to delete conversation {conversationId}: {e.msg}")
-      result = false
+
+  try:
+    # Delete all messages first
+    backend.pool.withDb:
+      db.query("DELETE FROM conversation_message WHERE conversation_id = ?", conversationId)
+      db.query("DELETE FROM model_token_usage WHERE conversation_id = ?", conversationId)
+      db.query("DELETE FROM conversation WHERE id = ?", conversationId)
+
+    info(fmt"Deleted conversation {conversationId} and all associated messages")
+    result = true
+  except Exception as e:
+    error(fmt"Failed to delete conversation {conversationId}: {e.msg}")
+    result = false
 
 proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversation] =
   ## Search conversations by title or message content using SQL LIKE patterns
   if backend == nil or query.len == 0:
     return @[]
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    try:
-      backend.pool.withDb:
-        # Search in conversation titles and message content
-        let queryPattern = fmt"%{query}%"
-        let searchQuery = """
-          SELECT DISTINCT c.id, c.created_at, c.updated_at, c.session_id, c.title,
-                 c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity,
-                 c.plan_mode_entered_at, c.plan_mode_created_files,
-                 c.parent_conversation_id, c.condensed_from_message_count,
-                 c.condensation_strategy, c.condensation_metadata
-          FROM conversation c
-          LEFT JOIN conversation_message cm ON c.id = cm.conversation_id
-          WHERE c.title LIKE ? OR cm.content LIKE ?
-          ORDER BY c.last_activity DESC
-        """
-        
-        result = db.query(Conversation, searchQuery, queryPattern, queryPattern)
-        
-        debug(fmt"Found {result.len} conversations matching '{query}'")
-    except Exception as e:
-      error(fmt"Failed to search conversations: {e.msg}")
-      result = @[]
+
+  try:
+    backend.pool.withDb:
+      # Search in conversation titles and message content
+      let queryPattern = fmt"%{query}%"
+      let searchQuery = """
+        SELECT DISTINCT c.id, c.created_at, c.updated_at, c.session_id, c.title,
+               c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity,
+               c.plan_mode_entered_at, c.plan_mode_created_files,
+               c.parent_conversation_id, c.condensed_from_message_count,
+               c.condensation_strategy, c.condensation_metadata
+        FROM conversation c
+        LEFT JOIN conversation_message cm ON c.id = cm.conversation_id
+        WHERE c.title LIKE ? OR cm.content LIKE ?
+        ORDER BY c.last_activity DESC
+      """
+
+      result = db.query(Conversation, searchQuery, queryPattern, queryPattern)
+
+      debug(fmt"Found {result.len} conversations matching '{query}'")
+  except Exception as e:
+    error(fmt"Failed to search conversations: {e.msg}")
+    result = @[]
 
 proc getCurrentConversationInfo*(): string =
   ## Get formatted string with current conversation info for display purposes
