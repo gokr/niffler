@@ -1,7 +1,7 @@
 ## Database Management Module
 ##
 ## This module provides comprehensive database functionality for Niffler:
-## - Support for SQLite and TiDB backends with connection pooling
+## - TiDB (MySQL-compatible) backend with connection pooling
 ## - Conversation management with metadata tracking
 ## - Message persistence with tool call support
 ## - Token usage logging and cost tracking
@@ -9,27 +9,20 @@
 ## - Automatic database migrations and schema management
 ##
 ## Architecture:
-## - Uses debby for database abstraction with connection pooling
-## - Supports both local SQLite and distributed TiDB
+## - Uses debby for MySQL database abstraction with connection pooling
 ## - Thread-safe operations with proper transaction handling
 ## - Efficient querying with prepared statements and indexing
 
 import std/[options, tables, strformat, os, times, strutils, algorithm, logging, json, sequtils]
 import ../types/[config, messages, mode]
 import config
-import debby/sqlite
+import debby/mysql
 import debby/pools
 
 type
-  DatabaseBackendKind* = enum
-    dbkSQLite
-    dbkTiDB
-  
   DatabaseBackend* = ref object
     config*: DatabaseConfig
-    case kind*: DatabaseBackendKind
-    of dbkSQLite, dbkTiDB:
-      pool*: Pool
+    pool*: Pool
   
   TokenLogEntry* = ref object of RootObj
     id*: int
@@ -43,7 +36,7 @@ type
     totalCost*: float
     request*: string
     response*: string
-  
+
   PromptHistoryEntry* = ref object of RootObj
     id*: int
     created_at*: DateTime
@@ -178,17 +171,17 @@ type
     totalOverhead*: int          ## Complete API request overhead
 
 # Database utility functions for query building and schema operations
-proc columnExists*(conn: sqlite.Db, tableName: string, columnName: string): bool =
+proc columnExists*(conn: mysql.Db, tableName: string, columnName: string): bool =
   ## Check if a column exists in a table
-  let tableInfo = conn.query(fmt"PRAGMA table_info({tableName})")
-  return tableInfo.anyIt(it[1] == columnName)
+  let tableInfo = conn.query(fmt"SHOW COLUMNS FROM {tableName} LIKE '{columnName}'")
+  return tableInfo.len > 0
 
-proc indexExists*(conn: sqlite.Db, indexName: string): bool =
+proc indexExists*(conn: mysql.Db, tableName: string, indexName: string): bool =
   ## Check if an index exists in the database
-  let indexList = conn.query(fmt"SELECT name FROM sqlite_master WHERE type='index' AND name='{indexName}'")
+  let indexList = conn.query(fmt"SHOW INDEX FROM {tableName} WHERE Key_name = '{indexName}'")
   return indexList.len > 0
 
-proc addColumnIfNotExists*(conn: sqlite.Db, tableName: string, columnName: string, 
+proc addColumnIfNotExists*(conn: mysql.Db, tableName: string, columnName: string,
                           columnDef: string) =
   ## Add a column to a table if it doesn't already exist
   if not columnExists(conn, tableName, columnName):
@@ -218,32 +211,30 @@ proc deserializeToolCalls*(jsonStr: string): seq[LLMToolCall] =
     error(fmt"Failed to deserialize tool calls: {e.msg}")
     return @[]
 
-proc migrateConversationMessageSchema*(conn: sqlite.Db) =
+proc migrateConversationMessageSchema*(conn: mysql.Db) =
   ## Add new columns to ConversationMessage table for tool call storage
   try:
     # Add new columns using utility functions
     addColumnIfNotExists(conn, "conversation_message", "tool_calls", "TEXT")
     addColumnIfNotExists(conn, "conversation_message", "sequence_id", "INTEGER")
     addColumnIfNotExists(conn, "conversation_message", "message_type", "TEXT DEFAULT 'content'")
-    
-    # Note: Deprecated fields have been manually removed from conversation_message table
-    
+
     debug("ConversationMessage schema migration completed")
   except Exception as e:
     error(fmt"Failed to migrate ConversationMessage schema: {e.msg}")
 
-proc migrateModelTokenUsageSchema*(conn: sqlite.Db) =
+proc migrateModelTokenUsageSchema*(conn: mysql.Db) =
   ## Add thinking token columns to ModelTokenUsage table
   try:
     # Add thinking token columns using utility functions
     addColumnIfNotExists(conn, "model_token_usage", "reasoning_tokens", "INTEGER DEFAULT 0")
-    addColumnIfNotExists(conn, "model_token_usage", "reasoning_cost", "REAL DEFAULT 0.0")
-    
+    addColumnIfNotExists(conn, "model_token_usage", "reasoning_cost", "DOUBLE DEFAULT 0.0")
+
     debug("ModelTokenUsage schema migration completed")
   except Exception as e:
     error(fmt"Failed to migrate ModelTokenUsage schema: {e.msg}")
 
-proc migrateConversationSchema*(conn: sqlite.Db) =
+proc migrateConversationSchema*(conn: mysql.Db) =
   ## Add new columns to Conversation table for mode and model tracking
   try:
     # Add new columns using utility functions
@@ -251,19 +242,19 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     addColumnIfNotExists(conn, "conversation", "model_nickname", "TEXT DEFAULT ''")
     addColumnIfNotExists(conn, "conversation", "message_count", "INTEGER DEFAULT 0")
     addColumnIfNotExists(conn, "conversation", "last_activity", "DATETIME DEFAULT CURRENT_TIMESTAMP")
-    addColumnIfNotExists(conn, "conversation", "plan_mode_entered_at", "DATETIME DEFAULT '1970-01-01T00:00:00'")
-    
+    addColumnIfNotExists(conn, "conversation", "plan_mode_entered_at", "DATETIME DEFAULT '1970-01-01 00:00:00'")
+
     # Update any existing records that have NULL or empty values
     debug("Updating any NULL or empty plan_mode_entered_at values")
-    conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01T00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
-    
+    conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01 00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
+
     # Migrate to new plan_mode_created_files column (changed semantics)
     if not columnExists(conn, "conversation", "plan_mode_created_files"):
       debug("Adding plan_mode_created_files column to conversation table")
       conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_created_files TEXT")
       # Clear old protection data since semantics changed completely
       debug("Clearing old plan mode protection data due to semantic change")
-      conn.query("UPDATE conversation SET plan_mode_created_files = '', plan_mode_entered_at = '1970-01-01T00:00:00'")
+      conn.query("UPDATE conversation SET plan_mode_created_files = '', plan_mode_entered_at = '1970-01-01 00:00:00'")
 
     # Add condensation support columns
     addColumnIfNotExists(conn, "conversation", "parent_conversation_id", "INTEGER")
@@ -272,9 +263,9 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
     addColumnIfNotExists(conn, "conversation", "condensation_metadata", "TEXT DEFAULT '{}'")
 
     # Create index for parent conversation lookups
-    if not indexExists(conn, "idx_conversation_parent_id"):
+    if not indexExists(conn, "conversation", "idx_conversation_parent_id"):
       debug("Creating index idx_conversation_parent_id")
-      conn.query("CREATE INDEX IF NOT EXISTS idx_conversation_parent_id ON conversation(parent_conversation_id)")
+      conn.query("CREATE INDEX idx_conversation_parent_id ON conversation(parent_conversation_id)")
 
     debug("Conversation schema migration completed")
   except Exception as e:
@@ -282,225 +273,226 @@ proc migrateConversationSchema*(conn: sqlite.Db) =
 
 proc initializeDatabase*(backend: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      # When running this for the first time, it will create the tables
-      if not db.tableExists(TokenLogEntry):
-        db.createTable(TokenLogEntry)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(TokenLogEntry, "model")
-        db.createIndexIfNotExists(TokenLogEntry, "created_at")
-      
-      if not db.tableExists(PromptHistoryEntry):
-        db.createTable(PromptHistoryEntry)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
-        db.createIndexIfNotExists(PromptHistoryEntry, "sessionId")
-      
-      # Create new conversation tracking tables
-      if not db.tableExists(Conversation):
-        db.createTable(Conversation)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(Conversation, "sessionId")
-        db.createIndexIfNotExists(Conversation, "isActive")
-      
-      if not db.tableExists(ConversationMessage):
-        db.createTable(ConversationMessage)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(ConversationMessage, "conversationId")
-        db.createIndexIfNotExists(ConversationMessage, "model")
-        db.createIndexIfNotExists(ConversationMessage, "created_at")
-      
-      # Run schema migrations to add new columns
-      migrateConversationMessageSchema(db)
-      migrateConversationSchema(db)
-      migrateModelTokenUsageSchema(db)
-      
-      if not db.tableExists(ModelTokenUsage):
-        db.createTable(ModelTokenUsage)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
-        db.createIndexIfNotExists(ModelTokenUsage, "model")
-        db.createIndexIfNotExists(ModelTokenUsage, "created_at")
-      
-      # Create thinking token storage table
-      if not db.tableExists(ConversationThinkingToken):
-        db.createTable(ConversationThinkingToken)
-        # Create indexes for better performance
-        db.createIndexIfNotExists(ConversationThinkingToken, "conversationId")
-        db.createIndexIfNotExists(ConversationThinkingToken, "messageId")
-        db.createIndexIfNotExists(ConversationThinkingToken, "created_at")
-        db.createIndexIfNotExists(ConversationThinkingToken, "importanceLevel")
-        db.createIndexIfNotExists(ConversationThinkingToken, "providerFormat")
-      
-      # Create todo system tables
-      if not db.tableExists(TodoList):
-        db.createTable(TodoList)
-        db.createIndexIfNotExists(TodoList, "conversationId")
-        db.createIndexIfNotExists(TodoList, "isActive")
-      
-      if not db.tableExists(TodoItem):
-        db.createTable(TodoItem)
-        db.createIndexIfNotExists(TodoItem, "listId")
-        db.createIndexIfNotExists(TodoItem, "state")
-        db.createIndexIfNotExists(TodoItem, "orderIndex")
+  backend.pool.withDb:
+    # When running this for the first time, it will create the tables
+    if not db.tableExists(TokenLogEntry):
+      db.createTable(TokenLogEntry)
+      # Create indexes for better performance (TEXT columns need key length)
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_log_entry_model ON token_log_entry (model(255))")
+      db.createIndexIfNotExists(TokenLogEntry, "created_at")
 
-      # Create token correction factor table
-      if not db.tableExists(TokenCorrectionFactor):
-        db.createTable(TokenCorrectionFactor)
-        db.createIndexIfNotExists(TokenCorrectionFactor, "modelName")
-        db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
+    if not db.tableExists(PromptHistoryEntry):
+      db.createTable(PromptHistoryEntry)
+      # Create indexes for better performance (TEXT columns need key length)
+      db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_prompt_history_entry_session_id ON prompt_history_entry (session_id(255))")
 
-      # Create system prompt token usage table
-      if not db.tableExists(SystemPromptTokenUsage):
-        db.createTable(SystemPromptTokenUsage)
-        db.createIndexIfNotExists(SystemPromptTokenUsage, "conversationId")
-        db.createIndexIfNotExists(SystemPromptTokenUsage, "messageId")
-        db.createIndexIfNotExists(SystemPromptTokenUsage, "createdAt")
-        db.createIndexIfNotExists(SystemPromptTokenUsage, "model")
+    # Create new conversation tracking tables
+    if not db.tableExists(Conversation):
+      db.createTable(Conversation)
+      # Create indexes for better performance (TEXT columns need key length)
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_session_id ON conversation (session_id(255))")
+      db.createIndexIfNotExists(Conversation, "isActive")
+
+    if not db.tableExists(ConversationMessage):
+      db.createTable(ConversationMessage)
+      # Create indexes for better performance (TEXT columns need key length)
+      db.createIndexIfNotExists(ConversationMessage, "conversationId")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_message_model ON conversation_message (model(255))")
+      db.createIndexIfNotExists(ConversationMessage, "created_at")
+
+    # Run schema migrations to add new columns
+    migrateConversationMessageSchema(db)
+    migrateConversationSchema(db)
+    migrateModelTokenUsageSchema(db)
+
+    if not db.tableExists(ModelTokenUsage):
+      db.createTable(ModelTokenUsage)
+      # Create indexes for better performance (TEXT columns need key length)
+      db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_model_token_usage_model ON model_token_usage (model(255))")
+      db.createIndexIfNotExists(ModelTokenUsage, "created_at")
+
+    # Create thinking token storage table
+    if not db.tableExists(ConversationThinkingToken):
+      db.createTable(ConversationThinkingToken)
+      # Create indexes for better performance (TEXT columns need key length)
+      db.createIndexIfNotExists(ConversationThinkingToken, "conversationId")
+      db.createIndexIfNotExists(ConversationThinkingToken, "messageId")
+      db.createIndexIfNotExists(ConversationThinkingToken, "created_at")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_thinking_token_importance_level ON conversation_thinking_token (importance_level(50))")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_thinking_token_provider_format ON conversation_thinking_token (provider_format(50))")
+
+    # Create todo system tables
+    if not db.tableExists(TodoList):
+      db.createTable(TodoList)
+      db.createIndexIfNotExists(TodoList, "conversationId")
+      db.createIndexIfNotExists(TodoList, "isActive")
+
+    if not db.tableExists(TodoItem):
+      db.createTable(TodoItem)
+      db.createIndexIfNotExists(TodoItem, "listId")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_todo_item_state ON todo_item (state(50))")
+      db.createIndexIfNotExists(TodoItem, "orderIndex")
+
+    # Create token correction factor table
+    if not db.tableExists(TokenCorrectionFactor):
+      db.createTable(TokenCorrectionFactor)
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_correction_factor_model_name ON token_correction_factor (model_name(255))")
+      db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
+
+    # Create system prompt token usage table
+    if not db.tableExists(SystemPromptTokenUsage):
+      db.createTable(SystemPromptTokenUsage)
+      db.createIndexIfNotExists(SystemPromptTokenUsage, "conversationId")
+      db.createIndexIfNotExists(SystemPromptTokenUsage, "messageId")
+      db.createIndexIfNotExists(SystemPromptTokenUsage, "createdAt")
+      discard db.query("CREATE INDEX IF NOT EXISTS idx_system_prompt_token_usage_model ON system_prompt_token_usage (model(255))")
 
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      db.checkTable(TokenLogEntry)
-      db.checkTable(PromptHistoryEntry)
-      db.checkTable(Conversation)
-      db.checkTable(ConversationMessage)
-      db.checkTable(ModelTokenUsage)
-      db.checkTable(ConversationThinkingToken)
-      db.checkTable(TodoList)
-      db.checkTable(TodoItem)
-      db.checkTable(TokenCorrectionFactor)
-      db.checkTable(SystemPromptTokenUsage)
+  backend.pool.withDb:
+    db.checkTable(TokenLogEntry)
+    db.checkTable(PromptHistoryEntry)
+    db.checkTable(Conversation)
+    db.checkTable(ConversationMessage)
+    db.checkTable(ModelTokenUsage)
+    db.checkTable(ConversationThinkingToken)
+    db.checkTable(TodoList)
+    db.checkTable(TodoItem)
+    db.checkTable(TokenCorrectionFactor)
+    db.checkTable(SystemPromptTokenUsage)
   echo "Database checked"
 
 proc init*(backend: DatabaseBackend) =
-  case backend.kind:
-  of dbkSQLite:
-    let fullPath = backend.config.path.get()
-    
+  let host = backend.config.host
+  let port = backend.config.port
+  let database = backend.config.database
+  let username = backend.config.username
+  let password = backend.config.password
+
+  try:
+    echo fmt"Connecting to TiDB at {host}:{port}/{database}"
+
+    # First, ensure the database exists by connecting to the mysql system database
+    var dbCreated = false
     try:
-      # Create directory if it doesn't exist
-      createDir(parentDir(fullPath))
-      
-      # Check if file is missing
-      if not fileExists(fullPath):
-        echo "Creating Sqlite3 database at: ", fullPath
+      var sysDb = mysql.openDatabase("mysql", host, port, username, password)
 
-      # Create connection pool
-      let poolSize = backend.config.poolSize
-      backend.pool = newPool()
-      for i in 0 ..< poolSize:
-        backend.pool.add sqlite.openDatabase(fullPath)
+      # Use CREATE DATABASE IF NOT EXISTS to auto-create the database
+      discard sysDb.query(fmt"CREATE DATABASE IF NOT EXISTS {database}")
+      dbCreated = true
+      echo fmt"Verified/created database '{database}'"
 
-      # Configure connections with WAL mode and timeouts
-      if backend.config.walMode or backend.config.busyTimeout > 0:
-        backend.pool.withDb:
-          # Enable WAL mode for better concurrency
-          if backend.config.walMode:
-            db.query("PRAGMA journal_mode=WAL")
-            db.query("PRAGMA synchronous=NORMAL")
-          
-          # Set busy timeout
-          if backend.config.busyTimeout > 0:
-            db.query(fmt"PRAGMA busy_timeout = {backend.config.busyTimeout}")
-      
-      # Create tables using debby's ORM
-      backend.initializeDatabase()
-      
-      echo "Database pool initialized successfully at: ", fullPath, " with ", poolSize, " connections"
+      sysDb.close()
     except Exception as e:
-      error(fmt"Failed to initialize SQLite database pool: {e.msg}")
-      raise e
-  
-  of dbkTiDB:
-    #let host = db.config.host.get("localhost")
-    #let port = db.config.port.get(4000)
-    #let database = db.config.database.get("niffler")
-    #let username = db.config.username.get("root")
-    #let password = db.config.password.get("")
-    
-    # For now, use SQLite as a placeholder
-    # In a real implementation, this would connect to TiDB using MySQL driver
-    echo "Tidb backend not yet ready"
-    #db.createTables()
+      let errorMsg = e.msg.toLowerAscii()
+      if "access denied" in errorMsg or "permission" in errorMsg:
+        error(fmt"Cannot create database '{database}': permission denied")
+        error("")
+        error(fmt"The database user '{username}' does not have permission to create databases.")
+        error("Please create the database using one of these methods:")
+        error("")
+        error(fmt"  1. Using mysql client (if installed):")
+        error(fmt"     mysql -h {host} -P {port} -u <admin_user> -p -e " & "\"CREATE DATABASE " & database & "\"")
+        error("")
+        error("  2. Using TiDB Cloud console (if using cloud):")
+        error("     https://tidbcloud.com - navigate to your cluster and create database")
+        error("")
+        error("  3. Have your database administrator create it for you")
+        error("")
+        raise e
+      else:
+        warn(fmt"Could not verify/create database: {e.msg}")
+        # Continue anyway - the database might already exist
+
+    # Create connection pool
+    let poolSize = backend.config.poolSize
+    backend.pool = newPool()
+    for i in 0 ..< poolSize:
+      try:
+        backend.pool.add mysql.openDatabase(database, host, port, username, password)
+      except Exception as e:
+        if "Unknown database" in e.msg:
+          error(fmt"Database '{database}' does not exist and could not be auto-created")
+          error("")
+          error("Please create the database using one of these methods:")
+          error("")
+          error(fmt"  1. Using mysql client (if installed):")
+          error(fmt"     mysql -h {host} -P {port} -u root -p -e " & "\"CREATE DATABASE " & database & "\"")
+          error("")
+          error("  2. Using TiDB Cloud console (if using cloud):")
+          error("     https://tidbcloud.com - navigate to your cluster and create database")
+          error("")
+          error("  3. Contact your database administrator")
+          error("")
+          raise e
+        else:
+          raise e
+
+    # Create tables using debby's ORM
+    backend.initializeDatabase()
+
+    echo fmt"Database pool initialized successfully with {poolSize} connections to {host}:{port}/{database}"
+  except Exception as e:
+    error(fmt"Failed to initialize TiDB database pool: {e.msg}")
+    raise e
 
 proc close*(backend: DatabaseBackend) =
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    if cast[pointer](backend.pool) != nil:
-      backend.pool.close()
+  if cast[pointer](backend.pool) != nil:
+    backend.pool.close()
 
 proc logTokenUsage*(backend: DatabaseBackend, entry: TokenLogEntry) =
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      # Insert using debby's ORM
-      db.insert(entry)
+  backend.pool.withDb:
+    # Insert using debby's ORM
+    db.insert(entry)
 
 proc getTokenStats*(backend: DatabaseBackend, model: string, startDate, endDate: DateTime): tuple[totalInputTokens: int, totalOutputTokens: int, totalCost: float] =
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    # Query using debby's ORM - directly use startDate and endDate in filter
-    let entries = if model.len > 0:
-      backend.pool.filter(TokenLogEntry, it.model == model and it.created_at >= startDate and it.created_at <= endDate)
-    else:
-      backend.pool.filter(TokenLogEntry, it.created_at >= startDate and it.created_at <= endDate)
-    
-    # Calculate totals
-    result = (0, 0, 0.0)
-    for entry in entries:
-      result.totalInputTokens += entry.inputTokens
-      result.totalOutputTokens += entry.outputTokens
-      result.totalCost += entry.totalCost
+  # Query using debby's ORM - directly use startDate and endDate in filter
+  let entries = if model.len > 0:
+    backend.pool.filter(TokenLogEntry, it.model == model and it.created_at >= startDate and it.created_at <= endDate)
+  else:
+    backend.pool.filter(TokenLogEntry, it.created_at >= startDate and it.created_at <= endDate)
+
+  # Calculate totals
+  result = (0, 0, 0.0)
+  for entry in entries:
+    result.totalInputTokens += entry.inputTokens
+    result.totalOutputTokens += entry.outputTokens
+    result.totalCost += entry.totalCost
 
 proc logPromptHistory*(backend: DatabaseBackend, entry: PromptHistoryEntry) =
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      # Insert using debby's ORM
-      db.insert(entry)
+  backend.pool.withDb:
+    # Insert using debby's ORM
+    db.insert(entry)
 
 
 
 proc getPromptHistory*(backend: DatabaseBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
   ## Return history entries, latest comes first in the seq
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      result = if sessionId.len > 0:
-        db.query(PromptHistoryEntry, 
-          fmt"SELECT * FROM prompt_history_entry WHERE session_id = '{sessionId}' ORDER BY created_at ASC LIMIT {maxEntries}")
-      else:
-        db.query(PromptHistoryEntry, 
-          fmt"SELECT * FROM prompt_history_entry ORDER BY created_at ASC LIMIT {maxEntries}")
+  backend.pool.withDb:
+    result = if sessionId.len > 0:
+      db.query(PromptHistoryEntry,
+        fmt"SELECT * FROM prompt_history_entry WHERE session_id = '{sessionId}' ORDER BY created_at ASC LIMIT {maxEntries}")
+    else:
+      db.query(PromptHistoryEntry,
+        fmt"SELECT * FROM prompt_history_entry ORDER BY created_at ASC LIMIT {maxEntries}")
 
 proc getRecentPrompts*(backend: DatabaseBackend, maxEntries: int = 20): seq[string] =
   ## Return history prompts, latest comes first in the seq
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let entries = db.query(PromptHistoryEntry, 
-        fmt"SELECT * FROM prompt_history_entry WHERE user_prompt != '' ORDER BY created_at DESC LIMIT {maxEntries}")
-      result = entries.map(proc(entry: PromptHistoryEntry): string = entry.userPrompt)
+  backend.pool.withDb:
+    let entries = db.query(PromptHistoryEntry,
+      fmt"SELECT * FROM prompt_history_entry WHERE user_prompt != '' ORDER BY created_at DESC LIMIT {maxEntries}")
+    result = entries.map(proc(entry: PromptHistoryEntry): string = entry.userPrompt)
 
 # Factory function to create database backend
 proc createDatabaseBackend*(config: DatabaseConfig): DatabaseBackend =
   if not config.enabled:
     return nil
-  
-  case config.`type`:
-  of dtSQLite:
-    let backend = DatabaseBackend(config: config, kind: dbkSQLite)
-    backend.init()
-    return backend
-  of dtTiDB:
-    let backend = DatabaseBackend(config: config, kind: dbkTiDB)
-    backend.init()
-    return backend
+
+  let backend = DatabaseBackend(config: config)
+  backend.init()
+  return backend
 
 # Helper functions
 proc logTokenUsage*(backend: DatabaseBackend, model: string, inputTokens, outputTokens: int, 
@@ -555,25 +547,23 @@ proc startConversation*(backend: DatabaseBackend, sessionId: string, title: stri
   ## Start a new conversation and return its ID
   if backend == nil:
     return 0
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    let conv = Conversation(
-      id: 0,
-      created_at: now().utc(),
-      updated_at: now().utc(),
-      sessionId: sessionId,
-      title: title,
-      isActive: true,
-      mode: amCode,  # Default mode
-      modelNickname: "default",  # Default model
-      messageCount: 0,
-      lastActivity: now().utc(),
-      planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
-      planModeCreatedFiles: ""  # Initialize to empty string
-    )
-    backend.pool.insert(conv)
-    return conv.id
+
+  let conv = Conversation(
+    id: 0,
+    created_at: now().utc(),
+    updated_at: now().utc(),
+    sessionId: sessionId,
+    title: title,
+    isActive: true,
+    mode: amCode,  # Default mode
+    modelNickname: "default",  # Default model
+    messageCount: 0,
+    lastActivity: now().utc(),
+    planModeEnteredAt: fromUnix(0).utc(),  # Initialize to epoch (not in plan mode)
+    planModeCreatedFiles: ""  # Initialize to empty string
+  )
+  backend.pool.insert(conv)
+  return conv.id
 
 proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role: string,
                            content: string, model: string, toolCallId: Option[string] = none(string),
@@ -582,23 +572,20 @@ proc logConversationMessage*(backend: DatabaseBackend, conversationId: int, role
   if backend == nil or conversationId == 0:
     return
 
-  # First ensure content is not nil before validation
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    let msg = ConversationMessage(
-      id: 0,
-      conversationId: conversationId,
-      created_at: now().utc(),
-      role: role,
-      content: content,
-      toolCallId: toolCallId,
-      model: model,
-      outputTokens: outputTokens,
-      toolCalls: none(string),
-      sequenceId: none(int),
-      messageType: "content"
-    )
-    backend.pool.insert(msg)
+  let msg = ConversationMessage(
+    id: 0,
+    conversationId: conversationId,
+    created_at: now().utc(),
+    role: role,
+    content: content,
+    toolCallId: toolCallId,
+    model: model,
+    outputTokens: outputTokens,
+    toolCalls: none(string),
+    sequenceId: none(int),
+    messageType: "content"
+  )
+  backend.pool.insert(msg)
 
 proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageId: int,
                         model: string, inputTokens: int, outputTokens: int,
@@ -621,34 +608,32 @@ proc logModelTokenUsage*(backend: DatabaseBackend, conversationId: int, messageI
   else: 0.0
   
   let totalCost = inputCost + outputCost + reasoningCost
-  
+
   debug(fmt"logModelTokenUsage: conversationId={conversationId}, messageId={messageId}, model={model}")
   debug(fmt"logModelTokenUsage: tokens=({inputTokens}, {outputTokens}, {reasoningTokens}), costs=({inputCost:.6f}, {outputCost:.6f}, {reasoningCost:.6f}, {totalCost:.6f})")
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    let usage = ModelTokenUsage(
-      id: 0,
-      conversationId: conversationId,
-      messageId: messageId,
-      created_at: now().utc(),
-      model: model,
-      inputTokens: inputTokens,
-      outputTokens: outputTokens,
-      inputCost: inputCost,
-      outputCost: outputCost,
-      totalCost: totalCost,
-      reasoningTokens: reasoningTokens,
-      reasoningCost: reasoningCost
-    )
-    
-    try:
-      backend.pool.insert(usage)
-      debug(fmt"Successfully inserted token usage record with ID: {usage.id}")
-    except Exception as e:
-      error(fmt"Failed to insert token usage to database: {e.msg}")
-      error(fmt"Insert error stack trace: {e.getStackTrace()}")
-      raise
+
+  let usage = ModelTokenUsage(
+    id: 0,
+    conversationId: conversationId,
+    messageId: messageId,
+    created_at: now().utc(),
+    model: model,
+    inputTokens: inputTokens,
+    outputTokens: outputTokens,
+    inputCost: inputCost,
+    outputCost: outputCost,
+    totalCost: totalCost,
+    reasoningTokens: reasoningTokens,
+    reasoningCost: reasoningCost
+  )
+
+  try:
+    backend.pool.insert(usage)
+    debug(fmt"Successfully inserted token usage record with ID: {usage.id}")
+  except Exception as e:
+    error(fmt"Failed to insert token usage to database: {e.msg}")
+    error(fmt"Insert error stack trace: {e.getStackTrace()}")
+    raise
 
 type
   ConversationCostRow* = ref object of RootObj
@@ -693,88 +678,82 @@ proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int)
   ## Calculate detailed cost breakdown by model for a conversation with reasoning token analysis
   if backend == nil or conversationId == 0:
     return (@[], 0.0, 0, 0, 0, 0.0, 0.0, 0.0)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      # Group by model and sum costs including reasoning tokens
-      let query = """
-        SELECT model,
-              SUM(input_tokens) as total_input_tokens,
-              SUM(output_tokens) as total_output_tokens,
-              SUM(reasoning_tokens) as total_reasoning_tokens,
-              SUM(input_cost) as total_input_cost,
-              SUM(output_cost) as total_output_cost,
-              SUM(reasoning_cost) as total_reasoning_cost,
-              SUM(total_cost) as total_model_cost
-        FROM model_token_usage
-        WHERE conversation_id = ?
-        GROUP BY model
-        ORDER BY SUM(total_cost) DESC
-      """
-      
-      result.rows = db.query(ConversationCostRow, query, conversationId)
-      result.totalCost = 0.0
-      result.totalInput = 0
-      result.totalOutput = 0
-      result.totalReasoning = 0
-      result.totalInputCost = 0.0
-      result.totalOutputCost = 0.0
-      result.totalReasoningCost = 0.0
-      
-      for modelRow in result.rows:
-        result.totalCost += modelRow.totalModelCost
-        result.totalInput += modelRow.totalInputTokens
-        result.totalOutput += modelRow.totalOutputTokens
-        result.totalReasoning += modelRow.totalReasoningTokens
-        result.totalInputCost += modelRow.totalInputCost
-        result.totalOutputCost += modelRow.totalOutputCost
-        result.totalReasoningCost += modelRow.totalReasoningCost
+
+  backend.pool.withDb:
+    # Group by model and sum costs including reasoning tokens
+    let query = """
+      SELECT model,
+            SUM(input_tokens) as total_input_tokens,
+            SUM(output_tokens) as total_output_tokens,
+            SUM(reasoning_tokens) as total_reasoning_tokens,
+            SUM(input_cost) as total_input_cost,
+            SUM(output_cost) as total_output_cost,
+            SUM(reasoning_cost) as total_reasoning_cost,
+            SUM(total_cost) as total_model_cost
+      FROM model_token_usage
+      WHERE conversation_id = ?
+      GROUP BY model
+      ORDER BY SUM(total_cost) DESC
+    """
+
+    result.rows = db.query(ConversationCostRow, query, conversationId)
+    result.totalCost = 0.0
+    result.totalInput = 0
+    result.totalOutput = 0
+    result.totalReasoning = 0
+    result.totalInputCost = 0.0
+    result.totalOutputCost = 0.0
+    result.totalReasoningCost = 0.0
+
+    for modelRow in result.rows:
+      result.totalCost += modelRow.totalModelCost
+      result.totalInput += modelRow.totalInputTokens
+      result.totalOutput += modelRow.totalOutputTokens
+      result.totalReasoning += modelRow.totalReasoningTokens
+      result.totalInputCost += modelRow.totalInputCost
+      result.totalOutputCost += modelRow.totalOutputCost
+      result.totalReasoningCost += modelRow.totalReasoningCost
 
 proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: int): tuple[totalReasoning: int, totalOutput: int, reasoningPercent: float] =
   ## Get reasoning token statistics for a conversation
   if backend == nil or conversationId == 0:
     return (0, 0, 0.0)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let query = """
-        SELECT SUM(reasoning_tokens) as totalReasoning,
-               SUM(output_tokens) as totalOutput
-        FROM model_token_usage
-        WHERE conversation_id = ?
-      """
-      
-      let stats = db.query(ReasoningTokenStats, query, conversationId)
-      if stats.len > 0:
-        let stat = stats[0]
-        result.totalReasoning = stat.totalReasoning
-        result.totalOutput = stat.totalOutput
-        result.reasoningPercent = if result.totalOutput > 0:
-          (result.totalReasoning.float / result.totalOutput.float) * 100.0
-        else:
-          0.0
+
+  backend.pool.withDb:
+    let query = """
+      SELECT SUM(reasoning_tokens) as totalReasoning,
+             SUM(output_tokens) as totalOutput
+      FROM model_token_usage
+      WHERE conversation_id = ?
+    """
+
+    let stats = db.query(ReasoningTokenStats, query, conversationId)
+    if stats.len > 0:
+      let stat = stats[0]
+      result.totalReasoning = stat.totalReasoning
+      result.totalOutput = stat.totalOutput
+      result.reasoningPercent = if result.totalOutput > 0:
+        (result.totalReasoning.float / result.totalOutput.float) * 100.0
+      else:
+        0.0
 
 proc getConversationThinkingTokens*(backend: DatabaseBackend, conversationId: int): int =
   ## Get total thinking tokens from conversation_thinking_token table
   if backend == nil or conversationId == 0:
     return 0
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let query = """
-        SELECT SUM(token_count) as totalThinking
-        FROM conversation_thinking_token
-        WHERE conversation_id = ?
-      """
-      
-      let rows = db.query(query, conversationId)
-      if rows.len > 0 and rows[0][0] != "" and rows[0][0] != "NULL":
-        result = parseInt(rows[0][0])
-      else:
-        result = 0
+
+  backend.pool.withDb:
+    let query = """
+      SELECT SUM(token_count) as totalThinking
+      FROM conversation_thinking_token
+      WHERE conversation_id = ?
+    """
+
+    let rows = db.query(query, conversationId)
+    if rows.len > 0 and rows[0][0] != "" and rows[0][0] != "NULL":
+      result = parseInt(rows[0][0])
+    else:
+      result = 0
 
 proc getConversationCostBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[totalCost: float, breakdown: seq[string]] =
   ## Calculate accurate cost breakdown by model for a conversation (legacy function)
@@ -792,62 +771,58 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
   ## Calculate session cost breakdown since app start time
   if backend == nil:
     return (0.0, 0.0, 0.0, 0.0, 0, 0, 0)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let query = """
-        SELECT SUM(input_tokens) as total_input_tokens,
-               SUM(output_tokens) as total_output_tokens,
-               SUM(reasoning_tokens) as total_reasoning_tokens,
-               SUM(input_cost) as total_input_cost,
-               SUM(output_cost) as total_output_cost,
-               SUM(reasoning_cost) as total_reasoning_cost,
-               SUM(total_cost) as total_cost,
-               COUNT(*) as row_count
-        FROM model_token_usage
-        WHERE created_at >= ?
-      """
-      
-      let timestampStr = $appStartTime
-      debug(fmt"Session cost query: timestamp={timestampStr}")
-      let stats = db.query(SessionCostStats, query, timestampStr)
-      debug(fmt"Session cost query returned {stats.len} rows")
-      if stats.len > 0:
-        let stat = stats[0]
-        debug(fmt"Session cost raw data: tokens=({stat.totalInputTokens}, {stat.totalOutputTokens}, {stat.totalReasoningTokens}), cost={stat.totalCost}")
-        result.inputTokens = stat.totalInputTokens
-        result.outputTokens = stat.totalOutputTokens
-        result.reasoningTokens = stat.totalReasoningTokens
-        result.inputCost = stat.totalInputCost
-        result.outputCost = stat.totalOutputCost
-        result.reasoningCost = stat.totalReasoningCost
-        result.totalCost = stat.totalCost
-        debug(fmt"Session cost breakdown: total={result.totalCost}, input={result.inputTokens}, output={result.outputTokens}")
+
+  backend.pool.withDb:
+    let query = """
+      SELECT SUM(input_tokens) as total_input_tokens,
+             SUM(output_tokens) as total_output_tokens,
+             SUM(reasoning_tokens) as total_reasoning_tokens,
+             SUM(input_cost) as total_input_cost,
+             SUM(output_cost) as total_output_cost,
+             SUM(reasoning_cost) as total_reasoning_cost,
+             SUM(total_cost) as total_cost,
+             COUNT(*) as row_count
+      FROM model_token_usage
+      WHERE created_at >= ?
+    """
+
+    let timestampStr = $appStartTime
+    debug(fmt"Session cost query: timestamp={timestampStr}")
+    let stats = db.query(SessionCostStats, query, timestampStr)
+    debug(fmt"Session cost query returned {stats.len} rows")
+    if stats.len > 0:
+      let stat = stats[0]
+      debug(fmt"Session cost raw data: tokens=({stat.totalInputTokens}, {stat.totalOutputTokens}, {stat.totalReasoningTokens}), cost={stat.totalCost}")
+      result.inputTokens = stat.totalInputTokens
+      result.outputTokens = stat.totalOutputTokens
+      result.reasoningTokens = stat.totalReasoningTokens
+      result.inputCost = stat.totalInputCost
+      result.outputCost = stat.totalOutputCost
+      result.reasoningCost = stat.totalReasoningCost
+      result.totalCost = stat.totalCost
+      debug(fmt"Session cost breakdown: total={result.totalCost}, input={result.inputTokens}, output={result.outputTokens}")
 
 proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: int): tuple[userTokens: int, assistantTokens: int, toolTokens: int] =
   ## Get token breakdown by message type for current conversation
   if backend == nil or conversationId == 0:
     return (0, 0, 0)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let query = """
-        SELECT cm.role,
-               SUM(mtu.input_tokens + mtu.output_tokens + mtu.reasoning_tokens) as totalTokens
-        FROM conversation_message cm
-        LEFT JOIN model_token_usage mtu ON cm.id = mtu.message_id
-        WHERE cm.conversation_id = ?
-        GROUP BY cm.role
-      """
-      
-      let tokenRows = db.query(TokenBreakdownRow, query, conversationId)
-      for tokenRow in tokenRows:
-        case tokenRow.role:
-        of "user": result.userTokens = tokenRow.totalTokens
-        of "assistant": result.assistantTokens = tokenRow.totalTokens
-        of "tool": result.toolTokens = tokenRow.totalTokens
+
+  backend.pool.withDb:
+    let query = """
+      SELECT cm.role,
+             SUM(mtu.input_tokens + mtu.output_tokens + mtu.reasoning_tokens) as totalTokens
+      FROM conversation_message cm
+      LEFT JOIN model_token_usage mtu ON cm.id = mtu.message_id
+      WHERE cm.conversation_id = ?
+      GROUP BY cm.role
+    """
+
+    let tokenRows = db.query(TokenBreakdownRow, query, conversationId)
+    for tokenRow in tokenRows:
+      case tokenRow.role:
+      of "user": result.userTokens = tokenRow.totalTokens
+      of "assistant": result.assistantTokens = tokenRow.totalTokens
+      of "tool": result.toolTokens = tokenRow.totalTokens
 
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =
@@ -1044,33 +1019,31 @@ proc verifyDatabaseHealth*(): bool =
   let database = getGlobalDatabase()
   if database == nil:
     return false
-  
-  case database.kind:
-  of dbkSQLite, dbkTiDB:
-    database.pool.withDb:
-      try:
-        # Check if all required tables exist
-        if not db.tableExists(TokenLogEntry):
-          warn("TokenLogEntry table missing")
-          return false
-        if not db.tableExists(PromptHistoryEntry):
-          warn("PromptHistoryEntry table missing")
-          return false
-        if not db.tableExists(Conversation):
-          warn("Conversation table missing")
-          return false
-        if not db.tableExists(ConversationMessage):
-          warn("ConversationMessage table missing")
-          return false
-        if not db.tableExists(ModelTokenUsage):
-          warn("ModelTokenUsage table missing")
-          return false
-        
-        debug("Database health check passed")
-        return true
-      except Exception as e:
-        error(fmt"Database health check failed: {e.msg}")
+
+  database.pool.withDb:
+    try:
+      # Check if all required tables exist
+      if not db.tableExists(TokenLogEntry):
+        warn("TokenLogEntry table missing")
         return false
+      if not db.tableExists(PromptHistoryEntry):
+        warn("PromptHistoryEntry table missing")
+        return false
+      if not db.tableExists(Conversation):
+        warn("Conversation table missing")
+        return false
+      if not db.tableExists(ConversationMessage):
+        warn("ConversationMessage table missing")
+        return false
+      if not db.tableExists(ModelTokenUsage):
+        warn("ModelTokenUsage table missing")
+        return false
+
+      debug("Database health check passed")
+      return true
+    except Exception as e:
+      error(fmt"Database health check failed: {e.msg}")
+      return false
 
 proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
   ## Initialize global database backend from configuration
@@ -1090,17 +1063,18 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
         debug("Database backend disabled in configuration")
         result = nil
     else:
-      # No database configuration found - create default SQLite configuration
-      debug("No database configuration found, creating default SQLite database")
+      # No database configuration found - create default TiDB configuration
+      debug("No database configuration found, creating default TiDB database")
       let defaultDbConfig = DatabaseConfig(
-        `type`: dtSQLite,
         enabled: true,
-        path: some(getDefaultSqlitePath()),
-        walMode: true,
-        busyTimeout: 5000,
+        host: "127.0.0.1",
+        port: 4000,
+        database: "niffler",
+        username: "root",
+        password: "",
         poolSize: 10
       )
-      
+
       result = createDatabaseBackend(defaultDbConfig)
       if result != nil:
         debug("Default database backend initialized successfully")
@@ -1172,205 +1146,187 @@ proc logTokenUsageFromRequest*(requestModel: string, finalUsage: TokenUsage, con
     except Exception as e:
       error(fmt"Failed to log token usage: {e.msg}")
 
-proc logSystemPromptTokenUsage*(backend: DatabaseBackend, conversationId: int, messageId: int, 
+proc logSystemPromptTokenUsage*(backend: DatabaseBackend, conversationId: int, messageId: int,
                                model: string, mode: string, basePromptTokens: int, modePromptTokens: int,
                                environmentTokens: int, instructionFileTokens: int, toolInstructionTokens: int,
                                availableToolsTokens: int, systemPromptTotal: int, toolSchemaTokens: int) =
   ## Log system prompt token breakdown for overhead analysis
   if backend == nil:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let entry = SystemPromptTokenUsage(
-          conversationId: conversationId,
-          messageId: messageId,
-          createdAt: now().utc(),
-          model: model,
-          mode: mode,
-          basePromptTokens: basePromptTokens,
-          modePromptTokens: modePromptTokens,
-          environmentTokens: environmentTokens,
-          instructionFileTokens: instructionFileTokens,
-          toolInstructionTokens: toolInstructionTokens,
-          availableToolsTokens: availableToolsTokens,
-          systemPromptTotal: systemPromptTotal,
-          toolSchemaTokens: toolSchemaTokens,
-          totalOverhead: systemPromptTotal + toolSchemaTokens
-        )
-        
-        db.insert(entry)
-        debug(fmt"Logged system prompt token usage: {systemPromptTotal} system + {toolSchemaTokens} schemas = {entry.totalOverhead} total overhead")
-      except Exception as e:
-        error(fmt"Failed to log system prompt token usage: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      let entry = SystemPromptTokenUsage(
+        conversationId: conversationId,
+        messageId: messageId,
+        createdAt: now().utc(),
+        model: model,
+        mode: mode,
+        basePromptTokens: basePromptTokens,
+        modePromptTokens: modePromptTokens,
+        environmentTokens: environmentTokens,
+        instructionFileTokens: instructionFileTokens,
+        toolInstructionTokens: toolInstructionTokens,
+        availableToolsTokens: availableToolsTokens,
+        systemPromptTotal: systemPromptTotal,
+        toolSchemaTokens: toolSchemaTokens,
+        totalOverhead: systemPromptTotal + toolSchemaTokens
+      )
+
+      db.insert(entry)
+      debug(fmt"Logged system prompt token usage: {systemPromptTotal} system + {toolSchemaTokens} schemas = {entry.totalOverhead} total overhead")
+    except Exception as e:
+      error(fmt"Failed to log system prompt token usage: {e.msg}")
 
 proc createTodoList*(backend: DatabaseBackend, conversationId: int, title: string, description: string = ""): int =
   ## Create a new todo list and return its ID
   if backend == nil:
     return 0
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let todoList = TodoList(
-        id: 0,
-        conversationId: conversationId,
-        title: title,
-        description: description,
-        createdAt: now().utc(),
-        updatedAt: now().utc(),
-        isActive: true
-      )
-      db.insert(todoList)
-      return todoList.id
+
+  backend.pool.withDb:
+    let todoList = TodoList(
+      id: 0,
+      conversationId: conversationId,
+      title: title,
+      description: description,
+      createdAt: now().utc(),
+      updatedAt: now().utc(),
+      isActive: true
+    )
+    db.insert(todoList)
+    return todoList.id
 
 proc addTodoItem*(backend: DatabaseBackend, listId: int, content: string, priority: TodoPriority = tpMedium): int =
   ## Add a new todo item to a list
   if backend == nil:
     return 0
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      
-      # Get the next order index
-      let existingItems = db.filter(TodoItem, it.listId == listId)
-      let nextOrder = if existingItems.len > 0: existingItems.len else: 0
-      
-      let todoItem = TodoItem(
-        id: 0,
-        listId: listId,
-        content: content,
-        state: tsPending,
-        priority: priority,
-        createdAt: now().utc(),
-        updatedAt: now().utc(),
-        orderIndex: nextOrder
-      )
-      db.insert(todoItem)
-      return todoItem.id
+
+  backend.pool.withDb:
+
+    # Get the next order index
+    let existingItems = db.filter(TodoItem, it.listId == listId)
+    let nextOrder = if existingItems.len > 0: existingItems.len else: 0
+
+    let todoItem = TodoItem(
+      id: 0,
+      listId: listId,
+      content: content,
+      state: tsPending,
+      priority: priority,
+      createdAt: now().utc(),
+      updatedAt: now().utc(),
+      orderIndex: nextOrder
+    )
+    db.insert(todoItem)
+    return todoItem.id
 
 proc updateTodoItem*(backend: DatabaseBackend, itemId: int, newState: Option[TodoState] = none(TodoState),
                     newContent: Option[string] = none(string), newPriority: Option[TodoPriority] = none(TodoPriority)): bool =
   ## Update a todo item's state, content, or priority
   if backend == nil:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      
-      let items = db.filter(TodoItem, it.id == itemId)
-      if items.len == 0:
-        return false
-      
-      var item = items[0]
-      item.updatedAt = now().utc()
-      
-      if newState.isSome():
-        item.state = newState.get()
-      if newContent.isSome():
-        item.content = newContent.get()
-      if newPriority.isSome():
-        item.priority = newPriority.get()
-      
-      db.update(item)
-      return true
+
+  backend.pool.withDb:
+
+    let items = db.filter(TodoItem, it.id == itemId)
+    if items.len == 0:
+      return false
+
+    var item = items[0]
+    item.updatedAt = now().utc()
+
+    if newState.isSome():
+      item.state = newState.get()
+    if newContent.isSome():
+      item.content = newContent.get()
+    if newPriority.isSome():
+      item.priority = newPriority.get()
+
+    db.update(item)
+    return true
 
 proc getTodoItems*(backend: DatabaseBackend, listId: int): seq[TodoItem] =
   ## Get all todo items for a list, sorted by order index
   if backend == nil:
     return @[]
 
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let items = db.filter(TodoItem, it.listId == listId)
-      return items.sortedByIt(it.orderIndex)
+  backend.pool.withDb:
+    let items = db.filter(TodoItem, it.listId == listId)
+    return items.sortedByIt(it.orderIndex)
 
 proc deleteTodoItem*(backend: DatabaseBackend, itemId: int): bool =
   ## Delete a todo item from the database (hard delete)
   if backend == nil:
     return false
 
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let items = db.filter(TodoItem, it.id == itemId)
-      if items.len == 0:
-        return false
+  backend.pool.withDb:
+    let items = db.filter(TodoItem, it.id == itemId)
+    if items.len == 0:
+      return false
 
-      db.delete(items[0])
-      return true
+    db.delete(items[0])
+    return true
 
 proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[TodoList] =
   ## Get the active todo list for a conversation
   if backend == nil:
     return none(TodoList)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      let lists = db.filter(TodoList, it.conversationId == conversationId and it.isActive == true)
-      if lists.len > 0:
-        return some(lists[0])
-      else:
-        return none(TodoList)
+
+  backend.pool.withDb:
+    let lists = db.filter(TodoList, it.conversationId == conversationId and it.isActive == true)
+    if lists.len > 0:
+      return some(lists[0])
+    else:
+      return none(TodoList)
 
 # Plan Mode Protection functions
 proc setPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int, createdFiles: seq[string]): bool =
   ## Set plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let conversations = db.filter(Conversation, it.id == conversationId)
-        if conversations.len == 0:
-          debug(fmt"Conversation {conversationId} not found")
-          return false
-        
-        var conv = conversations[0]
-        debug(fmt"Found conversation {conversationId}, setting created files")
-        conv.planModeEnteredAt = now().utc()
-        conv.planModeCreatedFiles = $(%*createdFiles)  # Convert to JSON string
-        conv.updated_at = now().utc()
-        
-        db.update(conv)
-        debug(fmt"Plan mode created files set for conversation {conversationId} with {createdFiles.len} created files")
-        return true
-      except Exception as e:
-        error(fmt"Failed to set plan mode created files: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
+        debug(fmt"Conversation {conversationId} not found")
         return false
+
+      var conv = conversations[0]
+      debug(fmt"Found conversation {conversationId}, setting created files")
+      conv.planModeEnteredAt = now().utc()
+      conv.planModeCreatedFiles = $(%*createdFiles)  # Convert to JSON string
+      conv.updated_at = now().utc()
+
+      db.update(conv)
+      debug(fmt"Plan mode created files set for conversation {conversationId} with {createdFiles.len} created files")
+      return true
+    except Exception as e:
+      error(fmt"Failed to set plan mode created files: {e.msg}")
+      return false
 
 proc clearPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): bool =
   ## Clear plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let conversations = db.filter(Conversation, it.id == conversationId)
-        if conversations.len == 0:
-          return false
-        
-        var conv = conversations[0]
-        conv.planModeEnteredAt = fromUnix(0).utc()  # Set to epoch (indicates not in plan mode)
-        conv.planModeCreatedFiles = ""  # Empty string indicates no created files
-        conv.updated_at = now().utc()
-        
-        db.update(conv)
-        debug(fmt"Plan mode created files cleared for conversation {conversationId}")
-        return true
-      except Exception as e:
-        error(fmt"Failed to clear plan mode created files: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
         return false
+
+      var conv = conversations[0]
+      conv.planModeEnteredAt = fromUnix(0).utc()  # Set to epoch (indicates not in plan mode)
+      conv.planModeCreatedFiles = ""  # Empty string indicates no created files
+      conv.updated_at = now().utc()
+
+      db.update(conv)
+      debug(fmt"Plan mode created files cleared for conversation {conversationId}")
+      return true
+    except Exception as e:
+      error(fmt"Failed to clear plan mode created files: {e.msg}")
+      return false
 
 proc setConversationCondensationInfo*(backend: DatabaseBackend, conversationId: int,
                                       parentConvId: int, messageCount: int,
@@ -1379,96 +1335,90 @@ proc setConversationCondensationInfo*(backend: DatabaseBackend, conversationId: 
   if backend == nil or conversationId == 0:
     return false
 
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let conversations = db.filter(Conversation, it.id == conversationId)
-        if conversations.len == 0:
-          debug(fmt"Conversation {conversationId} not found")
-          return false
-
-        var conv = conversations[0]
-        conv.parentConversationId = some(parentConvId)
-        conv.condensedFromMessageCount = messageCount
-        conv.condensationStrategy = strategy
-        conv.condensationMetadata = metadata
-        conv.updated_at = now().utc()
-
-        db.update(conv)
-        debug(fmt"Condensation info set for conversation {conversationId}")
-        return true
-      except Exception as e:
-        error(fmt"Failed to set condensation info: {e.msg}")
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
+        debug(fmt"Conversation {conversationId} not found")
         return false
+
+      var conv = conversations[0]
+      conv.parentConversationId = some(parentConvId)
+      conv.condensedFromMessageCount = messageCount
+      conv.condensationStrategy = strategy
+      conv.condensationMetadata = metadata
+      conv.updated_at = now().utc()
+
+      db.update(conv)
+      debug(fmt"Condensation info set for conversation {conversationId}")
+      return true
+    except Exception as e:
+      error(fmt"Failed to set condensation info: {e.msg}")
+      return false
 
 proc getPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): tuple[enabled: bool, createdFiles: seq[string]] =
   ## Get plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return (false, @[])
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
+        return (false, @[])
+
+      let conv = conversations[0]
+
+      # Check if planModeEnteredAt is a valid DateTime (not epoch)
       try:
-        let conversations = db.filter(Conversation, it.id == conversationId)
-        if conversations.len == 0:
-          return (false, @[])
-        
-        let conv = conversations[0]
-        
-        # Check if planModeEnteredAt is a valid DateTime (not epoch)
-        try:
-          if conv.planModeEnteredAt > fromUnix(0).utc():
-            # Parse created files list (empty list if no files created yet)
-            let createdFiles = if conv.planModeCreatedFiles.len > 0:
-              to(parseJson(conv.planModeCreatedFiles), seq[string])
-            else:
-              @[]
-            return (true, createdFiles)
-        except Exception:
-          # If DateTime parsing fails, assume plan mode is not active
-          debug(fmt"Invalid planModeEnteredAt value for conversation {conversationId}, plan mode not active")
-        return (false, @[])
-      except Exception as e:
-        error(fmt"Failed to get plan mode created files: {e.msg}")
-        return (false, @[])
+        if conv.planModeEnteredAt > fromUnix(0).utc():
+          # Parse created files list (empty list if no files created yet)
+          let createdFiles = if conv.planModeCreatedFiles.len > 0:
+            to(parseJson(conv.planModeCreatedFiles), seq[string])
+          else:
+            @[]
+          return (true, createdFiles)
+      except Exception:
+        # If DateTime parsing fails, assume plan mode is not active
+        debug(fmt"Invalid planModeEnteredAt value for conversation {conversationId}, plan mode not active")
+      return (false, @[])
+    except Exception as e:
+      error(fmt"Failed to get plan mode created files: {e.msg}")
+      return (false, @[])
 
 proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, filePath: string): bool =
   ## Add a file to the plan mode created files list for a conversation
   if backend == nil or conversationId == 0:
     return false
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let conversations = db.filter(Conversation, it.id == conversationId)
-        if conversations.len == 0:
-          return false
-        
-        var conv = conversations[0]
-        
-        # Get current created files list
-        let currentFiles = if conv.planModeCreatedFiles.len > 0:
-          to(parseJson(conv.planModeCreatedFiles), seq[string])
-        else:
-          @[]
-        
-        # Add new file if not already in list
-        var updatedFiles = currentFiles
-        if filePath notin currentFiles:
-          updatedFiles.add(filePath)
-          conv.planModeCreatedFiles = $(%*updatedFiles)
-          conv.updated_at = now().utc()
-          
-          db.update(conv)
-          debug(fmt"Added file '{filePath}' to plan mode created files for conversation {conversationId}")
-        
-        return true
-      except Exception as e:
-        error(fmt"Failed to add plan mode created file: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
         return false
+
+      var conv = conversations[0]
+
+      # Get current created files list
+      let currentFiles = if conv.planModeCreatedFiles.len > 0:
+        to(parseJson(conv.planModeCreatedFiles), seq[string])
+      else:
+        @[]
+
+      # Add new file if not already in list
+      var updatedFiles = currentFiles
+      if filePath notin currentFiles:
+        updatedFiles.add(filePath)
+        conv.planModeCreatedFiles = $(%*updatedFiles)
+        conv.updated_at = now().utc()
+
+        db.update(conv)
+        debug(fmt"Added file '{filePath}' to plan mode created files for conversation {conversationId}")
+
+      return true
+    except Exception as e:
+      error(fmt"Failed to add plan mode created file: {e.msg}")
+      return false
 
 # Token correction factor database functions
 proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, estimatedTokens: int, actualTokens: int) =
@@ -1476,8 +1426,8 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
   if backend == nil or estimatedTokens <= 0 or actualTokens <= 0:
     debug(fmt"Invalid parameters for recordTokenCorrectionToDB: model={modelName}, estimated={estimatedTokens}, actual={actualTokens}")
     return
-  
-  let ratio = actualTokens.float / estimatedTokens.float  
+
+  let ratio = actualTokens.float / estimatedTokens.float
   debug(fmt"🔍 CORRECTION FACTOR DEBUG: model={modelName}")
   debug(fmt"   📊 Estimated tokens: {estimatedTokens}")
   debug(fmt"   📊 Actual tokens: {actualTokens}")
@@ -1491,101 +1441,91 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
     return  # Don't record corrections for incompatible tokenizers
 
   debug(fmt"Recording token correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      # Check if correction factor exists for this model
-      let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
-      
-      if existingFactors.len > 0:
-        # Update existing correction factor
-        var factor = existingFactors[0]
-        factor.totalSamples += 1
-        factor.sumRatio += ratio
-        factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
-        factor.updatedAt = now().utc()
-        db.update(factor)
-        
-        debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
-      else:
-        # Create new correction factor
-        let factor = TokenCorrectionFactor(
-          id: 0,
-          modelName: modelName,
-          totalSamples: 1,
-          sumRatio: ratio,
-          avgCorrection: ratio,
-          createdAt: now().utc(),
-          updatedAt: now().utc()
-        )
-        db.insert(factor)
-        
-        debug(fmt"Created new correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
+
+  backend.pool.withDb:
+    # Check if correction factor exists for this model
+    let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+
+    if existingFactors.len > 0:
+      # Update existing correction factor
+      var factor = existingFactors[0]
+      factor.totalSamples += 1
+      factor.sumRatio += ratio
+      factor.avgCorrection = factor.sumRatio / factor.totalSamples.float
+      factor.updatedAt = now().utc()
+      db.update(factor)
+
+      debug(fmt"Updated correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}, avg={factor.avgCorrection:.3f}")
+    else:
+      # Create new correction factor
+      let factor = TokenCorrectionFactor(
+        id: 0,
+        modelName: modelName,
+        totalSamples: 1,
+        sumRatio: ratio,
+        avgCorrection: ratio,
+        createdAt: now().utc(),
+        updatedAt: now().utc()
+      )
+      db.insert(factor)
+
+      debug(fmt"Created new correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
 
 proc getCorrectionFactorFromDB*(backend: DatabaseBackend, modelName: string): Option[float] =
   ## Get the correction factor for a model from database
   if backend == nil:
     return none(float)
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let factors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
-        if factors.len > 0:
-          let factor = factors[0]
-          # Only apply correction if we have enough samples and it's not too extreme
-          if factor.totalSamples >= 3 and factor.avgCorrection > 0.5 and factor.avgCorrection < 2.0:
-            return some(factor.avgCorrection)
-        return none(float)
-      except Exception as e:
-        error(fmt"Failed to get correction factor from database: {e.msg}")
-        return none(float)
+
+  backend.pool.withDb:
+    try:
+      let factors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
+      if factors.len > 0:
+        let factor = factors[0]
+        # Only apply correction if we have enough samples and it's not too extreme
+        if factor.totalSamples >= 3 and factor.avgCorrection > 0.5 and factor.avgCorrection < 2.0:
+          return some(factor.avgCorrection)
+      return none(float)
+    except Exception as e:
+      error(fmt"Failed to get correction factor from database: {e.msg}")
+      return none(float)
 
 proc getAllCorrectionFactorsFromDB*(backend: DatabaseBackend): seq[TokenCorrectionFactor] =
   ## Get all correction factors from database
   if backend == nil:
     return @[]
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        return db.filter(TokenCorrectionFactor)
-      except Exception as e:
-        error(fmt"Failed to get all correction factors from database: {e.msg}")
-        return @[]
+
+  backend.pool.withDb:
+    try:
+      return db.filter(TokenCorrectionFactor)
+    except Exception as e:
+      error(fmt"Failed to get all correction factors from database: {e.msg}")
+      return @[]
 
 proc clearAllCorrectionFactorsFromDB*(backend: DatabaseBackend) =
   ## Clear all correction factors from database
   if backend == nil:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        db.query("DELETE FROM token_correction_factor")
-        debug("Cleared all token correction factors from database")
-      except Exception as e:
-        error(fmt"Failed to clear correction factors from database: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      db.query("DELETE FROM token_correction_factor")
+      debug("Cleared all token correction factors from database")
+    except Exception as e:
+      error(fmt"Failed to clear correction factors from database: {e.msg}")
 
 proc getAssistantTokensForConversation*(backend: DatabaseBackend, conversationId: int): Table[string, int] =
   ## Get a table mapping assistant message content to actual output tokens for a conversation
   result = initTable[string, int]()
-  
+
   if backend == nil or conversationId == 0:
     return
-  
-  case backend.kind:
-  of dbkSQLite, dbkTiDB:
-    backend.pool.withDb:
-      try:
-        let assistantMessages = db.filter(ConversationMessage, 
-          it.conversationId == conversationId and it.role == "assistant")
-        for msg in assistantMessages:
-          if msg.outputTokens > 0:
-            result[msg.content] = msg.outputTokens
-      except Exception as e:
-        error(fmt"Failed to get assistant tokens for conversation: {e.msg}")
+
+  backend.pool.withDb:
+    try:
+      let assistantMessages = db.filter(ConversationMessage,
+        it.conversationId == conversationId and it.role == "assistant")
+      for msg in assistantMessages:
+        if msg.outputTokens > 0:
+          result[msg.content] = msg.outputTokens
+    except Exception as e:
+      error(fmt"Failed to get assistant tokens for conversation: {e.msg}")
