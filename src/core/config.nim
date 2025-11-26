@@ -1,17 +1,16 @@
 ## Configuration Management Module
 ##
 ## This module handles configuration-related functionality for Niffler:
-## - Loading TOML configuration files (main entry point)
+## - Loading YAML configuration files (main entry point)
 ## - Managing API keys securely with file permissions
 ## - Platform-appropriate config directory detection
 ## - Model configuration with OpenAI protocol parameters
-## - Database configuration (SQLite/TiDB)
+## - Database configuration (TiDB)
 ## - Theme configuration and built-in themes
 ##
 ## Configuration Structure:
 ## - Main config: ~/.niffler/config.yaml (Unix) or %APPDATA%/niffler/config.yaml (Windows)
 ## - API keys: ~/.niffler/keys (with restricted permissions)
-## - Database: ~/.niffler/niffler.db (SQLite)
 ## - System prompts: ~/.niffler/NIFFLER.md
 
 import std/[os, appdirs, tables, options, locks, strformat, strutils, sugar]
@@ -21,7 +20,6 @@ import agent_defaults
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.yaml"
-const SQLITE_FILE_NAME = "niffler.db"
 const AGENTS_DIR_NAME = "agents"
 
 proc getConfigDir*(): string =
@@ -36,10 +34,6 @@ proc getConfigDir*(): string =
 proc getDefaultConfigPath*(): string =
   ## Get default path for main configuration file
   joinPath(getConfigDir(), CONFIG_FILE_NAME)
-
-proc getDefaultSqlitePath*(): string =
-  ## Get default path for SQLite database file
-  joinPath(getConfigDir(), SQLITE_FILE_NAME)
 
 proc getDefaultKeyPath*(): string =
   ## Get default path for API key storage file
@@ -199,18 +193,14 @@ proc getDatabaseConfig*(): DatabaseConfig =
   if globalConfig.database.isSome():
     return globalConfig.database.get()
 
-  # Default SQLite configuration
+  # Default TiDB configuration
   return DatabaseConfig(
-    `type`: dtSQLite,
     enabled: true,
-    path: some(getDefaultSqlitePath()),
-    host: none(string),
-    port: none(int),
-    database: none(string),
-    username: none(string),
-    password: none(string),
-    walMode: true,
-    busyTimeout: 5000,
+    host: "127.0.0.1",
+    port: 4000,
+    database: "niffler",
+    username: "root",
+    password: "",
     poolSize: 10
   )
 
@@ -288,16 +278,12 @@ proc validateConfig*(config: Config): seq[string] =
   # Check database configuration
   if config.database.isSome():
     let dbConfig = config.database.get()
-    if dbConfig.`type` == dtSqlite:
-      if not dbConfig.path.isSome():
-        result.add("SQLite mode requires database path")
-    elif dbConfig.`type` == dtTiDB:
-      if not dbConfig.host.isSome():
-        result.add("TiDB mode requires host")
-      if not dbConfig.port.isSome():
-        result.add("TiDB mode requires port")
-      if not dbConfig.database.isSome():
-        result.add("TiDB mode requires database name")
+    if dbConfig.host.len == 0:
+      result.add("Database requires host")
+    if dbConfig.port <= 0:
+      result.add("Database requires valid port")
+    if dbConfig.database.len == 0:
+      result.add("Database requires database name")
 
 # Create default configuration file if it doesn't exist
 proc createDefaultConfigFile*(): void =

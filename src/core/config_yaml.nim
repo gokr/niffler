@@ -26,15 +26,6 @@ proc parseReasoningLevel(value: string): Option[ReasoningLevel] =
   of "none": some(rlNone)
   else: none(ReasoningLevel)
 
-proc parseDatabaseType(value: string): DatabaseType =
-  case value.toLowerAscii()
-  of "sqlite": dtSQLite
-  of "tidb": dtTiDB
-  else: dtSQLite
-
-# This function doesn't work correctly for key lookup in YAML DOM
-# We'll use a different approach
-
 proc parseModelFromYaml(yamlNode: YamlNode): ModelConfig =
   if yamlNode.kind != yMapping:
     raise newException(ValueError, "Expected mapping for model config")
@@ -138,36 +129,11 @@ proc parseDatabaseFromYaml(yamlNode: YamlNode): DatabaseConfig =
     return default
 
   result.enabled = getYamlBool("enabled", true)
-
-  let dbType = getYamlString("type", "sqlite")
-  result.`type` = parseDatabaseType(dbType)
-
-  let path = getYamlString("path")
-  if path.len > 0:
-    result.path = some(path)
-
-  let host = getYamlString("host")
-  if host.len > 0:
-    result.host = some(host)
-
-  let port = getYamlInt("port", 0)
-  if port > 0:
-    result.port = some(port)
-
-  let database = getYamlString("database")
-  if database.len > 0:
-    result.database = some(database)
-
-  let username = getYamlString("username")
-  if username.len > 0:
-    result.username = some(username)
-
-  let password = getYamlString("password")
-  if password.len > 0:
-    result.password = some(password)
-
-  result.walMode = getYamlBool("wal_mode", true)
-  result.busyTimeout = getYamlInt("busy_timeout", 5000)
+  result.host = getYamlString("host", "127.0.0.1")
+  result.port = getYamlInt("port", 4000)
+  result.database = getYamlString("database", "niffler")
+  result.username = getYamlString("username", "root")
+  result.password = getYamlString("password", "")
   result.poolSize = getYamlInt("pool_size", 10)
 
 proc loadYamlConfig*(path: string): Config =

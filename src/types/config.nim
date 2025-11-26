@@ -16,7 +16,7 @@
 ## - Uses Option[T] for optional configuration fields
 ## - Separate enums for different configuration categories
 ## - Cost tracking built-in for all model configurations
-## - Flexible database backend support (SQLite/TiDB)
+## - TiDB (MySQL-compatible) database backend
 
 import std/[tables, options, locks]
 import messages
@@ -82,24 +82,13 @@ type
     enabled*: bool                    # Enable/disable specific servers
     name*: string                     # Human-readable name
 
-  DatabaseType* = enum
-    dtSQLite = "sqlite"
-    dtTiDB = "tidb"
-
   DatabaseConfig* = object
-    `type`*: DatabaseType
     enabled*: bool
-    # SQLite specific
-    path*: Option[string]
-    # TiDB specific
-    host*: Option[string]
-    port*: Option[int]
-    database*: Option[string]
-    username*: Option[string]
-    password*: Option[string]
-    # Common settings
-    walMode*: bool
-    busyTimeout*: int
+    host*: string
+    port*: int
+    database*: string
+    username*: string
+    password*: string
     poolSize*: int
 
   ThemeStyleConfig* = object
