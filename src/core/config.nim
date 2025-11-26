@@ -13,10 +13,9 @@
 ## - API keys: ~/.niffler/keys (with restricted permissions)
 ## - System prompts: ~/.niffler/NIFFLER.md
 
-import std/[os, appdirs, tables, options, locks, strformat, strutils, sugar]
-import ../types/[config, messages, nats_messages]
+import std/[os, appdirs, tables, options, locks, strformat, strutils]
+import ../types/[config, messages]
 import config_yaml
-import agent_defaults
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.yaml"

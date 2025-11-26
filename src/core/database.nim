@@ -13,7 +13,7 @@
 ## - Thread-safe operations with proper transaction handling
 ## - Efficient querying with prepared statements and indexing
 
-import std/[options, tables, strformat, os, times, strutils, algorithm, logging, json, sequtils]
+import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils]
 import ../types/[config, messages, mode]
 import config
 import debby/mysql

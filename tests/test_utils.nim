@@ -49,23 +49,25 @@ proc createTestDatabaseBackend*(): DatabaseBackend =
     quit(1)
 
 proc clearTestDatabase*(backend: DatabaseBackend) =
-  ## Clear all data from test database tables
+  ## Clear all data from test database tables (delete data, keep schema)
   backend.pool.withDb:
-    # Drop all tables to ensure clean state
+    # Delete all data from tables (keep schema for consistency between tests)
     try:
-      discard db.query("DROP TABLE IF EXISTS token_log_entry")
-      discard db.query("DROP TABLE IF EXISTS prompt_history_entry")
-      discard db.query("DROP TABLE IF EXISTS conversation_thinking_token")
-      discard db.query("DROP TABLE IF EXISTS system_prompt_token_usage")
-      discard db.query("DROP TABLE IF EXISTS model_token_usage")
-      discard db.query("DROP TABLE IF EXISTS conversation_message")
-      discard db.query("DROP TABLE IF EXISTS conversation")
-      discard db.query("DROP TABLE IF EXISTS todo_item")
-      discard db.query("DROP TABLE IF EXISTS todo_list")
-      discard db.query("DROP TABLE IF EXISTS token_correction_factor")
+      # Clear data in order to respect foreign key constraints
+      discard db.query("DELETE FROM token_correction_factor")
+      discard db.query("DELETE FROM todo_item")
+      discard db.query("DELETE FROM todo_list")
+      discard db.query("DELETE FROM conversation_message")
+      discard db.query("DELETE FROM conversation_thinking_token")
+      discard db.query("DELETE FROM system_prompt_token_usage")
+      discard db.query("DELETE FROM model_token_usage")
+      discard db.query("DELETE FROM conversation")
+      discard db.query("DELETE FROM token_log_entry")
+      discard db.query("DELETE FROM prompt_history_entry")
+      discard db.query("DELETE FROM token_correction_factor")
     except CatchableError:
-      # Ignore errors if tables don't exist
+      # Ignore errors if tables don't exist or if foreign key constraints cause issues
       discard
 
-  # Reinitialize schema
+  # Re-initialize schema if needed (create any missing tables)
   backend.initializeDatabase()

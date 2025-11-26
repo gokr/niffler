@@ -10,7 +10,7 @@
 ## - Can be switched dynamically via /config command (in-memory only)
 ## - Provides config directory resolution for prompts and agents
 
-import std/[options, os, strformat, json, appdirs, strutils]
+import std/[options, os, strformat, appdirs, strutils]
 
 type
   Session* = object

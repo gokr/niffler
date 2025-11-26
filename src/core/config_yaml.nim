@@ -9,7 +9,7 @@
 
 import std/[options, tables, strutils, streams, os]
 import yaml
-import ../types/[config, messages, nats_messages]
+import ../types/config
 
 proc parseModelType(value: string): Option[ModelType] =
   case value.toLowerAscii()
@@ -168,6 +168,14 @@ proc loadYamlConfig*(path: string): Config =
           return content == "true" or content == "yes" or content == "1"
     return default
 
+  # Helper function to get int value from root mapping
+  proc getRootInt(key: string, default: int): int =
+    for k, v in root.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return parseInt(v.content)
+    return default
+
   # Parse basic fields
   result.yourName = getRootString("your_name", "User")
 
@@ -198,6 +206,11 @@ proc loadYamlConfig*(path: string): Config =
       if v.kind == yScalar:
         result.markdownEnabled = some(getRootBool("markdown_enabled", true))
       break
+
+  # Parse agent timeout
+  let agentTimeout = getRootInt("agent_timeout_seconds", 0)
+  if agentTimeout > 0:
+    result.agentTimeoutSeconds = some(agentTimeout)
 
   let configPath = getRootString("config")
   if configPath.len > 0:

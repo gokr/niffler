@@ -5,7 +5,7 @@
 
 import std/[unittest, strformat, times, strutils, options, sequtils]
 import test_conversation_infrastructure
-import ../src/core/[database, conversation_manager, config, app, mode_state]
+import ../src/core/[conversation_manager, config, mode_state, database]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 
@@ -92,9 +92,10 @@ suite "End-to-End Conversation Lifecycle":
     check convId > 0
 
     # Create second database connection (TiDB allows multiple connections to same server)
-    let secondDb = createTestDatabaseBackend()
+    let secondTestDb = createTestDatabase()
+    let secondDb = secondTestDb.backend
     check secondDb != nil
-    defer: secondDb.close()
+    defer: cleanupTestDatabase(secondTestDb)
 
     # Verify conversation persists across connections
     let persistenceVerified = verifyDatabasePersistence(testDb.backend, secondDb, convId)

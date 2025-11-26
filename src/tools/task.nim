@@ -30,12 +30,6 @@ proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig,
   taskToolModelConfig = modelConfig
   taskToolSchemas = toolSchemas
 
-proc getArgStr(args: JsonNode, key: string): string =
-  ## Extract string argument from JSON node
-  if args.hasKey(key):
-    return args[key].getStr()
-  return ""
-
 proc executeTask*(args: JsonNode): string {.gcsafe.} =
   ## Execute a task with the specified agent
   {.gcsafe.}:

@@ -17,7 +17,7 @@
 ## - Commands like /plan, /model xxx parsed by agent from input string
 ## - Uses Sunny for automatic JSON serialization/deserialization
 
-import std/[json, times]
+import std/[times]
 import sunny
 
 type

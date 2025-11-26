@@ -5,7 +5,7 @@
 
 import std/[unittest, strformat, times, strutils, sequtils, options]
 import test_conversation_infrastructure
-import ../src/core/[database, conversation_manager, config, app, session]
+import ../src/core/[conversation_manager, app, session, database]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 
@@ -20,8 +20,8 @@ suite "CLI Command Integration Tests":
     check result1.success == true
     check "Created and switched to new conversation:" in result1.message
     
-    # Verify conversation was created
-    let conversations = listConversations(testDb.backend)
+    # Verify conversation was created (use global database for consistency)
+    let conversations = listConversations(getGlobalDatabase())
     check conversations.len == 1
     check conversations[0].isActive == true
     
@@ -30,8 +30,8 @@ suite "CLI Command Integration Tests":
     check result2.success == true
     check "Test Conversation Title" in result2.message
     
-    # Verify second conversation was created
-    let updatedConversations = listConversations(testDb.backend)
+    # Verify second conversation was created (use global database for consistency)
+    let updatedConversations = listConversations(getGlobalDatabase())
     check updatedConversations.len == 2
     
     let namedConv = updatedConversations.filterIt("Test Conversation Title" in it.title)
@@ -275,8 +275,8 @@ suite "Command Error Handling and Edge Cases":
     # (This would require extending the test to include model configuration loading)
     discard switchToConversation(testDb.backend, conv.id)
     
-    # Verify conversation properties
-    let retrievedConv = getConversationById(testDb.backend, conv.id)
+    # Verify conversation properties (use global database for consistency)
+    let retrievedConv = getConversationById(getGlobalDatabase(), conv.id)
     check retrievedConv.isSome()
     check retrievedConv.get().modelNickname == "gpt4"
 
@@ -292,8 +292,8 @@ suite "Concurrent Operations and Thread Safety":
       results[i] = executeCommand("new", @[fmt"Rapid Test {i}"], session, testModel)
       check results[i].success == true
 
-    # Verify all conversations were created
-    let conversations = listConversations(testDb.backend)
+    # Verify all conversations were created (use global database for consistency)
+    let conversations = listConversations(getGlobalDatabase())
     check conversations.len == 5
 
     # Verify each conversation has correct title

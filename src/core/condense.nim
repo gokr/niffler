@@ -2,7 +2,6 @@
 ## Provides LLM-based summarization to create condensed child conversations
 
 import std/[options, times, json, strformat]
-import sunny
 import ../types/[messages, config as configTypes]
 import conversation_manager
 import database
