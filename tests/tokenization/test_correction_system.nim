@@ -5,26 +5,21 @@ import std/[unittest, strformat, os, tables, options]
 import ../../src/tokenization/tokenizer
 import ../../src/core/database
 import ../../src/types/config as configTypes
+import ../test_utils
 
 suite "Dynamic Correction Factor Tests":
-  
+  var testDb: DatabaseBackend
+
   setup:
-    # Create in-memory database for testing
-    let testDbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(":memory:"),  # In-memory database for testing
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    let testDb = createDatabaseBackend(testDbConfig)
+    testDb = createTestDatabaseBackend()
+    clearTestDatabase(testDb)
     setGlobalDatabase(testDb)
-    clearCorrectionData()  # Start fresh for each test
-  
-  teardown:
-    # Cleanup correction data
     clearCorrectionData()
+
+  teardown:
+    clearCorrectionData()
+    if testDb != nil:
+      testDb.close()
 
   test "Basic correction recording and application":
     let text = "Hello world, this is a test message"

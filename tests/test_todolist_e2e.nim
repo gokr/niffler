@@ -1,34 +1,22 @@
-import std/[unittest, json, options, strutils, tempfiles, os]
+import std/[unittest, json, options, strutils]
 import ../src/tools/todolist
 import ../src/tools/registry
 import ../src/core/database
 import ../src/types/tools
 import ../src/types/config
+import test_utils
 
 suite "Todolist End-to-End Workflow Tests":
   var db: DatabaseBackend
-  var tempDbFile: string
-  
+
   setup:
-    tempDbFile = genTempPath("test_todolist_e2e", ".db")
-    let dbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(tempDbFile),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    db = createDatabaseBackend(dbConfig)
+    db = createTestDatabaseBackend()
+    clearTestDatabase(db)
     setGlobalDatabase(db)
-  
+
   teardown:
     if db != nil:
       db.close()
-    try:
-      removeFile(tempDbFile)
-    except:
-      discard
 
   test "Complete task management workflow":
     # 1. Start with empty list

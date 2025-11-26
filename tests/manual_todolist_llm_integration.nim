@@ -1,33 +1,21 @@
-import std/[unittest, json, options, strutils, os, tempfiles]
+import std/[unittest, json, options, strutils]
 import ../src/tools/todolist
 import ../src/tools/registry
 import ../src/core/database
 import ../src/types/config
+import test_utils
 
 suite "Todolist LLM Integration Tests":
   var db: DatabaseBackend
-  var tempDbFile: string
-  
+
   setup:
-    tempDbFile = genTempPath("test_todolist_llm", ".db")
-    let dbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(tempDbFile),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    db = createDatabaseBackend(dbConfig)
+    db = createTestDatabaseBackend()
+    clearTestDatabase(db)
     setGlobalDatabase(db)
-  
+
   teardown:
     if db != nil:
       db.close()
-    try:
-      removeFile(tempDbFile)
-    except:
-      discard
 
   test "Tool schema is valid for LLM consumption":
     # Verify the todolist tool schema is properly formatted for LLM use

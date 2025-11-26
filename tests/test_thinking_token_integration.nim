@@ -8,22 +8,16 @@ import std/[unittest, options, strformat, json, times, strutils]
 import ../src/types/[messages, thinking_tokens, config]
 import ../src/core/[database, conversation_manager]
 import ../src/api/thinking_token_parser
+import test_utils
 import debby/[pools, sqlite]
 
 suite "Thinking Token Integration Tests":
+  var testDb: DatabaseBackend
 
   setup:
-    # Create temporary database for testing
-    let testDbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(":memory:"),  # In-memory database for testing
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    let testDb = createDatabaseBackend(testDbConfig)
-    
+    testDb = createTestDatabaseBackend()
+    clearTestDatabase(testDb)
+
     # Initialize session manager for testing
     if testDb != nil:
       initSessionManager(testDb.pool, 1)  # conversation ID 1

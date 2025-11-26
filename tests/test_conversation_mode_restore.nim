@@ -1,29 +1,16 @@
 ## Conversation Mode Restore Tests
 ##
-## This module tests that plan mode protection is properly initialized 
+## This module tests that plan mode protection is properly initialized
 ## when loading conversations that are already in plan mode.
 
 import std/[unittest, os, tempfiles, json, options]
 import ../src/core/[database, conversation_manager, app, mode_state]
 import ../src/tools/[edit, create], ../src/types/[mode, tools, config as configTypes]
+import test_utils
 
 # Test database and conversation setup
 var testDb: DatabaseBackend
 var testDir: string
-
-proc createSimpleTestDatabase(): DatabaseBackend =
-  ## Create a simple test database
-  let tempDir = createTempDir("niffler_test_mode_restore", "")
-  let dbPath = tempDir / "test_mode_restore.db"
-  let dbConfig = DatabaseConfig(
-    `type`: dtSQLite,
-    enabled: true,
-    path: some(dbPath),
-    walMode: false,
-    busyTimeout: 1000,
-    poolSize: 1
-  )
-  return createDatabaseBackend(dbConfig)
 
 proc createSimpleTestModelConfig(): configTypes.ModelConfig =
   ## Create a simple test model configuration
@@ -40,11 +27,12 @@ proc setupTestEnvironment() =
   ## Setup test database and files in a temporary directory
   testDir = createTempDir("niffler_mode_restore_", "")
   setCurrentDir(testDir)
-  
+
   # Create test database
-  testDb = createSimpleTestDatabase()
+  testDb = createTestDatabaseBackend()
+  clearTestDatabase(testDb)
   setGlobalDatabase(testDb)
-  
+
   # Initialize mode state
   initializeModeState()
 

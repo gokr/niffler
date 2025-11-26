@@ -1,33 +1,21 @@
-import std/[unittest, json, options, strutils, tempfiles, os]
+import std/[unittest, json, options, strutils]
 import ../src/tools/todolist
 import ../src/core/database
 import ../src/types/tools
 import ../src/types/config
+import test_utils
 
 suite "Todolist Tool Functional Tests":
   var db: DatabaseBackend
-  var tempDbFile: string
-  
+
   setup:
-    tempDbFile = genTempPath("test_todolist", ".db")
-    let dbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(tempDbFile),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    db = createDatabaseBackend(dbConfig)
+    db = createTestDatabaseBackend()
+    clearTestDatabase(db)
     setGlobalDatabase(db)
-  
+
   teardown:
     if db != nil:
       db.close()
-    try:
-      removeFile(tempDbFile)
-    except:
-      discard
 
   test "Add todo item - basic functionality":
     let args = %*{

@@ -90,28 +90,19 @@ suite "End-to-End Conversation Lifecycle":
     let (convId, success) = simulateFullConversationWorkflow(testDb.backend)
     check success == true
     check convId > 0
-    
-    # Create second database connection to same file
-    let dbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(testDb.dbPath),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    
-    let secondDb = createDatabaseBackend(dbConfig)
+
+    # Create second database connection (TiDB allows multiple connections to same server)
+    let secondDb = createTestDatabaseBackend()
     check secondDb != nil
     defer: secondDb.close()
-    
+
     # Verify conversation persists across connections
     let persistenceVerified = verifyDatabasePersistence(testDb.backend, secondDb, convId)
     check persistenceVerified == true
-    
+
     # Verify messages persist
     assertMessageCount(secondDb, convId, 4)  # simulateFullConversationWorkflow adds 4 messages
-    
+
     # Verify we can retrieve conversation context from second connection
     let messages = getRecentMessagesFromDb(secondDb.pool, convId, 10)
     check messages.len == 4

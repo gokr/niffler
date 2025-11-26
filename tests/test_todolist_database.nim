@@ -1,57 +1,32 @@
-import std/[unittest, json, options, strutils, tempfiles, os, sequtils, strformat]
+import std/[unittest, json, options, strutils, sequtils, strformat]
 import ../src/tools/todolist
 import ../src/core/database
 import ../src/types/tools
 import ../src/types/config
+import test_utils
 
 suite "Todolist Database Integration Tests":
   var db: DatabaseBackend
-  var tempDbFile: string
-  
+
   setup:
-    tempDbFile = genTempPath("test_todolist_db", ".db")
-    let dbConfig = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(tempDbFile),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    db = createDatabaseBackend(dbConfig)
+    db = createTestDatabaseBackend()
+    clearTestDatabase(db)
     setGlobalDatabase(db)
-  
+
   teardown:
     if db != nil:
       db.close()
-    try:
-      removeFile(tempDbFile)
-    except:
-      discard
 
   test "Database persistence across operations":
     # Add an item
     let addArgs = %*{"operation": "add", "content": "Persistent item"}
     let addResult = parseJson(executeTodolist(addArgs))
     let itemId = addResult["itemId"].getInt()
-    
-    # Close and reopen database to test persistence
-    db.close()
-    let dbConfig2 = DatabaseConfig(
-      `type`: dtSQLite,
-      enabled: true,
-      path: some(tempDbFile),
-      walMode: false,
-      busyTimeout: 1000,
-      poolSize: 1
-    )
-    db = createDatabaseBackend(dbConfig2)
-    setGlobalDatabase(db)
-    
-    # List items - should still be there
+
+    # List items - should be persisted in TiDB
     let listArgs = %*{"operation": "list"}
     let listResult = parseJson(executeTodolist(listArgs))
-    
+
     check listResult["success"].getBool() == true
     check listResult["itemCount"].getInt() == 1
     check listResult["todoList"].getStr().contains("Persistent item")

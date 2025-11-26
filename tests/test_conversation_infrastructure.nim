@@ -7,6 +7,7 @@ import std/[unittest, options, strformat, times, os, tempfiles, strutils, algori
 import ../src/core/[database, conversation_manager, config, app, mode_state]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
+import test_utils
 import debby/sqlite
 import debby/pools
 
@@ -20,27 +21,15 @@ type
     config*: configTypes.ModelConfig
 
 proc createTestDatabase*(): TestDatabase =
-  ## Create an in-memory SQLite database for testing
+  ## Create a test database for testing using TiDB
   let tempDir = createTempDir("niffler_test", "")
-  let dbPath = tempDir / "test.db"
-  
-  let dbConfig = DatabaseConfig(
-    `type`: dtSQLite,
-    enabled: true,
-    path: some(dbPath),
-    walMode: false,  # Disable WAL for testing
-    busyTimeout: 1000,
-    poolSize: 1  # Single connection for tests
-  )
-  
-  let backend = createDatabaseBackend(dbConfig)
-  if backend == nil:
-    doAssert false, "Failed to create test database backend"
-  
+  let backend = createTestDatabaseBackend()
+  clearTestDatabase(backend)
+
   result = TestDatabase(
     backend: backend,
     tempDir: tempDir,
-    dbPath: dbPath
+    dbPath: ""  # Not used with TiDB
   )
 
 proc cleanupTestDatabase*(testDb: TestDatabase) =

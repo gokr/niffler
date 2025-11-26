@@ -7,25 +7,12 @@
 import std/[unittest, os, tempfiles, json, options]
 import ../src/core/[database, conversation_manager, app, mode_state]
 import ../src/tools/[edit, create], ../src/types/[mode, tools, config as configTypes]
+import test_utils
 
 # Test database and conversation setup
 var testDb: DatabaseBackend
 var testConvId: int
 var testDir: string
-
-proc createSimpleTestDatabase(): DatabaseBackend =
-  ## Create a simple test database
-  let tempDir = createTempDir("niffler_test_plan_protection", "")
-  let dbPath = tempDir / "test_protection.db"
-  let dbConfig = DatabaseConfig(
-    `type`: dtSQLite,
-    enabled: true,
-    path: some(dbPath),
-    walMode: false,
-    busyTimeout: 1000,
-    poolSize: 1
-  )
-  return createDatabaseBackend(dbConfig)
 
 proc createSimpleTestModelConfig(): configTypes.ModelConfig =
   ## Create a simple test model configuration
@@ -42,11 +29,12 @@ proc setupTestEnvironment() =
   ## Setup test database and conversation in a temporary directory
   testDir = createTempDir("niffler_plan_protection_", "")
   setCurrentDir(testDir)
-  
-  # Create test database using helper function
-  testDb = createSimpleTestDatabase()
+
+  # Create test database using test_utils
+  testDb = createTestDatabaseBackend()
+  clearTestDatabase(testDb)
   setGlobalDatabase(testDb)
-  
+
   # Initialize mode state
   initializeModeState()
 
