@@ -94,7 +94,7 @@ proc countTokensForModel(text: string, modelNickname: string): int =
 
 ### Database Storage
 
-Token usage and costs are tracked in the SQLite database:
+Token usage and costs are tracked in the TiDB database:
 
 **Table: `model_token_usage`**
 ```sql

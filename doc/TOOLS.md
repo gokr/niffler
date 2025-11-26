@@ -18,7 +18,7 @@ graph TB
     Worker --> FileSystem[File System]
     Worker --> Shell[Bash Shell]
     Worker --> Network[HTTP Client]
-    Worker --> Database[(SQLite DB)]
+    Worker --> Database[(TiDB DB)]
 
     classDef process fill:#e1f5fe
     classDef storage fill:#e8f5e8

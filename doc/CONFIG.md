@@ -9,7 +9,7 @@ Niffler uses a flexible configuration system with multiple config directories:
 ```
 ~/.niffler/
 ├── config.yaml              # Main config with model settings and active config selection
-├── niffler.db              # SQLite database for conversations
+├── niffler/                # Data directory (database managed by TiDB)
 ├── default/                # Minimal, concise prompts (default config)
 │   ├── NIFFLER.md          # System prompts and tool descriptions
 │   └── agents/             # Agent definitions for this config
