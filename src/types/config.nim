@@ -147,6 +147,8 @@ type
     externalRendering*: Option[ExternalRenderingConfig]
     # Text extraction configuration for web fetch tool
     textExtraction*: Option[TextExtractionConfig]
+    # Agent configuration
+    agentTimeoutSeconds*: Option[int]
     # Active config directory selection
     config*: Option[string]
 

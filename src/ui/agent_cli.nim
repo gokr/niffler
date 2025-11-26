@@ -64,22 +64,30 @@ proc loadAgentDefinition(agentName: string): AgentDefinition =
   info(fmt"  Description: {result.description}")
   info(fmt"  Allowed tools: {toolsList}")
 
-proc initializeAgent(agentName: string, natsUrl: string, modelName: string, level: Level): AgentState =
+proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, modelName: string, level: Level): AgentState =
   ## Initialize agent state and connect to NATS
-  info(fmt"Initializing agent '{agentName}'...")
+
+  # DEBUG: Print parameters immediately
+  echo fmt"DEBUG AGENT INIT - agentName: '{agentName}', agentNick: '{agentNick}', modelName: '{modelName}'"
+
+  # Use nickname for routing if provided, otherwise use agent name
+  let effectiveName = if agentNick.len > 0: agentNick else: agentName
+  info(fmt"Initializing agent '{agentName}' as '{effectiveName}'...")
 
   # Initialize runtime mode as agent
   initializeRuntimeMode(rmAgent)
 
-  # Load agent definition
-  result.name = agentName
+  # Load agent definition using the base agent name
   result.definition = loadAgentDefinition(agentName)
+
+  # Store both original name and effective name
+  result.name = effectiveName  # Use effective name for routing
   result.requestCount = 0
   result.startTime = getTime()
 
-  # Initialize NATS connection with presence tracking
-  info(fmt"Connecting to NATS at {natsUrl}...")
-  result.natsClient = initNatsClient(natsUrl, agentName, presenceTTL = 15)
+  # Initialize NATS connection with presence tracking using effective name
+  info(fmt"Connecting to NATS at {natsUrl} as '{effectiveName}'...")
+  result.natsClient = initNatsClient(natsUrl, effectiveName, presenceTTL = 15)
 
   # Initialize database
   info("Initializing database...")
@@ -89,11 +97,13 @@ proc initializeAgent(agentName: string, natsUrl: string, modelName: string, leve
   info("Loading configuration...")
   let config = loadConfig()
 
+  info(fmt"Looking for model: '{modelName}'")
   if modelName.len > 0:
     # Try to find specified model
     for model in config.models:
       if model.nickname == modelName:
         result.modelConfig = model
+        info(fmt"Found model: {model.nickname} ({model.baseUrl})")
         break
 
   if result.modelConfig.nickname.len == 0:
@@ -269,7 +279,10 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
     var responseComplete = false
     var isInThinkingBlock = false
     var attempts = 0
-    const maxAttempts = 3000  # 5 minutes per turn
+
+    # Calculate timeout from config (default 5 minutes = 300 seconds)
+    let timeoutSeconds = getGlobalConfig().agentTimeoutSeconds.get(300)
+    let maxAttempts = (timeoutSeconds * 1000) div 10  # Convert to number of 10ms attempts
 
     while attempts < maxAttempts and not responseComplete:
       var response: APIResponse
@@ -606,16 +619,17 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, natsUrl: string = "nats://localhost:4222", modelName: string = "", level: Level = lvlInfo) =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo) =
   ## Start agent mode - main entry point
-  echo fmt"Starting Niffler in agent mode: {agentName}"
+  let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
+  echo fmt"Starting Niffler in agent mode: {displayName}"
   echo ""
 
   var state: AgentState
 
   try:
-    # Initialize agent
-    state = initializeAgent(agentName, natsUrl, modelName, level)
+    # Initialize agent with nickname support
+    state = initializeAgent(agentName, agentNick, natsUrl, modelName, level)
 
     # Start worker threads AFTER initializeAgent returns
     # Workers must be started here, not in initializeAgent, because AgentState
