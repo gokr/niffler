@@ -4,7 +4,7 @@
 ## over subcommands and option handling.
 
 import std/[os, tables, logging, strformat, strutils, parseopt]
-import core/[config, channels, conversation_manager, database, session]
+import core/[config, channels, conversation_manager, database, session, app]
 import core/log_file as logFileModule
 import api/curlyStreaming
 import ui/[cli, agent_cli, nats_monitor, ui_state, master_cli]
@@ -167,8 +167,22 @@ proc sendSinglePrompt(prompt: string, modelName: string, level: Level, dump: boo
   echo "Note: Full single prompt functionality to be integrated with existing CLI systems"
 
 proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
-  ## Start interactive CLI mode (master mode) with specified model and logging configuration
-  startMasterMode(natsUrl=natsUrl, modelName=modelName, level=level)
+  ## Start interactive CLI mode with specified model and logging configuration
+
+  # Initialize configuration components
+  let config = loadConfig()
+  let database = initializeGlobalDatabase(level)
+
+  # Select model
+  let modelConfig = if modelName.len > 0:
+    selectModelFromConfig(config, modelName)
+  else:
+    config.models[0]
+
+  # Start the interactive CLI mode with proper input loop
+  # Signal handling and cleanup are handled inside startCLIMode
+  var session: Session
+  startCLIMode(session, modelConfig, database, level, dump, natsUrl)
 
 proc parseCliArgsMain(): CliArgs =
   ## Parse command line arguments with error handling
