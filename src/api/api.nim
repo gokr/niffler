@@ -32,9 +32,15 @@ when compileOption("threads"):
 else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 import ../types/[messages, config, thinking_tokens]
+import curlyStreaming
+
+# Debug output helper functions
+proc debugColored*(color, message: string) =
+  if isDumpEnabled():
+    echo color & message & COLOR_RESET
+
 import std/logging
 import ../core/[channels, conversation_manager, database]
-import curlyStreaming
 import ../tools/[registry, common]
 import ../ui/tool_visualizer
 import tool_call_parser
@@ -660,21 +666,25 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   
   if recursionDepth >= MAX_RECURSION_DEPTH:
     debug(fmt"Max recursion depth ({MAX_RECURSION_DEPTH}) exceeded, stopping tool execution")
+    debugColored(COLOR_ERROR, fmt"🔴 RECURSION LIMIT EXCEEDED at depth {recursionDepth}")
     return false
-  
+
   if toolCalls.len == 0:
     return true
-    
+
   debug(fmt"Executing {toolCalls.len} tool calls (recursion depth: {recursionDepth})")
+  debugColored(COLOR_RECURSE, fmt"🟣 Recursion depth {recursionDepth}: Executing {toolCalls.len} tool calls")
   
   # Filter duplicate tool calls to prevent infinite loops
   let (filteredToolCalls, updatedExecutedCalls) = filterDuplicateToolCalls(toolCalls, executedCalls)
-  
+
   if filteredToolCalls.len == 0:
-    return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent, 
+    debugColored(COLOR_BUFFER, fmt"🟡 All tool calls were duplicates, handling duplicates")
+    return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent,
                                    recursionDepth, updatedExecutedCalls)
-  
+
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
+  debugColored(COLOR_TOOL, fmt"🟢 Deduplication: {toolCalls.len - filteredToolCalls.len} duplicates removed")
 
   # Store assistant message with tool calls BEFORE executing tools to maintain correct order
   # Empty content is allowed when tool calls are present (messageType = "tool_call")
@@ -884,10 +894,12 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   chunkHasToolCalls = true
                   for toolCall in delta.toolCalls.get():
                     debug(fmt"Buffering tool call fragment: id='{toolCall.id}', name='{toolCall.function.name}', args='{toolCall.function.arguments}'")
+                    debugColored(COLOR_BUFFER, fmt"🟡 Buffering fragment: {toolCall.function.name} args='{toolCall.function.arguments}'")
                     # Buffer the tool call fragment
                     let isComplete = bufferToolCallFragment(mutableToolCallBuffers, toolCall)
                     debug(fmt"Tool call fragment complete: {isComplete}")
                     if isComplete:
+                      debugColored(COLOR_TOOL, fmt"🟢 Tool call complete: {toolCall.function.name}")
                       # Tool call is complete, add to collected calls
                       let completedCalls = getCompletedToolCalls(mutableToolCallBuffers)
                       for completedCall in completedCalls:

@@ -29,6 +29,15 @@ import ../core/log_file as logFileModule
 import tool_call_parser
 import thinking_token_parser
 
+# Color constants for enhanced debug output
+const
+  COLOR_HTTP* = "\e[34m"      # 🔵 Blue
+  COLOR_TOOL* = "\e[32m"      # 🟢 Green
+  COLOR_BUFFER* = "\e[33m"    # 🟡 Yellow
+  COLOR_ERROR* = "\e[31m"     # 🔴 Red
+  COLOR_RECURSE* = "\e[35m"   # 🟣 Purple
+  COLOR_RESET* = "\e[0m"      # Reset to default
+
 # Single long-lived Curly instance for the entire application
 let curl* = newCurly()
 
@@ -423,18 +432,18 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
     # Dump HTTP request if enabled
     if isDumpEnabled():
       logFileModule.logEcho ""
-      logFileModule.logEcho "=== HTTP REQUEST ==="
-      logFileModule.logEcho "URL: " & endpoint
-      logFileModule.logEcho "Method: POST"
-      logFileModule.logEcho "Headers:"
+      logFileModule.logEcho COLOR_HTTP & "🔵 === HTTP REQUEST ===" & COLOR_RESET
+      logFileModule.logEcho COLOR_HTTP & "URL: " & endpoint & COLOR_RESET
+      logFileModule.logEcho COLOR_HTTP & "Method: POST" & COLOR_RESET
+      logFileModule.logEcho COLOR_HTTP & "Headers:" & COLOR_RESET
       for key, value in client.headers.pairs:
         # Mask Authorization header for security
         let displayValue = if key.toLowerAscii() == "authorization": "Bearer ***" else: value
         logFileModule.logEcho "  " & key & ": " & displayValue
       logFileModule.logEcho ""
-      logFileModule.logEcho "Body:"
+      logFileModule.logEcho COLOR_HTTP & "Body:" & COLOR_RESET
       logFileModule.logEcho requestBody
-      logFileModule.logEcho "==================="
+      logFileModule.logEcho COLOR_HTTP & "===================" & COLOR_RESET
       logFileModule.logEcho ""
     
     # Create headers array for Curly
@@ -458,13 +467,13 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
       # Dump HTTP response headers if enabled - use logging to prevent stream contamination
       if isDumpEnabled():
         logFileModule.logEcho ""
-        logFileModule.logEcho "=== HTTP RESPONSE ==="
-        logFileModule.logEcho "Status: " & $stream.code
-        logFileModule.logEcho "Headers:"
+        logFileModule.logEcho COLOR_HTTP & "🔵 === HTTP RESPONSE ===" & COLOR_RESET
+        logFileModule.logEcho COLOR_HTTP & "Status: " & $stream.code & COLOR_RESET
+        logFileModule.logEcho COLOR_HTTP & "Headers:" & COLOR_RESET
         logFileModule.logEcho "  Content-Type: text/event-stream"
         logFileModule.logEcho "  Transfer-Encoding: chunked"
         logFileModule.logEcho ""
-        logFileModule.logEcho "Body (streaming):"
+        logFileModule.logEcho COLOR_HTTP & "Body (streaming):" & COLOR_RESET
       
       # Process the stream line by line in real-time
       var lineBuffer = ""
