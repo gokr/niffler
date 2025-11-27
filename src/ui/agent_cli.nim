@@ -20,10 +20,10 @@
 import std/[logging, strformat, times, os, options, strutils, json, random]
 import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager]
 import ../core/task_executor
-import ../types/[nats_messages, agents, config as configTypes, messages, tools, mode]
-import ../api/[api, curlyStreaming]
+import ../types/[nats_messages, agents, config as configTypes, messages, mode]
+import ../api/[api]
 import ../tools/[worker, registry]
-import ../mcp/[mcp, tools as mcpTools]
+import ../mcp/[mcp]
 import output_shared
 import tool_visualizer
 import theme
@@ -342,8 +342,6 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
             let toolResult = response.toolResultInfo
             let formattedResult = formatCompactToolResultWithIndent(toolResult)
             writeCompleteLine(formattedResult)
-          else:
-            discard
 
       sleep(10)
       attempts.inc()

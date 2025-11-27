@@ -484,24 +484,24 @@ proc condenseHandler(args: seq[string], session: var Session, currentModel: var 
       )
 
     # Create condensed conversation
-    let result = createCondensedConversation(backend, strategy, currentModel)
+    let condensationResult = createCondensedConversation(backend, strategy, currentModel)
 
-    if result.success:
+    if condensationResult.success:
       var message = fmt"""Conversation condensed successfully!
 
-Original conversation: {currentConvId} ({result.originalMessageCount} messages)
-New conversation: {result.newConversationId}
+Original conversation: {currentConvId} ({condensationResult.originalMessageCount} messages)
+New conversation: {condensationResult.newConversationId}
 Strategy: {strategy}
 
-Summary length: {result.summary.len} characters
+Summary length: {condensationResult.summary.len} characters
 
 The conversation has been switched to the new condensed conversation.
 You can return to the original with: /switch {currentConvId}
 
 Summary (first 500 chars):
-{result.summary[0..min(499, result.summary.len-1)]}"""
+{condensationResult.summary[0..min(499, condensationResult.summary.len-1)]}"""
 
-      if result.summary.len > 500:
+      if condensationResult.summary.len > 500:
         message &= "\n..."
 
       return CommandResult(
@@ -513,7 +513,7 @@ Summary (first 500 chars):
     else:
       return CommandResult(
         success: false,
-        message: fmt"Failed to condense conversation: {result.errorMessage}",
+        message: fmt"Failed to condense conversation: {condensationResult.errorMessage}",
         shouldExit: false,
         shouldContinue: true
       )

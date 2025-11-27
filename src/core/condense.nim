@@ -6,7 +6,6 @@ import ../types/[messages, config as configTypes]
 import conversation_manager
 import database
 import app
-import ../api/api
 import ../api/curlyStreaming
 import ../tools/registry
 import system_prompt

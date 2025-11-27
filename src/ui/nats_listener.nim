@@ -14,8 +14,6 @@ else:
 import ../core/[nats_client]
 import ../types/[nats_messages]
 import ../../../linecross/linecross
-import theme
-import output_shared
 import sunny
 
 type

@@ -6,9 +6,8 @@
 
 import std/[strformat, strutils, options, math, terminal]
 import ../../../linecross/linecross
-import ../core/[config, session, conversation_manager, mode_state, app]
+import ../core/[config, conversation_manager, mode_state, app]
 import ../types/[config as configTypes]
-import theme
 
 # UI state variables
 var inputTokens*: int = 0

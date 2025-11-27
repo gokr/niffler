@@ -15,10 +15,9 @@
 ## - @researcher /plan find docs  -> Plan mode task to researcher
 ## - Without @: use default agent or fall back to local processing
 
-import std/[logging, strformat, times, os, options, strutils, tables, json, sequtils, random]
-import ../core/[nats_client, command_parser, config, database, channels]
-import ../types/[nats_messages, config as configTypes]
-import sunny
+import std/[logging, strformat, times, strutils, tables, random]
+import ../core/[nats_client]
+import ../types/[nats_messages]
 
 type
   PendingRequest* = object

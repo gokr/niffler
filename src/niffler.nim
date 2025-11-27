@@ -3,11 +3,9 @@
 ## Uses parseopt for flexible command-line argument parsing with full control
 ## over subcommands and option handling.
 
-import std/[os, tables, logging, strformat, strutils, parseopt]
-import core/[config, channels, conversation_manager, database, session, app]
-import core/log_file as logFileModule
-import api/curlyStreaming
-import ui/[cli, agent_cli, nats_monitor, ui_state, master_cli]
+import std/[os, logging, parseopt]
+import core/[config, database, session, app]
+import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")

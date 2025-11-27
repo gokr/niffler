@@ -7,7 +7,6 @@
 
 import std/[options, strformat, logging, times, json, terminal, strutils]
 import ../core/nats_client
-import sunny
 
 proc formatTimestamp(): string =
   now().format("HH:mm:ss.fff")
