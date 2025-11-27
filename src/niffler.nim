@@ -242,3 +242,4 @@ proc dispatchCmd(args: CliArgs) =
 
 when isMainModule:
   let args = parseCliArgsMain()
+  dispatchCmd(args)
