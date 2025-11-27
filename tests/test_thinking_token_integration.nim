@@ -60,23 +60,23 @@ suite "Thinking Token Integration Tests":
         # Check that ConversationThinkingToken table exists
         let tableExists = db.tableExists(ConversationThinkingToken)
         check tableExists
-        
-        # Verify table structure has required fields
-        let tableInfo = db.query("PRAGMA table_info(conversation_thinking_token)")
+
+        # Verify table structure has required fields using MySQL-compatible syntax
+        let tableInfo = db.query("SHOW COLUMNS FROM conversation_thinking_token")
         var hasConversationId = false
         var hasThinkingContent = false
         var hasProviderFormat = false
         var hasImportanceLevel = false
-        
+
         for row in tableInfo:
-          let columnName = row[1]  # Column name is at index 1
+          let columnName = row[0]  # Column name is at index 0 in SHOW COLUMNS
           case columnName:
           of "conversation_id": hasConversationId = true
           of "thinking_content": hasThinkingContent = true
           of "provider_format": hasProviderFormat = true
           of "importance_level": hasImportanceLevel = true
           else: discard
-        
+
         check hasConversationId
         check hasThinkingContent
         check hasProviderFormat
@@ -84,6 +84,10 @@ suite "Thinking Token Integration Tests":
 
   test "Store and retrieve thinking tokens":
     if testDb != nil:
+      # First create a conversation
+      let conversationId = startConversation(testDb, "test-session-001", "Test conversation for thinking tokens")
+      check conversationId > 0
+
       # Create sample thinking content
       let thinkingContent = ThinkingContent(
         reasoningContent: some("Let me analyze this step by step: 1) First I need to understand the requirements..."),
@@ -91,13 +95,13 @@ suite "Thinking Token Integration Tests":
         reasoningId: some("reasoning_test_001"),
         providerSpecific: some(%*{"format": "anthropic", "test": true})
       )
-      
+
       # Store thinking token
-      let thinkingId = addThinkingTokenToDb(testDb.pool, 1, thinkingContent, none(int), ttfAnthropic, "high")
+      let thinkingId = addThinkingTokenToDb(testDb.pool, conversationId, thinkingContent, none(int), ttfAnthropic, "high")
       check thinkingId > 0
-      
+
       # Retrieve thinking token history
-      let history = getThinkingTokenHistory(testDb.pool, 1, 10)
+      let history = getThinkingTokenHistory(testDb.pool, conversationId, 10)
       check history.len == 1
       check history[0].reasoningContent.isSome()
       check history[0].reasoningContent.get().contains("step by step")
@@ -105,8 +109,17 @@ suite "Thinking Token Integration Tests":
       let retrievedId = history[0].reasoningId.get()
       check retrievedId.len > 0  # Just check it's not empty rather than exact match
 
+      echo "Test completed, checking database..."
+      testDb.pool.withDb:
+        let tokens = db.query("SELECT COUNT(*) FROM conversation_thinking_token")
+        echo fmt"Found {tokens[0][0]} tokens in database"
+
   test "Thinking token importance filtering":
     if testDb != nil:
+      # First create a conversation
+      let conversationId = startConversation(testDb, "test-session-002", "Test conversation for importance filtering")
+      check conversationId > 0
+
       # Store thinking tokens with different importance levels
       let highImportanceContent = ThinkingContent(
         reasoningContent: some("Critical reasoning about security implications"),
@@ -114,35 +127,42 @@ suite "Thinking Token Integration Tests":
         reasoningId: some("critical_001"),
         providerSpecific: none(JsonNode)
       )
-      
+
       let mediumImportanceContent = ThinkingContent(
         reasoningContent: some("Standard implementation analysis"),
         encryptedReasoningContent: none(string),
         reasoningId: some("standard_001"),
         providerSpecific: none(JsonNode)
       )
-      
-      discard addThinkingTokenToDb(testDb.pool, 1, highImportanceContent, none(int), ttfAnthropic, "high")
-      discard addThinkingTokenToDb(testDb.pool, 1, mediumImportanceContent, none(int), ttfOpenAI, "medium")
-      
+
+      discard addThinkingTokenToDb(testDb.pool, conversationId, highImportanceContent, none(int), ttfAnthropic, "high")
+      discard addThinkingTokenToDb(testDb.pool, conversationId, mediumImportanceContent, none(int), ttfOpenAI, "medium")
+
       # Filter by importance level
-      let highImportanceTokens = getThinkingTokensByImportance(testDb.pool, 1, "high", 10)
+      let highImportanceTokens = getThinkingTokensByImportance(testDb.pool, conversationId, "high", 10)
       check highImportanceTokens.len == 1
       check highImportanceTokens[0].reasoningContent.get().contains("Critical reasoning")
-      
-      let mediumImportanceTokens = getThinkingTokensByImportance(testDb.pool, 1, "medium", 10)
+
+      let mediumImportanceTokens = getThinkingTokensByImportance(testDb.pool, conversationId, "medium", 10)
       check mediumImportanceTokens.len == 1
       check mediumImportanceTokens[0].reasoningContent.get().contains("Standard implementation")
 
   test "Thinking token streaming integration":
     if testDb != nil:
+      # First create a conversation
+      let conversationId = startConversation(testDb, "test-session-003", "Test conversation for streaming")
+      check conversationId > 0
+
+      # Initialize global session for this conversation (required for streaming functions)
+      initSessionManager(testDb.pool, conversationId)
+
       # Test storing thinking token from streaming
       let thinkingContent = "I need to carefully consider the user's request and break it down into steps..."
       let thinkingId = storeThinkingTokenFromStreaming(thinkingContent, ttfAnthropic, none(int), false)
-      
+
       check thinkingId.isSome()
       check thinkingId.get() > 0
-      
+
       # Verify it was stored correctly
       let recentTokens = getRecentThinkingTokens(5)
       check recentTokens.len == 1
@@ -151,16 +171,23 @@ suite "Thinking Token Integration Tests":
 
   test "Encrypted thinking token handling":
     if testDb != nil:
+      # First create a conversation
+      let conversationId = startConversation(testDb, "test-session-004", "Test conversation for encrypted tokens")
+      check conversationId > 0
+
+      # Initialize global session for this conversation (required for streaming functions)
+      initSessionManager(testDb.pool, conversationId)
+
       # Test encrypted thinking token storage
       let encryptedContent = "[ENCRYPTED_REASONING_HASH_ABC123]"
       let thinkingId = storeThinkingTokenFromStreaming(encryptedContent, ttfEncrypted, none(int), true)
-      
+
       check thinkingId.isSome()
-      
+
       # Verify encrypted content is stored properly
       let recentTokens = getRecentThinkingTokens(5)
       check recentTokens.len >= 1
-      
+
       # Find the encrypted token
       var foundEncrypted = false
       for token in recentTokens:
@@ -168,7 +195,7 @@ suite "Thinking Token Integration Tests":
           check token.encryptedReasoningContent.get() == encryptedContent
           foundEncrypted = true
           break
-      
+
       check foundEncrypted
 
   test "Thinking token format detection":

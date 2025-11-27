@@ -634,38 +634,39 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
   result = @[]
   pool.withDb:
     let query = """
-      SELECT thinking_content, provider_format, importance_level, token_count, 
+      SELECT thinking_content, provider_format, importance_level, token_count,
              keywords, context_id, reasoning_id, created_at
-      FROM conversation_thinking_token 
-      WHERE conversation_id = ? 
-      ORDER BY created_at DESC 
+      FROM conversation_thinking_token
+      WHERE conversation_id = ?
+      ORDER BY created_at DESC
       LIMIT ?
     """
-    
+
     try:
       let thinkingRows = db.query(ThinkingTokenRow, query, conversationId, limit)
-      
+
       for thinkingRow in thinkingRows:
         # Parse the JSON thinking content back to ThinkingContent
         let thinkingJson = parseJson(thinkingRow.thinkingContent)
-        
+
         let thinkingContent = ThinkingContent(
-          reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
-                              some(thinkingJson{"reasoningContent"}.getStr("")) 
+          reasoningContent: if thinkingJson.hasKey("reasoningContent"):
+                              some(thinkingJson{"reasoningContent"}.getStr(""))
                             else: none(string),
-          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
+          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"):
                                        some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
                                      else: none(string),
           reasoningId: if thinkingRow.reasoningId.len > 0: some(thinkingRow.reasoningId) else: none(string),
-          providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
+          providerSpecific: if thinkingJson.hasKey("providerSpecific"):
                               some(thinkingJson{"providerSpecific"})
                             else: none(JsonNode)
         )
         result.add(thinkingContent)
-      
+
       debug(fmt"Retrieved {result.len} thinking tokens for conversation {conversationId}")
     except Exception as e:
       error(fmt"Failed to retrieve thinking token history: {e.msg}")
+      raise
 
 proc getThinkingTokensByImportance*(pool: Pool, conversationId: int, 
                                    importance: string, limit: int = 20): seq[ThinkingContent] =
