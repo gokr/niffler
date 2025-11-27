@@ -757,8 +757,8 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
     # No database: use timestamp-based ID for in-memory session
     initSessionManager(pool, epochTime().int)
   
-  # Display final model after all conversation loading and restoration
-  writeCompleteLine(formatWithStyle(fmt"Using model: {currentModel.nickname} ({currentModel.model})", currentTheme.success))
+  # Model display removed - in master mode we route to agents, not use a model directly
+  # Users can check model with /model command if needed
 
   # Update prompt color to reflect the restored mode
   updatePromptState()
