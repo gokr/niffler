@@ -75,6 +75,8 @@ proc syncSessionState*(conversationId: int, pool: Pool = nil) =
   finally:
     release(globalSession.lock)
 
+proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) {.gcsafe.}
+
 proc validateSessionState*(): tuple[valid: bool, message: string] =
   ## Validate that both session systems are properly synchronized
   ## Validate that both session systems are in sync
@@ -295,9 +297,9 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   # Update current session
   currentSession = some(session)
   
-  # Sync globalSession with the new conversation ID and pool
-  syncSessionState(conversationId, backend.pool)
-  
+# Sync globalSession with the new conversation ID and pool
+  initSessionManager(backend.pool, conversationId)
+
   # Mode restoration is handled in UI layer (commands.nim) to avoid circular imports
   debug(fmt"switchToConversation: mode {conversation.mode} will be restored by UI layer")
   
@@ -426,13 +428,18 @@ proc initializeDefaultConversation*(backend: DatabaseBackend) =
         break
 
 # Message management functions for conversation persistence
-proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) =
+proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) {.gcsafe.} =
   ## Initialize session manager with database pool and conversation ID for thread-safe operations
-  globalSession.pool = pool
-  globalSession.conversationId = conversationId
-  globalSession.sessionPromptTokens = 0
-  globalSession.sessionCompletionTokens = 0
-  globalSession.appStartTime = now()
+  acquire(globalSession.lock)
+  try:
+    globalSession.pool = pool
+    globalSession.conversationId = conversationId
+    globalSession.sessionPromptTokens = 0
+    globalSession.sessionCompletionTokens = 0
+    globalSession.appStartTime = now()
+    debug(fmt"Initialized session manager for conversation {conversationId}")
+  finally:
+    release(globalSession.lock)
 
 proc addUserMessage*(content: string): Message =
   ## Add user message to current conversation and persist to database
@@ -446,14 +453,14 @@ proc addUserMessage*(content: string): Message =
         let backend = getGlobalDatabase()
         if backend != nil:
           updateConversationMessageCount(backend, globalSession.conversationId)
-      
+
       result = Message(
         role: mrUser,
         content: content
       )
-      
+
       debug(fmt"Added user message: {content[0..min(50, content.len-1)]}")
-      
+
       # Invalidate conversation context cache
       invalidateConversationCache()
     finally:

@@ -78,7 +78,7 @@ proc getMessageCount*(db: DatabaseBackend, conversationId: int): int =
   ## Get the actual message count for a conversation
   try:
     db.pool.withDb:
-      let rows = db.query("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = ?", toArgument(conversationId))
+      let rows = db.query("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = ?", conversationId)
       if rows.len > 0:
         return parseInt(rows[0][0])
       return 0
@@ -178,27 +178,27 @@ proc verifyDatabasePersistence*(db1: DatabaseBackend, db2: DatabaseBackend, conv
 proc createTestConversationWithMessages*(db: DatabaseBackend, title: string, messageCount: int): int =
   ## Create a test conversation with a specified number of messages
   var testModel = createTestModelConfig()
-  
+
   let convOpt = createConversation(db, title, amCode, testModel.nickname)
   if convOpt.isNone():
     return 0
-  
+
   let conv = convOpt.get()
   let convId = conv.id
-  
+
   # Switch to conversation and initialize session
   discard switchToConversation(db, convId)
   initSessionManager(db.pool, convId)
-  
+
   # Add alternating user and assistant messages
   for i in 0..<messageCount:
     if i mod 2 == 0:
       discard addUserMessage(fmt"User message {i + 1}")
     else:
       discard addAssistantMessage(fmt"Assistant response {i + 1}", none(seq[LLMToolCall]))
-  
+
   # Update conversation metadata
   updateConversationMessageCount(db, convId)
   updateConversationActivity(db, convId)
-  
+
   return convId
