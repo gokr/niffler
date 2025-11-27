@@ -1152,14 +1152,12 @@ To send requests to agents:
         shouldContinue: true
       )
 
-    var message = fmt("Running Agents ({presentAgents.len} connected via NATS):\n\n")
+    var message = "Running agents:\n\n"
 
     for agentName in presentAgents:
       let present = client.isPresent(agentName)
       let statusIcon = if present: "✓" else: "?"
       message &= fmt("  {statusIcon} @{agentName}\n")
-
-    message &= "\nUse @<agent> <prompt> to send requests"
 
     return CommandResult(
       success: true,

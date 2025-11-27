@@ -18,6 +18,7 @@
 import std/[logging, strformat, times, strutils, tables, random]
 import ../core/[nats_client]
 import ../types/[nats_messages]
+import nats_listener
 
 type
   PendingRequest* = object
@@ -157,6 +158,8 @@ proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string)
   # Publish request and return immediately
   try:
     state.natsClient.publish(subject, $request)
+    # Track request for response display
+    trackAgentRequest(requestId, agentName, input)
     return (true, requestId, "")
   except Exception as e:
     state.pendingRequests.del(requestId)

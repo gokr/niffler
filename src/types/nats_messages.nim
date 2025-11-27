@@ -33,6 +33,7 @@ type
     ## Multiple responses can be sent per request with done=false
     ## Final response must have done=true
     requestId* {.json: "request_id".}: string      # Matching request ID
+    agentName* {.json: "agent_name".}: string      # Agent sending the response
     content*: string                                # Response content
     done*: bool                                     # True if this is the final response
 
@@ -62,10 +63,11 @@ proc createRequest*(requestId: string, agentName: string, input: string): NatsRe
     input: input
   )
 
-proc createResponse*(requestId: string, content: string, done: bool = false): NatsResponse =
+proc createResponse*(requestId: string, agentName: string, content: string, done: bool = false): NatsResponse =
   ## Create a response
   NatsResponse(
     requestId: requestId,
+    agentName: agentName,
     content: content,
     done: done
   )

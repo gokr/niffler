@@ -27,6 +27,7 @@ import ../mcp/[mcp]
 import output_shared
 import tool_visualizer
 import theme
+import commands
 
 type
   AgentState = object
@@ -123,6 +124,11 @@ proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, mode
   result.toolSchemas = getAllToolSchemas()
   info(fmt"Loaded {result.toolSchemas.len} tools")
 
+  # Initialize command system (needed for agent command execution)
+  info("Initializing command system...")
+  initializeCommands()
+  info("Command system initialized")
+
   # Initialize session manager for thread-safe operations
   # Pass database pool if available
   let pool = if result.database != nil: result.database.pool else: nil
@@ -138,7 +144,7 @@ proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, mode
 
 proc sendResponse(state: var AgentState, requestId: string, content: string, done: bool = false) =
   ## Send a response message back to master
-  let response = createResponse(requestId, content, done)
+  let response = createResponse(requestId, state.name, content, done)
   state.natsClient.publish("niffler.master.response", $response)
 
   if done:
@@ -296,14 +302,18 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
               let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
 
               if not isInThinkingBlock:
-                # First thinking chunk - show emoji prefix
+                # First thinking chunk - show emoji prefix (flush immediately to avoid buffering issues)
+                flushStreamingBuffer(redraw = false)
                 let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
                 let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-                writeStreamingChunk(emojiPrefix & styledContent)
+                stdout.write(emojiPrefix & styledContent)
+                stdout.flushFile()
                 isInThinkingBlock = true
               else:
-                # Continuing thinking - just show content
-                writeStreamingChunkStyled(thinkingContent, currentTheme.thinking)
+                # Continuing thinking - write directly without buffering
+                let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+                stdout.write(styledContent)
+                stdout.flushFile()
 
             # Display regular content
             if response.content.len > 0:
@@ -402,7 +412,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         requestId: toolCall.id,
         toolName: toolCall.function.name,
         arguments: toolCall.function.arguments,
-        agentName: state.name
+        agentName: state.definition.name
       )
 
       if not trySendToolRequest(state.channels, toolReq):
@@ -453,11 +463,8 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
         discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
 
-  # Generate brief summary for master
-  let summary = if finalResponse.len > 200:
-    finalResponse[0..199] & "..."
-  else:
-    finalResponse
+  # Return full response (no truncation)
+  let summary = finalResponse
 
   info(fmt"Ask completed: {totalToolCalls} tool calls, {totalTokens} tokens")
   return (true, summary)
@@ -468,8 +475,32 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
   state.requestCount.inc()
 
   try:
-    # Parse commands from input
-    let parsed = parseCommand(request.input)
+    # Check if input is an agent command (like /info, /conv, etc.)
+    if request.input.strip().startsWith("/"):
+      let (command, args) = commands.parseCommand(request.input)
+
+      # Check if this is an agent command (not a routing command like /plan, /task)
+      if command.len > 0 and isAgentCommand(command):
+        info(fmt"Executing agent command: /{command}")
+        sendStatusUpdate(state, request.requestId, fmt"Executing command: /{command}")
+
+        # Execute the command in agent context
+        var sess = initSession()
+        var currentModel = state.modelConfig
+        let commandResult = executeCommand(command, args, sess, currentModel)
+
+        # Send the command output back to master
+        sendResponse(state, request.requestId, commandResult.message, done = true)
+
+        # Update model if changed
+        if currentModel.nickname != state.modelConfig.nickname:
+          state.modelConfig = currentModel
+
+        info(fmt"Command /{command} executed successfully")
+        return
+
+    # Parse routing commands from input (/plan, /task, /model)
+    let parsed = command_parser.parseCommand(request.input)
 
     # Send status update
     sendStatusUpdate(state, request.requestId, "Processing request...")
@@ -615,7 +646,7 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo) =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false) =
   ## Start agent mode - main entry point
   let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
   echo fmt"Starting Niffler in agent mode: {displayName}"
@@ -633,14 +664,14 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     info("Starting worker threads...")
     let pool = if state.database != nil: state.database.pool else: nil
 
-    state.apiWorker = startAPIWorker(state.channels, level, dump = false, database = state.database, pool = pool)
+    state.apiWorker = startAPIWorker(state.channels, level, dump, database = state.database, pool = pool)
     info("API worker started")
 
     # Configure API worker with model
     if not configureAPIWorker(state.modelConfig):
       warn(fmt("Failed to configure API worker with model {state.modelConfig.nickname}"))
 
-    state.toolWorker = startToolWorker(state.channels, level, dump = false, database = state.database)
+    state.toolWorker = startToolWorker(state.channels, level, dump, database = state.database)
     info("Tool worker started")
 
     state.mcpWorker = startMcpWorker(state.channels, level)

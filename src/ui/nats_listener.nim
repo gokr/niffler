@@ -5,7 +5,7 @@
 ##
 ## This creates its own NATS connection to avoid thread-safety issues.
 
-import std/[options, strformat, logging, os, tables]
+import std/[options, strformat, logging, os, tables, hashes, strutils]
 when compileOption("threads"):
   import std/typedthreads
 else:
@@ -15,6 +15,7 @@ import ../core/[nats_client]
 import ../types/[nats_messages]
 import ../../../linecross/linecross
 import sunny
+import theme
 
 type
   NatsListenerParams* = ref object
@@ -33,6 +34,19 @@ type
     input: string
 
 var pendingRequests {.threadvar.}: Table[string, PendingAgentRequest]
+
+proc getAgentColor(agentName: string): ThemeStyle =
+  ## Get deterministic color for agent name using hash
+  let colorPalette = [
+    createThemeStyle("cyan", "default", "bright"),
+    createThemeStyle("magenta", "default", "bright"),
+    createThemeStyle("yellow", "default", "bright"),
+    createThemeStyle("blue", "default", "bright"),
+    createThemeStyle("green", "default", "bright")
+  ]
+  let hashValue = hash(agentName)
+  let colorIndex = abs(hashValue) mod colorPalette.len
+  return colorPalette[colorIndex]
 
 proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
   ## NATS listener thread that processes agent responses and displays them
@@ -60,14 +74,13 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
 
     try:
       while params.running[]:
-        # Check for status updates
+        # Check for status updates (but don't display them for cleaner UX)
         let maybeStatus = statusSubscription.nextMsg(timeoutMs = 50)
         if maybeStatus.isSome():
           try:
             let status = fromJson(NatsStatusUpdate, maybeStatus.get().data)
-            # Display status in chat style
-            let output = fmt("@{status.agentName}: {status.status}")
-            writeOutputRaw(output, addNewline = true, redraw = true)
+            # Status updates are consumed but not displayed
+            debug(fmt("Status from {status.agentName}: {status.status}"))
           except Exception as e:
             debug(fmt("Failed to parse status update: {e.msg}"))
 
@@ -78,20 +91,19 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
             let response = fromJson(NatsResponse, maybeMsg.get().data)
 
             if response.done:
-              # Final response - show completion with content summary
+              # Final response - show with colored agent name
               if response.content.len > 0:
-                # Show first 100 chars of response as summary
-                let summary = if response.content.len > 100:
-                  response.content[0..99] & "..."
-                else:
-                  response.content
-                writeOutputRaw(fmt("✓ Response: {summary}"), addNewline = true, redraw = true)
-              else:
-                writeOutputRaw("✓ Request completed", addNewline = true, redraw = true)
-              debug(fmt("Request {response.requestId} completed"))
+                # Get agent name from response
+                let agentColor = getAgentColor(response.agentName)
+                let coloredName = formatWithStyle(response.agentName, agentColor)
+                # Convert LF to CRLF for proper terminal display
+                let normalizedContent = response.content.replace("\n", "\r\n")
+                writeOutputRaw(fmt("{coloredName}: {normalizedContent}"), addNewline = true, redraw = true)
+              debug(fmt("Request {response.requestId} completed from {response.agentName}"))
             elif response.content.len > 0:
-              # Streaming chunk - display directly
-              writeOutputRaw(response.content, addNewline = false, redraw = true)
+              # Streaming chunk - display directly, convert LF to CRLF
+              let normalizedContent = response.content.replace("\n", "\r\n")
+              writeOutputRaw(normalizedContent, addNewline = false, redraw = true)
           except Exception as e:
             debug(fmt("Failed to parse response: {e.msg}"))
 
