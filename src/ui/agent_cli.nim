@@ -67,8 +67,6 @@ proc loadAgentDefinition(agentName: string): AgentDefinition =
 proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, modelName: string, level: Level): AgentState =
   ## Initialize agent state and connect to NATS
 
-  # DEBUG: Print parameters immediately
-  echo fmt"DEBUG AGENT INIT - agentName: '{agentName}', agentNick: '{agentNick}', modelName: '{modelName}'"
 
   # Use nickname for routing if provided, otherwise use agent name
   let effectiveName = if agentNick.len > 0: agentNick else: agentName
