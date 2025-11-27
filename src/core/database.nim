@@ -715,14 +715,14 @@ type
     totalTokens*: int
   
   ThinkingTokenRow* = ref object of RootObj
-    thinkingContent*: string
-    providerFormat*: string
-    importanceLevel*: string
-    tokenCount*: int
+    thinking_content*: string
+    provider_format*: string
+    importance_level*: string
+    token_count*: int
     keywords*: string
-    contextId*: string
-    reasoningId*: string  # text column in database
-    createdAt*: DateTime
+    context_id*: string
+    reasoning_id*: string  # text column in database
+    created_at*: DateTime
 
 proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int): tuple[rows: seq[ConversationCostRow], totalCost: float, totalInput: int, totalOutput: int, totalReasoning: int, totalInputCost: float, totalOutputCost: float, totalReasoningCost: float] =
   ## Calculate detailed cost breakdown by model for a conversation with reasoning token analysis

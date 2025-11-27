@@ -633,17 +633,18 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
   ## Retrieve thinking token history for a conversation, most recent first
   result = @[]
   pool.withDb:
-    let query = """
+    # Build query with direct limit value instead of parameter to avoid binding issues
+    let query = fmt"""
       SELECT thinking_content, provider_format, importance_level, token_count,
              keywords, context_id, reasoning_id, created_at
       FROM conversation_thinking_token
-      WHERE conversation_id = ?
+      WHERE conversation_id = {conversationId}
       ORDER BY created_at DESC
-      LIMIT ?
+      LIMIT {limit}
     """
 
     try:
-      let thinkingRows = db.query(ThinkingTokenRow, query, conversationId, limit)
+      let thinkingRows = db.query(ThinkingTokenRow, query)
 
       for thinkingRow in thinkingRows:
         # Parse the JSON thinking content back to ThinkingContent
@@ -656,7 +657,7 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
           encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"):
                                        some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
                                      else: none(string),
-          reasoningId: if thinkingRow.reasoningId.len > 0: some(thinkingRow.reasoningId) else: none(string),
+          reasoningId: if thinkingRow.reasoning_id.len > 0: some(thinkingRow.reasoning_id) else: none(string),
           providerSpecific: if thinkingJson.hasKey("providerSpecific"):
                               some(thinkingJson{"providerSpecific"})
                             else: none(JsonNode)
@@ -668,35 +669,36 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
       error(fmt"Failed to retrieve thinking token history: {e.msg}")
       raise
 
-proc getThinkingTokensByImportance*(pool: Pool, conversationId: int, 
+proc getThinkingTokensByImportance*(pool: Pool, conversationId: int,
                                    importance: string, limit: int = 20): seq[ThinkingContent] =
   ## Get thinking tokens filtered by importance level (low/medium/high)
   result = @[]
   pool.withDb:
-    let query = """
+    # Build query with direct values instead of parameters to avoid binding issues
+    let query = fmt"""
       SELECT thinking_content, provider_format, importance_level, token_count,
              keywords, context_id, reasoning_id, created_at
-      FROM conversation_thinking_token 
-      WHERE conversation_id = ? AND importance_level = ?
-      ORDER BY created_at DESC 
-      LIMIT ?
+      FROM conversation_thinking_token
+      WHERE conversation_id = {conversationId} AND importance_level = '{importance}'
+      ORDER BY created_at DESC
+      LIMIT {limit}
     """
-    
+
     try:
-      let thinkingRows = db.query(ThinkingTokenRow, query, conversationId, importance, limit)
-      
+      let thinkingRows = db.query(ThinkingTokenRow, query)
+
       for thinkingRow in thinkingRows:
         # Parse the JSON thinking content back to ThinkingContent
-        let thinkingJson = parseJson(thinkingRow.thinkingContent)
-        
+        let thinkingJson = parseJson(thinkingRow.thinking_content)
+
         let thinkingContent = ThinkingContent(
-          reasoningContent: if thinkingJson.hasKey("reasoningContent"): 
-                              some(thinkingJson{"reasoningContent"}.getStr("")) 
+          reasoningContent: if thinkingJson.hasKey("reasoningContent"):
+                              some(thinkingJson{"reasoningContent"}.getStr(""))
                             else: none(string),
-          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"): 
+          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"):
                                        some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
                                      else: none(string),
-          reasoningId: if thinkingRow.reasoningId.len > 0: some(thinkingRow.reasoningId) else: none(string),
+          reasoningId: if thinkingRow.reasoning_id.len > 0: some(thinkingRow.reasoning_id) else: none(string),
           providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
                               some(thinkingJson{"providerSpecific"})
                             else: none(JsonNode)
