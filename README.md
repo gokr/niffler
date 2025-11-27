@@ -244,10 +244,10 @@ niffler
 niffler model list
 
 # Send a single prompt
-niffler -p "Hello, how are you?"
+niffler -p="Hello, how are you?"
 
 # Use specific model
-niffler --model gpt4
+niffler --model=gpt4
 
 # Enable debug logging
 niffler --debug
@@ -396,7 +396,7 @@ All conversations are automatically saved to a TiDB database. See the Database S
 niffler init
 
 # Initialize with custom path
-niffler init --config-path /path/to/config.yaml
+niffler init /path/to/config
 ```
 
 ## 🔧 Configuration
@@ -850,7 +850,7 @@ The archive system integrates seamlessly with Niffler's conversation management:
 niffler init
 
 # Initialize with custom path
-niffler init --config-path /path/to/config.yaml
+niffler init /path/to/config
 ```
 
 ### NIFFLER.md System Prompt Customization

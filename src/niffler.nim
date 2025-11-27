@@ -7,7 +7,7 @@ import std/[os, tables, logging, strformat, strutils, parseopt]
 import core/[config, channels, conversation_manager, database, session]
 import core/log_file as logFileModule
 import api/curlyStreaming
-import ui/[cli, agent_cli, nats_monitor, ui_state]
+import ui/[cli, agent_cli, nats_monitor, ui_state, master_cli]
 import types/config as configTypes
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
@@ -109,35 +109,37 @@ proc showHelp() =
 Niffler - your friendly magical AI buddy
 
 USAGE:
-  niffler [options]                          # Interactive mode
-  niffler --prompt "<text>" [options]       # Single prompt
-  niffler agent <name> [options]             # Start agent
-  niffler model list                         # List models
-  niffler init [path]                        # Initialize config
-  niffler nats-monitor [options]             # Monitor NATS traffic
+  niffler [options]                               # Interactive mode
+  niffler --prompt="<text>" [options]            # Single prompt
+  niffler agent <name> [options]                  # Start agent
+  niffler model list                              # List models
+  niffler init [path]                             # Initialize config
+  niffler nats-monitor [options]                  # Monitor NATS traffic
+
+NOTE: All long options require '=' for values (e.g., --model=gpt4, --nick=test123)
 
 OPTIONS:
-  -m, --model <nickname>     Select model by nickname
-  -p, --prompt "<text>"      Single prompt and exit
+  -m, --model=<nickname>     Select model by nickname
+  -p, --prompt="<text>"      Single prompt and exit
   -i, --info                 Info level logging
   -d, --debug                Debug level logging
       --dump                 Show HTTP requests & responses
-      --log <filename>       Redirect debug output to log file
-      --nats <url>           NATS server URL [default: nats://localhost:4222]
+      --log=<filename>       Redirect debug output to log file
+      --nats=<url>           NATS server URL [default: nats://localhost:4222]
   -h, --help                 Show this help message
   -v, --version              Show version
 
 AGENT COMMAND OPTIONS:
-      --nick <nickname>      Instance nickname for multiple agent instances
+      --nick=<nickname>      Instance nickname for multiple agent instances
 
 EXAMPLES:
   niffler                              # Start interactive mode
-  niffler --model gpt4                # Interactive with specific model
-  niffler --prompt "hello" --debug    # Single prompt with debugging
+  niffler --model=gpt4               # Interactive with specific model
+  niffler --prompt="hello" --debug   # Single prompt with debugging
 
-  niffler agent coder                 # Start coder agent
-  niffler agent researcher --nick alpha    # Researcher with nickname
-  niffler agent coder --nick prod --model gpt4   # Coder with nick and model
+  niffler agent coder                # Start coder agent
+  niffler agent researcher --nick=alpha      # Researcher with nickname
+  niffler agent coder --nick=prod --model=gpt4  # Coder with nick and model
 
   niffler model list                   # List available models
   niffler init                         # Initialize config at default location
@@ -165,9 +167,8 @@ proc sendSinglePrompt(prompt: string, modelName: string, level: Level, dump: boo
   echo "Note: Full single prompt functionality to be integrated with existing CLI systems"
 
 proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
-  ## Start interactive CLI mode with specified model and logging configuration
-  echo "Interactive mode: Coming soon with proper initialization"
-  echo "For now, you can test agent functionality with: ./src/niffler agent <name>"
+  ## Start interactive CLI mode (master mode) with specified model and logging configuration
+  startMasterMode(natsUrl=natsUrl, modelName=modelName, level=level)
 
 proc parseCliArgsMain(): CliArgs =
   ## Parse command line arguments with error handling
