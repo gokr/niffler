@@ -379,10 +379,17 @@ proc init*(backend: DatabaseBackend) =
     try:
       var sysDb = mysql.openDatabase("mysql", host, port, username, password)
 
-      # Use CREATE DATABASE IF NOT EXISTS to auto-create the database
-      discard sysDb.query(fmt"CREATE DATABASE IF NOT EXISTS {database}")
-      dbCreated = true
-      echo fmt"Verified/created database '{database}'"
+      # Check if database exists
+      let checkResult = sysDb.query(fmt"SHOW DATABASES LIKE '{database}'")
+      let databaseExists = checkResult.len > 0
+
+      if databaseExists:
+        echo fmt"Opened database '{database}'"
+      else:
+        # Create the database
+        discard sysDb.query(fmt"CREATE DATABASE {database}")
+        dbCreated = true
+        echo fmt"Auto created database '{database}'"
 
       sysDb.close()
     except Exception as e:
