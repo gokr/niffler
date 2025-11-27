@@ -217,7 +217,7 @@ proc dispatchCmd(args: CliArgs) =
     if args.agentName == "":
       handleError("agent command requires a name", true)
 
-    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level)
+    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump)
 
   of "model":
     if args.modelSubCmd == "list":

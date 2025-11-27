@@ -170,24 +170,6 @@ type
     toolSchemaTokens*: int       ## Tool schema JSON tokens
     totalOverhead*: int          ## Complete API request overhead
 
-# Database utility functions for query building and schema operations
-proc columnExists*(conn: mysql.Db, tableName: string, columnName: string): bool =
-  ## Check if a column exists in a table
-  let tableInfo = conn.query(fmt"SHOW COLUMNS FROM {tableName} LIKE '{columnName}'")
-  return tableInfo.len > 0
-
-proc indexExists*(conn: mysql.Db, tableName: string, indexName: string): bool =
-  ## Check if an index exists in the database
-  let indexList = conn.query(fmt"SHOW INDEX FROM {tableName} WHERE Key_name = '{indexName}'")
-  return indexList.len > 0
-
-proc addColumnIfNotExists*(conn: mysql.Db, tableName: string, columnName: string,
-                          columnDef: string) =
-  ## Add a column to a table if it doesn't already exist
-  if not columnExists(conn, tableName, columnName):
-    conn.query(fmt"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDef}")
-    debug(fmt"Added column {columnName} to table {tableName}")
-
 proc utcNow*(): string =
   ## Return current UTC time
   now().utc().format("yyyy-MM-dd'T'HH:mm:ss")
@@ -210,109 +192,6 @@ proc deserializeToolCalls*(jsonStr: string): seq[LLMToolCall] =
   except Exception as e:
     error(fmt"Failed to deserialize tool calls: {e.msg}")
     return @[]
-
-proc migrateConversationMessageSchema*(conn: mysql.Db) =
-  ## Add new columns to ConversationMessage table for tool call storage
-  try:
-    # Add new columns using utility functions
-    addColumnIfNotExists(conn, "conversation_message", "tool_calls", "TEXT")
-    addColumnIfNotExists(conn, "conversation_message", "sequence_id", "INTEGER")
-    addColumnIfNotExists(conn, "conversation_message", "message_type", "TEXT DEFAULT 'content'")
-
-    debug("ConversationMessage schema migration completed")
-  except Exception as e:
-    error(fmt"Failed to migrate ConversationMessage schema: {e.msg}")
-
-proc migrateModelTokenUsageSchema*(conn: mysql.Db) =
-  ## Add thinking token columns to ModelTokenUsage table
-  try:
-    # Add thinking token columns using utility functions
-    addColumnIfNotExists(conn, "model_token_usage", "reasoning_tokens", "INTEGER DEFAULT 0")
-    addColumnIfNotExists(conn, "model_token_usage", "reasoning_cost", "DOUBLE DEFAULT 0.0")
-
-    debug("ModelTokenUsage schema migration completed")
-  except Exception as e:
-    error(fmt"Failed to migrate ModelTokenUsage schema: {e.msg}")
-
-proc migrateConversationThinkingTokenSchema*(conn: mysql.Db) =
-  ## Migrate conversation_thinking_token table schema to use correct column types for Option fields
-  try:
-    # Check if message_id column is JSON (old schema) and needs to be converted to bigint
-    let columnInfo = conn.query("SHOW COLUMNS FROM conversation_thinking_token WHERE Field = 'message_id'")
-    if columnInfo.len > 0:
-      let columnType = columnInfo[0][1].toLowerAscii()
-      if "json" in columnType:
-        warn("conversation_thinking_token table has old schema with JSON columns, migrating to correct types...")
-
-        # Drop the existing table and recreate it with correct schema
-        # This is safe for thinking tokens as they're not critical data
-        conn.query("DROP TABLE IF EXISTS conversation_thinking_token")
-        debug("Dropped old conversation_thinking_token table")
-
-        # The table will be recreated in initializeDatabase with correct schema
-        debug("conversation_thinking_token schema migration completed - table will be recreated")
-      else:
-        debug("conversation_thinking_token table already has correct schema")
-    else:
-      debug("conversation_thinking_token table does not exist yet, will be created with correct schema")
-  except Exception as e:
-    error(fmt"Failed to migrate ConversationThinkingToken schema: {e.msg}")
-
-proc migrateConversationSchema*(conn: mysql.Db) =
-  ## Add new columns to Conversation table for mode and model tracking
-  try:
-    # Check if parent_conversation_id is JSON (old schema) and needs to be fixed
-    # Option[int] should map to bigint, not JSON
-    let columnInfo = conn.query("SHOW COLUMNS FROM conversation WHERE Field = 'parent_conversation_id'")
-    var hasJsonColumn = false
-    if columnInfo.len > 0:
-      let columnType = columnInfo[0][1].toLowerAscii()
-      if "json" in columnType:
-        hasJsonColumn = true
-        warn("conversation table has old schema with JSON column, migrating to correct types...")
-
-    # If we have JSON columns, we need to recreate the table
-    if hasJsonColumn:
-      # For testing, we can just drop and recreate - but in production we'd need a proper migration
-      conn.query("DROP TABLE IF EXISTS conversation")
-      debug("Dropped old conversation table - will be recreated with correct schema")
-    else:
-      debug("conversation table already has correct schema for Option fields")
-
-    # Add new columns using utility functions (only if table wasn't just dropped)
-    if not hasJsonColumn:
-      addColumnIfNotExists(conn, "conversation", "mode", "TEXT DEFAULT 'plan'")
-      addColumnIfNotExists(conn, "conversation", "model_nickname", "TEXT DEFAULT ''")
-      addColumnIfNotExists(conn, "conversation", "message_count", "INTEGER DEFAULT 0")
-      addColumnIfNotExists(conn, "conversation", "last_activity", "DATETIME DEFAULT CURRENT_TIMESTAMP")
-      addColumnIfNotExists(conn, "conversation", "plan_mode_entered_at", "DATETIME DEFAULT '1970-01-01 00:00:00'")
-
-      # Update any existing records that have NULL or empty values
-      debug("Updating any NULL or empty plan_mode_entered_at values")
-      conn.query("UPDATE conversation SET plan_mode_entered_at = '1970-01-01 00:00:00' WHERE plan_mode_entered_at IS NULL OR plan_mode_entered_at = ''")
-
-      # Migrate to new plan_mode_created_files column (changed semantics)
-      if not columnExists(conn, "conversation", "plan_mode_created_files"):
-        debug("Adding plan_mode_created_files column to conversation table")
-        conn.query("ALTER TABLE conversation ADD COLUMN plan_mode_created_files TEXT")
-        # Clear old protection data since semantics changed completely
-        debug("Clearing old plan mode protection data due to semantic change")
-        conn.query("UPDATE conversation SET plan_mode_created_files = '', plan_mode_entered_at = '1970-01-01 00:00:00'")
-
-      # Add condensation support columns
-      addColumnIfNotExists(conn, "conversation", "parent_conversation_id", "INTEGER")
-      addColumnIfNotExists(conn, "conversation", "condensed_from_message_count", "INTEGER DEFAULT 0")
-      addColumnIfNotExists(conn, "conversation", "condensation_strategy", "TEXT DEFAULT ''")
-      addColumnIfNotExists(conn, "conversation", "condensation_metadata", "TEXT DEFAULT '{}'")
-
-      # Create index for parent conversation lookups
-      if not indexExists(conn, "conversation", "idx_conversation_parent_id"):
-        debug("Creating index idx_conversation_parent_id")
-        conn.query("CREATE INDEX idx_conversation_parent_id ON conversation(parent_conversation_id)")
-
-    debug("Conversation schema migration completed")
-  except Exception as e:
-    error(fmt"Failed to migrate Conversation schema: {e.msg}")
 
 proc initializeDatabase*(backend: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
@@ -343,12 +222,6 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       db.createIndexIfNotExists(ConversationMessage, "conversationId")
       discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_message_model ON conversation_message (model(255))")
       db.createIndexIfNotExists(ConversationMessage, "created_at")
-
-    # Run schema migrations to add new columns
-    migrateConversationMessageSchema(db)
-    migrateConversationSchema(db)
-    migrateModelTokenUsageSchema(db)
-    migrateConversationThinkingTokenSchema(db)
 
     if not db.tableExists(ModelTokenUsage):
       db.createTable(ModelTokenUsage)
