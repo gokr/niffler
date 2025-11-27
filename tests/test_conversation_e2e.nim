@@ -42,9 +42,6 @@ suite "End-to-End Conversation Lifecycle":
     let switchSuccess = switchToConversation(testDb.backend, convId)
     check switchSuccess == true
     
-    # Initialize session for message operations
-    initSessionManager(testDb.backend.pool, convId)
-    
     # Add user message
     let userMsg = addUserMessage("Test user message for E2E test")
     check userMsg.role == mrUser
@@ -144,11 +141,9 @@ suite "End-to-End Conversation Lifecycle":
     
     # Switch between conversations and add messages
     check switchToConversation(testDb.backend, conv1.id) == true
-    initSessionManager(testDb.backend.pool, conv1.id)
     discard addUserMessage("Planning message")
-    
+
     check switchToConversation(testDb.backend, conv2.id) == true
-    initSessionManager(testDb.backend.pool, conv2.id)
     discard addUserMessage("Code review message")
     
     # Verify messages went to correct conversations

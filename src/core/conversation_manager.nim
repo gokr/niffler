@@ -64,11 +64,13 @@ proc clearCurrentSession*() =
   finally:
     release(globalSession.lock)
 
-proc syncSessionState*(conversationId: int) =
+proc syncSessionState*(conversationId: int, pool: Pool = nil) =
   ## Synchronize both session systems with the same conversation ID
   acquire(globalSession.lock)
   try:
     globalSession.conversationId = conversationId
+    if pool != nil:
+      globalSession.pool = pool
     debug(fmt"Synced globalSession.conversationId to {conversationId}")
   finally:
     release(globalSession.lock)
@@ -293,8 +295,8 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   # Update current session
   currentSession = some(session)
   
-  # Sync globalSession with the new conversation ID
-  syncSessionState(conversationId)
+  # Sync globalSession with the new conversation ID and pool
+  syncSessionState(conversationId, backend.pool)
   
   # Mode restoration is handled in UI layer (commands.nim) to avoid circular imports
   debug(fmt"switchToConversation: mode {conversation.mode} will be restored by UI layer")

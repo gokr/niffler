@@ -120,12 +120,9 @@ proc simulateFullConversationWorkflow*(db: DatabaseBackend): tuple[convId: int, 
   let conv = convOpt.get()
   let convId = conv.id
   
-  # Switch to conversation
+  # Switch to conversation (this now also initializes the session manager)
   if not switchToConversation(db, convId):
     return (convId, false)
-  
-  # Initialize session manager for this conversation
-  initSessionManager(db.pool, convId)
   
   # Add some messages
   discard addUserMessage("Hello, this is a test message")
