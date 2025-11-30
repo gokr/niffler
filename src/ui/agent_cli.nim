@@ -403,7 +403,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         let errorMsg = fmt"Tool '{toolCall.function.name}' not allowed for agent '{state.name}'"
         writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
         messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
         continue
 
       # Send to tool worker
@@ -419,7 +419,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         let errorMsg = "Failed to send tool request"
         writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
         messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
         continue
 
       # Wait for tool response
@@ -449,7 +449,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
 
             # Add to conversation
             messages.add(Message(role: mrTool, content: toolContent, toolCallId: some(toolCall.id)))
-            discard conversation_manager.addToolMessage(toolCall.id, toolContent)
+            discard conversation_manager.addToolMessage(toolContent, toolCall.id)
 
             toolResponseReceived = true
             break
@@ -461,7 +461,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         let errorMsg = "Tool execution timed out"
         writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
         messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(toolCall.id, errorMsg)
+        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
 
   # Return full response (no truncation)
   let summary = finalResponse
