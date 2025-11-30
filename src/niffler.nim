@@ -205,11 +205,19 @@ proc dispatchCmd(args: CliArgs) =
   var level = lvlNotice
   if args.debug:
     level = lvlDebug
-    debug "Debug logging enabled"
   elif args.info:
     level = lvlInfo
-    debug "Info logging enabled"
+
+  # Setup console logging
+  let consoleLogger = newConsoleLogger(useStderr = true)
+  addHandler(consoleLogger)
   setLogFilter(level)
+
+  # Show debug logging status now that logger is set up
+  if args.debug:
+    debug "Debug logging enabled"
+  elif args.info:
+    debug "Info logging enabled"
 
   # Handle subcommands
   case args.command
