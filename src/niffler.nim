@@ -164,8 +164,8 @@ proc sendSinglePrompt(prompt: string, modelName: string, level: Level, dump: boo
   echo "Model: ", modelName
   echo "Note: Full single prompt functionality to be integrated with existing CLI systems"
 
-proc startInteractiveMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
-  ## Start interactive CLI mode with specified model and logging configuration
+proc startMasterMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
+  ## Start master mode with CLI interface for agent routing
 
   # Initialize configuration components
   let config = loadConfig()
@@ -208,9 +208,11 @@ proc dispatchCmd(args: CliArgs) =
   elif args.info:
     level = lvlInfo
 
-  # Setup console logging
+  # Setup console logging only if no file logging requested
+  # File logging modes will handle their own console+file setup
   let consoleLogger = newConsoleLogger(useStderr = true)
-  addHandler(consoleLogger)
+  if args.logFile.len == 0:
+    addHandler(consoleLogger)
   setLogFilter(level)
 
   # Show debug logging status now that logger is set up
@@ -225,7 +227,7 @@ proc dispatchCmd(args: CliArgs) =
     if args.agentName == "":
       handleError("agent command requires a name", true)
 
-    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump)
+    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.logFile)
 
   of "model":
     if args.modelSubCmd == "list":
@@ -245,14 +247,14 @@ proc dispatchCmd(args: CliArgs) =
     quit(0)
 
   of "nats-monitor":
-    startNatsMonitor(args.natsUrl, level)
+    startNatsMonitor(args.natsUrl, level, args.dump, args.logFile)
     quit(0)
 
   of "":
     # Interactive mode or single prompt
     if args.prompt.len == 0:
-      # Start interactive mode (master mode with agent routing)
-      startInteractiveMode(args.model, level, args.dump, args.logFile, args.natsUrl)
+      # Start master mode with agent routing
+      startMasterMode(args.model, level, args.dump, args.logFile, args.natsUrl)
     else:
       # Send single prompt
       sendSinglePrompt(args.prompt, args.model, level, args.dump, args.logFile)

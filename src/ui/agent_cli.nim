@@ -18,7 +18,7 @@
 ## 5. Send final response with done=true
 
 import std/[logging, strformat, times, os, options, strutils, json, random]
-import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager]
+import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
 import ../api/[api]
@@ -65,9 +65,19 @@ proc loadAgentDefinition(agentName: string): AgentDefinition =
   info(fmt"  Description: {result.description}")
   info(fmt"  Allowed tools: {toolsList}")
 
-proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, modelName: string, level: Level): AgentState =
+proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, modelName: string, level: Level, logFile: string = ""): AgentState =
   ## Initialize agent state and connect to NATS
 
+  # Setup file logging if logFile is provided
+  if logFile.len > 0:
+    # Setup file and console logging (main function didn't add console logger)
+    let logManager = initLogFileManager(logFile)
+    setGlobalLogManager(logManager)
+
+    let logger = newFileAndConsoleLogger(logManager)
+    addHandler(logger)
+    logManager.activateLogFile()
+    debug(fmt"File logging enabled: {logFile}")
 
   # Use nickname for routing if provided, otherwise use agent name
   let effectiveName = if agentNick.len > 0: agentNick else: agentName
@@ -646,7 +656,7 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false) =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "") =
   ## Start agent mode - main entry point
   let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
   echo fmt"Starting Niffler in agent mode: {displayName}"
@@ -656,7 +666,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
 
   try:
     # Initialize agent with nickname support
-    state = initializeAgent(agentName, agentNick, natsUrl, modelName, level)
+    state = initializeAgent(agentName, agentNick, natsUrl, modelName, level, logFile)
 
     # Start worker threads AFTER initializeAgent returns
     # Workers must be started here, not in initializeAgent, because AgentState

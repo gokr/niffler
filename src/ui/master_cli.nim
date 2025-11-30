@@ -246,25 +246,3 @@ proc cleanup*(state: var MasterState) =
   state.running = false
   info("Master shutdown complete")
 
-proc startMasterMode*(natsUrl: string = "nats://localhost:4222",
-                      defaultAgent: string = "",
-                      modelName: string = "",
-                      level: Level = lvlInfo) =
-  ## Start master mode - main entry point
-  ## This is a lightweight wrapper that can be called from niffler.nim
-  ## The actual input loop integration happens in cli.nim
-  echo "Niffler Master Mode"
-  echo ""
-
-  var state: MasterState
-
-  try:
-    state = initializeMaster(natsUrl, defaultAgent)
-    showAgentStatus(state)
-
-  except Exception as e:
-    error(fmt("Master mode initialization failed: {e.msg}"))
-    echo fmt("Error: {e.msg}")
-
-  finally:
-    cleanup(state)

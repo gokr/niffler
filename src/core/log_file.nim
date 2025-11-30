@@ -89,10 +89,10 @@ proc newFileAndConsoleLogger*(logManager: LogFileManager = nil): FileAndConsoleL
 method log*(logger: FileAndConsoleLogger, level: Level, args: varargs[string, `$`]) {.gcsafe.} =
   ## Log message to both console and file if active
   let message = substituteLog(logger.fmtStr, level, args)
-  
+
   # Always write to console
   logger.consoleLogger.log(level, message)
-  
+
   # Write to file if logging is active and logger has a log manager
   if logger.logManager != nil and logger.logManager.isActive:
     logger.logManager.writeLineToLogFile(message)

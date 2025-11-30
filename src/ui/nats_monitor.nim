@@ -6,7 +6,7 @@
 ## Shows timestamped messages with color-coded subjects and formatted payloads.
 
 import std/[options, strformat, logging, times, json, terminal, strutils]
-import ../core/nats_client
+import ../core/[nats_client, log_file]
 
 proc formatTimestamp(): string =
   now().format("HH:mm:ss.fff")
@@ -30,10 +30,23 @@ proc formatPayload(data: string): string =
   except:
     return data
 
-proc startNatsMonitor*(natsUrl: string, level: Level) =
+proc startNatsMonitor*(natsUrl: string, level: Level, dump: bool = false, logFile: string = "") =
   ## Start the NATS traffic monitor (runs in main thread)
-  let consoleLogger = newConsoleLogger(useStderr = true)
-  addHandler(consoleLogger)
+
+  # Setup file logging if logFile is provided
+  if logFile.len > 0:
+    # Setup file and console logging (main function didn't add console logger)
+    let logManager = initLogFileManager(logFile)
+    setGlobalLogManager(logManager)
+
+    let logger = newFileAndConsoleLogger(logManager)
+    addHandler(logger)
+    logManager.activateLogFile()
+    debug(fmt"File logging enabled: {logFile}")
+  else:
+    let consoleLogger = newConsoleLogger(useStderr = true)
+    addHandler(consoleLogger)
+
   setLogFilter(level)
 
   echo "NATS Traffic Monitor"

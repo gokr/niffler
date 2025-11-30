@@ -984,7 +984,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
     
   # Initialize the app systems but don't start the full UI loop
   if logFile.len > 0:
-    # Setup file and console logging
+    # Setup file and console logging (main function didn't add console logger)
     let logManager = logFileModule.initLogFileManager(logFile)
     logFileModule.setGlobalLogManager(logManager)
     logManager.activateLogFile()
