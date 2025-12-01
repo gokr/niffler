@@ -23,7 +23,7 @@ suite "NATS Message Serialization":
     check req2.input == req.input
 
   test "NatsResponse serialization and deserialization":
-    let resp = createResponse("req-123", "Here is the plan...", done = false)
+    let resp = createResponse("req-123", "test-agent", "Here is the plan...", done = false)
 
     check resp.requestId == "req-123"
     check resp.content == "Here is the plan..."
@@ -43,7 +43,7 @@ suite "NATS Message Serialization":
     check resp2.done == resp.done
 
   test "NatsResponse with done flag":
-    let resp = createResponse("req-456", "Final response", done = true)
+    let resp = createResponse("req-456", "test-agent", "Final response", done = true)
 
     check resp.done == true
 
@@ -98,7 +98,7 @@ suite "NATS Message Serialization":
 
   test "String conversion works for all message types":
     let req = createRequest("r1", "agent1", "test")
-    let resp = createResponse("r1", "result", done = true)
+    let resp = createResponse("r1", "agent1", "result", done = true)
     let update = createStatusUpdate("r1", "agent1", "ready")
     let hb = createHeartbeat("agent1")
 
@@ -129,7 +129,7 @@ suite "NATS Message Serialization":
     check req2.input == req.input
 
     # Response
-    let resp = createResponse("id2", "Content here", done = false)
+    let resp = createResponse("id2", "test-agent", "Content here", done = false)
     let respJson = $resp
     let resp2 = fromJson(NatsResponse, respJson)
     check resp2.requestId == resp.requestId
@@ -162,7 +162,7 @@ suite "NATS Message Serialization":
     check req2.input.contains("\n")
 
   test "Empty content is preserved":
-    let resp = createResponse("id1", "", done = true)
+    let resp = createResponse("id1", "test-agent", "", done = true)
     let jsonStr = $resp
     let resp2 = fromJson(NatsResponse, jsonStr)
 
