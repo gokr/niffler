@@ -34,11 +34,6 @@ else:
 import ../types/[messages, config, thinking_tokens]
 import curlyStreaming
 
-# Debug output helper functions
-proc debugColored*(color, message: string) =
-  if isDumpEnabled():
-    echo color & message & COLOR_RESET
-
 import std/logging
 import ../core/[channels, conversation_manager, database]
 import ../tools/[registry, common]
@@ -46,6 +41,37 @@ import ../ui/tool_visualizer
 import tool_call_parser
 import debby/pools
 import ../tokenization/tokenizer
+
+# Global debug flag for thread-safe debug output
+var debugEnabled* = false
+
+# Debug output helper functions
+proc debugColored*(color, message: string) =
+  if isDumpEnabled():
+    echo color & message & COLOR_RESET
+
+# Thread-safe debug output that always works when debug mode is enabled
+proc debugThreadSafe*(message: string) {.gcsafe.} =
+  ## Thread-safe debug output that works in both agent and master modes
+  if debugEnabled:
+    let timestamp = getTime().format("HH:mm:ss")
+    let formattedMessage = fmt"[{timestamp}] DEBUG: {message}"
+
+    # Output to stderr (console)
+    stderr.writeLine(formattedMessage)
+    stderr.flushFile()
+
+    # Try to output to log file using standard logging
+    try:
+      # Use the logging system to write to log file
+      debug(formattedMessage)
+    except Exception:
+      # Fail silently if logging isn't available
+      discard
+
+# Enable/disable debug logging for all threads
+proc setDebugEnabled*(enabled: bool) {.gcsafe.} =
+  debugEnabled = enabled
 
 
 type
@@ -256,14 +282,27 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
                              updatedExecutedCalls: seq[string]): bool =
   ## Handle the case when all tool calls are duplicates by providing feedback to the model
   debug("All tool calls were duplicates, sending feedback to model")
-  
+
+  # Store assistant message with duplicate tool calls in database
+  # Skip storing empty-content messages (protocol placeholders for tool calls)
+  if initialContent.strip().len > 0:
+    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+    debugThreadSafe(fmt"Stored assistant message with {toolCalls.len} duplicate tool calls in database")
+  else:
+    debugThreadSafe(fmt"Skipping empty-content assistant message with {toolCalls.len} duplicate tool calls (protocol placeholder)")
+
   # Create duplicate feedback message
+  let duplicateFeedbackContent = "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
   let duplicateResult = Message(
     role: mrTool,
     toolCallId: some(toolCalls[0].id),
-    content: "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
+    content: duplicateFeedbackContent
   )
-  
+
+  # Store duplicate feedback in database
+  discard conversation_manager.addToolMessage(duplicateFeedbackContent, toolCalls[0].id)
+  debug("Stored duplicate feedback message in database")
+
   # Add duplicate feedback and continue conversation
   var updatedMessages = request.messages
   
@@ -348,20 +387,31 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
               debug(fmt"Duplicate follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
           cleanupStaleBuffers(toolCallBuffers)
   
-  let (success, _) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
-  
+  let (success, _, duplicateErrorMsg) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
+
+  # Check if duplicate follow-up streaming request failed
+  if not success:
+    debug(fmt"Duplicate follow-up streaming request failed: {duplicateErrorMsg}")
+    let errorResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkStreamError,
+      error: duplicateErrorMsg
+    )
+    sendAPIResponse(channels, errorResponse)
+    return false
+
   # Get any remaining completed tool calls after streaming completes
   let remainingCalls = getCompletedToolCalls(toolCallBuffers)
   for completedCall in remainingCalls:
     followUpToolCalls.add(completedCall)
-  
+
   # Recursively execute any follow-up tool calls detected
   if followUpToolCalls.len > 0:
     debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
     {.gcsafe.}:
-      discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
+      discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls,
                                          followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
-  
+
   return success
 
 proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolCall], 
@@ -482,12 +532,15 @@ proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolC
       discard conversation_manager.addToolMessage("Error: Failed to send tool request", toolCall.id)
 
 proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
-                          request: APIRequest, toolCalls: seq[LLMToolCall], 
+                          request: APIRequest, toolCalls: seq[LLMToolCall],
                           allToolResults: seq[Message], initialContent: string,
                           recursionDepth: int, updatedExecutedCalls: seq[string]): bool {.gcsafe.} =
   ## Handle follow-up LLM request after tool execution
   debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
-  
+
+  # NOTE: Assistant message with tool calls was already stored in executeToolCallsAndContinue
+  # We do NOT store it again here to avoid duplication
+
   # Add tool results to conversation and continue
   var updatedMessages = request.messages
   
@@ -526,6 +579,8 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
   var followUpToolCalls: seq[LLMToolCall] = @[]
   var toolCallBuffers: Table[string, ToolCallBuffer] = initTable[string, ToolCallBuffer]()
   var isFirstContentChunk = true  # Track first content chunk for newline stripping
+
+  debugThreadSafe(fmt"[STREAM] Starting follow-up stream with {updatedMessages.len} messages (depth: {recursionDepth})")
   
   proc stripLeadingNewlines(content: string): string =
     ## Strip leading newlines and whitespace from content
@@ -557,6 +612,7 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
           isFirstContentChunk = false
         
         followUpContent.add(processedContent)
+        debugThreadSafe(fmt"[STREAM] followUpContent += '{processedContent}' (total now: {followUpContent.len} chars)")
         let chunkResponse = APIResponse(
           requestId: request.requestId,
           kind: arkStreamChunk,
@@ -578,8 +634,19 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
               debug(fmt"Follow-up tool call detected (depth {recursionDepth}): {completedCall.function.name}")
           cleanupStaleBuffers(toolCallBuffers)
   
-  let (_, followUpUsage) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
-  
+  let (followUpSuccess, followUpUsage, followUpErrorMsg) = client.sendStreamingChatRequest(followUpRequest, onFollowUpChunk)
+
+  # Check if follow-up streaming request failed
+  if not followUpSuccess:
+    debug(fmt"Follow-up streaming request failed: {followUpErrorMsg}")
+    let errorResponse = APIResponse(
+      requestId: request.requestId,
+      kind: arkStreamError,
+      error: followUpErrorMsg
+    )
+    sendAPIResponse(channels, errorResponse)
+    return false
+
   # Get any remaining completed tool calls
   let remainingCalls = getCompletedToolCalls(toolCallBuffers)
   for completedCall in remainingCalls:
@@ -640,7 +707,13 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
     
     # Store final assistant message in conversation history
     # Empty content is allowed for messages after tool execution
+    debug(fmt"[MSG-STORE] Storing follow-up assistant message (depth: {recursionDepth})")
+    debug(fmt"[MSG-STORE] followUpContent length: {followUpContent.len}")
+    if followUpContent.len > 0:
+      let preview = followUpContent[0..min(80, followUpContent.len-1)]
+      debug(fmt"[MSG-STORE] followUpContent preview: '{preview}...'")
     discard conversation_manager.addAssistantMessage(content = followUpContent, toolCalls = none(seq[LLMToolCall]), outputTokens = finalUsage.outputTokens, modelName = request.model)
+    debug(fmt"[MSG-STORE] Stored follow-up assistant message in database")
     
     let completeResponse = APIResponse(
       requestId: request.requestId,
@@ -686,10 +759,15 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
   debugColored(COLOR_TOOL, fmt"🟢 Deduplication: {toolCalls.len - filteredToolCalls.len} duplicates removed")
 
-  # Store assistant message with tool calls BEFORE executing tools to maintain correct order
-  # Empty content is allowed when tool calls are present (messageType = "tool_call")
-  discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-  
+  # Store assistant message with tool calls BEFORE executing tools
+  # This ensures correct message ordering in database: assistant -> tool results
+  # Skip storing empty-content messages (protocol placeholders for tool calls)
+  if initialContent.strip().len > 0:
+    debugThreadSafe(fmt"[MSG-STORE] Storing assistant message with {toolCalls.len} tool calls BEFORE tool execution")
+    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+  else:
+    debugThreadSafe(fmt"[MSG-STORE] Skipping empty-content assistant message with {toolCalls.len} tool calls (protocol placeholder)")
+
   # Execute all unique tool calls using helper function
   let allToolResults = executeToolCallsBatch(channels, filteredToolCalls, request)
   
@@ -735,10 +813,11 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
                         currentClient: Option[CurlyStreamingClient], activeRequests: seq[string],
                         toolCallBuffers: Table[string, ToolCallBuffer]] {.gcsafe.} =
   ## Initialize API worker thread with logging, parsing, and state
-  # NOTE: Don't modify logging state - the logging module is not thread-safe
-  # Worker threads inherit logging settings from main thread
-  discard # setLogFilter(params.level) - not thread safe
-  
+  # Enable thread-safe debug output based on log level
+  let debugMode = params.level == lvlDebug
+  setDebugEnabled(debugMode)
+  echo fmt"[INIT] API worker debug mode: {debugMode}, level: {params.level}"
+
   # Initialize dump flag for this thread
   setDumpEnabled(params.dump)
   
@@ -746,6 +825,7 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
   let database = params.database
   
   debug("API worker thread started")
+  debugThreadSafe("[TEST] API worker debug output working!")
   incrementActiveThreads(channels)
   
   # Initialize flexible parser for tool call format detection
@@ -987,12 +1067,28 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   )
                   sendAPIResponse(channels, thinkingOnlyResponse)
             
-            let (_, streamUsage) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
-            
+            let (streamSuccess, streamUsage, errorMsg) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
+
+            # Check if streaming request failed
+            if not streamSuccess:
+              let errorResponse = APIResponse(
+                requestId: request.requestId,
+                kind: arkStreamError,
+                error: errorMsg
+              )
+              sendAPIResponse(channels, errorResponse)
+
+              # Remove from active requests
+              for i in 0..<mutableActiveRequests.len:
+                if mutableActiveRequests[i] == request.requestId:
+                  mutableActiveRequests.delete(i)
+                  break
+              continue
+
             # Use extracted usage data from streaming response if available
-            var finalUsage = if streamUsage.isSome(): 
-              streamUsage.get() 
-            else: 
+            var finalUsage = if streamUsage.isSome():
+              streamUsage.get()
+            else:
               TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0)
             
             # Flush any remaining thinking tokens in buffer

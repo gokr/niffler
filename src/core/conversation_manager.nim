@@ -474,20 +474,22 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
     try:
       # Add to database if pool is available
       if globalSession.pool != nil and globalSession.conversationId > 0:
+        debug(fmt"[DB-INSERT] Assistant message: conv={globalSession.conversationId}, content_len={content.len}, has_tools={toolCalls.isSome()}, model={modelName}")
         discard addAssistantMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCalls, modelName, outputTokens)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:
           updateConversationMessageCount(backend, globalSession.conversationId)
-      
+
       result = Message(
         role: mrAssistant,
         content: content,
         toolCalls: toolCalls
       )
-      
+
       let callsInfo = if toolCalls.isSome(): fmt" (with {toolCalls.get().len} tool calls)" else: ""
       debug(fmt"Added assistant message: {content[0..min(50, content.len-1)]}...{callsInfo}")
+      debug(fmt"[DB-INSERT] Completed successfully")
       
       # Invalidate conversation context cache
       invalidateConversationCache()
