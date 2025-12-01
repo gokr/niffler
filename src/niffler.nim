@@ -3,10 +3,11 @@
 ## Uses parseopt for flexible command-line argument parsing with full control
 ## over subcommands and option handling.
 
-import std/[os, logging, parseopt]
+import std/[os, logging, parseopt, strutils, strformat]
 import core/[config, database, session, app]
-import ui/[cli, agent_cli, nats_monitor]
+import ui/[cli, agent_cli, nats_monitor, master_cli]
 import types/config as configTypes
+import core/command_parser
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
 
@@ -165,9 +166,23 @@ proc handleError(message: string, showHelp: bool = false) =
 
 proc sendSinglePrompt(prompt: string, modelName: string, level: Level, dump: bool, logFile: string) =
   ## Send a single prompt and exit
-  echo "Single prompt: ", prompt
-  echo "Model: ", modelName
-  echo "Note: Full single prompt functionality to be integrated with existing CLI systems"
+
+  # Parse for /wait and @agent
+  let parsed = parseCommand(prompt)
+
+  # Check if prompt uses @agent syntax
+  if prompt.strip().contains("@"):
+    # Master mode routing
+    echo fmt"🚀 Routing to agent: {prompt}"
+    let exitCode = sendSinglePromptMaster(
+      prompt = prompt,
+      shouldWait = parsed.shouldWait,
+      natsUrl = getNatsUrl()
+    )
+    quit(exitCode)
+  else:
+    # Regular LLM call (existing implementation)
+    cli.sendSinglePrompt(prompt, modelName, level, dump, logFile)
 
 proc startMasterMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start master mode with CLI interface for agent routing

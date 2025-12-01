@@ -18,7 +18,7 @@
 ## 5. Send final response with done=true
 
 import std/[logging, strformat, times, os, options, strutils, json, random]
-import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file]
+import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file, completion_detection]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
 import ../api/[api]
@@ -258,7 +258,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
       agentToolSchemas.add(tool)
 
   # Conversation loop (handle tool calls)
-  const maxTurns = 20
+  let maxTurns = getMaxTurnsForAgent(some(state.definition))
   var turn = 0
   var totalTokens = 0
   var totalToolCalls = 0
@@ -382,6 +382,12 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         content: assistantContent,
         toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
       ))
+
+    # Check for completion signal
+    let completionSignal = detectCompletionSignal(assistantContent)
+    if completionSignal != csNone:
+      debug(fmt"Completion signal detected in ask mode: {completionSignal}")
+      break
 
     # If no tool calls, conversation turn is complete
     if toolCalls.len == 0:

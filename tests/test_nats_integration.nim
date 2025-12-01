@@ -208,7 +208,7 @@ suite "NATS Client Integration":
       let subject = "niffler.master.response"
 
       # Create response
-      let resp = createResponse("req-123", "Here is the result", done = true)
+      let resp = createResponse("req-123", "test-agent", "Here is the result", done = true)
 
       # Serialize to JSON
       let respJson = $resp.toJson()

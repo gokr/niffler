@@ -1,6 +1,6 @@
 ## Agent type definitions, validation, and markdown parsing
 
-import std/[strutils, os]
+import std/[strutils, os, options]
 
 type
   AgentValidationError* = enum
@@ -22,6 +22,7 @@ type
     allowedTools*: seq[string]
     systemPrompt*: string
     filePath*: string
+    maxTurns*: Option[int]
 
   AgentContext* = object
     ## Context about which agent is executing (for tool access control)

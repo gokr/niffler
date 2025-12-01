@@ -14,7 +14,7 @@
 ## - System prompts: ~/.niffler/NIFFLER.md
 
 import std/[os, appdirs, tables, options, locks, strformat, strutils]
-import ../types/[config, messages]
+import ../types/[config, messages, agents]
 import config_yaml
 
 const KEY_FILE_NAME = "keys"
@@ -144,6 +144,15 @@ proc setGlobalConfig*(config: Config) =
   ## Set configuration in global manager
   withLock(globalConfigManager.lock):
     globalConfigManager.config = config
+
+proc getNatsUrl*(): string =
+  ## Get NATS URL from config or default
+  let config = getGlobalConfig()
+  if config.master.isSome:
+    # Could add master.get().natsUrl in future, for now default
+    "nats://localhost:4222"
+  else:
+    "nats://localhost:4222"
 
 proc reloadConfig*(): bool =
   ## Reload configuration from file
@@ -320,3 +329,21 @@ proc loadConfig*(): Config =
 # Configuration utilities
 # Note: TOML writing functionality would be implemented here as needed
 # For now, users can manually edit TOML files
+
+proc getMaxTurnsForAgent*(agentDef: Option[AgentDefinition]): int =
+  ## Get maximum turns for agent execution with fallback chain
+  ## Priority: agent-specific > global config > hardcoded default (30)
+
+  # 1. Check agent-specific override
+  if agentDef.isSome():
+    let agent = agentDef.get()
+    if agent.maxTurns.isSome():
+      return agent.maxTurns.get()
+
+  # 2. Check global config
+  let globalConfig = getGlobalConfig()
+  if globalConfig.defaultMaxTurns.isSome():
+    return globalConfig.defaultMaxTurns.get()
+
+  # 3. Hardcoded default
+  return 30

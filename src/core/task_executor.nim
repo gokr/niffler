@@ -21,6 +21,7 @@ import std/[logging, strformat, times, options, os, strutils, sets, json, algori
 import ../types/[messages, config, agents]
 import channels
 import config as configModule
+import completion_detection
 
 proc extractArtifacts*(messages: seq[Message]): seq[string] =
   ## Extract file paths from tool calls in the conversation
@@ -208,7 +209,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
     var conversationMessages = initialMessages
     var totalTokens = 0
     var totalToolCalls = 0
-    const maxTurns = 10
+    let maxTurns = getMaxTurnsForAgent(some(agent))
     var turn = 0
     var taskComplete = false
 
@@ -301,10 +302,15 @@ proc executeTask*(agent: AgentDefinition, description: string,
           toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
         ))
 
-      # Check if task is complete
-      if toolCalls.len == 0:
-        taskComplete = true
-      else:
+      # Check for completion signal
+      let completionSignal = detectCompletionSignal(assistantContent)
+      if completionSignal != csNone:
+        debug(fmt"Completion signal detected in task: {completionSignal}")
+
+      # Check if task is complete (completion signal OR no tool calls)
+      taskComplete = completionSignal != csNone or toolCalls.len == 0
+
+      if not taskComplete:
         # Execute tools and add results to conversation
         let agentContext = AgentContext(
           isMainAgent: false,

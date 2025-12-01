@@ -44,6 +44,7 @@ import output_handler
 import output_shared
 import ui_state
 import master_cli
+import ../core/agent_manager
 import nats_listener
 
 # State for input box rendering
@@ -815,6 +816,13 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       writeCompleteLine(formatWithStyle(agentsStr, currentTheme.normal))
     # Start NATS listener for async agent responses
     natsListenerWorker = startNatsListenerWorker(natsUrl, level)
+
+    # Auto-start agents from configuration
+    let globalConfig = getGlobalConfig()
+    let spawnedAgents = autoStartAgents(globalConfig, masterState.natsClient, "./src/niffler")
+
+    if spawnedAgents.len > 0:
+      writeCompleteLine(formatWithStyle(fmt"Auto-started {spawnedAgents.len} agent(s)", currentTheme.success))
   else:
     writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
 
@@ -878,6 +886,12 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
                 # Add confirmation for routed /new command
                 if command == "new":
                   writeCompleteLine(formatWithStyle(fmt"@{currentAgent}: Conversation created and switched", currentTheme.success))
+                  # Refresh master CLI's conversation context to match agent's new conversation
+                  if database != nil:
+                    let currentSession = getCurrentSession()
+                    if currentSession.isSome():
+                      discard switchToConversation(database, currentSession.get().conversation.id)
+                      resetUIState()
                 finishCommandOutput()
                 logToPromptHistory(database, input, "", currentModel.nickname)
                 continue
@@ -1154,3 +1168,41 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, dummyOutputHandler, database)
 
   # Linecross cleanup is automatic
+
+proc renderTaskResult*(result: TaskResult) =
+  ## Display formatted task result
+
+  echo ""
+
+  if result.success:
+    writeCompleteLine(formatWithStyle("✓ Task completed successfully", currentTheme.success))
+    echo ""
+
+    # Summary
+    if result.summary.len > 0:
+      writeCompleteLine(formatWithStyle("Summary:", currentTheme.bold))
+      echo result.summary
+      echo ""
+
+    # Artifacts
+    if result.artifacts.len > 0:
+      writeCompleteLine(formatWithStyle("Artifacts:", currentTheme.bold))
+      for artifact in result.artifacts:
+        echo "  📄 " & artifact
+      echo ""
+
+    # Metrics
+    writeCompleteLine(formatWithStyle("Task Metrics:", currentTheme.bold))
+    echo "  🔧 Tool calls: " & $result.toolCalls
+    if result.tokensUsed > 0:
+      echo "  🔤 Tokens used: " & $result.tokensUsed
+    echo ""
+  else:
+    writeCompleteLine(formatWithStyle("✗ Task failed", currentTheme.error))
+    echo ""
+
+    # Error details
+    if result.error.len > 0:
+      writeCompleteLine(formatWithStyle("Error details:", currentTheme.error))
+      echo result.error
+      echo ""

@@ -35,7 +35,7 @@ import ../types/[messages, config, thinking_tokens]
 import curlyStreaming
 
 import std/logging
-import ../core/[channels, conversation_manager, database]
+import ../core/[channels, conversation_manager, database, completion_detection]
 import ../tools/[registry, common]
 import ../ui/tool_visualizer
 import tool_call_parser
@@ -225,7 +225,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                 request: APIRequest, toolCalls: seq[LLMToolCall],
                                 initialContent: string, database: DatabaseBackend,
                                 recursionDepth: int = 0,
-                                executedCalls: seq[string] = @[]): bool
+                                executedCalls: seq[string] = @[],
+                                maxTurns: int = 30): bool
 
 # Helper procedures for tool execution refactoring
 proc filterDuplicateToolCalls(toolCalls: seq[LLMToolCall], executedCalls: seq[string]): tuple[filtered: seq[LLMToolCall], updated: seq[string]] =
@@ -279,7 +280,8 @@ proc createTempModelConfig(nickname: string, baseUrl: string, model: string,
 proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
                              request: APIRequest, toolCalls: seq[LLMToolCall],
                              initialContent: string, recursionDepth: int,
-                             updatedExecutedCalls: seq[string]): bool =
+                             updatedExecutedCalls: seq[string],
+                             maxTurns: int = 30): bool =
   ## Handle the case when all tool calls are duplicates by providing feedback to the model
   debug("All tool calls were duplicates, sending feedback to model")
 
@@ -410,7 +412,7 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
     debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
     {.gcsafe.}:
       discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls,
-                                         followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+                                         followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns)
 
   return success
 
@@ -534,7 +536,8 @@ proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolC
 proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
                           request: APIRequest, toolCalls: seq[LLMToolCall],
                           allToolResults: seq[Message], initialContent: string,
-                          recursionDepth: int, updatedExecutedCalls: seq[string]): bool {.gcsafe.} =
+                          recursionDepth: int, updatedExecutedCalls: seq[string],
+                          maxTurns: int = 30): bool {.gcsafe.} =
   ## Handle follow-up LLM request after tool execution
   debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
 
@@ -658,8 +661,8 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
   if followUpToolCalls.len > 0:
     debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
     {.gcsafe.}:
-      return executeToolCallsAndContinue(channels, client, request, followUpToolCalls, 
-                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls)
+      return executeToolCallsAndContinue(channels, client, request, followUpToolCalls,
+                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns)
   else:
     # No more tool calls, send completion
     debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
@@ -733,13 +736,27 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                 request: APIRequest, toolCalls: seq[LLMToolCall],
                                 initialContent: string, database: DatabaseBackend,
                                 recursionDepth: int = 0,
-                                executedCalls: seq[string] = @[]): bool =
+                                executedCalls: seq[string] = @[],
+                                maxTurns: int = 30): bool =
   ## Execute tool calls and continue conversation recursively
   ## Returns true if successful, false if max recursion depth exceeded
-  
-  if recursionDepth >= MAX_RECURSION_DEPTH:
-    debug(fmt"Max recursion depth ({MAX_RECURSION_DEPTH}) exceeded, stopping tool execution")
-    debugColored(COLOR_ERROR, fmt"🔴 RECURSION LIMIT EXCEEDED at depth {recursionDepth}")
+
+  # Check if LLM signaled completion (even if tool calls present)
+  let completionSignal = detectCompletionSignal(initialContent)
+  if completionSignal != csNone:
+    debug(fmt"Completion signal detected: {completionSignal}, stopping tool execution")
+    debugColored(COLOR_RECURSE, fmt"🟢 Task completion detected at depth {recursionDepth}")
+
+    # Store assistant message and return success (don't execute more tools)
+    if initialContent.strip().len > 0:
+      debugThreadSafe(fmt"[MSG-STORE] Storing completion message (depth: {recursionDepth})")
+      discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+
+    return true
+
+  if recursionDepth >= maxTurns:
+    debug(fmt"Max turns ({maxTurns}) exceeded at depth {recursionDepth}, stopping tool execution")
+    debugColored(COLOR_ERROR, fmt"🔴 TURN LIMIT EXCEEDED at depth {recursionDepth}")
     return false
 
   if toolCalls.len == 0:
@@ -754,7 +771,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   if filteredToolCalls.len == 0:
     debugColored(COLOR_BUFFER, fmt"🟡 All tool calls were duplicates, handling duplicates")
     return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent,
-                                   recursionDepth, updatedExecutedCalls)
+                                   recursionDepth, updatedExecutedCalls, maxTurns)
 
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
   debugColored(COLOR_TOOL, fmt"🟢 Deduplication: {toolCalls.len - filteredToolCalls.len} duplicates removed")
@@ -773,9 +790,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   
   # Send tool results back to LLM for continuation
   if allToolResults.len > 0:
-    return handleFollowUpRequest(channels, client, request, toolCalls, allToolResults, 
-                                initialContent, recursionDepth, updatedExecutedCalls)
-  
+    return handleFollowUpRequest(channels, client, request, toolCalls, allToolResults,
+                                initialContent, recursionDepth, updatedExecutedCalls, maxTurns)
+
   return true
 
 proc handleConfigureRequest(request: APIRequest): Option[CurlyStreamingClient] {.gcsafe.} =

@@ -31,6 +31,7 @@ type
     mode*: Option[ExecutionMode]           # /plan or /code
     conversationType*: Option[ConversationType]  # /task (default is ask)
     model*: Option[string]                 # /model <name>
+    shouldWait*: bool                      # /wait command
     prompt*: string                        # Remaining text after commands
 
 proc parseCommand*(input: string): ParsedCommand =
@@ -45,6 +46,7 @@ proc parseCommand*(input: string): ParsedCommand =
   result.mode = none(ExecutionMode)
   result.conversationType = none(ConversationType)
   result.model = none(string)
+  result.shouldWait = false
   result.prompt = ""
 
   var tokens = input.strip().split()
@@ -76,6 +78,9 @@ proc parseCommand*(input: string): ParsedCommand =
       of "ask":
         result.conversationType = some(ctAsk)
         i.inc()
+      of "wait":
+        result.shouldWait = true
+        i.inc()
       of "model":
         # Next token should be model name
         if i + 1 < filteredTokens.len:
@@ -97,7 +102,7 @@ proc parseCommand*(input: string): ParsedCommand =
 
 proc hasCommands*(parsed: ParsedCommand): bool =
   ## Check if any commands were parsed
-  parsed.mode.isSome() or parsed.conversationType.isSome() or parsed.model.isSome()
+  parsed.mode.isSome() or parsed.conversationType.isSome() or parsed.model.isSome() or parsed.shouldWait
 
 proc `$`*(parsed: ParsedCommand): string =
   ## String representation for debugging
@@ -108,4 +113,6 @@ proc `$`*(parsed: ParsedCommand): string =
     result.add("type=" & $parsed.conversationType.get() & ", ")
   if parsed.model.isSome():
     result.add("model=" & parsed.model.get() & ", ")
+  if parsed.shouldWait:
+    result.add("wait=true, ")
   result.add("prompt=\"" & parsed.prompt & "\")")

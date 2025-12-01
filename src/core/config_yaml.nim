@@ -136,6 +136,81 @@ proc parseDatabaseFromYaml(yamlNode: YamlNode): DatabaseConfig =
   result.password = getYamlString("password", "")
   result.poolSize = getYamlInt("pool_size", 10)
 
+proc parseMasterFromYaml(yamlNode: YamlNode): MasterConfig =
+  ## Parse master configuration from YAML node
+  if yamlNode.kind != yMapping:
+    raise newException(ValueError, "Expected mapping for master config")
+
+  let fields = yamlNode.fields
+
+  proc getYamlBool(key: string, default: bool): bool =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          let content = v.content.toLowerAscii()
+          return content == "true" or content == "yes" or content == "1"
+    return default
+
+  proc getYamlString(key: string, default: string = ""): string =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return v.content
+    return default
+
+  proc getYamlInt(key: string, default: int): int =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return parseInt(v.content)
+    return default
+
+  result.enabled = getYamlBool("enabled", false)
+  result.defaultAgent = getYamlString("default_agent", "coder")
+  result.autoStartAgents = getYamlBool("auto_start_agents", true)
+  result.heartbeatCheckInterval = getYamlInt("heartbeat_check_interval", 30)
+
+proc parseAgentFromYaml(yamlNode: YamlNode): AgentConfig =
+  ## Parse agent configuration from YAML node
+  if yamlNode.kind != yMapping:
+    raise newException(ValueError, "Expected mapping for agent config")
+
+  let fields = yamlNode.fields
+
+  proc getYamlString(key: string, default: string = ""): string =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return v.content
+    return default
+
+  proc getYamlBool(key: string, default: bool): bool =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          let content = v.content.toLowerAscii()
+          return content == "true" or content == "yes" or content == "1"
+    return default
+
+  proc getYamlStringSeq(key: string): seq[string] =
+    result = @[]
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == ySequence:
+          for item in v.elems:
+            if item.kind == yScalar:
+              result.add(item.content)
+        break
+
+  result.id = getYamlString("id")
+  result.name = getYamlString("name", result.id)
+  result.description = getYamlString("description", "")
+  result.model = getYamlString("model", "")
+  result.capabilities = getYamlStringSeq("capabilities")
+  result.toolPermissions = getYamlStringSeq("tool_permissions")
+  result.autoStart = getYamlBool("auto_start", false)
+  result.persistent = getYamlBool("persistent", true)
+
 proc loadYamlConfig*(path: string): Config =
   ## Load and parse YAML configuration file using proper YAML parsing
   if not fileExists(path):
@@ -212,9 +287,31 @@ proc loadYamlConfig*(path: string): Config =
   if agentTimeout > 0:
     result.agentTimeoutSeconds = some(agentTimeout)
 
+  # Parse default max turns
+  let defaultMaxTurns = getRootInt("default_max_turns", 0)
+  if defaultMaxTurns > 0:
+    result.defaultMaxTurns = some(defaultMaxTurns)
+
   let configPath = getRootString("config")
   if configPath.len > 0:
     result.config = some(configPath)
+
+  # Parse master configuration
+  for k, v in root.pairs:
+    if k.content == "master":
+      if v.kind == yMapping:
+        result.master = some(parseMasterFromYaml(v))
+      break
+
+  # Parse agents configuration
+  result.agents = @[]
+  for k, v in root.pairs:
+    if k.content == "agents":
+      if v.kind == ySequence:
+        for agentNode in v.elems:
+          if agentNode.kind == yMapping:
+            result.agents.add(parseAgentFromYaml(agentNode))
+      break
 
 # Type to maintain compatibility with existing code
 type YamlConfig* = Config

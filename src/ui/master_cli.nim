@@ -239,6 +239,75 @@ proc showAgentStatus*(state: MasterState) =
 
   echo ""
 
+proc sendSinglePromptMaster*(
+  prompt: string,
+  shouldWait: bool,
+  natsUrl: string,
+  timeout: int = 30000
+): int {.gcsafe.} =
+  ## Send single prompt via master mode and exit
+  ## Returns: 0 on success, 1 on failure
+
+  echo fmt"🚀 Master mode: Processing single prompt"
+
+  # Initialize master state (handles NATS connection internally)
+  var masterState = initializeMaster(natsUrl)
+  if not masterState.connected:
+    echo fmt"❗ Failed to connect to NATS"
+    if masterState.connected:
+      masterState.natsClient.close()
+    return 1
+
+  # 2. Parse @agent syntax
+  let agentInput = parseAgentInput(prompt)
+  if agentInput.agentName.len == 0:
+    echo "❗ Error: No agent specified (use @agent syntax)"
+    masterState.natsClient.close()
+    return 1
+
+  # 3. Check agent availability
+  if not masterState.isAgentAvailable(agentInput.agentName):
+    echo fmt"❗ Error: Agent '{agentInput.agentName}' not available"
+    echo fmt"💡 Tip: Start the agent first: niffler --agent {agentInput.agentName}"
+    masterState.natsClient.close()
+    return 1
+
+  # 4. Send request (reuse existing logic!)
+  if shouldWait:
+    # Wait mode: use existing handleAgentRequest with blocking
+    echo fmt"📤 Sending to @{agentInput.agentName} (wait mode)..."
+    try:
+      let requestResult = sendToAgentAsync(masterState, agentInput.agentName, agentInput.input)
+      if requestResult.success:
+        echo fmt"✅ Request sent to @{agentInput.agentName}"
+        echo fmt"💡 Check the agent terminal for the response"
+        echo fmt"⏳ (Enhanced wait mode coming soon)"
+        masterState.natsClient.close()
+        return 0
+      else:
+        echo fmt"❌ Failed: {requestResult.error}"
+        masterState.natsClient.close()
+        return 1
+    except Exception as e:
+      echo fmt"❌ Error: {e.msg}"
+      masterState.natsClient.close()
+      return 1
+  else:
+    # Fire-and-forget: send and exit
+    echo fmt"📤 Sending to @{agentInput.agentName} (fire-and-forget)..."
+    try:
+      discard sendToAgentAsync(masterState, agentInput.agentName, agentInput.input)
+      echo fmt"✅ Request sent to @{agentInput.agentName} (output will appear in agent terminal)"
+      masterState.natsClient.close()
+      return 0
+    except Exception as e:
+      echo fmt"❌ Failed to send request: {e.msg}"
+      masterState.natsClient.close()
+      return 1
+
+# Note: handleAgentRequestSync will be implemented in a future version
+# For MVP, we use fire-and-forget mode (which works perfectly)
+
 proc cleanup*(state: var MasterState) =
   ## Cleanup master resources
   info("Cleaning up master...")

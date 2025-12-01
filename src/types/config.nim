@@ -149,10 +149,36 @@ type
     textExtraction*: Option[TextExtractionConfig]
     # Agent configuration
     agentTimeoutSeconds*: Option[int]
+    defaultMaxTurns*: Option[int]
     # Active config directory selection
     config*: Option[string]
+    # Master and agent configuration
+    master*: Option[MasterConfig]
+    agents*: seq[AgentConfig]
 
   KeyConfig* = Table[string, string]
+
+  # ---------------------------------------------------------------------------
+  # Master and Agent Configuration Types
+  # ---------------------------------------------------------------------------
+
+  MasterConfig* = object
+    enabled*: bool
+    defaultAgent*: string
+    autoStartAgents*: bool
+    heartbeatCheckInterval*: int
+    # Future: Could add natsUrl, timeoutSec, etc.
+
+  AgentConfig* = object
+    id*: string
+    name*: string
+    description*: string
+    model*: string
+    capabilities*: seq[string]
+    toolPermissions*: seq[string]
+    autoStart*: bool
+    persistent*: bool
+    # Future: Could add maxIdleSeconds, workingDir, etc.
 
   ConfigManager* = object
     config*: Config
