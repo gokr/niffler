@@ -875,6 +875,9 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
               if handled:
                 if output.len > 0:
                   writeCompleteLine(output)
+                # Add confirmation for routed /new command
+                if command == "new":
+                  writeCompleteLine(formatWithStyle(fmt"@{currentAgent}: Conversation created and switched", currentTheme.success))
                 finishCommandOutput()
                 logToPromptHistory(database, input, "", currentModel.nickname)
                 continue

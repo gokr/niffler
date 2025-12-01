@@ -198,10 +198,13 @@ proc handleAgentRequest*(state: var MasterState, input: string): tuple[handled: 
 
   if not state.isAgentAvailable(targetAgent):
     let available = state.discoverAgents()
+    # Provide more specific error for commands
+    let isCommand = parsed.input.strip().startsWith("/")
+    let errorPrefix = if isCommand: "Cannot execute command:" else: "Cannot route request:"
     if available.len > 0:
-      return (true, fmt("Error: Agent '{targetAgent}' is not available. Available: {available.join(\", \")}"))
+      return (true, fmt("{errorPrefix} Agent '{targetAgent}' is not available. Available: {available.join(\", \")}"))
     else:
-      return (true, fmt("Error: Agent '{targetAgent}' is not available. No agents found."))
+      return (true, fmt("{errorPrefix} Agent '{targetAgent}' is not available. No agents found."))
 
   # Update currentAgent if user explicitly targeted one
   if explicitAgent:

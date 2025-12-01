@@ -146,6 +146,7 @@ proc helpHandler(args: seq[string], session: var Session, currentModel: var conf
   var message = """
 Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.
 Use '@agent prompt' to send to an agent, or '/focus agent' to set default.
+Use '/new <title>' to create a new conversation (routes to focused agent).
 
 Press Ctrl+C to stop streaming or exit. Ctrl-Z to suspend.
 

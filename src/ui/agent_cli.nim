@@ -656,10 +656,16 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "") =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "", task: string = "") =
   ## Start agent mode - main entry point
+  ## If task is provided, executes single task and exits (no interactive mode)
   let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
-  echo fmt"Starting Niffler in agent mode: {displayName}"
+
+  if task.len > 0:
+    echo fmt"Starting single-shot task execution: {displayName}"
+    echo fmt"Task: {task}"
+  else:
+    echo fmt"Starting Niffler in agent mode: {displayName}"
   echo ""
 
   var state: AgentState
@@ -687,8 +693,45 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     state.mcpWorker = startMcpWorker(state.channels, level)
     info("MCP worker started")
 
-    # Start listening for requests
-    listenForRequests(state)
+    # Handle single-shot task execution or interactive mode
+    if task.len > 0:
+      # Single-shot task execution
+      echo ""
+      echo "Executing task..."
+      echo ""
+
+      let taskResult = executeTask(
+        state.definition,
+        task,
+        state.modelConfig,
+        state.channels,
+        state.toolSchemas
+      )
+
+      # Display results
+      echo ""
+      if taskResult.success:
+        echo "=== Task Completed Successfully ==="
+        echo ""
+        echo taskResult.summary
+        echo ""
+        if taskResult.artifacts.len > 0:
+          echo "Files modified:"
+          for artifact in taskResult.artifacts:
+            echo "  - ", artifact
+          echo ""
+        echo fmt"Tool calls: {taskResult.toolCalls}, Tokens: {taskResult.tokensUsed}"
+      else:
+        echo "=== Task Failed ==="
+        echo ""
+        echo "Error: ", taskResult.error
+        echo ""
+
+      # Exit after task completion
+      return
+    else:
+      # Interactive mode - start listening for requests
+      listenForRequests(state)
 
   except Exception as e:
     error(fmt"Agent mode failed: {e.msg}")
