@@ -10,3 +10,10 @@ tests/test_*
 .venv
 training_corpus.txt
 IDEAS.md
+
+# Local development dependencies
+vendor/
+nimble.develop
+
+# Development/presentation materials
+presentation/
