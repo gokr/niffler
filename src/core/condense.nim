@@ -67,10 +67,14 @@ proc generateConversationSummary*(model: configTypes.ModelConfig, messages: seq[
     )
 
     var accumulatedContent = ""
-    let (success, _) = client.sendStreamingChatRequest(summaryRequest, proc(chunk: StreamChunk) =
+    let (success, _, errorMsg) = client.sendStreamingChatRequest(summaryRequest, proc(chunk: StreamChunk) =
       if chunk.choices.len > 0 and chunk.choices[0].delta.content.len > 0:
         accumulatedContent &= chunk.choices[0].delta.content
     )
+
+    if not success:
+      warn(fmt"Failed to generate condensed summary: {errorMsg}")
+      return "" # Return empty string on failure
 
     if success and accumulatedContent.len > 0:
       result = accumulatedContent

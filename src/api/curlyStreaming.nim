@@ -419,32 +419,36 @@ proc buildRequestBody(client: CurlyStreamingClient, request: ChatRequest): strin
   streamRequest.stream = true  # Force streaming for this client
   return $streamRequest.toJson()
 
-proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRequest, callback: StreamingCallback): (bool, Option[TokenUsage]) =
+proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRequest, callback: StreamingCallback): (bool, Option[TokenUsage], string) =
   ## Send a streaming chat request using Curly and process chunks in real-time
-  ## Returns success status and token usage information if available  
+  ## Returns (success status, token usage if available, error message if failed)
   try:
+    echo "🚀 CURLY: sendStreamingChatRequest CALLED"
     # Build request
     let requestBody = client.buildRequestBody(request)
     let endpoint = client.baseUrl & "/chat/completions"
-    
+
+    echo fmt"🚀 CURLY: Endpoint = {endpoint}"
+    echo fmt"🚀 CURLY: Model = {request.model}"
+
     debug(fmt"Sending streaming request to {endpoint}")
     
     # Dump HTTP request if enabled
     if isDumpEnabled():
-      logFileModule.logEcho ""
-      logFileModule.logEcho COLOR_HTTP & "🔵 === HTTP REQUEST ===" & COLOR_RESET
-      logFileModule.logEcho COLOR_HTTP & "URL: " & endpoint & COLOR_RESET
-      logFileModule.logEcho COLOR_HTTP & "Method: POST" & COLOR_RESET
-      logFileModule.logEcho COLOR_HTTP & "Headers:" & COLOR_RESET
+      logFileModule.dumpToLog ""
+      logFileModule.dumpToLog COLOR_HTTP & "🔵 === HTTP REQUEST ===" & COLOR_RESET
+      logFileModule.dumpToLog COLOR_HTTP & "URL: " & endpoint & COLOR_RESET
+      logFileModule.dumpToLog COLOR_HTTP & "Method: POST" & COLOR_RESET
+      logFileModule.dumpToLog COLOR_HTTP & "Headers:" & COLOR_RESET
       for key, value in client.headers.pairs:
         # Mask Authorization header for security
         let displayValue = if key.toLowerAscii() == "authorization": "Bearer ***" else: value
-        logFileModule.logEcho "  " & key & ": " & displayValue
-      logFileModule.logEcho ""
-      logFileModule.logEcho COLOR_HTTP & "Body:" & COLOR_RESET
-      logFileModule.logEcho requestBody
-      logFileModule.logEcho COLOR_HTTP & "===================" & COLOR_RESET
-      logFileModule.logEcho ""
+        logFileModule.dumpToLog "  " & key & ": " & displayValue
+      logFileModule.dumpToLog ""
+      logFileModule.dumpToLog COLOR_HTTP & "Body:" & COLOR_RESET
+      logFileModule.dumpToLog requestBody
+      logFileModule.dumpToLog COLOR_HTTP & "===================" & COLOR_RESET
+      logFileModule.dumpToLog ""
     
     # Create headers array for Curly
     var headerSeq: seq[(string, string)] = @[]
@@ -452,40 +456,80 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
       headerSeq.add((key, value))
     
     # Make the streaming request
+    echo "🚀 CURLY: About to call curl.request..."
     let stream = curl.request("POST", endpoint, headerSeq, requestBody)
-    
+    echo fmt"🚀 CURLY: curl.request returned, stream.code = {stream.code}"
+
     var finalUsage: Option[TokenUsage] = none(TokenUsage)
     var fullResponseBody = ""  # Capture full response for dumping
-    
+
     try:
+      echo fmt"🚀 CURLY: Entered try block, checking status code {stream.code}"
+      debug(fmt"Received HTTP status: {stream.code}")
+
       if stream.code != 200:
+        echo fmt"🔴 CURLY ERROR: HTTP {stream.code}"
         error(fmt"HTTP request failed with status {stream.code}")
-        return (false, none(TokenUsage))
-      
+        # Try to read error response body and extract error message
+        var errorBody = ""
+        var errorMessage = fmt"HTTP {stream.code} error"
+        try:
+          let bytesRead = stream.read(errorBody)
+          echo fmt"🔴 CURLY ERROR: Read {bytesRead} bytes of error response"
+          if bytesRead > 0:
+            echo fmt"🔴 CURLY ERROR BODY: {errorBody}"
+            error(fmt"Error response body: {errorBody}")
+            # Try to parse JSON error response and extract the message
+            try:
+              let errorJson = parseJson(errorBody)
+              if errorJson.hasKey("error") and errorJson["error"].kind == JObject:
+                let errorObj = errorJson["error"]
+                if errorObj.hasKey("message"):
+                  errorMessage = errorObj["message"].getStr()
+                  # Also include the code if available
+                  if errorObj.hasKey("code"):
+                    let errorCode = errorObj["code"].getInt()
+                    errorMessage = fmt"{errorMessage} (code: {errorCode})"
+            except:
+              # If JSON parsing fails, use the raw body (truncated if too long)
+              errorMessage = if errorBody.len > 200: errorBody[0..200] & "..." else: errorBody
+        except Exception as e:
+          echo fmt"🔴 CURLY ERROR: Failed to read error body: {e.msg}"
+          errorMessage = fmt"HTTP {stream.code}: {e.msg}"
+        return (false, none(TokenUsage), errorMessage)
+
       debug(fmt"Received HTTP {stream.code}, starting SSE processing")
-      
-      # Dump HTTP response headers if enabled - use logging to prevent stream contamination
+
+      # Track streaming metrics for debugging
+      var totalBytesRead = 0
+      var totalLinesProcessed = 0
+      var successfulChunks = 0
+
+      # Dump HTTP response headers if enabled - write to both console and log file
       if isDumpEnabled():
-        logFileModule.logEcho ""
-        logFileModule.logEcho COLOR_HTTP & "🔵 === HTTP RESPONSE ===" & COLOR_RESET
-        logFileModule.logEcho COLOR_HTTP & "Status: " & $stream.code & COLOR_RESET
-        logFileModule.logEcho COLOR_HTTP & "Headers:" & COLOR_RESET
-        logFileModule.logEcho "  Content-Type: text/event-stream"
-        logFileModule.logEcho "  Transfer-Encoding: chunked"
-        logFileModule.logEcho ""
-        logFileModule.logEcho COLOR_HTTP & "Body (streaming):" & COLOR_RESET
-      
+        logFileModule.dumpToLog ""
+        logFileModule.dumpToLog COLOR_HTTP & "🔵 === HTTP RESPONSE ===" & COLOR_RESET
+        logFileModule.dumpToLog COLOR_HTTP & "Status: " & $stream.code & COLOR_RESET
+        logFileModule.dumpToLog COLOR_HTTP & "Headers:" & COLOR_RESET
+        logFileModule.dumpToLog "  Content-Type: text/event-stream"
+        logFileModule.dumpToLog "  Transfer-Encoding: chunked"
+        logFileModule.dumpToLog ""
+        logFileModule.dumpToLog COLOR_HTTP & "Body (streaming):" & COLOR_RESET
+
       # Process the stream line by line in real-time
       var lineBuffer = ""
       
       while true:
         var buffer = ""
         let bytesRead = stream.read(buffer)
-        
+
         if bytesRead == 0:
-          debug("Stream ended normally")
+          debug(fmt"Stream ended normally (total bytes: {totalBytesRead}, lines: {totalLinesProcessed}, chunks: {successfulChunks})")
           break
-        
+
+        totalBytesRead += bytesRead
+        debug(fmt"Read {bytesRead} bytes from stream (total: {totalBytesRead})")
+
         # Add received data to line buffer
         lineBuffer.add(buffer)
         
@@ -498,30 +542,35 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
           let lineEndPos = lineBuffer.find("\n")
           let line = lineBuffer[0..<lineEndPos].strip()
           lineBuffer = lineBuffer[lineEndPos+1..^1]
-          
+
           if line.len > 0:
-            # Dump line if enabled - use logging instead of echo to prevent stream contamination
+            totalLinesProcessed += 1
+            debug(fmt"Processing line {totalLinesProcessed}: {line[0..min(100, line.len-1)]}")
+
+            # Dump line if enabled - write to both console and log file
             if isDumpEnabled():
-              logFileModule.logEcho line
-            
+              logFileModule.dumpToLog line
+
             try:
               let maybeChunk = parseSSELine(line)
               if maybeChunk.isSome():
                 let chunk = maybeChunk.get()
-                
+                successfulChunks += 1
+                debug(fmt"Successfully parsed chunk {successfulChunks}")
+
                 # Capture usage data if present
                 if chunk.usage.isSome():
                   finalUsage = chunk.usage
                   debug(fmt"Found usage data: {chunk.usage.get().totalTokens} tokens")
-                
+
                 callback(chunk)
                 if chunk.done:
-                  debug("SSE stream completed with [DONE]")
+                  debug(fmt"SSE stream completed with [DONE] (total chunks: {successfulChunks})")
                   # Finalize dump
                   if isDumpEnabled():
-                    logFileModule.logEcho "===================="
-                    logFileModule.logEcho ""
-                  return (true, finalUsage)
+                    logFileModule.dumpToLog "===================="
+                    logFileModule.dumpToLog ""
+                  return (true, finalUsage, "")
               else:
                 debug(fmt"Failed to parse SSE line, skipping: {line[0..min(100, line.len-1)]}")
             except Exception as e:
@@ -530,17 +579,17 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
       
       # Finalize dump if no [DONE] received
       if isDumpEnabled():
-        logFileModule.logEcho "===================="
-        logFileModule.logEcho ""
-      
-      return (true, finalUsage)
+        logFileModule.dumpToLog "===================="
+        logFileModule.dumpToLog ""
+
+      return (true, finalUsage, "")
       
     finally:
       stream.close()
     
   except Exception as e:
     error(fmt"Error in streaming request: {e.msg}")
-    return (false, none(TokenUsage))
+    return (false, none(TokenUsage), fmt"Exception: {e.msg}")
 
 proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
   ## Convert internal Message types to OpenAI-compatible ChatMessage format
