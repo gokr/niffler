@@ -410,7 +410,7 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
         args: argsJson
       )
       let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-      writeCompleteLine(formattedRequest & " ⏳")
+      writeCompleteLine(formattedRequest)
 
       # Validate tool is allowed
       if not isToolAllowed(agentContext, toolCall.function.name):
