@@ -126,14 +126,14 @@ agents:
     tool_permissions: ["read", "list", "fetch"]
 ```
 
-### Single-Prompt Agent Routing
+### Single-Shot Tasks with Agent Mode
 
 **Fire-and-forget tasks:**
 ```bash
-# Route to agent and exit immediately
-./src/niffler --prompt="@coder /task Create a README for this project"
+# Start agent and send single task, then exit
+./src/niffler agent coder --task="Create a README for this project"
 
-# Output appears in the agent's terminal, not the calling terminal
+# Output appears in the agent's terminal
 ```
 
 **Script-friendly usage:**
@@ -142,12 +142,12 @@ agents:
 # batch_tasks.sh
 
 # Send multiple tasks to different agents
-./src/niffler --prompt="@coder /task Lint all source files"
-sleep 1
-./src/niffler --prompt="@researcher /task Find latest version of all dependencies"
-sleep 1
-./src/niffler --prompt="@coder /task Update dependencies to latest versions"
+./src/niffler agent coder --task="Lint all source files"
+./src/niffler agent researcher --task="Find latest version of all dependencies"
+./src/niffler agent coder --task="Update dependencies to latest versions"
 ```
+
+**Note:** The `--task` flag is used with the `agent` command for single-shot tasks. The master CLI interactive mode only supports `@agent` syntax routing, not direct prompt execution.
 
 ### Agent Management
 
@@ -234,12 +234,9 @@ niffler
 
 ### Advanced Mode Features
 
-**Switching modes in single prompt:**
-```bash
-# Use /plan or /code commands in prompt
-niffler --prompt="/plan Analyze the database module"
-niffler --prompt="/code Optimize the database queries"
-```
+**Mode switching is available in:**
+- **Interactive mode:** Use `/plan` or `/code` commands
+- **Agent --task mode:** Prefix task with commands
 
 **Mode persistence:**
 - Mode is stored per conversation

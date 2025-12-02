@@ -133,7 +133,7 @@ AGENT COMMAND OPTIONS:
 
 EXAMPLES:
   niffler                              # Start interactive mode
-  niffler --prompt="hello" --debug   # Single prompt with debugging
+  niffler --model=gpt4               # Interactive with specific model
 
   niffler agent coder                # Start coder agent (interactive)
   niffler agent researcher --nick=alpha      # Researcher with nickname

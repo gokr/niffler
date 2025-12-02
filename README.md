@@ -38,7 +38,7 @@ Learn more about the multi-agent architecture in **[doc/TASK.md](doc/TASK.md)** 
 - **Multi-Model Support**: Seamlessly switch between different AI models (OpenAI, Anthropic, and other OpenAI-compatible APIs)
 - **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
 - **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
-- **Single Prompt Mode**: Scripting support for one-shot prompts with immediate responses
+- **Agent-Based Single-Shot Tasks**: Scripting support via `--task` flag in agent mode for immediate responses
 - **Model Management**: Easy configuration and switching between AI models
 - **Thinking Token Support**: Manages, shows and stores reasoning tokens separately
 - **Custom Instructions**: NIFFLER.md handling with include directive support
@@ -297,13 +297,17 @@ niffler
 
 ## 💻 Usage Examples
 
-### Interactive Mode
+### Interactive Mode (Master CLI)
 ```bash
+# Start interactive mode with agent routing
+niffler
+
+# Within interactive mode, route to agents:
+> @coder fix the bug in main.nim
+> @researcher find the best HTTP library
+
 # List available models
 niffler model list
-
-# Send a single prompt
-niffler -p="Hello, how are you?"
 
 # Use specific model
 niffler --model=gpt4
@@ -319,6 +323,23 @@ niffler --dump
 
 # Combine debug and dump for maximum visibility
 niffler --debug --dump
+```
+
+### Single-Shot Tasks (Agent Mode)
+```bash
+# Execute a single task with an agent and exit
+# Perfect for scripting and automation
+niffler agent coder --task="Create a README for this project"
+
+# With specific model
+niffler agent researcher --task="Find latest version of all dependencies" --model=kimi
+
+# Route a command with mode switching
+niffler agent coder --task="/plan analyze the codebase structure"
+
+# Script-friendly - chain multiple tasks
+niffler agent coder --task="Lint all source files"
+niffler agent researcher --task="Find latest version of all dependencies"
 ```
 
 ### Configuration Management
@@ -344,11 +365,8 @@ niffler init /path/to/config
 
 ### Running Tests
 ```bash
-# Run all tests including thinking token integration tests
+# Run all tests
 nimble test
-
-# Run specific thinking token tests
-nim c -r --threads:on -d:ssl -d:testing tests/test_thinking_token_integration.nim
 ```
 
 ### Building
@@ -360,31 +378,13 @@ nim c src/niffler.nim
 nimble build
 ```
 
-### Debugging API Issues
+### Debugging
 
-The `--dump` flag provides complete HTTP request and response logging for debugging API communication:
-
-```bash
-# See full HTTP transactions
-niffler -p "Hello" --dump
-```
-
-This is invaluable for:
-- Debugging API connectivity issues
-- Understanding request formatting
-- Monitoring token usage patterns
-- Verifying streaming response handling
+The `--dump` flag provides complete HTTP request and response logging and `--debug` provides debug logging.
 
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
-
-### Development Guidelines
-- Follow Nim coding conventions
-- Use exception-based error handling
-- Maintain thread safety
-- Add comprehensive error messages
-- Include tests for new features
 
 ## 📄 License
 
