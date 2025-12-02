@@ -1152,7 +1152,8 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
   # Enable thread-safe debug output based on log level
   let debugMode = params.level == lvlDebug
   setDebugEnabled(debugMode)
-  echo fmt"[INIT] API worker debug mode: {debugMode}, level: {params.level}"
+  if debugMode:
+    echo fmt"[INIT] API worker debug mode: {debugMode}, level: {params.level}"
 
   # Initialize dump flag for this thread
   setDumpEnabled(params.dump)
