@@ -288,10 +288,9 @@ proc init*(backend: DatabaseBackend) =
   let password = backend.config.password
 
   try:
-    echo fmt"Connecting to TiDB at {host}:{port}/{database}"
-
     # First, ensure the database exists by connecting to the mysql system database
     var dbCreated = false
+    var databaseOpened = false
     try:
       var sysDb = mysql.openDatabase("mysql", host, port, username, password)
 
@@ -300,12 +299,11 @@ proc init*(backend: DatabaseBackend) =
       let databaseExists = checkResult.len > 0
 
       if databaseExists:
-        echo fmt"Opened database '{database}'"
+        databaseOpened = true
       else:
         # Create the database
         discard sysDb.query(fmt"CREATE DATABASE {database}")
         dbCreated = true
-        echo fmt"Auto created database '{database}'"
 
       sysDb.close()
     except Exception as e:
@@ -356,7 +354,9 @@ proc init*(backend: DatabaseBackend) =
     # Create tables using debby's ORM
     backend.initializeDatabase()
 
-    echo fmt"Database pool initialized successfully with {poolSize} connections to {host}:{port}/{database}"
+    # Single consolidated database message
+    let status = if dbCreated: "created and opened" elif databaseOpened: "opened" else: "initialized"
+    echo fmt"TiDB database {status} with {poolSize} connections ({host}:{port}/{database})"
   except Exception as e:
     error(fmt"Failed to initialize TiDB database pool: {e.msg}")
     raise e
