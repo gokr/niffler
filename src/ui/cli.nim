@@ -714,7 +714,6 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   # Display welcome message in conversation area
   writeCompleteLine(formatWithStyle("Welcome to Niffler!", currentTheme.success))
   writeCompleteLine("Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.")
-  writeCompleteLine("Press Ctrl+C to stop stream display or exit.")
   
   # Initialize global state for enhanced CLI
   ui_state.currentModelName = currentModel.nickname
@@ -809,7 +808,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   globalMasterState = addr masterState  # Make available for completion callback
   var natsListenerWorker: NatsListenerWorker
   if masterState.connected:
-    writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
+    # writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
     let agents = masterState.discoverAgents()
     if agents.len > 0:
       let agentsStr = "Available agents: " & agents.join(", ")
@@ -1122,33 +1121,9 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
           writeCompleteLine(formatWithStyle(fmt"Error: {response.error}", currentTheme.error))
           isInThinkingBlock = false  # Reset thinking block flag on error
           responseReceived = true
-        of arkToolCallRequest:
-          # Display tool request immediately with hourglass indicator
-          let toolRequest = response.toolRequestInfo
-          pendingToolCalls[toolRequest.toolCallId] = toolRequest
-
-          # Reset output tracking and display tool call with hourglass
-          outputAfterToolCall = false
-          let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-          writeCompleteLine(formattedRequest & " ⏳")
-        of arkToolCallResult:
-          # Handle tool result display - always show complete request + result
-          let toolResult = response.toolResultInfo
-          if pendingToolCalls.hasKey(toolResult.toolCallId):
-            let toolRequest = pendingToolCalls[toolResult.toolCallId]
-            let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-            let formattedResult = formatCompactToolResultWithIndent(toolResult)
-
-            # Write complete tool call and result
-            writeCompleteLine(formattedRequest)
-            writeCompleteLine(formattedResult)
-
-            # Remove from pending
-            pendingToolCalls.del(toolResult.toolCallId)
-          else:
-            # Fallback if request wasn't tracked
-            let formattedResult = formatCompactToolResult(toolResult)
-            writeCompleteLine(formattedResult)
+        of arkToolCallRequest, arkToolCallResult:
+          # Use shared template for consistent tool call display
+          handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
         of arkReady:
           discard  # Just ignore ready responses
       
