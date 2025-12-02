@@ -48,7 +48,7 @@ Niffler implements a **process-per-agent architecture** using NATS messaging for
 ### Core Design Principles
 
 1. **Process Isolation**: One agent = one persistent process for true fault isolation
-2. **Markdown-Based Agents**: User-extensible agent definitions in `~/.niffler/agents/`
+2. **Markdown-Based Agents**: User-extensible agent definitions in `~/.niffler/default/agents/`
 3. **NATS Messaging**: Inter-process communication via `gokr/natswrapper`
 4. **Task vs Ask Model**: Clear semantics for different interaction patterns
 
@@ -119,7 +119,7 @@ Niffler implements a **process-per-agent architecture** using NATS messaging for
 **Key Components:**
 - `src/ui/agent_cli.nim` - Agent process CLI (278 lines)
 - `src/core/command_parser.nim` - Shared command parser (106 lines)
-- `~/.niffler/agents/*.md` - Agent definitions
+- `~/.niffler/default/agents/*.md` - Agent definitions
 
 **Features:**
 - Long-running agent processes with dedicated terminals
@@ -292,7 +292,7 @@ if msg.dataAvailable:
 
 ### Agent Definition Format
 
-Agent definitions are markdown files in `~/.niffler/agents/`:
+Agent definitions are markdown files in `~/.niffler/default/agents/`:
 
 ```markdown
 # Agent Name

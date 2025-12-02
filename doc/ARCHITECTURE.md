@@ -178,7 +178,7 @@ sequenceDiagram
 
 **Structure:**
 ```
-~/.niffler/agents/
+~/.niffler/default/agents/
 ├── coder.md          # Full tool access
 ├── researcher.md     # Read-only access
 └── tester.md         # Test execution only

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines Niffler's multi-agent architecture using process-per-agent isolation with NATS messaging. The system uses a **soft agent type system** where agents are defined via markdown files in `~/.niffler/agents/`, making it user-extensible without code changes.
+This document outlines Niffler's multi-agent architecture using process-per-agent isolation with NATS messaging. The system uses a **soft agent type system** where agents are defined via markdown files in `~/.niffler/default/agents/`, making it user-extensible without code changes.
 
 ### Core Design Principles
 
@@ -99,9 +99,9 @@ This document outlines Niffler's multi-agent architecture using process-per-agen
 
 ### Agent Definition Format
 
-Agents are defined via markdown files in `~/.niffler/agents/`. Each file must have three sections:
+Agents are defined via markdown files in `~/.niffler/default/agents/`. Each file must have three sections:
 
-**Example: `~/.niffler/agents/general-purpose.md`**
+**Example: `~/.niffler/default/agents/general-purpose.md`**
 
 ```markdown
 # General Purpose Agent
@@ -156,7 +156,7 @@ a clear summary with:
 
 ### User-Defined Agents
 
-Users can create custom agents by adding new markdown files to `~/.niffler/agents/`:
+Users can create custom agents by adding new markdown files to `~/.niffler/default/agents/`:
 - `security-scanner.md` - Read-only security analysis with bash for safe scans
 - `documentation-writer.md` - Read and create for documentation generation
 - `test-runner.md` - Read and bash for test execution and reporting
@@ -198,7 +198,7 @@ Users can create custom agents by adding new markdown files to `~/.niffler/agent
 │                                                                          │
 │ Status: ✓ Valid                                                         │
 │                                                                          │
-│ File: ~/.niffler/agents/general-purpose.md                             │
+│ File: ~/.niffler/default/agents/general-purpose.md                             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -604,7 +604,7 @@ CREATE INDEX idx_task_executions_request ON task_executions(request_id);
 
 1. **Agent Mode CLI** (`src/ui/agent_cli.nim` - new file)
    - Add `agent <name>` command
-   - Load agent definition from `~/.niffler/agents/`
+   - Load agent definition from `~/.niffler/default/agents/`
    - Initialize NATS connection
    - Subscribe to agent-specific request subject
    - Display agent info on startup
@@ -715,7 +715,7 @@ CREATE INDEX idx_task_executions_request ON task_executions(request_id);
 4. **Migration Utilities**
    - `--migrate-config` command
    - Add NATS and master sections
-   - Create example agents in `~/.niffler/agents/`
+   - Create example agents in `~/.niffler/default/agents/`
 
 #### Phase 3.6: Integration and Testing (1 week)
 
