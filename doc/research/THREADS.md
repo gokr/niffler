@@ -1,8 +1,27 @@
-## Thread Channel Communication Analysis and Optimization
-## 
-## This document analyzes Niffler's current thread-based architecture and identifies
-## opportunities for improving streaming performance by eliminating artificial delays
-## in channel communication.
+# Threading Performance Optimization Analysis
+
+**Document Type:** Educational Research / Technical Analysis
+**Status:** Analysis Complete, Implementation Deferred
+**Purpose:** Background research on threading optimization opportunities
+
+> **Note:** This document is for educational purposes and historical reference. It provides background technical analysis rather than current implementation documentation.
+
+## Overview
+
+This document analyzes Niffler's current thread-based architecture and identifies opportunities for improving streaming performance by eliminating artificial delays in channel communication.
+
+## Current Architecture
+
+Niffler uses a multi-threaded design with three main components:
+
+1. **Main Thread**: Handles UI and user interaction
+2. **API Worker Thread**: Manages LLM communication and tool calling orchestration
+3. **Tool Worker Thread**: Executes individual tools with validation
+
+Communication flows through Nim channels:
+- Main Thread ↔ API Worker: Via channels for requests/responses
+- API Worker ↔ Tool Worker: Via channels for tool execution
+- All threads coordinate shutdown via shared channels
 
 ## Current Architecture
 

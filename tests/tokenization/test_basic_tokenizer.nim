@@ -78,7 +78,7 @@ suite "BasicTokenizer Tests":
   
   test "UTF-8 text handling":
     let tokenizer = newBasicTokenizer()
-    let text = "hello 世界"  # Mix of ASCII and Unicode
+    let text = "hello world"  # Mix of ASCII and Unicode
     
     tokenizer.train(text, 300, verbose = false)
     

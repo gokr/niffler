@@ -150,6 +150,8 @@ type
     # Agent configuration
     agentTimeoutSeconds*: Option[int]
     defaultMaxTurns*: Option[int]
+    # Duplicate feedback prevention configuration
+    duplicateFeedback*: Option[DuplicateFeedbackConfig]
     # Active config directory selection
     config*: Option[string]
     # Master and agent configuration
@@ -157,6 +159,52 @@ type
     agents*: seq[AgentConfig]
 
   KeyConfig* = Table[string, string]
+
+  # ---------------------------------------------------------------------------
+  # Duplicate Feedback Prevention Configuration
+  # ---------------------------------------------------------------------------
+
+  ## Configuration for preventing infinite loops from duplicate tool call feedback
+  ##
+  ## This configuration addresses the issue where LLMs get stuck making the same
+  ## tool call repeatedly even after receiving duplicate feedback. By tracking
+  ## attempts per recursion level and globally, we can prevent infinite loops
+  ## while providing helpful recovery options.
+  ##
+  ## The system works by:
+  ## 1. Recording each duplicate feedback attempt with recursion depth
+  ## 2. Checking limits before providing feedback to prevent loops
+  ## 3. Attempting recovery (alternative suggestions) when limits exceeded
+  ## 4. Gracefully terminating with clear error messages if recovery fails
+  ##
+  ## Typical Usage:
+  ## ```nim
+  ## # In config.yaml:
+  ## duplicate_feedback:
+  ##   enabled: true
+  ##   max_attempts_per_level: 2
+  ##   max_total_attempts: 6
+  ##   attempt_recovery: true
+  ## ```
+  DuplicateFeedbackConfig* = object
+    ## Enable/disable duplicate feedback tracking and limits
+    ## When false, the system behaves as before (no duplicate limits)
+    enabled*: bool
+
+    ## Maximum duplicate feedback attempts per recursion level
+    ## Prevents infinite loops at the same depth. Recommended: 2-3
+    ## Lower values provide faster failure detection but may be too restrictive
+    maxAttemptsPerLevel*: int
+
+    ## Maximum total duplicate feedback attempts across all recursion levels
+    ## Global safety limit to prevent runaway loops. Recommended: 6-10
+    ## Should be higher than maxAttemptsPerLevel * typical depth
+    maxTotalAttempts*: int
+
+    ## Attempt automatic recovery when limits exceeded
+    ## When true, suggests alternative tools/approaches before terminating
+    ## When false, terminates immediately with error message
+    attemptRecovery*: bool
 
   # ---------------------------------------------------------------------------
   # Master and Agent Configuration Types

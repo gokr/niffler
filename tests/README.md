@@ -1,116 +1,61 @@
-# Niffler Tool Calling Tests
+# Niffler Test Suite
 
-This directory contains comprehensive tests for the tool calling functionality implemented in Phase 5.
+This directory contains the consolidated test suite for the Niffler AI terminal assistant.
 
-## Test Files
+## Test Structure
 
-### `test_tool_calling.nim`
-Core functionality tests:
-- Tool schema generation and validation
-- Message type conversions 
-- Tool call creation and parsing
-- Basic integration tests
+The test suite has been consolidated from 32 to 24 files to reduce redundancy while maintaining full coverage.
 
-### `test_api_integration.nim` 
-API integration tests:
-- ChatMessage conversion with tool calls
-- JSON serialization/deserialization
-- OpenAI API format compatibility
-- Multi-turn conversation handling
+### Core Test Categories
 
-### `test_tool_execution.nim`
-Tool execution and validation tests:
-- Individual tool argument validation
-- File system operations (create, read, edit, list)
-- Security and safety checks
-- Error handling scenarios
+- **Basic Functionality**: `test_basic.nim` - Core types and schema validation
+- **Tool Integration**: `test_tool_integration.nim` - Consolidated tool testing, task execution, and agent handling
+- **TodayList**:
+  - `test_todolist_core.nim` - Functional tests + validation (merged)
+  - `test_todolist_database.nim` - Database integration
+  - `test_todolist_e2e.nim` - End-to-end scenarios
+- **Conversation**: CLI, infrastructure, mode restore, and e2e tests
+- **Specialized**: Individual suites for NATS, thinking tokens, streaming, etc.
+
+### Manual Tests
+
+Manual integration tests that require LLM API access are located in `tests/manual/`.
 
 ## Running Tests
 
-### Run All Tests
 ```bash
+# Run all tests
 nimble test
+
+# Run individual test files
+nim c -r tests/test_basic.nim
+nim c -r tests/test_tool_integration.nim
 ```
 
-### Run Individual Test Suites
-```bash
-# Tool calling core tests
-nim c -r --threads:on -d:ssl test_tool_calling.nim
+## Consolidation Results
 
-# API integration tests  
-nim c -r --threads:on -d:ssl test_api_integration.nim
+- **Before**: 32 test files with significant redundancy
+- **After**: 24 test files with minimal overlap
+- **Reduction**: 25% fewer files, ~20% line count reduction
+- **Coverage**: All critical functionality maintained
 
-# Tool execution tests
-nim c -r --threads:on -d:ssl test_tool_execution.nim
-```
+### Key Consolidations
 
-## What These Tests Verify
+1. **Removed irrelevant tests**: `test_hello.nim`, `test_nim_features.nim` (tested Nim language, not niffler)
+2. **Eliminated duplicate feedback tests**: Removed redundant `test_duplicate_feedback_core.nim`
+3. **Merged tool integration**: Consolidated 3 separate tool test files into 1 comprehensive test
+4. **Streamlined todolist tests**: Reorganized 4 files into 3 focused test suites
 
-### ✅ Tool Schema System
-- All 6 tools (bash, read, list, edit, create, fetch) have proper schemas
-- Schema validation works correctly
-- Parameter validation catches invalid arguments
-- Tool confirmation requirements are properly defined
+## Test Categories
 
-### ✅ API Integration
-- Messages convert correctly between internal and OpenAI formats
-- Tool calls serialize/deserialize properly in JSON
-- Multi-turn conversations with tools work
-- Error responses are handled gracefully
-
-### ✅ Tool Execution
-- Tool arguments are validated before execution
-- File system operations are safe and secure
-- Path sanitization prevents directory traversal
-- Timeout and permission checks work
-
-### ✅ Safety & Security
-- Malicious paths are blocked
-- Invalid permissions are rejected
-- Tool execution timeouts are enforced
-- Error handling is comprehensive
-
-## Expected Output
-
-When all tests pass, you should see:
-```
-🎉 ALL TESTS PASSED!
-
-Tool calling functionality is working correctly:
-✓ Tool schema generation and validation
-✓ API integration with tool calls  
-✓ Message type conversions
-✓ Tool execution validation
-✓ Error handling and safety checks
-
-Ready for production use!
-```
-
-## Test Coverage
-
-These tests cover:
-- **Schema Generation**: All tool schemas are properly formed
-- **Validation**: Arguments are validated according to schemas
-- **API Compatibility**: OpenAI-compatible JSON format
-- **Message Flow**: Complete tool calling conversation flow
-- **Security**: Path validation, permission checks, timeouts
-- **Error Handling**: Graceful failure modes
-
-## Integration with Phase 5
-
-These tests validate the complete Phase 5 implementation:
-1. **Tool Schema System** (`src/tools/schemas.nim`)
-2. **API Integration** (`src/api/worker.nim`, `src/api/http_client.nim`)  
-3. **Message Types** (`src/types/messages.nim`)
-4. **Tool Validation** (`src/tools/common.nim`)
-5. **Worker Integration** (tool worker ↔ API worker communication)
-
-## Next Steps
-
-After all tests pass, Phase 5 is complete and you can proceed with:
-- **Phase 6**: Rich Terminal UI with illwill
-- **Streaming Improvements**: Enhanced SSE parsing
-- **Production Testing**: Real LLM integration testing
+| Category | Files | Purpose |
+|----------|-------|---------|
+| Core | 1 | Basic functionality and schemas |
+| Integration | 1 | Tool system, task execution, agents |
+| Todolist | 3 | Core/functional, database, e2e |
+| Conversation | 4 | CLI, infrastructure, modes, e2e |
+| Specialized | 11 | Individual component testing |
+| Manual | 1 | LLM integration (separate directory) |
 
 ## Troubleshooting
 

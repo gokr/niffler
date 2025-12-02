@@ -314,7 +314,13 @@ proc loadConfig*(): Config =
         models: @[],
         themes: some(initTable[string, ThemeConfig]()),
         currentTheme: some("default"),
-        markdownEnabled: some(true)
+        markdownEnabled: some(true),
+        duplicateFeedback: some(DuplicateFeedbackConfig(
+          enabled: true,
+          maxAttemptsPerLevel: 2,
+          maxTotalAttempts: 6,
+          attemptRecovery: true
+        ))
       )
   except:
     echo "Warning: Failed to load configuration, using defaults"
@@ -323,7 +329,13 @@ proc loadConfig*(): Config =
       models: @[],
       themes: some(initTable[string, ThemeConfig]()),
       currentTheme: some("default"),
-      markdownEnabled: some(true)
+      markdownEnabled: some(true),
+      duplicateFeedback: some(DuplicateFeedbackConfig(
+        enabled: true,
+        maxAttemptsPerLevel: 2,
+        maxTotalAttempts: 6,
+        attemptRecovery: true
+      ))
     )
 
 # Configuration utilities
@@ -347,3 +359,20 @@ proc getMaxTurnsForAgent*(agentDef: Option[AgentDefinition]): int =
 
   # 3. Hardcoded default
   return 30
+
+proc getDuplicateFeedbackConfig*(): DuplicateFeedbackConfig =
+  ## Get duplicate feedback configuration with fallback to defaults
+  ## Returns the active configuration or sensible defaults if not configured
+  ## Note: This function accesses global state but is safe for our use case
+
+  let globalConfig = getGlobalConfig()
+  if globalConfig.duplicateFeedback.isSome():
+    return globalConfig.duplicateFeedback.get()
+
+  # Safe defaults if not configured
+  result = DuplicateFeedbackConfig(
+    enabled: true,
+    maxAttemptsPerLevel: 2,
+    maxTotalAttempts: 6,
+    attemptRecovery: true
+  )

@@ -41,7 +41,6 @@ type
     running: bool
     requestCount: int
     startTime: Time
-    conversationId: int  # Active conversation for Ask mode
     # Worker threads
     apiWorker: APIWorker
     toolWorker: ToolWorker
@@ -176,21 +175,21 @@ proc ensureAgentConversation(state: var AgentState): bool =
   const maxRetries = 5
   const retryDelayMs = 200
 
-  if state.conversationId > 0:
+  let currentConvId = getCurrentConversationId()
+  if currentConvId > 0:
     # Already have an active conversation
-    debug(fmt"Using existing conversation: {state.conversationId}")
+    debug(fmt"Using existing conversation: {currentConvId}")
     # Make sure session is pointing to this conversation
     for attempt in 1..maxRetries:
       try:
-        discard switchToConversation(state.database, state.conversationId)
+        discard switchToConversation(state.database, currentConvId)
         return true
       except Exception as e:
         if "locked" in e.msg and attempt < maxRetries:
           debug(fmt"Database locked, retry {attempt}/{maxRetries}")
           sleep(retryDelayMs * attempt)
         else:
-          warn(fmt"Failed to switch to conversation {state.conversationId}: {e.msg}")
-          state.conversationId = 0
+          warn(fmt"Failed to switch to conversation {currentConvId}: {e.msg}")
           break
 
   # Create a new conversation for this agent
@@ -205,9 +204,8 @@ proc ensureAgentConversation(state: var AgentState): bool =
         return false
 
       let conv = convOpt.get()
-      state.conversationId = conv.id
 
-      # Switch session to this conversation
+      # Switch session to this conversation (updates global session tracking)
       discard switchToConversation(state.database, conv.id)
 
       info(fmt"Created new conversation {conv.id} for agent '{state.name}'")

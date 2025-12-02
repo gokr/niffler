@@ -423,13 +423,9 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
   ## Send a streaming chat request using Curly and process chunks in real-time
   ## Returns (success status, token usage if available, error message if failed)
   try:
-    echo "🚀 CURLY: sendStreamingChatRequest CALLED"
     # Build request
     let requestBody = client.buildRequestBody(request)
     let endpoint = client.baseUrl & "/chat/completions"
-
-    echo fmt"🚀 CURLY: Endpoint = {endpoint}"
-    echo fmt"🚀 CURLY: Model = {request.model}"
 
     debug(fmt"Sending streaming request to {endpoint}")
     
@@ -456,28 +452,22 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
       headerSeq.add((key, value))
     
     # Make the streaming request
-    echo "🚀 CURLY: About to call curl.request..."
     let stream = curl.request("POST", endpoint, headerSeq, requestBody)
-    echo fmt"🚀 CURLY: curl.request returned, stream.code = {stream.code}"
 
     var finalUsage: Option[TokenUsage] = none(TokenUsage)
     var fullResponseBody = ""  # Capture full response for dumping
 
     try:
-      echo fmt"🚀 CURLY: Entered try block, checking status code {stream.code}"
       debug(fmt"Received HTTP status: {stream.code}")
 
       if stream.code != 200:
-        echo fmt"🔴 CURLY ERROR: HTTP {stream.code}"
         error(fmt"HTTP request failed with status {stream.code}")
         # Try to read error response body and extract error message
         var errorBody = ""
         var errorMessage = fmt"HTTP {stream.code} error"
         try:
           let bytesRead = stream.read(errorBody)
-          echo fmt"🔴 CURLY ERROR: Read {bytesRead} bytes of error response"
           if bytesRead > 0:
-            echo fmt"🔴 CURLY ERROR BODY: {errorBody}"
             error(fmt"Error response body: {errorBody}")
             # Try to parse JSON error response and extract the message
             try:
@@ -494,7 +484,6 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
               # If JSON parsing fails, use the raw body (truncated if too long)
               errorMessage = if errorBody.len > 200: errorBody[0..200] & "..." else: errorBody
         except Exception as e:
-          echo fmt"🔴 CURLY ERROR: Failed to read error body: {e.msg}"
           errorMessage = fmt"HTTP {stream.code}: {e.msg}"
         return (false, none(TokenUsage), errorMessage)
 

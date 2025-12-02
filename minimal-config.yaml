@@ -21,5 +21,6 @@
     "password": "",
     "pool_size": 10
   },
-  "markdown_enabled": true
+  "markdown_enabled": true,
+  "default_max_turns": 30
 }

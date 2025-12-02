@@ -210,7 +210,7 @@ Users can create custom agents by adding new markdown files to `~/.niffler/agent
 
 **Startup**:
 ```bash
-$ niffler  # No --agent flag = master mode
+$ niffler  # No 'agent' command = master mode
 Master mode initialized
 Auto-starting agents: coder, researcher
 ✓ @coder started (pid: 12345)
@@ -245,7 +245,7 @@ Ready for commands (type /help for help)
 
 **Startup**:
 ```bash
-$ niffler --agent coder
+$ niffler agent coder
 Agent 'coder' initialized (model: claude-3.5-sonnet)
 Subscribed to: niffler.agent.coder.request
 Tools: read, list, create, edit, bash
@@ -603,7 +603,7 @@ CREATE INDEX idx_task_executions_request ON task_executions(request_id);
 #### Phase 3.2: Agent Mode (1 week)
 
 1. **Agent Mode CLI** (`src/ui/agent_cli.nim` - new file)
-   - Add `--agent <name>` flag
+   - Add `agent <name>` command
    - Load agent definition from `~/.niffler/agents/`
    - Initialize NATS connection
    - Subscribe to agent-specific request subject
@@ -629,7 +629,7 @@ CREATE INDEX idx_task_executions_request ON task_executions(request_id);
 #### Phase 3.3: Master Mode (1-2 weeks)
 
 1. **Master Mode CLI** (`src/ui/master_cli.nim` - new file)
-   - Detect master mode (no `--agent` flag)
+   - Detect master mode (no 'agent' command)
    - Simplified input loop
    - Initialize NATS connection
    - Load agent configurations
@@ -762,7 +762,7 @@ Ready for commands (type /help for help)
 
 **Terminal 2: Agent 'coder' Output**
 ```bash
-$ niffler --agent coder
+$ niffler agent coder
 Agent 'coder' initialized (model: claude-3.5-sonnet)
 Subscribed to: niffler.agent.coder.request
 Ready for requests...
