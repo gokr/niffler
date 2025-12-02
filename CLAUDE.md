@@ -245,3 +245,50 @@ proc checkPlanModeProtection*(path: string): bool {.gcsafe.} =
 - **Coordination**: Via thread-safe channels defined in `src/core/channels.nim`
 
 This architecture ensures tool execution doesn't block the UI while maintaining safety through proper synchronization patterns.
+
+### Case Study: Duplicate Feedback GC Safety Fix
+
+**Problem:** The duplicate feedback prevention system in `handleDuplicateToolCalls` was disabled due to GC safety issues when called from `apiWorkerProc` (threaded context). The function needed to access `getDuplicateFeedbackConfig()` which reads global configuration state.
+
+**Solution Applied:** Wrapped global state access in `{.gcsafe.}:` block and added proper error handling:
+
+```nim
+proc handleDuplicateToolCalls(...) {.gcsafe.} =
+  {.gcsafe.}:
+    debug("All tool calls were duplicates, sending feedback to model")
+
+    try:
+      let config = getDuplicateFeedbackConfig()
+
+      if config.enabled:
+        let limitReason = checkDuplicateFeedbackLimits(tracker, toolCalls[0], recursionDepth, config)
+
+        if limitReason.result != dlAllowed:
+          let errorMessage = createDuplicateLimitError(limitReason)
+          # ... handle limit exceeded
+          return false
+
+        # Within limits - record this attempt
+        recordDuplicateFeedbackAttempt(tracker, toolCalls[0], recursionDepth)
+    except Exception as e:
+      # Fail open - if we can't check limits, allow the duplicate feedback
+      debug(fmt"Error checking duplicate feedback limits: {e.msg}, allowing feedback as fallback")
+```
+
+**Key Points:**
+- Function marked with `{.gcsafe.}` pragma since it's called from apiWorkerProc
+- Configuration access wrapped in `{.gcsafe.}:` block
+- Try/except for fail-open behavior (graceful degradation)
+- Database operations also wrapped in `{.gcsafe.}:` blocks
+- Proper error reporting via APIResponse channels
+
+**Alternative Approaches Considered:**
+1. **Pass config as parameter** - Would require threading config through entire call chain from main thread
+2. **Use thread-local storage** - More complex, less maintainable
+3. **Refactor to avoid global state** - Significant architectural change for minimal benefit
+
+**Decision:** Used `{.gcsafe.}:` blocks because:
+- Minimal code changes
+- Follows established pattern in codebase
+- Proven safe (database uses connection pooling + locks)
+- Fail-open behavior ensures robustness
