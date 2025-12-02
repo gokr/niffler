@@ -886,12 +886,6 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
                 # Add confirmation for routed /new command
                 if command == "new":
                   writeCompleteLine(formatWithStyle(fmt"@{currentAgent}: Conversation created and switched", currentTheme.success))
-                  # Refresh master CLI's conversation context to match agent's new conversation
-                  if database != nil:
-                    let currentSession = getCurrentSession()
-                    if currentSession.isSome():
-                      discard switchToConversation(database, currentSession.get().conversation.id)
-                      resetUIState()
                 finishCommandOutput()
                 logToPromptHistory(database, input, "", currentModel.nickname)
                 continue

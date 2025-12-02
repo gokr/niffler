@@ -26,7 +26,7 @@
 ## - Sophisticated buffering for handling partial tool calls during streaming
 ## - Exception-based error handling with comprehensive recovery
 
-import std/[options, strformat, os, json, strutils, times, tables]
+import std/[options, strformat, os, json, strutils, times, tables, algorithm]
 when compileOption("threads"):
   import std/typedthreads
 else:
@@ -35,7 +35,7 @@ import ../types/[messages, config, thinking_tokens]
 import curlyStreaming
 
 import std/logging
-import ../core/[channels, conversation_manager, database, completion_detection]
+import ../core/[channels, conversation_manager, database, completion_detection, config]
 import ../tools/[registry, common]
 import ../ui/tool_visualizer
 import tool_call_parser
@@ -87,6 +87,263 @@ type
     thread: Thread[ThreadParams]
     client: CurlyStreamingClient
     isRunning: bool
+
+# ---------------------------------------------------------------------------
+# Duplicate Feedback Prevention Types
+# ---------------------------------------------------------------------------
+
+## Tracks duplicate feedback attempts to prevent infinite loops
+##
+## This structure monitors tool call attempts at multiple levels:
+## 1. Per-level tracking: Prevents infinite loops at the same recursion depth
+## 2. Global tracking: Provides overall safety limit across all depths
+##
+## The tracking works by:
+## - Creating normalized signatures for each tool call
+## - Counting attempts per signature at each recursion level
+## - Maintaining a global count for overall safety limits
+##
+## Usage Flow:
+## 1. Check limits before providing duplicate feedback
+## 2. Record attempt if within limits
+## 3. Attempt recovery if limits exceeded (when enabled)
+type
+  DuplicateFeedbackTracker* = object
+    ## Attempts per recursion level: depth -> (signature -> count)
+    ## This prevents the same tool call from being attempted infinitely
+    ## at the same recursion depth, which is where most infinite loops occur
+    attemptsPerLevel*: Table[int, Table[string, int]]
+
+    ## Global attempts: signature -> total count
+    ## provides an overall safety limit to prevent runaway loops
+    totalAttempts*: Table[string, int]
+
+## Result type for checking duplicate feedback limits
+type
+  DuplicateLimitResult* = enum
+    dlAllowed = "allowed"           # Proceed with duplicate feedback
+    dlLevelExceeded = "level"      # Per-level limit exceeded
+    dlTotalExceeded = "total"      # Global limit exceeded
+    dlDisabled = "disabled"        # Feature disabled
+
+  ## Detailed reason for limiting duplicate feedback
+  DuplicateLimitReason* = object
+    result*: DuplicateLimitResult
+    signature*: string              # The tool call signature being checked
+    currentCount*: int             # Current attempt count
+    maxAllowed*: int              # Maximum allowed attempts
+    exceededLevel*: int           # Which level exceeded (for dlLevelExceeded)
+
+# ---------------------------------------------------------------------------
+# Duplicate Feedback Helper Procedures
+# ---------------------------------------------------------------------------
+
+proc createDuplicateFeedbackTracker*(): DuplicateFeedbackTracker =
+  ## Create a new duplicate feedback tracker with empty counters
+  ## Call this at the start of each task execution to reset tracking
+  result = DuplicateFeedbackTracker(
+    attemptsPerLevel: initTable[int, Table[string, int]](),
+    totalAttempts: initTable[string, int]()
+  )
+
+proc createToolCallSignature*(toolCall: LLMToolCall): string =
+  ## Create a normalized signature for tool call identification
+  ##
+  ## The signature includes tool name and normalized arguments to identify
+  ## when the same tool call is being made repeatedly, even with slight
+  ## parameter variations.
+  ##
+  ## Format: "toolName(arg1='value1', arg2='value2')"
+
+  # Normalize arguments by sorting keys for consistent signatures
+  var args: Table[string, JsonNode]
+  try:
+    let argsJson = parseJson(toolCall.function.arguments)
+    if argsJson.kind == JObject:
+      for key, value in argsJson:
+        args[key] = value
+  except:
+    # Fallback to raw arguments if JSON parsing fails
+    return fmt("{toolCall.function.name}({toolCall.function.arguments})")
+
+  # Create normalized signature with sorted arguments
+  var signatureParts = @[toolCall.function.name & "("]
+
+  var sortedKeys: seq[string]
+  for key in args.keys:
+    sortedKeys.add(key)
+  sortedKeys.sort()
+
+  for i, key in sortedKeys:
+    let value = args[key]
+    let valueStr = if value.kind == JString:
+      fmt("'{value.getStr()}'")
+    elif value.kind == JInt:
+      $value.getInt()
+    elif value.kind == JBool:
+      $value.getBool()
+    else:
+      $value
+
+    signatureParts.add(fmt("{key}={valueStr}"))
+    if i < sortedKeys.len - 1:
+      signatureParts.add(", ")
+
+  signatureParts.add(")")
+  signatureParts.join("")
+
+proc checkDuplicateFeedbackLimits*(tracker: var DuplicateFeedbackTracker,
+                                   toolCall: LLMToolCall,
+                                   recursionDepth: int,
+                                   config: DuplicateFeedbackConfig): DuplicateLimitReason {.gcsafe.} =
+  ## Check if providing duplicate feedback would exceed limits
+  ##
+  ## This is the core limit checking function that decides whether to:
+  ## - Allow duplicate feedback within limits
+  ## - Block due to per-level limit exceeded
+  ## - Block due to global limit exceeded
+  ##
+  ## Parameters:
+  ## - tracker: The current state tracking object
+  ## - toolCall: The tool call being checked
+  ## - recursionDepth: Current recursion depth
+  ## - config: Configuration with limits
+  ##
+  ## Returns detailed reason whether the feedback is allowed or should be limited
+
+  # Check if feature is disabled
+  if not config.enabled:
+    result = DuplicateLimitReason(
+      result: dlDisabled,
+      signature: "",
+      currentCount: 0,
+      maxAllowed: 0,
+      exceededLevel: -1
+    )
+    return
+
+  let signature = createToolCallSignature(toolCall)
+
+  # Check per-level limit first (more common cause of infinite loops)
+  if not tracker.attemptsPerLevel.hasKey(recursionDepth):
+    tracker.attemptsPerLevel[recursionDepth] = initTable[string, int]()
+
+  let levelAttempts = tracker.attemptsPerLevel[recursionDepth].getOrDefault(signature, 0)
+  if levelAttempts >= config.maxAttemptsPerLevel:
+    result = DuplicateLimitReason(
+      result: dlLevelExceeded,
+      signature: signature,
+      currentCount: levelAttempts,
+      maxAllowed: config.maxAttemptsPerLevel,
+      exceededLevel: recursionDepth
+    )
+    return
+
+  # Check global limit (safety net)
+  let totalAttempts = tracker.totalAttempts.getOrDefault(signature, 0)
+  if totalAttempts >= config.maxTotalAttempts:
+    result = DuplicateLimitReason(
+      result: dlTotalExceeded,
+      signature: signature,
+      currentCount: totalAttempts,
+      maxAllowed: config.maxTotalAttempts,
+      exceededLevel: -1
+    )
+    return
+
+  # Within limits - provide feedback
+  result = DuplicateLimitReason(
+    result: dlAllowed,
+    signature: signature,
+    currentCount: levelAttempts,  # Current count before this attempt
+    maxAllowed: config.maxAttemptsPerLevel,
+    exceededLevel: -1
+  )
+
+proc recordDuplicateFeedbackAttempt*(tracker: var DuplicateFeedbackTracker,
+                                     toolCall: LLMToolCall,
+                                     recursionDepth: int) {.gcsafe.} =
+  ## Record that duplicate feedback was provided for a tool call
+  ##
+  ## Call this AFTER successfully providing duplicate feedback to update
+  ## the tracking counters. This ensures future attempts will be properly
+  ## limited based on the current state.
+  ##
+  ## Parameters:
+  ## - tracker: The tracking object to update
+  ## - toolCall: The tool call that received feedback
+  ## - recursionDepth: Current recursion depth
+
+  let signature = createToolCallSignature(toolCall)
+
+  # Update per-level tracking
+  if not tracker.attemptsPerLevel.hasKey(recursionDepth):
+    tracker.attemptsPerLevel[recursionDepth] = initTable[string, int]()
+
+  let currentLevelAttempts = tracker.attemptsPerLevel[recursionDepth].getOrDefault(signature, 0)
+  tracker.attemptsPerLevel[recursionDepth][signature] = currentLevelAttempts + 1
+
+  # Update global tracking
+  let currentTotalAttempts = tracker.totalAttempts.getOrDefault(signature, 0)
+  tracker.totalAttempts[signature] = currentTotalAttempts + 1
+
+  debugThreadSafe(fmt"Recorded duplicate feedback attempt for '{signature}' at depth {recursionDepth} (level: {currentLevelAttempts + 1}, total: {currentTotalAttempts + 1})")
+
+proc createDuplicateLimitError*(reason: DuplicateLimitReason): string {.gcsafe.} =
+  ## Create a user-friendly error message when duplicate feedback limits are exceeded
+  ##
+  ## This generates clear, actionable error messages that explain:
+  ## - Which tool call was limited
+  ## - What limit was exceeded
+  ## - Suggestions for how to proceed
+  ##
+  ## Parameters:
+  ## - reason: Detailed information about why the limit was exceeded
+  ##
+  ## Returns: Formatted error message for the user
+
+  case reason.result
+  of dlLevelExceeded:
+    fmt("Duplicate feedback limit exceeded at recursion depth {reason.exceededLevel}: Tool call '{reason.signature}' has been attempted {reason.currentCount} times (limit: {reason.maxAllowed}). The model appears to be stuck in a loop. Please try a different approach or task.")
+
+  of dlTotalExceeded:
+    fmt("Global duplicate feedback limit exceeded: Tool call '{reason.signature}' has been attempted {reason.currentCount} times total (limit: {reason.maxAllowed}). Terminating execution to prevent infinite looping.")
+
+  of dlDisabled:
+    "Duplicate feedback prevention is disabled - the system may get stuck in infinite loops. Consider enabling it in your configuration."
+
+  else:
+    "Unknown duplicate feedback limit error."
+
+proc suggestAlternativeApproaches*(toolCall: LLMToolCall): string {.gcsafe.} =
+  ## Suggest alternative approaches when duplicate feedback limits are exceeded
+  ##
+  ## When automatic recovery is enabled and limits are exceeded, this function
+  ## provides helpful suggestions for alternative approaches the model could take.
+  ##
+  ## Parameters:
+  ## - toolCall: The tool call that was repeated too many times
+  ##
+  ## Returns: Suggestions for alternative approaches
+
+  let toolName = toolCall.function.name
+
+  # Common suggestions based on tool type
+  case toolName
+  of "read", "list":
+    return "Consider trying a different file or directory, or using different parameters. If you need to re-read the same file, the previous result should still be available."
+
+  of "create", "edit":
+    return "Consider checking if the file already exists or reviewing previous changes. If creating the same file multiple times, you may want to verify the current state first."
+
+  of "bash":
+    return "Consider using different commands or approaches. If the previous command failed, check the error message and try an alternative method."
+
+  of "fetch":
+    return "Consider trying a different URL or approach. The previous fetch result should still be available for analysis."
+
+  else:
+    return fmt("Consider using a different tool or approach. The previous '{toolName}' call result should still be available. Try analyzing why the previous call didn't achieve the desired outcome.")
 
 # New format-aware validation functions
 proc detectAndValidateFormat*(content: string, buffer: var ToolCallBuffer): bool =
@@ -226,7 +483,8 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
                                 initialContent: string, database: DatabaseBackend,
                                 recursionDepth: int = 0,
                                 executedCalls: seq[string] = @[],
-                                maxTurns: int = 30): bool
+                                maxTurns: int = 30,
+                                duplicateTracker: var DuplicateFeedbackTracker): bool
 
 # Helper procedures for tool execution refactoring
 proc filterDuplicateToolCalls(toolCalls: seq[LLMToolCall], executedCalls: seq[string]): tuple[filtered: seq[LLMToolCall], updated: seq[string]] =
@@ -281,17 +539,62 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
                              request: APIRequest, toolCalls: seq[LLMToolCall],
                              initialContent: string, recursionDepth: int,
                              updatedExecutedCalls: seq[string],
-                             maxTurns: int = 30): bool =
+                             maxTurns: int = 30,
+                             duplicateTracker: var DuplicateFeedbackTracker): bool {.gcsafe.} =
   ## Handle the case when all tool calls are duplicates by providing feedback to the model
-  debug("All tool calls were duplicates, sending feedback to model")
+  ##
+  ## Returns true if feedback provided successfully, false if limits exceeded
+  {.gcsafe.}:
+    debug("All tool calls were duplicates, sending feedback to model")
+
+    # Check duplicate feedback limits before providing more feedback
+    # Use GC-safe block to access global configuration
+    try:
+      let config = getDuplicateFeedbackConfig()
+
+      if config.enabled:
+        # Check if we've exceeded duplicate feedback limits
+        let limitReason = checkDuplicateFeedbackLimits(duplicateTracker, toolCalls[0], recursionDepth, config)
+
+        if limitReason.result != dlAllowed:
+          # Limits exceeded - stop rather than creating infinite loop
+          let errorMessage = createDuplicateLimitError(limitReason)
+
+          debugColored(COLOR_ERROR, fmt"🚫 Duplicate feedback limits exceeded: {errorMessage}")
+          debug(fmt"Stopping task to prevent infinite loop: {limitReason.result}")
+
+          # Store final error message in database
+          discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+          discard conversation_manager.addToolMessage(errorMessage, toolCalls[0].id)
+
+          # Send error to channels for user display
+          let errorResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamError,
+            error: errorMessage
+          )
+          sendAPIResponse(channels, errorResponse)
+
+          return false
+
+        # Within limits - record this attempt
+        recordDuplicateFeedbackAttempt(duplicateTracker, toolCalls[0], recursionDepth)
+
+        debug(fmt"Duplicate feedback attempt recorded: level={recursionDepth}, totalAttempts={duplicateTracker.totalAttempts.len}")
+      else:
+        debug("Duplicate feedback prevention disabled in configuration")
+    except Exception as e:
+      # Fail open - if we can't check limits, allow the duplicate feedback
+      debug(fmt"Error checking duplicate feedback limits: {e.msg}, allowing feedback as fallback")
 
   # Store assistant message with duplicate tool calls in database
-  # Skip storing empty-content messages (protocol placeholders for tool calls)
-  if initialContent.strip().len > 0:
-    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-    debugThreadSafe(fmt"Stored assistant message with {toolCalls.len} duplicate tool calls in database")
-  else:
-    debugThreadSafe(fmt"Skipping empty-content assistant message with {toolCalls.len} duplicate tool calls (protocol placeholder)")
+  {.gcsafe.}:
+    # Skip storing empty-content messages (protocol placeholders for tool calls)
+    if initialContent.strip().len > 0:
+      discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
+      debugThreadSafe(fmt"Stored assistant message with {toolCalls.len} duplicate tool calls in database")
+    else:
+      debugThreadSafe(fmt"Skipping empty-content assistant message with {toolCalls.len} duplicate tool calls (protocol placeholder)")
 
   # Create duplicate feedback message
   let duplicateFeedbackContent = "Note: This tool call was already executed. Please continue the conversation without repeating the same call, or try a different approach if the previous result was insufficient."
@@ -302,8 +605,9 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
   )
 
   # Store duplicate feedback in database
-  discard conversation_manager.addToolMessage(duplicateFeedbackContent, toolCalls[0].id)
-  debug("Stored duplicate feedback message in database")
+  {.gcsafe.}:
+    discard conversation_manager.addToolMessage(duplicateFeedbackContent, toolCalls[0].id)
+    debug("Stored duplicate feedback message in database")
 
   # Add duplicate feedback and continue conversation
   var updatedMessages = request.messages
@@ -412,7 +716,7 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
     debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {recursionDepth})")
     {.gcsafe.}:
       discard executeToolCallsAndContinue(channels, client, request, followUpToolCalls,
-                                         followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns)
+                                         followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns, duplicateTracker)
 
   return success
 
@@ -537,7 +841,8 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
                           request: APIRequest, toolCalls: seq[LLMToolCall],
                           allToolResults: seq[Message], initialContent: string,
                           recursionDepth: int, updatedExecutedCalls: seq[string],
-                          maxTurns: int = 30): bool {.gcsafe.} =
+                          maxTurns: int = 30,
+                          duplicateTracker: var DuplicateFeedbackTracker): bool {.gcsafe.} =
   ## Handle follow-up LLM request after tool execution
   debug(fmt"Sending {allToolResults.len} tool results back to LLM (depth: {recursionDepth})")
 
@@ -662,7 +967,7 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
     debug(fmt"Found {followUpToolCalls.len} follow-up tool calls, executing recursively")
     {.gcsafe.}:
       return executeToolCallsAndContinue(channels, client, request, followUpToolCalls,
-                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns)
+                                       followUpContent, nil, recursionDepth + 1, updatedExecutedCalls, maxTurns, duplicateTracker)
   else:
     # No more tool calls, send completion
     debug(fmt"DEBUG: No follow-up tool calls found (depth {recursionDepth}). Follow-up content: '{followUpContent}'")
@@ -729,15 +1034,13 @@ proc handleFollowUpRequest(channels: ptr ThreadChannels, client: var CurlyStream
     debug(fmt"Recursive tool execution completed at depth {recursionDepth}")
     return true
 
-# Tool execution constants
-const MAX_RECURSION_DEPTH = 20  # Maximum recursion depth for tool calls
-
 proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
                                 request: APIRequest, toolCalls: seq[LLMToolCall],
                                 initialContent: string, database: DatabaseBackend,
                                 recursionDepth: int = 0,
                                 executedCalls: seq[string] = @[],
-                                maxTurns: int = 30): bool =
+                                maxTurns: int = 30,
+                                duplicateTracker: var DuplicateFeedbackTracker): bool =
   ## Execute tool calls and continue conversation recursively
   ## Returns true if successful, false if max recursion depth exceeded
 
@@ -771,7 +1074,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   if filteredToolCalls.len == 0:
     debugColored(COLOR_BUFFER, fmt"🟡 All tool calls were duplicates, handling duplicates")
     return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent,
-                                   recursionDepth, updatedExecutedCalls, maxTurns)
+                                   recursionDepth, updatedExecutedCalls, maxTurns, duplicateTracker)
 
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
   debugColored(COLOR_TOOL, fmt"🟢 Deduplication: {toolCalls.len - filteredToolCalls.len} duplicates removed")
@@ -791,9 +1094,25 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
   # Send tool results back to LLM for continuation
   if allToolResults.len > 0:
     return handleFollowUpRequest(channels, client, request, toolCalls, allToolResults,
-                                initialContent, recursionDepth, updatedExecutedCalls, maxTurns)
+                                initialContent, recursionDepth, updatedExecutedCalls, maxTurns, duplicateTracker)
 
   return true
+
+# ---------------------------------------------------------------------------
+# Backwards Compatibility Wrappers
+# ---------------------------------------------------------------------------
+
+proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
+                                request: APIRequest, toolCalls: seq[LLMToolCall],
+                                initialContent: string, database: DatabaseBackend,
+                                recursionDepth: int = 0,
+                                executedCalls: seq[string] = @[],
+                                maxTurns: int = 30): bool =
+  ## Backwards compatibility wrapper that creates a duplicate tracker automatically
+  ## This allows existing code to continue working without modification
+  var dummyTracker = createDuplicateFeedbackTracker()
+  executeToolCallsAndContinue(channels, client, request, toolCalls, initialContent,
+                            database, recursionDepth, executedCalls, maxTurns, dummyTracker)
 
 proc handleConfigureRequest(request: APIRequest): Option[CurlyStreamingClient] {.gcsafe.} =
   ## Handle API client configuration requests
@@ -1152,8 +1471,12 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                 
                 # Use shared tool execution function with recursive support
                 var mutableClient = client
-                let executeSuccess = executeToolCallsAndContinue(channels, mutableClient, request, 
-                                                               collectedToolCalls, fullContent, database)
+
+                # Thread-safe call without duplicate feedback to avoid GC safety issues
+                # Use the backwards compatibility wrapper which doesn't require the tracker
+                let executeSuccess = executeToolCallsAndContinue(channels, mutableClient, request,
+                                                                   collectedToolCalls, fullContent, database,
+                                                                   0, @[], 30)
                 
                 if not executeSuccess:
                   # Execution failed (likely max recursion depth exceeded)

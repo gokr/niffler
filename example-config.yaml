@@ -216,6 +216,21 @@ markdown_enabled: true
 # ---------------------------------------------------------------------------
 
 # agent_timeout_seconds: 300  # 5 minutes for agent response timeout
+# default_max_turns: 30        # Maximum turns for agent task execution
+
+# ---------------------------------------------------------------------------
+# Duplicate Feedback Prevention (Optional)
+# ---------------------------------------------------------------------------
+#
+# This feature prevents infinite loops when LLMs repeatedly make the same
+# tool call even after receiving duplicate feedback. It tracks attempts per
+# recursion level and globally to detect and break out of problematic loops.
+#
+# duplicate_feedback:
+#   enabled: true                     # Enable duplicate feedback tracking
+#   max_attempts_per_level: 2         # Max attempts per recursion depth
+#   max_total_attempts: 6             # Global max attempts across all depths
+#   attempt_recovery: true            # Try alternative approaches before failing
 
 # ---------------------------------------------------------------------------
 # Active Configuration Directory (Optional)
