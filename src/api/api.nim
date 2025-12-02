@@ -36,6 +36,7 @@ import curlyStreaming
 
 import std/logging
 import ../core/[channels, conversation_manager, database, completion_detection, config]
+import ../core/log_file as logFileModule
 import ../tools/[registry, common]
 import ../ui/tool_visualizer
 import tool_call_parser
@@ -44,6 +45,15 @@ import ../tokenization/tokenizer
 
 # Global debug flag for thread-safe debug output
 var debugEnabled* = false
+
+proc dumpJsonOutput*(jsonObj: JsonNode) {.gcsafe.} =
+  ## Emit formatted JSON to dump output without SSE envelope
+  try:
+    let formatted = jsonObj.pretty()
+    logFileModule.dumpToLog(formatted)
+    logFileModule.dumpToLog("")  # Blank line between events for readability
+  except Exception as e:
+    debug(fmt"Failed to format dump JSON: {e.msg}")
 
 # Debug output helper functions
 proc debugColored*(color, message: string) =
@@ -1457,7 +1467,34 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             # Process tool calls if any were collected
             if hasToolCalls and collectedToolCalls.len > 0:
                 debug(fmt"Found {collectedToolCalls.len} tool calls in streaming response")
-                
+
+                # Emit accumulated dump data for tool calls
+                if isDumpEnabled():
+                  if fullThinkingContent.len > 0:
+                    dumpJsonOutput(%*{
+                      "type": "thinking",
+                      "content": fullThinkingContent
+                    })
+
+                  if fullContent.len > 0:
+                    dumpJsonOutput(%*{
+                      "type": "content",
+                      "content": fullContent
+                    })
+
+                  dumpJsonOutput(%*{
+                    "type": "tool_calls",
+                    "calls": collectedToolCalls
+                  })
+
+                  if finalUsage.inputTokens > 0:
+                    dumpJsonOutput(%*{
+                      "type": "usage",
+                      "input_tokens": finalUsage.inputTokens,
+                      "output_tokens": finalUsage.outputTokens,
+                      "total_tokens": finalUsage.totalTokens
+                    })
+
                 # Send assistant message with tool calls (content was already streamed)
                 let assistantResponse = APIResponse(
                   requestId: request.requestId,
@@ -1495,6 +1532,35 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     break
             else:
               # No tool calls, regular streaming response (content was already streamed in onChunkReceived)
+
+              # Before cleanup, emit accumulated dump data
+              if isDumpEnabled():
+                if fullThinkingContent.len > 0:
+                  dumpJsonOutput(%*{
+                    "type": "thinking",
+                    "content": fullThinkingContent
+                  })
+
+                if fullContent.len > 0:
+                  dumpJsonOutput(%*{
+                    "type": "content",
+                    "content": fullContent
+                  })
+
+                if collectedToolCalls.len > 0:
+                  dumpJsonOutput(%*{
+                    "type": "tool_calls",
+                    "calls": collectedToolCalls
+                  })
+
+                if finalUsage.inputTokens > 0:
+                  dumpJsonOutput(%*{
+                    "type": "usage",
+                    "input_tokens": finalUsage.inputTokens,
+                    "output_tokens": finalUsage.outputTokens,
+                    "total_tokens": finalUsage.totalTokens
+                  })
+
               # Send final completion signal
               let finalChunkResponse = APIResponse(
                 requestId: request.requestId,

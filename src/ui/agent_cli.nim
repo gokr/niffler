@@ -142,7 +142,7 @@ proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, mode
   # Initialize session manager for thread-safe operations
   # Pass database pool if available
   let pool = if result.database != nil: result.database.pool else: nil
-  initSessionManager(pool, epochTime().int)
+  initSessionManager(pool)
   info("Session manager initialized")
 
   # NOTE: Workers are started in startAgentMode AFTER this function returns

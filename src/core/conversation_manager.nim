@@ -34,7 +34,6 @@ proc invalidateConversationCache*() {.gcsafe.} =
 type
   SessionManager = object
     pool: Pool
-    conversationId: int
     # Session token tracking
     sessionPromptTokens: int
     sessionCompletionTokens: int
@@ -64,35 +63,7 @@ proc clearCurrentSession*() =
   finally:
     release(globalSession.lock)
 
-proc syncSessionState*(conversationId: int, pool: Pool = nil) =
-  ## Synchronize both session systems with the same conversation ID
-  acquire(globalSession.lock)
-  try:
-    globalSession.conversationId = conversationId
-    if pool != nil:
-      globalSession.pool = pool
-    debug(fmt"Synced globalSession.conversationId to {conversationId}")
-  finally:
-    release(globalSession.lock)
-
-proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) {.gcsafe.}
-
-proc validateSessionState*(): tuple[valid: bool, message: string] =
-  ## Validate that both session systems are properly synchronized
-  ## Validate that both session systems are in sync
-  let currentSessionOpt = getCurrentSession()
-  if currentSessionOpt.isNone():
-    return (valid: false, message: "No current session active")
-  
-  let currentConversationId = currentSessionOpt.get().conversation.id
-  acquire(globalSession.lock)
-  let globalConversationId = globalSession.conversationId
-  release(globalSession.lock)
-  
-  if currentConversationId != globalConversationId:
-    return (valid: false, message: fmt"Session state divergence: currentSession has conversation ID {currentConversationId}, globalSession has {globalConversationId}")
-  else:
-    return (valid: true, message: "Session states are synchronized")
+proc initSessionManager*(pool: Pool = nil) {.gcsafe.}
 
 proc getAppStartTime*(): DateTime =
   ## Get the application start time for session cost calculations
@@ -296,9 +267,9 @@ proc switchToConversation*(backend: DatabaseBackend, conversationId: int): bool 
   
   # Update current session
   currentSession = some(session)
-  
-# Sync globalSession with the new conversation ID and pool
-  initSessionManager(backend.pool, conversationId)
+
+  # Initialize session manager for token tracking
+  initSessionManager(backend.pool)
 
   # Mode restoration is handled in UI layer (commands.nim) to avoid circular imports
   debug(fmt"switchToConversation: mode {conversation.mode} will be restored by UI layer")
@@ -428,31 +399,40 @@ proc initializeDefaultConversation*(backend: DatabaseBackend) =
         break
 
 # Message management functions for conversation persistence
-proc initSessionManager*(pool: Pool = nil, conversationId: int = 0) {.gcsafe.} =
-  ## Initialize session manager with database pool and conversation ID for thread-safe operations
+proc initSessionManager*(pool: Pool = nil) {.gcsafe.} =
+  ## Initialize session manager with database pool for thread-safe operations
   acquire(globalSession.lock)
   try:
     globalSession.pool = pool
-    globalSession.conversationId = conversationId
     globalSession.sessionPromptTokens = 0
     globalSession.sessionCompletionTokens = 0
     globalSession.appStartTime = now()
-    debug(fmt"Initialized session manager for conversation {conversationId}")
+    debug("Initialized session manager")
   finally:
     release(globalSession.lock)
 
+
+proc getCurrentConversationId*(): int64 =
+  ## Get the current conversation ID for database operations
+  {.gcsafe.}:
+    let currentSessionOpt = getCurrentSession()
+    if currentSessionOpt.isNone():
+      result = 0
+    else:
+      result = currentSessionOpt.get().conversation.id.int64
 proc addUserMessage*(content: string): Message =
   ## Add user message to current conversation and persist to database
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
+      let conversationId = getCurrentConversationId().int
       # Add to database if pool is available
-      if globalSession.pool != nil and globalSession.conversationId > 0:
-        discard addUserMessageToDb(globalSession.pool, globalSession.conversationId, content)
+      if globalSession.pool != nil and conversationId > 0:
+        discard addUserMessageToDb(globalSession.pool, conversationId, content)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:
-          updateConversationMessageCount(backend, globalSession.conversationId)
+          updateConversationMessageCount(backend, conversationId)
 
       result = Message(
         role: mrUser,
@@ -473,13 +453,13 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
     acquire(globalSession.lock)
     try:
       # Add to database if pool is available
-      if globalSession.pool != nil and globalSession.conversationId > 0:
-        debug(fmt"[DB-INSERT] Assistant message: conv={globalSession.conversationId}, content_len={content.len}, has_tools={toolCalls.isSome()}, model={modelName}")
-        discard addAssistantMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCalls, modelName, outputTokens)
+      if globalSession.pool != nil and getCurrentConversationId().int > 0:
+        debug(fmt"[DB-INSERT] Assistant message: conv={getCurrentConversationId().int}, content_len={content.len}, has_tools={toolCalls.isSome()}, model={modelName}")
+        discard addAssistantMessageToDb(globalSession.pool, getCurrentConversationId().int, content, toolCalls, modelName, outputTokens)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:
-          updateConversationMessageCount(backend, globalSession.conversationId)
+          updateConversationMessageCount(backend, getCurrentConversationId().int)
 
       result = Message(
         role: mrAssistant,
@@ -502,12 +482,12 @@ proc addToolMessage*(content: string, toolCallId: string): Message =
     acquire(globalSession.lock)
     try:
       # Add to database if pool is available
-      if globalSession.pool != nil and globalSession.conversationId > 0:
-        discard addToolMessageToDb(globalSession.pool, globalSession.conversationId, content, toolCallId)
+      if globalSession.pool != nil and getCurrentConversationId().int > 0:
+        discard addToolMessageToDb(globalSession.pool, getCurrentConversationId().int, content, toolCallId)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:
-          updateConversationMessageCount(backend, globalSession.conversationId)
+          updateConversationMessageCount(backend, getCurrentConversationId().int)
       
       result = Message(
         role: mrTool,
@@ -528,8 +508,8 @@ proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
     acquire(globalSession.lock)
     try:
       # Use database if available
-      if globalSession.pool != nil and globalSession.conversationId > 0:
-        result = getRecentMessagesFromDb(globalSession.pool, globalSession.conversationId, maxMessages)
+      if globalSession.pool != nil and getCurrentConversationId().int > 0:
+        result = getRecentMessagesFromDb(globalSession.pool, getCurrentConversationId().int, maxMessages)
         debug(fmt"Retrieved {result.len} recent messages from database")
         return result
       
@@ -544,10 +524,10 @@ proc getConversationContext*(): seq[Message] {.gcsafe.} =
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
-      if globalSession.pool != nil and globalSession.conversationId > 0:
+      if globalSession.pool != nil and getCurrentConversationId().int > 0:
         # Check if cache is valid and for the same conversation
         if cacheValid and 
-           cachedContext.conversationId == globalSession.conversationId and
+           cachedContext.conversationId == getCurrentConversationId().int and
            (getTime() - cachedContext.lastCacheTime) < initDuration(seconds = 60):
           debug(fmt"Using cached conversation context with {cachedContext.messages.len} messages")
           result = cachedContext.messages
@@ -555,13 +535,13 @@ proc getConversationContext*(): seq[Message] {.gcsafe.} =
         
         # Cache miss or invalid - fetch from database
         var toolCallCount: int
-        (result, toolCallCount) = getConversationContextFromDb(globalSession.pool, globalSession.conversationId)
+        (result, toolCallCount) = getConversationContextFromDb(globalSession.pool, getCurrentConversationId().int)
         
         # Update cache
         cachedContext.messages = result
         cachedContext.toolCallCount = toolCallCount
         cachedContext.lastCacheTime = getTime()
-        cachedContext.conversationId = globalSession.conversationId
+        cachedContext.conversationId = getCurrentConversationId().int
         cacheValid = true
         
         debug(fmt"Retrieved and cached {result.len} messages from database with {toolCallCount} tool calls")
@@ -591,10 +571,6 @@ proc getSessionTokens*(): tuple[inputTokens: int, outputTokens: int, totalTokens
     )
   finally:
     release(globalSession.lock)
-
-proc getCurrentConversationId*(): int64 =
-  ## Get the current conversation ID for database operations
-  result = globalSession.conversationId.int64
 
 proc getCurrentMessageId*(): int64 =
   ## Get the current message ID (placeholder implementation)
@@ -719,7 +695,7 @@ proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenForm
     acquire(globalSession.lock)
     try:
       # Store thinking token if pool is available
-      if globalSession.pool != nil and globalSession.conversationId > 0 and content.len > 0:
+      if globalSession.pool != nil and getCurrentConversationId().int > 0 and content.len > 0:
         # Create ThinkingContent from streaming data
         let thinkingContent = if isEncrypted:
           ThinkingContent(
@@ -736,7 +712,7 @@ proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenForm
             providerSpecific: some(%*{"format": $format, "timestamp": epochTime()})
           )
         
-        let thinkingId = addThinkingTokenToDb(globalSession.pool, globalSession.conversationId, 
+        let thinkingId = addThinkingTokenToDb(globalSession.pool, getCurrentConversationId().int, 
                                             thinkingContent, messageId, format, "medium")
         debug(fmt"Stored thinking token from streaming: {format} format, {content.len} chars")
         return some(thinkingId)
@@ -755,8 +731,8 @@ proc getRecentThinkingTokens*(maxTokens: int = 10): seq[ThinkingContent] =
     acquire(globalSession.lock)
     try:
       # Use database if available
-      if globalSession.pool != nil and globalSession.conversationId > 0:
-        result = getThinkingTokenHistory(globalSession.pool, globalSession.conversationId, maxTokens)
+      if globalSession.pool != nil and getCurrentConversationId().int > 0:
+        result = getThinkingTokenHistory(globalSession.pool, getCurrentConversationId().int, maxTokens)
         debug(fmt"Retrieved {result.len} recent thinking tokens from database")
         return result
       

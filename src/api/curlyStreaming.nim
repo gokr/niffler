@@ -536,9 +536,10 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
             totalLinesProcessed += 1
             debug(fmt"Processing line {totalLinesProcessed}: {line[0..min(100, line.len-1)]}")
 
-            # Dump line if enabled - write to both console and log file
-            if isDumpEnabled():
-              logFileModule.dumpToLog line
+            # Skip line-by-line dumping for SSE body - accumulation happens in api.nim
+            # Headers and request/response metadata still dumped above
+            # if isDumpEnabled():
+            #   logFileModule.dumpToLog line
 
             try:
               let maybeChunk = parseSSELine(line)

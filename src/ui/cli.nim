@@ -733,9 +733,8 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
     initializeDefaultConversation(database)
     let currentSession = getCurrentSession()
     if currentSession.isSome():
-      let conversationId = currentSession.get().conversation.id
-      initSessionManager(pool, conversationId)
-      
+      initSessionManager(pool)
+
       # Restore model and mode from loaded conversation
       let conversation = currentSession.get().conversation
       
@@ -752,11 +751,11 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
             debug(fmt"Restored model from conversation: {model.nickname}")
             break
     else:
-      # Fallback: use timestamp-based ID if no conversation system available
-      initSessionManager(pool, epochTime().int)
+      # Fallback: initialize session manager even if no conversation available
+      initSessionManager(pool)
   else:
-    # No database: use timestamp-based ID for in-memory session
-    initSessionManager(pool, epochTime().int)
+    # No database: initialize session manager for in-memory session
+    initSessionManager(pool)
   
   # Model display removed - in master mode we route to agents, not use a model directly
   # Users can check model with /model command if needed
@@ -1019,10 +1018,10 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   
   # Get database pool for cross-thread history sharing
   let pool = if database != nil: database.pool else: nil
-  
+
   # Initialize session manager with pool (no database for single prompts)
-  initSessionManager(pool, epochTime().int)
-  
+  initSessionManager(pool)
+
   let channels = getChannels()
 
   # Start API worker with pool
