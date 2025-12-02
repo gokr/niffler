@@ -27,7 +27,6 @@ type
   CliArgs = object
     command: string      # "", "agent", "model", "init", "nats-monitor"
     model: string
-    prompt: string
     agentName: string
     agentNick: string
     natsUrl: string
@@ -81,7 +80,6 @@ proc parseCliArgs(): CliArgs =
     of cmdLongOption, cmdShortOption:
       case key
       of "model", "m": result.model = val
-      of "prompt", "p": result.prompt = val
       of "nick": result.agentNick = val
       of "nats": result.natsUrl = val
       of "debug", "d": result.debug = true
@@ -112,7 +110,6 @@ Niffler - your friendly magical AI buddy
 
 USAGE:
   niffler [options]                               # Interactive mode
-  niffler --prompt="<text>" [options]            # Single prompt
   niffler agent <name> [options]                  # Start agent
   niffler model list                              # List models
   niffler init [path]                             # Initialize config
@@ -122,7 +119,6 @@ NOTE: All long options require '=' for values (e.g., --model=gpt4, --nick=test12
 
 OPTIONS:
   -m, --model=<nickname>     Select model by nickname
-  -p, --prompt="<text>"      Single prompt and exit
   -i, --info                 Info level logging
   -d, --debug                Debug level logging
       --dump                 Show HTTP requests & responses
@@ -137,7 +133,6 @@ AGENT COMMAND OPTIONS:
 
 EXAMPLES:
   niffler                              # Start interactive mode
-  niffler --model=gpt4               # Interactive with specific model
   niffler --prompt="hello" --debug   # Single prompt with debugging
 
   niffler agent coder                # Start coder agent (interactive)
@@ -163,26 +158,6 @@ proc handleError(message: string, showHelp: bool = false) =
     showHelp()
   quit(1)
 
-
-proc sendSinglePrompt(prompt: string, modelName: string, level: Level, dump: bool, logFile: string) =
-  ## Send a single prompt and exit
-
-  # Parse for /wait and @agent
-  let parsed = parseCommand(prompt)
-
-  # Check if prompt uses @agent syntax
-  if prompt.strip().contains("@"):
-    # Master mode routing
-    echo fmt"🚀 Routing to agent: {prompt}"
-    let exitCode = sendSinglePromptMaster(
-      prompt = prompt,
-      shouldWait = parsed.shouldWait,
-      natsUrl = getNatsUrl()
-    )
-    quit(exitCode)
-  else:
-    # Regular LLM call (existing implementation)
-    cli.sendSinglePrompt(prompt, modelName, level, dump, logFile)
 
 proc startMasterMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start master mode with CLI interface for agent routing
@@ -271,13 +246,8 @@ proc dispatchCmd(args: CliArgs) =
     quit(0)
 
   of "":
-    # Interactive mode or single prompt
-    if args.prompt.len == 0:
-      # Start master mode with agent routing
-      startMasterMode(args.model, level, args.dump, args.logFile, args.natsUrl)
-    else:
-      # Send single prompt
-      sendSinglePrompt(args.prompt, args.model, level, args.dump, args.logFile)
+    # Interactive mode with agent routing
+    startMasterMode(args.model, level, args.dump, args.logFile, args.natsUrl)
 
   else:
     handleError("Unknown command: " & args.command, true)
