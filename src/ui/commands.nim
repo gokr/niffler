@@ -213,6 +213,9 @@ proc modelHandler(args: seq[string], session: var Session, currentModel: var con
           if database != nil:
             let conversationId = currentSession.get().conversation.id
             updateConversationModel(database, conversationId, model.nickname)
+
+            # Update the in-memory conversation object to reflect the change
+            currentSession.get().conversation.modelNickname = model.nickname
             debug(fmt"Persisted model change to database for conversation {conversationId}")
       except Exception as e:
         debug(fmt"Failed to persist model change to database: {e.msg}")
