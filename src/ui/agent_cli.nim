@@ -17,7 +17,7 @@
 ## 4. Send NatsResponse messages (streaming)
 ## 5. Send final response with done=true
 
-import std/[logging, strformat, times, os, options, strutils, json, random]
+import std/[logging, strformat, times, os, options, strutils, json, random, tables]
 import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file, completion_detection]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
@@ -28,6 +28,7 @@ import output_shared
 import tool_visualizer
 import theme
 import commands
+import response_templates
 
 type
   AgentState = object
@@ -261,6 +262,8 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
   var totalTokens = 0
   var totalToolCalls = 0
   var finalResponse = ""
+  var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
+  var outputAfterToolCall = false
 
   while turn < maxTurns:
     turn.inc()
@@ -349,17 +352,9 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
           of arkStreamError:
             finishStreaming()
             return (false, fmt"API error: {response.error}")
-          of arkToolCallRequest:
-            # Display tool request from API (different from our tool execution)
-            finishStreaming()
-            let toolRequest = response.toolRequestInfo
-            let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-            writeCompleteLine(formattedRequest & " ⏳")
-          of arkToolCallResult:
-            # Display tool result from API
-            let toolResult = response.toolResultInfo
-            let formattedResult = formatCompactToolResultWithIndent(toolResult)
-            writeCompleteLine(formattedResult)
+          of arkToolCallRequest, arkToolCallResult:
+            # Use shared template for consistent tool call display
+            handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
 
       sleep(10)
       attempts.inc()
@@ -391,91 +386,27 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
     if toolCalls.len == 0:
       break
 
-    # Execute tool calls
-    let agentContext = AgentContext(
-      isMainAgent: false,
-      agent: state.definition
+    # Let api.nim handle tool execution with duplicate detection
+    # Create follow-up request with tool results
+    let followUpRequestId = fmt"ask_followup_{state.name}_{turn}_{rand(100000)}"
+    let followUpRequest = APIRequest(
+      kind: arkChatRequest,
+      requestId: followUpRequestId,
+      messages: messages,
+      model: state.modelConfig.model,
+      maxTokens: state.modelConfig.maxTokens.get(4096),
+      temperature: state.modelConfig.temperature.get(0.7),
+      tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition])
     )
 
-    for toolCall in toolCalls:
-      # Display tool call - parse args string to JsonNode
-      let argsJson = try:
-        parseJson(toolCall.function.arguments)
-      except:
-        newJObject()
+    # Send to API worker for next turn
+    if not trySendAPIRequest(state.channels, followUpRequest):
+      return (false, "Failed to send follow-up request to API worker")
 
-      let toolRequest = CompactToolRequestInfo(
-        toolCallId: toolCall.id,
-        toolName: toolCall.function.name,
-        args: argsJson
-      )
-      let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-      writeCompleteLine(formattedRequest)
-
-      # Validate tool is allowed
-      if not isToolAllowed(agentContext, toolCall.function.name):
-        let errorMsg = fmt"Tool '{toolCall.function.name}' not allowed for agent '{state.name}'"
-        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
-        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
-        continue
-
-      # Send to tool worker
-      let toolReq = ToolRequest(
-        kind: trkExecute,
-        requestId: toolCall.id,
-        toolName: toolCall.function.name,
-        arguments: toolCall.function.arguments,
-        agentName: state.definition.name
-      )
-
-      if not trySendToolRequest(state.channels, toolReq):
-        let errorMsg = "Failed to send tool request"
-        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
-        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
-        continue
-
-      # Wait for tool response
-      var toolResponseReceived = false
-      var toolAttempts = 0
-      const maxToolAttempts = 3000
-
-      while toolAttempts < maxToolAttempts and not toolResponseReceived:
-        let maybeResponse = tryReceiveToolResponse(state.channels)
-        if maybeResponse.isSome():
-          let toolResponse = maybeResponse.get()
-          if toolResponse.requestId == toolCall.id:
-            let toolContent = if toolResponse.kind == trkResult:
-              toolResponse.output
-            else:
-              fmt"Error: {toolResponse.error}"
-
-            # Display tool result
-            let resultInfo = CompactToolResultInfo(
-              toolCallId: toolCall.id,
-              toolName: toolCall.function.name,
-              resultSummary: toolContent,
-              success: toolResponse.kind == trkResult
-            )
-            let formattedResult = formatCompactToolResultWithIndent(resultInfo)
-            writeCompleteLine(formattedResult)
-
-            # Add to conversation
-            messages.add(Message(role: mrTool, content: toolContent, toolCallId: some(toolCall.id)))
-            discard conversation_manager.addToolMessage(toolContent, toolCall.id)
-
-            toolResponseReceived = true
-            break
-
-        sleep(10)
-        toolAttempts.inc()
-
-      if not toolResponseReceived:
-        let errorMsg = "Tool execution timed out"
-        writeCompleteLine(formatWithStyle(fmt"  ✗ {errorMsg}", currentTheme.error))
-        messages.add(Message(role: mrTool, content: errorMsg, toolCallId: some(toolCall.id)))
-        discard conversation_manager.addToolMessage(errorMsg, toolCall.id)
+    # Reset for next turn
+    assistantContent = ""
+    toolCalls = @[]
+    isInThinkingBlock = false
 
   # Return full response (no truncation)
   let summary = finalResponse

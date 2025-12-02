@@ -44,6 +44,7 @@ import output_handler
 import output_shared
 import ui_state
 import master_cli
+import response_templates
 import ../core/agent_manager
 import nats_listener
 
