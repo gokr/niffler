@@ -284,7 +284,12 @@ proc executeTask*(agent: AgentDefinition, description: string,
         sleep(100)
         attempts.inc()
 
-      if not responseComplete:
+      # Exit loop if we have tool calls (don't wait for arkStreamComplete)
+      if toolCalls.len > 0:
+        debug(fmt"Exited response loop with {toolCalls.len} tool calls (will execute)")
+        break
+
+      if not responseComplete and attempts >= maxAttempts:
         return TaskResult(
           success: false,
           summary: "",
@@ -294,8 +299,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
           error: "Turn timed out"
         )
 
-      # Add assistant message to history
-      if assistantContent.len > 0:
+      # Add assistant message to history (always add if has content or tool calls)
+      if assistantContent.len > 0 or toolCalls.len > 0:
         conversationMessages.add(Message(
           role: mrAssistant,
           content: assistantContent,
