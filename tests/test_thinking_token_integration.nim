@@ -20,7 +20,7 @@ suite "Thinking Token Integration Tests":
 
     # Initialize session manager for testing
     if testDb != nil:
-      initSessionManager(testDb.pool, 1)  # conversation ID 1
+      initSessionManager(testDb.pool)  # conversation ID 1
 
   test "ThinkingContent serialization and deserialization":
     let originalContent = ThinkingContent(
@@ -154,7 +154,7 @@ suite "Thinking Token Integration Tests":
       check conversationId > 0
 
       # Initialize global session for this conversation (required for streaming functions)
-      initSessionManager(testDb.pool, conversationId)
+      initSessionManager(testDb.pool)
 
       # Test storing thinking token from streaming
       let thinkingContent = "I need to carefully consider the user's request and break it down into steps..."
@@ -176,7 +176,7 @@ suite "Thinking Token Integration Tests":
       check conversationId > 0
 
       # Initialize global session for this conversation (required for streaming functions)
-      initSessionManager(testDb.pool, conversationId)
+      initSessionManager(testDb.pool)
 
       # Test encrypted thinking token storage
       let encryptedContent = "[ENCRYPTED_REASONING_HASH_ABC123]"

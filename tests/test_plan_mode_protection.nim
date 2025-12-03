@@ -66,7 +66,7 @@ proc switchToPlanMode() =
   
   # Switch to the conversation and initialize session
   check switchToConversation(testDb, testConvId) == true
-  initSessionManager(testDb.pool, testConvId)
+  initSessionManager(testDb.pool)
   
   # Start in code mode to ensure we have a different previous mode
   setCurrentMode(amCode)

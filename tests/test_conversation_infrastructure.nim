@@ -188,7 +188,7 @@ proc createTestConversationWithMessages*(db: DatabaseBackend, title: string, mes
 
   # Switch to conversation and initialize session
   discard switchToConversation(db, convId)
-  initSessionManager(db.pool, convId)
+  initSessionManager(db.pool)
 
   # Add alternating user and assistant messages
   for i in 0..<messageCount:

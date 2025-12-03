@@ -65,7 +65,7 @@ proc createPlanModeConversation(): int =
   
   # Switch to the conversation
   check switchToConversation(testDb, convId) == true
-  initSessionManager(testDb.pool, convId)
+  initSessionManager(testDb.pool)
   
   # Set up plan mode created files tracking as if the user had previously entered plan mode
   setCurrentMode(amPlan)
@@ -91,7 +91,7 @@ suite "Conversation Mode Restore Tests":
     
     # Now simulate loading the conversation (like startup or /conv command would)
     check switchToConversation(testDb, convId) == true
-    initSessionManager(testDb.pool, convId)
+    initSessionManager(testDb.pool)
     
     # Get the conversation and restore its mode using our new function
     let conversationOpt = getConversationById(testDb, convId)
@@ -127,7 +127,7 @@ suite "Conversation Mode Restore Tests":
     
     # Switch to the conversation and restore mode
     check switchToConversation(testDb, convId) == true
-    initSessionManager(testDb.pool, convId)
+    initSessionManager(testDb.pool)
     
     # Start from plan mode (to test the transition)
     setCurrentMode(amPlan)
@@ -155,7 +155,7 @@ suite "Conversation Mode Restore Tests":
     setCurrentMode(amCode)  # Start from different mode
     clearCurrentSession()
     check switchToConversation(testDb, convId) == true
-    initSessionManager(testDb.pool, convId)
+    initSessionManager(testDb.pool)
     
     # Restore mode (this should enable protection)
     let conversationOpt = getConversationById(testDb, convId)

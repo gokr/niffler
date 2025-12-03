@@ -157,12 +157,12 @@ suite "CLI Command Integration Tests":
 
     # Add specific content for searching
     discard switchToConversation(testDb.backend, conv1Id)
-    initSessionManager(testDb.backend.pool, conv1Id)
+    initSessionManager(testDb.backend.pool)
     discard addUserMessage("How do I set up virtual environments in Python?")
     discard addAssistantMessage("Use venv to create Python virtual environments")
 
     discard switchToConversation(testDb.backend, conv2Id)
-    initSessionManager(testDb.backend.pool, conv2Id)
+    initSessionManager(testDb.backend.pool)
     discard addUserMessage("What testing framework should I use for JavaScript?")
     discard addAssistantMessage("Jest is a popular JavaScript testing framework")
 

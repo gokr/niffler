@@ -164,12 +164,12 @@ suite "End-to-End Conversation Lifecycle":
     
     # Add specific content that we can search for
     discard switchToConversation(testDb.backend, conv1Id)
-    initSessionManager(testDb.backend.pool, conv1Id)
+    initSessionManager(testDb.backend.pool)
     discard addUserMessage("We need to implement OAuth2 authentication")
     discard addAssistantMessage("I recommend using the authorization code flow for OAuth2")
     
     discard switchToConversation(testDb.backend, conv2Id)
-    initSessionManager(testDb.backend.pool, conv2Id)
+    initSessionManager(testDb.backend.pool)
     discard addUserMessage("There's a null pointer exception in the auth validator")
     discard addAssistantMessage("The authentication bug is in the token validation")
     
@@ -203,7 +203,7 @@ suite "Token Tracking and Session Persistence":
     
     # Switch to first conversation and simulate token usage
     check switchToConversation(testDb.backend, conv1Id) == true
-    initSessionManager(testDb.backend.pool, conv1Id)
+    initSessionManager(testDb.backend.pool)
     
     updateSessionTokens(500, 300)  # Input: 500, Output: 300
     updateSessionTokens(200, 150)  # Additional tokens
@@ -215,7 +215,7 @@ suite "Token Tracking and Session Persistence":
     
     # Switch to second conversation
     check switchToConversation(testDb.backend, conv2Id) == true
-    initSessionManager(testDb.backend.pool, conv2Id)
+    initSessionManager(testDb.backend.pool)
     
     # Verify new conversation has clean token state
     let tokens2 = getSessionTokens()
@@ -231,7 +231,7 @@ suite "Token Tracking and Session Persistence":
     
     # Switch back to first conversation
     check switchToConversation(testDb.backend, conv1Id) == true
-    initSessionManager(testDb.backend.pool, conv1Id)
+    initSessionManager(testDb.backend.pool)
     
     # Verify tokens were preserved (Note: This tests session isolation, not persistence)
     # In the current implementation, tokens are per-session, not per-conversation
@@ -247,7 +247,7 @@ suite "Conversation Context and Message Retrieval":
     
     # Add tool call messages
     discard switchToConversation(testDb.backend, convId)
-    initSessionManager(testDb.backend.pool, convId)
+    initSessionManager(testDb.backend.pool)
     
     # Create a mock tool call
     let mockToolCall = LLMToolCall(
