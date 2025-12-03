@@ -77,7 +77,7 @@ proc buildTaskSystemPrompt*(agent: AgentDefinition, taskDescription: string): st
   result.add("3. Key findings or results\n")
   result.add("4. Any blockers or limitations\n")
 
-proc generateSummary(conversationMessages: seq[Message], modelConfig: ModelConfig,
+proc generateSummary*(conversationMessages: seq[Message], modelConfig: ModelConfig,
                      channels: ptr ThreadChannels, apiKey: string,
                      toolSchemas: seq[ToolDefinition]): string =
   ## Ask LLM to summarize task results

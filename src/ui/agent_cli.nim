@@ -407,8 +407,9 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
     toolCalls = @[]
     isInThinkingBlock = false
 
-  # Return full response (no truncation)
-  let summary = finalResponse
+  # Generate summary of results like task mode does
+  debug("Generating summary for ask mode")
+  let summary = task_executor.generateSummary(messages, state.modelConfig, state.channels, apiKey, state.toolSchemas)
 
   info(fmt"Ask completed: {totalToolCalls} tool calls, {totalTokens} tokens")
   return (true, summary)
