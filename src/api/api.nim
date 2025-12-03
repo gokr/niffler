@@ -983,12 +983,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
 
   # Store assistant message with tool calls BEFORE executing tools
   # This ensures correct message ordering in database: assistant -> tool results
-  # Skip storing empty-content messages (protocol placeholders for tool calls)
-  if initialContent.strip().len > 0:
-    debugThreadSafe(fmt"[MSG-STORE] Storing assistant message with {toolCalls.len} tool calls BEFORE tool execution")
-    discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-  else:
-    debugThreadSafe(fmt"[MSG-STORE] Skipping empty-content assistant message with {toolCalls.len} tool calls (protocol placeholder)")
+  # Always store, even if content is empty, to maintain conversation integrity
+  debugThreadSafe(fmt"[MSG-STORE] Storing assistant message (content_len={initialContent.len}) with {toolCalls.len} tool calls")
+  discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
 
   # Execute all unique tool calls using helper function
   var currentToolResults = executeToolCallsBatch(channels, filteredToolCalls, request)
@@ -1059,6 +1056,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         )
 
       # Send completion
+      debug(fmt"Sending arkStreamComplete for request {request.requestId}")
       let completeResponse = APIResponse(
         requestId: request.requestId,
         kind: arkStreamComplete,
@@ -1066,6 +1064,7 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         finishReason: "stop"
       )
       sendAPIResponse(channels, completeResponse)
+      debug(fmt"Sent arkStreamComplete for request {request.requestId}")
 
       return true
 
@@ -1087,10 +1086,9 @@ proc executeToolCallsAndContinue*(channels: ptr ThreadChannels, client: var Curl
         )
       return true
 
-    # Store assistant message with tool calls
-    if responseContent.strip().len > 0:
-      debug(fmt"[MSG-STORE] Storing assistant message with {responseToolCalls.len} tool calls (depth: {depth})")
-      discard conversation_manager.addAssistantMessage(responseContent, some(responseToolCalls))
+    # Store assistant message with tool calls (always store to maintain conversation integrity)
+    debug(fmt"[MSG-STORE] Storing assistant message (content_len={responseContent.len}) with {responseToolCalls.len} tool calls (depth: {depth})")
+    discard conversation_manager.addAssistantMessage(responseContent, some(responseToolCalls))
 
     # Execute the new tool calls
     let nextToolResults = executeToolCallsBatch(channels, filteredNextToolCalls, request)
