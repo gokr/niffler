@@ -365,16 +365,15 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
     # Store final response for summary
     finalResponse = assistantContent
 
-    # Add assistant message to conversation (persists to DB)
+    # Build assistant message for next turn (API worker already persisted to DB)
     if assistantContent.len > 0:
-      var assistantMsg = conversation_manager.addAssistantMessage(assistantContent)
-      if toolCalls.len > 0:
-        assistantMsg.toolCalls = some(toolCalls)
-      messages.add(Message(
+      let assistantMsg = Message(
         role: mrAssistant,
         content: assistantContent,
         toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
-      ))
+      )
+      messages.add(assistantMsg)
+      debug(fmt"Added assistant message to in-memory conversation (already persisted by API worker)")
 
     # Check for completion signal
     let completionSignal = detectCompletionSignal(assistantContent)
