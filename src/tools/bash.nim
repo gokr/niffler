@@ -27,7 +27,9 @@ proc executeBash*(args: JsonNode): string =
 
   try:
     let output = getCommandOutput(parsedArgs.command, timeout = parsedArgs.timeout)
-    # Success case (exit code 0) - return output as before
+    # Success case (exit code 0) - return output or indicator for empty output
+    if output.len == 0:
+      return "(success: no output)"
     return output
   except ToolExecutionError as e:
     # Non-zero exit code - return JSON with exit code info instead of failing

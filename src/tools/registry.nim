@@ -72,7 +72,7 @@ proc createBashTool(): Tool =
     `type`: "function",
     function: ToolFunction(
       name: "bash",
-      description: "Execute shell commands",
+      description: "Execute shell commands. Returns command output on success, or '(success: no output)' if the command produces no output.",
       parameters: parameters
     )
   )

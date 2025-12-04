@@ -1325,6 +1325,26 @@ proc focusPlaceholder(args: seq[string], session: var Session, currentModel: var
     shouldContinue: true
   )
 
+proc taskHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle /task command for executing isolated tasks
+  if args.len == 0:
+    return CommandResult(
+      success: false,
+      message: "Usage: /task <description>",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  # This should only be reached if no agent is focused
+  # The CLI routing will send /task to focused agents
+  # If we get here, it means no agent was available
+  return CommandResult(
+    success: false,
+    message: "/task requires an agent to be focused. Use /focus <agent> or @agent /task <description>",
+    shouldExit: false,
+    shouldContinue: true
+  )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
@@ -1351,3 +1371,4 @@ proc initializeCommands*() =
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent)
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)
   registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent)
+  registerCommand("task", "Execute a task in fresh context", "<description>", @[], taskHandler, ccAgent)

@@ -442,7 +442,17 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
         logFileModule.dumpToLog "  " & key & ": " & displayValue
       logFileModule.dumpToLog ""
       logFileModule.dumpToLog COLOR_HTTP & "Body:" & COLOR_RESET
-      logFileModule.dumpToLog requestBody
+      # Pretty-print JSON for better readability
+      try:
+        let jsonBody = parseJson(requestBody)
+        let prettyBody = jsonBody.pretty(indent = 2)
+        logFileModule.dumpToLog prettyBody
+      except JsonParsingError:
+        # Fallback to original format if JSON parsing fails
+        logFileModule.dumpToLog requestBody
+      except Exception:
+        # Fallback to original format for any other errors
+        logFileModule.dumpToLog requestBody
       logFileModule.dumpToLog COLOR_HTTP & "===================" & COLOR_RESET
       logFileModule.dumpToLog ""
     
