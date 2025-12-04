@@ -91,6 +91,24 @@ proc createReadTool(): Tool =
       "path": {
         "type": "string",
         "description": "The file path to read"
+      },
+      "encoding": {
+        "type": "string",
+        "description": "File encoding: auto, utf-8, utf-16, utf-32, ascii, latin1. Default: auto (detects automatically)",
+        "default": "auto",
+        "enum": ["auto", "utf-8", "utf-16", "utf-32", "ascii", "latin1"]
+      },
+      "max_size": {
+        "type": "integer",
+        "description": "Maximum file size in bytes to read. Default: 1048576 (1MB)",
+        "default": 1048576,
+        "minimum": 1024,
+        "maximum": 52428800
+      },
+      "linerange": {
+        "type": "string",
+        "description": "Line range to extract in format 'start-end' (e.g., '100-200') or 'start' (e.g., '100')",
+        "default": ""
       }
     },
     "required": ["path"]
@@ -227,7 +245,45 @@ proc createFetchTool(): Tool =
     "properties": {
       "url": {
         "type": "string",
-        "description": "The URL to fetch content from"
+        "description": "The URL to fetch content from (HTTP or HTTPS)"
+      },
+      "method": {
+        "type": "string",
+        "description": "HTTP method to use",
+        "enum": ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+        "default": "GET"
+      },
+      "headers": {
+        "type": "object",
+        "description": "Additional HTTP headers to send with the request",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {}
+      },
+      "body": {
+        "type": "string",
+        "description": "Request body for POST, PUT, and PATCH requests",
+        "default": ""
+      },
+      "timeout": {
+        "type": "integer",
+        "description": "Request timeout in milliseconds",
+        "default": 30000,
+        "minimum": 1,
+        "maximum": 120000
+      },
+      "max_size": {
+        "type": "integer",
+        "description": "Maximum response body size in bytes",
+        "default": 10485760,
+        "minimum": 1024,
+        "maximum": 52428800
+      },
+      "convert_to_text": {
+        "type": "boolean",
+        "description": "Automatically extract readable text from HTML, XML, and other web content. When true (default), converts HTML to clean plain text, removing tags and formatting. Recommended for documentation and articles. Set to false to get raw content (useful for APIs, JSON, or binary files).",
+        "default": true
       }
     },
     "required": ["url"]
@@ -236,11 +292,11 @@ proc createFetchTool(): Tool =
     `type`: "function",
     function: ToolFunction(
       name: "fetch",
-      description: "Fetch web content",
+      description: "Fetch web content from HTTP/HTTPS URLs. Large content (>50KB after processing) will be saved to /tmp/niffler/fetch/ directory.",
       parameters: parameters
     )
   )
-  
+
   Tool(
     kind: tkFetch,
     requiresConfirmation: false,

@@ -17,18 +17,20 @@
 
 import std/[json, logging, strformat, strutils]
 import ../types/[agents, config, tool_args, messages]
-import ../core/[config as configModule, task_executor, channels, session as sessionMod]
+import ../core/[config as configModule, task_executor, channels, session as sessionMod, database]
 
 # Thread-local storage for task tool context (set by tool worker)
 var taskToolChannels* {.threadvar.}: ptr ThreadChannels
 var taskToolModelConfig* {.threadvar.}: ModelConfig
 var taskToolSchemas* {.threadvar.}: seq[ToolDefinition]
+var taskToolDatabase* {.threadvar.}: DatabaseBackend
 
-proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig, toolSchemas: seq[ToolDefinition]) =
+proc setTaskToolContext*(channels: ptr ThreadChannels, modelConfig: ModelConfig, toolSchemas: seq[ToolDefinition], database: DatabaseBackend) =
   ## Set the context needed for task execution (called by tool worker)
   taskToolChannels = channels
   taskToolModelConfig = modelConfig
   taskToolSchemas = toolSchemas
+  taskToolDatabase = database
 
 proc executeTask*(args: JsonNode): string {.gcsafe.} =
   ## Execute a task with the specified agent
@@ -95,7 +97,7 @@ proc executeTask*(args: JsonNode): string {.gcsafe.} =
         }
 
       # Execute the task using the task executor
-      let taskResult = task_executor.executeTask(agent, parsedArgs.description, modelConfig, taskToolChannels, taskToolSchemas)
+      let taskResult = task_executor.executeTask(agent, parsedArgs.description, modelConfig, taskToolChannels, taskToolSchemas, taskToolDatabase)
 
       # Return the result
       return $ %*{

@@ -14,13 +14,39 @@
 ## - Error handling for network issues and invalid responses
 ## - Support for redirects and various content types
 
-import std/[strutils, json, httpclient, uri, xmltree, strformat]
+import std/[strutils, json, httpclient, uri, xmltree, strformat, os, times, hashes]
 import pkg/htmlparser
 import ../types/tools
 import ../types/tool_args
 import ../core/constants
 import text_extraction
 
+const
+  MAX_INLINE_CONTENT_SIZE = 50 * 1024  # 50KB default max inline content size
+  FETCH_CACHE_DIR = "/tmp/niffler/fetch"
+
+proc initFetchCacheDir(): string =
+  ## Create fetch cache directory if it doesn't exist
+  try:
+    createDir(FETCH_CACHE_DIR)
+  except:
+    discard  # Directory might already exist
+  return FETCH_CACHE_DIR
+
+proc saveContentToFile*(content: string, url: string): string =
+  ## Save content to file and return the file path
+  let cacheDir = initFetchCacheDir()
+  let timestamp = int(epochTime())  # Current epoch time as int
+  let urlHashStr = $hash(url & $timestamp)  # Add timestamp to make hash unique
+  let urlHash = if urlHashStr.len > 8: urlHashStr[0..7] else: urlHashStr  # Take first 8 chars
+  let filename = fmt"fetch_{timestamp}_{urlHash}.txt"
+  let filepath = cacheDir / filename
+
+  try:
+    writeFile(filepath, content)
+    return filepath
+  except Exception as e:
+    raise newException(IOError, fmt"Failed to save content to file: {e.msg}")
 
 proc htmlToText*(html: string): string =
   ## Convert HTML content to plain text with proper formatting and spacing
@@ -116,19 +142,20 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
     else:
       response = client.request(parsedArgs.url, requestMethod)
 
-    # Check response size
+    # Check response size against maxSize limit (for raw HTTP response)
     if response.body.len > parsedArgs.maxSize:
       raise newToolExecutionError("fetch", "Response size exceeds limit: " & $response.body.len & " > " & $parsedArgs.maxSize, -1, "")
-    
-    # Convert HTML to text if requested
-    var content = response.body
-    var contentType = "text/plain"
 
+    # Determine content type
+    var contentType = "text/plain"
     if response.headers.hasKey("Content-Type"):
       contentType = response.headers["Content-Type"]
 
+    # Process content - convert HTML to text if requested
+    var content = response.body
     var convertedToText = false
     var extractionMethod = "none"
+
     if parsedArgs.convertToText and contentType.toLowerAscii().contains("text/html"):
       let textExtConfig = getCurrentTextExtractionConfig()
       let extractionResult = extractText(response.body, parsedArgs.url, textExtConfig)
@@ -141,7 +168,21 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
         content = htmlToText(response.body)
         convertedToText = true
         extractionMethod = "builtin-fallback"
-    
+
+    # Check if content exceeds inline size limit after processing
+    # If so, save to file and return file path instead of inline content
+    var savedToFile = false
+    var filePath = ""
+
+    if content.len > MAX_INLINE_CONTENT_SIZE:
+      try:
+        filePath = saveContentToFile(content, parsedArgs.url)
+        savedToFile = true
+        # Store file metadata in content field for backward compatibility
+        content = fmt"Content saved to file: {filePath}\n\nFile size: {content.len} bytes\nOriginal URL: {parsedArgs.url}"
+      except Exception as e:
+        raise newToolExecutionError("fetch", fmt"Content too large ({content.len} bytes) and failed to save to file: {e.msg}", -1, "")
+
     # Create result
     let resultJson = %*{
       "url": parsedArgs.url,
@@ -154,9 +195,11 @@ proc executeFetch*(args: JsonNode): string {.gcsafe.} =
       "extraction_method": extractionMethod,
       "method": parsedArgs.`method`,
       "timeout": parsedArgs.timeout,
-      "max_size": parsedArgs.maxSize
+      "max_size": parsedArgs.maxSize,
+      "saved_to_file": savedToFile,
+      "file_path": filePath
     }
-    
+
     return $resultJson
   
   except ToolError as e:

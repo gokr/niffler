@@ -123,6 +123,8 @@ proc applyDefaults*(args: var FetchArgs) =
     args.`method` = "GET"
   if args.headers == nil:
     args.headers = newJObject()
+  # Default convertToText to true for HTML to text conversion
+  args.convertToText = true
 
 proc applyDefaults*(args: var CreateArgs) =
   ## Apply default values for optional CreateArgs fields
