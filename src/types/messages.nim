@@ -84,6 +84,8 @@ type
       # Tool calling support
       enableTools*: bool
       tools*: Option[seq[ToolDefinition]]
+      # Agent identification for tool permission validation
+      agentName*: string  # Empty = main agent with full access
     of arkStreamCancel:
       cancelRequestId*: string
     of arkShutdown:
