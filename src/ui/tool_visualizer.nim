@@ -697,10 +697,23 @@ proc createToolResultSummary*(toolName: string, toolResult: string, success: boo
         return "Command executed"
   
   of "fetch":
-    let lines = toolResult.splitLines()
-    if lines.len > 0:
-      return fmt"Fetched content ({lines.len} lines)"
-    else:
+    try:
+      let resultJson = parseJson(toolResult)
+      if resultJson.hasKey("saved_to_file") and resultJson["saved_to_file"].getBool():
+        let path = resultJson["file_path"].getStr()
+        return fmt"Fetched content (saved to {path.extractFilename()})"
+      elif resultJson.hasKey("content_length"):
+        let contentLength = resultJson["content_length"].getBiggestInt()
+        let unit = if contentLength > 1024 * 1024: "MB"
+                  elif contentLength > 1024: "KB"
+                  else: "bytes"
+        let size = if unit == "MB": contentLength div (1024 * 1024)
+                   elif unit == "KB": contentLength div 1024
+                   else: contentLength
+        return fmt"Fetched content ({size} {unit})"
+      else:
+        return "Fetch completed"
+    except:
       return "Fetch completed"
   
   of "todolist":
