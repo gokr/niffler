@@ -211,7 +211,7 @@ proc handleAgentRequest*(state: var MasterState, input: string): tuple[handled: 
     state.currentAgent = targetAgent
 
   # Send to agent asynchronously - responses will arrive via NATS listener
-  let (success, requestId, error) = state.sendToAgentAsync(targetAgent, parsed.input)
+  let (success, _, error) = state.sendToAgentAsync(targetAgent, parsed.input)
 
   if success:
     # Request sent successfully - no output needed, responses will stream in

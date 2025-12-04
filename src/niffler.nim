@@ -3,25 +3,13 @@
 ## Uses parseopt for flexible command-line argument parsing with full control
 ## over subcommands and option handling.
 
-import std/[os, logging, parseopt, strutils, strformat]
+import std/[os, logging, parseopt]
 import core/[config, database, session, app]
-import ui/[cli, agent_cli, nats_monitor, master_cli]
+import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
-import core/command_parser
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
 
-proc init(configPath: string = "") =
-  ## Initialize Niffler configuration at specified path or default location
-  let path = if configPath.len == 0: getDefaultConfigPath() else: configPath
-  initializeConfigManager()
-
-proc showModels() =
-  ## List available models and their base URLs from configuration
-  let config = loadConfig()
-  echo "Available models:"
-  for model in config.models:
-    echo "  ", model.nickname, " (", model.baseUrl, ")"
 
 type
   CliArgs = object
