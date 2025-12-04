@@ -1,27 +1,27 @@
 ## Task Executor
 ##
 ## This module implements isolated task execution for autonomous agents.
-## Each task runs with its own message history and restricted tool access.
+## Each task runs with its own conversation and persists to the database.
 ##
 ## Key Features:
-## - Isolated execution environment per task
-## - Agent-specific system prompt
-## - Separate message history (not mixed with main conversation)
-## - Tool access validation via AgentContext
-## - Result condensation via LLM summary
+## - Creates isolated conversation for each task
+## - Delegates tool execution to the API worker's agentic loop
+## - Database persistence for all messages
+## - Generates summary after task completion
+## - Switches back to previous conversation when done
 ##
 ## Architecture:
-## - Tasks execute in the same thread as the main conversation for simplicity
-## - Uses existing API worker and tool worker (thread-safe)
-## - Builds task-specific system prompt from agent definition
-## - Collects metrics (tokens, tool calls, artifacts)
-## - Asks LLM to summarize results before returning to main agent
+## - Uses the API worker's executeAgenticLoop for all tool calling
+## - Creates a new conversation, switches to it, executes, switches back
+## - Summary generation happens after task completion
 
-import std/[logging, strformat, times, options, os, strutils, sets, json, algorithm]
-import ../types/[messages, config, agents]
+import std/[logging, strformat, times, options, os, strutils, sets, json, algorithm, tables]
+import ../types/[messages, config, agents, mode]
 import channels
 import config as configModule
-import completion_detection
+import database
+import conversation_manager
+import ../ui/[tool_visualizer, output_shared, response_templates]
 
 proc extractArtifacts*(messages: seq[Message]): seq[string] =
   ## Extract file paths from tool calls in the conversation
@@ -121,7 +121,8 @@ Keep the summary brief (2-4 sentences) but informative."""
     baseUrl: modelConfig.baseUrl,
     apiKey: apiKey,
     enableTools: false,  # No tools needed for summarization
-    tools: some(toolSchemas)
+    tools: some(toolSchemas),
+    agentName: ""  # No agent restriction for summary
   )
 
   if not trySendAPIRequest(channels, request):
@@ -162,8 +163,10 @@ Keep the summary brief (2-4 sentences) but informative."""
 
 proc executeTask*(agent: AgentDefinition, description: string,
                   modelConfig: ModelConfig, channels: ptr ThreadChannels,
-                  toolSchemas: seq[ToolDefinition]): TaskResult =
-  ## Execute a task with the given agent in an isolated context
+                  toolSchemas: seq[ToolDefinition],
+                  database: DatabaseBackend): TaskResult =
+  ## Execute a task with the given agent in an isolated conversation
+  ## Creates a new conversation, delegates to API worker, generates summary, switches back
   debug(fmt("Starting task execution with agent '{agent.name}': {description}"))
 
   try:
@@ -172,10 +175,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
     if apiKey.len == 0:
       # Check if this is a local server that doesn't require authentication
       let baseUrl = modelConfig.baseUrl.toLower()
-      if baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1"):
-        # Local server - use empty string as valid key
-        discard
-      else:
+      if not (baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1")):
         # Remote server - API key required but not found
         return TaskResult(
           success: false,
@@ -186,224 +186,144 @@ proc executeTask*(agent: AgentDefinition, description: string,
           error: fmt("No API key configured for model '{modelConfig.nickname}'")
         )
 
+    # Save current conversation ID to restore later
+    let previousConvId = getCurrentConversationId()
+    debug(fmt"Saved previous conversation: {previousConvId}")
+
+    # Create a task-specific conversation
+    let taskTitle = fmt"Task: {description[0..min(50, description.len-1)]}..."
+    let taskConvOpt = createConversation(database, taskTitle, amCode, modelConfig.nickname)
+
+    if taskConvOpt.isNone():
+      return TaskResult(
+        success: false,
+        summary: "",
+        artifacts: @[],
+        toolCalls: 0,
+        tokensUsed: 0,
+        error: "Failed to create task conversation"
+      )
+
+    let taskConv = taskConvOpt.get()
+    discard switchToConversation(database, taskConv.id)
+    debug(fmt"Created and switched to task conversation: {taskConv.id}")
+
     # Build task-specific system prompt
     let systemPrompt = buildTaskSystemPrompt(agent, description)
 
-    # Create initial messages for the task
+    # Build initial messages
     var initialMessages: seq[Message] = @[]
+    initialMessages.add(Message(role: mrSystem, content: systemPrompt))
+    initialMessages.add(Message(role: mrUser, content: description))
 
-    # Add system prompt
-    initialMessages.add(Message(
-      role: mrSystem,
-      content: systemPrompt
-    ))
+    # Add user message to conversation (persists to DB)
+    discard conversation_manager.addUserMessage(description)
 
-    # Add task description as user message
-    initialMessages.add(Message(
-      role: mrUser,
-      content: description
-    ))
+    # Filter tool schemas to only include agent's allowed tools
+    var agentToolSchemas: seq[ToolDefinition] = @[]
+    for tool in toolSchemas:
+      if tool.function.name in agent.allowedTools:
+        agentToolSchemas.add(tool)
 
-    # Execute task conversation loop (max 10 turns)
-    debug("Executing task conversation")
-    var conversationMessages = initialMessages
-    var totalTokens = 0
-    var totalToolCalls = 0
-    let maxTurns = getMaxTurnsForAgent(some(agent))
-    var turn = 0
-    var taskComplete = false
+    # Create and send API request - API worker will handle tool execution
+    let requestId = fmt("task_{agent.name}_{epochTime()}")
+    let request = APIRequest(
+      kind: arkChatRequest,
+      requestId: requestId,
+      messages: initialMessages,
+      model: modelConfig.model,
+      modelNickname: modelConfig.nickname,
+      maxTokens: 8192,
+      temperature: 0.7,
+      baseUrl: modelConfig.baseUrl,
+      apiKey: apiKey,
+      enableTools: agentToolSchemas.len > 0,
+      tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition]),
+      agentName: agent.name  # For tool permission validation
+    )
 
-    while turn < maxTurns and not taskComplete:
-      turn.inc()
-      debug(fmt("Task turn {turn}/{maxTurns}"))
-
-      # Send request via channels
-      let requestId = fmt("task_{agent.name}_{turn}_{epochTime()}")
-      let request = APIRequest(
-        kind: arkChatRequest,
-        requestId: requestId,
-        messages: conversationMessages,
-        model: modelConfig.model,
-        modelNickname: modelConfig.nickname,
-        maxTokens: 8192,
-        temperature: 0.7,
-        baseUrl: modelConfig.baseUrl,
-        apiKey: apiKey,
-        enableTools: true,  # Enable tools for task execution
-        tools: some(toolSchemas)
+    if not trySendAPIRequest(channels, request):
+      # Restore previous conversation
+      if previousConvId > 0:
+        discard switchToConversation(database, previousConvId)
+      return TaskResult(
+        success: false,
+        summary: "",
+        artifacts: @[],
+        toolCalls: 0,
+        tokensUsed: 0,
+        error: "Failed to send API request"
       )
 
-      if not trySendAPIRequest(channels, request):
-        return TaskResult(
-          success: false,
-          summary: "",
-          artifacts: @[],
-          toolCalls: totalToolCalls,
-          tokensUsed: totalTokens,
-          error: "Failed to send API request"
-        )
+    # Wait for completion - API worker handles all tool execution via executeAgenticLoop
+    var totalTokens = 0
+    var totalToolCalls = 0
+    var responseComplete = false
+    var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
+    var outputAfterToolCall = false
+    var lastContent = ""
 
-      # Collect response
-      var assistantContent = ""
-      var toolCalls: seq[LLMToolCall] = @[]
-      var responseComplete = false
-      var attempts = 0
-      const maxAttempts = 3000  # 5 minutes per turn
+    # Timeout configuration (default 5 minutes per request, but allow much longer for tasks)
+    let timeoutSeconds = getGlobalConfig().agentTimeoutSeconds.get(300) * 2  # Double for tasks
+    let maxAttempts = (timeoutSeconds * 1000) div 100  # Convert to number of 100ms attempts
 
-      while attempts < maxAttempts and not responseComplete:
-        var response: APIResponse
-        if tryReceiveAPIResponse(channels, response):
-          if response.requestId == requestId:
-            case response.kind:
-            of arkReady:
-              debug("API ready")
-            of arkStreamChunk:
-              assistantContent.add(response.content)
-              # Check for tool calls in chunk
-              if response.toolCalls.isSome():
-                for tc in response.toolCalls.get():
-                  toolCalls.add(tc)
-                  totalToolCalls.inc()
-                  debug(fmt("Tool call: {tc.function.name}"))
-            of arkStreamComplete:
-              let usage = response.usage
-              totalTokens += usage.inputTokens + usage.outputTokens
-              responseComplete = true
-            of arkStreamError:
-              return TaskResult(
-                success: false,
-                summary: "",
-                artifacts: @[],
-                toolCalls: totalToolCalls,
-                tokensUsed: totalTokens,
-                error: fmt("API error: {response.error}")
-              )
-            else:
-              discard
+    var attempts = 0
+    while attempts < maxAttempts and not responseComplete:
+      var response: APIResponse
+      if tryReceiveAPIResponse(channels, response):
+        if response.requestId == requestId:
+          case response.kind:
+          of arkReady:
+            debug("API ready for task")
+          of arkStreamChunk:
+            if response.content.len > 0:
+              lastContent.add(response.content)
+              # Display streaming content
+              writeStreamingChunk(response.content)
+            # Count tool calls from chunks
+            if response.toolCalls.isSome():
+              totalToolCalls += response.toolCalls.get().len
+          of arkToolCallRequest, arkToolCallResult:
+            # Display tool execution progress
+            handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
+          of arkStreamComplete:
+            finishStreaming()
+            totalTokens = response.usage.totalTokens
+            responseComplete = true
+            debug(fmt"Task completed: {totalTokens} tokens, {totalToolCalls} tool calls")
+          of arkStreamError:
+            finishStreaming()
+            # Restore previous conversation
+            if previousConvId > 0:
+              discard switchToConversation(database, previousConvId)
+            return TaskResult(
+              success: false,
+              summary: "",
+              artifacts: @[],
+              toolCalls: totalToolCalls,
+              tokensUsed: totalTokens,
+              error: fmt("API error: {response.error}")
+            )
 
-        sleep(100)
-        attempts.inc()
+      sleep(100)
+      attempts.inc()
 
-      # Exit loop if we have tool calls (don't wait for arkStreamComplete)
-      if toolCalls.len > 0:
-        debug(fmt"Exited response loop with {toolCalls.len} tool calls (will execute)")
-        break
-
-      if not responseComplete and attempts >= maxAttempts:
-        return TaskResult(
-          success: false,
-          summary: "",
-          artifacts: @[],
-          toolCalls: totalToolCalls,
-          tokensUsed: totalTokens,
-          error: "Turn timed out"
-        )
-
-      # Add assistant message to history (always add if has content or tool calls)
-      if assistantContent.len > 0 or toolCalls.len > 0:
-        conversationMessages.add(Message(
-          role: mrAssistant,
-          content: assistantContent,
-          toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
-        ))
-
-      # Check for completion signal
-      let completionSignal = detectCompletionSignal(assistantContent)
-      if completionSignal != csNone:
-        debug(fmt"Completion signal detected in task: {completionSignal}")
-
-      # Check if task is complete (completion signal OR no tool calls)
-      taskComplete = completionSignal != csNone or toolCalls.len == 0
-
-      if not taskComplete:
-        # Execute tools and add results to conversation
-        let agentContext = AgentContext(
-          isMainAgent: false,
-          agent: agent
-        )
-
-        for toolCall in toolCalls:
-          debug(fmt("Executing tool: {toolCall.function.name}"))
-
-          # Validate tool is allowed for this agent
-          if not isToolAllowed(agentContext, toolCall.function.name):
-            let allowedTools = agent.allowedTools.join(", ")
-            let errorMsg = fmt("Tool '{toolCall.function.name}' not allowed for agent '{agent.name}'. Allowed tools: {allowedTools}")
-            warn(errorMsg)
-            conversationMessages.add(Message(
-              role: mrTool,
-              content: fmt("Error: {errorMsg}"),
-              toolCallId: some(toolCall.id)
-            ))
-            continue
-
-          # Send tool request to tool worker
-          let toolRequest = ToolRequest(
-            kind: trkExecute,
-            requestId: toolCall.id,
-            toolName: toolCall.function.name,
-            arguments: toolCall.function.arguments,
-            agentName: agent.name  # Pass agent name for permission validation
-          )
-
-          if not trySendToolRequest(channels, toolRequest):
-            warn(fmt("Failed to send tool request for {toolCall.function.name}"))
-            conversationMessages.add(Message(
-              role: mrTool,
-              content: "Error: Failed to send tool request",
-              toolCallId: some(toolCall.id)
-            ))
-            continue
-
-          # Wait for tool response with timeout
-          var toolResponseReceived = false
-          var toolAttempts = 0
-          const maxToolAttempts = 3000  # 5 minutes per tool
-
-          while toolAttempts < maxToolAttempts and not toolResponseReceived:
-            let maybeResponse = tryReceiveToolResponse(channels)
-            if maybeResponse.isSome():
-              let toolResponse = maybeResponse.get()
-              if toolResponse.requestId == toolCall.id:
-                # Add tool result to conversation
-                let toolContent = if toolResponse.kind == trkResult:
-                  toolResponse.output
-                else:
-                  fmt("Error: {toolResponse.error}")
-
-                conversationMessages.add(Message(
-                  role: mrTool,
-                  content: toolContent,
-                  toolCallId: some(toolCall.id)
-                ))
-
-                toolResponseReceived = true
-                debug(fmt("Tool {toolCall.function.name} completed successfully"))
-                break
-
-            sleep(100)
-            toolAttempts.inc()
-
-          if not toolResponseReceived:
-            warn(fmt("Tool execution timed out for {toolCall.function.name}"))
-            conversationMessages.add(Message(
-              role: mrTool,
-              content: "Error: Tool execution timed out",
-              toolCallId: some(toolCall.id)
-            ))
-
-        # Continue conversation with tool results (don't mark as complete)
-        taskComplete = false
-
-    if not taskComplete:
+    if not responseComplete:
+      # Restore previous conversation
+      if previousConvId > 0:
+        discard switchToConversation(database, previousConvId)
       return TaskResult(
         success: false,
         summary: "",
         artifacts: @[],
         toolCalls: totalToolCalls,
         tokensUsed: totalTokens,
-        error: fmt("Task did not complete within {maxTurns} turns")
+        error: "Task timed out"
       )
+
+    # Load conversation from database for summary generation
+    let conversationMessages = getConversationContext()
+    debug(fmt"Loaded {conversationMessages.len} messages for summary")
 
     # Generate summary of results
     debug("Generating summary")
@@ -412,6 +332,11 @@ proc executeTask*(agent: AgentDefinition, description: string,
     # Extract artifacts (file paths) from conversation
     let artifacts = extractArtifacts(conversationMessages)
     debug(fmt("Extracted {artifacts.len} artifacts: {artifacts.join(\", \")}"))
+
+    # Restore previous conversation
+    if previousConvId > 0:
+      discard switchToConversation(database, previousConvId)
+      debug(fmt"Restored previous conversation: {previousConvId}")
 
     return TaskResult(
       success: true,

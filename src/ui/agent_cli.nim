@@ -17,8 +17,8 @@
 ## 4. Send NatsResponse messages (streaming)
 ## 5. Send final response with done=true
 
-import std/[logging, strformat, times, os, options, strutils, json, random, tables]
-import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file, completion_detection]
+import std/[logging, strformat, times, os, options, strutils, json, tables]
+import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
 import ../api/[api]
@@ -221,9 +221,9 @@ proc ensureAgentConversation(state: var AgentState): bool =
 
   return false
 
-proc executeAskMode(state: var AgentState, prompt: string, requestId: string): tuple[success: bool, summary: string] =
+proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple[success: bool, response: string] =
   ## Execute Ask mode: continue conversation with context
-  ## Displays streaming output to agent terminal, sends completion to master
+  ## Returns the last assistant message (no summary generation)
 
   # Ensure we have an active conversation
   if not ensureAgentConversation(state):
@@ -248,171 +248,123 @@ proc executeAskMode(state: var AgentState, prompt: string, requestId: string): t
   let userMsg = conversation_manager.addUserMessage(prompt)
   messages.add(userMsg)
 
-  echo ""
-
   # Prepare tool schemas filtered by agent's allowed tools
   var agentToolSchemas: seq[ToolDefinition] = @[]
   for tool in state.toolSchemas:
     if tool.function.name in state.definition.allowedTools:
       agentToolSchemas.add(tool)
 
-  # Conversation loop (handle tool calls)
-  let maxTurns = getMaxTurnsForAgent(some(state.definition))
-  var turn = 0
-  var totalTokens = 0
-  var totalToolCalls = 0
-  var finalResponse = ""
+  # Create and send API request - API worker will handle all tool execution
+  let request = APIRequest(
+    kind: arkChatRequest,
+    requestId: requestId,
+    messages: messages,
+    model: state.modelConfig.model,
+    modelNickname: state.modelConfig.nickname,
+    maxTokens: 8192,
+    temperature: 0.7,
+    baseUrl: state.modelConfig.baseUrl,
+    apiKey: apiKey,
+    enableTools: agentToolSchemas.len > 0,
+    tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition]),
+    agentName: state.name  # For tool permission validation
+  )
+
+  if not trySendAPIRequest(state.channels, request):
+    return (false, "Failed to send API request")
+
+  # Wait for completion, collecting the response
+  var lastContent = ""
+  var responseComplete = false
   var pendingToolCalls: Table[string, CompactToolRequestInfo] = initTable[string, CompactToolRequestInfo]()
   var outputAfterToolCall = false
+  var isInThinkingBlock = false
+  var attempts = 0
 
-  while turn < maxTurns:
-    turn.inc()
-    debug(fmt"Ask turn {turn}/{maxTurns}")
+  # Calculate timeout from config (default 5 minutes = 300 seconds)
+  let timeoutSeconds = getGlobalConfig().agentTimeoutSeconds.get(300)
+  let maxAttempts = (timeoutSeconds * 1000) div 100  # Convert to number of 100ms attempts
 
-    # Create and send API request
-    let turnRequestId = fmt"ask_{state.name}_{turn}_{rand(100000)}"
-    let request = APIRequest(
-      kind: arkChatRequest,
-      requestId: turnRequestId,
-      messages: messages,
-      model: state.modelConfig.model,
-      modelNickname: state.modelConfig.nickname,
-      maxTokens: 8192,
-      temperature: 0.7,
-      baseUrl: state.modelConfig.baseUrl,
-      apiKey: apiKey,
-      enableTools: agentToolSchemas.len > 0,
-      tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition])
-    )
+  while attempts < maxAttempts and not responseComplete:
+    var response: APIResponse
+    if tryReceiveAPIResponse(state.channels, response):
+      if response.requestId == requestId:
+        case response.kind:
+        of arkReady:
+          discard
+        of arkStreamChunk:
+          # Handle thinking content display (like CLI)
+          if response.thinkingContent.isSome():
+            let thinkingContent = response.thinkingContent.get()
+            let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
 
-    if not trySendAPIRequest(state.channels, request):
-      return (false, "Failed to send API request")
+            if not isInThinkingBlock:
+              # First thinking chunk - show emoji prefix (flush immediately to avoid buffering issues)
+              flushStreamingBuffer(redraw = false)
+              let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
+              let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+              stdout.write(emojiPrefix & styledContent)
+              stdout.flushFile()
+              isInThinkingBlock = true
+            else:
+              # Continuing thinking - write directly without buffering
+              let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
+              stdout.write(styledContent)
+              stdout.flushFile()
 
-    # Collect and display streaming response
-    var assistantContent = ""
-    var toolCalls: seq[LLMToolCall] = @[]
-    var responseComplete = false
-    var isInThinkingBlock = false
-    var attempts = 0
-
-    # Calculate timeout from config (default 5 minutes = 300 seconds)
-    let timeoutSeconds = getGlobalConfig().agentTimeoutSeconds.get(300)
-    let maxAttempts = (timeoutSeconds * 1000) div 10  # Convert to number of 10ms attempts
-
-    while attempts < maxAttempts and not responseComplete:
-      var response: APIResponse
-      if tryReceiveAPIResponse(state.channels, response):
-        if response.requestId == turnRequestId:
-          case response.kind:
-          of arkReady:
-            discard
-          of arkStreamChunk:
-            # Handle thinking content display (like CLI)
-            if response.thinkingContent.isSome():
-              let thinkingContent = response.thinkingContent.get()
-              let isEncrypted = response.isEncrypted.isSome() and response.isEncrypted.get()
-
-              if not isInThinkingBlock:
-                # First thinking chunk - show emoji prefix (flush immediately to avoid buffering issues)
-                flushStreamingBuffer(redraw = false)
-                let emojiPrefix = if isEncrypted: "🔒 " else: "🤔 "
-                let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-                stdout.write(emojiPrefix & styledContent)
-                stdout.flushFile()
-                isInThinkingBlock = true
-              else:
-                # Continuing thinking - write directly without buffering
-                let styledContent = formatWithStyle(thinkingContent, currentTheme.thinking)
-                stdout.write(styledContent)
-                stdout.flushFile()
-
-            # Display regular content
-            if response.content.len > 0:
-              if isInThinkingBlock:
-                # Transition from thinking to regular content
-                finishStreaming()
-                writeCompleteLine("")
-                isInThinkingBlock = false
-
-              assistantContent.add(response.content)
-              writeStreamingChunk(response.content)
-
-            # Collect tool calls
-            if response.toolCalls.isSome():
-              for tc in response.toolCalls.get():
-                toolCalls.add(tc)
-                totalToolCalls.inc()
-
-          of arkStreamComplete:
-            finishStreaming()
-            if assistantContent.len > 0:
+          # Display regular content
+          if response.content.len > 0:
+            if isInThinkingBlock:
+              # Transition from thinking to regular content
+              finishStreaming()
               writeCompleteLine("")
-            totalTokens += response.usage.inputTokens + response.usage.outputTokens
-            responseComplete = true
-          of arkStreamError:
-            finishStreaming()
-            return (false, fmt"API error: {response.error}")
-          of arkToolCallRequest, arkToolCallResult:
-            # Use shared template for consistent tool call display
-            handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
+              isInThinkingBlock = false
 
-      sleep(10)
-      attempts.inc()
+            lastContent.add(response.content)
+            writeStreamingChunk(response.content)
 
-    if not responseComplete:
-      return (false, "Response timed out")
+        of arkToolCallRequest, arkToolCallResult:
+          # Use shared template for consistent tool call display
+          handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
 
-    # Store final response for summary
-    finalResponse = assistantContent
+        of arkStreamComplete:
+          finishStreaming()
+          if lastContent.len > 0:
+            writeCompleteLine("")
+          responseComplete = true
+        of arkStreamError:
+          finishStreaming()
+          return (false, response.error)
 
-    # Build assistant message for next turn (API worker already persisted to DB)
-    if assistantContent.len > 0:
-      let assistantMsg = Message(
-        role: mrAssistant,
-        content: assistantContent,
-        toolCalls: if toolCalls.len > 0: some(toolCalls) else: none(seq[LLMToolCall])
-      )
-      messages.add(assistantMsg)
-      debug(fmt"Added assistant message to in-memory conversation (already persisted by API worker)")
+    sleep(100)
+    attempts.inc()
 
-    # Check for completion signal
-    let completionSignal = detectCompletionSignal(assistantContent)
-    if completionSignal != csNone:
-      debug(fmt"Completion signal detected in ask mode: {completionSignal}")
-      break
+  if not responseComplete:
+    return (false, "Response timed out")
 
-    # If no tool calls, conversation turn is complete
-    if toolCalls.len == 0:
-      break
+  # Return the last assistant response (already persisted to DB by API worker)
+  return (true, lastContent)
 
-    # Let api.nim handle tool execution with duplicate detection
-    # Create follow-up request with tool results
-    let followUpRequestId = fmt"ask_followup_{state.name}_{turn}_{rand(100000)}"
-    let followUpRequest = APIRequest(
-      kind: arkChatRequest,
-      requestId: followUpRequestId,
-      messages: messages,
-      model: state.modelConfig.model,
-      maxTokens: state.modelConfig.maxTokens.get(4096),
-      temperature: state.modelConfig.temperature.get(0.7),
-      tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition])
-    )
+proc applyModeChange(state: var AgentState, mode: AgentMode) =
+  ## Apply mode change to current conversation (persisted to DB)
+  let convId = getCurrentConversationId()
+  if convId > 0:
+    updateConversationMode(state.database, convId, mode)
+    debug(fmt"Applied mode change to {mode}")
 
-    # Send to API worker for next turn
-    if not trySendAPIRequest(state.channels, followUpRequest):
-      return (false, "Failed to send follow-up request to API worker")
+proc applyModelChange(state: var AgentState, modelNickname: string): bool =
+  ## Apply model change to current conversation (persisted to DB)
+  ## Returns true if model was found and applied
+  let modelOpt = getModel(modelNickname)
+  if modelOpt.isNone():
+    return false
 
-    # Reset for next turn
-    assistantContent = ""
-    toolCalls = @[]
-    isInThinkingBlock = false
-
-  # Generate summary of results like task mode does
-  debug("Generating summary for ask mode")
-  let summary = task_executor.generateSummary(messages, state.modelConfig, state.channels, apiKey, state.toolSchemas)
-
-  info(fmt"Ask completed: {totalToolCalls} tool calls, {totalTokens} tokens")
-  return (true, summary)
+  state.modelConfig = modelOpt.get()
+  let convId = getCurrentConversationId()
+  if convId > 0:
+    updateConversationModel(state.database, convId, modelNickname)
+  debug(fmt"Applied model change to {modelNickname}")
+  return true
 
 proc processRequest(state: var AgentState, request: NatsRequest) =
   ## Process an incoming request from master
@@ -420,84 +372,116 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
   state.requestCount.inc()
 
   try:
-    # Check if input is an agent command (like /info, /conv, etc.)
-    if request.input.strip().startsWith("/"):
-      let (command, args) = commands.parseCommand(request.input)
+    let input = request.input.strip()
 
-      # Check if this is an agent command (not a routing command like /plan, /task)
-      if command.len > 0 and isAgentCommand(command):
-        info(fmt"Executing agent command: /{command}")
+    # Check for pure local commands first (commands that execute immediately)
+    if input.startsWith("/"):
+      let (command, args) = commands.parseCommand(input)
+      const localCommands = ["info", "conv", "new", "context", "inspect", "condense"]
+
+      # Handle pure local commands
+      if command in localCommands:
+        info(fmt"Executing local command: /{command}")
         sendStatusUpdate(state, request.requestId, fmt"Executing command: /{command}")
 
-        # Execute the command in agent context
         var sess = initSession()
         var currentModel = state.modelConfig
         let commandResult = executeCommand(command, args, sess, currentModel)
-
-        # Send the command output back to master
         sendResponse(state, request.requestId, commandResult.message, done = true)
 
-        # Update model if changed
+        # Update model if command changed it
         if currentModel.nickname != state.modelConfig.nickname:
           state.modelConfig = currentModel
 
         info(fmt"Command /{command} executed successfully")
         return
 
-    # Parse routing commands from input (/plan, /task, /model)
-    let parsed = command_parser.parseCommand(request.input)
+      # Handle /model alone (show current model)
+      if command == "model" and args.len == 0:
+        sendResponse(state, request.requestId,
+          fmt"Current model: {state.modelConfig.nickname} ({state.modelConfig.model})", done = true)
+        return
 
-    # Send status update
-    sendStatusUpdate(state, request.requestId, "Processing request...")
+      # Handle /plan or /code alone (just set mode, no prompt)
+      if command in ["plan", "code"] and args.len == 0:
+        let newMode = if command == "plan": amPlan else: amCode
+        applyModeChange(state, newMode)
+        sendResponse(state, request.requestId,
+          fmt"Switched to {command} mode", done = true)
+        return
 
-    # Handle mode switches
+    # Parse routing commands from input (/plan, /task, /model, /code + prompt)
+    let parsed = command_parser.parseCommand(input)
+
+    # Apply state changes (persisted to conversation in DB)
+    var stateChanged = false
+
     if parsed.mode.isSome():
-      let modeName = $parsed.mode.get()
-      sendStatusUpdate(state, request.requestId, fmt"Switching to {modeName} mode")
+      let mode = parsed.mode.get()
+      let agentMode = if mode == emPlan: amPlan else: amCode
+      applyModeChange(state, agentMode)
+      sendStatusUpdate(state, request.requestId, fmt"Switched to {mode} mode")
+      stateChanged = true
 
-    # Handle model switches
     if parsed.model.isSome():
       let modelNickname = parsed.model.get()
-      sendStatusUpdate(state, request.requestId, fmt"Switching to model {modelNickname}")
-
-      # TODO: Update modelConfig based on nickname
-      # For now, just send status
-
-    # Execute the request based on conversation type
-    if parsed.conversationType.isSome() and parsed.conversationType.get() == ctTask:
-      # Task mode: Fresh isolated context
-      sendStatusUpdate(state, request.requestId, "Executing task (fresh context)...")
-
-      let taskResult = executeTask(
-        state.definition,
-        parsed.prompt,
-        state.modelConfig,
-        state.channels,
-        state.toolSchemas
-      )
-
-      if taskResult.success:
-        sendResponse(state, request.requestId, taskResult.summary, done = true)
-        info(fmt"Task completed successfully: {taskResult.toolCalls} tool calls, {taskResult.tokensUsed} tokens")
+      if applyModelChange(state, modelNickname):
+        sendStatusUpdate(state, request.requestId, fmt"Switched to model {modelNickname}")
+        stateChanged = true
       else:
-        sendResponse(state, request.requestId, fmt"Task failed: {taskResult.error}", done = true)
-        warn(fmt"Task failed: {taskResult.error}")
+        sendResponse(state, request.requestId,
+          fmt"Unknown model: {modelNickname}", done = true)
+        return
+
+    # Check if we have work to do
+    let hasPrompt = parsed.prompt.len > 0
+    let isTask = parsed.conversationType.isSome() and parsed.conversationType.get() == ctTask
+
+    if hasPrompt or isTask:
+      # Execute the request based on conversation type
+      if isTask:
+        # Task mode: Fresh isolated context
+        sendStatusUpdate(state, request.requestId, "Executing task (fresh context)...")
+
+        let taskResult = executeTask(
+          state.definition,
+          parsed.prompt,
+          state.modelConfig,
+          state.channels,
+          state.toolSchemas,
+          state.database
+        )
+
+        if taskResult.success:
+          sendResponse(state, request.requestId, taskResult.summary, done = true)
+          info(fmt"Task completed successfully: {taskResult.toolCalls} tool calls, {taskResult.tokensUsed} tokens")
+        else:
+          sendResponse(state, request.requestId, fmt"Task failed: {taskResult.error}", done = true)
+          warn(fmt"Task failed: {taskResult.error}")
+
+      else:
+        # Ask mode: Continue/create conversation
+        sendStatusUpdate(state, request.requestId, "Processing ask (building context)...")
+
+        let askResult = executeAsk(state, parsed.prompt, request.requestId)
+
+        if askResult.success:
+          sendResponse(state, request.requestId, askResult.response, done = true)
+          echo ""
+          echo "[COMPLETED ✓]"
+        else:
+          sendResponse(state, request.requestId, fmt"Ask failed: {askResult.response}", done = true)
+          echo ""
+          echo fmt"[FAILED ✗] {askResult.response}"
+          warn(fmt"Ask failed: {askResult.response}")
+
+    elif stateChanged:
+      # Just state changes were applied, confirm them
+      sendResponse(state, request.requestId, "Settings updated", done = true)
 
     else:
-      # Ask mode: Continue/create conversation
-      sendStatusUpdate(state, request.requestId, "Processing ask (building context)...")
-
-      let askResult = executeAskMode(state, parsed.prompt, request.requestId)
-
-      if askResult.success:
-        sendResponse(state, request.requestId, askResult.summary, done = true)
-        echo ""
-        echo "[COMPLETED ✓]"
-      else:
-        sendResponse(state, request.requestId, fmt"Ask failed: {askResult.summary}", done = true)
-        echo ""
-        echo fmt"[FAILED ✗] {askResult.summary}"
-        warn(fmt"Ask failed: {askResult.summary}")
+      # Nothing to do (empty input after parsing)
+      sendResponse(state, request.requestId, "No action specified", done = true)
 
   except Exception as e:
     error(fmt"Error processing request: {e.msg}")
@@ -640,7 +624,8 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
         task,
         state.modelConfig,
         state.channels,
-        state.toolSchemas
+        state.toolSchemas,
+        state.database
       )
 
       # Display results
