@@ -184,7 +184,7 @@ proc extractText*(html: string, url: string, config: TextExtractionConfig): Extr
 proc getDefaultTextExtractionConfig*(): TextExtractionConfig =
   ## Get default text extraction configuration
   TextExtractionConfig(
-    enabled: false,
+    enabled: true,  # Enable trafilatura by default for better text extraction
     command: "trafilatura -u {url}",
     mode: temUrl,
     fallbackToBuiltin: true
