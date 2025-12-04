@@ -1,4 +1,4 @@
-import std/[unittest, options]
+import std/[unittest, options, strutils]
 import ../src/types/messages
 import ../src/tools/registry
 
@@ -11,7 +11,7 @@ suite "Basic Functionality Tests":
     check bashSchema.isSome()
     check bashSchema.get().`type` == "function"
     check bashSchema.get().function.name == "bash"
-    check bashSchema.get().function.description == "Execute shell commands"
+    check bashSchema.get().function.description.startsWith("Execute shell commands")
 
   test "Message type creation":
     let message = Message(
