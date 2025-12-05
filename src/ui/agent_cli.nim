@@ -184,6 +184,10 @@ proc ensureAgentConversation(state: var AgentState): bool =
     for attempt in 1..maxRetries:
       try:
         discard switchToConversation(state.database, currentConvId)
+        # Restore mode from conversation to initialize thread-local state
+        let convOpt = getConversationById(state.database, currentConvId)
+        if convOpt.isSome():
+          restoreModeWithProtection(convOpt.get().mode)
         return true
       except Exception as e:
         if "locked" in e.msg and attempt < maxRetries:
@@ -208,6 +212,8 @@ proc ensureAgentConversation(state: var AgentState): bool =
 
       # Switch session to this conversation (updates global session tracking)
       discard switchToConversation(state.database, conv.id)
+      # Restore mode from conversation to initialize thread-local state
+      restoreModeWithProtection(conv.mode)
 
       info(fmt"Created new conversation {conv.id} for agent '{state.name}'")
       return true
