@@ -153,8 +153,8 @@ suite "Thinking Token Integration Tests":
       let conversationId = startConversation(testDb, "test-session-003", "Test conversation for streaming")
       check conversationId > 0
 
-      # Initialize global session for this conversation (required for streaming functions)
-      initSessionManager(testDb.pool)
+      # Switch to the conversation to establish current session context
+      check switchToConversation(testDb, conversationId) == true
 
       # Test storing thinking token from streaming
       let thinkingContent = "I need to carefully consider the user's request and break it down into steps..."
@@ -175,8 +175,8 @@ suite "Thinking Token Integration Tests":
       let conversationId = startConversation(testDb, "test-session-004", "Test conversation for encrypted tokens")
       check conversationId > 0
 
-      # Initialize global session for this conversation (required for streaming functions)
-      initSessionManager(testDb.pool)
+      # Switch to the conversation to establish current session context
+      check switchToConversation(testDb, conversationId) == true
 
       # Test encrypted thinking token storage
       let encryptedContent = "[ENCRYPTED_REASONING_HASH_ABC123]"
