@@ -8,6 +8,7 @@ import std/[tables, strformat]
 import ../types/messages
 import tool_visualizer
 import theme
+import output_shared
 
 template processThinkingContent*(response: APIResponse, isInThinkingBlock: var bool): untyped =
   ## Template for consistent thinking content display across CLI modes
@@ -35,10 +36,13 @@ template handleToolCallDisplay*(response: APIResponse,
   ## Covers both arkToolCallRequest and arkToolCallResult cases
   case response.kind:
   of arkToolCallRequest:
+    # Flush any buffered content before showing tool calls
+    flushStreamingBuffer(redraw = false)
+
     # Display tool request immediately with hourglass indicator
     let toolRequest = response.toolRequestInfo
     pendingToolCalls[toolRequest.toolCallId] = toolRequest
-    
+
     # Reset output tracking and display tool call with hourglass
     outputAfterToolCall = false
     let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
