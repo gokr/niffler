@@ -131,17 +131,19 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
     # Get file info for metadata
     let fileInfo = attemptUntrackedStat(sanitizedPath)
 
-    # Check file size - if too large, suggest using linerange
-    try:
-      validateFileSize(sanitizedPath, parsedArgs.maxSize)
-    except CatchableError as e:
-      if e.msg.contains("bytes") and parsedArgs.maxSize < attemptUntrackedStat(sanitizedPath).size:
-        let fileInfo = attemptUntrackedStat(sanitizedPath)
-        raise newToolExecutionError("read",
-          fmt"File too large ({fileInfo.size} bytes > {parsedArgs.maxSize}). Use linerange parameter to read specific sections, e.g., linerange: '1-100'",
-          -1, "")
-      else:
-        raise
+    # Check file size - if too large AND no linerange specified, suggest using linerange
+    # When linerange is provided, we skip pre-read size check and validate after extraction
+    if parsedArgs.linerange.len == 0:
+      try:
+        validateFileSize(sanitizedPath, parsedArgs.maxSize)
+      except CatchableError as e:
+        if e.msg.contains("bytes") and parsedArgs.maxSize < attemptUntrackedStat(sanitizedPath).size:
+          let fileInfo = attemptUntrackedStat(sanitizedPath)
+          raise newToolExecutionError("read",
+            fmt"File too large ({fileInfo.size} bytes > {parsedArgs.maxSize}). Use linerange parameter to read specific sections, e.g., linerange: '1-100'",
+            -1, "")
+        else:
+          raise
 
     # Determine encoding
     let detectedEncoding = if parsedArgs.encoding == "auto": detectFileEncoding(sanitizedPath) else: parsedArgs.encoding
@@ -174,7 +176,12 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
     var content = fullContent
     if parsedArgs.linerange.len > 0:
       content = extractLinesByRange(fullContent, parsedArgs.linerange)
-    
+      # Check extracted content size after line range processing
+      if content.len > parsedArgs.maxSize:
+        raise newToolExecutionError("read",
+          fmt"Extracted content too large ({content.len} bytes > {parsedArgs.maxSize}). Use a smaller line range.",
+          -1, "")
+
     # Note: Content is returned raw for tool results
     # External rendering (batcat) is applied at UI display layer only
     
