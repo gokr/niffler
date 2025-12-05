@@ -131,8 +131,17 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
     # Get file info for metadata
     let fileInfo = attemptUntrackedStat(sanitizedPath)
 
-    # Check file size
-    validateFileSize(sanitizedPath, parsedArgs.maxSize)
+    # Check file size - if too large, suggest using linerange
+    try:
+      validateFileSize(sanitizedPath, parsedArgs.maxSize)
+    except CatchableError as e:
+      if e.msg.contains("bytes") and parsedArgs.maxSize < attemptUntrackedStat(sanitizedPath).size:
+        let fileInfo = attemptUntrackedStat(sanitizedPath)
+        raise newToolExecutionError("read",
+          fmt"File too large ({fileInfo.size} bytes > {parsedArgs.maxSize}). Use linerange parameter to read specific sections, e.g., linerange: '1-100'",
+          -1, "")
+      else:
+        raise
 
     # Determine encoding
     let detectedEncoding = if parsedArgs.encoding == "auto": detectFileEncoding(sanitizedPath) else: parsedArgs.encoding
