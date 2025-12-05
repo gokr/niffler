@@ -51,24 +51,33 @@ proc detectFileEncoding*(path: string): string =
   return "utf-8"
 
 proc parseLineRange*(rangeStr: string): tuple[startLine: int, endLine: int] =
-  ## Parse line range string like "b'[660,690]'" or "[660,690]"
+  ## Parse line range string in various formats:
+  ## - "1-100" (dash-separated)
+  ## - "1,100" (comma-separated)
+  ## - "[1,100]" (bracketed comma-separated)
+  ## - "b'[660,690]'" (Python bytes literal format)
   var cleanRange = rangeStr.strip()
-  
-  # Remove b' prefix and ' suffix if present
+
+  # Remove b' prefix and ' suffix if present (Python bytes literal)
   if cleanRange.startsWith("b'") and cleanRange.endsWith("'"):
     cleanRange = cleanRange[2..^2]
-  
+
   # Remove brackets if present
   if cleanRange.startsWith("[") and cleanRange.endsWith("]"):
     cleanRange = cleanRange[1..^2]
-  
-  # Split by comma
-  let parts = cleanRange.split(',')
+
+  # Determine separator (dash or comma)
+  var parts: seq[string]
+  if '-' in cleanRange and ',' notin cleanRange:
+    parts = cleanRange.split('-')
+  else:
+    parts = cleanRange.split(',')
+
   if parts.len == 2:
     try:
       result.startLine = parseInt(parts[0].strip())
       result.endLine = parseInt(parts[1].strip())
-      # Convert to 1-based indexing if needed (Nim uses 0-based internally)
+      # Convert to 1-based indexing (Nim uses 0-based internally)
       if result.startLine > 0:
         result.startLine -= 1
       if result.endLine > 0:
