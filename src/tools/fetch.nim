@@ -22,7 +22,7 @@ import ../core/constants
 import text_extraction
 
 const
-  MAX_INLINE_CONTENT_SIZE = 50 * 1024  # 50KB default max inline content size
+  MAX_INLINE_CONTENT_SIZE = 200 * 1024  # 200KB for extracted text content (reasonable after trafilatura)
   FETCH_CACHE_DIR = "/tmp/niffler/fetch"
 
 proc initFetchCacheDir(): string =
