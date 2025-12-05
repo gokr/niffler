@@ -17,7 +17,7 @@
 ## 4. Send NatsResponse messages (streaming)
 ## 5. Send final response with done=true
 
-import std/[logging, strformat, times, os, options, strutils, json, tables]
+import std/[logging, strformat, times, os, options, strutils, json, tables, atomics]
 import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
@@ -31,6 +31,11 @@ import commands
 import response_templates
 
 type
+  CommandClass* = enum
+    ccSafeQuick      ## Can run during agentic loop (read-only)
+    ccDisruptive     ## Would corrupt agentic loop, return error
+    ccAgentic        ## Queue/serialize
+
   AgentState = object
     ## Runtime state for agent
     name: string
@@ -47,6 +52,36 @@ type
     toolWorker: ToolWorker
     mcpWorker: MCPWorker
     toolSchemas: seq[ToolDefinition]
+    # Concurrent command handling
+    agenticActive: Atomic[bool]            ## Is an agentic loop running?
+    agenticRequestId: string               ## Current agentic request ID
+    pendingAgenticRequests: seq[NatsRequest]  ## Queue for serialization
+
+proc classifyCommand(request: NatsRequest): CommandClass =
+  ## Classify a request into safe, disruptive, or agentic category
+  let input = request.input.strip()
+  if not input.startsWith("/"):
+    return ccAgentic  # Prompts are agentic
+
+  let (command, args) = commands.parseCommand(input)
+
+  # Safe read-only commands
+  const safeCommands = ["info", "context", "inspect"]
+  if command in safeCommands:
+    return ccSafeQuick
+
+  # /model alone (show current) is safe
+  if command == "model" and args.len == 0:
+    return ccSafeQuick
+
+  # Disruptive commands that would corrupt context
+  const disruptiveCommands = ["conv", "new", "condense", "plan", "code"]
+  if command in disruptiveCommands:
+    return ccDisruptive
+  if command == "model" and args.len > 0:
+    return ccDisruptive  # Switching model mid-conversation
+
+  return ccAgentic
 
 proc loadAgentDefinition(agentName: string): AgentDefinition =
   ## Load agent definition from the active config's agents directory
@@ -372,68 +407,90 @@ proc applyModelChange(state: var AgentState, modelNickname: string): bool =
   debug(fmt"Applied model change to {modelNickname}")
   return true
 
-proc processRequest(state: var AgentState, request: NatsRequest) =
-  ## Process an incoming request from master
-  info(fmt"Processing request {request.requestId}")
+proc processQuickCommand(state: var AgentState, request: NatsRequest) =
+  ## Process quick commands that don't require agentic execution
+  ## Safe to call concurrently during an agentic loop (for read-only commands)
+  info(fmt"Processing quick command: {request.requestId}")
+  state.requestCount.inc()
+
+  try:
+    let input = request.input.strip()
+    let (command, args) = commands.parseCommand(input)
+
+    # Handle local commands
+    const localCommands = ["info", "conv", "new", "context", "inspect", "condense"]
+
+    if command in localCommands:
+      info(fmt"Executing local command: /{command}")
+      sendStatusUpdate(state, request.requestId, fmt"Executing command: /{command}")
+
+      var sess = initSession()
+      var currentModel = state.modelConfig
+      let commandResult = executeCommand(command, args, sess, currentModel)
+      sendResponse(state, request.requestId, commandResult.message, done = true)
+
+      # Update model if command changed it
+      if currentModel.nickname != state.modelConfig.nickname:
+        state.modelConfig = currentModel
+
+      info(fmt"Command /{command} executed successfully")
+      return
+
+    # Handle /model alone (show current model)
+    if command == "model" and args.len == 0:
+      sendResponse(state, request.requestId,
+        fmt"Current model: {state.modelConfig.nickname} ({state.modelConfig.model})", done = true)
+      return
+
+    # Handle /plan or /code alone (just set mode, no prompt)
+    if command in ["plan", "code"] and args.len == 0:
+      let newMode = if command == "plan": amPlan else: amCode
+      applyModeChange(state, newMode)
+      sendResponse(state, request.requestId,
+        fmt"Switched to {command} mode", done = true)
+      return
+
+    # Handle /model with argument (model switch)
+    if command == "model" and args.len > 0:
+      if applyModelChange(state, args[0]):
+        sendResponse(state, request.requestId,
+          fmt"Switched to model: {state.modelConfig.nickname}", done = true)
+      else:
+        sendResponse(state, request.requestId,
+          fmt"Unknown model: {args[0]}", done = true)
+      return
+
+    # Fallback - unknown quick command
+    sendResponse(state, request.requestId,
+      fmt"Unknown command: /{command}", done = true)
+
+  except Exception as e:
+    error(fmt"Error processing quick command: {e.msg}")
+    sendResponse(state, request.requestId, fmt"Error: {e.msg}", done = true)
+
+proc processAgenticRequest(state: var AgentState, request: NatsRequest) =
+  ## Process an agentic request (ask/task) - runs in its own thread
+  ## This handles the long-running LLM conversation loop
+  info(fmt"Processing agentic request {request.requestId}")
   state.requestCount.inc()
 
   try:
     let input = request.input.strip()
 
-    # Check for pure local commands first (commands that execute immediately)
-    if input.startsWith("/"):
-      let (command, args) = commands.parseCommand(input)
-      const localCommands = ["info", "conv", "new", "context", "inspect", "condense"]
-
-      # Handle pure local commands
-      if command in localCommands:
-        info(fmt"Executing local command: /{command}")
-        sendStatusUpdate(state, request.requestId, fmt"Executing command: /{command}")
-
-        var sess = initSession()
-        var currentModel = state.modelConfig
-        let commandResult = executeCommand(command, args, sess, currentModel)
-        sendResponse(state, request.requestId, commandResult.message, done = true)
-
-        # Update model if command changed it
-        if currentModel.nickname != state.modelConfig.nickname:
-          state.modelConfig = currentModel
-
-        info(fmt"Command /{command} executed successfully")
-        return
-
-      # Handle /model alone (show current model)
-      if command == "model" and args.len == 0:
-        sendResponse(state, request.requestId,
-          fmt"Current model: {state.modelConfig.nickname} ({state.modelConfig.model})", done = true)
-        return
-
-      # Handle /plan or /code alone (just set mode, no prompt)
-      if command in ["plan", "code"] and args.len == 0:
-        let newMode = if command == "plan": amPlan else: amCode
-        applyModeChange(state, newMode)
-        sendResponse(state, request.requestId,
-          fmt"Switched to {command} mode", done = true)
-        return
-
     # Parse routing commands from input (/plan, /task, /model, /code + prompt)
     let parsed = command_parser.parseCommand(input)
 
     # Apply state changes (persisted to conversation in DB)
-    var stateChanged = false
-
     if parsed.mode.isSome():
       let mode = parsed.mode.get()
       let agentMode = if mode == emPlan: amPlan else: amCode
       applyModeChange(state, agentMode)
       sendStatusUpdate(state, request.requestId, fmt"Switched to {mode} mode")
-      stateChanged = true
 
     if parsed.model.isSome():
       let modelNickname = parsed.model.get()
       if applyModelChange(state, modelNickname):
         sendStatusUpdate(state, request.requestId, fmt"Switched to model {modelNickname}")
-        stateChanged = true
       else:
         sendResponse(state, request.requestId,
           fmt"Unknown model: {modelNickname}", done = true)
@@ -481,17 +538,29 @@ proc processRequest(state: var AgentState, request: NatsRequest) =
           echo fmt"[FAILED ✗] {askResult.response}"
           warn(fmt"Ask failed: {askResult.response}")
 
-    elif stateChanged:
-      # Just state changes were applied, confirm them
-      sendResponse(state, request.requestId, "Settings updated", done = true)
-
     else:
       # Nothing to do (empty input after parsing)
       sendResponse(state, request.requestId, "No action specified", done = true)
 
   except Exception as e:
-    error(fmt"Error processing request: {e.msg}")
+    error(fmt"Error processing agentic request: {e.msg}")
     sendResponse(state, request.requestId, fmt"Error: {e.msg}", done = true)
+
+type
+  AgenticThreadParams = object
+    state: ptr AgentState
+    request: NatsRequest
+
+proc agenticThreadProc(params: AgenticThreadParams) {.thread.} =
+  ## Thread procedure for running agentic loops in background
+  {.gcsafe.}:
+    try:
+      processAgenticRequest(params.state[], params.request)
+    except Exception as e:
+      error(fmt"Agentic thread error: {e.msg}")
+    finally:
+      # Signal completion by clearing the active flag
+      params.state[].agenticActive.store(false)
 
 proc publishHeartbeat(state: var AgentState) =
   ## Publish heartbeat to presence KV store
@@ -502,7 +571,8 @@ proc publishHeartbeat(state: var AgentState) =
     warn(fmt"Failed to publish heartbeat: {e.msg}")
 
 proc listenForRequests(state: var AgentState) =
-  ## Main request listening loop
+  ## Main request listening loop - non-blocking design
+  ## Quick commands execute immediately, agentic loops run in background thread
   let subject = fmt"niffler.agent.{state.name}.request"
   info(fmt"Subscribing to {subject}")
 
@@ -522,9 +592,10 @@ proc listenForRequests(state: var AgentState) =
 
   var lastHeartbeat = getTime()
   const heartbeatInterval = 5  # seconds
+  var agenticThread: Thread[AgenticThreadParams]
 
   while state.running:
-    # Check for incoming messages with short timeout
+    # 1. Check for incoming messages with short timeout
     let maybeMsg = subscription.nextMsg(timeoutMs = 1000)
 
     if maybeMsg.isSome():
@@ -538,16 +609,62 @@ proc listenForRequests(state: var AgentState) =
         echo fmt"[REQUEST] {request.input}"
         echo ""
 
-        # Process request
-        processRequest(state, request)
-        echo ""
-        echo "Waiting for requests..."
-        echo ""
+        # Classify and route the request
+        let cmdClass = classifyCommand(request)
+
+        case cmdClass:
+        of ccSafeQuick:
+          # Handle read-only commands immediately (even during agentic loop)
+          processQuickCommand(state, request)
+          if not state.agenticActive.load():
+            echo ""
+            echo "Waiting for requests..."
+            echo ""
+
+        of ccDisruptive:
+          if state.agenticActive.load():
+            # Return error - can't disrupt ongoing work
+            sendResponse(state, request.requestId,
+              "Cannot execute this command while ask/task is running", done = true)
+          else:
+            # No agentic loop running, safe to execute
+            processQuickCommand(state, request)
+            echo ""
+            echo "Waiting for requests..."
+            echo ""
+
+        of ccAgentic:
+          if state.agenticActive.load():
+            # Queue agentic request for later
+            state.pendingAgenticRequests.add(request)
+            sendStatusUpdate(state, request.requestId,
+              fmt"Queued - agent busy (position {state.pendingAgenticRequests.len})")
+            info(fmt"Queued agentic request {request.requestId}, queue size: {state.pendingAgenticRequests.len}")
+          else:
+            # Start agentic loop in background thread
+            state.agenticActive.store(true)
+            state.agenticRequestId = request.requestId
+            let params = AgenticThreadParams(state: addr state, request: request)
+            createThread(agenticThread, agenticThreadProc, params)
+            info(fmt"Started agentic thread for request {request.requestId}")
 
       except Exception as e:
         error(fmt"Failed to parse request: {e.msg}")
 
-    # Publish heartbeat if needed
+    # 2. Check if agentic loop completed and start next queued request
+    if not state.agenticActive.load() and state.pendingAgenticRequests.len > 0:
+      let nextRequest = state.pendingAgenticRequests[0]
+      state.pendingAgenticRequests.delete(0)
+      state.agenticActive.store(true)
+      state.agenticRequestId = nextRequest.requestId
+      let params = AgenticThreadParams(state: addr state, request: nextRequest)
+      createThread(agenticThread, agenticThreadProc, params)
+      info(fmt"Started queued agentic request {nextRequest.requestId}, remaining queue: {state.pendingAgenticRequests.len}")
+      echo ""
+      echo fmt"[QUEUE] Processing next request: {nextRequest.input}"
+      echo ""
+
+    # 3. Publish heartbeat (always, even during agentic loop)
     let now = getTime()
     if (now - lastHeartbeat).inSeconds() >= heartbeatInterval:
       publishHeartbeat(state)
