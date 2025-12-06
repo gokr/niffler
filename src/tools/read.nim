@@ -181,8 +181,16 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
       else:
         raise newToolExecutionError("read", "Unsupported encoding: " & detectedEncoding, -1, "")
 
+    # Count total lines in file
+    let allLines = fullContent.splitLines()
+    let totalLines = allLines.len
+
     # Process line range if specified
     var content = fullContent
+    var linesRead = totalLines
+    var startLine = 1
+    var endLine = totalLines
+
     if parsedArgs.linerange.len > 0:
       content = extractLinesByRange(fullContent, parsedArgs.linerange)
       # Check extracted content size after line range processing
@@ -191,21 +199,31 @@ proc executeRead*(args: JsonNode): string {.gcsafe.} =
           fmt"Extracted content too large ({content.len} bytes > {parsedArgs.maxSize}). Use a smaller line range.",
           -1, "")
 
+      # Calculate actual range returned
+      let (parsedStart, parsedEnd) = parseLineRange(parsedArgs.linerange)
+      startLine = max(1, parsedStart + 1)  # Convert back to 1-based
+      endLine = min(totalLines, if parsedEnd < 0: totalLines else: parsedEnd + 1)
+      linesRead = if content.len > 0: content.splitLines().len else: 0
+
     # Note: Content is returned raw for tool results
     # External rendering (batcat) is applied at UI display layer only
-    
+
     # Get file modification time
     let modTime = fileInfo.lastWriteTime
-    
+
     # Create result JSON
     let resultJson = %*{
       "content": content,
       "path": sanitizedPath,
       "size": fileInfo.size,
       "encoding": detectedEncoding,
-      "modified": modTime.toUnix()
+      "modified": modTime.toUnix(),
+      "total_lines": totalLines,
+      "lines_read": linesRead,
+      "start_line": startLine,
+      "end_line": endLine
     }
-    
+
     return $resultJson
   
   except ToolError as e:

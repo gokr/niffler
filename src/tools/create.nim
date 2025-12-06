@@ -39,7 +39,8 @@ proc createFileWithContent*(path: string, content: string, permissions: string) 
     writeFile(path, content)
     setFilePermissions(path, permissions)
   except IOError as e:
-    raise newToolExecutionError("create", "Failed to create file: " & e.msg, -1, "")
+    raise newToolExecutionError("create",
+      fmt("Failed to create file '{path}': {e.msg}. Current directory: {getCurrentDir()}"), -1, "")
 
 proc executeCreate*(args: JsonNode): string =
   ## Execute file creation operation with validation and error handling
