@@ -447,9 +447,11 @@ proc addUserMessage*(content: string): Message =
       release(globalSession.lock)
 
 proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] = none(seq[LLMToolCall]),
-                          outputTokens: int = 0, modelName: string = ""): Message =
+                          outputTokens: int = 0, modelName: string = ""): tuple[message: Message, messageId: int] =
   ## Add assistant message to current conversation with optional tool calls and token data
+  ## Returns both the Message object and the database message ID
   let conversationId = getCurrentConversationId().int  # Get ID before acquiring lock to avoid deadlock
+  var msgId = 0
   {.gcsafe.}:
     acquire(globalSession.lock)
     try:
@@ -457,20 +459,23 @@ proc addAssistantMessage*(content: string, toolCalls: Option[seq[LLMToolCall]] =
       if globalSession.pool != nil and conversationId > 0:
         let toolInfo = if toolCalls.isSome(): fmt" with {toolCalls.get().len} tool calls" else: ""
         debug(fmt"[DB-INSERT] Assistant message: conv={conversationId}, content_len={content.len}{toolInfo}, model={modelName}")
-        discard addAssistantMessageToDb(globalSession.pool, conversationId, content, toolCalls, modelName, outputTokens)
+        msgId = addAssistantMessageToDb(globalSession.pool, conversationId, content, toolCalls, modelName, outputTokens)
         # Update message count
         let backend = getGlobalDatabase()
         if backend != nil:
           updateConversationMessageCount(backend, conversationId)
 
-      result = Message(
-        role: mrAssistant,
-        content: content,
-        toolCalls: toolCalls
+      result = (
+        message: Message(
+          role: mrAssistant,
+          content: content,
+          toolCalls: toolCalls
+        ),
+        messageId: msgId
       )
 
       let callsInfo = if toolCalls.isSome(): fmt" (with {toolCalls.get().len} tool calls)" else: ""
-      debug(fmt"Added assistant message: {content[0..min(50, content.len-1)]}...{callsInfo}")
+      debug(fmt"Added assistant message (id={msgId}): {content[0..min(50, content.len-1)]}...{callsInfo}")
       debug(fmt"[DB-INSERT] Completed successfully")
 
       # Invalidate conversation context cache
@@ -783,6 +788,45 @@ proc getRecentThinkingTokens*(maxTokens: int = 10): seq[ThinkingContent] =
       # Fallback: no thinking tokens if no database
       result = @[]
       debug("No database available, returning empty thinking token history")
+    finally:
+      release(globalSession.lock)
+
+proc linkPendingThinkingTokensToMessage*(messageId: int): int {.gcsafe.} =
+  ## Link all unlinked thinking tokens (message_id = 0) in current conversation to the given message
+  ## Returns the number of thinking tokens that were linked
+  let conversationId = getCurrentConversationId().int
+  if messageId <= 0 or conversationId <= 0:
+    return 0
+
+  {.gcsafe.}:
+    acquire(globalSession.lock)
+    try:
+      if globalSession.pool != nil:
+        globalSession.pool.withDb:
+          # Update all thinking tokens with message_id = 0 for this conversation
+          db.query("""
+            UPDATE conversation_thinking_token
+            SET message_id = ?
+            WHERE conversation_id = ? AND (message_id = 0 OR message_id IS NULL)
+          """, messageId, conversationId)
+
+          # Get count of updated rows
+          let countRows = db.query("""
+            SELECT COUNT(*) FROM conversation_thinking_token
+            WHERE conversation_id = ? AND message_id = ?
+          """, conversationId, messageId)
+
+          if countRows.len > 0:
+            result = parseInt(countRows[0][0])
+            if result > 0:
+              debug(fmt"Linked {result} thinking tokens to message {messageId}")
+          else:
+            result = 0
+      else:
+        result = 0
+    except Exception as e:
+      error(fmt"Failed to link thinking tokens to message: {e.msg}")
+      result = 0
     finally:
       release(globalSession.lock)
 

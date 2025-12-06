@@ -1048,12 +1048,15 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
       # Store final message without tool calls
       if responseContent.len > 0:
         debug(fmt"[MSG-STORE] Storing final assistant message (depth: {depth})")
-        discard conversation_manager.addAssistantMessage(
+        let (_, msgId) = conversation_manager.addAssistantMessage(
           content = responseContent,
           toolCalls = none(seq[LLMToolCall]),
           outputTokens = if usage.isSome(): usage.get().outputTokens else: 0,
           modelName = request.model
         )
+        # Link pending thinking tokens to this message
+        if msgId > 0:
+          discard conversation_manager.linkPendingThinkingTokensToMessage(msgId)
 
       # Send completion
       debug(fmt"Sending arkStreamComplete for request {request.requestId}")
@@ -1078,12 +1081,14 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
       debug(fmt"All {responseToolCalls.len} tool calls were duplicates")
       # Handle duplicate case - store message, send completion, and return
       if responseContent.len > 0:
-        discard conversation_manager.addAssistantMessage(
+        let (_, msgId) = conversation_manager.addAssistantMessage(
           content = responseContent,
           toolCalls = none(seq[LLMToolCall]),
           outputTokens = if usage.isSome(): usage.get().outputTokens else: 0,
           modelName = request.model
         )
+        if msgId > 0:
+          discard conversation_manager.linkPendingThinkingTokensToMessage(msgId)
       # Send completion signal for duplicate case
       sendAPIResponse(channels, APIResponse(
         requestId: request.requestId,
@@ -1583,7 +1588,23 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               )
               debug "Sending API final chunk response"
               sendAPIResponse(channels, finalChunkResponse)
-              
+
+              # Store assistant message in database for non-tool conversations
+              if fullContent.len > 0:
+                let (_, msgId) = conversation_manager.addAssistantMessage(
+                  content = fullContent,
+                  toolCalls = none(seq[LLMToolCall]),
+                  outputTokens = finalUsage.outputTokens,
+                  modelName = request.model
+                )
+                debug(fmt"Stored assistant message for non-tool response: {fullContent.len} chars, msgId={msgId}")
+
+                # Link any pending thinking tokens to this message
+                if msgId > 0:
+                  let linkedCount = conversation_manager.linkPendingThinkingTokensToMessage(msgId)
+                  if linkedCount > 0:
+                    debug(fmt"Linked {linkedCount} thinking tokens to message {msgId}")
+
               # Log token usage for regular (non-tool) conversations
               let conversationId = getCurrentConversationId().int
               let messageId = getCurrentMessageId().int
