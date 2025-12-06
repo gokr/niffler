@@ -10,7 +10,8 @@
 ## - Can be switched dynamically via /config command (in-memory only)
 ## - Provides config directory resolution for prompts and agents
 
-import std/[options, os, strformat, appdirs, strutils]
+import std/[options, os, strformat, appdirs, strutils, logging]
+import agent_defaults
 
 type
   Session* = object
@@ -25,6 +26,9 @@ type
     agentsDir*: string
     warnings*: seq[string]
     errors*: seq[string]
+
+# Forward declaration for ensureDefaultAgents (defined at end of file)
+proc ensureDefaultAgents*(session: Session): int
 
 proc getConfigDir(): string =
   ## Get platform-appropriate config directory for niffler (duplicated to avoid circular import)
@@ -75,7 +79,13 @@ proc loadActiveConfig*(): string =
 
 proc initSession*(): Session =
   ## Initialize a new session with config loaded from config.json files
+  ## Also ensures default agents exist in the agents directory
   result.currentConfig = loadActiveConfig()
+
+  # Ensure default agents are installed (creates dir and files if needed)
+  let created = ensureDefaultAgents(result)
+  if created > 0:
+    debug(fmt"Installed {created} default agent(s)")
 
 proc getActiveConfigDir*(session: Session): string =
   ## Get the directory path for the currently active config
@@ -256,3 +266,32 @@ proc getConfigInfoString*(session: Session): string =
 proc displayConfigInfo*(session: Session) =
   ## Display current config status with diagnostics (prints to stdout)
   echo getConfigInfoString(session)
+
+proc ensureDefaultAgents*(session: Session): int =
+  ## Ensure default agent definitions exist in the agents directory
+  ## Creates agents directory and default agents if they don't exist
+  ## Returns number of agents created
+  let agentsDir = getAgentsDir(session)
+  var created = 0
+
+  # Create agents directory if it doesn't exist
+  if not dirExists(agentsDir):
+    try:
+      createDir(agentsDir)
+      debug(fmt"Created agents directory: {agentsDir}")
+    except OSError as e:
+      warn(fmt"Failed to create agents directory: {e.msg}")
+      return 0
+
+  # Install default agents if they don't exist
+  for (name, content) in getDefaultAgents():
+    let agentPath = agentsDir / name & ".md"
+    if not fileExists(agentPath):
+      try:
+        writeFile(agentPath, content)
+        debug(fmt"Created default agent: {agentPath}")
+        inc created
+      except IOError as e:
+        warn(fmt"Failed to create agent {name}: {e.msg}")
+
+  return created
