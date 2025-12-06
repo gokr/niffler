@@ -23,44 +23,69 @@ import database
 import conversation_manager
 import ../ui/[tool_visualizer, output_shared, response_templates]
 
-proc extractArtifacts*(messages: seq[Message]): seq[string] =
-  ## Extract file paths from tool calls in the conversation
-  var fileSet = initHashSet[string]()
+type
+  ArtifactCategories* = object
+    modified*: seq[string]     ## Files created or edited
+    temporary*: seq[string]    ## Temp files (e.g., fetch cache)
+
+proc isTemporaryPath(path: string): bool =
+  ## Check if path is a temporary file location
+  path.startsWith("/tmp/") or path.startsWith("/var/tmp/") or
+    path.contains("/tmp/niffler/")
+
+proc extractArtifactCategories*(messages: seq[Message]): ArtifactCategories =
+  ## Extract file paths from tool calls, categorized by type
+  var modifiedSet = initHashSet[string]()
+  var tempSet = initHashSet[string]()
 
   for msg in messages:
     if msg.role == mrAssistant and msg.toolCalls.isSome():
       for toolCall in msg.toolCalls.get():
-        # Extract file paths from file operation tools
         case toolCall.function.name:
-        of "read", "create", "edit":
-          # These tools have a "path" or "file_path" argument
+        of "create", "edit":
+          # Only track write operations as "modified"
           try:
             let args = parseJson(toolCall.function.arguments)
+            var path = ""
             if args.hasKey("path"):
-              fileSet.incl(args["path"].getStr())
+              path = args["path"].getStr()
             elif args.hasKey("file_path"):
-              fileSet.incl(args["file_path"].getStr())
+              path = args["file_path"].getStr()
+
+            if path.len > 0:
+              if isTemporaryPath(path):
+                tempSet.incl(path)
+              else:
+                modifiedSet.incl(path)
           except JsonParsingError, KeyError:
-            # Invalid JSON or missing key, skip
             discard
-        of "list":
-          # List tool has a "directory" argument
+        of "fetch":
+          # Fetch tool creates temp files
           try:
             let args = parseJson(toolCall.function.arguments)
-            if args.hasKey("directory"):
-              fileSet.incl(args["directory"].getStr())
-            elif args.hasKey("path"):
-              fileSet.incl(args["path"].getStr())
+            if args.hasKey("output_path"):
+              let path = args["output_path"].getStr()
+              if path.len > 0:
+                tempSet.incl(path)
           except JsonParsingError, KeyError:
             discard
         else:
           discard
 
-  # Convert set to sorted list
-  result = @[]
-  for path in fileSet:
-    result.add(path)
-  result.sort()
+  # Convert sets to sorted lists
+  for path in modifiedSet:
+    result.modified.add(path)
+  result.modified.sort()
+
+  for path in tempSet:
+    result.temporary.add(path)
+  result.temporary.sort()
+
+proc extractArtifacts*(messages: seq[Message]): seq[string] =
+  ## Extract modified file paths from tool calls (create/edit only)
+  ## For categorized extraction, use extractArtifactCategories instead
+  let categories = extractArtifactCategories(messages)
+  result = categories.modified
 
 proc buildTaskSystemPrompt*(agent: AgentDefinition, taskDescription: string): string =
   ## Build system prompt for task execution combining agent prompt and task context
@@ -181,6 +206,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
           success: false,
           summary: "",
           artifacts: @[],
+          tempArtifacts: @[],
           toolCalls: 0,
           tokensUsed: 0,
           error: fmt("No API key configured for model '{modelConfig.nickname}'")
@@ -199,6 +225,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
         success: false,
         summary: "",
         artifacts: @[],
+        tempArtifacts: @[],
         toolCalls: 0,
         tokensUsed: 0,
         error: "Failed to create task conversation"
@@ -250,6 +277,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
         success: false,
         summary: "",
         artifacts: @[],
+        tempArtifacts: @[],
         toolCalls: 0,
         tokensUsed: 0,
         error: "Failed to send API request"
@@ -286,6 +314,9 @@ proc executeTask*(agent: AgentDefinition, description: string,
           of arkToolCallRequest, arkToolCallResult:
             # Display tool execution progress
             handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
+            # Count tool requests (not results to avoid double-counting)
+            if response.kind == arkToolCallRequest:
+              totalToolCalls += 1
           of arkStreamComplete:
             finishStreaming()
             totalTokens = response.usage.totalTokens
@@ -300,6 +331,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
               success: false,
               summary: "",
               artifacts: @[],
+              tempArtifacts: @[],
               toolCalls: totalToolCalls,
               tokensUsed: totalTokens,
               error: fmt("API error: {response.error}")
@@ -316,6 +348,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
         success: false,
         summary: "",
         artifacts: @[],
+        tempArtifacts: @[],
         toolCalls: totalToolCalls,
         tokensUsed: totalTokens,
         error: "Task timed out"
@@ -330,8 +363,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
     let summary = generateSummary(conversationMessages, modelConfig, channels, apiKey, toolSchemas)
 
     # Extract artifacts (file paths) from conversation
-    let artifacts = extractArtifacts(conversationMessages)
-    debug(fmt("Extracted {artifacts.len} artifacts: {artifacts.join(\", \")}"))
+    let categories = extractArtifactCategories(conversationMessages)
+    debug(fmt("Extracted {categories.modified.len} modified files, {categories.temporary.len} temp files"))
 
     # Restore previous conversation
     if previousConvId > 0:
@@ -341,7 +374,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
     return TaskResult(
       success: true,
       summary: summary,
-      artifacts: artifacts,
+      artifacts: categories.modified,
+      tempArtifacts: categories.temporary,
       toolCalls: totalToolCalls,
       tokensUsed: totalTokens,
       error: ""
@@ -353,6 +387,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       success: false,
       summary: "",
       artifacts: @[],
+      tempArtifacts: @[],
       toolCalls: 0,
       tokensUsed: 0,
       error: fmt("Task execution failed: {e.msg}")

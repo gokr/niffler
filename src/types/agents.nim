@@ -69,7 +69,8 @@ type
   TaskResult* = object
     success*: bool
     summary*: string              ## LLM-generated summary of findings
-    artifacts*: seq[string]       ## File paths created/read
+    artifacts*: seq[string]       ## File paths created/edited
+    tempArtifacts*: seq[string]   ## Temporary files (e.g., fetch cache)
     toolCalls*: int               ## Number of tool calls made
     tokensUsed*: int              ## Total tokens consumed
     error*: string                ## Error message if failed

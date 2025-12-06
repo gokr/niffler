@@ -763,6 +763,11 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
           for artifact in taskResult.artifacts:
             echo "  - ", artifact
           echo ""
+        if taskResult.tempArtifacts.len > 0:
+          echo "Temporary files:"
+          for artifact in taskResult.tempArtifacts:
+            echo "  - ", artifact
+          echo ""
         echo fmt"Tool calls: {taskResult.toolCalls}, Tokens: {taskResult.tokensUsed}"
       else:
         echo "=== Task Failed ==="
