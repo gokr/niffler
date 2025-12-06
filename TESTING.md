@@ -12,7 +12,7 @@
 
 **Run this command:**
 ```bash
-./src/niffler agent coder --task="Can you write, compile and run hello world in Nim?" --model synthetic-glm46
+./src/niffler agent coder --task="Can you write, compile and run hello world in Nim?" --model=synthetic-glm46
 ```
 
 **Expected behavior:**

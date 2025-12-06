@@ -960,7 +960,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       writeUserInput(input)
       let availableAgents = masterState.discoverAgents()
       if availableAgents.len == 0:
-        writeCompleteLine(formatWithStyle("No agents are running. Start an agent with: niffler --agent <name>", currentTheme.error))
+        writeCompleteLine(formatWithStyle("No agents are running. Start an agent with: niffler agent <name>", currentTheme.error))
         finishCommandOutput()
         continue
       else:

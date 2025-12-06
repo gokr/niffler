@@ -121,11 +121,11 @@ AGENT COMMAND OPTIONS:
 
 EXAMPLES:
   niffler                              # Start interactive mode
-  niffler --model=gpt4               # Interactive with specific model
+  niffler --model=kimik2               # Interactive with specific model
 
   niffler agent coder                # Start coder agent (interactive)
   niffler agent researcher --nick=alpha      # Researcher with nickname
-  niffler agent coder --nick=prod --model=gpt4  # Coder with nick and model
+  niffler agent coder --nick=prod --model=kimik2  # Coder with nick and model
   niffler agent coder --task="What is 7+8?" --model=kimi  # Single-shot task
 
   niffler model list                   # List available models

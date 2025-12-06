@@ -133,7 +133,7 @@ This test can be run manually with a real LLM to verify end-to-end functionality
 1. Compile and run: nim c -r tests/test_todolist_llm_integration.nim
 
 2. To test with a real LLM, run niffler with a model that supports tool calling:
-   ./niffler --model gpt-4 "I need to plan a software project. Please use the todolist tool to help me track tasks."
+   ./niffler --model=gpt-4 "I need to plan a software project. Please use the todolist tool to help me track tasks."
 
 3. Expected LLM behavior:
    - Should use todolist tool with 'add' operation to create initial tasks
@@ -156,7 +156,7 @@ This test can be run manually with a real LLM to verify end-to-end functionality
    - Error handling works for invalid operations
 
 To run with a specific model: 
-./niffler --model MODEL_NAME --interactive
+./niffler --model=MODEL_NAME --interactive
 
 Then test the todolist tool through natural conversation.
 """

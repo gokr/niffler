@@ -268,7 +268,7 @@ proc sendSinglePromptMaster*(
   # 3. Check agent availability
   if not masterState.isAgentAvailable(agentInput.agentName):
     echo fmt"❗ Error: Agent '{agentInput.agentName}' not available"
-    echo fmt"💡 Tip: Start the agent first: niffler --agent {agentInput.agentName}"
+    echo fmt"💡 Tip: Start the agent first: niffler agent {agentInput.agentName}"
     masterState.natsClient.close()
     return 1
 

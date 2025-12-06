@@ -1146,8 +1146,8 @@ proc agentsHandler(args: seq[string], session: var Session, currentModel: var co
         message: """No agents currently running via NATS.
 
 To start an agent:
-  ./src/niffler --agent coder
-  ./src/niffler --agent researcher --model haiku
+  ./src/niffler agent coder
+  ./src/niffler agent researcher --model=glm46
 
 To send requests to agents:
   @coder fix the bug in main.nim

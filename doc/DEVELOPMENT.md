@@ -177,7 +177,7 @@ agents:
 #### ✅ **Phase 3.5: Single-Prompt Routing** (COMPLETE)
 
 **Features:**
-- Direct command-line routing: `./src/niffler agent <name> --task "task"`
+- Direct command-line routing: `./src/niffler agent <name> --task="task"`
 - Fire-and-forget mode (default)
 - Wait mode (basic version)
 - Support for `/task`, `/plan`, `/code` commands in agent mode with --task
