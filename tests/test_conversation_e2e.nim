@@ -49,7 +49,7 @@ suite "End-to-End Conversation Lifecycle":
     check userMsg.content == "Test user message for E2E test"
     
     # Add assistant message
-    let assistantMsg = addAssistantMessage("Test assistant response for E2E test")
+    let (assistantMsg, _) = addAssistantMessage("Test assistant response for E2E test")
     check assistantMsg.role == mrAssistant
     check assistantMsg.content == "Test assistant response for E2E test"
     
