@@ -5,6 +5,9 @@ const generalAgent* = """# General Agent
 ## Description
 Safe research and analysis agent for gathering information without modifying the system.
 
+## Model
+default
+
 ## Allowed Tools
 - read
 - list
@@ -42,6 +45,9 @@ const coderAgent* = """# Coder Agent
 
 ## Description
 Specialized coding agent for implementing features, fixing bugs, and writing tests. Has access to full file manipulation and execution capabilities.
+
+## Model
+coder-model
 
 ## Allowed Tools
 - read
@@ -98,6 +104,9 @@ const researcherAgent* = """# Researcher Agent
 
 ## Description
 Fast research agent for documentation lookup, web search, and code analysis. Read-only access for safe exploration without modifications.
+
+## Model
+research-model
 
 ## Allowed Tools
 - read

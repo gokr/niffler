@@ -142,6 +142,8 @@ proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, mode
   let config = loadConfig()
 
   info(fmt"Looking for model: '{modelName}'")
+  var selectedModelName = modelName
+
   if modelName.len > 0:
     # Try to find specified model
     for model in config.models:
@@ -151,9 +153,21 @@ proc initializeAgent(agentName: string, agentNick: string, natsUrl: string, mode
         break
 
   if result.modelConfig.nickname.len == 0:
+    # Check agent definition for default model
+    if result.definition.model.isSome():
+      selectedModelName = result.definition.model.get()
+      info(fmt"Using model from agent definition: '{selectedModelName}'")
+      for model in config.models:
+        if model.nickname == selectedModelName:
+          result.modelConfig = model
+          info(fmt"Found model: {model.nickname} ({model.baseUrl})")
+          break
+
+  if result.modelConfig.nickname.len == 0:
     # Use first model as default
     if config.models.len > 0:
       result.modelConfig = config.models[0]
+      info("Using first available model as fallback")
     else:
       raise newException(IOError, "No models configured")
 
@@ -698,9 +712,10 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "", task: string = "") =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "", task: string = "", ask: string = "") =
   ## Start agent mode - main entry point
   ## If task is provided, executes single task and exits (no interactive mode)
+  ## If ask is provided, executes single ask without summarization and exits
   let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
 
   if task.len > 0:
@@ -777,6 +792,24 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
 
       # Exit after task completion
       return
+
+    elif ask.len > 0:
+      # Single-shot ask execution (like task but without summarization)
+      echo ""
+      echo "Executing ask..."
+      echo ""
+
+      # Use executeAsk which doesn't generate summary
+      let askResult = executeAsk(state, ask, "cli_ask_" & $epochTime())
+
+      if askResult.success:
+        echo askResult.response
+      else:
+        echo "Error: ", askResult.response
+
+      # Exit after ask completion
+      return
+
     else:
       # Interactive mode - start listening for requests
       listenForRequests(state)

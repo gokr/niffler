@@ -31,6 +31,7 @@ type
     initPath: string
     # For 'agent' subcommand
     task: string           # Single-shot task to execute
+    ask: string            # Single-shot ask (like task but without summarization)
 
 proc parseCliArgs(): CliArgs =
   ## Parse command line arguments using parseopt
@@ -75,6 +76,7 @@ proc parseCliArgs(): CliArgs =
       of "dump": result.dump = true
       of "log": result.logFile = val
       of "task", "t": result.task = val
+      of "ask", "a": result.ask = val
       of "help", "h": result.help = true
       of "version", "v": result.version = true
       of "agent":
@@ -118,6 +120,7 @@ OPTIONS:
 AGENT COMMAND OPTIONS:
       --nick=<nickname>      Instance nickname for multiple agent instances
   -t, --task="<text>"        Execute single task and exit (no interactive mode)
+  -a, --ask="<text>"         Execute single ask and exit (no task summarization)
 
 EXAMPLES:
   niffler                              # Start interactive mode
@@ -127,6 +130,7 @@ EXAMPLES:
   niffler agent researcher --nick=alpha      # Researcher with nickname
   niffler agent coder --nick=prod --model=kimik2  # Coder with nick and model
   niffler agent coder --task="What is 7+8?" --model=kimi  # Single-shot task
+  niffler agent coder --ask="List files in src/" --model=kimi  # Single-shot ask
 
   niffler model list                   # List available models
   niffler init                         # Initialize config at default location
@@ -210,7 +214,7 @@ proc dispatchCmd(args: CliArgs) =
     if args.agentName == "":
       handleError("agent command requires a name", true)
 
-    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.logFile, args.task)
+    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.logFile, args.task, args.ask)
 
   of "model":
     if args.modelSubCmd == "list":

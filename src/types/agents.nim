@@ -23,6 +23,7 @@ type
     systemPrompt*: string
     filePath*: string
     maxTurns*: Option[int]
+    model*: Option[string]  # Default model for this agent
 
   AgentContext* = object
     ## Context about which agent is executing (for tool access control)
@@ -38,7 +39,8 @@ proc createMainAgentContext*(): AgentContext =
       description: "Main Niffler agent with full tool access",
       allowedTools: @[],  # Empty means all tools allowed
       systemPrompt: "",
-      filePath: ""
+      filePath: "",
+      model: none(string)  # Main agent uses default model selection
     ),
     isMainAgent: true
   )
@@ -95,10 +97,14 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
   var descriptionLines: seq[string]
   var toolLines: seq[string]
   var promptLines: seq[string]
+  var modelLine = ""  # Model should be a single line
 
   for line in lines:
     if line.startsWith("## Description"):
       currentSection = "description"
+      continue
+    elif line.startsWith("## Model"):
+      currentSection = "model"
       continue
     elif line.startsWith("## Allowed Tools"):
       currentSection = "tools"
@@ -114,6 +120,10 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
     of "description":
       if line.strip().len > 0:
         descriptionLines.add(line.strip())
+    of "model":
+      # Model is a single line (the model nickname)
+      if line.strip().len > 0 and modelLine.len == 0:
+        modelLine = line.strip()
     of "tools":
       let toolLine = line.strip()
       if toolLine.startsWith("-") or toolLine.startsWith("*"):
@@ -128,6 +138,9 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
   result.description = descriptionLines.join(" ")
   result.allowedTools = toolLines
   result.systemPrompt = promptLines.join("\n").strip()
+  # Set model if found
+  if modelLine.len > 0:
+    result.model = some(modelLine)
 
 proc validateAgentDefinition*(agent: AgentDefinition, knownTools: seq[string]): AgentStatus =
   ## Validate agent definition and return status

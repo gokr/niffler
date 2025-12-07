@@ -9,9 +9,11 @@
 
 import std/[osproc, os, strformat, times]
 import ../types/config
+import ../types/agents
 import nats_client, config
 from std/options import isSome, isNone, get
 import natswrapper
+import ../core/session
 
 type
   SpawnedAgent* = object
@@ -38,11 +40,29 @@ proc startAgent*(agentId: string, nifflerPath: string = "./src/niffler"): Spawne
   if not found:
     raise newException(ValueError, fmt"Agent '{agentId}' not found in configuration")
 
+  # Load agent definition to get model configuration
+  var agentArgs = @["--agent", agentId]
+  try:
+    # Try to load agent definition from agents directory
+    let agentsDir = session.getAgentsDir()
+    let agentFile = agentsDir / agentId & ".md"
+    if fileExists(agentFile):
+      let content = readFile(agentFile)
+      let agentDef = parseAgentDefinition(content, agentFile)
+      if agentDef.model.isSome():
+        # Pass model from agent definition
+        agentArgs.add("--model=" & agentDef.model.get())
+        echo fmt"→ Using model from agent definition: {agentDef.model.get()}"
+  except Exception as e:
+    # If we can't load agent definition, spawn without model parameter
+    # The agent will use its default logic (first model or fallback)
+    discard
+
   # Spawn agent process
   # Use poUsePath so agent inherits terminal for display
   let process = startProcess(
     command = nifflerPath,
-    args = ["--agent", agentId],
+    args = agentArgs,
     options = {poUsePath}
   )
 
