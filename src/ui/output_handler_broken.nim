@@ -160,6 +160,7 @@ proc startOutputHandlerWorker*(channels: ptr ThreadChannels, level: Level): Outp
   params.channels = channels
   params.level = level
   params.dump = false
+  params.dumpsse = false  # Output handler doesn't need SSE dumping
   params.database = nil
   params.pool = nil
   createThread(result.thread, outputHandlerProc, params)

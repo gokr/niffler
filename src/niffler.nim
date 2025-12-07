@@ -21,6 +21,7 @@ type
     debug: bool
     info: bool
     dump: bool
+    dumpsse: bool
     logFile: string
     help: bool
     version: bool
@@ -41,6 +42,7 @@ proc parseCliArgs(): CliArgs =
     debug: false,
     info: false,
     dump: false,
+    dumpsse: false,
     help: false,
     version: false
   )
@@ -74,6 +76,7 @@ proc parseCliArgs(): CliArgs =
       of "debug", "d": result.debug = true
       of "info", "i": result.info = true
       of "dump": result.dump = true
+      of "dumpsse": result.dumpsse = true
       of "log": result.logFile = val
       of "task", "t": result.task = val
       of "ask", "a": result.ask = val
@@ -112,6 +115,7 @@ OPTIONS:
   -i, --info                 Info level logging
   -d, --debug                Debug level logging
       --dump                 Show HTTP requests & responses
+      --dumpsse              Show raw SSE lines (verbose, use with --dump)
       --log=<filename>       Redirect debug output to log file
       --nats=<url>           NATS server URL [default: nats://localhost:4222]
   -h, --help                 Show this help message
@@ -151,7 +155,7 @@ proc handleError(message: string, showHelp: bool = false) =
   quit(1)
 
 
-proc startMasterMode(modelName: string, level: Level, dump: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
+proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start master mode with CLI interface for agent routing
 
   # Initialize configuration components
@@ -167,7 +171,7 @@ proc startMasterMode(modelName: string, level: Level, dump: bool, logFile: strin
   # Start the interactive CLI mode with proper input loop
   # Signal handling and cleanup are handled inside startCLIMode
   var session: Session
-  startCLIMode(session, modelConfig, database, level, dump, natsUrl)
+  startCLIMode(session, modelConfig, database, level, dump, dumpsse, natsUrl)
 
 proc parseCliArgsMain(): CliArgs =
   ## Parse command line arguments with error handling
@@ -214,7 +218,7 @@ proc dispatchCmd(args: CliArgs) =
     if args.agentName == "":
       handleError("agent command requires a name", true)
 
-    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.logFile, args.task, args.ask)
+    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.dumpsse, args.logFile, args.task, args.ask)
 
   of "model":
     if args.modelSubCmd == "list":
@@ -234,12 +238,12 @@ proc dispatchCmd(args: CliArgs) =
     quit(0)
 
   of "nats-monitor":
-    startNatsMonitor(args.natsUrl, level, args.dump, args.logFile)
+    startNatsMonitor(args.natsUrl, level, args.dump, args.dumpsse, args.logFile)
     quit(0)
 
   of "":
     # Interactive mode with agent routing
-    startMasterMode(args.model, level, args.dump, args.logFile, args.natsUrl)
+    startMasterMode(args.model, level, args.dump, args.dumpsse, args.logFile, args.natsUrl)
 
   else:
     handleError("Unknown command: " & args.command, true)

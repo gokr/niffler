@@ -30,7 +30,7 @@ proc formatPayload(data: string): string =
   except:
     return data
 
-proc startNatsMonitor*(natsUrl: string, level: Level, dump: bool = false, logFile: string = "") =
+proc startNatsMonitor*(natsUrl: string, level: Level, dump: bool = false, dumpsse: bool = false, logFile: string = "") =
   ## Start the NATS traffic monitor (runs in main thread)
 
   # Setup file logging if logFile is provided

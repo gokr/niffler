@@ -44,8 +44,11 @@ let curl* = newCurly()
 # Global dump flag for request/response logging
 var dumpEnabled {.threadvar.}: bool
 
+# Global dumpsse flag for SSE line dumping
+var dumpsseEnabled {.threadvar.}: bool
+
 # Global parser for flexible tool call format detection
-var globalFlexibleParser {.threadvar.}: FlexibleParser
+var globalFlexibleParser* {.threadvar.}: FlexibleParser
 
 # Global thinking token parser for incremental processing
 var globalThinkingParser {.threadvar.}: IncrementalThinkingParser
@@ -53,6 +56,10 @@ var globalThinkingParser {.threadvar.}: IncrementalThinkingParser
 proc setDumpEnabled*(enabled: bool) =
   ## Set the global dump flag for HTTP request/response logging
   dumpEnabled = enabled
+
+proc setDumpsseEnabled*(enabled: bool) =
+  ## Set the global dumpsse flag for SSE line dumping
+  dumpsseEnabled = enabled
 
 proc initGlobalParser*() =
   ## Initialize the global flexible parser for tool call format detection
@@ -88,10 +95,15 @@ proc processThinkingContent(rawContent: string, chunk: var StreamChunk): string 
 proc initDumpFlag*() =
   ## Initialize the dump flag for this thread (called once per thread)
   dumpEnabled = false
+  dumpsseEnabled = false
 
 proc isDumpEnabled*(): bool =
   ## Check if HTTP request/response dumping is enabled for this thread
   return dumpEnabled
+
+proc isDumpsseEnabled*(): bool =
+  ## Check if SSE line dumping is enabled for this thread
+  return dumpsseEnabled
 
 type
   CurlyStreamingClient* = object
@@ -510,8 +522,10 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
         logFileModule.dumpToLog COLOR_HTTP & "🔵 === HTTP RESPONSE ===" & COLOR_RESET
         logFileModule.dumpToLog COLOR_HTTP & "Status: " & $stream.code & COLOR_RESET
         logFileModule.dumpToLog COLOR_HTTP & "Headers:" & COLOR_RESET
-        logFileModule.dumpToLog "  Content-Type: text/event-stream"
-        logFileModule.dumpToLog "  Transfer-Encoding: chunked"
+        # Display headers as available from the curl response
+        # Note: stream.headers is webby's HttpHeaders type
+        # Using toString which formats headers as text
+        logFileModule.dumpToLog "  " & $stream.headers
         logFileModule.dumpToLog ""
         logFileModule.dumpToLog COLOR_HTTP & "Body (streaming):" & COLOR_RESET
 
@@ -546,10 +560,9 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
             totalLinesProcessed += 1
             debug(fmt"Processing line {totalLinesProcessed}: {line[0..min(100, line.len-1)]}")
 
-            # Skip line-by-line dumping for SSE body - accumulation happens in api.nim
-            # Headers and request/response metadata still dumped above
-            # if isDumpEnabled():
-            #   logFileModule.dumpToLog line
+            # Dump SSE line-by-line if dumpsse is enabled
+            if isDumpsseEnabled():
+              logFileModule.dumpToLog line
 
             try:
               let maybeChunk = parseSSELine(line)

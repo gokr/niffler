@@ -217,7 +217,8 @@ proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = f
   var params = new(ThreadParams)
   params.channels = channels
   params.level = level
-  params.dump = dump  
+  params.dump = dump
+  params.dumpsse = false  # Tool worker doesn't need SSE dumping
   params.database = database
   params.pool = pool
   createThread(result.thread, toolWorkerProc, params)

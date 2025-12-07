@@ -1180,6 +1180,7 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
 
   # Initialize dump flag for this thread
   setDumpEnabled(params.dump)
+  setDumpsseEnabled(params.dumpsse)
   
   let channels = params.channels
   let database = params.database
@@ -1346,11 +1347,50 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                         collectedToolCalls.add(completedCall)
                         hasToolCalls = true
                         debug(fmt"Complete tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
-                        
+
                         # Tool call request notification will be sent by main execution loop
-                    
+
                     # Clean up stale buffers periodically
                     cleanupStaleBuffers(mutableToolCallBuffers)
+
+                # Handle XML-style tool calls in content (for models that send tool calls as content)
+                if delta.content.len > 0 and not chunkHasToolCalls:
+                  let contentFormat = detectToolCallFormat(delta.content)
+                  if contentFormat != tfUnknown and contentFormat in [tfQwenXML, tfAnthropic]:
+                    # This content contains XML tool calls, parse them
+                    debug(fmt"Detected {contentFormat} tool calls in content, parsing...")
+
+                    # Use the global parser to parse XML tool calls from content
+                    var parsedCalls = parseToolCallFragment(globalFlexibleParser, delta.content)
+                    if parsedCalls.len > 0:
+                      debugColored(COLOR_TOOL, fmt"🟢 Parsed {parsedCalls.len} XML tool calls from content")
+                      chunkHasToolCalls = true
+
+                      # Add parsed calls to the buffers as complete calls
+                      for parsedCall in parsedCalls:
+                        # Convert to LLMToolCall format for buffering
+                        let tc = LLMToolCall(
+                          id: parsedCall.id,
+                          `type`: "function",
+                          function: FunctionCall(
+                            name: parsedCall.function.name,
+                            arguments: parsedCall.function.arguments
+                          )
+                        )
+
+                        # Buffer as complete tool call
+                        let isComplete = bufferToolCallFragment(mutableToolCallBuffers, tc)
+                        if isComplete:
+                          let completedCalls = getCompletedToolCalls(mutableToolCallBuffers)
+                          for completedCall in completedCalls:
+                            collectedToolCalls.add(completedCall)
+                            hasToolCalls = true
+                            debug(fmt"Complete XML tool call detected: {completedCall.function.name} with args: {completedCall.function.arguments}")
+
+                      cleanupStaleBuffers(mutableToolCallBuffers)
+
+                      # Don't send this content as regular content since it's tool calls
+                      # Continue to next processing step
                 
                 # Handle thinking token processing from streaming chunks
                 var thinkingContentStr: Option[string] = none(string)
@@ -1702,13 +1742,14 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, dumpsse: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
   result.isRunning = true
   # Create params as heap-allocated object to ensure it stays alive for thread lifetime
   var params = new(ThreadParams)
   params.channels = channels
-  params.level = level  
+  params.level = level
   params.dump = dump
+  params.dumpsse = dumpsse
   params.database = database
   params.pool = pool
   createThread(result.thread, apiWorkerProc, params)

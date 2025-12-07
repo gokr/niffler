@@ -681,7 +681,7 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
     writeCompleteLine(formatWithStyle(fmt"$ {command}", currentTheme.toolCall))
     writeCompleteLine(formatWithStyle(fmt"Unexpected error: {e.msg}", currentTheme.error))
 
-proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false, natsUrl: string = "nats://localhost:4222") =
+proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false, dumpsse: bool = false, natsUrl: string = "nats://localhost:4222") =
   ## Start the CLI mode with enhanced interface
 
   # Load configuration to get theme settings
@@ -764,7 +764,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   updatePromptState()
   
   # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, database, pool)
 
   # Start MCP worker with pool
   var mcpWorker = startMcpWorker(channels, level, dump, database, pool)
@@ -986,7 +986,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
 
   # Linecross cleanup is automatic
 
-proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false, logFile: string = "") =
+proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = false, dumpsse: bool = false, logFile: string = "") =
   ## Send a single prompt and return response
   if text.len == 0:
     echo "Error: No prompt text provided"
@@ -1009,6 +1009,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   initThreadSafeChannels()
   initDumpFlag()
   setDumpEnabled(dump)
+  setDumpsseEnabled(dumpsse)
   
   # Initialize database
   let database = initializeGlobalDatabase(level)
@@ -1025,7 +1026,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   let channels = getChannels()
 
   # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, database, pool)
+  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, database, pool)
 
   # Start MCP worker with pool
   var mcpWorker = startMcpWorker(channels, level, dump, database, pool)

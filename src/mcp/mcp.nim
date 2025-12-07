@@ -271,8 +271,9 @@ proc startMcpWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = fa
   result.isRunning = true
   var params = new(ThreadParams)
   params.channels = channels
-  params.level = level  
+  params.level = level
   params.dump = dump
+  params.dumpsse = false  # MCP worker doesn't need SSE dumping
   params.database = database
   params.pool = pool
   createThread(result.thread, mcpWorkerMain, params)

@@ -29,6 +29,7 @@ type
     channels*: ptr ThreadChannels
     level*: Level
     dump*: bool
+    dumpsse*: bool
     database*: DatabaseBackend  # Keep for backward compatibility
     pool*: Pool                 # New database pool for cross-thread sharing
 

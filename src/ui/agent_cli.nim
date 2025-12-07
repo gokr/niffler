@@ -712,7 +712,7 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, logFile: string = "", task: string = "", ask: string = "") =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, dumpsse: bool = false, logFile: string = "", task: string = "", ask: string = "") =
   ## Start agent mode - main entry point
   ## If task is provided, executes single task and exits (no interactive mode)
   ## If ask is provided, executes single ask without summarization and exits
@@ -737,7 +737,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     info("Starting worker threads...")
     let pool = if state.database != nil: state.database.pool else: nil
 
-    state.apiWorker = startAPIWorker(state.channels, level, dump, database = state.database, pool = pool)
+    state.apiWorker = startAPIWorker(state.channels, level, dump, dumpsse, database = state.database, pool = pool)
     info("API worker started")
 
     # Configure API worker with model
