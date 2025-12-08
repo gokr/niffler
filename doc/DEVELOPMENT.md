@@ -443,7 +443,389 @@ Allowed tools:
 - [Examples](../doc/EXAMPLES.md) - Usage patterns and examples
 - [Configuration](CONFIG.md) - Configuration system guide
 
+## Recent Features and Updates
+
+### Integration Testing Framework (v0.5.0)
+
+The testing framework has been comprehensive completed with real LLM integration:
+
+#### Real LLM Workflows
+- `test_real_llm_workflows.nim` - Tests actual LLM interactions
+- Environment-based configuration for API keys
+- Support for different model providers
+- Token usage tracking verification
+
+#### Master-Agent Scenarios
+- `test_master_agent_scenario.nim` - Multi-agent coordination
+- NATS messaging verification
+- Agent health monitoring
+- Task completion validation
+
+#### Testing Infrastructure
+- `test_integration_framework.nim` - Core testing utilities
+- `run_integration_tests.sh` - Test runner script
+- Environment configuration and cleanup
+- Parallel test execution support
+
+### MCP Integration (v0.5.0)
+
+Model Context Protocol support for external tools:
+
+#### Core Components
+- `src/mcp/mcp.nim` - MCP client implementation
+- `src/mcp/manager.nim` - Service discovery and management
+- `src/mcp/protocol.nim` - Protocol handling
+- `src/mcp/tools.nim` - Tool integration
+
+#### Key Features
+- Dynamic external tool loading
+- Cross-thread accessibility with caching
+- Service discovery and configuration
+- `/mcp status` command for monitoring
+- Tool registry integration
+
+### Advanced Conversation Features
+
+#### Thinking Token Support
+- `src/ui/thinking_visualizer.nim` - Real-time thinking display
+- Database storage in `conversation_thinking_token` table
+- Model-specific reasoning capture
+- UI streaming with progress indicators
+
+#### Enhanced Message Persistence
+- Extended tool call metadata
+- Tool execution tracking
+- Performance metrics storage
+- Multiple content blocks support
+
+### Configuration System Updates
+
+#### NATS and Master Mode Configuration
+- Multi-environment setup support
+- Agent auto-start configuration
+- Security and authentication options
+- Clustering and high availability setup
+- Complete NATS server setup documentation
+
+#### Advanced Configuration Patterns
+- Environment-specific configurations
+- Dynamic model selection
+- Custom agent definitions
+- Security and access control
+- Performance optimization settings
+
+### Database Schema Enhancements
+
+#### New Tables (v0.5.0)
+- `conversation_thinking_token` - Reasoning token storage
+- `token_correction_factor` - Token counting accuracy
+- `token_log_entry` - Debugging and analysis
+- `system_prompt_token_usage` - System prompt tracking
+- `prompt_history_entry` - Prompt optimization data
+
+#### Database Features
+- Complete schema documentation in `DATABASE_SCHEMA.md`
+- Performance optimization recommendations
+- Security considerations
+- Backup and migration procedures
+
+### CLI and UI Improvements
+
+#### Enhanced CLI Features
+- `--ask` option for single prompt execution
+- `--dumpsse` for debugging server-sent events
+- Response header visualization
+- Model configuration in agent markdown files
+
+#### Better Visualization
+- Progress indicators for long operations
+- Tool execution status updates
+- Diff visualization improvements
+- Table formatting utilities
+
+## Implementation Status Updates
+
+### Recently Completed Features
+
+#### Multi-Agent System (✅ Complete)
+- Agent discovery via NATS presence
+- Master mode CLI with @agent routing
+- Task result visualization
+- Single-prompt routing support
+- **All Phase 3 goals met**
+
+#### Task and Agent System (✅ Complete)
+- Soft agent type system
+- Default agents: general-purpose, code-focused
+- Task executor with isolated execution
+- Full tool integration
+- Agent-based conversation tracking
+
+#### Database Capabilities (✅ Complete)
+- TiDB integration with all tables
+- Conversation tracking and persistence
+- Token usage and cost tracking
+- Todo system with database persistence
+- Complete database schema
+
+### Current Testing Capabilities
+
+#### Unit Tests (✅ Complete)
+- Core modules coverage
+- Tool validation testing
+- Database operations
+- MCP integration basics
+
+#### Integration Tests (✅ Complete)
+- Real LLM workflow testing
+- Master-agent scenarios
+- NATS messaging validation
+- Database integration
+
+#### Performance Testing
+- Token usage tracking
+- Multi-agent load testing
+- Database query optimization
+- NATS throughput validation
+
+### Tools and Utilities
+
+#### Database Inspector (`scripts/db_inspector.sh`)
+- Conversation analysis
+- Token usage reports
+- Database health checks
+- Migration assistance
+
+#### Development Scripts
+- `run_integration_tests.sh` - Full test suite
+- Token monitoring scripts
+- Debugging utilities
+- Performance profiling tools
+
+## Development Patterns
+
+### Adding New Tools
+
+1. **Schema Definition** (`src/tools/schemas.nim`)
+2. **Tool Implementation** (new `.nim` file in `src/tools/`)
+3. **GC Safety** - Mark all tool functions with `{.gcsafe.}`
+4. **Registration** (`src/tools/registry.nim`)
+5. **Testing** - Add tests in `tests/test_*.nim`
+
+### Thread Safety Requirements
+
+All tool functions MUST use this pattern:
+
+```nim
+proc executeTool*(args: JsonNode): string {.gcsafe.} =
+  ## Tool description
+  {.gcsafe.}:
+    try:
+      # Tool implementation here
+      # Access to database via getGlobalDatabase()
+      # Access to globals only inside {.gcsafe.}: block
+      result = "success"
+    except Exception as e:
+      return $ %*{"error": e.msg}
+```
+
+### Error Handling Patterns
+
+Use standardized error responses throughout:
+
+```nim
+# Standard error format
+return $ %*{
+  "error": "Descriptive error message",
+  "type": "ErrorType",
+  "context": "Additional context"
+}
+
+# Tool errors
+return $ %*{
+  "error": "Parameter validation failed",
+  "field": "param_name",
+  "expected": "string",
+  "received": "null"
+}
+```
+
+### Configuration Integration
+
+For new configuration options:
+
+1. **Update Default Config** - Add to `src/core/config.nim`
+2. **Environment Variable Support** - Use `${VAR_NAME}` pattern
+3. **Documentation** - Update `CONFIG.md`
+4. **Validation** - Add schema validation where appropriate
+5. **Testing** - Add config validation tests
+
+## Testing Strategy Evolution
+
+### Current Testing Levels
+
+#### ✅ Unit Tests
+- Tool execution and validation
+- Database operations
+- Configuration parsing
+- Agent system components
+- **Files:** `tests/test_*.nim`
+
+#### ✅ Integration Tests
+- Real LLM workflows
+- Master-agent communication
+- NATS messaging
+- Database persistence
+- **Files:** `tests/test_integration_framework.nim`, `test_real_llm_workflows.nim`, `test_master_agent_scenario.nim`
+
+#### ✅ System Tests
+- End-to-end workflows
+- Multi-agent scenarios
+- Performance under load
+- Memory leak detection
+- **Files:** `tests/test_system_*.nim` (planned)
+
+### Running Tests
+
+```bash
+# All unit tests
+nimble test
+
+# Integration tests (requires NATS + API keys)
+./tests/run_integration_tests.sh
+
+# Specific test suites
+nim c -r tests/test_conversation.nim
+nim c -r tests/test_tools.nim
+
+# Skip tests that require running services
+nim test -- --exclude "integration"
+```
+
+## Debugging Guide
+
+### Debug Mode
+
+```bash
+# Enable debug output
+./src/niffler --debug
+
+# Specific debug topics
+./src/niffler --debug topics=api,tools,nats
+
+# Database debugging
+./src/niffler --debug topics=database
+
+# Token usage debugging
+./src/niffler --debug topics=token,correction
+```
+
+### Common Debugging Scenarios
+
+#### Tool Not Working
+```bash
+# Enable tool debugging
+./src/niffler --debug topics=tools,validation
+
+# Check tool registration
+grep "tools: register" logs/niffler.log
+```
+
+#### NATS Connection Issues
+```bash
+# NATS debugging
+./src/niffler --debug topics=nats,master
+
+# Test NATS directly
+nats sub "niffler.>" &
+./src/niffler agent test-agent
+```
+
+#### Database Issues
+```bash
+# Database debugging
+./src/niffler --debug topics=database
+
+# Check database schema
+mysql -h 127.0.0.1 -P 4000 -u root -e "SHOW TABLES FROM niffler"
+```
+
+## Performance Optimization
+
+### Current Optimizations
+
+#### Token Usage
+- Token correction factors for accuracy
+- Local token counting
+- Prompt caching strategies
+- Usage tracking and limits
+
+#### Database Performance
+- Connection pooling
+- Query optimization
+- Index tuning recommendations
+- Monitoring and alerting
+
+#### Multi-Agent Scaling
+- NATS clustering support
+- Agent load balancing
+- Health monitoring
+- Graceful shutdown handling
+
+## Future Development Areas
+
+### High Priority Opportunities
+
+1. **Performance Optimization**
+   - Query optimization for large datasets
+   - Memory usage reduction
+   - Parallel tool execution
+
+2. **Enhanced Security**
+   - Input validation improvements
+   - API key rotation
+   - Access control refinement
+
+3. **Developer Experience**
+   - Better debugging tools
+   - Automated testing improvements
+   - Performance profiling tools
+
+### Medium Priority Enhancements
+
+1. **Advanced Features**
+   - Custom plugin system
+   - Workflow automation
+   - Advanced filtering and search
+
+2. **Integration Improvements**
+   - More MCP servers
+   - Additional model providers
+   - CI/CD integrations
+
+## Resources and References
+
+### Technical Documentation
+- [Architecture Overview](ARCHITECTURE.md) - System design and patterns
+- [Task System](TASK.md) - Multi-agent architecture
+- [Database Schema](DATABASE_SCHEMA.md) - Complete database documentation
+- [Configuration Guide](CONFIG.md) - All configuration options
+- [Advanced Configuration](ADVANCED_CONFIG.md) - Production setup
+
+### Development Resources
+- [Contribution Guidelines](CONTRIBUTING.md) - How to contribute
+- [Examples](EXAMPLES.md) - Common usage patterns
+- [Integration Tests](INTEGRATION_TESTS.md) - Testing framework
+- [Model Documentation](MODELS.md) - API and model reference
+
+### External Resources
+- [Nim Documentation](https://nim-lang.org/docs.html) - Language reference
+- [NATS Documentation](https://docs.nats.io/) - Messaging system
+- [TiDB Documentation](https://docs.pingcap.com/tidb) - Database system
+- [OpenAI API](https://platform.openai.com/docs) - Primary API reference
+
 ---
 
-**Last Updated:** 2025-12-02
-**Document Version:** 0.4.0
+**Last Updated:** 2025-12-08
+**Document Version:** 0.5.0
+**Features Covered:** Through v0.5.0 completion

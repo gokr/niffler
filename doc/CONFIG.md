@@ -384,3 +384,403 @@ The old system still works for backward compatibility, but the new config system
 - ⚠️ **Conversation manager** - Session threading through conversation manager functions
 
 See TODO.md for priority and detailed tasks.
+
+## NATS Configuration
+
+Niffler uses NATS for multi-agent communication and master mode routing. NATS configuration is optional and only required when using master mode or running multiple agents.
+
+### Configuration Fields
+
+Add to your `~/.niffler/config.yaml`:
+
+```yaml
+# NATS Server Configuration
+nats:
+  url: "nats://127.0.0.1:4222"    # NATS server URL
+  username: ""                    # Optional username
+  password: ""                    # Optional password
+  token: ""                       # Optional auth token
+  timeout: 5000                   # Connection timeout in ms
+
+# Master Mode Configuration
+masterMode:
+  enabled: false                  # Enable master mode CLI
+  defaultAgent: "general-purpose" # Default agent to route to
+  timeout: 30000                  # Agent request timeout in ms
+  retryAttempts: 3                # Number of retry attempts
+  presenceInterval: 5000          # Agent presence check interval in ms
+```
+
+### NATS Server Setup
+
+#### Quick Start (Local)
+
+```bash
+# Install NATS Server
+curl -L https://github.com/nats-io/nats-server/releases/download/v2.10.5/nats-server-v2.10.5-linux-amd64.tar.gz | tar xz
+sudo cp nats-server-v2.10.5-linux-amd64/nats-server /usr/local/bin/
+
+# Start NATS Server
+nats-server
+
+# Or with custom config
+nats-server -c nats.conf
+```
+
+#### Docker
+
+```bash
+# Basic NATS server
+docker run --name nats -p 4222:4222 -d nats:latest
+
+# With persistent storage and monitoring
+docker run --name nats \
+  -p 4222:4222 \
+  -p 8222:8222 \
+  -v nats-data:/data \
+  -d nats:latest \
+  -js \  # Enable JetStream
+  -m 8222  # Enable HTTP monitoring
+```
+
+#### NATS Configuration File (nats.conf)
+
+```ini
+# Basic configuration
+listen: 0.0.0.0:4222
+http_port: 8222
+
+# Authorization (optional)
+authorization {
+  users: [
+    {user: admin, password: secret, permissions: {
+      publish: "niffler.>"
+      subscribe: "niffler.>"
+    }}
+  ]
+}
+
+# JetStream for persistence (optional)
+jetstream {
+  store_dir: "/data/jetstream"
+}
+
+# Clustering (for production)
+cluster {
+  name: "niffler-cluster"
+  listen: 0.0.0.0:6222
+  routes: ["nats://other-node:6222"]
+}
+```
+
+### Master Mode Configuration
+
+Master mode allows routing requests to specialized agents and managing a fleet of Niffler agents.
+
+#### Enabling Master Mode
+
+```yaml
+masterMode:
+  enabled: true                   # Enable master mode
+  defaultAgent: "general-purpose" # Fallback agent
+
+# Agent configuration
+agents:
+  - name: "general-purpose"
+    model: "gpt-4"
+    config: "default"
+    skills: ["general", "conversation", "analysis"]
+
+  - name: "coder"
+    model: "gpt-4"
+    config: "cc"
+    skills: ["coding", "debugging", "architecture"]
+
+  - name: "researcher"
+    model: "gpt-4-turbo"
+    config: "default"
+    skills: ["research", "writing", "analysis"]
+```
+
+#### Agent Auto-Start Configuration
+
+```yaml
+# Auto-start agents with master mode
+masterMode:
+  autoStart: true                   # Auto-start configured agents
+  agentTimeout: 30000               # Wait time for agent startup
+  healthCheckInterval: 5000         # Health check frequency
+
+agents:
+  - name: "coder"
+    autoStart: true
+    arguments: ["--agent", "--name", "coder", "--config", "cc"]
+
+  - name: "researcher"
+    autoStart: true
+    arguments: ["--agent", "--name", "researcher", "--model", "gpt-4-turbo"]
+```
+
+### NATS Subjects and Patterns
+
+Niffler uses these NATS subject patterns:
+
+- `niffler.agent.{agent_name}.request` - Send commands to specific agents
+- `niffler.agent.{agent_name}.response` - Receive responses from agents
+- `niffler.master.{session_id}.status` - Master mode status updates
+- `niffler.presence.{agent_name}` - Agent presence announcements
+
+### Security Considerations
+
+#### Authentication
+
+```yaml
+nats:
+  url: "tls://nats.example.com:4222"
+  username: "${NATS_USER}"         # Use environment variables
+  password: "${NATS_PASS}"
+  tls:
+    enabled: true
+    ca_file: "/path/to/ca.pem"
+    cert_file: "/path/to/cert.pem"
+    key_file: "/path/to/key.pem"
+```
+
+#### Network Security
+
+1. **Use TLS in production**: Enable TLS encryption for all NATS connections
+2. **Firewall rules**: Restrict NATS ports (4222, 6222, 8222) to trusted networks
+3. **Account-based isolation**: Use NATS accounts to isolate multi-tenant deployments
+4. **Subject permissions**: Limit publish/subscribe permissions per user
+
+### Best Practices
+
+#### Development Environment
+
+```yaml
+nats:
+  url: "nats://127.0.0.1:4222"
+
+masterMode:
+  enabled: true
+  timeout: 10000                # Shorter timeout for development
+  retryAttempts: 1              # Fail fast for debugging
+```
+
+#### Production Environment
+
+```yaml
+nats:
+  url: "nats://nats-cluster.example.com:4222"
+  username: "${NATS_USER}"
+  password: "${NATS_PASS}"
+  timeout: 30000
+  maxReconnects: 10
+  reconnectWait: 2000
+
+masterMode:
+  enabled: true
+  timeout: 60000                # Longer timeout for production
+  retryAttempts: 3
+  healthCheckInterval: 10000
+```
+
+### Troubleshooting
+
+#### Connection Issues
+
+```bash
+# Test NATS connection
+nats sub "niffler.>" &
+nats pub "niffler.test" "hello world"
+
+# Check server status
+curl http://localhost:8222/varz
+curl http://localhost:8222/connz
+```
+
+#### Agent Discovery Issues
+
+1. **Check presence messages**: Monitor `niffler.presence.>` subjects
+2. **Verify connectivity**: Ensure agents can reach NATS server
+3. **Check subject patterns**: Verify agent names match subject patterns
+4. **Authentication**: Validate credentials and permissions
+
+#### Master Mode Issues
+
+1. **Agent not found**: Check agent auto-start and presence registration
+2. **Request timeout**: Increase timeout or check agent responsiveness
+3. **Route conflicts**: Verify agent names don't conflict with built-in commands
+
+### Multi-Region Deployment
+
+For distributed deployments, configure NATS clustering:
+
+```yaml
+# Region 1
+nats:
+  url: "nats://region1-nats.example.com:4222"
+  cluster:
+    name: "niffler-global"
+    routes: ["nats://region2-nats.example.com:6222"]
+
+# Region 2
+nats:
+  url: "nats://region2-nats.example.com:4222"
+  cluster:
+    name: "niffler-global"
+    routes: ["nats://region1-nats.example.com:6222"]
+```
+
+### Monitoring NATS
+
+#### HTTP Endpoints
+
+- `/varz` - Server variables and statistics
+- `/connz` - Connection information
+- `/routez` - Route information
+- `/gatewayz` - Gateway information (if enabled)
+- `/leafz` - Leaf node connections (if enabled)
+
+#### Prometheus Metrics
+
+Enable Prometheus metrics:
+
+```yaml
+# In nats.conf
+http_port: 8222
+monitor_host: "0.0.0.0"
+```
+
+Access metrics at: `http://localhost:8222/metrics`
+
+### JetStream for Persistence
+
+For reliable message delivery:
+
+```yaml
+nats:
+  url: "nats://127.0.0.1:4222"
+  jetstream: enabled  #Enable JetStream
+
+masterMode:
+  jetStream: true     # Use JetStream for agent requests
+  streamConfig:
+    replicas: 3       # Number of replicas for durability
+    max_age: "24h"    # Message retention
+```
+
+### Environment Variables
+
+Use environment variables for sensitive configuration:
+
+```bash
+export NATS_URL="nats://nats.example.com:4222"
+export NATS_USER="niffler"
+export NATS_PASS="secure-password"
+export NATS_TLS_CERT="/path/to/cert.pem"
+export NATS_TLS_KEY="/path/to/key.pem"
+export NATS_CA="/path/to/ca.pem"
+
+# In config.yaml
+nats:
+  url: "${NATS_URL}"
+  username: "${NATS_USER}"
+  password: "${NATS_PASS}"
+```
+
+## Database Configuration
+
+Niffler uses TiDB (MySQL-compatible) for persistent storage. Configure database connection in `~/.niffler/config.yaml`:
+
+```yaml
+# Database Configuration
+database:
+  host: "127.0.0.1"
+  port: 4000
+  user: "root"
+  password: ""                    # Leave empty for default TiDB setup
+  database: "niffler"
+  ssl: false                      # Set to true for production
+  maxConnections: 10
+  connectionTimeout: 5000
+  maxIdleTime: 3600
+```
+
+### Environment Variables
+
+```bash
+export DB_HOST="127.0.0.1"
+export DB_PORT="4000"
+export DB_USER="root"
+export DB_PASSWORD=""
+export DB_NAME="niffler"
+
+# In config.yaml
+database:
+  host: "${DB_HOST}"
+  port: ${DB_PORT}
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  database: "${DB_NAME}"
+```
+
+### Database Setup
+
+#### TiDB Quick Start
+
+```bash
+# Using Docker
+docker run -d --name tidb \
+  -p 4000:4000 \
+  -p 10080:10080 \
+  pingcap/tidb:latest
+
+# Create database
+mysql -h 127.0.0.1 -P 4000 -u root
+CREATE DATABASE niffler;
+```
+
+#### MySQL Alternative
+
+```yaml
+database:
+  host: "mysql.example.com"
+  port: 3306
+  user: "niffler"
+  password: "secure-password"
+  database: "niffler"
+  ssl: true
+  charset: "utf8mb4"
+```
+
+### Connection Pooling
+
+For production deployments:
+
+```yaml
+database:
+  pool:
+    minConnections: 5
+    maxConnections: 50
+    acquireTimeoutMillis: 10000
+    createTimeoutMillis: 30000
+    destroyTimeoutMillis: 5000
+    idleTimeoutMillis: 30000
+    reapIntervalMillis: 1000
+    createRetryIntervalMillis: 100
+```
+
+### Database Migration
+
+Schema is auto-created on first run. For production, run migrations manually:
+
+```bash
+# Using the built-in migration tool
+./src/niffler --migrate
+
+# Or apply schema directly
+mysql -h 127.0.0.1 -P 4000 -u root niffler < schema.sql
+```
+
+For complete database documentation, see [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md).

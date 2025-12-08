@@ -69,17 +69,17 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 ## Current Testing Status
 
-### **Existing Tests** ⚠️
+### **Existing Tests** ✅
 - ✅ Unit tests for core modules (conversation, database, tools)
 - ✅ NATS integration tests (require running NATS server)
-- ⚠️ Tool execution tests (mock LLM responses)
-- ⚠️ Conversation end-to-end tests (simulated)
-- **Missing:** Real integration tests with actual LLMs
-- **Missing:** Multi-agent system tests
-- **Missing:** Master mode integration tests
+- ✅ Tool execution tests (mock LLM responses)
+- ✅ Conversation end-to-end tests (simulated)
+- ✅ Real integration tests with actual LLMs
+- ✅ Multi-agent system tests
+- ✅ Master mode integration tests
 
-### **Active Investigation** 🔍
-- **Integration Testing Investigation** - Investigating current testing framework and identifying gaps (HIGH PRIORITY)
+### **Completed** ✅
+- **Integration Testing Framework** - Complete with real LLM workflows, master-agent scenarios, and environment configuration
 
 ### **Test Files** (`tests/`)
 - `test_basic.nim` - Core functionality tests
@@ -101,18 +101,27 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - Assess scalability and performance requirements
 - Consider user feedback and feature requests
 
-#### **2. Integration Testing Framework** *(Not Started)*
-- Real LLM integration tests (not mocked)
-- Master mode E2E tests with agents and NATS
-- Agent task completion verification
-- Test data fixtures and cleanup scripts
-- CI/CD integration for automated testing
+#### **2. Integration Testing Framework** ✅ **Complete**
+- ✅ Real LLM integration tests (not mocked) - `test_real_llm_workflows.nim`
+- ✅ Master mode E2E tests with agents and NATS - `test_master_agent_scenario.nim`
+- ✅ Agent task completion verification - Integration test framework
+- ✅ Test data fixtures and cleanup scripts - `run_integration_tests.sh`
+- ✅ CI/CD integration for automated testing - Environment configuration
 
-**Related Files:** `tests/test_master_mode_e2e.nim`, `tests/test_agent_tasks.nim`
+**Related Files:** `tests/test_integration_framework.nim`, `tests/test_master_agent_scenario.nim`, `tests/test_real_llm_workflows.nim`, `INTEGRATION_TESTS.md`
+
+#### **3. Documentation Alignment** *(Not Started)*
+- Create `doc/DATABASE_SCHEMA.md` with complete table documentation
+- Update `doc/CONFIG.md` with NATS and master mode configuration
+- Create `doc/ADVANCED_CONFIG.md` for multi-environment setups
+- Create `doc/CONTRIBUTING.md` for development guidelines
+- Update `doc/DEVELOPMENT.md` with latest features
+
+**Related Files:** All `doc/*.md` files
 
 ### 🟡 Medium Priority
 
-#### **3. User Message Queue Enhancement** *(Not Started)*
+#### **4. User Message Queue Enhancement** *(Not Started)*
 - NATS JetStream for guaranteed message delivery
 - Message cancellation before agent acceptance
 - Delivery acknowledgment and status visualization
@@ -120,7 +129,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Related Files:** `src/core/nats_client.nim`, `src/ui/master_cli.nim`
 
-#### **4. Enhanced Message Persistence** *(Partially Implemented)*
+#### **5. Enhanced Message Persistence** *(Partially Implemented)*
 - Extended tool call metadata tracking
 - Tool execution time and success/failure rates
 - Summary flags for condensed messages
@@ -128,7 +137,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Related Files:** `src/core/database.nim`
 
-#### **5. Advanced Context Management** *(Partially Implemented)*
+#### **6. Advanced Context Management** *(Partially Implemented)*
 - Truncate and smart_window condensation strategies
 - Context size warnings with automatic suggestions
 - Enhanced @ referencing with folder/glob pattern support
@@ -138,7 +147,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 ### 🟢 Lower Priority
 
-#### **6. Multi-Config System** *(Not Started)*
+#### **7. Multi-Config System** *(Not Started)*
 - Plan model with default reasoning level
 - Code model optimized for implementation
 - Fast tool model for quick operations
@@ -147,7 +156,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Related Files:** `src/core/config.nim`, `src/ui/cli.nim`
 
-#### **7. Process Management & Monitoring** *(Not Started)*
+#### **8. Process Management & Monitoring** *(Not Started)*
 - Health monitoring with heartbeat timeout detection
 - Auto-restart for persistent agents
 - Graceful shutdown handling for all processes
@@ -156,7 +165,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Related Files:** `src/core/agent_manager.nim`
 
-#### **8. Advanced Features** *(Not Started)*
+#### **9. Advanced Features** *(Not Started)*
 - Git integration for diff visualization
 - Context squashing with `/squash` command
 - Recursive task spawning with depth limits
@@ -165,7 +174,7 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 **Related Files:** `src/ui/cli.nim`, `src/tools/task.nim`
 
-#### **9. Native Provider Support** *(Partially Implemented)*
+#### **10. Native Provider Support** *(Partially Implemented)*
 - Dedicated Claude API client (beyond OpenAI-compatible)
 - Unified provider interface architecture
 - Provider-specific optimizations and features
@@ -225,8 +234,8 @@ Below are concrete integration test proposals that would verify Niffler's core f
 
 ## Task Statistics
 
-- **Total Tasks:** 9
-- **🔴 High Priority:** 2
+- **Total Tasks:** 10
+- **🔴 High Priority:** 3
 - **🟡 Medium Priority:** 3
 - **🟢 Lower Priority:** 4
 - **Completed:** 40+ major features
@@ -234,9 +243,9 @@ Below are concrete integration test proposals that would verify Niffler's core f
 ## Priority Guidelines
 
 **High Priority:**
-- Integration testing framework (validation)
+- Niffler Next Development Phase Investigation
+- Documentation alignment (core gap)
 - Process management and health monitoring (robustness)
-- Enhanced message persistence (data quality)
 
 **Medium Priority:**
 - Advanced context management (usability)
