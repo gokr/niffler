@@ -11,7 +11,7 @@
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, nats_client]
-import ../types/[config as configTypes, messages, agents]
+import ../types/[config as configTypes, messages, agents, mode]
 import ../tokenization/[tokenizer]
 import ../tools/registry
 import ../api/curlyStreaming
@@ -147,6 +147,7 @@ proc helpHandler(args: seq[string], session: var Session, currentModel: var conf
 Type '/help' for help, '!command' for bash, and '/exit' or '/quit' to leave.
 Use '@agent prompt' to send to an agent, or '/focus agent' to set default.
 Use '/new <title>' to create a new conversation (routes to focused agent).
+Use '/plan' or '/code' to switch modes.
 
 Press Ctrl+C to stop streaming or exit. Ctrl-Z to suspend.
 
@@ -1345,6 +1346,44 @@ proc taskHandler(args: seq[string], session: var Session, currentModel: var conf
     shouldContinue: true
   )
 
+proc planHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Switch to plan mode
+  setCurrentMode(amPlan)
+
+  # Persist mode change to database
+  let database = getGlobalDatabase()
+  if database != nil:
+    let conversationId = getCurrentConversationId().int
+    if conversationId > 0:
+      updateConversationMode(database, conversationId, amPlan)
+
+  return CommandResult(
+    success: true,
+    message: "Switched to Plan mode - focus on analysis and planning",
+    shouldExit: false,
+    shouldContinue: true,
+    shouldResetUI: true
+  )
+
+proc codeHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Switch to code mode
+  setCurrentMode(amCode)
+
+  # Persist mode change to database
+  let database = getGlobalDatabase()
+  if database != nil:
+    let conversationId = getCurrentConversationId().int
+    if conversationId > 0:
+      updateConversationMode(database, conversationId, amCode)
+
+  return CommandResult(
+    success: true,
+    message: "Switched to Code mode - ready for implementation",
+    shouldExit: false,
+    shouldContinue: true,
+    shouldResetUI: true
+  )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
@@ -1372,3 +1411,5 @@ proc initializeCommands*() =
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)
   registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent)
   registerCommand("task", "Execute a task in fresh context", "<description>", @[], taskHandler, ccAgent)
+  registerCommand("plan", "Switch to plan mode", "", @[], planHandler, ccAgent)
+  registerCommand("code", "Switch to code mode", "", @[], codeHandler, ccAgent)

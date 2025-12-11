@@ -198,7 +198,8 @@ Niffler features an intelligent mode system that adapts its behavior based on th
 
 ### Mode Switching
 
-- **Shift+Tab**: Toggle between Plan and Code modes
+- **`/plan`**: Switch to Plan mode
+- **`/code`**: Switch to Code mode
 - **Visual Indicators**: Mode displayed in prompt with color coding (green for plan, blue for code)
 - **Dynamic Prompts**: Each mode has specialized system prompts for optimal AI behavior
 
@@ -211,9 +212,9 @@ Niffler features an intelligent mode system that adapts its behavior based on th
 
 **Usage:**
 ```bash
-# Toggle to plan mode with Shift+Tab, then:
+# Switch to plan mode with /plan command:
 niffler
-# [Shift+Tab]
+/plan
 # > Analyze the codebase structure and identify performance bottlenecks
 ```
 
@@ -226,9 +227,9 @@ niffler
 
 **Usage:**
 ```bash
-# Toggle to code mode with Shift+Tab, then:
+# Switch to code mode with /code command:
 niffler
-# [Shift+Tab]
+/code
 # > Implement the performance optimizations we planned
 ```
 
@@ -236,7 +237,7 @@ niffler
 
 **Mode switching is available in:**
 - **Interactive mode:** Use `/plan` or `/code` commands
-- **Agent --task mode:** Prefix task with commands
+- **Agent --task mode:** Prefix task with commands (e.g., `@coder /plan analyze the code`)
 
 **Mode persistence:**
 - Mode is stored per conversation
@@ -313,7 +314,7 @@ Niffler implements intelligent file protection to maintain clear separation betw
 
 ### When Protection is Activated
 
-- **Manual Mode Toggle**: Pressing `Shift+Tab` to enter Plan Mode
+- **`/plan` Command**: Using `/plan` to enter Plan Mode
 - **Conversation Loading**: When loading a conversation that's already in Plan Mode
 - **Application Startup**: If the last active conversation was in Plan Mode
 - **Conversation Switching**: Using `/conv` command to switch to a Plan Mode conversation
@@ -363,7 +364,6 @@ Switch to code mode to edit existing files, or create new files which can then b
 - **Home/End**: Jump to beginning/end of current line
 - **Ctrl+C**: Graceful exit
 - **Ctrl+Z**: Suspend to background (Unix/Linux/macOS)
-- **Shift+Tab**: Toggle between Plan and Code modes
 
 ### Visual Enhancements
 
