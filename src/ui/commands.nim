@@ -1349,6 +1349,7 @@ proc taskHandler(args: seq[string], session: var Session, currentModel: var conf
 proc planHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to plan mode
   setCurrentMode(amPlan)
+  updateCurrentSessionMode(amPlan)
 
   # Persist mode change to database
   let database = getGlobalDatabase()
@@ -1368,6 +1369,7 @@ proc planHandler(args: seq[string], session: var Session, currentModel: var conf
 proc codeHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to code mode
   setCurrentMode(amCode)
+  updateCurrentSessionMode(amCode)
 
   # Persist mode change to database
   let database = getGlobalDatabase()

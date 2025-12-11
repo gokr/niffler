@@ -63,6 +63,17 @@ proc clearCurrentSession*() =
   finally:
     release(globalSession.lock)
 
+proc updateCurrentSessionMode*(mode: AgentMode) =
+  ## Update the current session's conversation mode (thread-safe)
+  acquire(globalSession.lock)
+  try:
+    if currentSession.isSome():
+      var session = currentSession.get()
+      session.conversation.mode = mode
+      currentSession = some(session)
+  finally:
+    release(globalSession.lock)
+
 proc initSessionManager*(pool: Pool = nil) {.gcsafe.}
 
 proc getAppStartTime*(): DateTime =
