@@ -109,6 +109,9 @@ Agents are defined via markdown files in `~/.niffler/default/agents/`. Each file
 ## Description
 Safe research and analysis agent for gathering information without modifying the system.
 
+## Model
+synthetic-kimi
+
 ## Allowed Tools
 - read
 - list
@@ -118,29 +121,73 @@ Safe research and analysis agent for gathering information without modifying the
 
 ## System Prompt
 
-You are a research and analysis agent. Your role is to gather information, analyze code,
-and provide comprehensive findings without making any modifications to the system.
+You are a research and analysis agent.
 
-### Your Capabilities
-- Read and analyze files
-- Search through codebases
-- Fetch web content for research
-- Explore directory structures
+Available tools: {availableTools}
 
-### Your Constraints
-- You CANNOT edit or create files
-- You CANNOT execute bash commands
-- You CANNOT modify the system in any way
-- You MUST return a concise summary of your findings
+Current environment:
+- Working directory: {currentDir}
+- Current time: {currentTime}
+- OS: {osInfo}
+{gitInfo}
+{projectInfo}
 
-### Task Execution
-When assigned a task, work autonomously to gather all relevant information, then provide
-a clear summary with:
-1. Key findings
-2. Files/resources examined
-3. Specific recommendations or answers
-4. Any blockers or limitations encountered
+Your role is to gather information, analyze code, and provide comprehensive findings
+without making any modifications to the system.
 ```
+
+### Required Sections
+
+| Section | Description |
+|---------|-------------|
+| `## Description` | Brief description of the agent's purpose |
+| `## Allowed Tools` | List of tools the agent can use (one per line with `-` prefix) |
+| `## System Prompt` | The system prompt sent to the LLM |
+
+### Optional Sections
+
+| Section | Description |
+|---------|-------------|
+| `## Model` | Model nickname to use (overrides CLI `--model` option) |
+
+### System Prompt Template Variables
+
+The system prompt supports template variables that are expanded at runtime:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `{availableTools}` | Comma-separated list of allowed tools | `read, list, fetch, bash` |
+| `{currentDir}` | Current working directory | `/home/user/project` |
+| `{currentTime}` | Current UTC time | `2025-01-15 14:30:00 UTC` |
+| `{osInfo}` | Operating system | `Linux` |
+| `{gitInfo}` | Git repository info (branch, status) | `- Git repository: Yes\n- Current branch: main` |
+| `{projectInfo}` | Project size info | `- Large codebase (100+ source files)` |
+
+### Using MCP Tools
+
+To use MCP (Model Context Protocol) tools with an agent, list the **actual tool names** provided by the MCP server, not the server name itself.
+
+For example, if you have an MCP server called `calculator` that provides tools `add`, `multiply`, `compare`, and `factorial`:
+
+```yaml
+# In config.yaml
+mcp_servers:
+  calculator:
+    command: "/path/to/calculator"
+    enabled: true
+```
+
+```markdown
+# In agent markdown file
+## Allowed Tools
+- read
+- bash
+- add        # MCP tool from calculator server
+- multiply   # MCP tool from calculator server
+- factorial  # MCP tool from calculator server
+```
+
+The MCP server name (`calculator`) is only used in `config.yaml`. The agent definition must list the individual tool names that the server provides.
 
 ### Default Agents Provided
 
