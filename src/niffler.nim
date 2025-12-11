@@ -3,7 +3,7 @@
 ## Uses parseopt for flexible command-line argument parsing with full control
 ## over subcommands and option handling.
 
-import std/[os, logging, parseopt]
+import std/[os, logging, parseopt, strutils]
 import core/[config, database, session, app]
 import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
@@ -18,10 +18,10 @@ type
     agentName: string
     agentNick: string
     natsUrl: string
-    debug: bool
-    info: bool
+    logLevel: string
     dump: bool
     dumpsse: bool
+    dumpJson: bool
     logFile: string
     help: bool
     version: bool
@@ -39,10 +39,10 @@ proc parseCliArgs(): CliArgs =
   result = CliArgs(
     command: "",
     natsUrl: "nats://localhost:4222",
-    debug: false,
-    info: false,
+    logLevel: "NOTICE",
     dump: false,
     dumpsse: false,
+    dumpJson: false,
     help: false,
     version: false
   )
@@ -73,10 +73,10 @@ proc parseCliArgs(): CliArgs =
       of "model", "m": result.model = val
       of "nick": result.agentNick = val
       of "nats": result.natsUrl = val
-      of "debug", "d": result.debug = true
-      of "info", "i": result.info = true
+      of "loglevel": result.logLevel = val
       of "dump": result.dump = true
       of "dumpsse": result.dumpsse = true
+      of "dump-json": result.dumpJson = true
       of "log": result.logFile = val
       of "task", "t": result.task = val
       of "ask", "a": result.ask = val
@@ -112,10 +112,14 @@ NOTE: All long options require '=' for values (e.g., --model=gpt4, --nick=test12
 
 OPTIONS:
   -m, --model=<nickname>     Select model by nickname
-  -i, --info                 Info level logging
-  -d, --debug                Debug level logging
+      --loglevel=<level>     Set logging level [DEBUG|INFO|NOTICE|WARN|ERROR|FATAL] (default: NOTICE)
       --dump                 Show HTTP requests & responses
-      --dumpsse              Show raw SSE lines (verbose, use with --dump)
+      --dumpsse              Show raw SSE lines as they arrive
+      --dump-json            Show complete Chat Completion API response as single JSON (accumulated from streaming)
+
+  Debug combinations:
+    --dump --dumpsse          Show HTTP + raw SSE protocol debug info
+    --dump-json              Show only final JSON response (no protocol debug)
       --log=<filename>       Redirect debug output to log file
       --nats=<url>           NATS server URL [default: nats://localhost:4222]
   -h, --help                 Show this help message
@@ -129,12 +133,15 @@ AGENT COMMAND OPTIONS:
 EXAMPLES:
   niffler                              # Start interactive mode
   niffler --model=kimik2               # Interactive with specific model
+  niffler --loglevel=DEBUG             # Enable debug logging
+  niffler --loglevel=ERROR --model=gpt4  # Error logging only with specific model
 
   niffler agent coder                # Start coder agent (interactive)
   niffler agent researcher --nick=alpha      # Researcher with nickname
   niffler agent coder --nick=prod --model=kimik2  # Coder with nick and model
   niffler agent coder --task="What is 7+8?" --model=kimi  # Single-shot task
   niffler agent coder --ask="List files in src/" --model=kimi  # Single-shot ask
+  niffler agent coder --loglevel=DEBUG  # Agent with debug logging
 
   niffler model list                   # List available models
   niffler init                         # Initialize config at default location
@@ -155,7 +162,21 @@ proc handleError(message: string, showHelp: bool = false) =
   quit(1)
 
 
-proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
+proc parseLogLevel(levelStr: string): Level =
+  ## Parse string log level to logging.Level enum
+  let upperLevel = levelStr.toUpper()
+  case upperLevel
+  of "DEBUG": result = lvlDebug
+  of "INFO": result = lvlInfo
+  of "NOTICE": result = lvlNotice
+  of "WARN": result = lvlWarn
+  of "ERROR": result = lvlError
+  of "FATAL": result = lvlFatal
+  else:
+    handleError("Invalid log level: '" & levelStr & "'. Available levels: DEBUG, INFO, NOTICE, WARN, ERROR, FATAL")
+
+
+proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool, dumpJson: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start master mode with CLI interface for agent routing
 
   # Initialize configuration components
@@ -192,12 +213,8 @@ proc dispatchCmd(args: CliArgs) =
     showVersion()
     quit(0)
 
-  # Set logging level
-  var level = lvlNotice
-  if args.debug:
-    level = lvlDebug
-  elif args.info:
-    level = lvlInfo
+  # Set logging level from loglevel argument
+  let level = parseLogLevel(args.logLevel)
 
   # Setup console logging only if no file logging requested
   # File logging modes will handle their own console+file setup
@@ -206,11 +223,10 @@ proc dispatchCmd(args: CliArgs) =
     addHandler(consoleLogger)
   setLogFilter(level)
 
-  # Show debug logging status now that logger is set up
-  if args.debug:
-    debug "Debug logging enabled"
-  elif args.info:
-    debug "Info logging enabled"
+  # Show logging status now that logger is set up
+  let upperLevel = args.logLevel.toUpper()
+  if upperLevel in ["DEBUG", "INFO"]:
+    debug(upperLevel & " logging enabled")
 
   # Handle subcommands
   case args.command
@@ -218,7 +234,7 @@ proc dispatchCmd(args: CliArgs) =
     if args.agentName == "":
       handleError("agent command requires a name", true)
 
-    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.dumpsse, args.logFile, args.task, args.ask)
+    startAgentMode(args.agentName, args.agentNick, args.model, args.natsUrl, level, args.dump, args.dumpsse, args.dumpJson, args.logFile, args.task, args.ask)
 
   of "model":
     if args.modelSubCmd == "list":
@@ -243,7 +259,7 @@ proc dispatchCmd(args: CliArgs) =
 
   of "":
     # Interactive mode with agent routing
-    startMasterMode(args.model, level, args.dump, args.dumpsse, args.logFile, args.natsUrl)
+    startMasterMode(args.model, level, args.dump, args.dumpsse, args.dumpJson, args.logFile, args.natsUrl)
 
   else:
     handleError("Unknown command: " & args.command, true)
