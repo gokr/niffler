@@ -47,6 +47,9 @@ var dumpEnabled {.threadvar.}: bool
 # Global dumpsse flag for SSE line dumping
 var dumpsseEnabled {.threadvar.}: bool
 
+# Global dumpJson flag for Chat Completion API response dumping
+var dumpJsonEnabled {.threadvar.}: bool
+
 # Global parser for flexible tool call format detection
 var globalFlexibleParser* {.threadvar.}: FlexibleParser
 
@@ -60,6 +63,10 @@ proc setDumpEnabled*(enabled: bool) =
 proc setDumpsseEnabled*(enabled: bool) =
   ## Set the global dumpsse flag for SSE line dumping
   dumpsseEnabled = enabled
+
+proc setDumpJsonEnabled*(enabled: bool) =
+  ## Set the global dumpJson flag for Chat Completion API response dumping
+  dumpJsonEnabled = enabled
 
 proc initGlobalParser*() =
   ## Initialize the global flexible parser for tool call format detection
@@ -96,6 +103,7 @@ proc initDumpFlag*() =
   ## Initialize the dump flag for this thread (called once per thread)
   dumpEnabled = false
   dumpsseEnabled = false
+  dumpJsonEnabled = false
 
 proc isDumpEnabled*(): bool =
   ## Check if HTTP request/response dumping is enabled for this thread
@@ -104,6 +112,10 @@ proc isDumpEnabled*(): bool =
 proc isDumpsseEnabled*(): bool =
   ## Check if SSE line dumping is enabled for this thread
   return dumpsseEnabled
+
+proc isDumpJsonEnabled*(): bool =
+  ## Check if Chat Completion API response dumping is enabled for this thread
+  return dumpJsonEnabled
 
 type
   CurlyStreamingClient* = object
@@ -431,9 +443,9 @@ proc buildRequestBody(client: CurlyStreamingClient, request: ChatRequest): strin
   streamRequest.stream = true  # Force streaming for this client
   return $streamRequest.toJson()
 
-proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRequest, callback: StreamingCallback): (bool, Option[TokenUsage], string) =
+proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRequest, callback: StreamingCallback): (bool, Option[TokenUsage], string, string) =
   ## Send a streaming chat request using Curly and process chunks in real-time
-  ## Returns (success status, token usage if available, error message if failed)
+  ## Returns (success status, token usage if available, error message if failed, raw SSE response)
   try:
     # Build request
     let requestBody = client.buildRequestBody(request)
@@ -507,7 +519,7 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
               errorMessage = if errorBody.len > 200: errorBody[0..200] & "..." else: errorBody
         except Exception as e:
           errorMessage = fmt"HTTP {stream.code}: {e.msg}"
-        return (false, none(TokenUsage), errorMessage)
+        return (false, none(TokenUsage), errorMessage, "")
 
       debug(fmt"Received HTTP {stream.code}, starting SSE processing")
 
@@ -583,7 +595,7 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
                   if isDumpEnabled():
                     logFileModule.dumpToLog "===================="
                     logFileModule.dumpToLog ""
-                  return (true, finalUsage, "")
+                  return (true, finalUsage, "", fullResponseBody)
               else:
                 debug(fmt"Failed to parse SSE line, skipping: {line[0..min(100, line.len-1)]}")
             except Exception as e:
@@ -595,14 +607,14 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
         logFileModule.dumpToLog "===================="
         logFileModule.dumpToLog ""
 
-      return (true, finalUsage, "")
+      return (true, finalUsage, "", fullResponseBody)
       
     finally:
       stream.close()
     
   except Exception as e:
     error(fmt"Error in streaming request: {e.msg}")
-    return (false, none(TokenUsage), fmt"Exception: {e.msg}")
+    return (false, none(TokenUsage), fmt"Exception: {e.msg}", "")
 
 proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
   ## Convert internal Message types to OpenAI-compatible ChatMessage format
