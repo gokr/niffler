@@ -708,16 +708,13 @@ nim test -- --exclude "integration"
 
 ```bash
 # Enable debug output
-./src/niffler --debug
+./src/niffler --loglevel=DEBUG
 
-# Specific debug topics
-./src/niffler --debug topics=api,tools,nats
-
-# Database debugging
-./src/niffler --debug topics=database
-
-# Token usage debugging
-./src/niffler --debug topics=token,correction
+# Note: topics-based debugging not yet implemented
+# Use --loglevel=DEBUG for full visibility, or:
+./src/niffler --loglevel=INFO    # General information
+./src/niffler --loglevel=WARN    # Warnings and above
+./src/niffler --loglevel=ERROR   # Errors only
 ```
 
 ### Common Debugging Scenarios
@@ -725,7 +722,7 @@ nim test -- --exclude "integration"
 #### Tool Not Working
 ```bash
 # Enable tool debugging
-./src/niffler --debug topics=tools,validation
+./src/niffler --loglevel=DEBUG
 
 # Check tool registration
 grep "tools: register" logs/niffler.log
@@ -734,7 +731,7 @@ grep "tools: register" logs/niffler.log
 #### NATS Connection Issues
 ```bash
 # NATS debugging
-./src/niffler --debug topics=nats,master
+./src/niffler --loglevel=DEBUG
 
 # Test NATS directly
 nats sub "niffler.>" &
@@ -744,7 +741,7 @@ nats sub "niffler.>" &
 #### Database Issues
 ```bash
 # Database debugging
-./src/niffler --debug topics=database
+./src/niffler --loglevel=DEBUG
 
 # Check database schema
 mysql -h 127.0.0.1 -P 4000 -u root -e "SHOW TABLES FROM niffler"

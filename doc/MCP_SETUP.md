@@ -361,7 +361,7 @@ Enable debug logging for troubleshooting:
 
 1. **Start Niffler with debug:**
    ```bash
-   niffler --debug
+   niffler --loglevel=DEBUG
    ```
 
 2. **Look for MCP-related messages** in the debug output

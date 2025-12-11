@@ -314,12 +314,14 @@ Brief description of the change
 
 Enable debug mode:
 ```bash
-./src/niffler --debug
+./src/niffler --loglevel=DEBUG
 ```
 
-Enable specific debug topics:
+Note: topics-based debugging not yet implemented. Use log levels for filtering:
 ```bash
-./src/niffler --debug topics=api,tools,database
+./src/niffler --loglevel=INFO     # General information
+./src/niffler --loglevel=WARN     # Warnings and above
+./src/niffler --loglevel=ERROR    # Errors only
 ```
 
 ### Profiling

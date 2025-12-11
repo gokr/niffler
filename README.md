@@ -312,17 +312,18 @@ niffler model list
 # Use specific model
 niffler --model=gpt4
 
-# Enable debug logging
-niffler --debug
-
-# Enable info logging
-niffler --info
+# Set logging level
+niffler --loglevel=DEBUG       # Verbose debugging
+niffler --loglevel=INFO        # General information
+niffler --loglevel=NOTICE      # Default (notice and above)
+niffler --loglevel=WARN        # Warnings and above
+niffler --loglevel=ERROR       # Errors only
 
 # Enable HTTP request/response dumping for debugging
 niffler --dump
 
-# Combine debug and dump for maximum visibility
-niffler --debug --dump
+# Combine loglevel and dump for maximum visibility
+niffler --loglevel=DEBUG --dump
 ```
 
 ### Single-Shot Tasks (Agent Mode)
@@ -380,7 +381,7 @@ nimble build
 
 ### Debugging
 
-The `--dump` flag provides complete HTTP request and response logging and `--debug` provides debug logging.
+The `--dump` flag provides complete HTTP request and response logging and `--loglevel=DEBUG` provides detailed debug logging. Use `--loglevel=INFO` for general information logging.
 
 ## 🤝 Contributing
 

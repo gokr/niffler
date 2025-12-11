@@ -655,8 +655,8 @@ The `--dump` flag provides complete HTTP request and response logging for debugg
 # Basic usage with dump
 niffler -p "Hello" --dump
 
-# Combine with debug for maximum visibility
-niffler -p "Debug this" --debug --dump
+# Combine with debug level for maximum visibility
+niffler -p "Debug this" --loglevel=DEBUG --dump
 ```
 
 **What `--dump` shows:**

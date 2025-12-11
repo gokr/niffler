@@ -523,7 +523,7 @@ Enable detailed logging for tool operations:
 
 ```bash
 # Start with debug logging
-niffler --debug
+niffler --loglevel=DEBUG
 
 # Look for tool-related log messages
 grep "tool" niffler.log
