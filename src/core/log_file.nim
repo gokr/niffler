@@ -134,3 +134,16 @@ proc dumpToLog*(message: string) {.gcsafe.} =
       except Exception:
         # Fail silently to avoid breaking dumps on logging errors
         discard
+
+proc dumpToLogOnly*(message: string) {.gcsafe.} =
+  ## Thread-safe dump output to log file only (no console output)
+  ## Use for verbose JSON summaries that should not spam console
+  {.gcsafe.}:
+    if isLoggingActive():
+      try:
+        let manager = getGlobalLogManager()
+        if manager != nil:
+          manager.writeLineToLogFile(message)
+      except Exception:
+        # Fail silently to avoid breaking dumps on logging errors
+        discard

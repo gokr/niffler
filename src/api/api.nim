@@ -47,13 +47,80 @@ import ../tokenization/tokenizer
 var debugEnabled* = false
 
 proc dumpJsonOutput*(jsonObj: JsonNode) {.gcsafe.} =
-  ## Emit formatted JSON to dump output without SSE envelope
+  ## Emit formatted JSON to log file only (not console)
+  ## These verbose JSON summaries should not spam console output
   try:
     let formatted = jsonObj.pretty()
-    logFileModule.dumpToLog(formatted)
-    logFileModule.dumpToLog("")  # Blank line between events for readability
+    logFileModule.dumpToLogOnly(formatted)
+    logFileModule.dumpToLogOnly("")  # Blank line between events for readability
   except Exception as e:
     debug(fmt"Failed to format dump JSON: {e.msg}")
+
+proc dumpChatCompletionResponse*(id, model, finishReason: string,
+                                 created: int64,
+                                 content: string,
+                                 toolCalls: seq[LLMToolCall],
+                                 usage: TokenUsage,
+                                 reasoningTokens: Option[int] = none(int),
+                                 thinkingContent: string = "") {.gcsafe.} =
+  ## Emit a single Chat Completion API response object
+  try:
+    var choiceMessage = %*{
+      "role": "assistant",
+      "content": content
+    }
+
+    # Add tool calls if present
+    if toolCalls.len > 0:
+      var toolCallsJson = newJArray()
+      for tc in toolCalls:
+        toolCallsJson.add(%*{
+          "id": tc.id,
+          "type": tc.`type`,
+          "function": %*{
+            "name": tc.function.name,
+            "arguments": tc.function.arguments
+          }
+        })
+      choiceMessage["tool_calls"] = toolCallsJson
+
+    # Build usage object
+    var usageObj = %*{
+      "prompt_tokens": usage.inputTokens,
+      "completion_tokens": usage.outputTokens,
+      "total_tokens": usage.totalTokens
+    }
+
+    # Add reasoning tokens if available
+    if reasoningTokens.isSome():
+      usageObj["reasoning_tokens"] = %reasoningTokens.get()
+
+    # Build final response
+    var response = %*{
+      "id": id,
+      "object": "chat.completion",
+      "created": created,
+      "model": model,
+      "choices": [{
+        "index": 0,
+        "message": choiceMessage,
+        "finish_reason": finishReason
+      }],
+      "usage": usageObj
+    }
+
+    # Add thinking content as top-level field if present
+    if thinkingContent.len > 0:
+      response["thinking"] = %thinkingContent
+
+    # Output the complete response
+    logFileModule.dumpToLog ""
+    logFileModule.dumpToLog COLOR_HTTP & "🔵 === CHAT COMPLETION API RESPONSE ===" & COLOR_RESET
+    logFileModule.dumpToLog response.pretty(indent = 2)
+    logFileModule.dumpToLog COLOR_HTTP & "====================================" & COLOR_RESET
+    logFileModule.dumpToLog ""
+  except Exception as e:
+    debug(fmt"Failed to format Chat Completion response: {e.msg}")
 
 # Debug output helper functions
 proc debugColored*(color, message: string) =
@@ -703,7 +770,7 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
               debug(fmt"Duplicate follow-up tool call detected (depth {turn}): {completedCall.function.name}")
           cleanupStaleBuffers(toolCallBuffers)
   
-  let (success, _, duplicateErrorMsg) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
+  let (success, _, duplicateErrorMsg, _) = client.sendStreamingChatRequest(followUpRequest, onDuplicateFollowUp)
 
   # Check if duplicate follow-up streaming request failed
   if not success:
@@ -916,7 +983,7 @@ proc callLLMWithFollowUp(channels: ptr ThreadChannels, client: var CurlyStreamin
               debug(fmt"Tool call detected at depth {depth}: {completedCall.function.name}")
           cleanupStaleBuffers(toolCallBuffers)
 
-  let (success, usage, errorMsg) = client.sendStreamingChatRequest(followUpRequest, onChunk)
+  let (success, usage, errorMsg, _) = client.sendStreamingChatRequest(followUpRequest, onChunk)
 
   if not success:
     debug(fmt"LLM call failed: {errorMsg}")
@@ -1181,6 +1248,7 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
   # Initialize dump flag for this thread
   setDumpEnabled(params.dump)
   setDumpsseEnabled(params.dumpsse)
+  setDumpJsonEnabled(params.dumpJson)
   
   let channels = params.channels
   let database = params.database
@@ -1296,6 +1364,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
             var fullThinkingContent = ""  # Accumulate all thinking content for estimation
             var collectedToolCalls: seq[LLMToolCall] = @[]
             var hasToolCalls = false
+            var accumulatedChunks: seq[StreamChunk] = @[]  # Track chunks for dump-json extraction
             
             # Thinking token buffering to avoid storing tiny chunks
             var thinkingTokenBuffer = ""
@@ -1324,6 +1393,9 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               if request.requestId notin mutableActiveRequests:
                 debug(fmt"Request {request.requestId} was canceled, stopping chunk processing")
                 return
+
+              # Accumulate chunk for dump-json extraction
+              accumulatedChunks.add(chunk)
                 
               if chunk.choices.len > 0:
                 let choice = chunk.choices[0]
@@ -1467,7 +1539,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                   )
                   sendAPIResponse(channels, thinkingOnlyResponse)
             
-            let (streamSuccess, streamUsage, errorMsg) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
+            let (streamSuccess, streamUsage, errorMsg, rawResponse) = client.sendStreamingChatRequest(chatRequest, onChunkReceived)
 
             # Check if streaming request failed
             if not streamSuccess:
@@ -1548,6 +1620,32 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                       "total_tokens": finalUsage.totalTokens
                     })
 
+                # Emit Chat Completion API response if dump-json is enabled
+                if isDumpJsonEnabled():
+                  # Extract values from accumulated chunks
+                  let chunkId = if accumulatedChunks.len > 0: accumulatedChunks[0].id else: ""
+                  let chunkModel = if accumulatedChunks.len > 0: accumulatedChunks[0].model else: request.model
+                  let chunkCreated = if accumulatedChunks.len > 0: accumulatedChunks[0].created else: getTime().toUnix()
+
+                  # Always finish_reason is "tool_calls" for this case
+                  let finishReason = "tool_calls"
+
+                  # Get reasoning tokens if available
+                  let reasoningTokens = if(finalUsage.reasoningTokens.isSome() and finalUsage.reasoningTokens.get() > 0): finalUsage.reasoningTokens else: none(int)
+
+                  # Dump the single Chat Completion response
+                  dumpChatCompletionResponse(
+                    id = chunkId,
+                    model = chunkModel,
+                    finishReason = finishReason,
+                    created = chunkCreated,
+                    content = fullContent,
+                    toolCalls = collectedToolCalls,
+                    usage = finalUsage,
+                    reasoningTokens = reasoningTokens,
+                    thinkingContent = fullThinkingContent
+                  )
+
                 # Send assistant message with tool calls (content was already streamed)
                 let assistantResponse = APIResponse(
                   requestId: request.requestId,
@@ -1616,6 +1714,61 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
                     "output_tokens": finalUsage.outputTokens,
                     "total_tokens": finalUsage.totalTokens
                   })
+
+              # Emit Chat Completion API response if dump-json is enabled
+              if isDumpJsonEnabled():
+                # Extract values from accumulated chunks
+                let chunkId = if accumulatedChunks.len > 0: accumulatedChunks[0].id else: ""
+                let chunkModel = if accumulatedChunks.len > 0: accumulatedChunks[0].model else: request.model
+                let chunkCreated = if accumulatedChunks.len > 0: accumulatedChunks[0].created else: getTime().toUnix()
+
+                # Determine finish reason
+                let finishReason = if hasToolCalls: "tool_calls"
+                                 elif fullContent.len > 0: "stop"
+                                 else: "length"
+
+                # Get reasoning tokens if available
+                let reasoningTokens = if(finalUsage.reasoningTokens.isSome() and finalUsage.reasoningTokens.get() > 0): finalUsage.reasoningTokens else: none(int)
+
+                # Dump the single Chat Completion response
+                dumpChatCompletionResponse(
+                  id = chunkId,
+                  model = chunkModel,
+                  finishReason = finishReason,
+                  created = chunkCreated,
+                  content = fullContent,
+                  toolCalls = collectedToolCalls,
+                  usage = finalUsage,
+                  reasoningTokens = reasoningTokens,
+                  thinkingContent = fullThinkingContent
+                )
+
+              # Show raw SSE reconstruction for protocol debugging (only when NOT using --dump-json)
+              # This preserves debug capability while fixing the duplicate output issue
+              if rawResponse.len > 0 and not isDumpJsonEnabled() and isDumpEnabled() and isDumpsseEnabled():
+                # Reconstruct JSON from SSE stream
+                var jsonLines: seq[string] = @[]
+                for line in rawResponse.splitLines():
+                  if line.startsWith("data: ") and not line.startsWith("data: [DONE]"):
+                    jsonLines.add(line[6..^1])  # Remove "data: " prefix
+
+                if jsonLines.len > 0:
+                  try:
+                    # Parse and pretty-print the complete JSON
+                    let combinedJson = "[" & jsonLines.join(",") & "]"
+                    let jsonObj = parseJson(combinedJson)
+                    logFileModule.dumpToLog ""
+                    logFileModule.dumpToLog COLOR_HTTP & "🔵 === RAW SSE FRAGMENTS (DEBUG) ===" & COLOR_RESET
+                    logFileModule.dumpToLog jsonObj.pretty(indent = 2)
+                    logFileModule.dumpToLog COLOR_HTTP & "=============================" & COLOR_RESET
+                    logFileModule.dumpToLog ""
+                  except:
+                    # Fallback to raw SSE if parsing fails
+                    logFileModule.dumpToLog ""
+                    logFileModule.dumpToLog COLOR_HTTP & "🔵 === RAW SSE RESPONSE ===" & COLOR_RESET
+                    logFileModule.dumpToLog rawResponse
+                    logFileModule.dumpToLog COLOR_HTTP & "========================" & COLOR_RESET
+                    logFileModule.dumpToLog ""
 
               # Send final completion signal
               let finalChunkResponse = APIResponse(
@@ -1742,7 +1895,7 @@ proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     decrementActiveThreads(channels)
     debug("API worker thread stopped")
 
-proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, dumpsse: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
+proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, dumpsse: bool = false, dumpJson: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): APIWorker =
   result.isRunning = true
   # Create params as heap-allocated object to ensure it stays alive for thread lifetime
   var params = new(ThreadParams)
@@ -1750,6 +1903,7 @@ proc startAPIWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = fa
   params.level = level
   params.dump = dump
   params.dumpsse = dumpsse
+  params.dumpJson = dumpJson
   params.database = database
   params.pool = pool
   createThread(result.thread, apiWorkerProc, params)

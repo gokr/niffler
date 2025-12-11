@@ -63,6 +63,11 @@ proc finishStreaming*() =
   # Redraw prompt at the end of streaming
   redraw()
 
+proc finishStreamingNoRedraw*() =
+  ## Call after streaming is done in non-interactive mode (no prompt redraw)
+  ## Use this for --ask or --task modes where no readline prompt exists
+  flushStreamingBuffer(redraw = false)
+
 proc finishCommandOutput*() =
   ## Call after synchronous command output to reset position tracking
   ## This allows the next readline() to start fresh without clearing our output
