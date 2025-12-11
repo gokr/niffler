@@ -764,7 +764,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   updatePromptState()
   
   # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, database, pool)
+  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, false, database, pool)
 
   # Start MCP worker with pool
   var mcpWorker = startMcpWorker(channels, level, dump, database, pool)
@@ -1026,7 +1026,7 @@ proc sendSinglePrompt*(text: string, model: string, level: Level, dump: bool = f
   let channels = getChannels()
 
   # Start API worker with pool
-  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, database, pool)
+  var apiWorker = startAPIWorker(channels, level, dump, dumpsse, false, database, pool)
 
   # Start MCP worker with pool
   var mcpWorker = startMcpWorker(channels, level, dump, database, pool)

@@ -18,12 +18,12 @@
 ## 5. Send final response with done=true
 
 import std/[logging, strformat, times, os, options, strutils, json, tables, atomics]
-import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file]
+import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file, system_prompt]
 import ../core/task_executor
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
 import ../api/[api]
 import ../tools/[worker, registry]
-import ../mcp/[mcp]
+import ../mcp/[mcp, tools as mcpTools]
 import output_shared
 import tool_visualizer
 import theme
@@ -82,6 +82,25 @@ proc classifyCommand(request: NatsRequest): CommandClass =
     return ccDisruptive  # Switching model mid-conversation
 
   return ccAgentic
+
+proc expandAgentSystemPrompt(promptTemplate: string, allowedTools: seq[string]): string =
+  ## Expand template variables in agent system prompt
+  ## Replaces {availableTools}, {currentDir}, {currentTime}, {osInfo}, {gitInfo}, {projectInfo}
+  let availableToolsStr = allowedTools.join(", ")
+  let currentDir = getCurrentDirectoryInfo()
+  let currentTime = now().utc().format("yyyy-MM-dd HH:mm:ss 'UTC'")
+  let osInfo = getOSInfo()
+  let gitInfo = getGitInfo()
+  let projectInfo = getProjectInfo()
+
+  result = promptTemplate.multiReplace([
+    ("{availableTools}", availableToolsStr),
+    ("{currentDir}", currentDir),
+    ("{currentTime}", currentTime),
+    ("{osInfo}", osInfo),
+    ("{gitInfo}", gitInfo),
+    ("{projectInfo}", projectInfo)
+  ])
 
 proc loadAgentDefinition(agentName: string): AgentDefinition =
   ## Load agent definition from the active config's agents directory
@@ -293,9 +312,10 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
   # Build messages with conversation context
   var messages = getConversationContext()
 
-  # Use agent's system prompt from definition
-  let systemPromptText = state.definition.systemPrompt
-  if systemPromptText.len > 0:
+  # Use agent's system prompt from definition with template expansion
+  let systemPromptTemplate = state.definition.systemPrompt
+  if systemPromptTemplate.len > 0:
+    let systemPromptText = expandAgentSystemPrompt(systemPromptTemplate, state.definition.allowedTools)
     let systemMsg = Message(role: mrSystem, content: systemPromptText)
     messages.insert(systemMsg, 0)
 
@@ -303,9 +323,12 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
   let userMsg = conversation_manager.addUserMessage(prompt)
   messages.add(userMsg)
 
+  # Refresh tool schemas to include MCP tools discovered after initialization
+  let currentToolSchemas = getAllToolSchemas()
+
   # Prepare tool schemas filtered by agent's allowed tools
   var agentToolSchemas: seq[ToolDefinition] = @[]
-  for tool in state.toolSchemas:
+  for tool in currentToolSchemas:
     if tool.function.name in state.definition.allowedTools:
       agentToolSchemas.add(tool)
 
@@ -371,7 +394,7 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
           if response.content.len > 0:
             if isInThinkingBlock:
               # Transition from thinking to regular content
-              finishStreaming()
+              finishStreamingNoRedraw()
               writeCompleteLine("")
               isInThinkingBlock = false
 
@@ -383,12 +406,12 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
           handleToolCallDisplay(response, pendingToolCalls, outputAfterToolCall)
 
         of arkStreamComplete:
-          finishStreaming()
+          finishStreamingNoRedraw()
           if lastContent.len > 0:
             writeCompleteLine("")
           responseComplete = true
         of arkStreamError:
-          finishStreaming()
+          finishStreamingNoRedraw()
           return (false, response.error)
 
     sleep(100)
@@ -712,17 +735,17 @@ proc cleanup(state: var AgentState) =
 
   info("Agent shutdown complete")
 
-proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, dumpsse: bool = false, logFile: string = "", task: string = "", ask: string = "") =
+proc startAgentMode*(agentName: string, agentNick: string = "", modelName: string = "", natsUrl: string = "nats://localhost:4222", level: Level = lvlInfo, dump: bool = false, dumpsse: bool = false, dumpJson: bool = false, logFile: string = "", task: string = "", ask: string = "") =
   ## Start agent mode - main entry point
   ## If task is provided, executes single task and exits (no interactive mode)
   ## If ask is provided, executes single ask without summarization and exits
   let displayName = if agentNick.len > 0: fmt"{agentName} (nick: {agentNick})" else: agentName
 
   if task.len > 0:
-    echo fmt"Starting single-shot task execution: {displayName}"
-    echo fmt"Task: {task}"
+    info(fmt"Starting single-shot task execution: {displayName}")
+    info(fmt"Task: {task}")
   else:
-    echo fmt"Starting Niffler in agent mode: {displayName}"
+    info(fmt"Starting Niffler in agent mode: {displayName}")
   echo ""
 
   var state: AgentState
@@ -737,7 +760,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     info("Starting worker threads...")
     let pool = if state.database != nil: state.database.pool else: nil
 
-    state.apiWorker = startAPIWorker(state.channels, level, dump, dumpsse, database = state.database, pool = pool)
+    state.apiWorker = startAPIWorker(state.channels, level, dump, dumpsse, dumpJson, database = state.database, pool = pool)
     info("API worker started")
 
     # Configure API worker with model
@@ -749,6 +772,27 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
 
     state.mcpWorker = startMcpWorker(state.channels, level)
     info("MCP worker started")
+
+    # Wait for MCP ready signal
+    var mcpReady = false
+    while not mcpReady:
+      let maybeResponse = tryReceiveMcpResponse(state.channels)
+      if maybeResponse.isSome():
+        let response = maybeResponse.get()
+        if response.kind == mcrrkReady:
+          mcpReady = true
+          debug("MCP worker ready")
+      if not mcpReady:
+        sleep(10)
+
+    # Give MCP servers time to fully initialize
+    sleep(100)
+
+    # Discover and integrate MCP tools
+    mcpTools.discoverMcpTools()
+    let mcpToolCount = mcpTools.getMcpToolsCount()
+    if mcpToolCount > 0:
+      debug(fmt("Discovered {mcpToolCount} MCP tools"))
 
     # Handle single-shot task execution or interactive mode
     if task.len > 0:
@@ -796,15 +840,14 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     elif ask.len > 0:
       # Single-shot ask execution (like task but without summarization)
       echo ""
-      echo "Executing ask..."
+      info("Executing ask...")
       echo ""
 
       # Use executeAsk which doesn't generate summary
+      # Content is already streamed to stdout during executeAsk, so no echo needed
       let askResult = executeAsk(state, ask, "cli_ask_" & $epochTime())
 
-      if askResult.success:
-        echo askResult.response
-      else:
+      if not askResult.success:
         echo "Error: ", askResult.response
 
       # Exit after ask completion

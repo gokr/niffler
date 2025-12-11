@@ -37,7 +37,17 @@ type
     servers*: Table[string, McpServerInstance]
     logger*: Logger
 
-proc newMcpServerInstance*(name: string, config: McpServerConfig): McpServerInstance =
+var mcpLogLevel {.threadvar.}: Level
+
+proc setMcpLogLevel*(level: Level) =
+  ## Set the log level for MCP manager (call from worker thread before creating manager)
+  mcpLogLevel = level
+
+proc newFilteredLogger(level: Level): Logger =
+  ## Create a console logger with the specified threshold level
+  result = newConsoleLogger(levelThreshold = level)
+
+proc newMcpServerInstance*(name: string, config: McpServerConfig, level: Level): McpServerInstance =
   ## Create a new MCP server instance
   McpServerInstance(
     name: name,
@@ -47,24 +57,26 @@ proc newMcpServerInstance*(name: string, config: McpServerConfig): McpServerInst
     lastActivity: getMonoTime(),
     errorCount: 0,
     restartCount: 0,
-    logger: newConsoleLogger()
+    logger: newFilteredLogger(level)
   )
 
-proc newMcpManager*(): McpManager =
+proc newMcpManager*(level: Level = lvlNotice): McpManager =
   ## Create a new MCP manager instance
+  mcpLogLevel = level
   McpManager(
     servers: initTable[string, McpServerInstance](),
-    logger: newConsoleLogger()
+    logger: newFilteredLogger(level)
   )
+
 
 proc addServer*(manager: McpManager, name: string, config: McpServerConfig) {.gcsafe.} =
   ## Add an MCP server to the manager
   if name in manager.servers:
     raise newException(Exception, fmt("MCP server {name} already exists"))
 
-  let server = newMcpServerInstance(name, config)
+  let server = newMcpServerInstance(name, config, mcpLogLevel)
   manager.servers[name] = server
-  manager.logger.log(lvlInfo, fmt("Added MCP server: {name}"))
+  manager.logger.log(lvlDebug, fmt("Added MCP server: {name}"))
 
 proc removeServer*(manager: McpManager, name: string) {.gcsafe.} =
   ## Remove an MCP server from the manager
@@ -73,7 +85,7 @@ proc removeServer*(manager: McpManager, name: string) {.gcsafe.} =
     if server.client.isSome():
       server.client.get().close()
     manager.servers.del(name)
-    manager.logger.log(lvlInfo, fmt("Removed MCP server: {name}"))
+    manager.logger.log(lvlDebug, fmt("Removed MCP server: {name}"))
 
 proc startServer*(manager: McpManager, name: string) {.gcsafe.} =
   ## Start an MCP server
@@ -83,24 +95,24 @@ proc startServer*(manager: McpManager, name: string) {.gcsafe.} =
   let server = manager.servers[name]
 
   if server.status == mssRunning:
-    server.logger.log(lvlInfo, fmt("MCP server {name} already running"))
+    manager.logger.log(lvlDebug, fmt("MCP server {name} already running"))
     return  # Already running
 
   server.status = mssStarting
-  server.logger.log(lvlInfo, fmt("Starting MCP server: {name} with command: {server.config.command}"))
+  manager.logger.log(lvlDebug, fmt("Starting MCP server: {name} with command: {server.config.command}"))
 
   try:
     let client = newMcpClient(name)
-    server.logger.log(lvlInfo, fmt("Starting MCP process for {name}"))
+    manager.logger.log(lvlDebug, fmt("Starting MCP process for {name}"))
     client.startMcpProcess(server.config)
-    server.logger.log(lvlInfo, fmt("MCP process started, initializing client for {name}"))
+    manager.logger.log(lvlDebug, fmt("MCP process started, initializing client for {name}"))
 
     if client.initialize():
       server.client = some(client)
       server.status = mssRunning
       server.lastActivity = getMonoTime()
       server.restartCount += 1
-      server.logger.log(lvlInfo, fmt("MCP server {name} started successfully"))
+      manager.logger.log(lvlInfo, fmt("MCP server {name} started successfully"))
     else:
       server.status = mssError
       server.errorCount += 1
@@ -122,7 +134,7 @@ proc stopServer*(manager: McpManager, name: string) {.gcsafe.} =
     return  # Already stopped
 
   server.status = mssStopping
-  server.logger.log(lvlInfo, fmt("Stopping MCP server: {name}"))
+  manager.logger.log(lvlDebug, fmt("Stopping MCP server: {name}"))
 
   try:
     if server.client.isSome():
@@ -132,7 +144,7 @@ proc stopServer*(manager: McpManager, name: string) {.gcsafe.} =
 
     server.status = mssStopped
     server.lastActivity = getMonoTime()
-    server.logger.log(lvlInfo, fmt("MCP server {name} stopped"))
+    manager.logger.log(lvlDebug, fmt("MCP server {name} stopped"))
 
   except Exception as e:
     server.status = mssError
@@ -209,7 +221,7 @@ proc performMaintenance*(manager: McpManager) {.gcsafe.} =
     of mssRunning:
       # Check if server has been inactive for too long
       if (currentTime - server.lastActivity).inMinutes > 30:
-        server.logger.log(lvlInfo, fmt("MCP server {name} inactive, performing health check"))
+        manager.logger.log(lvlDebug, fmt("MCP server {name} inactive, performing health check"))
         if not manager.performHealthCheck(name):
           server.logger.log(lvlWarn, fmt("Health check failed, restarting MCP server {name}"))
           manager.restartServer(name)
@@ -217,7 +229,7 @@ proc performMaintenance*(manager: McpManager) {.gcsafe.} =
     of mssError:
       # Auto-restart failed servers after a cooldown period
       if server.errorCount < 5:  # Limit restart attempts
-        server.logger.log(lvlInfo, fmt("Attempting to restart failed MCP server {name}"))
+        manager.logger.log(lvlInfo, fmt("Attempting to restart failed MCP server {name}"))
         manager.startServer(name)
 
     of mssStarting, mssStopping, mssStopped:
@@ -231,15 +243,11 @@ proc shutdownServer*(manager: McpManager, name: string) {.gcsafe.} =
 
 proc shutdownAll*(manager: McpManager) {.gcsafe.} =
   ## Shutdown all MCP servers
-  manager.logger.log(lvlInfo, "Shutting down all MCP servers")
-
   # Create a copy of server names to avoid modification during iteration
   let serverNames = toSeq(manager.servers.keys)
 
   for name in serverNames:
     manager.shutdownServer(name)
-
-  manager.logger.log(lvlInfo, "All MCP servers shutdown")
 
 # Utility procedures
 

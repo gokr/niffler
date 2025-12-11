@@ -211,6 +211,78 @@ proc parseAgentFromYaml(yamlNode: YamlNode): AgentConfig =
   result.autoStart = getYamlBool("auto_start", false)
   result.persistent = getYamlBool("persistent", true)
 
+proc parseMcpServerFromYaml(yamlNode: YamlNode, serverName: string): McpServerConfig =
+  ## Parse a single MCP server configuration from YAML
+  if yamlNode.kind != yMapping:
+    raise newException(ValueError, "Expected mapping for MCP server config")
+
+  let fields = yamlNode.fields
+
+  proc getYamlString(key: string, default: string = ""): string =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return v.content
+    return default
+
+  proc getYamlBool(key: string, default: bool): bool =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          let content = v.content.toLowerAscii()
+          return content == "true" or content == "yes" or content == "1"
+    return default
+
+  proc getYamlInt(key: string, default: int): int =
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yScalar:
+          return parseInt(v.content)
+    return default
+
+  proc getYamlStringSeq(key: string): seq[string] =
+    result = @[]
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == ySequence:
+          for item in v.elems:
+            if item.kind == yScalar:
+              result.add(item.content)
+        break
+
+  proc getYamlStringTable(key: string): Table[string, string] =
+    result = initTable[string, string]()
+    for k, v in fields.pairs:
+      if k.content == key:
+        if v.kind == yMapping:
+          for envKey, envValue in v.fields.pairs:
+            if envValue.kind == yScalar:
+              result[envKey.content] = envValue.content
+        break
+
+  result.command = getYamlString("command")
+  if result.command.len == 0:
+    raise newException(ValueError, "MCP server '" & serverName & "' missing required 'command' field")
+
+  let args = getYamlStringSeq("args")
+  if args.len > 0:
+    result.args = some(args)
+
+  let env = getYamlStringTable("env")
+  if env.len > 0:
+    result.env = some(env)
+
+  let workingDir = getYamlString("working_dir")
+  if workingDir.len > 0:
+    result.workingDir = some(workingDir)
+
+  let timeout = getYamlInt("timeout", 0)
+  if timeout > 0:
+    result.timeout = some(timeout)
+
+  result.enabled = getYamlBool("enabled", true)
+  result.name = getYamlString("name", serverName)
+
 proc loadYamlConfig*(path: string): Config =
   ## Load and parse YAML configuration file using proper YAML parsing
   if not fileExists(path):
@@ -311,6 +383,18 @@ proc loadYamlConfig*(path: string): Config =
         for agentNode in v.elems:
           if agentNode.kind == yMapping:
             result.agents.add(parseAgentFromYaml(agentNode))
+      break
+
+  # Parse MCP servers configuration
+  for k, v in root.pairs:
+    if k.content == "mcp_servers":
+      if v.kind == yMapping:
+        var mcpTable = initTable[string, McpServerConfig]()
+        for serverKey, serverValue in v.fields.pairs:
+          if serverValue.kind == yMapping:
+            mcpTable[serverKey.content] = parseMcpServerFromYaml(serverValue, serverKey.content)
+        if mcpTable.len > 0:
+          result.mcpServers = some(mcpTable)
       break
 
 # Type to maintain compatibility with existing code
