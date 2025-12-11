@@ -58,12 +58,12 @@ proc updateCachedClient(serverName: string, client: McpClient) =
   withLock(mcpStatusLock):
     mcpCachedClients[serverName] = client
 
-proc newMcpWorkerInternal*(channels: ptr ThreadChannels): McpWorkerInternal =
+proc newMcpWorkerInternal*(channels: ptr ThreadChannels, level: Level): McpWorkerInternal =
   ## Create a new MCP worker internal instance
   result = McpWorkerInternal(
     channels: channels,
     state: mwsIdle,
-    manager: newMcpManager()
+    manager: newMcpManager(level)
   )
 
 proc initializeMcpServers*(worker: McpWorkerInternal, config: Config) =
@@ -206,14 +206,13 @@ proc processMcpRequest*(worker: McpWorkerInternal, request: McpRequest) =
 
 proc mcpWorkerMain*(params: ThreadParams) {.thread.} =
   ## Main MCP worker thread function
-  # NOTE: Don't modify logging state - the logging module is not thread-safe
-  # Worker threads inherit logging settings from main thread
-  discard # setLogFilter not thread safe
+  # NOTE: Don't modify global logging state - use per-logger level thresholds instead
+  # The log level is passed to the manager which creates loggers with the correct threshold
 
   {.gcsafe.}:
     try:
-      # Initialize worker
-      mcpWorkerInternal = newMcpWorkerInternal(params.channels)
+      # Initialize worker with log level
+      mcpWorkerInternal = newMcpWorkerInternal(params.channels, params.level)
       params.channels.incrementActiveThreads()
 
       debug("MCP worker thread started")
