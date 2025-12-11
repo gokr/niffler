@@ -356,7 +356,7 @@ proc init*(backend: DatabaseBackend) =
 
     # Single consolidated database message
     let status = if dbCreated: "created and opened" elif databaseOpened: "opened" else: "initialized"
-    echo fmt"TiDB database {status} with {poolSize} connections ({host}:{port}/{database})"
+    info(fmt"TiDB database {status} with {poolSize} connections ({host}:{port}/{database})")
   except Exception as e:
     error(fmt"Failed to initialize TiDB database pool: {e.msg}")
     raise e

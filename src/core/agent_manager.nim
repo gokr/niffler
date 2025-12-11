@@ -53,7 +53,7 @@ proc startAgent*(agentId: string, nifflerPath: string = "./src/niffler"): Spawne
         # Pass model from agent definition
         agentArgs.add("--model=" & agentDef.model.get())
         echo fmt"→ Using model from agent definition: {agentDef.model.get()}"
-  except Exception as e:
+  except Exception:
     # If we can't load agent definition, spawn without model parameter
     # The agent will use its default logic (first model or fallback)
     discard
