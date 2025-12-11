@@ -3,10 +3,10 @@
 ## These tests verify end-to-end functionality using actual LLM APIs.
 ## Skip if API key is not configured.
 
-import std/[unittest, os, times, options, strutils, json, chronicles, asyncdispatch]
-import ../src/core/[config, session, app, database, nats_client]
+import std/[unittest, os, times, options, strutils, json, logging, tables]
+import ../src/core/[config, session, app, database, nats_client, channels]
 import ../src/types/[messages, config as configTypes]
-import ../src/api/[api, http_client]
+import ../src/api/api
 import ../src/ui/[cli, master_cli]
 import debby/pools
 
@@ -20,57 +20,54 @@ const
 var
   testConfig: Config
   testDatabase: DatabaseBackend
-  testPool: Pool
 
 suite "Integration Tests with Real LLM":
 
   setup:
     # Initialize test configuration
     testConfig = Config(
-      models: {
-        TEST_MODEL: ModelConfig(
+      yourName: "Test User",
+      models: @[
+        ModelConfig(
           nickname: TEST_MODEL,
           model: TEST_MODEL,
           baseUrl: TEST_BASE_URL,
           apiKey: some(TEST_API_KEY),
-          maxTokens: 1000,
-          temperature: 0.1
+          maxTokens: some(1000),
+          temperature: some(0.1)
         )
-      }.toTable(),
-      defaultModel: TEST_MODEL,
-      database: DatabaseConfig(
+      ],
+      database: some(DatabaseConfig(
         host: "127.0.0.1",
         port: 4000,
         database: "niffler_test",
         username: "root",
         password: ""
-      ),
-      natsUrl: TEST_NATS_URL
+      ))
     )
 
     # Initialize test database
-    testPool = newPool(5)
-    testDatabase = initMysqlBackend(testConfig.database, testPool)
+    testDatabase = createDatabaseBackend(testConfig.database.get())
 
     # Clean up any existing test data
-    testDatabase.execute("DELETE FROM conversation WHERE title LIKE 'test_%'")
+    # TODO: Implement test cleanup when database API is available
+    # testDatabase.execute("DELETE FROM conversation WHERE title LIKE 'test_%'")
 
   teardown:
     # Clean up test database
     if testDatabase != nil:
-      testDatabase.execute("DELETE FROM conversation WHERE title LIKE 'test_%'")
+      # TODO: Implement test cleanup when database API is available
+      # testDatabase.execute("DELETE FROM conversation WHERE title LIKE 'test_%'")
       testDatabase.close()
 
-    if testPool != nil:
-      testPool.close()
 
   test "Simple Q&A with real LLM":
     #[ Test basic LLM integration without tool usage ]#
     if TEST_API_KEY.len == 0:
-      skip("No API key configured - set NIFflER_TEST_API_KEY")
+      skip
 
     # Initialize API worker
-    var apiChannels = initThreadChannels()
+    var apiChannels = initializeChannels()
     var apiProc = apiWorkerProc
     var apiThread: Thread[ThreadParams]
     var params = ThreadParams(channels: addr apiChannels, level: lvlInfo, dump: false)
@@ -124,7 +121,7 @@ suite "Integration Tests with Real LLM":
   test "Tool execution with real LLM":
     #[ Test LLM's ability to use tools ]#
     if TEST_API_KEY.len == 0:
-      skip("No API key configured")
+      skip
 
     # Create test file
     let testContent = "This is a test file for integration testing.\n"
@@ -136,7 +133,7 @@ suite "Integration Tests with Real LLM":
         removeFile(testFile)
 
     # Initialize API worker
-    var apiChannels = initThreadChannels()
+    var apiChannels = initializeChannels()
     var apiThread: Thread[ThreadParams]
     var params = ThreadParams(channels: addr apiChannels, level: lvlInfo, dump: false)
     createThread(apiThread, apiWorkerProc, params)
@@ -187,14 +184,14 @@ suite "Integration Tests with Real LLM":
   test "Master-Agent E2E Communication":
     #[ Test full master-agent workflow ]#
     if TEST_API_KEY.len == 0:
-      skip("No API key configured")
+      skip
 
     # Test NATS availability
     try:
       var natsTest = initNatsClient(TEST_NATS_URL, "test", 0)
       natsTest.close()
     except:
-      skip("NATS server not available - start with: nats-server -js")
+      skip
 
     # This is a simplified test since we can't easily spawn full processes in tests
     # In a real test suite, you would:
@@ -251,10 +248,8 @@ suite "Integration Test Utilities":
         username: "root",
         password: ""
       )
-      let testPool = newPool(1)
-      let testDb = initMysqlBackend(dbConfig, testPool)
+      let testDb = createDatabaseBackend(dbConfig)
       testDb.close()
-      testPool.close()
       echo "✅ Database available for testing"
     except:
       echo "⚠️  Database not available - persistence tests will fail"
