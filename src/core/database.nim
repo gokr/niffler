@@ -97,7 +97,21 @@ type
     reasoningTokens*: int          # New: thinking token count
     reasoningCost*: float          # New: thinking token cost
 
-  # New table for conversation thinking token storage
+  # New table for interleaved thinking blocks (replaces ConversationThinkingToken)
+  MessageThinkingBlock* = ref object of RootObj
+    id*: int
+    messageId*: int                 # Required link to message (not NULL)
+    positionIndex*: int             # Position within message (0-based)
+    blockType*: string              # "pre_thinking", "inline_thinking", "post_thinking"
+    blockId*: string                # Unique block identifier
+    content*: string                # Thinking content
+    timestamp*: float               # Precise timing for each block
+    isEncrypted*: bool              # Whether content is encrypted
+    metadata*: string               # JSON for provider-specific data (signature, etc.)
+    tokenCount*: int                # Pre-calculated token count
+    reasoningId*: Option[string]    # Optional reasoning correlation ID
+
+  # Keep old type for migration reference only
   ConversationThinkingToken* = ref object of RootObj
     id*: int
     conversationId*: int
@@ -230,14 +244,34 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       discard db.query("CREATE INDEX IF NOT EXISTS idx_model_token_usage_model ON model_token_usage (model(255))")
       db.createIndexIfNotExists(ModelTokenUsage, "created_at")
 
-    # Create thinking token storage table
-    if not db.tableExists(ConversationThinkingToken):
-      db.createTable(ConversationThinkingToken)
-      # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(ConversationThinkingToken, "conversationId")
-      db.createIndexIfNotExists(ConversationThinkingToken, "created_at")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_thinking_token_importance_level ON conversation_thinking_token (importance_level(50))")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_thinking_token_provider_format ON conversation_thinking_token (provider_format(50))")
+    # Create interleaved thinking blocks table (NEW)
+    if not db.tableExists(MessageThinkingBlock):
+      # Create table manually since we need ENUM type and specific constraints
+      db.query("""
+        CREATE TABLE message_thinking_blocks (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          message_id INT NOT NULL,
+          position_index INT NOT NULL,
+          block_type ENUM('pre_thinking', 'inline_thinking', 'post_thinking') NOT NULL,
+          block_id VARCHAR(255) UNIQUE NOT NULL,
+          content TEXT NOT NULL,
+          timestamp FLOAT NOT NULL,
+          is_encrypted BOOLEAN DEFAULT FALSE,
+          metadata TEXT,  -- JSON for provider-specific data
+          token_count INT DEFAULT 0,
+          reasoning_id TEXT,
+          FOREIGN KEY (message_id) REFERENCES conversation_message(id) ON DELETE CASCADE,
+          INDEX idx_message_position (message_id, position_index),
+          INDEX idx_message_conversation (message_id),
+          INDEX idx_block_id (block_id)
+        )
+      """)
+
+      # Drop old table if it exists
+      try:
+        db.query("DROP TABLE IF EXISTS conversation_thinking_token")
+      except Exception as e:
+        debug(fmt"Note: old conversation_thinking_token table not found or already dropped: {e.msg}")
 
     # Create todo system tables
     if not db.tableExists(TodoList):
@@ -661,15 +695,16 @@ proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: i
         0.0
 
 proc getConversationThinkingTokens*(backend: DatabaseBackend, conversationId: int): int =
-  ## Get total thinking tokens from conversation_thinking_token table
+  ## Get total thinking tokens from message_thinking_blocks table
   if backend == nil or conversationId == 0:
     return 0
 
   backend.pool.withDb:
     let query = """
-      SELECT SUM(token_count) as totalThinking
-      FROM conversation_thinking_token
-      WHERE conversation_id = ?
+      SELECT SUM(mtb.token_count) as totalThinking
+      FROM message_thinking_blocks mtb
+      INNER JOIN conversation_message cm ON mtb.message_id = cm.id
+      WHERE cm.conversation_id = ?
     """
 
     let rows = db.query(query, conversationId)
@@ -838,23 +873,27 @@ proc getRecentMessagesFromDb*(pool: Pool, conversationId: int, maxMessages: int 
       # Convert database message to LLM Message
       case dbMsg.role:
       of "user":
-        result.add(Message(role: mrUser, content: dbMsg.content))
+        result.add(Message(id: dbMsg.id, role: mrUser, content: dbMsg.content))
       of "assistant":
         let toolCalls = if dbMsg.toolCalls.isSome():
           some(deserializeToolCalls(dbMsg.toolCalls.get()))
         else:
           none(seq[LLMToolCall])
         result.add(Message(
+          id: dbMsg.id,
           role: mrAssistant,
           content: dbMsg.content,
           toolCalls: toolCalls
         ))
       of "tool":
-        result.add(Message(
-          role: mrTool,
-          content: dbMsg.content,
-          toolCallId: dbMsg.toolCallId
-        ))
+        result.add(
+          Message(
+            id: dbMsg.id,
+            role: mrTool,
+            content: dbMsg.content,
+            toolCallId: dbMsg.toolCallId
+          )
+        )
       else:
         debug(fmt"Skipping message with unknown role: {dbMsg.role}")
 
@@ -880,7 +919,8 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
         case dbMsg.role:
         of "user":
           result.messages.add(Message(
-            role: mrUser, 
+            id: dbMsg.id,
+            role: mrUser,
             content: dbMsg.content,
             toolCalls: none(seq[LLMToolCall]),
             toolCallId: none(string),
@@ -893,6 +933,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
           else:
             none(seq[LLMToolCall])
           result.messages.add(Message(
+            id: dbMsg.id,
             role: mrAssistant,
             content: dbMsg.content,
             toolCalls: toolCalls,
@@ -902,6 +943,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
           ))
         of "tool":
           result.messages.add(Message(
+            id: dbMsg.id,
             role: mrTool,
             content: dbMsg.content,
             toolCalls: none(seq[LLMToolCall]),
