@@ -19,6 +19,14 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - ✅ LLM summary strategy implemented
 - ⚠️ Truncate and smart_window strategies planned
 
+### **CLI & Mode Management Enhancements**
+- ✅ `--ask` CLI option for quick single-prompt queries
+- ✅ `--loglevel` flag replacing deprecated `--debug/--info`
+- ✅ `--dumpsse` option for server-sent events debugging
+- ✅ `--dump-json` flag support for streaming client
+- ✅ Mode persistence fix for `/plan` and `/code` commands
+- ✅ Session consistency across mode switches
+
 ### **MCP Integration**
 - ✅ Model Context Protocol client implementation (`src/mcp/mcp.nim`)
 - ✅ MCP worker thread with dedicated message processing
@@ -93,7 +101,35 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 ### 🔴 High Priority
 
-#### **1. Niffler Next Development Phase Investigation** *(Not Started)*
+#### **1. Multi-Agent Coordination System** *(Not Started)*
+
+**The next major evolution of Niffler - enabling Claude Code-like hierarchical agent execution**
+
+##### **1.1 Hierarchical Agent Execution**
+- Manager agent for intelligent task decomposition and planning
+- Dynamic sub-agent spawning with specialized roles (analyzer, coder, debugger, tester)
+- Result collection and synthesis pipeline with quality scoring
+- Task dependency graph management and execution ordering
+- Context inheritance between parent/child agents with selective sharing
+- Sub-agent lifecycle management (creation, monitoring, cleanup)
+
+##### **1.2 Agent-to-Agent Communication Hub**
+- Direct messaging between agents (bypassing NATS for local optimization)
+- Shared context store for collaborative problem-solving
+- Agent capability discovery and automatic matching
+- Inter-agent security and permissions system
+- Agent reputation and reliability scoring
+
+##### **1.3 Workflow Orchestration Engine**
+- Visual workflow definition (similar to GitHub Actions YAML)
+- Conditional branching based on agent results and quality metrics
+- Parallel execution with synchronization points and barriers
+- Rollback and error recovery mechanisms
+- Workflow templates for common patterns (debug session, feature implementation)
+
+**Related Files:** `src/core/agent_orchestrator.nim`, `src/core/workflow_engine.nim`, `src/core/agent_registry.nim`
+
+#### **2. Niffler Next Development Phase Investigation** *(Not Started)*
 - Investigate and plan Niffler's next development phase
 - Evaluate current system capabilities and identify improvement areas
 - Research emerging AI/LLM integration patterns
@@ -101,84 +137,92 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 - Assess scalability and performance requirements
 - Consider user feedback and feature requests
 
-#### **2. Integration Testing Framework** ✅ **Complete**
-- ✅ Real LLM integration tests (not mocked) - `test_real_llm_workflows.nim`
+#### **3. Integration Testing Framework** ✅ **PRODUCTION READY**
+- ✅ Comprehensive real LLM integration tests (no mocks) - `test_real_llm_workflows.nim`
 - ✅ Master mode E2E tests with agents and NATS - `test_master_agent_scenario.nim`
-- ✅ Agent task completion verification - Integration test framework
+- ✅ Agent task completion verification - Full integration test framework
 - ✅ Test data fixtures and cleanup scripts - `run_integration_tests.sh`
 - ✅ CI/CD integration for automated testing - Environment configuration
+- ✅ Complete test coverage for all major features
 
 **Related Files:** `tests/test_integration_framework.nim`, `tests/test_master_agent_scenario.nim`, `tests/test_real_llm_workflows.nim`, `INTEGRATION_TESTS.md`
 
-#### **3. Documentation Alignment** *(Not Started)*
-- Create `doc/DATABASE_SCHEMA.md` with complete table documentation
-- Update `doc/CONFIG.md` with NATS and master mode configuration
-- Create `doc/ADVANCED_CONFIG.md` for multi-environment setups
-- Create `doc/CONTRIBUTING.md` for development guidelines
-- Update `doc/DEVELOPMENT.md` with latest features
+#### **4. Documentation Alignment** ✅ **Mostly Complete**
+- ✅ `doc/DATABASE_SCHEMA.md` - Complete table documentation created
+- ✅ `doc/CONFIG.md` - Updated with NATS and master mode configuration
+- ✅ `doc/ADVANCED_CONFIG.md` - Multi-environment setup documentation
+- ✅ `doc/CONTRIBUTING.md` - Development guidelines created
+- [ ] Update `doc/DEVELOPMENT.md` with latest features (agent orchestration, CLI improvements)
 
 **Related Files:** All `doc/*.md` files
 
 ### 🟡 Medium Priority
 
-#### **4. User Message Queue Enhancement** *(Not Started)*
-- NATS JetStream for guaranteed message delivery
-- Message cancellation before agent acceptance
-- Delivery acknowledgment and status visualization
-- Message queuing for offline agents
+#### **5. Reliable Inter-Agent Communication** *(Not Started)*
+- NATS JetStream for guaranteed message delivery between distributed agents
+- Message cancellation and timeout handling for sub-agent tasks
+- Delivery acknowledgment and real-time status visualization
+- Message queuing for offline agents and fault tolerance
+- Priority-based message routing for urgent tasks
 
 **Related Files:** `src/core/nats_client.nim`, `src/ui/master_cli.nim`
 
-#### **5. Enhanced Message Persistence** *(Partially Implemented)*
-- Extended tool call metadata tracking
-- Tool execution time and success/failure rates
-- Summary flags for condensed messages
-- Support for multiple content blocks per message
+#### **6. Collaborative Workflow Tracking** *(Partially Implemented)*
+- Extended tool call metadata for multi-agent workflows
+- Agent execution time and success/failure rate tracking
+- Task relationship mapping (parent-child, dependencies)
+- Result provenance and attribution tracking
+- Support for collaborative artifacts and shared resources
 
 **Related Files:** `src/core/database.nim`
 
-#### **6. Advanced Context Management** *(Partially Implemented)*
-- Truncate and smart_window condensation strategies
-- Context size warnings with automatic suggestions
+#### **7. Shared Context for Collaboration** *(Partially Implemented)*
+- Truncate and smart_window condensation for agent conversations
+- Context size warnings with automatic agent-specific suggestions
 - Enhanced @ referencing with folder/glob pattern support
-- Context window optimization per model
+- Context window optimization per agent model and role
+- Shared context pools for agent collaboration
 
 **Related Files:** `src/core/condense.nim`, `src/ui/file_completion.nim`
 
 ### 🟢 Lower Priority
 
-#### **7. Multi-Config System** *(Not Started)*
+#### **8. Multi-Config System** *(Not Started)*
 - Plan model with default reasoning level
 - Code model optimized for implementation
 - Fast tool model for quick operations
 - Hotkey support for config switching
 - Dynamic system prompt selection per mode
+- Agent-specific configuration profiles
 
 **Related Files:** `src/core/config.nim`, `src/ui/cli.nim`
 
-#### **8. Process Management & Monitoring** *(Not Started)*
+#### **9. Process Management & Monitoring** *(Not Started)*
 - Health monitoring with heartbeat timeout detection
 - Auto-restart for persistent agents
 - Graceful shutdown handling for all processes
 - Ephemeral vs persistent agent lifecycle management
-- Resource usage monitoring
+- Resource usage monitoring for multi-agent systems
+- Distributed agent health dashboard
 
 **Related Files:** `src/core/agent_manager.nim`
 
-#### **9. Advanced Features** *(Not Started)*
+#### **10. Advanced Features** *(Not Started)*
 - Git integration for diff visualization
 - Context squashing with `/squash` command
 - Recursive task spawning with depth limits
 - Enhanced content display options
 - Workspace management commands
+- Agent collaboration visualization
 
 **Related Files:** `src/ui/cli.nim`, `src/tools/task.nim`
 
-#### **10. Native Provider Support** *(Partially Implemented)*
+#### **11. Native Provider Support** *(Partially Implemented)*
 - Dedicated Claude API client (beyond OpenAI-compatible)
 - Unified provider interface architecture
 - Provider-specific optimizations and features
 - Custom endpoint configuration
+- Multi-provider failover and load balancing
 
 **Related Files:** `src/api/http_client.nim`, `src/types/models.nim`
 
@@ -234,17 +278,18 @@ Below are concrete integration test proposals that would verify Niffler's core f
 
 ## Task Statistics
 
-- **Total Tasks:** 10
-- **🔴 High Priority:** 3
+- **Total Tasks:** 11
+- **🔴 High Priority:** 4
 - **🟡 Medium Priority:** 3
 - **🟢 Lower Priority:** 4
-- **Completed:** 40+ major features
+- **Completed:** 50+ major features
 
 ## Priority Guidelines
 
 **High Priority:**
+- Multi-Agent Coordination System (next major evolution)
 - Niffler Next Development Phase Investigation
-- Documentation alignment (core gap)
+- Documentation alignment (nearly complete)
 - Process management and health monitoring (robustness)
 
 **Medium Priority:**
@@ -275,6 +320,6 @@ When working on remaining tasks:
 
 ---
 
-**Last Updated:** 2025-12-06
+**Last Updated:** 2025-12-12
 **Current Version:** 0.5.0
-**Next Milestone:** Integration testing framework and validation
+**Next Milestone:** Multi-Agent Coordination System - Hierarchical Agent Execution
