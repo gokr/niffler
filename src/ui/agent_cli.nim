@@ -798,7 +798,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     if task.len > 0:
       # Single-shot task execution
       echo ""
-      echo "Executing task..."
+      info("Executing task...")
       echo ""
 
       let taskResult = executeTask(
@@ -813,7 +813,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
       # Display results
       echo ""
       if taskResult.success:
-        echo "=== Task Completed Successfully ==="
+        info("Task Completed Successfully")
         echo ""
         echo taskResult.summary
         echo ""
@@ -827,7 +827,7 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
           for artifact in taskResult.tempArtifacts:
             echo "  - ", artifact
           echo ""
-        echo fmt"Tool calls: {taskResult.toolCalls}, Tokens: {taskResult.tokensUsed}"
+        info(fmt"Task completed: {taskResult.toolCalls} tool calls, {taskResult.tokensUsed} tokens, {taskResult.messages} messages, {taskResult.durationMs}ms")
       else:
         echo "=== Task Failed ==="
         echo ""

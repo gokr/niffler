@@ -192,6 +192,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
                   database: DatabaseBackend): TaskResult =
   ## Execute a task with the given agent in an isolated conversation
   ## Creates a new conversation, delegates to API worker, generates summary, switches back
+  let startTime = epochTime() * 1000  # Convert to milliseconds
   debug(fmt("Starting task execution with agent '{agent.name}': {description}"))
 
   try:
@@ -202,6 +203,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       let baseUrl = modelConfig.baseUrl.toLower()
       if not (baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1")):
         # Remote server - API key required but not found
+        let endTime = epochTime() * 1000
         return TaskResult(
           success: false,
           summary: "",
@@ -209,6 +211,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
           tempArtifacts: @[],
           toolCalls: 0,
           tokensUsed: 0,
+          messages: 0,
+          durationMs: int(endTime - startTime),
           error: fmt("No API key configured for model '{modelConfig.nickname}'")
         )
 
@@ -221,6 +225,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
     let taskConvOpt = createConversation(database, taskTitle, amCode, modelConfig.nickname)
 
     if taskConvOpt.isNone():
+      let endTime = epochTime() * 1000
       return TaskResult(
         success: false,
         summary: "",
@@ -228,6 +233,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
         tempArtifacts: @[],
         toolCalls: 0,
         tokensUsed: 0,
+        messages: 0,
+        durationMs: int(endTime - startTime),
         error: "Failed to create task conversation"
       )
 
@@ -273,6 +280,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       # Restore previous conversation
       if previousConvId > 0:
         discard switchToConversation(database, previousConvId)
+      let endTime = epochTime() * 1000
       return TaskResult(
         success: false,
         summary: "",
@@ -280,6 +288,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
         tempArtifacts: @[],
         toolCalls: 0,
         tokensUsed: 0,
+        messages: 0,
+        durationMs: int(endTime - startTime),
         error: "Failed to send API request"
       )
 
@@ -327,6 +337,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
             # Restore previous conversation
             if previousConvId > 0:
               discard switchToConversation(database, previousConvId)
+            let endTime = epochTime() * 1000
             return TaskResult(
               success: false,
               summary: "",
@@ -334,6 +345,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
               tempArtifacts: @[],
               toolCalls: totalToolCalls,
               tokensUsed: totalTokens,
+              messages: 0,
+              durationMs: int(endTime - startTime),
               error: fmt("API error: {response.error}")
             )
 
@@ -344,6 +357,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       # Restore previous conversation
       if previousConvId > 0:
         discard switchToConversation(database, previousConvId)
+      let endTime = epochTime() * 1000
       return TaskResult(
         success: false,
         summary: "",
@@ -351,6 +365,8 @@ proc executeTask*(agent: AgentDefinition, description: string,
         tempArtifacts: @[],
         toolCalls: totalToolCalls,
         tokensUsed: totalTokens,
+        messages: 0,
+        durationMs: int(endTime - startTime),
         error: "Task timed out"
       )
 
@@ -371,6 +387,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       discard switchToConversation(database, previousConvId)
       debug(fmt"Restored previous conversation: {previousConvId}")
 
+    let endTime = epochTime() * 1000
     return TaskResult(
       success: true,
       summary: summary,
@@ -378,11 +395,14 @@ proc executeTask*(agent: AgentDefinition, description: string,
       tempArtifacts: categories.temporary,
       toolCalls: totalToolCalls,
       tokensUsed: totalTokens,
+      messages: conversationMessages.len,
+      durationMs: int(endTime - startTime),
       error: ""
     )
 
   except Exception as e:
     error(fmt("Task execution error: {e.msg}"))
+    let endTime = epochTime() * 1000
     return TaskResult(
       success: false,
       summary: "",
@@ -390,5 +410,7 @@ proc executeTask*(agent: AgentDefinition, description: string,
       tempArtifacts: @[],
       toolCalls: 0,
       tokensUsed: 0,
+      messages: 0,
+      durationMs: int(endTime - startTime),
       error: fmt("Task execution failed: {e.msg}")
     )
