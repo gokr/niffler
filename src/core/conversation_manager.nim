@@ -6,7 +6,7 @@
 ## - Handle conversation session state
 ## - Integrate with database for persistence
 
-import std/[options, strformat, times, logging, locks, strutils, json, sets]
+import std/[options, strformat, times, logging, locks, strutils, sequtils, json, sets]
 import ../types/[mode, messages, thinking_tokens]
 import ../tokenization/tokenizer
 import database
@@ -641,13 +641,11 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
                           importance: string = "medium"): int =
   ## Add thinking token to database and return the assigned ID
   pool.withDb:
-    # Extract content from ThinkingContent
-    let content = if thinkingContent.reasoningContent.isSome(): 
-                    thinkingContent.reasoningContent.get() 
-                  elif thinkingContent.encryptedReasoningContent.isSome():
-                    thinkingContent.encryptedReasoningContent.get()
+    # Extract content from ThinkingContent blocks
+    let content = if thinkingContent.blocks.len > 0:
+                    thinkingContent.blocks[0].content  # For now, just get first block
                   else: ""
-    
+
     let thinkingToken = ConversationThinkingToken(
       id: 0,
       conversationId: conversationId,
@@ -686,18 +684,56 @@ proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50):
         # Parse the JSON thinking content back to ThinkingContent
         let thinkingJson = parseJson(thinkingRow.thinkingContent)
 
-        let thinkingContent = ThinkingContent(
-          reasoningContent: if thinkingJson.hasKey("reasoningContent"):
-                              some(thinkingJson{"reasoningContent"}.getStr(""))
-                            else: none(string),
-          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"):
-                                       some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
-                                     else: none(string),
-          reasoningId: if thinkingRow.reasoning_id.len > 0: some(thinkingRow.reasoning_id) else: none(string),
-          providerSpecific: if thinkingJson.hasKey("providerSpecific"):
-                              some(thinkingJson{"providerSpecific"})
-                            else: none(JsonNode)
-        )
+        # Parse thinking content from JSON
+        var thinkingContent: ThinkingContent
+
+        # Check if it's the new format with blocks or old format
+        if thinkingJson.hasKey("blocks"):
+          # New format with blocks
+          var blocks: seq[ThinkingBlock] = @[]
+          for blockJson in thinkingJson["blocks"]:
+            blocks.add(ThinkingBlock(
+              id: blockJson["id"].getStr(),
+              position: blockJson["position"].getInt(),
+              blockType: parseEnum[ThinkingBlockType](blockJson["blockType"].getStr()),
+              content: blockJson["content"].getStr(),
+              timestamp: blockJson["timestamp"].getFloat(),
+              providerType: blockJson{"providerType"}.getStr("unknown"),
+              isEncrypted: blockJson{"isEncrypted"}.getBool(false),
+              metadata: if blockJson.hasKey("metadata"): blockJson["metadata"] else: newJObject()
+            ))
+
+          thinkingContent = ThinkingContent(
+            messageId: if thinkingJson.hasKey("messageId"): some(thinkingJson{"messageId"}.getInt()) else: none(int),
+            totalTokens: thinkingJson{"totalTokens"}.getInt(0),
+            blocks: blocks,
+            reasoningId: if thinkingJson.hasKey("reasoningId"): some(thinkingJson{"reasoningId"}.getStr()) else: none(string)
+          )
+        else:
+          # Old format - convert to new structure
+          let content = if thinkingJson.hasKey("reasoningContent"):
+                          some(thinkingJson{"reasoningContent"}.getStr())
+                        elif thinkingJson.hasKey("encryptedReasoningContent"):
+                          some(thinkingJson{"encryptedReasoningContent"}.getStr())
+                        else: some("")
+
+          thinkingContent = ThinkingContent(
+            messageId: if thinkingJson.hasKey("messageId"): some(thinkingJson{"messageId"}.getInt()) else: none(int),
+            totalTokens: thinkingJson{"totalTokens"}.getInt(0),
+            blocks: if content.isSome():
+              @[ThinkingBlock(
+                id: "legacy_" & epochTime().int.toHex,
+                position: 0,
+                blockType: tbtPre,
+                content: content.get(),
+                timestamp: epochTime(),
+                providerType: "legacy",
+                isEncrypted: thinkingJson.hasKey("encryptedReasoningContent"),
+                metadata: newJObject()
+              )]
+            else: @[],
+            reasoningId: if thinkingJson.hasKey("reasoningId"): some(thinkingJson{"reasoningId"}.getStr()) else: none(string)
+          )
         result.add(thinkingContent)
 
       debug(fmt"Retrieved {result.len} thinking tokens for conversation {conversationId}")
@@ -727,18 +763,54 @@ proc getThinkingTokensByImportance*(pool: Pool, conversationId: int,
         # Parse the JSON thinking content back to ThinkingContent
         let thinkingJson = parseJson(thinkingRow.thinking_content)
 
-        let thinkingContent = ThinkingContent(
-          reasoningContent: if thinkingJson.hasKey("reasoningContent"):
-                              some(thinkingJson{"reasoningContent"}.getStr(""))
-                            else: none(string),
-          encryptedReasoningContent: if thinkingJson.hasKey("encryptedReasoningContent"):
-                                       some(thinkingJson{"encryptedReasoningContent"}.getStr(""))
-                                     else: none(string),
-          reasoningId: if thinkingRow.reasoning_id.len > 0: some(thinkingRow.reasoning_id) else: none(string),
-          providerSpecific: if thinkingJson.hasKey("providerSpecific"): 
-                              some(thinkingJson{"providerSpecific"})
-                            else: none(JsonNode)
-        )
+        # Parse thinking content from JSON
+        var thinkingContent: ThinkingContent
+
+        # Check if it's the new format with blocks or old format
+        if thinkingJson.hasKey("blocks"):
+          # New format with blocks
+          var blocks: seq[ThinkingBlock] = @[]
+          for blockJson in thinkingJson["blocks"]:
+            blocks.add(ThinkingBlock(
+              id: blockJson["id"].getStr(),
+              position: blockJson["position"].getInt(),
+              blockType: parseEnum[ThinkingBlockType](blockJson["blockType"].getStr()),
+              content: blockJson["content"].getStr(),
+              timestamp: blockJson["timestamp"].getFloat(),
+              providerType: blockJson{"providerType"}.getStr("unknown"),
+              isEncrypted: blockJson{"isEncrypted"}.getBool(false),
+              metadata: if blockJson.hasKey("metadata"): blockJson["metadata"] else: newJObject()
+            ))
+          thinkingContent = ThinkingContent(
+            messageId: if thinkingJson.hasKey("messageId"): some(thinkingJson{"messageId"}.getInt()) else: none(int),
+            totalTokens: thinkingJson{"totalTokens"}.getInt(0),
+            blocks: blocks,
+            reasoningId: if thinkingJson.hasKey("reasoningId"): some(thinkingJson{"reasoningId"}.getStr()) else: none(string)
+          )
+        else:
+          # Old format - convert to new structure
+          let content = if thinkingJson.hasKey("reasoningContent"):
+                          some(thinkingJson{"reasoningContent"}.getStr())
+                        elif thinkingJson.hasKey("encryptedReasoningContent"):
+                          some(thinkingJson{"encryptedReasoningContent"}.getStr())
+                        else: some("")
+          thinkingContent = ThinkingContent(
+            messageId: if thinkingJson.hasKey("messageId"): some(thinkingJson{"messageId"}.getInt()) else: none(int),
+            totalTokens: thinkingJson{"totalTokens"}.getInt(0),
+            blocks: if content.isSome():
+              @[ThinkingBlock(
+                id: "legacy_" & epochTime().int.toHex,
+                position: 0,
+                blockType: tbtPre,
+                content: content.get(),
+                timestamp: epochTime(),
+                providerType: "legacy",
+                isEncrypted: thinkingJson.hasKey("encryptedReasoningContent"),
+                metadata: newJObject()
+              )]
+            else: @[],
+            reasoningId: if thinkingJson.hasKey("reasoningId"): some(thinkingJson{"reasoningId"}.getStr()) else: none(string)
+          )
         result.add(thinkingContent)
       
       debug(fmt"Retrieved {result.len} thinking tokens with {importance} importance for conversation {conversationId}")
@@ -756,20 +828,21 @@ proc storeThinkingTokenFromStreaming*(content: string, format: ThinkingTokenForm
       # Store thinking token if pool is available
       if globalSession.pool != nil and conversationId > 0 and content.len > 0:
         # Create ThinkingContent from streaming data
-        let thinkingContent = if isEncrypted:
-          ThinkingContent(
-            reasoningContent: none(string),
-            encryptedReasoningContent: some(content),
-            reasoningId: none(string),
-            providerSpecific: some(%*{"format": $format, "timestamp": epochTime()})
-          )
-        else:
-          ThinkingContent(
-            reasoningContent: some(content),
-            encryptedReasoningContent: none(string),
-            reasoningId: none(string),
-            providerSpecific: some(%*{"format": $format, "timestamp": epochTime()})
-          )
+        let thinkingContent = ThinkingContent(
+          messageId: messageId,
+          totalTokens: content.len div 4,
+          blocks: @[ThinkingBlock(
+            id: "stream_" & epochTime().int.toHex,
+            position: 0,
+            blockType: tbtPre,
+            content: content,
+            timestamp: epochTime(),
+            providerType: $format,
+            isEncrypted: isEncrypted,
+            metadata: %*{"format": $format, "timestamp": epochTime()}
+          )],
+          reasoningId: none(string)
+        )
 
         let thinkingId = addThinkingTokenToDb(globalSession.pool, conversationId,
                                             thinkingContent, messageId, format, "medium")
@@ -841,3 +914,133 @@ proc linkPendingThinkingTokensToMessage*(messageId: int): int {.gcsafe.} =
     finally:
       release(globalSession.lock)
 
+# ============================================================================
+# New Interleaved Thinking Block Functions
+# ============================================================================
+
+proc addThinkingBlock*(pool: Pool, conversationId: int, messageId: int,
+                     thinkingBlock: ThinkingBlock): int =
+  ## Store a single thinking block with position tracking
+  if pool == nil or messageId == 0:
+    return 0
+
+  var result = 0
+  pool.withDb:
+    try:
+      # Create MessageThinkingBlock object for insertion
+      var mtb = MessageThinkingBlock(
+        id: 0,
+        messageId: messageId,
+        positionIndex: thinkingBlock.position,
+        blockType: $thinkingBlock.blockType,
+        blockId: thinkingBlock.id,
+        content: thinkingBlock.content,
+        timestamp: thinkingBlock.timestamp,
+        isEncrypted: thinkingBlock.isEncrypted,
+        metadata: if thinkingBlock.metadata != nil: $thinkingBlock.metadata else: "{}",
+        tokenCount: thinkingBlock.content.len div 4,
+      )
+      mtb.reasoningId = thinkingBlock.reasoningId
+
+      # Insert and get back the ID
+      db.insert(mtb)
+      result = mtb.id
+
+      debug(fmt"Stored thinking block {thinkingBlock.id} at position {thinkingBlock.position} for message {messageId}")
+    except Exception as e:
+      error(fmt"Failed to add thinking block: {e.msg}")
+      result = 0
+
+  return result
+
+
+proc storeThinkingBlockFromStreaming*(conversationId: int, blockType: ThinkingBlockType,
+                                     content: string, providerType: string,
+                                     position: int): Option[ThinkingBlock] =
+  ## Store thinking block from streaming response with position
+  let pool = globalSession.pool
+  if pool == nil:
+    return none(ThinkingBlock)
+
+  {.gcsafe.}:
+    acquire(globalSession.lock)
+    try:
+      let thinkingBlock = ThinkingBlock(
+        id: "tb_" & epochTime().int.toHex & "_" & position.toHex,
+        position: position,
+        blockType: blockType,
+        content: content,
+        timestamp: epochTime(),
+        providerType: providerType,
+        isEncrypted: false,
+        metadata: newJObject()
+      )
+
+      let messageId = getCurrentConversationId()
+      if messageId != 0:
+        discard addThinkingBlock(pool, conversationId, messageId.int, thinkingBlock)
+        debug(fmt"Stored thinking block from streaming: {blockType} at position {position}")
+        return some(thinkingBlock)
+      else:
+        warn("Cannot store thinking block: no current message")
+        return none(ThinkingBlock)
+    except Exception as e:
+      error(fmt"Failed to store thinking block from streaming: {e.msg}")
+      return none(ThinkingBlock)
+    finally:
+      release(globalSession.lock)
+
+
+proc getThinkingBlocksForMessage*(pool: Pool, messageId: int): seq[ThinkingBlock] =
+  ## Retrieve all thinking blocks for a specific message in order
+  if pool == nil or messageId == 0:
+    return @[]
+
+  result = @[]
+  pool.withDb:
+    try:
+      let query = """
+        SELECT block_id, position_index, block_type, content, timestamp,
+               is_encrypted, metadata, reasoning_id
+        FROM message_thinking_blocks
+        WHERE message_id = ?
+        ORDER BY position_index ASC
+      """
+
+      let rows = db.query(query, messageId)
+      for row in rows:
+        var thinkingBlock = ThinkingBlock(
+          id: row[0],
+          position: parseInt(row[1]),
+          blockType: parseEnum[ThinkingBlockType](row[2]),
+          content: row[3],
+          timestamp: parseFloat(row[4]),
+          isEncrypted: row[5] == "1",
+          metadata: parseJson(row[6])
+        )
+
+        if row[7] != "" and row[7] != "NULL":
+          thinkingBlock.reasoningId = some(row[7])
+
+        result.add(thinkingBlock)
+
+      debug(fmt"Retrieved {result.len} thinking blocks for message {messageId}")
+    except Exception as e:
+      error(fmt"Failed to get thinking blocks for message {messageId}: {e.msg}")
+
+
+proc getConversationContextWithThinking*(pool: Pool, conversationId: int,
+                                      limit: int = 100): seq[Message] =
+  ## Get conversation context with thinking blocks attached
+  let (messages, _) = getConversationContextFromDb(pool, conversationId)
+  result = if limit > 0: messages[0..<min(messages.len, limit)] else: messages
+
+  # Attach thinking blocks to each message
+  for msg in result.mitems:
+    let blocks = getThinkingBlocksForMessage(pool, msg.id)
+    if blocks.len > 0:
+      msg.thinkingContent = some(ThinkingContent(
+        messageId: some(msg.id),
+        totalTokens: foldl(0, blocks, proc(acc: int, b: ThinkingBlock, int: int = acc + (b.content.len div 4))),
+        blocks: blocks ))
+      debug(fmt"Attached {blocks.len} thinking blocks to message {msg.id}")
