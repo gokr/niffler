@@ -23,7 +23,8 @@ type
     regularContent*: Option[string]         # Regular content (if mixed)
     format*: ThinkingTokenFormat            # Detected format
     isComplete*: bool                       # Whether thinking block is complete
-  
+    blocks*: seq[ThinkingBlock]             # Interleaved thinking blocks (if any)
+
   # Thinking token parser state
   ThinkingParser* = object
     buffer*: string                         # Buffer for partial content
@@ -32,6 +33,10 @@ type
     inThinkingBlock*: bool                  # Currently processing thinking block
     thinkingContent*: string                # Accumulated thinking content
     providerSpecific*: Option[JsonNode]     # Provider-specific metadata
+    # New: interleaved thinking support
+    currentBlocks*: seq[ThinkingBlock]      # Track multiple thinking blocks
+    currentPosition*: int                    # Position counter for blocks
+    streamPosition*: int                     # Overall stream position
     
 proc detectThinkingFormatFromJson*(json: JsonNode): ThinkingTokenFormat =
   ## Detect thinking token format from JSON response structure
@@ -311,3 +316,97 @@ proc isThinkingBlockComplete*(parser: IncrementalThinkingParser): bool {.inline.
   of ttfOpenAI: return true  # OpenAI format doesn't have explicit completion markers
   of ttfEncrypted: return true  # Encrypted content is considered complete
   of ttfNone: return false
+
+# ============================================================================
+# Interleaved Thinking Support
+# ============================================================================
+
+proc parseInterleavedThinking*(delta: JsonNode, state: var ThinkingParser): seq[ThinkingBlock] =
+  ## Parse interleaved thinking from SSE delta chunks
+  ## Returns new thinking blocks discovered in this delta
+  result = @[]
+
+  try:
+    # Check for thinking delta types in different provider formats
+    if delta.hasKey("thinking"):
+      # Anthropic-like format
+      let thinkingContent = delta["thinking"].getStr()
+      if thinkingContent.len > 0:
+        let block = ThinkingBlock(
+          id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
+          position: state.currentPosition,
+          blockType: tbtInline,
+          content: thinkingContent,
+          timestamp: epochTime(),
+          providerType: "anthropic",
+          isEncrypted: false,
+          metadata: newJObject()
+        )
+        result.add(block)
+        state.currentPosition.inc()
+
+    elif delta.hasKey("reasoning_content"):
+      # OpenAI-like format
+      let reasoningContent = delta["reasoning_content"].getStr()
+      if reasoningContent.len > 0:
+        let block = ThinkingBlock(
+          id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
+          position: state.currentPosition,
+          blockType: tbtInline,
+          content: reasoningContent,
+          timestamp: epochTime(),
+          providerType: "openai",
+          isEncrypted: false,
+          metadata: newJObject()
+        )
+        result.add(block)
+        state.currentPosition.inc()
+
+    elif delta.hasKey("encrypted_reasoning"):
+      # Encrypted reasoning content
+      let encryptedContent = delta["encrypted_reasoning"].getStr()
+      if encryptedContent.len > 0:
+        let block = ThinkingBlock(
+          id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
+          position: state.currentPosition,
+          blockType: tbtInline,
+          content: encryptedContent,
+          timestamp: epochTime(),
+          providerType: "encrypted",
+          isEncrypted: true,
+          metadata: %*{"encrypted": true}
+        )
+        result.add(block)
+        state.currentPosition.inc()
+
+  except Exception as e:
+    error(fmt"Error parsing interleaved thinking: {e.msg}")
+
+  state.streamPosition.inc()
+
+
+proc initThinkingParser*(): ThinkingParser =
+  ## Initialize a new thinking parser for interleaved thinking
+  return ThinkingParser(
+    buffer: "",
+    detectedFormat: none(ThinkingTokenFormat),
+    xmlDepth: 0,
+    inThinkingBlock: false,
+    thinkingContent: "",
+    providerSpecific: none(JsonNode),
+    currentBlocks: @[],
+    currentPosition: 0,
+    streamPosition: 0
+  )
+
+
+proc shouldIncludeThinking*(modelConfig: ModelConfig): bool =
+  ## Check if model should receive thinking in context
+  ## Uses the opt-in approach
+  modelConfig.includeReasoningInContext.get(false)
+
+
+proc concatenateThinking*(blocks: seq[ThinkingBlock]): string =
+  ## Concatenate multiple thinking blocks into a single string
+  ## For OpenAI-style models that don't support interleaved format
+  result = blocks.mapIt(it.content).join("\n\n")

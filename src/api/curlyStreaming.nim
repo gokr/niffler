@@ -22,7 +22,7 @@
 ## - Manual SSE parsing on top of Curly's streaming mechanism
 ## - Compatible with existing message types and API
 
-import std/[json, strutils, options, strformat, logging, tables]
+import std/[json, strutils, options, strformat, logging, tables, sequtils]
 import curly
 import ../types/[messages, config, thinking_tokens]
 import ../core/log_file as logFileModule
@@ -616,34 +616,61 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
     error(fmt"Error in streaming request: {e.msg}")
     return (false, none(TokenUsage), fmt"Exception: {e.msg}", "")
 
-proc convertMessages*(messages: seq[Message]): seq[ChatMessage] =
+proc convertMessages*(messages: seq[Message], modelConfig: ModelConfig, includeThinking: bool = false): seq[ChatMessage] =
   ## Convert internal Message types to OpenAI-compatible ChatMessage format
+  ## Include thinking content if enabled and model supports it
+  import ../api/thinking_token_parser
+
   result = @[]
   for msg in messages:
     var chatMsg = ChatMessage(
       role: $msg.role,
       content: msg.content
     )
-    
+
     # Handle tool calls (assistant -> API)
     if msg.toolCalls.isSome():
       # Tool calls are already LLMToolCall - use directly without conversion
       let apiToolCalls = msg.toolCalls.get()
       chatMsg.toolCalls = some(apiToolCalls)
-    
+
     # Handle tool call ID (tool -> API)
     if msg.toolCallId.isSome():
       chatMsg.toolCallId = msg.toolCallId
-    
+
+    # Handle thinking content if enabled
+    if includeThinking and msg.thinkingContent.isSome():
+      let tc = msg.thinkingContent.get()
+
+      # Convert thinking blocks based on model format
+      if modelConfig.thinkingFormat.get("auto") == "anthropic":
+        # For Anthropic, store blocks for special content array formatting
+        chatMsg.thinkingBlocks = tc.blocks
+        # Also concatenate for OpenAI compatibility in other contexts
+        chatMsg.reasoningContent = some(concatenateThinking(tc.blocks))
+      else:
+        # For OpenAI-style models, concatenate all thinking blocks
+        chatMsg.reasoningContent = some(concatenateThinking(tc.blocks))
+
+      # Handle encrypted reasoning content
+      let encryptedBlocks = tc.blocks.filterIt(it.isEncrypted)
+      if encryptedBlocks.len > 0:
+        chatMsg.encryptedReasoningContent = some(encryptedBlocks.mapIt(it.content).join("\n\n"))
+
+      # Set reasoning ID if available
+      chatMsg.reasoningId = tc.reasoningId
+
     result.add(chatMsg)
 
 # Helper function to create ChatRequest (compatibility with existing API)
 proc createChatRequest*(modelConfig: ModelConfig, messages: seq[Message],
                        stream: bool, tools: Option[seq[ToolDefinition]]): ChatRequest =
   ## Create a ChatRequest from internal message types using model configuration
+  let includeThinking = shouldIncludeThinking(modelConfig)
+
   return ChatRequest(
     model: modelConfig.model,
-    messages: convertMessages(messages),
+    messages: convertMessages(messages, modelConfig, includeThinking),
     maxTokens: modelConfig.maxTokens,
     temperature: modelConfig.temperature,
     topP: modelConfig.topP,
