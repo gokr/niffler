@@ -75,6 +75,8 @@ type
     tempArtifacts*: seq[string]   ## Temporary files (e.g., fetch cache)
     toolCalls*: int               ## Number of tool calls made
     tokensUsed*: int              ## Total tokens consumed
+    messages*: int                ## Number of messages in conversation
+    durationMs*: int              ## Duration in milliseconds
     error*: string                ## Error message if failed
 
   TaskExecution* = object

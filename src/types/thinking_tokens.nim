@@ -140,10 +140,21 @@ proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): Option
         let thinkingStart = startPos + 10  # Length of "<thinking>"
         let thinkingContent = content[thinkingStart..<endPos].strip()
         return some(ThinkingContent(
-          reasoningContent: some(thinkingContent),
-          encryptedReasoningContent: none(string),
-          reasoningId: none(string),
-          providerSpecific: none(JsonNode)
+          messageId: none(int),
+          totalTokens: thinkingContent.len div 4,
+          blocks: @[
+            ThinkingBlock(
+              id: "tc_" & epochTime().int.toHex,
+              position: 0,
+              blockType: tbtPre,
+              content: thinkingContent,
+              timestamp: epochTime(),
+              providerType: "anthropic",
+              isEncrypted: false,
+              metadata: newJObject()
+            )
+          ],
+          reasoningId: none(string)
         ))
   
   of ttfOpenAI:
@@ -155,10 +166,21 @@ proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): Option
           let reasoningContent = jsonContent{"reasoning_content"}.getStr()
           let reasoningId = if jsonContent.hasKey("reasoning_id"): some(jsonContent{"reasoning_id"}.getStr()) else: none(string)
           return some(ThinkingContent(
-            reasoningContent: some(reasoningContent),
-            encryptedReasoningContent: none(string),
-            reasoningId: reasoningId,
-            providerSpecific: none(JsonNode)
+            messageId: none(int),
+            totalTokens: reasoningContent.len div 4,
+            blocks: @[
+              ThinkingBlock(
+                id: "tc_" & epochTime().int.toHex,
+                position: 0,
+                blockType: tbtPre,
+                content: reasoningContent,
+                timestamp: epochTime(),
+                providerType: "openai",
+                isEncrypted: false,
+                metadata: newJObject()
+              )
+            ],
+            reasoningId: reasoningId
           ))
       except JsonParsingError:
         debug("Failed to parse OpenAI reasoning content: " & getCurrentExceptionMsg())
@@ -168,10 +190,21 @@ proc parseThinkingContent*(content: string, format: ThinkingTokenFormat): Option
     if "encrypted_reasoning" in content or "redacted_thinking" in content:
       let encryptedReasoning = content  # Store as-is for encryption handling
       return some(ThinkingContent(
-        reasoningContent: none(string),
-        encryptedReasoningContent: some(encryptedReasoning),
-        reasoningId: none(string),
-        providerSpecific: none(JsonNode)
+        messageId: none(int),
+        totalTokens: 0,
+        blocks: @[
+          ThinkingBlock(
+            id: "tc_" & epochTime().int.toHex,
+            position: 0,
+            blockType: tbtPre,
+            content: encryptedReasoning,
+            timestamp: epochTime(),
+            providerType: "encrypted",
+            isEncrypted: true,
+            metadata: %*{"encrypted": true}
+          )
+        ],
+        reasoningId: none(string)
       ))
   
   of ttfNone:
@@ -367,3 +400,17 @@ proc clearWindow*(window: var ThinkingWindowManager) =
   ## Clear all tokens from the window
   window.tokens = @[]
   window.currentSize = 0
+
+proc concatenateThinking*(blocks: seq[ThinkingBlock]): string =
+  ## Concatenate multiple thinking blocks into a single string
+  ## For OpenAI-style models that don't support interleaved format
+  var parts: seq[string]
+  for b in blocks:
+    parts.add(b.content)
+    parts.add("\n\n")
+
+  # Remove the trailing newline if any
+  if parts.len > 0:
+    parts.setLen(parts.len - 1)
+
+  result = parts.join("")

@@ -49,6 +49,9 @@ type
     reasoning*: Option[ReasoningLevel]
     enabled*: bool
     reasoningContent*: Option[ReasoningContentType]  # New: thinking token visibility
+    includeReasoningInContext*: Option[bool]         # NEW: Override auto behavior
+    thinkingFormat*: Option[string]                  # "anthropic", "openai", "auto"
+    maxThinkingTokens*: Option[int]                  # NEW: Limit thinking context
     
     # OpenAI protocol parameters
     temperature*: Option[float]

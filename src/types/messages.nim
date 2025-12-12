@@ -24,11 +24,27 @@ import std/[options, json, tables]
 
 type
   # Thinking Token Support Types
+  ThinkingBlockType* = enum
+    tbtPre = "pre_thinking"       # Before first content/tool
+    tbtInline = "inline_thinking"  # Between content/tools
+    tbtPost = "post_thinking"      # After all content/tools
+
+  ThinkingBlock* = object
+    id*: string                    # Unique block identifier
+    position*: int                 # Position within message (0-based)
+    blockType*: ThinkingBlockType
+    content*: string
+    timestamp*: float              # Precise timing
+    providerType*: string          # "anthropic", "openai", "encrypted"
+    isEncrypted*: bool
+    metadata*: JsonNode            # Provider-specific data (signature, etc.)
+    reasoningId*: Option[string]    # Optional reasoning correlation ID
+
   ThinkingContent* = object
-    reasoningContent*: Option[string]      # Plain text reasoning
-    encryptedReasoningContent*: Option[string]  # Encrypted reasoning for privacy models
-    reasoningId*: Option[string]           # Unique ID for reasoning correlation
-    providerSpecific*: Option[JsonNode]    # Provider-specific metadata
+    messageId*: Option[int]        # Link to message
+    totalTokens*: int
+    blocks*: seq[ThinkingBlock]    # Ordered sequence of thinking blocks
+    reasoningId*: Option[string]
     
   # Core message types for LLM conversations
   MessageRole* = enum
@@ -53,6 +69,7 @@ type
     error*: Option[string]
 
   Message* = object
+    id*: int                           # Database ID
     role*: MessageRole
     content*: string
     # OpenAI format tool calls (for LLM communication)
@@ -337,6 +354,7 @@ type
     reasoningContent*: Option[string]         # OpenAI-style thinking content
     encryptedReasoningContent*: Option[string]  # Encrypted reasoning content
     reasoningId*: Option[string]              # Unique reasoning identifier
+    thinkingBlocks*: seq[ThinkingBlock]       # Full interleaved thinking blocks (for Anthropic)
 
 
   # Simple convenience check - access thinkingContent directly in practice
