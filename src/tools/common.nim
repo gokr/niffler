@@ -13,7 +13,7 @@
 ## - Timeout enforcement for commands
 ## - Input validation and sanitization
 
-import std/[strutils, os, times, strformat, osproc, json, streams, logging]
+import std/[strutils, os, times, strformat, osproc, json, streams, logging, sequtils]
 import ../types/tools
 import ../core/constants
 
@@ -127,6 +127,11 @@ proc formatFileSize*(size: int64): string =
 proc formatTimestamp*(time: Time): string =
   ## Format timestamp in a readable format
   return $time
+
+proc stripTrailingWhitespace*(text: string): string =
+  ## Remove only trailing whitespace from each line (safe for indentation)
+  ## Preserves leading whitespace (important for Python/Nim indentation)
+  return text.splitLines().mapIt(it.strip(trailing = true, leading = false)).join("\n")
 
 proc createBackupPath*(originalPath: string): string =
   ## Create a backup file path

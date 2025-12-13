@@ -24,7 +24,7 @@
 ## - Automatic backups prevent data loss
 ## - Comprehensive error handling with specific error types
 
-import std/[strutils, json, strformat, logging, os, options]
+import std/[strutils, json, strformat, logging, os, options, sequtils]
 import ../types/tools, ../types/tool_args
 import ../types/mode
 import ../core/database, ../core/conversation_manager
@@ -50,23 +50,41 @@ proc findTextInFile*(path: string, searchText: string): tuple[found: bool, lineR
   ## Find text in file and return its line range
   let content = attemptUntrackedRead(path)
   let lines = content.splitLines()
-  
+
   var startLine = -1
   var endLine = -1
   let searchLines = searchText.splitLines()
-  
+
+  # Try exact match first
   for i in 0..(lines.len - searchLines.len):
     var match = true
     for j in 0..<searchLines.len:
       if lines[i + j] != searchLines[j]:
         match = false
         break
-    
+
     if match:
       startLine = i + 1  # 1-based line numbering
       endLine = i + searchLines.len
       break
-  
+
+  # If exact match failed, try trailing-whitespace-normalized match
+  if startLine == -1:
+    let normalizedSearchLines = stripTrailingWhitespace(searchText).splitLines()
+    if normalizedSearchLines.len == searchLines.len:
+      for i in 0..(lines.len - normalizedSearchLines.len):
+        var match = true
+        for j in 0..<normalizedSearchLines.len:
+          # Compare with normalized lines (stripping trailing whitespace)
+          if stripTrailingWhitespace(lines[i + j]) != normalizedSearchLines[j]:
+            match = false
+            break
+
+        if match:
+          startLine = i + 1  # 1-based line numbering
+          endLine = i + normalizedSearchLines.len
+          break
+
   return (found: startLine != -1, lineRange: (start: startLine, `end`: endLine))
 
 proc replaceText*(content: string, oldText: string, newText: string): string =
@@ -277,11 +295,44 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     
     case op:
       of Replace:
+        var oldTextToReplace = parsedArgs.oldText
+        # Try exact match first
         if parsedArgs.oldText notin originalContent:
-          raise newToolExecutionError("edit", "Text to replace not found in file", -1, "")
-        newContent = replaceText(originalContent, parsedArgs.oldText, parsedArgs.newText)
+          # Try with trailing whitespace normalized
+          let normalizedOld = stripTrailingWhitespace(parsedArgs.oldText)
+          let normalizedContent = originalContent.splitLines().mapIt(it.strip(trailing = true, leading = false)).join("\n")
+          let normalizedSearchLines = normalizedOld.splitLines()
+          let normalizedContentLines = normalizedContent.splitLines()
+
+          var foundNormalized = false
+          var matchStart = -1
+
+          # Look for normalized version
+          for i in 0..(normalizedContentLines.len - normalizedSearchLines.len):
+            var match = true
+            for j in 0..<normalizedSearchLines.len:
+              if normalizedContentLines[i + j] != normalizedSearchLines[j]:
+                match = false
+                break
+
+            if match:
+              foundNormalized = true
+              matchStart = i
+              break
+
+          if foundNormalized:
+            # Extract the actual text from original content (with original whitespace)
+            var actualLines: seq[string] = @[]
+            for i in 0..<normalizedSearchLines.len:
+              actualLines.add(originalContent.splitLines()[matchStart + i])
+            oldTextToReplace = actualLines.join("\n")
+            debug(fmt"Using whitespace-normalized match for: {oldTextToReplace}")
+          else:
+            raise newToolExecutionError("edit", "Text to replace not found in file", -1, "")
+
+        newContent = replaceText(originalContent, oldTextToReplace, parsedArgs.newText)
         changesMade = newContent != originalContent
-        let found = findTextInFile(sanitizedPath, parsedArgs.oldText)
+        let found = findTextInFile(sanitizedPath, oldTextToReplace)
         if found.found:
           actualLineRange = found.lineRange
       
