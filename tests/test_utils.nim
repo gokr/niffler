@@ -57,14 +57,13 @@ proc clearTestDatabase*(backend: DatabaseBackend) =
       discard db.query("DELETE FROM token_correction_factor")
       discard db.query("DELETE FROM todo_item")
       discard db.query("DELETE FROM todo_list")
+      discard db.query("DELETE FROM message_thinking_blocks")  # Must be before conversation_message (FK)
       discard db.query("DELETE FROM conversation_message")
-      discard db.query("DELETE FROM conversation_thinking_token")
       discard db.query("DELETE FROM system_prompt_token_usage")
       discard db.query("DELETE FROM model_token_usage")
       discard db.query("DELETE FROM conversation")
       discard db.query("DELETE FROM token_log_entry")
       discard db.query("DELETE FROM prompt_history_entry")
-      discard db.query("DELETE FROM token_correction_factor")
     except CatchableError:
       # Ignore errors if tables don't exist or if foreign key constraints cause issues
       discard

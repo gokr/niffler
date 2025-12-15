@@ -1266,7 +1266,7 @@ proc initializeAPIWorker(params: ThreadParams): tuple[channels: ptr ThreadChanne
   
   return (channels, database, currentClient, activeRequests, toolCallBuffers)
 
-proc apiWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
+proc apiWorkerProc*(params: ThreadParams) {.thread, gcsafe.} =
   let (channels, database, currentClient, activeRequests, toolCallBuffers) = initializeAPIWorker(params)
   var mutableCurrentClient = currentClient
   var mutableActiveRequests = activeRequests

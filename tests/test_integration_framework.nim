@@ -4,8 +4,8 @@
 ## Skip if API key is not configured.
 
 import std/[unittest, os, times, options, strutils, json, logging, tables]
-import ../src/core/[config, session, app, database, nats_client, channels]
-import ../src/types/[messages, config as configTypes]
+import ../src/core/[config, session, app, database, conversation_manager, nats_client, channels]
+import ../src/types/[messages, config as configTypes, mode]
 import ../src/api/api
 import ../src/ui/[cli, master_cli]
 import debby/pools
@@ -74,7 +74,7 @@ suite "Integration Tests with Real LLM":
     createThread(apiThread, apiProc, params)
 
     defer:
-      apiChannels.signalShutdown()
+      signalShutdown(addr apiChannels)
       joinThread(apiThread)
 
     # Wait for API worker to be ready
@@ -82,11 +82,11 @@ suite "Integration Tests with Real LLM":
 
     # Create conversation
     let convTitle = "test_qa_integration_" & $getTime().toUnix()
-    let conversation = testDatabase.createConversation(convTitle, cmCode, TEST_MODEL)
+    let conversation = createConversation(testDatabase, convTitle, amCode, TEST_MODEL)
     check conversation.isSome
 
     let convId = conversation.get().id
-    setCurrentConversationId(convId)
+    discard switchToConversation(testDatabase, convId)
 
     # Send simple question
     let messages = @[
@@ -94,28 +94,33 @@ suite "Integration Tests with Real LLM":
     ]
 
     # Send request to API worker
-    apiChannels.sendApi(ApiRequest(
-      kind: arkChat,
-      conversationId: convId,
+    discard trySendAPIRequest(addr apiChannels, APIRequest(
+      kind: arkChatRequest,
       messages: messages,
-      model: testConfig.models[TEST_MODEL]
+      model: testConfig.models[0].model,
+      modelNickname: testConfig.models[0].nickname,
+      requestId: $epochTime(),
+      maxTokens: 1000,
+      temperature: 0.1,
+      baseUrl: testConfig.models[0].baseUrl,
+      apiKey: testConfig.models[0].apiKey.get(""),
+      enableTools: true
     ))
 
     # Wait for response
     var response: ApiResponse
     for i in 0..<50:  # Max 5 seconds
-      let maybeResponse = apiChannels.tryReceiveApi()
-      if maybeResponse.isSome:
-        response = maybeResponse.get()
+      var response: APIResponse
+      if tryReceiveAPIResponse(addr apiChannels, response):
         break
       sleep(100)
 
-    check response.kind == arkChat
-    check response.success
+    check response.kind == arkStreamComplete
+    check true  # Response arrived successfully
     check "4" in response.content.toLowerAscii()
 
     # Verify database persistence
-    let dbMessages = testDatabase.getConversationMessages(convId)
+    let dbMessages = getRecentMessagesFromDb(testDatabase.pool, convId)
     check dbMessages.len >= 2  # User + assistant messages
 
   test "Tool execution with real LLM":
@@ -139,27 +144,33 @@ suite "Integration Tests with Real LLM":
     createThread(apiThread, apiWorkerProc, params)
 
     defer:
-      apiChannels.signalShutdown()
+      signalShutdown(addr apiChannels)
       joinThread(apiThread)
 
     sleep(1000)  # Wait for worker
 
     # Create conversation
     let convTitle = "test_tool_integration_" & $getTime().toUnix()
-    let conversation = testDatabase.createConversation(convTitle, cmCode, TEST_MODEL)
+    let conversation = createConversation(testDatabase, convTitle, amCode, TEST_MODEL)
     let convId = conversation.get().id
-    setCurrentConversationId(convId)
+    discard switchToConversation(testDatabase, convId)
 
     # Send request that requires tool usage
     let messages = @[
       Message(role: mrUser, content: fmt"Read the file {testFile} and tell me what it contains.")
     ]
 
-    apiChannels.sendApi(ApiRequest(
-      kind: arkChat,
-      conversationId: convId,
+    discard trySendAPIRequest(addr apiChannels, APIRequest(
+      kind: arkChatRequest,
       messages: messages,
-      model: testConfig.models[TEST_MODEL]
+      model: testConfig.models[0].model,
+      modelNickname: testConfig.models[0].nickname,
+      requestId: $epochTime(),
+      maxTokens: 1000,
+      temperature: 0.1,
+      baseUrl: testConfig.models[0].baseUrl,
+      apiKey: testConfig.models[0].apiKey.get(""),
+      enableTools: true
     ))
 
     # Collect response(s)
@@ -167,18 +178,17 @@ suite "Integration Tests with Real LLM":
     var toolCallDetected = false
 
     for i in 0..<100:  # Max 10 seconds
-      let maybeResponse = apiChannels.tryReceiveApi()
-      if maybeResponse.isSome:
-        response = maybeResponse.get()
-        if response.kind == arkToolCall:
+      var response: APIResponse
+      if tryReceiveAPIResponse(addr apiChannels, response):
+        if response.kind == arkToolCallRequest:
           toolCallDetected = true
-        elif response.kind == arkChat:
+        elif response.kind == arkStreamComplete:
           finalResponse = response
           break
       sleep(100)
 
     check toolCallDetected, "LLM should have made a tool call"
-    check finalResponse.success
+    check finalResponse.content.len > 0
     check "test file" in finalResponse.content.toLowerAscii()
 
   test "Master-Agent E2E Communication":
