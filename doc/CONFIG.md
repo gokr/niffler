@@ -385,6 +385,92 @@ The old system still works for backward compatibility, but the new config system
 
 See TODO.md for priority and detailed tasks.
 
+## Model Configuration
+
+Niffler supports multiple AI models with extensive configuration options, including thinking token support for models that provide reasoning.
+
+### Basic Model Configuration
+
+```yaml
+models:
+  - nickname: "claude-sonnet"           # Friendly name for the model
+    model: "claude-3-5-sonnet-20241022" # Model identifier for the API
+    base_url: "https://api.anthropic.com/v1"
+    api_key: "sk-ant-..."              # Or use api_env_var
+    context: 200000                     # Context window size
+    enabled: true                       # Enable this model
+```
+
+### Thinking Token Configuration
+
+Enable and configure thinking token support for models that provide reasoning:
+
+```yaml
+models:
+  - nickname: "claude-thinking"
+    model: "claude-3-7-sonnet-20250219"
+    base_url: "https://api.anthropic.com/v1"
+    # Thinking token configuration
+    include_reasoning_in_context: true  # Include thinking in context for follow-ups
+    thinking_format: "anthropic"        # anthropic, openai, or auto-detect
+    max_thinking_tokens: 4000           # Limit thinking tokens (optional)
+```
+
+**Configuration Options:**
+- `include_reasoning_in_context` (boolean): When true, model receives previous thinking as context
+- `thinking_format` (string): Provider format - "anthropic", "openai", or "auto"
+- `max_thinking_tokens` (integer): Optional limit to prevent excessive thinking
+
+### Advanced Model Options
+
+```yaml
+models:
+  - nickname: "gpt-4"
+    model: "gpt-4-turbo"
+    base_url: "https://api.openai.com/v1"
+    # API authentication
+    api_env_var: "OPENAI_API_KEY"       # Use environment variable
+    # Token costs for tracking
+    input_cost_per_mtoken: 0.01         # Cost per million input tokens
+    output_cost_per_mtoken: 0.03        # Cost per million output tokens
+    # Generation parameters
+    temperature: 0.7                    # Sampling temperature
+    top_p: 0.9                          # Top-p sampling
+    max_tokens: 4096                    # Maximum response tokens
+    # Context window
+    context: 128000                     # Model's context window
+    enabled: true
+```
+
+### Reasoning Levels
+
+For models that support adjustable reasoning (like o1 variants):
+
+```yaml
+models:
+  - nickname: "o1-mini"
+    model: "o1-mini"
+    reasoning: "medium"                 # low, medium, or high
+```
+
+### Model Types
+
+Specify model type for special handling:
+
+```yaml
+models:
+  - nickname: "deepseek"
+    model: "deepseek-chat"
+    type: "deepseek"                    # Enables DeepSeek-specific handling
+```
+
+**Supported Types:**
+- `anthropic` - Anthropic Claude models
+- `openai` - OpenAI models
+- `deepseek` - DeepSeek models
+- `mistral` - Mistral models
+- Default: Auto-detect based on base URL
+
 ## NATS Configuration
 
 Niffler uses NATS for multi-agent communication and master mode routing. NATS configuration is optional and only required when using master mode or running multiple agents.
@@ -727,18 +813,44 @@ database:
 
 ### Database Setup
 
-#### TiDB Quick Start
+#### TiDB Quick Start (Persistent)
+
+For development, run TiDB with persistent data storage:
 
 ```bash
-# Using Docker
-docker run -d --name tidb \
+# Create a directory for TiDB data
+mkdir -p ~/tidb-data
+
+# Run TiDB with volume mount for persistence
+docker run -d \
+  --name tidb \
   -p 4000:4000 \
   -p 10080:10080 \
+  -v ~/tidb-data:/data \
   pingcap/tidb:latest
 
 # Create database
 mysql -h 127.0.0.1 -P 4000 -u root
 CREATE DATABASE niffler;
+```
+
+**To stop and restart TiDB:**
+```bash
+# Stop TiDB (data persists in ~/tidb-data)
+docker stop tidb
+
+# Restart TiDB
+docker start tidb
+```
+
+**For a fresh database:**
+```bash
+# Remove all data
+docker stop tidb
+docker rm tidb
+rm -rf ~/tidb-data
+
+# Then run the docker command above again
 ```
 
 #### MySQL Alternative

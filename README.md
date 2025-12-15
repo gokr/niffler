@@ -97,6 +97,52 @@ Niffler's unique **chat room model** enables multiple specialized agents to coll
 
 **Learn more:** See [doc/TASK.md](doc/TASK.md) for complete multi-agent documentation and [doc/EXAMPLES.md](doc/EXAMPLES.md) for usage patterns.
 
+## 🧠 Interleaved Thinking Token Support
+
+Niffler now supports **interleaved thinking tokens** with full context persistence, allowing models to receive their previous reasoning as input in follow-up requests.
+
+### Features
+
+- **Multiple Thinking Blocks**: Support for pre-thinking, inline thinking, and post-thinking blocks per message
+- **Position Tracking**: Maintains thinking block order and position for accurate reconstruction
+- **Provider-Aware Formatting**: Automatic detection and formatting for Anthropic, OpenAI, and encrypted formats
+- **Opt-In Configuration**: Models only receive thinking tokens when explicitly enabled
+- **Database Persistence**: Thinking blocks stored in dedicated table with full metadata
+- **Token Counting**: Automatic token estimation for thinking content
+
+### Configuration
+
+Enable thinking token support in your `config.yaml`:
+
+```yaml
+models:
+  - nickname: "claude-thinking"
+    model: "claude-3-7-sonnet-20250219"
+    base_url: "https://api.anthropic.com/v1"
+    include_reasoning_in_context: true  # Enable thinking in context
+    thinking_format: "anthropic"        # anthropic, openai, or auto
+    max_thinking_tokens: 4000           # Optional: limit thinking tokens
+```
+
+### Database Schema
+
+Thinking blocks are stored in the `message_thinking_blocks` table with:
+- `message_id` - Reference to parent message
+- `position_index` - Order of thinking block
+- `block_type` - pre_thinking, inline_thinking, or post_thinking
+- `content` - The thinking content
+- `is_encrypted` - For encrypted reasoning
+- `token_count` - Estimated token count
+- `reasoning_id` - Optional reasoning identifier
+
+**Migration:** Run `./migrations/run_migration.sh` to upgrade existing databases.
+
+### Supported Providers
+
+- **Anthropic**: XML-style thinking blocks with `<thinking>` tags
+- **OpenAI**: `reasoning_content` field support
+- **Encrypted**: For providers with encrypted reasoning
+
 ## 💰 Token Counting & Cost Tracking
 
 Niffler features an intelligent token estimation system with dynamic correction factors that learns from actual API usage to provide increasingly accurate cost predictions.
