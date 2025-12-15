@@ -3,7 +3,7 @@
 ## These tests verify end-to-end functionality using actual LLM APIs.
 ## Skip if API key is not configured.
 
-import std/[unittest, os, times, options, strutils, json, logging, tables]
+import std/[unittest, os, times, options, strutils, json, logging, tables, strformat]
 import ../src/core/[config, session, app, database, conversation_manager, nats_client, channels]
 import ../src/types/[messages, config as configTypes, mode]
 import ../src/api/api
