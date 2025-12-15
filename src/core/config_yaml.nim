@@ -100,6 +100,19 @@ proc parseModelFromYaml(yamlNode: YamlNode): ModelConfig =
   if outputCostStr.len > 0:
     result.outputCostPerMToken = some(parseFloat(outputCostStr))
 
+  # Thinking token configuration (optional)
+  let includeThinking = getYamlString("include_reasoning_in_context")
+  if includeThinking.len > 0:
+    result.includeReasoningInContext = some(getYamlBool("include_reasoning_in_context", false))
+
+  let thinkingFormat = getYamlString("thinking_format")
+  if thinkingFormat.len > 0:
+    result.thinkingFormat = some(thinkingFormat)
+
+  let maxThinkingTokensStr = getYamlString("max_thinking_tokens")
+  if maxThinkingTokensStr.len > 0:
+    result.maxThinkingTokens = some(parseInt(maxThinkingTokensStr))
+
 proc parseDatabaseFromYaml(yamlNode: YamlNode): DatabaseConfig =
   if yamlNode.kind != yMapping:
     raise newException(ValueError, "Expected mapping for database config")

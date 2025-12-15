@@ -12,8 +12,8 @@
 ## - Provider detection and automatic format selection
 ## - Efficient buffering for partial thinking blocks
 
-import std/[strutils, json, options]
-import ../types/[messages, thinking_tokens]
+import std/[strutils, json, options, times, logging, strformat]
+import ../types/[messages, thinking_tokens, config]
 
 type
   # Thinking token parsing result
@@ -332,7 +332,7 @@ proc parseInterleavedThinking*(delta: JsonNode, state: var ThinkingParser): seq[
       # Anthropic-like format
       let thinkingContent = delta["thinking"].getStr()
       if thinkingContent.len > 0:
-        let block = ThinkingBlock(
+        let thinkingBlock = ThinkingBlock(
           id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
           position: state.currentPosition,
           blockType: tbtInline,
@@ -342,14 +342,14 @@ proc parseInterleavedThinking*(delta: JsonNode, state: var ThinkingParser): seq[
           isEncrypted: false,
           metadata: newJObject()
         )
-        result.add(block)
+        result.add(thinkingBlock)
         state.currentPosition.inc()
 
     elif delta.hasKey("reasoning_content"):
       # OpenAI-like format
       let reasoningContent = delta["reasoning_content"].getStr()
       if reasoningContent.len > 0:
-        let block = ThinkingBlock(
+        let thinkingBlock = ThinkingBlock(
           id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
           position: state.currentPosition,
           blockType: tbtInline,
@@ -359,14 +359,14 @@ proc parseInterleavedThinking*(delta: JsonNode, state: var ThinkingParser): seq[
           isEncrypted: false,
           metadata: newJObject()
         )
-        result.add(block)
+        result.add(thinkingBlock)
         state.currentPosition.inc()
 
     elif delta.hasKey("encrypted_reasoning"):
       # Encrypted reasoning content
       let encryptedContent = delta["encrypted_reasoning"].getStr()
       if encryptedContent.len > 0:
-        let block = ThinkingBlock(
+        let thinkingBlock = ThinkingBlock(
           id: "tb_" & epochTime().int.toHex & "_" & state.streamPosition.toHex,
           position: state.currentPosition,
           blockType: tbtInline,
@@ -376,7 +376,7 @@ proc parseInterleavedThinking*(delta: JsonNode, state: var ThinkingParser): seq[
           isEncrypted: true,
           metadata: %*{"encrypted": true}
         )
-        result.add(block)
+        result.add(thinkingBlock)
         state.currentPosition.inc()
 
   except Exception as e:
@@ -406,7 +406,3 @@ proc shouldIncludeThinking*(modelConfig: ModelConfig): bool =
   modelConfig.includeReasoningInContext.get(false)
 
 
-proc concatenateThinking*(blocks: seq[ThinkingBlock]): string =
-  ## Concatenate multiple thinking blocks into a single string
-  ## For OpenAI-style models that don't support interleaved format
-  result = blocks.mapIt(it.content).join("\n\n")

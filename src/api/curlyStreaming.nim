@@ -619,8 +619,6 @@ proc sendStreamingChatRequest*(client: var CurlyStreamingClient, request: ChatRe
 proc convertMessages*(messages: seq[Message], modelConfig: ModelConfig, includeThinking: bool = false): seq[ChatMessage] =
   ## Convert internal Message types to OpenAI-compatible ChatMessage format
   ## Include thinking content if enabled and model supports it
-  import ../api/thinking_token_parser
-
   result = @[]
   for msg in messages:
     var chatMsg = ChatMessage(

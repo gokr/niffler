@@ -38,7 +38,8 @@ type
     providerType*: string          # "anthropic", "openai", "encrypted"
     isEncrypted*: bool
     metadata*: JsonNode            # Provider-specific data (signature, etc.)
-    reasoningId*: Option[string]    # Optional reasoning correlation ID
+    reasoningId*: Option[string]   # Optional reasoning correlation ID
+    tokenCount*: int               # Pre-calculated token count from DB
 
   ThinkingContent* = object
     messageId*: Option[int]        # Link to message

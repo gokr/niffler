@@ -248,9 +248,9 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     if not db.tableExists(MessageThinkingBlock):
       # Create table manually since we need ENUM type and specific constraints
       db.query("""
-        CREATE TABLE message_thinking_blocks (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          message_id INT NOT NULL,
+        CREATE TABLE IF NOT EXISTS message_thinking_blocks (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          message_id BIGINT NOT NULL,
           position_index INT NOT NULL,
           block_type ENUM('pre_thinking', 'inline_thinking', 'post_thinking') NOT NULL,
           block_id VARCHAR(255) UNIQUE NOT NULL,
@@ -897,24 +897,110 @@ proc getRecentMessagesFromDb*(pool: Pool, conversationId: int, maxMessages: int 
       else:
         debug(fmt"Skipping message with unknown role: {dbMsg.role}")
 
+proc getThinkingBlocksForMessage*(pool: Pool, messageId: int): seq[ThinkingBlock] =
+  ## Retrieve all thinking blocks for a specific message in order
+  if pool == nil or messageId == 0:
+    return @[]
+
+  result = @[]
+  pool.withDb:
+    try:
+      let query = """
+        SELECT block_id, position_index, block_type, content, timestamp,
+               is_encrypted, metadata, reasoning_id, token_count
+        FROM message_thinking_blocks
+        WHERE message_id = ?
+        ORDER BY position_index ASC
+      """
+
+      let rows = db.query(query, messageId)
+      for row in rows:
+        var thinkingBlock = ThinkingBlock(
+          id: row[0],
+          position: parseInt(row[1]),
+          blockType: parseEnum[ThinkingBlockType](row[2]),
+          content: row[3],
+          timestamp: parseFloat(row[4]),
+          isEncrypted: row[5] == "1",
+          metadata: parseJson(row[6]),
+          tokenCount: if row[8] != "" and row[8] != "NULL": parseInt(row[8]) else: row[3].len div 4
+        )
+
+        if row[7] != "" and row[7] != "NULL":
+          thinkingBlock.reasoningId = some(row[7])
+
+        result.add(thinkingBlock)
+
+      debug(fmt"Retrieved {result.len} thinking blocks for message {messageId}")
+    except Exception as e:
+      error(fmt"Failed to get thinking blocks for message {messageId}: {e.msg}")
+
+proc getThinkingBlocksForConversation*(pool: Pool, conversationId: int): Table[int, seq[ThinkingBlock]] =
+  ## Retrieve all thinking blocks for a conversation, grouped by message_id
+  ## This avoids N+1 queries when loading conversation context
+  result = initTable[int, seq[ThinkingBlock]]()
+
+  if pool == nil or conversationId == 0:
+    return
+
+  pool.withDb:
+    try:
+      let query = """
+        SELECT mtb.message_id, mtb.block_id, mtb.position_index, mtb.block_type,
+               mtb.content, mtb.timestamp, mtb.is_encrypted, mtb.metadata,
+               mtb.reasoning_id, mtb.token_count
+        FROM message_thinking_blocks mtb
+        INNER JOIN conversation_message cm ON mtb.message_id = cm.id
+        WHERE cm.conversation_id = ?
+        ORDER BY mtb.message_id, mtb.position_index ASC
+      """
+
+      let rows = db.query(query, conversationId)
+      for row in rows:
+        let messageId = parseInt(row[0])
+        var thinkingBlock = ThinkingBlock(
+          id: row[1],
+          position: parseInt(row[2]),
+          blockType: parseEnum[ThinkingBlockType](row[3]),
+          content: row[4],
+          timestamp: parseFloat(row[5]),
+          isEncrypted: row[6] == "1",
+          metadata: parseJson(row[7]),
+          tokenCount: if row[9] != "" and row[9] != "NULL": parseInt(row[9]) else: row[4].len div 4
+        )
+
+        if row[8] != "" and row[8] != "NULL":
+          thinkingBlock.reasoningId = some(row[8])
+
+        if not result.hasKey(messageId):
+          result[messageId] = @[]
+        result[messageId].add(thinkingBlock)
+
+      debug(fmt"Retrieved thinking blocks for {result.len} messages in conversation {conversationId}")
+    except Exception as e:
+      error(fmt"Failed to get thinking blocks for conversation {conversationId}: {e.msg}")
+
 proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messages: seq[Message], toolCallCount: int] =
   ## Get conversation context with tool call count for /context command
   result.messages = @[]
   result.toolCallCount = 0
-  
+
+  # Batch fetch all thinking blocks for this conversation (avoids N+1 queries)
+  let thinkingBlocksByMessage = getThinkingBlocksForConversation(pool, conversationId)
+
   try:
     pool.withDb:
       let messages = db.filter(ConversationMessage, it.conversationId == conversationId)
       # Convert to proper heap-allocated seq and sort
       var sortedMessages = @messages
       sortedMessages.sort(proc(a, b: ConversationMessage): int = cmp(a.id, b.id))
-      
+
       for dbMsg in sortedMessages:
         # Count tool calls
         if dbMsg.toolCalls.isSome():
           let toolCalls = deserializeToolCalls(dbMsg.toolCalls.get())
           result.toolCallCount += toolCalls.len
-        
+
         # Convert to Message format
         case dbMsg.role:
         of "user":
@@ -932,6 +1018,20 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
             some(deserializeToolCalls(dbMsg.toolCalls.get()))
           else:
             none(seq[LLMToolCall])
+
+          # Get thinking blocks from batch-fetched data
+          var thinkingContent: Option[ThinkingContent] = none(ThinkingContent)
+          if thinkingBlocksByMessage.hasKey(dbMsg.id):
+            let blocks = thinkingBlocksByMessage[dbMsg.id]
+            var tokenCount = 0
+            for thinkingBlock in blocks:
+              tokenCount += thinkingBlock.tokenCount
+            thinkingContent = some(ThinkingContent(
+              messageId: some(dbMsg.id),
+              totalTokens: tokenCount,
+              blocks: blocks
+            ))
+
           result.messages.add(Message(
             id: dbMsg.id,
             role: mrAssistant,
@@ -939,7 +1039,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
             toolCalls: toolCalls,
             toolCallId: none(string),
             toolResults: none(seq[ToolResult]),
-            thinkingContent: none(ThinkingContent)
+            thinkingContent: thinkingContent
           ))
         of "tool":
           result.messages.add(Message(
@@ -954,7 +1054,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
         else:
           debug(fmt"Skipping message with unknown role: {dbMsg.role}")
   except Exception as e:
-    debug(fmt"Error getting conversation context: {e.msg}")
+    error(fmt"Error getting conversation context: {e.msg}")
     result.messages = @[]
     result.toolCallCount = 0
 
