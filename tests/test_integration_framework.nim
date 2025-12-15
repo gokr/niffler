@@ -187,7 +187,7 @@ suite "Integration Tests with Real LLM":
           break
       sleep(100)
 
-    check toolCallDetected, "LLM should have made a tool call"
+    check toolCallDetected
     check finalResponse.content.len > 0
     check "test file" in finalResponse.content.toLowerAscii()
 
