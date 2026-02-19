@@ -43,10 +43,8 @@ import file_completion
 import output_handler
 import output_shared
 import ui_state
-import master_cli
 import response_templates
 import ../core/agent_manager
-import nats_listener
 
 # State for input box rendering
 var currentInputText: string = ""
@@ -58,8 +56,9 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
 
-# Global master state reference for completion callback access
-var globalMasterState: ptr MasterState = nil
+# Global state reference for completion callback access
+# TODO: Refactor for autonomous agent system
+# var globalMasterState: ptr MasterState = nil
 
 # Note: Streaming output functions are now in output_shared.nim to avoid circular imports
 
@@ -411,63 +410,43 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
         debug(fmt"No argument completion available for command '{command}'")
         return ""
   of "agent":
-    # Agent completion for @ prefix - query running agents via NATS
-    if globalMasterState != nil:
-      let agents = globalMasterState[].discoverAgents()
-      var matchedAgents: seq[string] = @[]
-
-      for agent in agents:
-        if agent.toLower().startsWith(prefix.toLower()):
-          matchedAgents.add(agent)
-
-      if matchedAgents.len == 1:
-        # Single match - complete it with space
-        let suffix = matchedAgents[0][prefix.len..^1] & " "
-        debug(fmt"Single agent match: returning '{suffix}'")
-        clearInfo()
-        return suffix
-      elif matchedAgents.len > 1:
-        if isSecondTab:
-          # Show agent options in info area
-          var infoLines: seq[string] = @["Running agents:"]
-          for agent in matchedAgents:
-            infoLines.add(fmt"  @{agent}")
-          setInfo(infoLines)
-          redraw()
-          debug(fmt"Showing {matchedAgents.len} agent options in info area")
-        return ""
-      # No agent matches - fall through to file completion below
-
-    # Fall back to file completion if no agents matched or masterState not available
-    try:
-      let fileCompletions = getFileCompletions(prefix)
-      debug(fmt"Found {fileCompletions.len} file completions for prefix '{prefix}'")
-
-      if fileCompletions.len == 1:
-        # Single match - complete it
-        let file = fileCompletions[0]
-        let completePath = if file.isDir: file.path & "/" else: file.path
-        let suffix = completePath[prefix.len..^1]
-        debug(fmt"Single file match: returning '{suffix}'")
-        clearInfo()
-        return suffix
-      elif fileCompletions.len > 1:
-        if isSecondTab:
-          # Show file options in info area
-          var infoLines: seq[string] = @["Available files:"]
-          for file in fileCompletions:
-            let displayPath = if file.isDir: file.path & "/" else: file.path
-            infoLines.add(fmt"  @{displayPath}")
-          setInfo(infoLines)
-          redraw()
-          debug(fmt"Showing {fileCompletions.len} file options in info area")
-        return ""
-      else:
-        return ""
-    except Exception as e:
-      debug(fmt"Error getting file completions: {e.msg}")
-      return ""
-  of "mention":
+    # Agent completion for @ prefix - query running agents via database
+    # TODO: Implement database-based agent discovery
+    return ""
+    # NOTE: Code below is commented out - was using NATS-based agent discovery
+    # if globalMasterState != nil:
+    #   let agents = globalMasterState[].discoverAgents()
+    #   var matchedAgents: seq[string] = @[]
+    #   for agent in agents:
+    #     if agent.toLower().startsWith(prefix.toLower()):
+    #       matchedAgents.add(agent)
+    #   if matchedAgents.len == 1:
+    #     let suffix = matchedAgents[0][prefix.len..^1] & " "
+    #     clearInfo()
+    #     return suffix
+    #   elif matchedAgents.len > 1:
+    #     if isSecondTab:
+    #       var infoLines: seq[string] = @["Running agents:"]
+    #       for agent in matchedAgents:
+    #         infoLines.add(fmt"  @{agent}")
+    #       setInfo(infoLines)
+    #       redraw()
+    #     return ""
+    # # Fall back to file completion if no agents matched
+    # try:
+    #   let fileCompletions = getFileCompletions(prefix)
+    #   if fileCompletions.len == 1:
+    #     let file = fileCompletions[0]
+    #     let completePath = if file.isDir: file.path & "/" else: file.path
+    #     let suffix = completePath[prefix.len..^1]
+    #     clearInfo()
+    #     return suffix
+    #   elif fileCompletions.len > 1:
+    #     return ""
+    # except:
+    #   return ""
+  # TODO: Reimplement file completion for @agent syntax
+  # of "mention":
     # User/mention completion for @
     let mentions = @["user", "assistant", "system", "claude", "gpt"]
     var matchedMentions: seq[string] = @[]
@@ -800,30 +779,25 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
 
-  # Initialize runtime mode as master
-  initializeRuntimeMode(rmMaster)
+  # Initialize runtime mode
+  # TODO: Initialize for autonomous agent mode
+  # initializeRuntimeMode(rmMaster)
 
-  # Initialize master mode for agent routing
-  var masterState = initializeMaster(natsUrl)
-  globalMasterState = addr masterState  # Make available for completion callback
-  var natsListenerWorker: NatsListenerWorker
-  if masterState.connected:
-    # writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
-    let agents = masterState.discoverAgents()
-    if agents.len > 0:
-      let agentsStr = "Available agents: " & agents.join(", ")
-      writeCompleteLine(formatWithStyle(agentsStr, currentTheme.normal))
-    # Start NATS listener for async agent responses
-    natsListenerWorker = startNatsListenerWorker(natsUrl, level)
+  # Initialize master mode for agent routing - DISABLED (moved to database)
+  # var masterState = initializeMaster(natsUrl)
+  # globalMasterState = addr masterState  # Make available for completion callback
+  # var natsListenerWorker: NatsListenerWorker
+  # if masterState.connected:
+  #   let agents = masterState.discoverAgents()
+  #   if agents.len > 0:
+  #     let agentsStr = "Available agents: " & agents.join(", ")
+  #     writeCompleteLine(formatWithStyle(agentsStr, currentTheme.normal))
 
-    # Auto-start agents from configuration
-    let globalConfig = getGlobalConfig()
-    let spawnedAgents = autoStartAgents(globalConfig, masterState.natsClient, "./src/niffler")
-
-    if spawnedAgents.len > 0:
-      writeCompleteLine(formatWithStyle(fmt"Auto-started {spawnedAgents.len} agent(s)", currentTheme.success))
-  else:
-    writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
+    # Auto-start agents from configuration - DISABLED (moved to database)
+    # let globalConfig = getGlobalConfig()
+    # let spawnedAgents = autoStartAgents(globalConfig, "./src/niffler")
+    # if spawnedAgents.len > 0:
+    #   writeCompleteLine(formatWithStyle(fmt"Auto-started {spawnedAgents.len} agent(s)", currentTheme.success))
 
   # Interactive loop
   var running = true
@@ -845,50 +819,50 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
           # Show user input in scrollback
           writeUserInput(input)
 
-          # Handle /focus specially - needs masterState access
+          # Handle /focus specially - DISABLED (moved to database)
+          # TODO: Reimplement using database-based agent system
           if command == "focus":
-            if args.len == 0:
-              # Show current agent
-              let current = masterState.getCurrentAgent()
-              if current.len > 0:
-                writeCompleteLine(fmt("Current agent: @{current}"))
-              else:
-                writeCompleteLine("No agent focused. Use /focus <agent> to set one.")
-            else:
-              let agentName = args[0]
-              if agentName == "none" or agentName == "clear":
-                masterState.setCurrentAgent("")
-                setCurrentAgentForPrompt("")  # Update prompt
-                writeCompleteLine("Agent focus cleared")
-              elif masterState.isAgentAvailable(agentName):
-                masterState.setCurrentAgent(agentName)
-                setCurrentAgentForPrompt(agentName)  # Update prompt
-                writeCompleteLine(fmt("Focused on agent: @{agentName}"))
-              else:
-                let available = masterState.discoverAgents()
-                if available.len > 0:
-                  writeCompleteLine(fmt("Agent '{agentName}' not available. Available: {available.join(\", \")}"))
-                else:
-                  writeCompleteLine(fmt("Agent '{agentName}' not available. No agents found."))
+            writeCompleteLine("Agent focus not yet implemented in autonomous mode")
             finishCommandOutput()
             continue
+          # if command == "focus":
+          #   if args.len == 0:
+          #     let current = masterState.getCurrentAgent()
+          #     if current.len > 0:
+          #       writeCompleteLine(fmt("Current agent: @{current}"))
+          #     else:
+          #       writeCompleteLine("No agent focused. Use /focus <agent> to set one.")
+          #   else:
+          #     let agentName = args[0]
+          #     if agentName == "none" or agentName == "clear":
+          #       masterState.setCurrentAgent("")
+          #       setCurrentAgentForPrompt("")
+          #       writeCompleteLine("Agent focus cleared")
+          #     elif masterState.isAgentAvailable(agentName):
+          #       masterState.setCurrentAgent(agentName)
+          #       setCurrentAgentForPrompt(agentName)
+          #       writeCompleteLine(fmt("Focused on agent: @{agentName}"))
+          #     else:
+          #       let available = masterState.discoverAgents()
+          #       if available.len > 0:
+          #         writeCompleteLine(fmt("Agent '{agentName}' not available. Available: {available.join(\", \")}"))
+          #       else:
+          #         writeCompleteLine(fmt("Agent '{agentName}' not available. No agents found."))
+          #   finishCommandOutput()
+          #   continue
 
-          # Route agent commands to current agent if one is set
-          if isAgentCommand(command):
-            let currentAgent = masterState.getCurrentAgent()
-            if currentAgent.len > 0 and masterState.isAgentAvailable(currentAgent):
-              # Route the command to the agent
-              let (handled, output) = masterState.handleAgentRequest(input)
-              if handled:
-                if output.len > 0:
-                  writeCompleteLine(output)
-                # Add confirmation for routed /new command
-                if command == "new":
-                  writeCompleteLine(formatWithStyle(fmt"@{currentAgent}: Conversation created and switched", currentTheme.success))
-                finishCommandOutput()
-                logToPromptHistory(database, input, "", currentModel.nickname)
-                continue
-              # If not handled, fall through to local execution
+          # Route agent commands to current agent if one is set - DISABLED
+          # if isAgentCommand(command):
+          #   let currentAgent = masterState.getCurrentAgent()
+          #   if currentAgent.len > 0 and masterState.isAgentAvailable(currentAgent):
+          #     let (handled, output) = masterState.handleAgentRequest(input)
+          #     if handled:
+          #       if command == "new":
+          #         writeCompleteLine(formatWithStyle(fmt"@{currentAgent}: Conversation created and switched", currentTheme.success))
+          #       finishCommandOutput()
+          #       logToPromptHistory(database, input, "", currentModel.nickname)
+          #       continue
+          #     # If not handled, fall through to local execution
 
           let res = executeCommand(command, args, session, currentModel)
 
@@ -938,48 +912,43 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
         finishCommandOutput()
         continue
 
-      # Handle @agent routing (async - responses arrive via NATS listener)
-      # Route to agent if: explicit @agent prefix OR currentAgent is set
-      let currentAgent = masterState.getCurrentAgent()
-      if input.startsWith("@") or currentAgent.len > 0:
-        writeUserInput(input)
-        let (handled, output) = masterState.handleAgentRequest(input)
-        if handled:
-          # Sync prompt with current agent (handleAgentRequest updates masterState.currentAgent)
-          setCurrentAgentForPrompt(masterState.getCurrentAgent())
-          # Only show output if there's an error message
-          if output.len > 0:
-            writeCompleteLine(output)
-            finishCommandOutput()
-          # Log the request (response will be logged separately when it arrives)
-          logToPromptHistory(database, input, "", currentModel.nickname)
-          continue
-        # If not handled (no agent found), fall through to show helpful message
+      # Handle @agent routing - DISABLED (moved to database)
+      # TODO: Reimplement using database-based agent system
+      # if input.startsWith("@"):
+      #   writeUserInput(input)
+      #   # TODO: Route to appropriate agent via database
+      #   writeCompleteLine("Agent routing not yet implemented in autonomous mode")
+      #   finishCommandOutput()
+      #   continue
 
+      # TODO: Reimplement agent discovery using database
       # No agent focused - check if any agents are available
+      # writeUserInput(input)
+      # let availableAgents = masterState.discoverAgents()
+      # if availableAgents.len == 0:
+      #   writeCompleteLine(formatWithStyle("No agents are running. Start an agent with: niffler agent <name>", currentTheme.error))
+      #   finishCommandOutput()
+      #   continue
+      # else:
+      #   # Agents exist but none focused
+      #   let agentList = availableAgents.join(", ")
+      #   writeCompleteLine(formatWithStyle(fmt("No agent in focus. Available agents: {agentList}"), currentTheme.toolCall))
+      #   writeCompleteLine(formatWithStyle("Use /focus <agent> to select one, or @<agent> to send directly", currentTheme.normal))
+      #   finishCommandOutput()
+      #   continue
+      
+      # For now, just process the input normally
       writeUserInput(input)
-      let availableAgents = masterState.discoverAgents()
-      if availableAgents.len == 0:
-        writeCompleteLine(formatWithStyle("No agents are running. Start an agent with: niffler agent <name>", currentTheme.error))
-        finishCommandOutput()
-        continue
-      else:
-        # Agents exist but none focused
-        let agentList = availableAgents.join(", ")
-        writeCompleteLine(formatWithStyle(fmt("No agent in focus. Available agents: {agentList}"), currentTheme.toolCall))
-        writeCompleteLine(formatWithStyle("Use /focus <agent> to select one, or @<agent> to send directly", currentTheme.normal))
-        finishCommandOutput()
-        continue
 
     except EOFError:
       # Handle Ctrl+C, Ctrl+D gracefully
       running = false
 
-  # Cleanup NATS listener and master mode
-  if natsListenerWorker.isRunning:
-    stopNatsListenerWorker(natsListenerWorker)
-  masterState.cleanup()
-  globalMasterState = nil  # Clear global reference
+  # Cleanup NATS listener and master mode - DISABLED
+  # if natsListenerWorker.isRunning:
+  #   stopNatsListenerWorker(natsListenerWorker)
+  # masterState.cleanup()
+  # globalMasterState = nil  # Clear global reference
 
   # Cleanup
   cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, outputHandlerWorker, database)

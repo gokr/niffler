@@ -10,7 +10,8 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
-import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, nats_client]
+import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense]
+import ../agent/messaging
 import ../types/[config as configTypes, messages, agents, mode]
 import ../tokenization/[tokenizer]
 import ../tools/registry
@@ -1131,50 +1132,59 @@ proc agentHandler(args: seq[string], session: var Session, currentModel: var con
     )
 
 proc agentsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Handle /agents command for showing running NATS agents
-  ## This connects to NATS to discover available agents via presence tracking
+  ## Handle /agents command for showing running agents
+  ## Queries the database for agent presence
   try:
-    # Create temporary NATS connection to check presence
-    let natsUrl = "nats://localhost:4222"
-    var client = initNatsClient(natsUrl, "master-cmd", presenceTTL = 15)
-    defer: client.close()
-
-    let presentAgents = client.listPresent()
-
-    if presentAgents.len == 0:
+    let database = getGlobalDatabase()
+    if database == nil:
       return CommandResult(
-        success: true,
-        message: """No agents currently running via NATS.
-
-To start an agent:
-  ./src/niffler agent coder
-  ./src/niffler agent researcher --model=glm46
-
-To send requests to agents:
-  @coder fix the bug in main.nim
-  @researcher /task find documentation about X""",
+        success: false,
+        message: "Database not available",
         shouldExit: false,
         shouldContinue: true
       )
+    
+    # Query online agents from database
+    let agents = getOnlineAgents(database)
+    
+    if agents.len == 0:
+      return CommandResult(
+        success: true,
+        message: """No agents currently running.
 
+To start an agent:
+  ./src/niffler agent coder
+  ./src/niffler agent researcher --model=claude
+
+Agents work autonomously on tasks from the queue.""",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
     var message = "Running agents:\n\n"
-
-    for agentName in presentAgents:
-      let present = client.isPresent(agentName)
-      let statusIcon = if present: "✓" else: "?"
-      message &= fmt("  {statusIcon} @{agentName}\n")
-
+    
+    for agent in agents:
+      let statusIcon = case agent.status
+        of asOnline: "●"
+        of asBusy: "◐"
+        of asOffline: "○"
+      let lastHeartbeat = if agent.lastHeartbeat.isSome: 
+        fmt" (last seen: {agent.lastHeartbeat.get()}"
+      else:
+        ""
+      message &= fmt"  {statusIcon} {agent.agentId} ({agent.persona}){lastHeartbeat}\n"
+    
     return CommandResult(
       success: true,
       message: message,
       shouldExit: false,
       shouldContinue: true
     )
-
+    
   except Exception as e:
     return CommandResult(
       success: false,
-      message: fmt("Cannot connect to NATS: {e.msg}\n\nMake sure NATS server is running:\n  nats-server"),
+      message: fmt("Error querying agents: {e.msg}"),
       shouldExit: false,
       shouldContinue: true
     )
