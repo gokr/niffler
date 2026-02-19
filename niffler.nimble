@@ -1,7 +1,7 @@
 # Package
-version       = "0.4.0"
+version       = "0.5.0"
 author        = "Göran Krampe"
-description   = "Niffler - AI assistant in Nim"
+description   = "Niffler - Autonomous coding agent in Nim"
 license       = "MIT"
 srcDir        = "src"
 bin           = @["niffler"]
@@ -18,7 +18,7 @@ requires "hldiff"                                    # For improved diff calcula
 requires "unittest2 >= 0.2.4"
 requires "nancy"                                     # For nice tabular output formatting
 requires "yaml"                                      # For YAML configuration parsing
-requires "https://github.com/gokr/natswrapper"       # For NATS messaging (multi-agent IPC)
+requires "dimscord"                                  # For Discord bot integration
 
 task testament, "Run all tests":
   exec "nimble install -d"
