@@ -175,7 +175,6 @@ proc parseLogLevel(levelStr: string): Level =
   else:
     handleError("Invalid log level: '" & levelStr & "'. Available levels: DEBUG, INFO, NOTICE, WARN, ERROR, FATAL")
 
-
 proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool, dumpJson: bool, logFile: string = "", natsUrl: string = "nats://localhost:4222") =
   ## Start master mode with CLI interface for agent routing
 
@@ -193,6 +192,50 @@ proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool,
   # Signal handling and cleanup are handled inside startCLIMode
   var session: Session
   startCLIMode(session, modelConfig, database, level, dump, dumpsse, natsUrl)
+
+proc startAgentMode(
+  agentName: string,
+  modelName: string,
+  level: Level,
+  dump: bool,
+  dumpsse: bool,
+  dumpJson: bool,
+  logFile: string = ""
+) =
+  ## Start agent mode with autonomous capabilities
+  
+  # Load minimal DB config
+  let minimalConfig = loadMinimalDbConfig()
+  let dbConfig = toDatabaseConfig(minimalConfig)
+  
+  # Initialize database
+  let database = createDatabaseBackend(dbConfig)
+  if database == nil:
+    handleError("Failed to initialize database. Check your database configuration.")
+  
+  # Initialize workspace manager
+  let workspaceMgr = newWorkspaceManager(database)
+  
+  # Register this agent
+  let agentId = if agentName.len > 0: agentName else: "niffler-" & $getTime().toUnix()
+  let capabilities = %*{}
+  let agentConfig = %*{
+    "model": modelName
+  }
+  
+  if not registerAgent(database, agentId, "default", capabilities, agentConfig):
+    handleError("Failed to register agent")
+  
+  # TODO: Start task processor with proper agent and model config
+  # For now, skip task processor startup (will be implemented in full integration)
+  # let taskProcessor = newTaskProcessor(database, workspaceMgr, agentId, agent, modelConfig, channels)
+  # startTaskProcessor(taskProcessor)
+  
+  # TODO: Implement NATS-based agent communication
+  # Connect to NATS, subscribe to agent subject, etc.
+  
+  echo fmt("Agent '{agentId}' registered. Ready for tasks.")
+  echo "Press Ctrl+C to stop."
 
 proc parseCliArgsMain(): CliArgs =
   ## Parse command line arguments with error handling
