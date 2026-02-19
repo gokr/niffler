@@ -190,8 +190,8 @@ type
     toolInstructionTokens*: int  ## TodoList/thinking instructions
     availableToolsTokens*: int   ## Tools list tokens
     systemPromptTotal*: int      ## Total system prompt tokens
-    toolSchemaTokens*: int       ## Tool schema JSON tokens
-    totalOverhead*: int          ## Complete API request overhead
+  toolSchemaTokens*: int       ## Tool schema JSON tokens
+  totalOverhead*: int          ## Complete API request overhead
 
 # Simple retry template for handling transient connection errors
 template withRetry*(body: untyped) =
@@ -214,6 +214,121 @@ template withRetry*(body: untyped) =
       raise
   if lastError.len > 0:
     error(fmt"Database operation failed after retry: {lastError}")
+
+  # ============================================================
+  # Autonomous Agent System Tables
+  # ============================================================
+
+  # Workspace management
+  Workspace* = ref object of RootObj
+    id*: int
+    name*: string
+    path*: string
+    description*: string
+    gitRemote*: string
+    defaultBranch*: string
+    settings*: string           ## JSON configuration
+    createdAt*: DateTime
+    lastAccessed*: DateTime
+
+  # Task queue
+  TaskStatus* = enum
+    tsQueuePending = "pending"
+    tsQueueRunning = "running"
+    tsQueueCompleted = "completed"
+    tsQueueFailed = "failed"
+    tsQueueCancelled = "cancelled"
+
+  TaskType* = enum
+    ttUserRequest = "user_request"
+    ttFileChange = "file_change"
+    ttScheduled = "scheduled"
+    ttWebhook = "webhook"
+    ttDelegated = "delegated"
+    ttInternal = "internal"
+
+  TaskQueueEntry* = ref object of RootObj
+    id*: int
+    createdAt*: DateTime
+    workspaceId*: Option[int]
+    priority*: int
+    status*: TaskStatus
+    taskType*: TaskType
+    sourceChannel*: string
+    sourceId*: string
+    instruction*: string
+    context*: string            ## JSON context data
+    result*: string
+    error*: string
+    startedAt*: Option[DateTime]
+    completedAt*: Option[DateTime]
+    assignedAgent*: string
+    conversationId*: Option[int]
+
+  # Agent identity and configuration
+  AgentStatus* = enum
+    asOnline = "online"
+    asBusy = "busy"
+    asOffline = "offline"
+
+  Agent* = ref object of RootObj
+    id*: int
+    agentId*: string            ## Unique identifier
+    persona*: string
+    status*: AgentStatus
+    capabilities*: string        ## JSON: available tools, skills
+    config*: string            ## JSON: model, system prompt overrides, NATS subject, Discord channel
+    createdAt*: DateTime
+
+  # Scheduled jobs
+  ScheduledJob* = ref object of RootObj
+    id*: int
+    workspaceId*: Option[int]
+    name*: string
+    cronExpr*: string
+    instruction*: string
+    lastRun*: Option[DateTime]
+    nextRun*: Option[DateTime]
+    enabled*: bool
+    createdAt*: DateTime
+
+  # File watchers
+  WatchedPath* = ref object of RootObj
+    id*: int
+    workspaceId*: int
+    path*: string
+    patterns*: string           ## JSON array of patterns
+    events*: string             ## "create", "modify", "delete", "all"
+    taskTemplate*: string
+    enabled*: bool
+    lastChecked*: Option[DateTime]
+
+  # Webhook endpoints
+  WebhookEndpoint* = ref object of RootObj
+    id*: int
+    path*: string
+    secret*: string
+    taskTemplate*: string
+    workspaceId*: Option[int]
+    enabled*: bool
+    createdAt*: DateTime
+
+  # Webhook events
+  WebhookEvent* = ref object of RootObj
+    id*: int
+    endpointId*: int
+    receivedAt*: DateTime
+    headers*: string            ## JSON
+    payload*: string            ## JSON
+    taskId*: Option[int]
+    processed*: bool
+
+  # Agent configuration (JSON blob stored in database)
+  AgentConfigDB* = ref object of RootObj
+    id*: int
+    key*: string                ## "personas", "models", "channels", etc.
+    value*: string              ## JSON blob
+    updatedAt*: DateTime
 
 proc utcNow*(): string =
   ## Return current UTC time
@@ -399,6 +514,79 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       except:
         discard
 
+    # ============================================================
+    # Create Autonomous Agent System Tables
+    # ============================================================
+
+    # Workspace management
+    if not db.tableExists(Workspace):
+      db.createTable(Workspace)
+      db.createIndexIfNotExists(Workspace, "name")
+      db.createIndexIfNotExists(Workspace, "path")
+
+    # Task queue
+    if not db.tableExists(TaskQueueEntry):
+      db.createTable(TaskQueueEntry)
+      db.createIndexIfNotExists(TaskQueueEntry, "workspaceId")
+      db.createIndexIfNotExists(TaskQueueEntry, "status")
+      db.createIndexIfNotExists(TaskQueueEntry, "assignedAgent")
+      db.createIndexIfNotExists(TaskQueueEntry, "createdAt")
+      discard db.query("""
+        CREATE INDEX IF NOT EXISTS idx_task_queue_status_priority 
+        ON task_queue_entry (status(50), priority DESC)
+      """)
+
+    # Agent identity and presence
+    if not db.tableExists(Agent):
+      db.createTable(Agent)
+      db.createIndexIfNotExists(Agent, "agentId")
+      db.createIndexIfNotExists(Agent, "status")
+      db.createIndexIfNotExists(Agent, "lastHeartbeat")
+
+    # Agent messaging
+    if not db.tableExists(AgentMessage):
+      db.createTable(AgentMessage)
+      db.createIndexIfNotExists(AgentMessage, "toAgent")
+      db.createIndexIfNotExists(AgentMessage, "fromAgent")
+      db.createIndexIfNotExists(AgentMessage, "readAt")
+      db.createIndexIfNotExists(AgentMessage, "createdAt")
+      discard db.query("""
+        CREATE INDEX IF NOT EXISTS idx_agent_message_to_read 
+        ON agent_message (to_agent(100), read_at)
+      """)
+
+    # Scheduled jobs
+    if not db.tableExists(ScheduledJob):
+      db.createTable(ScheduledJob)
+      db.createIndexIfNotExists(ScheduledJob, "workspaceId")
+      db.createIndexIfNotExists(ScheduledJob, "nextRun")
+      db.createIndexIfNotExists(ScheduledJob, "enabled")
+
+    # File watchers
+    if not db.tableExists(WatchedPath):
+      db.createTable(WatchedPath)
+      db.createIndexIfNotExists(WatchedPath, "workspaceId")
+      db.createIndexIfNotExists(WatchedPath, "enabled")
+      db.createIndexIfNotExists(WatchedPath, "lastChecked")
+
+    # Webhook endpoints
+    if not db.tableExists(WebhookEndpoint):
+      db.createTable(WebhookEndpoint)
+      db.createIndexIfNotExists(WebhookEndpoint, "path")
+      db.createIndexIfNotExists(WebhookEndpoint, "enabled")
+
+    # Webhook events
+    if not db.tableExists(WebhookEvent):
+      db.createTable(WebhookEvent)
+      db.createIndexIfNotExists(WebhookEvent, "endpointId")
+      db.createIndexIfNotExists(WebhookEvent, "processed")
+      db.createIndexIfNotExists(WebhookEvent, "receivedAt")
+
+    # Agent configuration storage
+    if not db.tableExists(AgentConfigDB):
+      db.createTable(AgentConfigDB)
+      db.createIndexIfNotExists(AgentConfigDB, "key")
+
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
   backend.pool.withDb:
@@ -412,6 +600,16 @@ proc checkDatabase*(backend: DatabaseBackend) =
     db.checkTable(TodoItem)
     db.checkTable(TokenCorrectionFactor)
     db.checkTable(SystemPromptTokenUsage)
+    # Autonomous agent system tables
+    db.checkTable(Workspace)
+    db.checkTable(TaskQueueEntry)
+    db.checkTable(Agent)
+    db.checkTable(AgentMessage)
+    db.checkTable(ScheduledJob)
+    db.checkTable(WatchedPath)
+    db.checkTable(WebhookEndpoint)
+    db.checkTable(WebhookEvent)
+    db.checkTable(AgentConfigDB)
   echo "Database checked"
 
 proc init*(backend: DatabaseBackend) =
