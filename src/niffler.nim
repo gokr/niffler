@@ -164,24 +164,21 @@ proc startAgentMode(
   if not registerAgent(database, agentId, "default", capabilities, agentConfig):
     handleError("Failed to register agent")
   
-  # Start task processor
-  let taskProcessor = newTaskProcessor(database, workspaceMgr, agentId)
-  startTaskProcessor(taskProcessor)
+  # TODO: Start task processor with proper agent and model config
+  # For now, skip task processor startup (will be implemented in full integration)
+  # let taskProcessor = newTaskProcessor(database, workspaceMgr, agentId, agent, modelConfig, channels)
+  # startTaskProcessor(taskProcessor)
   
-  # Start agent messenger
-  let messenger = newAgentMessenger(database, agentId)
-  startMessenger(messenger)
+  # TODO: Start agent messenger
+  # let messenger = newAgentMessenger(database, agentId)
+  # startMessenger(messenger)
   
   # Start interactive CLI
   var session: Session
   # TODO: Update startCLIMode to work with new structure
   # For now, just print a message
-  echo fmt("Agent '{agentId}' started. Task processor running.")
+  echo fmt("Agent '{agentId}' registered. Ready for tasks.")
   echo "Press Ctrl+C to stop."
-  
-  # Wait for shutdown signal
-  while true:
-    sleep(1000)
 
 proc dispatchCmd(args: CliArgs) =
   ## Dispatch parsed commands to appropriate handlers
