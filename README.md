@@ -148,6 +148,54 @@ nimble build
 ./niffler
 ```
 
+## 🚀 Discord Quick Start
+
+Get Niffler running as a Discord bot in 5 minutes:
+
+### 1. Create Discord Bot (2 minutes)
+
+```bash
+# Go to https://discord.com/developers/applications
+# Click "New Application" → "Bot" → "Add Bot"
+# Enable MESSAGE CONTENT INTENT
+# Copy your bot token (keep it secret!)
+```
+
+### 2. Start Database
+
+```bash
+# Quick start with Docker
+docker run -d --name tidb -p 4000:4000 pingcap/tidb:latest
+```
+
+### 3. Configure
+
+```bash
+# Create database config
+mkdir -p ~/.config/niffler
+cat > ~/.config/niffler/db_config.yaml << 'EOF'
+{"host": "127.0.0.1", "port": 4000, "database": "niffler", "username": "root", "password": ""}
+EOF
+
+# Store Discord token in database
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
+INSERT INTO agent_config (key, value) VALUES ('discord', 
+'{\"enabled\": true, \"token\": \"YOUR_BOT_TOKEN_HERE\"}');
+"
+```
+
+### 4. Run
+
+```bash
+./niffler agent mybot
+```
+
+### 5. Test
+
+In Discord, send: `@YourBotName review the code in src/main.nim`
+
+**See [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) for complete setup guide.**
+
 ## 💬 Using Niffler
 
 ### Discord Integration
