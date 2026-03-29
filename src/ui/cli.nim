@@ -26,7 +26,7 @@ import std/[os, strutils, strformat, terminal, options, times, math, tables]
 import std/logging
 when defined(posix):
   import posix
-import ../../../linecross/linecross
+import linecross
 import ../core/[app, channels, conversation_manager, config, database, mode_state, session]
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools, agents]

@@ -13,7 +13,7 @@ else:
 
 import ../core/[nats_client]
 import ../types/[nats_messages]
-import ../../../linecross/linecross
+import linecross
 import sunny
 import theme
 import markdown_cli
