@@ -16,6 +16,7 @@ import ../types/[nats_messages]
 import ../../../linecross/linecross
 import sunny
 import theme
+import markdown_cli
 
 type
   NatsListenerParams* = ref object
@@ -96,13 +97,12 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
                 # Get agent name from response
                 let agentColor = getAgentColor(response.agentName)
                 let coloredName = formatWithStyle(response.agentName, agentColor)
-                # Convert LF to CRLF for proper terminal display
-                let normalizedContent = response.content.replace("\n", "\r\n")
-                writeOutputRaw(fmt("{coloredName}: {normalizedContent}"), addNewline = true, redraw = true)
+                let renderedContent = renderMarkdownTextCLI(response.content).replace("\n", "\r\n")
+                writeOutputRaw(fmt("{coloredName}: {renderedContent}"), addNewline = true, redraw = true)
               debug(fmt("Request {response.requestId} completed from {response.agentName}"))
             elif response.content.len > 0:
               # Streaming chunk - display directly, convert LF to CRLF
-              let normalizedContent = response.content.replace("\n", "\r\n")
+              let normalizedContent = renderMarkdownTextCLIStream(response.content).replace("\n", "\r\n")
               writeOutputRaw(normalizedContent, addNewline = false, redraw = true)
           except Exception as e:
             debug(fmt("Failed to parse response: {e.msg}"))

@@ -345,7 +345,7 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
     apiKey: apiKey,
     enableTools: agentToolSchemas.len > 0,
     tools: if agentToolSchemas.len > 0: some(agentToolSchemas) else: none(seq[ToolDefinition]),
-    agentName: state.name  # For tool permission validation
+    agentName: state.definition.name  # Use definition name for tool permission validation
   )
 
   if not trySendAPIRequest(state.channels, request):
