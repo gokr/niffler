@@ -368,9 +368,13 @@ proc toJson*(req: ChatRequest): JsonNode {.gcsafe.} =
   
   for msg in req.messages:
     var msgJson = %*{
-      "role": msg.role,
-      "content": msg.content
+      "role": msg.role
     }
+
+    if msg.role == "assistant" and msg.toolCalls.isSome() and msg.content.strip().len == 0:
+      msgJson["content"] = newJNull()
+    else:
+      msgJson["content"] = %msg.content
     
     # Add tool calls if present
     if msg.toolCalls.isSome():
