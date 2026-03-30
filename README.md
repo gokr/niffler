@@ -14,10 +14,31 @@
 
 - Nim 2.2.4 or later
 - Git
-- **NATS Server**: Required for multi-agent IPC and will be automatically started by Niffler
+- NATS Server
+- Tidb
+
+#### Nim
+Install Nim (compiler and tools) is easiest via [choosenim](https://nim-lang.org/install_unix.html):
+
+```bash
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
+```
+
+#### Tidb
+Easiest way to get a Tidb up and running is to install `tiup` and just run a **playground**:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+```
+
+Run a playground (in a new shell) that should start on port 4000:
+
+```bash
+tiup playground
+```
+
 
 #### NATS Server Installation
-
 Niffler requires a NATS server for communication between agents. You have several options:
 
 ```bash
@@ -75,11 +96,25 @@ nimble build
 ### 5. Initialize config
 
 ```bash
-brew install nats
+brew install cnats
 ```
 
 **Windows:**
 > The NATS library is typically bundled with the Nim package on Windows.
+
+### MySQL client library
+
+**macOS:**
+```bash
+brew install mariadb-connector-c
+```
+
+And you may need to also do:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
+```
+
 
 ## 🏗️ Building Niffler
 
@@ -90,6 +125,7 @@ Niffler needs to be built from source at this time. Follow these steps to build 
 - All compilation requires `--threads:on -d:ssl` flags (automatically set in build configuration)
 - The optimized build (`nimble build`) creates a single static binary
 - Windows users may need to install Visual Studio Build Tools for native compilation
+- You may need to set CPATH so that futhark finds stdlib.h: `export CPATH="$(xcrun --show-sdk-path)/usr/include"`
 
 ## 🎯 Quick Start
 
