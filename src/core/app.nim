@@ -270,6 +270,13 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
   ## Local servers (localhost/127.0.0.1) don't require API keys
   ## Validate and return API key, or None with error message displayed
   ## Local servers (localhost/127.0.0.1) don't require API keys
+  if modelConfig.apiKey.isSome() and modelConfig.apiEnvVar.isSome():
+    let configuredKey = modelConfig.apiKey.get().strip()
+    let envVar = modelConfig.apiEnvVar.get().strip()
+    let envValue = if envVar.len > 0: getEnv(envVar) else: ""
+    if configuredKey.len > 0 and not configuredKey.toLowerAscii().contains("enter your") and configuredKey.toLowerAscii() != "empty" and envValue.len > 0:
+      info(fmt("Model {modelConfig.nickname} uses configured api_key and overrides {envVar}"))
+
   let apiKey = readKeyForModel(modelConfig)
   
   # Check if this is a local server that doesn't require authentication
@@ -285,6 +292,22 @@ proc validateApiKey*(modelConfig: configTypes.ModelConfig): Option[string] =
       return none(string)
   
   return some(apiKey)
+
+proc getEnabledModelsMissingCredentials*(config: configTypes.Config): seq[string] =
+  ## Return enabled remote models that have no usable configured credentials.
+  result = @[]
+
+  for model in config.models:
+    if not model.enabled:
+      continue
+
+    let baseUrl = model.baseUrl.toLowerAscii()
+    if baseUrl.contains("localhost") or baseUrl.contains("127.0.0.1"):
+      continue
+
+    let apiKey = readKeyForModel(model)
+    if apiKey.len == 0:
+      result.add(model.nickname)
 
 proc prepareConversationMessagesWithTokens*(text: string, modelName: string): (seq[Message], string, SystemPromptTokens, int) =
   ## Prepare conversation context with system prompt and process @ file references

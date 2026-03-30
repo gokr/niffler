@@ -250,6 +250,7 @@ proc dispatchCmd(args: CliArgs) =
     let path = if args.initPath.len > 0: args.initPath else: ""
     let fullPath = if path.len == 0: getDefaultConfigPath() else: path
     initializeConfigManager()
+    createDefaultConfigFile(fullPath)
     echo "Configuration initialized at: ", fullPath
     quit(0)
 

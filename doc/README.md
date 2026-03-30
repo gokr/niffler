@@ -1,90 +1,39 @@
 # Niffler Documentation
 
-This directory contains comprehensive documentation for Niffler. Use this index to find the information you need.
+This directory now keeps the current, user-facing documentation for the `niffler-nats` branch.
 
-## 📖 User Guides
+## Start Here
 
-These guides are designed for end users who want to configure and use Niffler effectively.
+- [../README.md](../README.md): installation, first run, TiDB playground, and quick start
+- [CONFIG.md](CONFIG.md): config file layout, active config directories, and prompt files
+- [MODELS.md](MODELS.md): model entries, credentials, local models, and provider examples
 
-### Getting Started
-- **[../README.md](../README.md)** - Quick start, installation, and basic usage
-- **[CONFIG.md](CONFIG.md)** - Configuration system, NIFFLER.md files, and config management
-- **[MODELS.md](MODELS.md)** - AI model setup, providers, and cost tracking
+## Core Guides
 
-### Using Niffler
-- **[TOOLS.md](TOOLS.md)** - Tool system usage, security features, and extensions
-- **[MCP_SETUP.md](MCP_SETUP.md)** - Model Context Protocol server integration guide
-- **[EXAMPLES.md](EXAMPLES.md)** - Common usage patterns and workflows
+- [TASK.md](TASK.md): master mode, agent mode, `@agent`, and agent definition files
+- [TOOLS.md](TOOLS.md): built-in tools and MCP-discovered tools
+- [MCP_SETUP.md](MCP_SETUP.md): how to configure MCP servers in `config.yaml`
+- [EXAMPLES.md](EXAMPLES.md): common workflows and command examples
+- [ARCHITECTURE.md](ARCHITECTURE.md): implementation-level system overview
+- [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md): TiDB tables and persisted data
+- [THINK.md](THINK.md): reasoning/thinking token behavior
+- [TOKEN_COUNTING.md](TOKEN_COUNTING.md): token estimation and cost tracking
 
-### Features
-- **[THINK.md](THINK.md)** - Thinking token support for reasoning models
-- **[TOKEN_COUNTING.md](TOKEN_COUNTING.md)** - Token estimation and cost tracking system
+## Research And Historical Material
 
-## 🔧 Developer Documentation
+Older design notes, roadmap material, experiments, and superseded reference docs live under [research/](research/).
 
-Technical documentation for developers contributing to Niffler or building integrations.
+This includes:
 
-### Architecture
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and design principles
-- **[TASK.md](TASK.md)** - Multi-agent architecture and agent system design
+- `research/ADVANCED_CONFIG.md`
+- `research/CCPROMPTS.md`
+- `research/DEVELOPMENT.md`
+- `research/MCP.md`
+- `research/TOKENS.md`
+- `research/TOKENIZER.md`
+- existing research notes already in `research/`
 
-### Implementation Details
-- **[TOKENS.md](TOKENS.md)** - Token handling and processing
-- **[TOKENIZER.md](TOKENIZER.md)** - Tokenizer implementation details
-- **[MCP.md](MCP.md)** - MCP integration architecture and implementation
+## Notes
 
-### Development
-- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Development roadmap and implementation phases
-
-## 🔬 Advanced Topics
-
-Educational content and technical deep-dives for advanced users and researchers.
-
-### Research & Background
-- **[research/](./research/)** - Technical research papers and educational documents
-  - **[research/THREADS.md](./research/THREADS.md)** - Threading optimization analysis (background research)
-  - **[research/STREAM-BPE.md](./research/STREAM-BPE.md)** - BPE tokenization background
-
-## 📋 Documentation Index by Topic
-
-### Configuration
-- Quick start: [../README.md#-quick-start](../README.md#-quick-start)
-- Full guide: [CONFIG.md](CONFIG.md)
-- Model setup: [MODELS.md](MODELS.md)
-
-### Tool System
-- Overview: [../README.md#%EF%B8%8F-tool-system--extensions](../README.md#%EF%B8%8F-tool-system--extensions)
-- Security features: [TOOLS.md#security-architecture](TOOLS.md#security-architecture)
-- MCP integration: [MCP_SETUP.md](MCP_SETUP.md)
-
-### AI Features
-- Thinking tokens: [THINK.md](THINK.md)
-- Token counting: [TOKEN_COUNTING.md](TOKEN_COUNTING.md)
-- Multi-agent system: [TASK.md](TASK.md)
-
-### Development
-- Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Building from source: [../README.md##-building-niffler](../README.md##-building-niffler)
-- Development roadmap: [DEVELOPMENT.md](DEVELOPMENT.md)
-
-## 🤔 Need Help?
-
-If you're not sure where to start:
-
-1. **New users**: Begin with the [main README](../README.md) for installation and quick start
-2. **Configuring models**: See [MODELS.md](MODELS.md) for AI provider setup
-3. **Using tools**: Check [TOOLS.md](TOOLS.md) for tool system documentation
-4. **Understanding architecture**: Read [ARCHITECTURE.md](ARCHITECTURE.md)
-5. **Deep technical dives**: Explore the [research/](research/) directory
-
-## 📖 Documentation Conventions
-
-- **User guides** focus on practical usage and configuration
-- **Developer docs** cover technical implementation details
-- **Research docs** provide educational background and technical analysis
-- All documentation is written in Markdown and can be viewed on GitHub or locally
-
----
-
-**Last Updated:** 2025-12-02
-**Documentation Version:** 0.4.0
+- The docs in this directory should describe current behavior in this branch.
+- Research docs may be historically interesting, but are not guaranteed to match the current implementation.

@@ -26,7 +26,6 @@ suite "Integration Tests with Real LLM":
   setup:
     # Initialize test configuration
     testConfig = Config(
-      yourName: "Test User",
       models: @[
         ModelConfig(
           nickname: TEST_MODEL,

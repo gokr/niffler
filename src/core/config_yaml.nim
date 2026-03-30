@@ -178,7 +178,6 @@ proc parseMasterFromYaml(yamlNode: YamlNode): MasterConfig =
           return parseInt(v.content)
     return default
 
-  result.enabled = getYamlBool("enabled", false)
   result.defaultAgent = getYamlString("default_agent", "coder")
   result.autoStartAgents = getYamlBool("auto_start_agents", true)
   result.heartbeatCheckInterval = getYamlInt("heartbeat_check_interval", 30)
@@ -335,9 +334,6 @@ proc loadYamlConfig*(path: string): Config =
         if v.kind == yScalar:
           return parseInt(v.content)
     return default
-
-  # Parse basic fields
-  result.yourName = getRootString("your_name", "User")
 
   # Parse models
   result.models = @[]

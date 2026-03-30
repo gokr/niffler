@@ -800,6 +800,13 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   if not configureAPIWorker(currentModel):
     echo fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key."
 
+  let modelsMissingCredentials = getEnabledModelsMissingCredentials(loadConfig())
+  if modelsMissingCredentials.len > 0:
+    writeCompleteLine(formatWithStyle(
+      fmt("Warning: Enabled remote models missing usable credentials: {modelsMissingCredentials.join(\", \")}"),
+      currentTheme.error
+    ))
+
   # Initialize runtime mode as master
   initializeRuntimeMode(rmMaster)
 
