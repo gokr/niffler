@@ -15,37 +15,23 @@
 - Nim 2.2.4 or later
 - Git
 - NATS Server
-- Tidb
+- TiDB
 
 #### Nim
-Install Nim (compiler and tools) is easiest via [choosenim](https://nim-lang.org/install_unix.html):
+Install Nim (compiler and tools) via [choosenim](https://nim-lang.org/install_unix.html):
 
 ```bash
 curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 ```
 
-#### Tidb
-Easiest way to get a Tidb up and running is to install `tiup` and just run a **playground**:
+#### TiDB
+The easiest way to get TiDB running locally is to install `tiup` and start a named playground:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
 ```
 
-Run a playground (in a new shell) that should start on port 4000:
-
-```bash
-tiup playground
-```
-
-
-#### NATS Server Installation
-Niffler requires a NATS server for communication between agents. You have several options:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
-```
-
-Start a named playground that keeps its data between restarts:
+Then start a persistent playground:
 
 ```bash
 tiup playground --tag niffler
@@ -72,12 +58,47 @@ tiup playground display
 
 Niffler expects TiDB on `127.0.0.1:4000` by default, which matches the normal playground setup.
 
-### 3. Install system dependencies
+#### NATS Server Installation
+Niffler requires a NATS server for communication between agents.
 
 macOS:
 
 ```bash
-brew install nats
+brew install nats-server
+```
+
+Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y nats-server
+```
+
+Start it with:
+
+```bash
+nats-server -js
+```
+
+### 2. Install system libraries
+
+macOS:
+
+```bash
+brew install cnats
+brew install mariadb-connector-c
+```
+
+If the MySQL client library is not found at runtime, you may also need:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
+```
+
+You may also need to help the compiler find Apple SDK headers:
+
+```bash
+export CPATH="$(xcrun --show-sdk-path)/usr/include"
 ```
 
 Ubuntu/Debian:
@@ -87,49 +108,40 @@ sudo apt update
 sudo apt install -y libnats3.7t64 libnats-dev
 ```
 
-### 4. Build Niffler
+Windows:
+
+> The NATS library is typically bundled with the Nim package on Windows.
+
+### 3. Build Niffler
 
 ```bash
 nimble build
 ```
 
-### 5. Initialize config
+### 4. Initialize config
 
 ```bash
-brew install cnats
+./src/niffler init
 ```
 
-**Windows:**
-> The NATS library is typically bundled with the Nim package on Windows.
+- macOS/Linux: `~/.niffler/config.yaml`
+- Windows: `%APPDATA%/niffler/config.yaml`
 
-### MySQL client library
+### 5. Add credentials if needed
 
-**macOS:**
+The default config is meant to start cleanly on a fresh machine.
+
+- Local models such as Ollama and LM Studio can work without remote API keys
+- Enabled remote models without usable credentials are reported at startup
+- You can either edit `api_key` in `config.yaml` or set the matching `api_env_var`
+
 ```bash
-brew install mariadb-connector-c
+export OPENROUTER_API_KEY="your-key-here"
+./src/niffler
 ```
 
-And you may need to also do:
+### 6. Start Niffler
 
-```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
-```
-
-
-## 🏗️ Building Niffler
-
-Niffler needs to be built from source at this time. Follow these steps to build and install the application on your system.
-
-### Build Notes
-
-- All compilation requires `--threads:on -d:ssl` flags (automatically set in build configuration)
-- The optimized build (`nimble build`) creates a single static binary
-- Windows users may need to install Visual Studio Build Tools for native compilation
-- You may need to set CPATH so that futhark finds stdlib.h: `export CPATH="$(xcrun --show-sdk-path)/usr/include"`
-
-## 🎯 Quick Start
-
-### 1. Initialize Configuration
 ```bash
 ./src/niffler
 ```

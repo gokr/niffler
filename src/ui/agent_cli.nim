@@ -775,7 +775,8 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
 
     # Wait for MCP ready signal
     var mcpReady = false
-    while not mcpReady:
+    let mcpReadyDeadline = epochTime() + 5.0
+    while not mcpReady and epochTime() < mcpReadyDeadline:
       let maybeResponse = tryReceiveMcpResponse(state.channels)
       if maybeResponse.isSome():
         let response = maybeResponse.get()
@@ -784,6 +785,9 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
           debug("MCP worker ready")
       if not mcpReady:
         sleep(10)
+
+    if not mcpReady:
+      warn("Timed out waiting for MCP worker ready signal, continuing startup")
 
     # Give MCP servers time to fully initialize
     sleep(100)
