@@ -39,14 +39,14 @@ template handleToolCallDisplay*(response: APIResponse,
     # Flush any buffered content before showing tool calls
     flushStreamingBuffer(redraw = false)
 
-    # Display tool request immediately with hourglass indicator
+    # Display tool request immediately
     let toolRequest = response.toolRequestInfo
     pendingToolCalls[toolRequest.toolCallId] = toolRequest
 
-    # Reset output tracking and display tool call with hourglass
+    # Reset output tracking and display tool call
     outputAfterToolCall = false
     let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-    stdout.write(formattedRequest & " ⏳\n")
+    stdout.write(formattedRequest & "\n")
     stdout.flushFile()
   
   of arkToolCallResult:
@@ -56,9 +56,9 @@ template handleToolCallDisplay*(response: APIResponse,
       let toolRequest = pendingToolCalls[toolResult.toolCallId]
       let formattedResult = formatCompactToolResultWithIndent(toolResult)
       
-      # Always use simple append mode - cursor manipulation fails with line wrapping
-      let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-      stdout.write(formattedRequest & "\n" & formattedResult & "\n")
+      # Just print the result - request was already printed with hourglass
+      # Note: We don't re-print the request to avoid duplication
+      stdout.write("        " & formattedResult & "\n")
       
       # Remove from pending
       pendingToolCalls.del(toolResult.toolCallId)

@@ -361,7 +361,7 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
 
   # Calculate timeout from config (default 5 minutes = 300 seconds)
   let timeoutSeconds = getGlobalConfig().agentTimeoutSeconds.get(300)
-  let maxAttempts = (timeoutSeconds * 1000) div 100  # Convert to number of 100ms attempts
+  let maxAttempts = (timeoutSeconds * 1000) div 10  # Convert to number of 10ms attempts
 
   while attempts < maxAttempts and not responseComplete:
     var response: APIResponse
