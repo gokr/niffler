@@ -420,6 +420,9 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
   if not responseComplete:
     return (false, "Response timed out")
 
+  if lastContent.strip().len == 0:
+    debug(fmt"Ask request {requestId} completed without final assistant text")
+
   # Return the last assistant response (already persisted to DB by API worker)
   return (true, lastContent)
 

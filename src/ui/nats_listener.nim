@@ -93,12 +93,15 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
 
             if response.done:
               # Final response - show with colored agent name
+              let agentColor = getAgentColor(response.agentName)
+              let coloredName = formatWithStyle(response.agentName, agentColor)
+
               if response.content.len > 0:
-                # Get agent name from response
-                let agentColor = getAgentColor(response.agentName)
-                let coloredName = formatWithStyle(response.agentName, agentColor)
                 let renderedContent = renderMarkdownTextCLI(response.content).replace("\n", "\r\n")
                 writeOutputRaw(fmt("{coloredName}: {renderedContent}"), addNewline = true, redraw = true)
+              else:
+                let completedMark = formatWithStyle("✓", currentTheme.success)
+                writeOutputRaw(fmt("{coloredName}: {completedMark}"), addNewline = true, redraw = true)
               debug(fmt("Request {response.requestId} completed from {response.agentName}"))
             elif response.content.len > 0:
               # Streaming chunk - display directly, convert LF to CRLF
