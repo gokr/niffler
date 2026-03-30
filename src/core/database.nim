@@ -19,7 +19,7 @@ import config
 import debby/mysql
 import debby/pools
 
-const MaxConnectionIdleSeconds* = 300  # 5 minutes idle - helps with TiDB Cloud Serverless aggressive timeouts
+const MaxConnectionIdleSeconds* = 60  # 1 minute idle - TiDB Cloud Serverless is very aggressive with timeouts
 
 type
   TrackedConnection* = tuple[db: Db, lastIdleAt: float]  # Connection with last idle timestamp
@@ -191,6 +191,7 @@ type
     totalOverhead*: int          ## Complete API request overhead
 
 # Forward declarations for connection management
+proc testConnection*(db: Db): bool
 proc replaceExpiredConnections*(backend: DatabaseBackend): int
 proc replaceConnectionIfNeeded*(backend: DatabaseBackend)
 
@@ -471,6 +472,16 @@ proc isConnectionExpired*(tracked: TrackedConnection): bool =
   let idleTime = epochTime() - tracked.lastIdleAt
   result = idleTime > MaxConnectionIdleSeconds
 
+proc testConnection*(db: Db): bool =
+  ## Test if a database connection is still alive by running a simple query
+  ## Note: Uses raw mysql_query to avoid exceptions
+  try:
+    # Try a simple query - if it fails, connection is dead
+    let result = db.query("SELECT 1")
+    return result.len >= 0  # If we got here without exception, connection is alive
+  except:
+    return false
+
 proc recreateConnection*(backend: DatabaseBackend): Db =
   let host = backend.config.host
   let port = backend.config.port
@@ -489,8 +500,16 @@ proc replaceExpiredConnections*(backend: DatabaseBackend): int =
   try:
     var newTracked: seq[TrackedConnection] = @[]
     for tracked in backend.trackedConnections:
-      if isConnectionExpired(tracked):
-        debug(fmt"Replacing expired connection (idle: {epochTime() - tracked.lastIdleAt:.0f}s)")
+      # Check both idle time AND connection health
+      let isExpired = isConnectionExpired(tracked)
+      let isDead = not testConnection(tracked.db)
+      
+      if isExpired or isDead:
+        if isExpired:
+          debug(fmt"Replacing expired connection (idle: {epochTime() - tracked.lastIdleAt:.0f}s)")
+        elif isDead:
+          debug("Replacing dead connection (failed health check)")
+        
         try:
           tracked.db.close()
         except:
@@ -511,7 +530,10 @@ proc replaceExpiredConnections*(backend: DatabaseBackend): int =
   return replaced
 
 proc replaceConnectionIfNeeded*(backend: DatabaseBackend) =
-  discard backend.replaceExpiredConnections()
+  ## Replace any dead or expired connections before use
+  let replaced = backend.replaceExpiredConnections()
+  if replaced > 0:
+    debug(fmt"Pre-use connection check: replaced {replaced} connections")
 
 proc logTokenUsage*(backend: DatabaseBackend, entry: TokenLogEntry) =
   withDbResilient(backend):
