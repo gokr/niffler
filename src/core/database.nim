@@ -13,22 +13,16 @@
 ## - Thread-safe operations with proper transaction handling
 ## - Efficient querying with prepared statements and indexing
 
-import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils, locks]
+import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils, os]
 import ../types/[config, messages, mode]
 import config
 import debby/mysql
 import debby/pools
 
-const MaxConnectionIdleSeconds* = 60  # 1 minute idle - TiDB Cloud Serverless is very aggressive with timeouts
-
 type
-  TrackedConnection* = tuple[db: Db, lastIdleAt: float]  # Connection with last idle timestamp
-
   DatabaseBackend* = ref object
     config*: DatabaseConfig
     pool*: Pool
-    connectionLock*: Lock  # Lock for connection management
-    trackedConnections*: seq[TrackedConnection]  # Track connections with timestamps
   
   TokenLogEntry* = ref object of RootObj
     id*: int
@@ -190,58 +184,27 @@ type
     toolSchemaTokens*: int       ## Tool schema JSON tokens
     totalOverhead*: int          ## Complete API request overhead
 
-# Forward declarations for connection management
-proc testConnection*(db: Db): bool
-proc replaceExpiredConnections*(backend: DatabaseBackend): int
-proc replaceConnectionIfNeeded*(backend: DatabaseBackend)
-
-# Resilient DB wrapper templates - must be after DatabaseBackend type definition
-template withDbResilient*(backend: DatabaseBackend, body: untyped) =
-  block:
-    if backend != nil and backend.pool != nil:
-      backend.replaceConnectionIfNeeded()
-      try:
-        backend.pool.withDb:
-          body
-      except DbError as e:
-        let errMsg = e.msg.toLowerAscii()
-        if "lost connection" in errMsg or "gone away" in errMsg or "connection" in errMsg:
-          debug("Connection error, retrying: " & e.msg)
-          discard backend.replaceExpiredConnections()
-          try:
-            backend.pool.withDb:
-              body
-          except:
-            error("Database connection failed after retry: " & e.msg)
-            raise
-        else:
-          raise
-    else:
-      debug("Database not available, skipping operation")
-
-template withDbResilient*(pool: Pool, body: untyped) =
-  block:
-    let backend = getGlobalDatabase()
-    if backend != nil and pool != nil:
-      backend.replaceConnectionIfNeeded()
-      try:
-        pool.withDb:
-          body
-      except DbError as e:
-        let errMsg = e.msg.toLowerAscii()
-        if "lost connection" in errMsg or "gone away" in errMsg or "connection" in errMsg:
-          debug("Connection error, retrying: " & e.msg)
-          discard backend.replaceExpiredConnections()
-          try:
-            pool.withDb:
-              body
-          except:
-            error("Database connection failed after retry: " & e.msg)
-            raise
-        else:
-          raise
-    else:
-      debug("Database not available, skipping operation")
+# Simple retry template for handling transient connection errors
+template withRetry*(body: untyped) =
+  ## Execute database operation with retry on connection errors
+  var lastError: string
+  for attempt in 0..1:
+    try:
+      body
+      break
+    except DbError as e:
+      let errMsg = e.msg.toLowerAscii()
+      if ("lost connection" in errMsg or "gone away" in errMsg) and attempt == 0:
+        debug(fmt"Database connection lost, retrying: {e.msg}")
+        lastError = e.msg
+        sleep(100)  # Brief pause before retry
+        continue
+      else:
+        raise
+    except Exception as e:
+      raise
+  if lastError.len > 0:
+    error(fmt"Database operation failed after retry: {lastError}")
 
 proc utcNow*(): string =
   ## Return current UTC time
@@ -268,7 +231,7 @@ proc deserializeToolCalls*(jsonStr: string): seq[LLMToolCall] =
 
 proc initializeDatabase*(backend: DatabaseBackend) =
   ## This is where we create the tables if they are not already created.
-  withDbResilient(backend):
+  backend.pool.withDb:
     # When running this for the first time, it will create the tables
     if not db.tableExists(TokenLogEntry):
       db.createTable(TokenLogEntry)
@@ -360,7 +323,7 @@ proc initializeDatabase*(backend: DatabaseBackend) =
 
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
-  withDbResilient(backend):
+  backend.pool.withDb:
     db.checkTable(TokenLogEntry)
     db.checkTable(PromptHistoryEntry)
     db.checkTable(Conversation)
@@ -420,21 +383,12 @@ proc init*(backend: DatabaseBackend) =
         warn(fmt"Could not verify/create database: {e.msg}")
         # Continue anyway - the database might already exist
 
-    # Initialize tracking structures
-    initLock(backend.connectionLock)
-    backend.trackedConnections = @[]
-
     # Create connection pool
     let poolSize = backend.config.poolSize
     backend.pool = newPool()
     for i in 0 ..< poolSize:
       try:
-        let conn = mysql.openDatabase(database, host, port, username, password)
-        backend.pool.add conn
-        # Also track with last idle timestamp
-        acquire(backend.connectionLock)
-        backend.trackedConnections.add((conn, epochTime()))  # Mark as idle now
-        release(backend.connectionLock)
+        backend.pool.add mysql.openDatabase(database, host, port, username, password)
       except Exception as e:
         if "Unknown database" in e.msg:
           error(fmt"Database '{database}' does not exist and could not be auto-created")
@@ -466,77 +420,9 @@ proc init*(backend: DatabaseBackend) =
 proc close*(backend: DatabaseBackend) =
   if cast[pointer](backend.pool) != nil:
     backend.pool.close()
-  deinitLock(backend.connectionLock)
-
-proc isConnectionExpired*(tracked: TrackedConnection): bool =
-  let idleTime = epochTime() - tracked.lastIdleAt
-  result = idleTime > MaxConnectionIdleSeconds
-
-proc testConnection*(db: Db): bool =
-  ## Test if a database connection is still alive by running a simple query
-  ## Note: Uses raw mysql_query to avoid exceptions
-  try:
-    # Try a simple query - if it fails, connection is dead
-    let result = db.query("SELECT 1")
-    return result.len >= 0  # If we got here without exception, connection is alive
-  except:
-    return false
-
-proc recreateConnection*(backend: DatabaseBackend): Db =
-  let host = backend.config.host
-  let port = backend.config.port
-  let database = backend.config.database
-  let username = backend.config.username
-  let password = backend.config.password
-  result = mysql.openDatabase(database, host, port, username, password)
-  debug(fmt"Created new database connection for {host}:{port}/{database}")
-
-proc replaceExpiredConnections*(backend: DatabaseBackend): int =
-  if backend == nil or backend.pool == nil:
-    return 0
-
-  var replaced = 0
-  acquire(backend.connectionLock)
-  try:
-    var newTracked: seq[TrackedConnection] = @[]
-    for tracked in backend.trackedConnections:
-      # Check both idle time AND connection health
-      let isExpired = isConnectionExpired(tracked)
-      let isDead = not testConnection(tracked.db)
-      
-      if isExpired or isDead:
-        if isExpired:
-          debug(fmt"Replacing expired connection (idle: {epochTime() - tracked.lastIdleAt:.0f}s)")
-        elif isDead:
-          debug("Replacing dead connection (failed health check)")
-        
-        try:
-          tracked.db.close()
-        except:
-          discard
-        # Create new connection and add to BOTH our tracking AND the debby pool
-        let newConn = backend.recreateConnection()
-        backend.pool.add(newConn)  # Add to the actual debby pool
-        newTracked.add((newConn, epochTime()))  # Track it
-        inc replaced
-      else:
-        newTracked.add(tracked)
-    backend.trackedConnections = newTracked
-  finally:
-    release(backend.connectionLock)
-
-  if replaced > 0:
-    info(fmt"Replaced {replaced} expired database connections")
-  return replaced
-
-proc replaceConnectionIfNeeded*(backend: DatabaseBackend) =
-  ## Replace any dead or expired connections before use
-  let replaced = backend.replaceExpiredConnections()
-  if replaced > 0:
-    debug(fmt"Pre-use connection check: replaced {replaced} connections")
 
 proc logTokenUsage*(backend: DatabaseBackend, entry: TokenLogEntry) =
-  withDbResilient(backend):
+  backend.pool.withDb:
     # Insert using debby's ORM
     db.insert(entry)
 
@@ -555,7 +441,7 @@ proc getTokenStats*(backend: DatabaseBackend, model: string, startDate, endDate:
     result.totalCost += entry.totalCost
 
 proc logPromptHistory*(backend: DatabaseBackend, entry: PromptHistoryEntry) =
-  withDbResilient(backend):
+  backend.pool.withDb:
     # Insert using debby's ORM
     db.insert(entry)
 
@@ -563,7 +449,7 @@ proc logPromptHistory*(backend: DatabaseBackend, entry: PromptHistoryEntry) =
 
 proc getPromptHistory*(backend: DatabaseBackend, sessionId: string = "", maxEntries: int = 50): seq[PromptHistoryEntry] =
   ## Return history entries, latest comes first in the seq
-  withDbResilient(backend):
+  backend.pool.withDb:
     result = if sessionId.len > 0:
       db.query(PromptHistoryEntry,
         fmt"SELECT * FROM prompt_history_entry WHERE session_id = '{sessionId}' ORDER BY created_at ASC LIMIT {maxEntries}")
@@ -573,7 +459,7 @@ proc getPromptHistory*(backend: DatabaseBackend, sessionId: string = "", maxEntr
 
 proc getRecentPrompts*(backend: DatabaseBackend, maxEntries: int = 20): seq[string] =
   ## Return history prompts, latest comes first in the seq
-  withDbResilient(backend):
+  backend.pool.withDb:
     let entries = db.query(PromptHistoryEntry,
       fmt"SELECT * FROM prompt_history_entry WHERE user_prompt != '' ORDER BY created_at DESC LIMIT {maxEntries}")
     result = entries.map(proc(entry: PromptHistoryEntry): string = entry.userPrompt)
@@ -772,7 +658,7 @@ proc getConversationCostDetailed*(backend: DatabaseBackend, conversationId: int)
   if backend == nil or conversationId == 0:
     return (@[], 0.0, 0, 0, 0, 0.0, 0.0, 0.0)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     # Group by model and sum costs including reasoning tokens
     let query = """
       SELECT model,
@@ -812,7 +698,7 @@ proc getConversationReasoningTokens*(backend: DatabaseBackend, conversationId: i
   if backend == nil or conversationId == 0:
     return (0, 0, 0.0)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let query = """
       SELECT SUM(reasoning_tokens) as totalReasoning,
              SUM(output_tokens) as totalOutput
@@ -835,7 +721,7 @@ proc getConversationThinkingTokens*(backend: DatabaseBackend, conversationId: in
   if backend == nil or conversationId == 0:
     return 0
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let query = """
       SELECT SUM(mtb.token_count) as totalThinking
       FROM message_thinking_blocks mtb
@@ -866,7 +752,7 @@ proc getSessionCostBreakdown*(backend: DatabaseBackend, appStartTime: DateTime):
   if backend == nil:
     return (0.0, 0.0, 0.0, 0.0, 0, 0, 0)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let query = """
       SELECT SUM(input_tokens) as total_input_tokens,
              SUM(output_tokens) as total_output_tokens,
@@ -901,7 +787,7 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
   if backend == nil or conversationId == 0:
     return (0, 0, 0)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let query = """
       SELECT cm.role,
              SUM(mtu.input_tokens + mtu.output_tokens + mtu.reasoning_tokens) as totalTokens
@@ -1355,7 +1241,7 @@ proc logSystemPromptTokenUsage*(backend: DatabaseBackend, conversationId: int, m
   if backend == nil:
     return
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let entry = SystemPromptTokenUsage(
         conversationId: conversationId,
@@ -1384,7 +1270,7 @@ proc createTodoList*(backend: DatabaseBackend, conversationId: int, title: strin
   if backend == nil:
     return 0
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let todoList = TodoList(
       id: 0,
       conversationId: conversationId,
@@ -1402,7 +1288,7 @@ proc addTodoItem*(backend: DatabaseBackend, listId: int, content: string, priori
   if backend == nil:
     return 0
 
-  withDbResilient(backend):
+  backend.pool.withDb:
 
     # Get the next order index
     let existingItems = db.filter(TodoItem, it.listId == listId)
@@ -1427,7 +1313,7 @@ proc updateTodoItem*(backend: DatabaseBackend, itemId: int, newState: Option[Tod
   if backend == nil:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
 
     let items = db.filter(TodoItem, it.id == itemId)
     if items.len == 0:
@@ -1451,7 +1337,7 @@ proc getTodoItems*(backend: DatabaseBackend, listId: int): seq[TodoItem] =
   if backend == nil:
     return @[]
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let items = db.filter(TodoItem, it.listId == listId)
     return items.sortedByIt(it.orderIndex)
 
@@ -1460,7 +1346,7 @@ proc deleteTodoItem*(backend: DatabaseBackend, itemId: int): bool =
   if backend == nil:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let items = db.filter(TodoItem, it.id == itemId)
     if items.len == 0:
       return false
@@ -1473,7 +1359,7 @@ proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[T
   if backend == nil:
     return none(TodoList)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     let lists = db.filter(TodoList, it.conversationId == conversationId and it.isActive == true)
     if lists.len > 0:
       return some(lists[0])
@@ -1486,7 +1372,7 @@ proc setPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int, cre
   if backend == nil or conversationId == 0:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let conversations = db.filter(Conversation, it.id == conversationId)
       if conversations.len == 0:
@@ -1511,7 +1397,7 @@ proc clearPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): 
   if backend == nil or conversationId == 0:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let conversations = db.filter(Conversation, it.id == conversationId)
       if conversations.len == 0:
@@ -1536,7 +1422,7 @@ proc setConversationCondensationInfo*(backend: DatabaseBackend, conversationId: 
   if backend == nil or conversationId == 0:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let conversations = db.filter(Conversation, it.id == conversationId)
       if conversations.len == 0:
@@ -1562,7 +1448,7 @@ proc getPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int): tu
   if backend == nil or conversationId == 0:
     return (false, @[])
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let conversations = db.filter(Conversation, it.id == conversationId)
       if conversations.len == 0:
@@ -1592,7 +1478,7 @@ proc addPlanModeCreatedFile*(backend: DatabaseBackend, conversationId: int, file
   if backend == nil or conversationId == 0:
     return false
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let conversations = db.filter(Conversation, it.id == conversationId)
       if conversations.len == 0:
@@ -1643,7 +1529,7 @@ proc recordTokenCorrectionToDB*(backend: DatabaseBackend, modelName: string, est
 
   debug(fmt"Recording token correction for {modelName}: estimated={estimatedTokens}, actual={actualTokens}, ratio={ratio:.3f}")
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     # Check if correction factor exists for this model
     let existingFactors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
 
@@ -1677,7 +1563,7 @@ proc getCorrectionFactorFromDB*(backend: DatabaseBackend, modelName: string): Op
   if backend == nil:
     return none(float)
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let factors = db.filter(TokenCorrectionFactor, it.modelName == modelName)
       if factors.len > 0:
@@ -1695,7 +1581,7 @@ proc getAllCorrectionFactorsFromDB*(backend: DatabaseBackend): seq[TokenCorrecti
   if backend == nil:
     return @[]
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       return db.filter(TokenCorrectionFactor)
     except Exception as e:
@@ -1707,7 +1593,7 @@ proc clearAllCorrectionFactorsFromDB*(backend: DatabaseBackend) =
   if backend == nil:
     return
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       db.query("DELETE FROM token_correction_factor")
       debug("Cleared all token correction factors from database")
@@ -1721,7 +1607,7 @@ proc getAssistantTokensForConversation*(backend: DatabaseBackend, conversationId
   if backend == nil or conversationId == 0:
     return
 
-  withDbResilient(backend):
+  backend.pool.withDb:
     try:
       let assistantMessages = db.filter(ConversationMessage,
         it.conversationId == conversationId and it.role == "assistant")

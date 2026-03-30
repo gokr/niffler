@@ -94,7 +94,7 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
     return @[]
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let whereClause = case filter:
         of cfActive: "WHERE is_active = 1"
         of cfArchived: "WHERE is_active = 0"
@@ -172,7 +172,7 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
     return none(Conversation)
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let query = """
         SELECT id, created_at, updated_at, session_id, title, is_active,
                mode, model_nickname, message_count, last_activity,
@@ -201,7 +201,7 @@ proc updateConversationActivity*(backend: DatabaseBackend, conversationId: int) 
     return
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let currentTime = utcNow()
       db.query("UPDATE conversation SET last_activity = ?, updated_at = ? WHERE id = ?",
                currentTime, currentTime, conversationId)
@@ -215,7 +215,7 @@ proc updateConversationMessageCount*(backend: DatabaseBackend, conversationId: i
     return
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       # Count messages for this conversation
       let countRows = db.query("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = ?", conversationId)
       let messageCount = parseInt(countRows[0][0])
@@ -235,7 +235,7 @@ proc updateConversationMode*(backend: DatabaseBackend, conversationId: int, mode
     return
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let currentTime = utcNow()
       db.query("UPDATE conversation SET mode = ?, updated_at = ? WHERE id = ?",
                $mode, currentTime, conversationId)
@@ -249,7 +249,7 @@ proc updateConversationModel*(backend: DatabaseBackend, conversationId: int, mod
     return
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let currentTime = utcNow()
       db.query("UPDATE conversation SET model_nickname = ?, updated_at = ? WHERE id = ?",
                modelNickname, currentTime, conversationId)
@@ -297,7 +297,7 @@ proc archiveConversation*(backend: DatabaseBackend, conversationId: int): bool =
     return false
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       # First check if the conversation exists
       let existsRows = db.query("SELECT id, title FROM conversation WHERE id = ?", conversationId)
       if existsRows.len == 0:
@@ -321,7 +321,7 @@ proc unarchiveConversation*(backend: DatabaseBackend, conversationId: int): bool
     return false
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       let currentTime = utcNow()
       db.query("UPDATE conversation SET is_active = 1, updated_at = ? WHERE id = ?",
                currentTime, conversationId)
@@ -343,7 +343,7 @@ proc deleteConversation*(backend: DatabaseBackend, conversationId: int): bool =
 
   try:
     # Delete all messages first
-    backend.withDbResilient:
+    backend.pool.withDb:
       db.query("DELETE FROM conversation_message WHERE conversation_id = ?", conversationId)
       db.query("DELETE FROM model_token_usage WHERE conversation_id = ?", conversationId)
       db.query("DELETE FROM conversation WHERE id = ?", conversationId)
@@ -360,7 +360,7 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
     return @[]
 
   try:
-    backend.withDbResilient:
+    backend.pool.withDb:
       # Search in conversation titles and message content
       let queryPattern = fmt"%{query}%"
       let searchQuery = """
@@ -640,7 +640,7 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
                           messageId: Option[int] = none(int), format: ThinkingTokenFormat = ttfNone,
                           importance: string = "medium"): int =
   ## Add thinking token to database and return the assigned ID
-  withDbResilient(pool):
+  pool.withDb:
     # Extract content from ThinkingContent blocks
     let content = if thinkingContent.blocks.len > 0:
                     thinkingContent.blocks[0].content  # For now, just get first block
@@ -666,7 +666,7 @@ proc addThinkingTokenToDb*(pool: Pool, conversationId: int, thinkingContent: Thi
 proc getThinkingTokenHistory*(pool: Pool, conversationId: int, limit: int = 50): seq[ThinkingContent] =
   ## Retrieve thinking token history for a conversation, most recent first
   result = @[]
-  withDbResilient(pool):
+  pool.withDb:
     # Build query with direct limit value instead of parameter to avoid binding issues
     let query = fmt"""
       SELECT thinking_content, provider_format, importance_level, token_count,
@@ -745,7 +745,7 @@ proc getThinkingTokensByImportance*(pool: Pool, conversationId: int,
                                    importance: string, limit: int = 20): seq[ThinkingContent] =
   ## Get thinking tokens filtered by importance level (low/medium/high)
   result = @[]
-  withDbResilient(pool):
+  pool.withDb:
     # Build query with direct values instead of parameters to avoid binding issues
     let query = fmt"""
       SELECT thinking_content, provider_format, importance_level, token_count,
@@ -886,7 +886,7 @@ proc linkPendingThinkingTokensToMessage*(messageId: int): int {.gcsafe.} =
     acquire(globalSession.lock)
     try:
       if globalSession.pool != nil:
-        withDbResilient(globalSession.pool):
+        globalSession.pool.withDb:
           # Update all thinking tokens with message_id = 0 for this conversation
           db.query("""
             UPDATE conversation_thinking_token
@@ -925,7 +925,7 @@ proc addThinkingBlock*(pool: Pool, conversationId: int, messageId: int,
     return 0
 
   var result = 0
-  withDbResilient(pool):
+  pool.withDb:
     try:
       # Create MessageThinkingBlock object for insertion
       var mtb = MessageThinkingBlock(
