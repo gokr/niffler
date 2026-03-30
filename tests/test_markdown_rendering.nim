@@ -10,7 +10,6 @@ suite "Markdown Rendering Tests":
   setup:
     # Initialize theme system with a basic theme for testing
     let testConfig = Config(
-      yourName: "Test",
       models: @[],
       markdownEnabled: some(true),
       currentTheme: some("default")

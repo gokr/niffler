@@ -131,7 +131,6 @@ type
     fallbackToBuiltin*: bool    # Use built-in htmlToText if external command fails
 
   Config* = object
-    yourName*: string
     models*: seq[ModelConfig]
     diffApply*: Option[SpecialModelConfig]
     fixJson*: Option[SpecialModelConfig]
@@ -214,7 +213,6 @@ type
   # ---------------------------------------------------------------------------
 
   MasterConfig* = object
-    enabled*: bool
     defaultAgent*: string
     autoStartAgents*: bool
     heartbeatCheckInterval*: int

@@ -1,961 +1,136 @@
-# Niffler Multi-Agent Architecture
+# Multi-Agent Guide
+
+This document describes how the multi-agent flow works in the current `niffler-nats` branch.
 
 ## Overview
 
-This document outlines Niffler's multi-agent architecture using process-per-agent isolation with NATS messaging. The system uses a **soft agent type system** where agents are defined via markdown files in `~/.niffler/default/agents/`, making it user-extensible without code changes.
+Niffler supports a master-and-agent setup over NATS.
 
-### Core Design Principles
+- The master CLI accepts user input and routes work with `@agent`
+- Agent processes run as separate Niffler processes
+- Agents communicate over NATS
+- Conversations and token usage are persisted in TiDB
 
-1. **Process Isolation**: One agent = one persistent process for true fault isolation and visibility
-2. **Markdown-Based Agents**: User-extensible agent definitions without code changes
-3. **NATS Messaging**: Inter-process communication via **gokr/natswrapper**
-4. **Minimal Viable**: One master + one agent is the baseline
+## Running The Master
 
-### Task vs Ask Model
+Start the normal CLI:
 
-**Ask** (`@agent prompt`) - Default behavior
-- Continues agent's current conversation context
-- Agent builds on previous interactions within the same conversation
-- Maintains context across multiple asks
-- Agent stays in the conversation after responding
-- Use case: Multi-step problems, refinement, iterative development
-- Example: `@coder Build a simple HTTP server`
-
-**Task** (`@agent /task prompt`)
-- Creates fresh context for isolated execution
-- Agent processes request independently without previous conversation history
-- Returns result via NATS and restores previous conversation context
-- Use case: One-off operations, isolated problems, research tasks
-- Example: `@coder /task Research NATS libraries and tell me the best option`
-
-**Key Points:**
-- All conversations (both task and ask) are fully persisted to the database
-- Any conversation can be resumed and continued
-- Agents track their current conversation ID
-- Task requests create isolated contexts but preserve conversation history for audit
-
-### Architecture Components
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Master Niffler Process                   │
-│  - User interaction (stdin/stdout)                          │
-│  - @agent routing syntax                                    │
-│  - Agent lifecycle management                               │
-│  - NATS client for request/reply                            │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                    NATS Message Bus
-                (gokr/natswrapper)
-                           │
-         ┌─────────────────┴─────────────────┐
-         │                                   │
-┌────────▼────────┐             ┌───────────▼────────┐
-│ Agent Process 1  │             │ Agent Process 2    │
-│  (coder)         │             │  (researcher)      │
-│                  │             │                    │
-│ - Own terminal   │             │ - Own terminal     │
-│ - NATS subscriber│             │ - NATS subscriber  │
-│ - Task executor  │             │ - Task executor    │
-│ - Tool worker    │             │ - Tool worker      │
-└──────────────────┘             └────────────────────┘
+```bash
+./src/niffler
 ```
 
-## Current State Analysis
+Inside the CLI, route requests with `@agent`:
 
-### What Exists ✅
-
-**Task Framework (Partially Complete)**:
-- ✅ Agent definitions: markdown-based soft types (`src/types/agents.nim`)
-- ✅ Tool access control: whitelist enforcement ready
-- ✅ Task executor: isolated context framework (`src/core/task_executor.nim`)
-- ✅ Default agents: general-purpose, code-focused (`src/core/agent_defaults.nim`)
-- ✅ Task tool: delegation mechanism (`src/tools/task.nim`)
-- ✅ Database schema: conversation and message tracking
-
-**NATS Infrastructure (Started)**:
-- ⚠️ NATS client: basic wrapper exists, needs gokr/natswrapper integration (`src/core/nats_client.nim`)
-- ⚠️ NATS messages: type definitions exist, we should use sunny for JSON serialization/deserialization (`src/types/nats_messages.nim`)
-- ✅ YAML config: NATS server configuration support (`src/core/config_yaml.nim`)
-
-### What's Missing ❌
-
-**Phase 0 (Critical Blocker - Nearly Complete)**:
-- ✅ Tool execution integration in task executor (COMPLETED)
-- ✅ Circular import resolution blocking tool calls from tasks (COMPLETED)
-- ✅ Artifact extraction from task conversations (COMPLETED)
-- ❌ Task result visualization in main conversation (PENDING)
-- ✅ End-to-end testing with 8 passing unit tests (COMPLETED)
-
-**Phase 1 (Multi-Process)**:
-- ❌ Master mode CLI: agent routing with `/<agent>` syntax
-- ❌ Agent mode CLI: dedicated process per agent
-- ❌ Process management: spawning, monitoring, health checks
-- ❌ NATS communication: actual message passing via gokr/natswrapper
-- ❌ Database schema: agent_id and request_id fields
-- ❌ Agent lifecycle: auto-start, heartbeats, graceful shutdown
-
-## Soft Agent Type System
-
-### Agent Definition Format
-
-Agents are defined via markdown files in `~/.niffler/default/agents/`. Each file must have three sections:
-
-**Example: `~/.niffler/default/agents/general-purpose.md`**
-
-```markdown
-# General Purpose Agent
-
-## Description
-Safe research and analysis agent for gathering information without modifying the system.
-
-## Model
-synthetic-kimi
-
-## Allowed Tools
-- read
-- list
-- fetch
-- grep
-- glob
-
-## System Prompt
-
-You are a research and analysis agent.
-
-Available tools: {availableTools}
-
-Current environment:
-- Working directory: {currentDir}
-- Current time: {currentTime}
-- OS: {osInfo}
-{gitInfo}
-{projectInfo}
-
-Your role is to gather information, analyze code, and provide comprehensive findings
-without making any modifications to the system.
+```text
+@coder fix the build failure
+@researcher compare NATS clients for Nim
+@coder /task add JSON logging to the worker
 ```
 
-### Required Sections
+## Running Agents
 
-| Section | Description |
-|---------|-------------|
-| `## Description` | Brief description of the agent's purpose |
-| `## Allowed Tools` | List of tools the agent can use (one per line with `-` prefix) |
-| `## System Prompt` | The system prompt sent to the LLM |
+Each agent is a separate process:
 
-### Optional Sections
+```bash
+./src/niffler agent coder
+./src/niffler agent researcher
+```
 
-| Section | Description |
-|---------|-------------|
-| `## Model` | Model nickname to use (overrides CLI `--model` option) |
+The agent name passed on the command line selects the markdown agent definition to load.
 
-### System Prompt Template Variables
+## Ask Versus Task
 
-The system prompt supports template variables that are expanded at runtime:
+### Ask
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `{availableTools}` | Comma-separated list of allowed tools | `read, list, fetch, bash` |
-| `{currentDir}` | Current working directory | `/home/user/project` |
-| `{currentTime}` | Current UTC time | `2025-01-15 14:30:00 UTC` |
-| `{osInfo}` | Operating system | `Linux` |
-| `{gitInfo}` | Git repository info (branch, status) | `- Git repository: Yes\n- Current branch: main` |
-| `{projectInfo}` | Project size info | `- Large codebase (100+ source files)` |
+Default `@agent prompt` behavior continues the agent's current conversation.
 
-### Using MCP Tools
+Example:
 
-To use MCP (Model Context Protocol) tools with an agent, list the **actual tool names** provided by the MCP server, not the server name itself.
+```text
+@coder refactor the config loader
+```
 
-For example, if you have an MCP server called `calculator` that provides tools `add`, `multiply`, `compare`, and `factorial`:
+### Task
+
+`@agent /task ...` runs an isolated task flow.
+
+Example:
+
+```text
+@coder /task create a small REST example
+```
+
+## Agent Definitions
+
+The authoritative runtime agent definition is a markdown file under the active config directory.
+
+Typical locations:
+
+- `~/.niffler/<active-config>/agents/*.md`
+- `.niffler/<active-config>/agents/*.md`
+
+The active config directory is selected by the `config` field in `config.yaml` and by the runtime session.
+
+## YAML `agents` Section
+
+The `agents` section in `config.yaml` is still important, but it is not the whole agent definition.
+
+It is used for:
+
+- process metadata
+- auto-start behavior
+- persistent/ephemeral intent
+- default model metadata used by the agent manager
+
+The markdown files are used for:
+
+- prompt content
+- allowed tools
+- markdown-defined behavior
+- optional agent-specific model override
+
+## Auto-Start
+
+If master mode is connected to NATS, it can auto-start agents listed in `config.yaml` with:
 
 ```yaml
-# In config.yaml
-mcp_servers:
-  calculator:
-    command: "/path/to/calculator"
-    enabled: true
-```
-
-```markdown
-# In agent markdown file
-## Allowed Tools
-- read
-- bash
-- add        # MCP tool from calculator server
-- multiply   # MCP tool from calculator server
-- factorial  # MCP tool from calculator server
-```
-
-The MCP server name (`calculator`) is only used in `config.yaml`. The agent definition must list the individual tool names that the server provides.
-
-### Default Agents Provided
-
-**`general-purpose.md`**
-- **Tools**: read, list, fetch, grep, glob
-- **Purpose**: Research, analysis, information gathering
-- **Constraints**: Cannot edit, create, or execute commands
-
-**`code-focused.md`**
-- **Tools**: read, list, fetch, grep, glob, create
-- **Purpose**: Code generation, analysis, safe file creation
-- **Constraints**: Cannot edit existing files or execute commands
-
-### User-Defined Agents
-
-Users can create custom agents by adding new markdown files to `~/.niffler/default/agents/`:
-- `security-scanner.md` - Read-only security analysis with bash for safe scans
-- `documentation-writer.md` - Read and create for documentation generation
-- `test-runner.md` - Read and bash for test execution and reporting
-- `api-tester.md` - Fetch and bash for API endpoint testing
-
-### Agent Validation
-
-**Validation checks**:
-- ✓ Has `## Description` section
-- ✓ Has `## Allowed Tools` section with at least one tool
-- ✓ Has `## System Prompt` section
-- ⚠ Warning if tools are not in registry (may be future tools)
-
-**Status indicators** (in `/agent` command):
-- ✓ (green) - Valid definition
-- ✗ (red) - Parse error or missing required section
-- ⚠ (yellow) - Valid but references unknown tools
-
-### Agent Management Commands
-
-**`/agent`** - Show table of all agents with status
-```
-┌────────────────────┬──────────────────────────────────┬───────┬────────┐
-│ Name               │ Description                      │ Tools │ Status │
-├────────────────────┼──────────────────────────────────┼───────┼────────┤
-│ general-purpose    │ Research and analysis agent      │ 5     │ ✓      │
-│ code-focused       │ Code generation and analysis     │ 6     │ ✓      │
-│ my-custom-agent    │ Custom testing agent             │ 4     │ ✓      │
-└────────────────────┴──────────────────────────────────┴───────┴────────┘
-```
-
-**`/agent <name>`** - Show detailed agent view
-```
-┌─ general-purpose ───────────────────────────────────────────────────────┐
-│ Description: Research and analysis agent for gathering information      │
-│              without modifying the system                               │
-│                                                                          │
-│ Allowed Tools: read, list, fetch, grep, glob                           │
-│                                                                          │
-│ Status: ✓ Valid                                                         │
-│                                                                          │
-│ File: ~/.niffler/default/agents/general-purpose.md                             │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## Multi-Process Architecture
-
-### Master Niffler: Coordinator Process
-
-**Role**: Simplified CLI that routes user input to agents without streaming complexity.
-
-**Startup**:
-```bash
-$ niffler  # No 'agent' command = master mode
-Master mode initialized
-Auto-starting agents: coder, researcher
-✓ @coder started (pid: 12345)
-✓ @researcher started (pid: 12346)
-Ready for commands (type /help for help)
->
-```
-
-**Workflow**:
-1. Parse input for agent routing syntax:
-   - `@coder prompt` - Ask request (default, continue conversation)
-   - `@coder /task prompt` - Task request (fresh context)
-2. Publish TaskRequest or AskRequest to NATS subject `niffler.agent.<name>.request`
-3. Display routing confirmation: "→ Sent to @coder (task)" or "→ Sent to @coder (ask)"
-4. Display result summary: "✓ @coder completed"
-
-**No Streaming Output**: Master doesn't handle agent streaming - users see that in agent's terminal window.
-
-**Agent Management Commands**:
-```bash
-/agent list          # Query active agents via NATS heartbeats
-/agent start <name>  # Spawn new agent process
-/agent stop <name>   # Send graceful shutdown message
-/agent restart <name> # Stop and restart agent
-```
-
-**Default agent**: Input without `/agent` command routes to `default_agent` from config.
-
-### Agent Niffler: Worker Processes
-
-**Role**: Long-running specialist processes that display their work transparently.
-
-**Startup**:
-```bash
-$ niffler agent coder
-Agent 'coder' initialized (model: claude-3.5-sonnet)
-Subscribed to: niffler.agent.coder.request
-Tools: read, list, create, edit, bash
-Ready for requests...
-```
-
-**Process Architecture** (per agent):
-```
-┌─────────────────────────────────────┐
-│ Agent Process: "coder"              │
-├─────────────────────────────────────┤
-│ Main Thread:                        │
-│  - NATS subscriber                  │
-│  - Display incoming prompts         │
-│  - Display streaming output         │
-│  - Publish status updates           │
-├─────────────────────────────────────┤
-│ API Worker Thread:                  │
-│  - LLM communication                │
-│  - Tool call orchestration          │
-│  - Channel communication            │
-├─────────────────────────────────────┤
-│ Tool Worker Thread:                 │
-│  - Execute tools                    │
-│  - Validation and security          │
-└─────────────────────────────────────┘
-```
-
-**NATS Integration**:
-- Subscribe to `niffler.agent.<name>.request`
-- Receive task requests
-- Display prompts received to stdout
-- Process via task executor (fresh context)
-- Stream LLM output to stdout (user sees live)
-- Publish status updates to `niffler.agent.<name>.status`
-- Publish final result to `niffler.agent.<name>.response`
-- Publish heartbeat to `niffler.agent.<name>.heartbeat` by integrating the presence example code from natswrapper (that implements heartbeat)
-
-**Display Format**:
-The output in an agent stdout will render much like it renders now in Niffler, but with the difference that:
-1. The prompt coming from the master (or another agent) needs to be rendered in one color and prefixed with the name of the sender. Use "master:" for the master Niffler.
-2. When a result has been reached we should also show that we are replying back to the agent that prompted us (or master). Like "Sent result to master" (or "Sent result to researcher" etc).
-
-**Lifecycle**:
-- Started once (manually or auto-started by master)
-- Handles multiple requests over lifetime
-- Tracks current conversation ID in memory
-- **Task request handling**:
-  - Creates new conversation (fresh context, type='task')
-  - Executes task in isolation
-  - Sends result via NATS
-  - Restores previous conversation context
-- **Ask request handling**:
-  - Continues current conversation (type='ask')
-  - If conversationId specified: loads that conversation
-  - If no conversationId: uses/creates default ask conversation
-  - Agent remains in this conversation after responding
-- Persistent agents stay alive when idle
-- Ephemeral agents shutdown after `max_idle_seconds`
-
-### NATS Message Bus
-
-**Why gokr/natswrapper**:
-- Nim wrapper around C NATS library
-- Proven reliability and performance
-- Subject-based routing eliminates discovery protocol
-- Easy monitoring (subscribe to `niffler.>`)
-- Scalable to distributed deployment later
-- Low latency (~1-2ms local)
-
-**Message Protocol**: Simplified JSON-based protocol using sunny for serialization.
-
-**Design Principles**:
-- Single generic Request type (agent parses commands from input)
-- Streaming responses via `done` flag
-- Agent maintains its own conversation state (no conversationId in Request)
-- Commands like `/plan`, `/model xxx` parsed by agent from input string
-
-**Request Message** (master → agent):
-```json
-{
-  "request_id": "uuid-1234-5678",
-  "agent_name": "coder",
-  "input": "/plan Create a simple HTTP server"
-}
-```
-**Subject**: `niffler.agent.coder.request`
-
-**Command Examples**:
-- Regular ask: `"Create tests"`
-- Task mode: `"/task Research best practices"`
-- Plan mode: `"/plan Figure out architecture"`
-- Model switch: `"/model haiku Write docs"`
-- Combined: `"/plan /model sonnet Design database schema"`
-
-**Response Message** (agent → master, streaming):
-```json
-{
-  "request_id": "uuid-1234-5678",
-  "content": "I've created an HTTP server with...",
-  "done": false
-}
-```
-**Subject**: `niffler.master.response`
-**Streaming**: Agent sends multiple Response messages with `done: false`, final message has `done: true`
-
-**Status Update Message** (agent → master):
-```json
-{
-  "request_id": "uuid-1234-5678",
-  "agent_name": "coder",
-  "status": "Switching to plan mode"
-}
-```
-**Subject**: `niffler.master.status`
-**Usage**: For state changes like mode switches, model changes, etc.
-
-**Heartbeat Message** (agent → presence KV store):
-```json
-{
-  "agent_name": "coder",
-  "timestamp": 1736941800
-}
-```
-**Storage**: JetStream KV store `niffler_presence` with key `presence.coder`
-**TTL**: 15 seconds (auto-expires if agent crashes)
-**Frequency**: Published every 5 seconds
-
-### Configuration: YAML Format
-
-**Location**: `~/.niffler/config.yaml`
-
-**Example Configuration**:
-```yaml
-# Niffler Multi-Agent Configuration
-
-# NATS server connection settings
-nats:
-  server: "nats://localhost:4222"
-  timeout_ms: 30000
-  reconnect_attempts: 5
-  reconnect_delay_ms: 1000
-
-# Master mode settings
 master:
-  default_agent: "coder"  # Agent to use when no @agent specified
-  auto_start_agents: true  # Auto-start agents with auto_start=true
-  heartbeat_check_interval: 30  # Seconds between health checks
+  auto_start_agents: true
 
-# Agent Definitions
 agents:
   - id: "coder"
-    name: "Code Expert"
-    description: "Specialized in code analysis, debugging, and implementation"
-
-    # Model configuration
-    model: "claude-3.5-sonnet"
-
-    # Capabilities (used for smart routing and UI hints)
-    capabilities:
-      - "coding"
-      - "debugging"
-      - "architecture"
-      - "refactoring"
-      - "testing"
-
-    # Tool permissions (enforced by agent - only these tools can execute)
-    tool_permissions:
-      - "read"
-      - "edit"
-      - "create"
-      - "bash"
-      - "list"
-      - "fetch"
-
-    # Lifecycle settings
-    auto_start: true  # Master will start this agent automatically
-    persistent: true  # Keep running when idle (don't shutdown)
-
-  - id: "researcher"
-    name: "Research Assistant"
-    description: "Fast research, documentation lookup, and web search"
-
-    model: "claude-3-haiku"  # Cheaper model for simple research tasks
-    capabilities:
-      - "research"
-      - "documentation"
-      - "web_search"
-      - "analysis"
-    tool_permissions:  # Read-only, no modifications
-      - "read"
-      - "list"
-      - "fetch"
-
-    auto_start: false  # Start manually when needed
-    persistent: false  # Ephemeral - shutdown after idle timeout
-    max_idle_seconds: 600  # Shutdown after 10 minutes idle
-
-# Model definitions (shared across agents)
-models:
-  - id: "claude-3.5-sonnet"
-    nickname: "sonnet"
-    base_url: "https://api.anthropic.com/v1"
-    api_env_var: "ANTHROPIC_API_KEY"
-
-  - id: "claude-3-haiku"
-    nickname: "haiku"
-    base_url: "https://api.anthropic.com/v1"
-    api_env_var: "ANTHROPIC_API_KEY"
+    auto_start: true
 ```
 
-### Database Schema
+Both conditions are needed:
 
-**Conversations Table** (extended):
-```sql
-CREATE TABLE conversations (
-  id INTEGER PRIMARY KEY,
-  agent_id TEXT,           -- Which agent owns this conversation
-  type TEXT,               -- 'task' or 'ask' (how conversation originated)
-  request_id TEXT,         -- NATS request ID for correlation
-  status TEXT NOT NULL,    -- 'active', 'completed'
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  metadata TEXT            -- JSON metadata
-);
+- `master.auto_start_agents` must be true
+- the individual agent entry must have `auto_start: true`
 
-CREATE INDEX idx_conversations_agent ON conversations(agent_id);
-CREATE INDEX idx_conversations_type ON conversations(type);
-CREATE INDEX idx_conversations_request ON conversations(request_id);
-CREATE INDEX idx_conversations_status ON conversations(status);
+## Agent Availability
+
+Master mode discovers agents through NATS presence tracking.
+
+In the CLI, use:
+
+```text
+/agents
 ```
 
-**Task Executions Table** (new):
-```sql
-CREATE TABLE task_executions (
-  id INTEGER PRIMARY KEY,
-  conversation_id INTEGER,
-  agent_id TEXT NOT NULL,
-  request_id TEXT NOT NULL,
-  status TEXT NOT NULL,      -- 'pending', 'running', 'completed', 'failed'
-  started_at TEXT,
-  completed_at TEXT,
-  tokens_used INTEGER,
-  result_summary TEXT,
-  artifacts TEXT,            -- JSON array of file paths
-  FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-);
+to see available agents.
 
-CREATE INDEX idx_task_executions_agent ON task_executions(agent_id);
-CREATE INDEX idx_task_executions_request ON task_executions(request_id);
-```
+## Model Selection For Agents
 
-**Context Management**:
-- **Task requests**: Create new conversation (type='task', fresh context, no history loaded)
-- **Ask requests**: Load/continue existing conversation (type='ask', builds context)
-  - If conversationId provided: load that specific conversation
-  - If no conversationId: load agent's current ask conversation or create new
-- Agent tracks current conversation ID in memory
-- All messages persisted for audit/debugging
-- Conversations marked 'completed' when finished
-- Task completion restores previous conversation context
+Agents can get their model from more than one place.
 
-## Implementation Phases
+In practice, the model used by a running agent can come from:
 
-### Phase 0: Foundation Solidification ⭐⭐⭐ NEARLY COMPLETE
+1. `--model` passed when the agent process is started
+2. the markdown agent definition if it declares a model
+3. normal fallback model selection logic from the loaded config
 
-**Goal**: Fix critical gaps in current task system - prerequisite for everything
+## Related Docs
 
-**Status**: ✅ 4/5 tasks complete, only visualization remaining
-
-**Tasks**:
-1. ✅ **Resolve circular import** (`src/core/task_executor.nim`)
-   - COMPLETED: Tool execution via channels (lines 329-383)
-   - Uses existing tool worker with thread-safe communication
-   - No circular dependency - clean architecture
-
-2. ✅ **Integrate tool execution into task conversation loop** (`task_executor.nim:308-386`)
-   - COMPLETED: Full tool execution loop implemented
-   - Tool call collection from LLM responses (lines 262-266)
-   - Tool access validation against agent.allowedTools (lines 318-327)
-   - Tool execution via tool worker (lines 329-383)
-   - Tool result formatting and conversation continuation (lines 358-385)
-   - Graceful error handling for tool failures
-
-3. ✅ **Extract artifacts** (`task_executor.nim:25-62`)
-   - COMPLETED: `extractArtifacts()` function implemented
-   - Parses file operations (read, create, edit, list)
-   - Extracts file paths from tool arguments
-   - Returns sorted unique file paths
-   - Called during task completion (line 402)
-
-4. ❌ **Task result visualization** (`src/ui/cli.nim`)
-   - PENDING: Render task results with formatting
-   - Display artifacts as file paths
-   - Show error details if failed
-   - Note: Approval prompt and progress indicator not needed for multi-process architecture
-
-5. ✅ **Test end-to-end task execution** (`tests/test_task_execution.nim`)
-   - COMPLETED: 8 unit tests passing
-   - Tool call parsing and validation against whitelist
-   - Artifact extraction from various tool calls
-   - Tool access control enforcement (reject unauthorized)
-   - Error handling (graceful failure, malformed data)
-   - TaskResult structure validation
-   - System prompt generation
-   - Note: Full multi-turn execution tests with live LLM require manual testing
-
-**Deliverable**: ✅ Working single-process task delegation with tool execution
-
-**Success Criteria**: ✅ Task can execute tool calls, receive results, continue conversation, and complete successfully with summary
-
-### Phase 3: Multi-Process Architecture (4-6 weeks) ⭐⭐ HIGH
-
-**Prerequisites**: Phase 0 complete and tested
-
-#### Phase 3.1: NATS Communication Layer ✅ COMPLETE
-
-**Using**: https://github.com/gokr/natswrapper (NOT nim-nats)
-
-1. ✅ **NATS Client Integration** (`src/core/nats_client.nim` - 229 lines)
-   - Wraps natswrapper for Niffler's multi-agent communication
-   - Connection management (initNatsClient, close)
-   - Publish/subscribe primitives (publish, subscribe, nextMsg)
-   - Request/reply pattern support (request)
-   - JetStream KV presence tracking (sendHeartbeat, isPresent, listPresent, removePresence)
-   - 15-second TTL for auto-expiring heartbeats
-   - Synchronous subscriptions with timeout support
-
-2. ✅ **Message Type Definitions** (`src/types/nats_messages.nim` - 152 lines)
-   - Simplified protocol with single generic Request type
-   - Complete JSON serialization/deserialization via sunny
-   - NatsRequest (requestId, agentName, input)
-   - NatsResponse (requestId, content, done flag for streaming)
-   - NatsStatusUpdate (requestId, agentName, status)
-   - NatsHeartbeat (agentName, timestamp)
-   - Convenience creation functions (createRequest, createResponse, etc.)
-   - String conversion operators for debugging
-
-3. ✅ **NATS Integration Tests**
-   - Message serialization tests (`tests/test_nats_messages.nim` - 10 tests passing)
-     - Round-trip serialization for all message types
-     - Special character handling
-     - Empty content preservation
-   - Client integration tests (`tests/test_nats_integration.nim` - 10 tests passing)
-     - Publish/subscribe between clients
-     - Subscription timeout handling
-     - Presence tracking with JetStream KV
-     - NatsRequest/NatsResponse serialization over NATS
-     - Multi-client communication
-   - Graceful skip if NATS server not running
-   - All tests passing ✅
-
-**Configuration**: Added `--path "../natswrapper/src"` to `config.nims` for natswrapper import
-
-#### Phase 3.2: Agent Mode (1 week)
-
-1. **Agent Mode CLI** (`src/ui/agent_cli.nim` - new file)
-   - Add `agent <name>` command
-   - Load agent definition from `~/.niffler/default/agents/`
-   - Initialize NATS connection
-   - Subscribe to agent-specific request subject
-   - Display agent info on startup
-
-2. **Request Processing**
-   - Parse TaskRequest messages
-   - Create new conversation (fresh context)
-   - Route to task executor
-   - Stream LLM output to stdout
-   - Display tool calls and results
-
-3. **Status and Response Publishing**
-   - Publish status updates during processing
-   - Publish final result with summary and artifacts
-   - Include token usage statistics
-
-4. **Heartbeat Publishing**
-   - Publish every 30 seconds
-   - Include status (idle/busy)
-   - Include uptime and request count
-
-#### Phase 3.3: Master Mode (1-2 weeks)
-
-1. **Master Mode CLI** (`src/ui/master_cli.nim` - new file)
-   - Detect master mode (no 'agent' command)
-   - Simplified input loop
-   - Initialize NATS connection
-   - Load agent configurations
-
-2. **Input Parsing and Routing**
-   - Parse `@agent prompt` syntax
-   - Fallback to default_agent
-   - Tab completion for agent names
-   - Validate agent exists
-
-3. **NATS Request/Reply**
-   - Build TaskRequest message
-   - Generate unique requestId
-   - Publish to agent request subject
-   - Wait for response with timeout
-   - Display completion status
-
-4. **Agent Auto-Start** (`src/core/agent_manager.nim` - new file)
-   - Spawn agents with `auto_start: true`
-   - Track PIDs
-   - Wait for heartbeats (confirm ready)
-   - Report startup status
-
-5. **Agent Management Commands**
-   - `/agents list` - Show active agents
-   - `/agents start <name>` - Spawn agent
-   - `/agents stop <name>` - Graceful shutdown
-   - `/agents restart <name>` - Stop and start
-   - `/agents health` - Health status table
-
-#### Phase 3.4: Process Management (1 week)
-
-1. **Process Spawning**
-   - AgentProcess type (config, pid, startTime, lastHeartbeat, status)
-   - startAgent() proc (fork/exec)
-   - Handle failures gracefully
-
-2. **Heartbeat Monitoring**
-   - Subscribe to wildcard heartbeat subject
-   - Track last heartbeat time
-   - Detect stale agents (>90s)
-   - Mark unhealthy agents
-
-3. **Auto-Restart**
-   - Detect crashes (process exit)
-   - Detect hangs (heartbeat timeout)
-   - Auto-restart persistent agents
-   - Limit restart attempts (max 3 in 5 min)
-
-4. **Graceful Shutdown**
-   - Publish shutdown message
-   - Agent finishes current request
-   - Agent cleanup (close DB, close NATS)
-   - Wait for exit (max 10s)
-   - SIGKILL if timeout
-
-5. **Ephemeral vs Persistent**
-   - Persistent: stay alive when idle
-   - Ephemeral: shutdown after `max_idle_seconds`
-   - Master respawns on demand
-
-#### Phase 3.5: Configuration and Database (1 week)
-
-1. **YAML Config Extension**
-   - Parse `nats:` section
-   - Parse `master:` section
-   - Parse `agents:` array
-   - Validate NATS server URL
-
-2. **Database Schema Extensions**
-   - Add `agent_id` to conversations
-   - Add `request_id` to conversations
-   - Add `status` field
-   - Create task_executions table
-   - Add queries for agent conversations
-
-3. **Task Context Management**
-   - All requests create new conversation
-   - No context loading between tasks
-   - Store with agent_id and request_id
-   - Mark completed when done
-
-4. **Migration Utilities**
-   - `--migrate-config` command
-   - Add NATS and master sections
-   - Create example agents in `~/.niffler/default/agents/`
-
-#### Phase 3.6: Integration and Testing (1 week)
-
-1. **End-to-End Tests**
-   - Master starts, spawns agents
-   - Route request, agent processes, return result
-   - Multiple sequential tasks (fresh context each)
-   - Agent crash detection and restart
-   - Heartbeat timeout detection
-   - Graceful shutdown
-   - Tool access control across processes
-   - Concurrent requests to different agents
-
-2. **Documentation**
-   - Multi-process usage examples
-   - NATS setup guide
-   - Master/agent CLI usage
-   - Agent configuration format
-   - Troubleshooting guide
-
-3. **Example Configuration**
-   - 3 agents with different models
-   - Different tool permissions per agent
-   - Mix of auto-start and manual
-   - Mix of persistent and ephemeral
-
-**Deliverable**: Full multi-process architecture with NATS IPC
-
-**Success Criteria**: Master spawns agents, routes via NATS, monitors health, agents display work
-
-## Usage Examples
-
-### Basic Setup
-
-**Terminal 1: Start Master**
-```bash
-$ niffler
-Master mode initialized
-Auto-starting agents: coder
-✓ @coder started (pid: 12345)
-Ready for commands (type /help for help)
->
-```
-
-**Terminal 2: Agent 'coder' Output**
-```bash
-$ niffler agent coder
-Agent 'coder' initialized (model: claude-3.5-sonnet)
-Subscribed to: niffler.agent.coder.request
-Ready for requests...
-```
-
-### Task Execution
-
-**Terminal 1 (Master)**:
-```bash
-> @coder Create a simple HTTP server in Nim
-→ Sent to @coder
-
-(wait for completion...)
-
-✓ @coder completed
-Summary: I've created an HTTP server using Nim's asynchttpserver.
-The server listens on port 8080 and handles basic GET requests.
-Artifacts: src/server.nim
-```
-
-**Terminal 2 (@coder)**:
-```
-[RECEIVED @coder] Create a simple HTTP server in Nim
-
-[PROCESSING...]
-I'll create a simple async HTTP server using Nim's standard library...
-
-[TOOL: create] src/server.nim
-[TOOL RESULT] File created successfully
-
-I've created an HTTP server that listens on port 8080...
-
-[COMPLETED ✓]
-```
-
-### Multiple Sequential Tasks (Fresh Context Each Time)
-
-**Terminal 1 (Master)**:
-```bash
-> @coder /task Add logging to src/server.nim
-→ Sent to @coder (task)
-✓ @coder completed (fresh context, no memory of previous task)
-```
-
-**Terminal 2 (@coder)**:
-```
-[RECEIVED:TASK @coder] Add logging to src/server.nim
-
-[PROCESSING...] (reads file to understand it, fresh context)
-[TOOL: read] src/server.nim
-[TOOL: edit] src/server.nim
-
-[COMPLETED ✓]
-Sent result to master
-```
-
-### Conversational Workflow with Ask (Building Context)
-
-**Terminal 1 (Master)**:
-```bash
-> @coder Create a simple HTTP server
-→ Sent to @coder (ask)
-✓ @coder completed
-
-> @coder Add logging to the server
-→ Sent to @coder (ask)
-✓ @coder completed (continues conversation, has context from previous ask)
-
-> @coder Now add error handling for port already in use
-→ Sent to @coder (ask)
-✓ @coder completed (still same conversation, full context)
-```
-
-**Terminal 2 (@coder)**:
-```
-[RECEIVED:ASK @coder] Create a simple HTTP server
-
-[PROCESSING...] (fresh ask conversation)
-I'll create a simple async HTTP server...
-[TOOL: create] src/server.nim
-[TOOL RESULT] File created successfully
-
-[COMPLETED ✓]
-(Agent stays in this conversation)
-
-[RECEIVED:ASK @coder] Add logging to the server
-
-[PROCESSING...] (continuing conversation with previous context)
-I'll add logging to the HTTP server we just created...
-[TOOL: edit] src/server.nim
-[TOOL RESULT] File edited successfully
-
-[COMPLETED ✓]
-(Agent still in same conversation)
-
-[RECEIVED:ASK @coder] Now add error handling for port already in use
-
-[PROCESSING...] (continuing same conversation, full context)
-I'll add error handling to our server for the port binding...
-[TOOL: edit] src/server.nim
-
-[COMPLETED ✓]
-```
-
-### Agent Management
-
-```bash
-> /agents list
-┌─────────────┬────────────┬───────────┬───────────────┬──────────┐
-│ Agent       │ Status     │ Model     │ Uptime        │ Requests │
-├─────────────┼────────────┼───────────┼───────────────┼──────────┤
-│ coder       │ idle       │ sonnet    │ 1h 23m        │ 15       │
-│ researcher  │ stopped    │ haiku     │ -             │ -        │
-└─────────────┴────────────┴───────────┴───────────────┴──────────┘
-
-> /agents start researcher
-Starting agent 'researcher'...
-✓ Started (pid: 12347)
-
-> /agents health
-All agents healthy (2/2 running)
-```
-
-
-## Benefits of This Architecture
-
-### User Extensibility
-- **No Code Changes**: Add agents by creating markdown files
-- **Transparent Definitions**: Agent capabilities clearly documented
-- **Shareable**: Agent definitions are portable files
-- **Version Control**: Track agent changes in git
-
-### Safety and Control
-- **Explicit Tool Whitelists**: Clear boundaries per agent
-- **User Confirmation**: Tasks require approval before execution
-- **Process Isolation**: OS-level fault containment
-- **Fresh Context**: No cross-task contamination
-
-### Clean Architecture
-- **Leverages Existing Systems**: Uses tool registry and threading
-- **Consistent Patterns**: `/agent` command mirrors `/model` command
-- **Simple Enforcement**: Whitelist checking straightforward
-- **Scalable Design**: Add agents without recompiling
-
-### Operational Benefits
-- **Visibility**: Each agent's work displayed in own terminal
-- **Debugging**: Per-agent logs and error isolation
-- **Cost Optimization**: Different models per agent (cheap for research, powerful for coding)
-- **Fault Tolerance**: Agent crashes don't affect master or other agents
+- [CONFIG.md](CONFIG.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [EXAMPLES.md](EXAMPLES.md)

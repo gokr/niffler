@@ -20,6 +20,11 @@ import config_yaml
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.yaml"
 const AGENTS_DIR_NAME = "agents"
+const DEFAULT_CONFIG_TEMPLATE = staticRead(currentSourcePath().parentDir().parentDir().parentDir() / "default-config.yaml")
+
+proc isPlaceholderApiKey(key: string): bool =
+  let normalized = key.strip().toLowerAscii()
+  return normalized.len == 0 or normalized == "empty" or normalized.contains("enter your")
 
 proc getConfigDir*(): string =
   ## Get platform-appropriate config directory for niffler
@@ -93,22 +98,31 @@ proc writeKeys*(keys: KeyConfig) =
 proc readKeyForModel*(modelConfig: config.ModelConfig): string =
   ## Read API key for a specific model from key storage
   # First check if api_key is directly configured in the model config
-  if modelConfig.apiKey.isSome() and modelConfig.apiKey.get().len > 0:
-    return modelConfig.apiKey.get()
+  if modelConfig.apiKey.isSome():
+    let configuredKey = modelConfig.apiKey.get().strip()
+    if configuredKey.len > 0 and not isPlaceholderApiKey(configuredKey):
+      return configuredKey
 
   # Then check the keys file
   let keys = readKeys()
   let nickname = modelConfig.nickname
 
   if keys.hasKey(nickname):
-    return keys[nickname]
+    let storedKey = keys[nickname].strip()
+    if storedKey.len > 0 and not isPlaceholderApiKey(storedKey):
+      return storedKey
 
   # Fallback to environment variable
   let envVar = modelConfig.apiEnvVar.get("")
   if envVar.len > 0:
     let envValue = getEnv(envVar)
-    if envValue.len > 0:
+    if envValue.len > 0 and not isPlaceholderApiKey(envValue):
       return envValue
+
+  if modelConfig.apiKey.isSome():
+    let configuredKey = modelConfig.apiKey.get().strip()
+    if configuredKey.len > 0:
+      return configuredKey
 
   return ""
 
@@ -248,10 +262,6 @@ proc validateConfig*(config: Config): seq[string] =
   ## Validate configuration and return list of issues
   result = @[]
 
-  # Check required fields
-  if config.yourName.len == 0:
-    result.add("yourName is required")
-
   # Check models
   var enabledModels: seq[ModelConfig] = @[]
   for model in config.models:
@@ -294,10 +304,13 @@ proc validateConfig*(config: Config): seq[string] =
       result.add("Database requires database name")
 
 # Create default configuration file if it doesn't exist
-proc createDefaultConfigFile*(): void =
-  let configPath = getDefaultConfigPath()
+proc createDefaultConfigFile*(configPath: string = getDefaultConfigPath()): void =
   if not fileExists(configPath):
-    echo fmt"Creating default configuration at {configPath}"
+    let dir = parentDir(configPath)
+    if dir.len > 0:
+      createDir(dir)
+    writeFile(configPath, DEFAULT_CONFIG_TEMPLATE)
+    echo fmt("Creating default configuration at {configPath}")
     echo "Please edit the file to add your models and preferences"
 
 # Load configuration with fallback to defaults
@@ -310,7 +323,6 @@ proc loadConfig*(): Config =
     else:
       createDefaultConfigFile()
       return Config(
-        yourName: "User",
         models: @[],
         themes: some(initTable[string, ThemeConfig]()),
         currentTheme: some("default"),
@@ -325,7 +337,6 @@ proc loadConfig*(): Config =
   except:
     echo "Warning: Failed to load configuration, using defaults"
     return Config(
-      yourName: "User",
       models: @[],
       themes: some(initTable[string, ThemeConfig]()),
       currentTheme: some("default"),

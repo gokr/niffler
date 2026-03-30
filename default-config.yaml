@@ -1,0 +1,325 @@
+# Niffler default configuration
+# This file is copied by `niffler init`.
+# Usual location on Unix: ~/.niffler/config.yaml
+# Usual location on Windows: %APPDATA%/niffler/config.yaml
+
+# Theme used for markdown rendering in the CLI.
+current_theme: "default"
+
+# Render markdown formatting in terminal output.
+markdown_enabled: true
+
+# Timeout in seconds for agent requests before they are considered failed.
+agent_timeout_seconds: 300
+
+# Maximum number of turns an agent task may run before it is stopped.
+default_max_turns: 30
+
+# Available models. Pick one by nickname with `--model=<nickname>`.
+models:
+  - # Short local name used when selecting this model.
+    nickname: "openrouter-free"
+    # OpenAI-compatible API base URL.
+    base_url: "https://openrouter.ai/api/v1"
+    # Provider model identifier sent to the API.
+    model: "qwen/qwen3-coder:free"
+    # Maximum context window supported by the model.
+    context: 262144
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Put the key here if you want it stored in the config.
+    api_key: "ENTER YOUR OPENROUTER API KEY HERE"
+    # Alternative to `api_key`: read the key from this environment variable instead.
+    api_env_var: "OPENROUTER_API_KEY"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.7
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 32768
+
+  - # Short local name used when selecting this model.
+    nickname: "openrouter-minimax-free"
+    # OpenAI-compatible API base URL.
+    base_url: "https://openrouter.ai/api/v1"
+    # Provider model identifier sent to the API.
+    model: "minimax/minimax-m2.5:free"
+    # Maximum context window supported by the model.
+    context: 131072
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Put the key here if you want it stored in the config.
+    api_key: "ENTER YOUR OPENROUTER API KEY HERE"
+    # Alternative to `api_key`: read the key from this environment variable instead.
+    api_env_var: "OPENROUTER_API_KEY"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.7
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 32768
+
+  - # Short local name used when selecting this model.
+    nickname: "openrouter-nemotron-free"
+    # OpenAI-compatible API base URL.
+    base_url: "https://openrouter.ai/api/v1"
+    # Provider model identifier sent to the API.
+    model: "nvidia/nemotron-3-super-120b-a12b:free"
+    # Maximum context window supported by the model.
+    context: 131072
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Put the key here if you want it stored in the config.
+    api_key: "ENTER YOUR OPENROUTER API KEY HERE"
+    # Alternative to `api_key`: read the key from this environment variable instead.
+    api_env_var: "OPENROUTER_API_KEY"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.7
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 32768
+
+  - # Short local name used when selecting this model.
+    nickname: "ollama-qwen35"
+    # OpenAI-compatible local Ollama endpoint.
+    base_url: "http://localhost:11434/v1"
+    # Local model name as exposed by Ollama.
+    model: "qwen3.5:latest"
+    # Maximum context window supported by the model.
+    context: 32768
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Placeholder API key for local servers that require a non-empty value.
+    api_key: "ollama"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.7
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 8192
+
+  - # Short local name used when selecting this model.
+    nickname: "lmstudio-qwen35"
+    # OpenAI-compatible LM Studio local endpoint.
+    base_url: "http://localhost:1234/v1"
+    # Local model name as exposed by LM Studio.
+    model: "qwen3.5-coder"
+    # Maximum context window supported by the model.
+    context: 32768
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Placeholder API key for local servers that require a non-empty value.
+    api_key: "lm-studio"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.7
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 8192
+
+  - # Short local name used when selecting this model.
+    nickname: "synthetic-glm47"
+    # OpenAI-compatible API base URL.
+    base_url: "https://api.synthetic.new/v1"
+    # Provider model identifier sent to the API.
+    model: "hf:zai-org/GLM-4.7-FP8"
+    # Maximum context window supported by the model.
+    context: 200000
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Replace this placeholder with a real provider key.
+    api_key: "ENTER YOUR KEY HERE"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.6
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 32768
+    # Optional cost tracking for input tokens, per million tokens.
+    input_cost_per_mtoken: 0.4
+    # Optional cost tracking for output tokens, per million tokens.
+    output_cost_per_mtoken: 1.6
+    # Optional reasoning effort hint for models that support it.
+    reasoning: "medium"
+
+  - # Short local name used when selecting this model.
+    nickname: "synthetic-minimaxm25"
+    # OpenAI-compatible API base URL.
+    base_url: "https://api.synthetic.new/v1"
+    # Provider model identifier sent to the API.
+    model: "hf:MiniMaxAI/MiniMax-M2.5"
+    # Maximum context window supported by the model.
+    context: 192000
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Replace this placeholder with a real provider key.
+    api_key: "ENTER YOUR KEY HERE"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.6
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 32768
+    # Optional cost tracking for input tokens, per million tokens.
+    input_cost_per_mtoken: 0.4
+    # Optional cost tracking for output tokens, per million tokens.
+    output_cost_per_mtoken: 1.6
+    # Optional reasoning effort hint for models that support it.
+    reasoning: "medium"
+
+  - # Short local name used when selecting this model.
+    nickname: "synthetic-kimik25"
+    # OpenAI-compatible API base URL.
+    base_url: "https://api.synthetic.new/v1"
+    # Provider model identifier sent to the API.
+    model: "hf:moonshotai/Kimi-K2.5"
+    # Maximum context window supported by the model.
+    context: 262144
+    # Whether this model should be available for selection.
+    enabled: true
+    # Protocol type. Leave as `standard` for normal chat-completions style APIs.
+    type: "standard"
+    # Direct API key value. Replace this placeholder with a real provider key.
+    api_key: "ENTER YOUR KEY HERE"
+    # Sampling temperature. Lower is more deterministic.
+    temperature: 0.6
+    # Nucleus sampling value.
+    top_p: 0.95
+    # Maximum output tokens for one response.
+    max_tokens: 65536
+    # Optional cost tracking for input tokens, per million tokens.
+    input_cost_per_mtoken: 0.4
+    # Optional cost tracking for output tokens, per million tokens.
+    output_cost_per_mtoken: 1.6
+    # Optional reasoning effort hint for models that support it.
+    reasoning: "medium"
+
+# Database connection used for persisted conversations and token usage.
+database:
+  # Enable or disable database usage.
+  enabled: true
+  # Database host name or IP.
+  host: "127.0.0.1"
+  # Database port.
+  port: 4000
+  # Database name.
+  database: "niffler"
+  # Database username.
+  username: "root"
+  # Database password.
+  password: ""
+  # Size of the database connection pool.
+  pool_size: 10
+
+# Master-mode settings for routing prompts to agents over NATS.
+master:
+  # Agent to route to when none is specified explicitly.
+  default_agent: "coder"
+  # Whether master mode should auto-start agents from the `agents` section below.
+  auto_start_agents: true
+  # Seconds between agent heartbeat checks.
+  heartbeat_check_interval: 30
+
+# Agent process metadata used for discovery and optional auto-start.
+# The actual agent instructions, prompt, allowed tools, and markdown-based definition
+# live in the active config's agents directory, usually ~/.niffler/<config>/agents/*.md.
+# If both exist, the markdown agent definition is the authoritative runtime definition.
+agents:
+  - # Unique ID used to address this agent.
+    id: "coder"
+    # Human-friendly display name.
+    name: "Code Expert"
+    # Short description of the agent's purpose.
+    description: "General code implementation and debugging"
+    # Model nickname from the `models` section.
+    model: "openrouter-free"
+    # Capability labels used for discovery and routing hints.
+    capabilities:
+      - "coding"
+      - "debugging"
+      - "refactoring"
+    # Tool names this agent is allowed to use.
+    tool_permissions:
+      - "read"
+      - "edit"
+      - "create"
+      - "bash"
+      - "list"
+      - "fetch"
+    # Start this agent automatically with master mode.
+    auto_start: true
+    # Keep this agent running between requests.
+    persistent: true
+
+  - # Unique ID used to address this agent.
+    id: "researcher"
+    # Human-friendly display name.
+    name: "Research Assistant"
+    # Short description of the agent's purpose.
+    description: "Read-only research and documentation lookup"
+    # Model nickname from the `models` section.
+    model: "openrouter-free"
+    # Capability labels used for discovery and routing hints.
+    capabilities:
+      - "research"
+      - "documentation"
+      - "analysis"
+    # Tool names this agent is allowed to use.
+    tool_permissions:
+      - "read"
+      - "list"
+      - "fetch"
+    # Start this agent automatically with master mode.
+    auto_start: false
+    # Keep this agent running between requests.
+    persistent: false
+
+  - # Unique ID used to address this agent.
+    id: "local"
+    # Human-friendly display name.
+    name: "Local Model Agent"
+    # Short description of the agent's purpose.
+    description: "General local-agent profile for Ollama or LM Studio"
+    # Model nickname from the `models` section.
+    model: "ollama-qwen35"
+    # Capability labels used for discovery and routing hints.
+    capabilities:
+      - "coding"
+      - "chat"
+      - "local"
+    # Tool names this agent is allowed to use.
+    tool_permissions:
+      - "read"
+      - "edit"
+      - "create"
+      - "bash"
+      - "list"
+    # Start this agent automatically with master mode.
+    auto_start: false
+    # Keep this agent running between requests.
+    persistent: true
+
+# Example MCP server block.
+# mcp_servers:
+#   calculator:
+#     # Command to launch the MCP server.
+#     command: "/absolute/path/to/calculator-server"
+#     # Command-line arguments passed to the MCP server.
+#     args: []
+#     # Whether this MCP server should be enabled.
+#     enabled: true

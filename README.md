@@ -8,335 +8,78 @@
 
 **NOTE: Niffler is to a large extent coded using Claude Code!**
 
-## 🏗️ Architecture & Design
+## Quick Start
 
-Niffler features a **distributed multi-agent architecture** where specialized agents run as separate processes and collaborate via NATS messaging in a chat room model.
+### 1. Install prerequisites
 
-**Current Architecture:**
-- **Multi-Agent System**: Named agents (coder, researcher, etc.) run in isolated processes with dedicated tools
-- **Chat Room Model**: Agents communicate via NATS subjects like `niffler.agent.{name}.request`
-- **Master-Worker Pattern**: Master Niffler orchestrates agents using `@agent` routing syntax
-- **Process Isolation**: Each agent has independent terminal, tool permissions, and memory space
-- **Thread-Safe Workers**: Each agent uses dedicated worker threads for UI, API, and tool execution
-- **Persistent Storage**: TiDB database for conversation history, agent state, and usage tracking
-
-**Key Features:**
-- 🤖 **Multi-Agent**: Process-per-agent with specialized tool sets and capabilities
-- 💬 **Chat Room Model**: NATS-based messaging enables agent collaboration (`niffler.agent.*`)
-- 🎮 **Master Orchestration**: Central CLI with `@agent` syntax for routing and management
-- 🧵 **Multi-threaded**: Per-agent worker threads for UI, API, and tool operations
-- 💾 **Persistent**: TiDB storage for conversations, agents, and state across restarts
-- 🛠️ **Tool System**: Built-in tools + MCP integration per agent
-- 🔄 **Secure**: Path sanitization, tool permissions, and agent-based access control
-- 📡 **NATS**: Distributed messaging backbone for all agent coordination
-
-Learn more about the multi-agent architecture in **[doc/TASK.md](doc/TASK.md)** and system design in **[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)**.
-
-
-## 🤖 AI Capabilities
-
-- **Multi-Model Support**: Seamlessly switch between different AI models (OpenAI, Anthropic, and other OpenAI-compatible APIs)
-- **Plan/Code Mode System**: Toggle between planning and coding modes with mode-specific system prompts
-- **Dynamic System Prompts**: Context-aware prompts that include workspace information, git status, and project details
-- **Agent-Based Single-Shot Tasks**: Scripting support via `--task` flag in agent mode for immediate responses
-- **Model Management**: Easy configuration and switching between AI models
-- **Thinking Token Support**: Manages, shows and stores reasoning tokens separately
-- **Custom Instructions**: NIFFLER.md handling with include directive support
-
-## 👥 Multi-Agent System
-
-Niffler's unique **chat room model** enables multiple specialized agents to collaborate via NATS messaging.
-
-### How It Works
-
-**Master Niffler** (the orchestrator):
-```bash
-# Start the master CLI
-./src/niffler
-
-# Route requests to agents using @agent syntax
-> @coder refactor the database module
-> @researcher find the best HTTP library for Nim
-```
-
-**Agent Processes** (specialized workers):
-```bash
-# Terminal 1: Start specialized agents
-./src/niffler agent coder          # Coding and implementation tasks
-./src/niffler agent researcher     # Research and analysis
-./src/niffler agent bash_helper    # Shell operations
-```
-
-### Key Features
-
-- **Named Agents**: Each agent has a unique name (coder, researcher, etc.)
-- **Auto-Start**: Agents marked `auto_start: true` launch automatically with master
-- **Independent Processes**: Each agent runs in its own terminal window
-- **Tool Permissions**: Each agent can have different tool access (e.g., read-only vs full access)
-- **Task vs Ask Model**: `Task` for isolated execution, `Ask` for conversation continuation
-
-### Quick Start
-
-```bash
-# Terminal 1: Start your agents
-./src/niffler agent coder
-./src/niffler agent researcher
-
-# Terminal 2: Start master and begin collaborating
-./src/niffler
-
-# Check which agents are available
-> /agents
-
-# Route a task to an agent
-> @coder /task "Create a REST API server"
-
-# Have a conversation with an agent
-> @researcher "Compare authentication methods"
-```
-
-**Learn more:** See [doc/TASK.md](doc/TASK.md) for complete multi-agent documentation and [doc/EXAMPLES.md](doc/EXAMPLES.md) for usage patterns.
-
-## 🧠 Interleaved Thinking Token Support
-
-Niffler now supports **interleaved thinking tokens** with full context persistence, allowing models to receive their previous reasoning as input in follow-up requests.
-
-### Features
-
-- **Multiple Thinking Blocks**: Support for pre-thinking, inline thinking, and post-thinking blocks per message
-- **Position Tracking**: Maintains thinking block order and position for accurate reconstruction
-- **Provider-Aware Formatting**: Automatic detection and formatting for Anthropic, OpenAI, and encrypted formats
-- **Opt-In Configuration**: Models only receive thinking tokens when explicitly enabled
-- **Database Persistence**: Thinking blocks stored in dedicated table with full metadata
-- **Token Counting**: Automatic token estimation for thinking content
-
-### Configuration
-
-Enable thinking token support in your `config.yaml`:
-
-```yaml
-models:
-  - nickname: "claude-thinking"
-    model: "claude-3-7-sonnet-20250219"
-    base_url: "https://api.anthropic.com/v1"
-    include_reasoning_in_context: true  # Enable thinking in context
-    thinking_format: "anthropic"        # anthropic, openai, or auto
-    max_thinking_tokens: 4000           # Optional: limit thinking tokens
-```
-
-### Database Schema
-
-Thinking blocks are stored in the `message_thinking_blocks` table with:
-- `message_id` - Reference to parent message
-- `position_index` - Order of thinking block
-- `block_type` - pre_thinking, inline_thinking, or post_thinking
-- `content` - The thinking content
-- `is_encrypted` - For encrypted reasoning
-- `token_count` - Estimated token count
-- `reasoning_id` - Optional reasoning identifier
-
-**Migration:** Run `./migrations/run_migration.sh` to upgrade existing databases.
-
-### Supported Providers
-
-- **Anthropic**: XML-style thinking blocks with `<thinking>` tags
-- **OpenAI**: `reasoning_content` field support
-- **Encrypted**: For providers with encrypted reasoning
-
-## 💰 Token Counting & Cost Tracking
-
-Niffler features an intelligent token estimation system with dynamic correction factors that learns from actual API usage to provide increasingly accurate cost predictions.
-
-**Features:**
-- **Heuristic-Based Estimation**: 7-16% accuracy using language-specific heuristics without heavy tokenizers
-- **Dynamic Learning**: Automatically improves accuracy through comparison with actual API responses
-- **Cost Optimization**: Better estimates lead to more accurate cost predictions
-- **Model-Specific**: Each model gets its own correction factor based on real usage data
-
-**Learn More:** Complete details about the token estimation system and cost tracking in **[doc/TOKEN_COUNTING.md](doc/TOKEN_COUNTING.md)**.
-
-
-## 🛠️ Tool System & Extensions
-
-Niffler includes a comprehensive tool system that enables AI assistants to safely interact with your development environment.
-
-### Core Tools
-- **bash**: Execute shell commands with timeout control and process management
-- **read**: Read file contents with encoding detection and size limits
-- **list**: Directory listing with filtering, sorting, and metadata display
-- **edit**: Advanced file editing with diff-based operations and backup creation
-- **create**: Safe file creation with directory management and permission control
-- **fetch**: HTTP/HTTPS content fetching with web scraping capabilities
-- **todolist**: Task management and todo tracking with persistent state
-
-**Learn More:** Complete documentation of the tool system, security features, and custom tool development in **[doc/TOOLS.md](doc/TOOLS.md)**.
-
-### MCP (Model Context Protocol) Integration
-
-Extend Niffler's capabilities with external MCP servers that provide additional specialized tools and resources for your development workflow.
-
-**Key Features:**
-- **External Server Support**: Integration with any MCP-compatible server
-- **Automatic Discovery**: Tools are automatically discovered at startup
-- **Flexible Configuration**: Easy YAML-based server setup
-- **Health Monitoring**: Automatic server health checks and recovery
-
-**Popular MCP Servers:**
-- **Filesystem**: Secure file operations with directory access controls
-- **GitHub**: Repository management, issue tracking, and PR operations
-- **Git**: Version control operations and repository management
-
-**Quick Setup:**
-```yaml
-mcpServers:
-  filesystem:
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/projects"]
-    enabled: true
-
-  github:
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-github"]
-    env:
-      GITHUB_TOKEN: "your-github-token"
-    enabled: true
-```
-
-**Check Status:**
-```bash
-# View all MCP servers and available tools
-/mcp status
-```
-
-**Learn More:** Complete MCP setup guide with installation, configuration, and troubleshooting in **[doc/MCP_SETUP.md](doc/MCP_SETUP.md)**.
-
-## 📦 Installation
-
-### Prerequisites
 - Nim 2.2.4 or later
 - Git
-- NATS Server
-- Tidb
+- **NATS Server**: Required for multi-agent IPC and will be automatically started by Niffler
 
-#### Nim
-Install Nim (compiler and tools) is easiest via [choosenim](https://nim-lang.org/install_unix.html):
+#### NATS Server Installation
 
-```bash
-curl https://nim-lang.org/choosenim/init.sh -sSf | sh
-```
-
-#### Tidb
-Easiest way to get a Tidb up and running is to install `tiup` and just run a **playground**:
+Niffler requires a NATS server for communication between agents. You have several options:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
 ```
 
-Run a playground (in a new shell) that should start on port 4000:
+Start a named playground that keeps its data between restarts:
 
 ```bash
-tiup playground
+tiup playground --tag niffler
 ```
 
+Why use `--tag niffler`:
 
-#### NATS Server Installation
-Niffler requires a NATS server for communication between agents. You have several options:
+- It stores the cluster data under `~/.tiup/data/niffler`
+- You can stop it and later start the same named playground again with the same command
+- Niffler can keep using the same local TiDB instance across restarts
 
-**Option 1: Docker (Recommended)**
+Useful playground commands:
+
 ```bash
-# Pull and run NATS server
-docker run -d --name nats -p 4222:4222 nats:latest
+# Start or resume the same named playground
+tiup playground --tag niffler
 
-# Or using docker-compose
-echo 'version: "3.7"
-services:
-  nats:
-    image: nats:latest
-    ports:
-      - "4222:4222"
-    command: ["-js"]  # Enable JetStream for persistence
-' > docker-compose.yml
-docker-compose up -d
+# Connect with the built-in client
+tiup client
+
+# Show running playground processes
+tiup playground display
 ```
 
-**Option 2: Binary Download**
+Niffler expects TiDB on `127.0.0.1:4000` by default, which matches the normal playground setup.
+
+### 3. Install system dependencies
+
+macOS:
+
 ```bash
-# Download the latest NATS server binary
-curl -L https://github.com/nats-io/nats-server/releases/latest/download/nats-server-linux-amd64.tar.gz | tar xz
-sudo mv nats-server-*/nats-server /usr/local/bin/nats-server
-
-# Or download specific version
-OS=linux ARCH=amd64 VERSION=2.10.7
-wget https://github.com/nats-io/nats-server/releases/download/v${VERSION}/nats-server-${VERSION}-${OS}-${ARCH}.tar.gz
-tar xzf nats-server-${VERSION}-${OS}-${ARCH}.tar.gz
-sudo mv nats-server-${VERSION}-${OS}-${ARCH}/nats-server /usr/local/bin/
+brew install nats
 ```
 
-**Option 3: Package Manager**
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install -y nats-server
+Ubuntu/Debian:
 
-# macOS
-brew install nats-server
-
-# Windows (using Chocolatey)
-choco install nats-server
-```
-
-Once installed, you can start NATS with:
-```bash
-nats-server -js  # -js enables JetStream for persistence
-```
-
-**Note**: Niffler will automatically detect and connect to a running NATS server on `localhost:4222`. If no server is running, Niffler will attempt to start one automatically.
-
-### Optional Prerequisites (Enhanced Rendering)
-- **[batcat](https://github.com/sharkdp/bat)**: For syntax-highlighted file content display
-- **[delta](https://github.com/dandavison/delta)**: For advanced diff visualization with side-by-side view and word-level highlighting
-- **[trafilatura](https://trafilatura.readthedocs.io/)**: For enhanced web content extraction with the fetch tool
-
-If these tools are not installed, Niffler will automatically fall back to built-in rendering.
-
-### System Libraries
-
-Before building, ensure you have the required system libraries installed:
-
-**Linux (Ubuntu/Debian):**
 ```bash
 sudo apt update
 sudo apt install -y libnats3.7t64 libnats-dev
 ```
 
-**Linux (CentOS/RHEL/Fedora):**
+### 4. Build Niffler
+
 ```bash
-# For CentOS/RHEL
-sudo yum install nats-devel
-# Or for Fedora
-sudo dnf install nats-devel
+nimble build
 ```
 
-**macOS:**
+### 5. Initialize config
+
 ```bash
-brew install cnats
+brew install nats
 ```
 
 **Windows:**
 > The NATS library is typically bundled with the Nim package on Windows.
-
-### MySQL client library
-
-**macOS:**
-```bash
-brew install mariadb-connector-c
-```
-
-And you may need to also do:
-
-```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
-```
-
 
 ## 🏗️ Building Niffler
 
@@ -347,35 +90,65 @@ Niffler needs to be built from source at this time. Follow these steps to build 
 - All compilation requires `--threads:on -d:ssl` flags (automatically set in build configuration)
 - The optimized build (`nimble build`) creates a single static binary
 - Windows users may need to install Visual Studio Build Tools for native compilation
-- You may need to set CPATH so that futhark finds stdlib.h: `export CPATH="$(xcrun --show-sdk-path)/usr/include"`
 
 ## 🎯 Quick Start
 
 ### 1. Initialize Configuration
 ```bash
-niffler init
-```
-This creates default configuration files:
-- **Linux/macOS**: `~/.niffler/config.yaml` and `~/.niffler/NIFFLER.md`
-- **Windows**: `%APPDATA%\niffler\config.yaml` and `%APPDATA%\niffler\NIFFLER.md`
-
-The NIFFLER.md file contains customizable system prompts that you can edit to tailor Niffler's behavior to your preferences.
-
-### 2. Configure Your AI Model
-Edit the configuration file to add (or enable) at least one AI model and API key:
-```yaml
-models:
-  - nickname: "gpt4"
-    baseUrl: "https://api.openai.com/v1"
-    model: "gpt-4"
-    apiKey: "your-api-key-here"
-    enabled: true
+./src/niffler
 ```
 
-### 3. Start Interactive Mode
+For more detailed setup and reference material, keep reading below.
+
+## Overview
+
+Niffler is a terminal-first coding assistant with:
+
+- Multiple model providers via OpenAI-compatible APIs
+- Local model support through Ollama and LM Studio
+- Persistent conversations stored in TiDB
+- Multi-agent routing over NATS with `@agent` syntax
+- Built-in tools plus MCP integration
+- Markdown rendering, prompt files, and model-specific settings
+
+## Multi-Agent
+
+In master mode, you can route prompts to agents with `@agent` syntax:
+
 ```bash
-niffler
+./src/niffler
+
+> @coder fix the bug in main.nim
+> @researcher compare HTTP libraries for Nim
+> /agents
 ```
+
+Agents are normal Niffler processes:
+
+```bash
+./src/niffler agent coder
+./src/niffler agent researcher
+```
+
+More detail lives in:
+
+- [doc/TASK.md](doc/TASK.md)
+- [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
+
+## Features
+
+- Plan/code workflow with mode-aware prompting
+- Tool calling for shell, file, web, and task operations
+- Thinking-token support for models that expose reasoning
+- Token and cost tracking
+- MCP server integration
+
+Details live in:
+
+- [doc/TOOLS.md](doc/TOOLS.md)
+- [doc/MCP_SETUP.md](doc/MCP_SETUP.md)
+- [doc/TOKEN_COUNTING.md](doc/TOKEN_COUNTING.md)
+- [doc/MODELS.md](doc/MODELS.md)
 
 ## 💻 Usage Examples
 
@@ -436,6 +209,7 @@ niffler init /path/to/config
 
 ## 📚 Documentation
 
+- **[Documentation Index](doc/README.md)** - Overview of current docs and research notes
 - **[Configuration Guide](doc/CONFIG.md)** - Comprehensive configuration documentation
 - **[Model Setup](doc/MODELS.md)** - AI model configuration and providers
 - **[Tool System](doc/TOOLS.md)** - Tool execution, security, and extensions
@@ -477,4 +251,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Nim Programming Language**: For providing an excellent, performant language for systems programming
 - **Original Octofriend**: For inspiring the feature set and a very friendly Discord
-
