@@ -40,14 +40,40 @@ proc recordTokenCountCorrection*(modelNickname: string, estimatedTokens: int, ac
     return
   recordTokenCorrectionToDB(database, modelNickname, estimatedTokens, actualTokens)
 
+# Correction factor cache to avoid repeated DB queries
+var correctionFactorCache: Table[string, float]
+var correctionCacheInitialized = false
+
+proc getCachedCorrectionFactor*(modelNickname: string): Option[float] =
+  ## Get correction factor with caching - queries DB only once per model
+  if not correctionCacheInitialized:
+    correctionFactorCache = initTable[string, float]()
+    correctionCacheInitialized = true
+  
+  # Check cache first
+  if correctionFactorCache.hasKey(modelNickname):
+    return some(correctionFactorCache[modelNickname])
+  
+  # Query database
+  let database = getGlobalDatabase()
+  if database == nil:
+    return none(float)
+  
+  let factor = getCorrectionFactorFromDB(database, modelNickname)
+  if factor.isSome():
+    correctionFactorCache[modelNickname] = factor.get()
+  
+  return factor
+
+proc clearCorrectionFactorCache*() =
+  ## Clear the correction factor cache (call after token corrections are recorded)
+  correctionFactorCache.clear()
+
 proc applyCorrectionFactor*(modelNickname: string, estimatedTokens: int): int =
   ## Apply learned correction factor to improve token estimate using database
   ## Uses model nickname as the key for lookup
-  let database = getGlobalDatabase()
-  if database == nil:
-    return estimatedTokens  # No database, no correction
+  let correctionFactor = getCachedCorrectionFactor(modelNickname)
   
-  let correctionFactor = getCorrectionFactorFromDB(database, modelNickname)
   if correctionFactor.isSome():
     let factor = correctionFactor.get()
     let correctedCount = (estimatedTokens.float * factor).int

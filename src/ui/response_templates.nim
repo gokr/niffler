@@ -56,19 +56,9 @@ template handleToolCallDisplay*(response: APIResponse,
       let toolRequest = pendingToolCalls[toolResult.toolCallId]
       let formattedResult = formatCompactToolResultWithIndent(toolResult)
       
-      if not outputAfterToolCall:
-        # No output since tool call - move cursor up, clear hourglass, and add result
-        stdout.write("\r\e[K")  # Clear current line
-        stdout.write("\e[1A")   # Move cursor up one line
-        stdout.write("\r\e[K")  # Clear the tool call line with hourglass
-        
-        # Re-write tool call without hourglass and add result
-        let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-        stdout.write(formattedRequest & "\n" & formattedResult & "\n")
-      else:
-        # Output occurred since tool call - re-render both request and result
-        let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-        stdout.write(formattedRequest & "\n" & formattedResult & "\n")
+      # Always use simple append mode - cursor manipulation fails with line wrapping
+      let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
+      stdout.write(formattedRequest & "\n" & formattedResult & "\n")
       
       # Remove from pending
       pendingToolCalls.del(toolResult.toolCallId)

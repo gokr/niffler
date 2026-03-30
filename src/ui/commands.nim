@@ -293,33 +293,43 @@ proc contextHandler(args: seq[string], session: var Session, currentModel: var c
   # Get token data from conversation cost details (more reliable than message role breakdown)
   var totalTokens = 0
   
+  debug("Getting conversation cost details...")
   if database != nil:
     try:
       let conversationId = getCurrentConversationId().int
       let conversationDetails = getConversationCostDetailed(database, conversationId)
       totalTokens = conversationDetails.totalInput + conversationDetails.totalOutput + conversationDetails.totalReasoning
+      debug(fmt"Got conversation cost details: {totalTokens} total tokens")
     except Exception as e:
       debug(fmt"Failed to get conversation tokens: {e.msg}")
   
   # Get reasoning token data (from both OpenAI-style and thinking token sources)
   var reasoningTokens = 0
+  debug("Getting reasoning tokens...")
   if database != nil:
     try:
       let conversationId = getCurrentConversationId().int
       # Get OpenAI-style reasoning tokens from model_token_usage
       let reasoningStats = getConversationReasoningTokens(database, conversationId)
       reasoningTokens = reasoningStats.totalReasoning
+      debug(fmt"Got reasoning tokens: {reasoningTokens}")
       
       # Add XML thinking tokens from conversation_thinking_token table
+      debug("Getting thinking tokens from DB...")
       let thinkingTokens = getConversationThinkingTokens(database, conversationId)
       reasoningTokens += thinkingTokens
+      debug(fmt"Got thinking tokens: {thinkingTokens}, total: {reasoningTokens}")
     except Exception as e:
       debug(fmt"Failed to get reasoning tokens: {e.msg}")
 
   # Create and display combined context table
+  debug("Generating context table...")
   try:
+    debug("Creating session...")
     let sess = initSession()
+    debug("Generating system prompt with tokens...")
     let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), sess, modelNickname)
+    debug(fmt"System prompt generated: {systemPromptResult.tokens.total} tokens")
     let toolSchemaTokens = countToolSchemaTokens(modelNickname)
     
     let combinedTable = formatCombinedContextTable(

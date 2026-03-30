@@ -414,7 +414,7 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
           finishStreamingNoRedraw()
           return (false, response.error)
 
-    sleep(100)
+    sleep(10)  # Reduced from 100ms to 10ms for more responsive streaming
     attempts.inc()
 
   if not responseComplete:
