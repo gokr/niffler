@@ -236,35 +236,71 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     if not db.tableExists(TokenLogEntry):
       db.createTable(TokenLogEntry)
       # Create indexes for better performance (TEXT columns need key length)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_log_entry_model ON token_log_entry (model(255))")
-      db.createIndexIfNotExists(TokenLogEntry, "created_at")
+      try:
+        discard db.query("CREATE INDEX idx_token_log_entry_model ON token_log_entry (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(TokenLogEntry, "created_at")
+      except:
+        discard
 
     if not db.tableExists(PromptHistoryEntry):
       db.createTable(PromptHistoryEntry)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_prompt_history_entry_session_id ON prompt_history_entry (session_id(255))")
+      try:
+        db.createIndex(PromptHistoryEntry, "created_at")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_prompt_history_entry_session_id ON prompt_history_entry (session_id(255))")
+      except:
+        discard
 
     # Create new conversation tracking tables
     if not db.tableExists(Conversation):
       db.createTable(Conversation)
       # Create indexes for better performance (TEXT columns need key length)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_session_id ON conversation (session_id(255))")
-      db.createIndexIfNotExists(Conversation, "isActive")
+      try:
+        discard db.query("CREATE INDEX idx_conversation_session_id ON conversation (session_id(255))")
+      except:
+        discard
+      try:
+        db.createIndex(Conversation, "isActive")
+      except:
+        discard
 
     if not db.tableExists(ConversationMessage):
       db.createTable(ConversationMessage)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(ConversationMessage, "conversationId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_message_model ON conversation_message (model(255))")
-      db.createIndexIfNotExists(ConversationMessage, "created_at")
+      try:
+        db.createIndex(ConversationMessage, "conversationId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_conversation_message_model ON conversation_message (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(ConversationMessage, "created_at")
+      except:
+        discard
 
     if not db.tableExists(ModelTokenUsage):
       db.createTable(ModelTokenUsage)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_model_token_usage_model ON model_token_usage (model(255))")
-      db.createIndexIfNotExists(ModelTokenUsage, "created_at")
+      try:
+        db.createIndex(ModelTokenUsage, "conversationId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_model_token_usage_model ON model_token_usage (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(ModelTokenUsage, "created_at")
+      except:
+        discard
 
     # Create interleaved thinking blocks table (NEW)
     if not db.tableExists(MessageThinkingBlock):
@@ -298,28 +334,61 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Create todo system tables
     if not db.tableExists(TodoList):
       db.createTable(TodoList)
-      db.createIndexIfNotExists(TodoList, "conversationId")
-      db.createIndexIfNotExists(TodoList, "isActive")
+      try:
+        db.createIndex(TodoList, "conversationId")
+      except:
+        discard
+      try:
+        db.createIndex(TodoList, "isActive")
+      except:
+        discard
 
     if not db.tableExists(TodoItem):
       db.createTable(TodoItem)
-      db.createIndexIfNotExists(TodoItem, "listId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_todo_item_state ON todo_item (state(50))")
-      db.createIndexIfNotExists(TodoItem, "orderIndex")
+      try:
+        db.createIndex(TodoItem, "listId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_todo_item_state ON todo_item (state(50))")
+      except:
+        discard
+      try:
+        db.createIndex(TodoItem, "orderIndex")
+      except:
+        discard
 
     # Create token correction factor table
     if not db.tableExists(TokenCorrectionFactor):
       db.createTable(TokenCorrectionFactor)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_correction_factor_model_name ON token_correction_factor (model_name(255))")
-      db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
+      try:
+        discard db.query("CREATE INDEX idx_token_correction_factor_model_name ON token_correction_factor (model_name(255))")
+      except:
+        discard
+      try:
+        db.createIndex(TokenCorrectionFactor, "updatedAt")
+      except:
+        discard
 
     # Create system prompt token usage table
     if not db.tableExists(SystemPromptTokenUsage):
       db.createTable(SystemPromptTokenUsage)
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "conversationId")
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "messageId")
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "createdAt")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_system_prompt_token_usage_model ON system_prompt_token_usage (model(255))")
+      try:
+        db.createIndex(SystemPromptTokenUsage, "conversationId")
+      except:
+        discard
+      try:
+        db.createIndex(SystemPromptTokenUsage, "messageId")
+      except:
+        discard
+      try:
+        db.createIndex(SystemPromptTokenUsage, "createdAt")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_system_prompt_token_usage_model ON system_prompt_token_usage (model(255))")
+      except:
+        discard
 
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions
