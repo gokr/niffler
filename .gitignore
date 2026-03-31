@@ -4,12 +4,14 @@ niffler
 testresults
 *.log
 .roo
+niffler.dSYM
+
 # Compiled Nim binaries
 tests/test_*
 !tests/test_*.nim
+
 .venv
-training_corpus.txt
-IDEAS.md
+
 
 # Local development dependencies
 vendor/
