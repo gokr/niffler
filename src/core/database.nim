@@ -19,6 +19,15 @@ import config
 import debby/mysql
 import debby/pools
 
+# Debug wrapper for database operations
+template withDbDebug*(pool: Pool, body: untyped) =
+  ## Wrap database operation with debug logging
+  block:
+    debug("[DB] Entering database operation")
+    pool.withDb:
+      body
+    debug("[DB] Exited database operation")
+
 type
   DatabaseBackend* = ref object
     config*: DatabaseConfig
@@ -876,7 +885,7 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =
   ## Add user message to database and return message ID
-  pool.withDb:
+  withDbDebug(pool):
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
@@ -1080,7 +1089,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
   let thinkingBlocksByMessage = getThinkingBlocksForConversation(pool, conversationId)
 
   try:
-    pool.withDb:
+    withDbDebug(pool):
       let messages = db.filter(ConversationMessage, it.conversationId == conversationId)
       # Convert to proper heap-allocated seq and sort
       var sortedMessages = @messages
