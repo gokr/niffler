@@ -21,12 +21,22 @@ import std/[times]
 import sunny
 
 type
+  NatsRequestKind* {.pure.} = enum
+    ## Type of request
+    nrkNormal = "normal"      ## Normal request with input
+    nrkCancel = "cancel"      ## Cancel running request
+  
   NatsRequest* = object
     ## Generic request sent to an agent
     ## Agent parses commands from input string (e.g., "/plan", "/model xxx")
     requestId* {.json: "request_id".}: string      # Unique request identifier
     agentName* {.json: "agent_name".}: string      # Target agent name
     input*: string                                  # Full input including commands and prompt
+    case kind* {.json: "kind".}: NatsRequestKind = nrkNormal
+    of nrkNormal:
+      discard
+    of nrkCancel:
+      cancelRequestId* {.json: "cancel_request_id".}: string  # ID of request to cancel
 
   NatsResponse* = object
     ## Streaming response from agent
@@ -61,6 +71,16 @@ proc createRequest*(requestId: string, agentName: string, input: string): NatsRe
     requestId: requestId,
     agentName: agentName,
     input: input
+  )
+
+proc createCancelRequest*(requestId: string, agentName: string, cancelRequestId: string): NatsRequest =
+  ## Create a cancel request to stop a running task/ask
+  NatsRequest(
+    requestId: requestId,
+    agentName: agentName,
+    input: "",
+    kind: nrkCancel,
+    cancelRequestId: cancelRequestId
   )
 
 proc createResponse*(requestId: string, agentName: string, content: string, done: bool = false): NatsResponse =

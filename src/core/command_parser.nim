@@ -32,6 +32,7 @@ type
     conversationType*: Option[ConversationType]  # /task (default is ask)
     model*: Option[string]                 # /model <name>
     shouldWait*: bool                      # /wait command
+    shouldStop*: bool                      # /stop command - cancel running task
     prompt*: string                        # Remaining text after commands
 
 proc parseCommand*(input: string): ParsedCommand =
