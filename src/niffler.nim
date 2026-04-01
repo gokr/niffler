@@ -3,10 +3,12 @@
 ## Uses parseopt for flexible command-line argument parsing with full control
 ## over subcommands and option handling.
 
-import std/[os, logging, parseopt, strutils]
-import core/[config, database, session, app]
+import std/[os, logging, parseopt, strutils, times, json, strformat]
+import core/[config, database, session, app, db_config]
 import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
+import autonomous/[task_queue]
+import workspace/[manager]
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")
 
@@ -223,8 +225,9 @@ proc startAgentMode(
     "model": modelName
   }
   
-  if not registerAgent(database, agentId, "default", capabilities, agentConfig):
-    handleError("Failed to register agent")
+  # TODO: Implement agent registration with NATS
+  # if not registerAgent(database, agentId, "default", capabilities, agentConfig):
+  #   handleError("Failed to register agent")
   
   # TODO: Start task processor with proper agent and model config
   # For now, skip task processor startup (will be implemented in full integration)

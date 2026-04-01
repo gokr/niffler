@@ -190,8 +190,8 @@ type
     toolInstructionTokens*: int  ## TodoList/thinking instructions
     availableToolsTokens*: int   ## Tools list tokens
     systemPromptTotal*: int      ## Total system prompt tokens
-  toolSchemaTokens*: int       ## Tool schema JSON tokens
-  totalOverhead*: int          ## Complete API request overhead
+    toolSchemaTokens*: int       ## Tool schema JSON tokens
+    totalOverhead*: int          ## Complete API request overhead
 
 # Simple retry template for handling transient connection errors
 template withRetry*(body: untyped) =
@@ -215,6 +215,7 @@ template withRetry*(body: untyped) =
   if lastError.len > 0:
     error(fmt"Database operation failed after retry: {lastError}")
 
+type
   # ============================================================
   # Autonomous Agent System Tables
   # ============================================================
@@ -541,19 +542,6 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       db.createTable(Agent)
       db.createIndexIfNotExists(Agent, "agentId")
       db.createIndexIfNotExists(Agent, "status")
-      db.createIndexIfNotExists(Agent, "lastHeartbeat")
-
-    # Agent messaging
-    if not db.tableExists(AgentMessage):
-      db.createTable(AgentMessage)
-      db.createIndexIfNotExists(AgentMessage, "toAgent")
-      db.createIndexIfNotExists(AgentMessage, "fromAgent")
-      db.createIndexIfNotExists(AgentMessage, "readAt")
-      db.createIndexIfNotExists(AgentMessage, "createdAt")
-      discard db.query("""
-        CREATE INDEX IF NOT EXISTS idx_agent_message_to_read 
-        ON agent_message (to_agent(100), read_at)
-      """)
 
     # Scheduled jobs
     if not db.tableExists(ScheduledJob):
@@ -604,7 +592,6 @@ proc checkDatabase*(backend: DatabaseBackend) =
     db.checkTable(Workspace)
     db.checkTable(TaskQueueEntry)
     db.checkTable(Agent)
-    db.checkTable(AgentMessage)
     db.checkTable(ScheduledJob)
     db.checkTable(WatchedPath)
     db.checkTable(WebhookEndpoint)
