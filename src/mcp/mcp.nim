@@ -217,13 +217,14 @@ proc mcpWorkerMain*(params: ThreadParams) {.thread.} =
 
       debug("MCP worker thread started")
 
+      # Signal readiness as soon as the worker loop is alive so UI startup
+      # cannot hang behind slow or non-responsive MCP server initialization.
+      let readyResponse = McpResponse(kind: mcrrkReady, serverName: "worker")
+      params.channels.sendMcpResponse(readyResponse)
+
       # Load config and initialize servers
       let config = configLoader.loadConfig()
       mcpWorkerInternal.initializeMcpServers(config)
-
-      # Send ready signal
-      let readyResponse = McpResponse(kind: mcrrkReady, serverName: "worker")
-      params.channels.sendMcpResponse(readyResponse)
 
       # Main message processing loop
       while not params.channels.isShutdownSignaled():

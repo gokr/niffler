@@ -5,7 +5,7 @@
 ## between cli.nim and output_handler.nim.
 
 import std/[strformat, strutils, options, math, terminal]
-import ../../../linecross/linecross
+import linecross
 import ../core/[config, conversation_manager, mode_state, app]
 import ../types/[config as configTypes]
 

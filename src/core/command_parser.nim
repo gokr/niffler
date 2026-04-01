@@ -32,6 +32,7 @@ type
     conversationType*: Option[ConversationType]  # /task (default is ask)
     model*: Option[string]                 # /model <name>
     shouldWait*: bool                      # /wait command
+    shouldStop*: bool                      # /stop command - cancel running task
     prompt*: string                        # Remaining text after commands
 
 proc parseCommand*(input: string): ParsedCommand =
@@ -42,11 +43,13 @@ proc parseCommand*(input: string): ParsedCommand =
   ## - "/task Research topic" -> type=task, prompt="Research topic"
   ## - "/model haiku Write" -> model="haiku", prompt="Write"
   ## - "/plan /model sonnet Design" -> mode=plan, model="sonnet", prompt="Design"
+  ## - "/stop" -> shouldStop=true (cancel running task)
 
   result.mode = none(ExecutionMode)
   result.conversationType = none(ConversationType)
   result.model = none(string)
   result.shouldWait = false
+  result.shouldStop = false
   result.prompt = ""
 
   var tokens = input.strip().split()
@@ -81,6 +84,9 @@ proc parseCommand*(input: string): ParsedCommand =
       of "wait":
         result.shouldWait = true
         i.inc()
+      of "stop", "cancel", "abort":
+        result.shouldStop = true
+        i.inc()
       of "model":
         # Next token should be model name
         if i + 1 < filteredTokens.len:
@@ -102,7 +108,7 @@ proc parseCommand*(input: string): ParsedCommand =
 
 proc hasCommands*(parsed: ParsedCommand): bool =
   ## Check if any commands were parsed
-  parsed.mode.isSome() or parsed.conversationType.isSome() or parsed.model.isSome() or parsed.shouldWait
+  parsed.mode.isSome() or parsed.conversationType.isSome() or parsed.model.isSome() or parsed.shouldWait or parsed.shouldStop
 
 proc `$`*(parsed: ParsedCommand): string =
   ## String representation for debugging

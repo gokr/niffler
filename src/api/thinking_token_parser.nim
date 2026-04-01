@@ -59,24 +59,30 @@ proc parseAnthropicThinkingBlock*(content: string): ThinkingParseResult =
   result.isThinkingContent = false
   
   let contentLower = content.toLowerAscii()
+  var openTag = "<thinking>"
+  var closeTag = "</thinking>"
+
+  if "<think>" in contentLower:
+    openTag = "<think>"
+    closeTag = "</think>"
   
-  # Check for opening <thinking> tag
-  let startPos = contentLower.find("<thinking>")
+  # Check for opening thinking tag
+  let startPos = contentLower.find(openTag)
   if startPos >= 0:
     # Check for corresponding closing tag
-    let endPos = contentLower.find("</thinking>")
+    let endPos = contentLower.find(closeTag)
     if endPos > startPos:
       # Complete thinking block
       result.isThinkingContent = true
       result.isComplete = true
       
       # Extract thinking content
-      let thinkingStart = startPos + 10  # Length of "<thinking>"
+      let thinkingStart = startPos + openTag.len
       result.thinkingContent = some(content[thinkingStart..<endPos].strip())
       
       # Extract remaining content (if any)
       let beforeThinking = content[0..<startPos].strip()
-      let afterThinking = content[endPos + 11..^1].strip()  # Length of "</thinking>"
+      let afterThinking = content[endPos + closeTag.len..^1].strip()
       
       if beforeThinking.len > 0 and afterThinking.len > 0:
         result.regularContent = some(beforeThinking & afterThinking)
@@ -92,7 +98,7 @@ proc parseAnthropicThinkingBlock*(content: string): ThinkingParseResult =
       result.isComplete = false
       
       # Find where thinking content starts
-      let thinkingStart = startPos + 10
+      let thinkingStart = startPos + openTag.len
       result.thinkingContent = some(content[thinkingStart..^1].strip())
       result.regularContent = some(content[0..<startPos].strip())
   else:
@@ -181,7 +187,7 @@ proc detectAndParseThinkingContent*(content: string): ThinkingParseResult =
   
   # Quick format detection
   let contentLower = content.toLowerAscii()
-  if "<thinking>" in contentLower or "<redacted_thinking>" in contentLower:
+  if "<thinking>" in contentLower or "<think>" in contentLower or "<redacted_thinking>" in contentLower:
     detectedFormat = ttfAnthropic
   elif "reasoning_content" in contentLower or "encrypted_reasoning" in contentLower:
     try:
@@ -264,17 +270,21 @@ proc updateIncrementalParser*(parser: var IncrementalThinkingParser, newContent:
   # Update based on format
   case parser.format.get(ttfNone)
   of ttfAnthropic:
-    parser.isInThinkingBlock = "<thinking>" in parser.buffer
-    parser.startMarkerFound = "<thinking>" in parser.buffer
-    parser.endMarkerFound = "</thinking>" in parser.buffer
+    let bufferLower = parser.buffer.toLowerAscii()
+    let openTag = if "<think>" in bufferLower: "<think>" else: "<thinking>"
+    let closeTag = if openTag == "<think>": "</think>" else: "</thinking>"
+
+    parser.isInThinkingBlock = openTag in bufferLower
+    parser.startMarkerFound = openTag in bufferLower
+    parser.endMarkerFound = closeTag in bufferLower
     
     if parser.isInThinkingBlock:
       # Extract thinking content from buffer
-      let startPos = parser.buffer.toLowerAscii().find("<thinking>")
-      let endPos = parser.buffer.toLowerAscii().find("</thinking>")
+      let startPos = bufferLower.find(openTag)
+      let endPos = bufferLower.find(closeTag)
       
       if startPos >= 0:
-        let thinkingStart = startPos + 10  # Length of "<thinking>"
+        let thinkingStart = startPos + openTag.len
         if endPos > startPos:
           parser.accumulatedThinking = parser.buffer[thinkingStart..<endPos]
         else:
@@ -404,5 +414,4 @@ proc shouldIncludeThinking*(modelConfig: ModelConfig): bool =
   ## Check if model should receive thinking in context
   ## Uses the opt-in approach
   modelConfig.includeReasoningInContext.get(false)
-
 

@@ -309,7 +309,6 @@ proc migrateYamlConfigToDb*(db: DatabaseBackend, yamlConfig: Config) =
   
   # Migrate other settings
   var settingsObj = newJObject()
-  settingsObj["yourName"] = %yamlConfig.yourName
   if yamlConfig.markdownEnabled.isSome:
     settingsObj["markdownEnabled"] = %yamlConfig.markdownEnabled.get()
   if yamlConfig.thinkingTokensEnabled.isSome:

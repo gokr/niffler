@@ -570,14 +570,11 @@ GROUP BY tool_name;
 
 ### Performance Metrics
 
-Track tool execution performance:
+Tool execution happens through the tool worker and is visible in normal logs.
 
 ```bash
-# Monitor tool call latencies
-niffler --metrics
-
-# View average execution times
-sqlite3 ~/.niffler/niffler.db "SELECT tool_name, AVG(execution_time_ms) FROM tool_audit_log GROUP BY tool_name;"
+# Run with debug logging when investigating tool behavior
+niffler --loglevel=DEBUG
 ```
 
 The tool system provides a secure, extensible foundation for AI-assisted development operations, balancing capability with safety through comprehensive validation, sandboxing, and monitoring features.

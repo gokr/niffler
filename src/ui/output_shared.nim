@@ -7,7 +7,7 @@
 ## After readline returns, output appears below the input line, then new prompt.
 
 import std/strutils
-import ../../../linecross/linecross
+import linecross
 import theme
 
 # Streaming buffer for batching output

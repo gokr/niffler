@@ -1,470 +1,324 @@
-# Niffler - Autonomous Coding Agent
+# Niffler - AI Assistant in Nim
 
 ![Nim](https://img.shields.io/badge/Nim-2.2.4-yellow.svg)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version](https://img.shields.io/badge/Version-0.5.0-green.svg)
+![Version](https://img.shields.io/badge/Version-0.4.0-green.svg)
 
-**Niffler** is a self-hosted autonomous coding agent that works on your software projects 24/7. Unlike general-purpose AI assistants, Niffler focuses specifically on software development workflows, working independently on your codebases and reporting back through messaging platforms like Discord.
+**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using TiDB (MySQL-compatible distributed database). Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/). It has evolved into a distributed multi agent system where each agent runs as its own Niffler process and collaborates in a "chat room style" using NATS.
 
-Think of it as having a tireless junior developer that never sleeps - reviewing code, fixing bugs, refactoring, writing documentation, and keeping your projects healthy.
+**NOTE: Niffler is to a large extent coded using Claude Code!**
 
-## 🎯 What Makes Niffler Different?
+## Quick Start
 
-**Autonomous Operation**: Once configured, Niffler works independently on your tasks. It doesn't wait for prompts - it processes task queues, monitors file changes, executes scheduled jobs, and reports results back to you.
+### 1. Install prerequisites
 
-**Software Development Focus**: Purpose-built for coding tasks with deep understanding of git, project structures, code review workflows, and development best practices.
+- Nim 2.2.4 or later
+- Git
+- NATS Server
+- TiDB
 
-**Multi-Platform Communication**: Talk to Niffler through Discord (and soon Slack, web interfaces). Get notifications when tasks complete, code is reviewed, or issues are found.
-
-**Self-Hosted & Private**: Your code never leaves your infrastructure. Run Niffler in a Docker container on your own servers or development machines.
-
-**Multi-Workspace**: Work across multiple projects simultaneously. Niffler can context-switch between different codebases seamlessly.
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Communication Layer                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                │
-│  │ Discord  │  │   CLI    │  │  Future  │                │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘                │
-└───────┼─────────────┼─────────────┼─────────────────────┘
-        │             │             │
-        └─────────────┴─────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Task Queue                             │
-│         (Polls database for pending tasks)                 │
-└────────────────┬───────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Agent Messenger                        │
-│         (Inter-agent communication via database)           │
-└────────────────┬───────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     LLM Worker                             │
-│              (AI calls with tool execution)                  │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│                     TiDB Database                          │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │workspace │ │task_queue│ │  agent   │ │ messages │     │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │scheduled │ │watched   │ │ webhook  │ │ config   │     │
-│  │  jobs    │ │  paths   │ │          │ │          │     │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Key Components:**
-
-- **Communication Channels**: Discord bot, CLI, webhooks - multiple ways to interact
-- **Task Queue**: Database-backed priority queue for autonomous task execution
-- **Workspace Manager**: Context-switch between multiple projects
-- **Agent Messaging**: Multi-agent coordination through database
-- **LLM Integration**: Tool-augmented AI with file operations, code analysis
-- **Persistent Storage**: TiDB for conversations, tasks, configuration
-
-## 🚀 Quick Start
-
-### Docker (Recommended)
+#### Nim
+Install Nim (compiler and tools) via [choosenim](https://nim-lang.org/install_unix.html):
 
 ```bash
-# Pull and run with Docker
-docker run -d \
-  --name niffler \
-  -e NIFFLER_DB_HOST=tidb \
-  -e DISCORD_TOKEN=your-token \
-  -v $(pwd)/workspaces:/workspaces \
-  ghcr.io/yourusername/niffler:latest
-
-# Or use docker-compose
-cat > docker-compose.yml << 'EOF'
-version: "3.8"
-services:
-  tidb:
-    image: pingcap/tidb:latest
-    ports:
-      - "4000:4000"
-    
-  niffler:
-    image: ghcr.io/yourusername/niffler:latest
-    environment:
-      - NIFFLER_DB_HOST=tidb
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-    volumes:
-      - ./workspaces:/workspaces
-    depends_on:
-      - tidb
-EOF
-
-docker-compose up -d
+curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 ```
 
-### Binary Installation
+#### TiDB
+The easiest way to get TiDB running locally is to install `tiup` and start a named playground:
 
 ```bash
-# Download latest release
-curl -L https://github.com/yourusername/niffler/releases/latest/download/niffler-linux-amd64 -o niffler
-chmod +x niffler
-
-# Set up database configuration
-mkdir -p ~/.config/niffler
-cat > ~/.config/niffler/db_config.yaml << 'EOF'
-host: "127.0.0.1"
-port: 4000
-database: "niffler"
-username: "root"
-password: ""
-EOF
-
-# Or use environment variables
-export NIFFLER_DB_HOST=127.0.0.1
-export NIFFLER_DB_PORT=4000
-export NIFFLER_DB_DATABASE=niffler
-export NIFFLER_DB_USERNAME=root
-export DISCORD_TOKEN=your-discord-token
-
-# Run
-./niffler
+curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
 ```
 
-### From Source
+Then start a persistent playground:
 
 ```bash
-# Prerequisites: Nim 2.2+, TiDB
+tiup playground --tag niffler
+```
 
-git clone https://github.com/yourusername/niffler.git
-cd niffler
+Why use `--tag niffler`:
+
+- It stores the cluster data under `~/.tiup/data/niffler`
+- You can stop it and later start the same named playground again with the same command
+- Niffler can keep using the same local TiDB instance across restarts
+
+Useful playground commands:
+
+```bash
+# Start or resume the same named playground
+tiup playground --tag niffler
+
+# Connect with the built-in client
+tiup client
+
+# Show running playground processes
+tiup playground display
+```
+
+Niffler expects TiDB on `127.0.0.1:4000` by default, which matches the normal playground setup.
+
+#### NATS Server Installation
+Niffler requires a NATS server for communication between agents.
+
+macOS:
+
+```bash
+brew install nats-server
+```
+
+Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y nats-server
+```
+
+Start it with:
+
+```bash
+nats-server -js
+```
+
+### 2. Install system libraries
+
+macOS:
+
+```bash
+brew install cnats
+brew install mariadb-connector-c
+```
+
+If the MySQL client library is not found at runtime, you may also need:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
+```
+
+You may also need to help the compiler find Apple SDK headers:
+
+```bash
+export CPATH="$(xcrun --show-sdk-path)/usr/include"
+```
+
+Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y libnats3.7t64 libnats-dev
+```
+
+Windows:
+
+> The NATS library is typically bundled with the Nim package on Windows.
+
+### 3. Build Niffler
+
+```bash
 nimble build
-
-# Configure database (see above)
-./niffler
 ```
 
-## 🚀 Discord Quick Start
-
-Get Niffler running as a Discord bot in 5 minutes:
-
-### 1. Create Discord Bot (2 minutes)
+### 4. Initialize config
 
 ```bash
-# Go to https://discord.com/developers/applications
-# Click "New Application" → "Bot" → "Add Bot"
-# Enable MESSAGE CONTENT INTENT
-# Copy your bot token (keep it secret!)
+./src/niffler init
 ```
 
-### 2. Start Database
+- macOS/Linux: `~/.niffler/config.yaml`
+- Windows: `%APPDATA%/niffler/config.yaml`
+
+### 5. Add credentials if needed
+
+The default config is meant to start cleanly on a fresh machine.
+
+- Local models such as Ollama and LM Studio can work without remote API keys
+- Enabled remote models without usable credentials are reported at startup
+- You can either edit `api_key` in `config.yaml` or set the matching `api_env_var`
 
 ```bash
-# Quick start with Docker
-docker run -d --name tidb -p 4000:4000 pingcap/tidb:latest
+export OPENROUTER_API_KEY="your-key-here"
+./src/niffler
 ```
 
-### 3. Configure
+### 6. Start Niffler
 
 ```bash
-# Create database config
-mkdir -p ~/.config/niffler
-cat > ~/.config/niffler/db_config.yaml << 'EOF'
-{"host": "127.0.0.1", "port": 4000, "database": "niffler", "username": "root", "password": ""}
-EOF
-
-# Store Discord token in database
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO agent_config (key, value) VALUES ('discord', 
-'{\"enabled\": true, \"token\": \"YOUR_BOT_TOKEN_HERE\"}');
-"
+./src/niffler
 ```
 
-### 4. Run
+For more detailed setup and reference material, keep reading below.
+
+## Overview
+
+Niffler is a terminal-first coding assistant with:
+
+- Multiple model providers via OpenAI-compatible APIs
+- Local model support through Ollama and LM Studio
+- Persistent conversations stored in TiDB
+- Multi-agent routing over NATS with `@agent` syntax
+- Built-in tools plus MCP integration
+- Markdown rendering, prompt files, and model-specific settings
+
+## Multi-Agent Architecture
+
+Niffler supports a distributed multi-agent system with two modes:
+
+### Master Mode
+Master Niffler reads configuration from `~/.niffler/config.yaml` and syncs it to the database. It provides:
+- CLI interface with `@agent` routing
+- Discord integration for remote access
+- NATS-based coordination with agents
 
 ```bash
-./niffler agent mybot
+./src/niffler  # Start master with CLI
+./src/niffler --nats-url=nats://localhost:4222  # Custom NATS URL
 ```
 
-### 5. Test
-
-In Discord, send: `@YourBotName review the code in src/main.nim`
-
-**See [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) for complete setup guide.**
-
-## 💬 Using Niffler
-
-### Discord Integration
-
-Add Niffler to your Discord server and interact through channels or DMs:
-
-```
-@Niffler review the pull request at https://github.com/...
-
-@Niffler refactor the authentication module to use JWT
-
-@Niffler fix all TODO comments in the codebase
-
-@Niffler create documentation for the API endpoints
-```
-
-**Channel Monitoring**: Niffler can watch specific channels and respond to relevant messages automatically.
-
-**Proactive Notifications**: Get notified when:
-- Long-running tasks complete
-- Code review finds issues
-- Scheduled maintenance is done
-- Errors occur during task execution
-
-### CLI Mode
-
-For direct interaction:
+### Agent Mode
+Agents bootstrap from minimal CLI args, then pull all config from database:
+- No filesystem config needed
+- Connect to NATS and optional Discord channels
+- Stateless - can be deployed anywhere
 
 ```bash
-# Interactive mode
+./src/niffler agent coder --db-host=127.0.0.1 --db-port=4000 --db-name=niffler
+```
+
+### Communication Channels
+- **NATS**: Real-time agent coordination (required)
+- **Discord**: Alternative interface for master and agents (optional)
+- **Database**: Persistent task queue, configuration, and workspace management
+
+### Routing Examples
+```bash
+# In master CLI:
+> @coder fix the bug in main.nim
+> @researcher compare HTTP libraries for Nim
+> /agents  # List connected agents
+> /sync    # Reload config from YAML and sync to database
+```
+
+More detail lives in:
+
+- [doc/TASK.md](doc/TASK.md)
+- [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
+
+## Features
+
+- Plan/code workflow with mode-aware prompting
+- Tool calling for shell, file, web, and task operations
+- Thinking-token support for models that expose reasoning
+- Token and cost tracking
+- MCP server integration
+- **Discord integration** - Use Niffler via Discord (see `src/comms/discord.nim`)
+- **Task queue** - Persistent task queue with priority and retry logic
+- **Workspace management** - Multi-project support with file watchers and webhooks
+
+Details live in:
+
+- [doc/TOOLS.md](doc/TOOLS.md)
+- [doc/MCP_SETUP.md](doc/MCP_SETUP.md)
+- [doc/TOKEN_COUNTING.md](doc/TOKEN_COUNTING.md)
+- [doc/MODELS.md](doc/MODELS.md)
+
+## 💻 Usage Examples
+
+### Interactive Mode (Master CLI)
+```bash
+# Start interactive mode with agent routing
 niffler
 
-> Create a REST API for user management
-> Refactor the database layer to use connection pooling
-> Review all error handling in src/api/
+# Within interactive mode, route to agents:
+> @coder fix the bug in main.nim
+> @researcher find the best HTTP library
 
-# Single task execution
-niffler --task="Fix all linting errors"
+# List available models
+niffler model list
 
-# With specific workspace
-niffler --workspace=myproject --task="Update dependencies"
+# Use specific model
+niffler --model=gpt4
+
+# Set logging level
+niffler --loglevel=DEBUG       # Verbose debugging
+niffler --loglevel=INFO        # General information
+niffler --loglevel=NOTICE      # Default (notice and above)
+niffler --loglevel=WARN        # Warnings and above
+niffler --loglevel=ERROR       # Errors only
+
+# Enable HTTP request/response dumping for debugging
+niffler --dump
+
+# Combine loglevel and dump for maximum visibility
+niffler --loglevel=DEBUG --dump
 ```
 
-## 🔧 Configuration
-
-### Minimal Database Config
-
-Only database connection info is stored in a local file:
-
-```yaml
-# ~/.config/niffler/db_config.yaml
-host: "127.0.0.1"
-port: 4000
-database: "niffler"
-username: "root"
-password: ""
-```
-
-Or via environment:
+### Single-Shot Tasks (Agent Mode)
 ```bash
-export NIFFLER_DB_HOST=127.0.0.1
-export NIFFLER_DB_PORT=4000
-export NIFFLER_DB_DATABASE=niffler
-export NIFFLER_DB_USERNAME=root
-export NIFFLER_DB_PASSWORD=secret
+# Execute a single task with an agent and exit
+# Perfect for scripting and automation
+niffler agent coder --task="Create a README for this project"
+
+# With specific model
+niffler agent researcher --task="Find latest version of all dependencies" --model=kimi
+
+# Route a command with mode switching
+niffler agent coder --task="/plan analyze the codebase structure"
+
+# Script-friendly - chain multiple tasks
+niffler agent coder --task="Lint all source files"
+niffler agent researcher --task="Find latest version of all dependencies"
 ```
 
-### Everything Else in Database
-
-All other configuration is stored in TiDB as JSON:
-
+### Configuration Management
 ```bash
-# Configure models
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO agent_config (key, value) VALUES ('models', '
-[
-  {
-    \"nickname\": \"claude-sonnet\",
-    \"model\": \"claude-3-sonnet-20240229\",
-    \"baseUrl\": \"https://api.anthropic.com/v1\",
-    \"apiKey\": \"sk-ant-...\"
-  }
-]
-');"
+# Initialize configuration
+niffler init
 
-# Configure Discord
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO agent_config (key, value) VALUES ('discord', '
-{
-  \"enabled\": true,
-  \"token\": \"YOUR_DISCORD_TOKEN\",
-  \"guildId\": \"123456789\",
-  \"monitoredChannels\": [\"dev\", \"general\"]
-}
-');"
-
-# Configure workspaces
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO workspace (name, path, description) VALUES
-('niffler', '/workspaces/niffler', 'Niffler source code'),
-('myapp', '/workspaces/myapp', 'My application');"
-
-# Configure scheduled jobs
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO scheduled_job (name, cron_expr, instruction) VALUES
-('daily-cleanup', '0 2 * * *', 'Clean up old log files and temp directories'),
-('dependency-check', '0 9 * * 1', 'Check for outdated dependencies and create PR if updates available');"
-
-# Configure file watchers
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "
-INSERT INTO watched_path (workspace_id, path, patterns, task_template) VALUES
-(1, '/workspaces/niffler/src', '[\"*.nim\"]', 'Review changes in {file} and suggest improvements');"
+# Initialize with custom path
+niffler init /path/to/config
 ```
 
-## 🤖 Autonomous Features
+## 📚 Documentation
 
-### Task Queue
-
-Niffler continuously polls for tasks and executes them:
-
-```sql
--- Create a task
-INSERT INTO task_queue_entry (instruction, task_type, priority)
-VALUES ('Refactor the authentication module', 'user_request', 10);
-
--- Tasks are picked up automatically and executed
--- Results are stored in the result column
-```
-
-**Task Types:**
-- `user_request` - Direct user requests via Discord/CLI
-- `file_change` - Triggered by file watchers
-- `scheduled` - Cron-based scheduled jobs
-- `webhook` - External webhook events
-- `delegated` - Tasks from other agents
-
-### File Watchers
-
-Monitor directories for changes and trigger tasks:
-
-```sql
-INSERT INTO watched_path (workspace_id, path, patterns, events, task_template)
-VALUES (
-  1,
-  '/workspaces/niffler/src',
-  '["*.nim"]',
-  'modify',
-  'Review the changes in {file} and run tests if it\'s a test file'
-);
-```
-
-### Scheduled Jobs
-
-Cron-like scheduling for recurring tasks:
-
-```sql
-INSERT INTO scheduled_job (name, cron_expr, instruction)
-VALUES (
-  'weekly-cleanup',
-  '0 2 * * 0',
-  'Archive old logs, clean temp directories, and report disk usage'
-);
-```
-
-### Webhooks
-
-Receive external events (GitHub webhooks, CI/CD, etc.):
-
-```sql
-INSERT INTO webhook_endpoint (path, secret, task_template)
-VALUES (
-  '/github/pr',
-  'webhook-secret',
-  'Review pull request: {payload.pull_request.url}'
-);
-```
-
-## 🛠️ Tool System
-
-Niffler includes specialized tools for software development:
-
-- **read** - Read file contents with context
-- **edit** - Edit files with diff-based operations
-- **create** - Create new files and directories
-- **list** - Directory listing with filtering
-- **bash** - Execute shell commands
-- **fetch** - HTTP requests and web scraping
-- **task** - Spawn sub-tasks for complex workflows
-
-All tools are workspace-aware and respect boundaries.
-
-## 💰 Token Usage & Cost Tracking
-
-Niffler tracks token usage per model with cost calculation:
-
-```sql
--- View costs for a specific period
-SELECT 
-  model,
-  SUM(input_tokens) as input,
-  SUM(output_tokens) as output,
-  SUM(total_cost) as cost
-FROM model_token_usage
-WHERE created_at >= NOW() - INTERVAL 7 DAY
-GROUP BY model;
-```
+- **[Documentation Index](doc/README.md)** - Overview of current docs and research notes
+- **[Configuration Guide](doc/CONFIG.md)** - Comprehensive configuration documentation
+- **[Model Setup](doc/MODELS.md)** - AI model configuration and providers
+- **[Tool System](doc/TOOLS.md)** - Tool execution, security, and extensions
+- **[MCP Setup](doc/MCP_SETUP.md)** - External tool server integration
+- **[Architecture](doc/ARCHITECTURE.md)** - System design and architecture
+- **[Usage Examples](doc/EXAMPLES.md)** - Common patterns and workflows
+- **[Multi-Agent System](doc/TASK.md)** - Agent-based architecture
 
 ## 🧪 Development
 
-### Building
+### Running Tests
+```bash
+# Run all tests
+nimble test
+```
 
+### Building
 ```bash
 # Development build
 nim c src/niffler.nim
 
 # Release build
 nimble build
-
-# Docker build
-docker build -t niffler:latest .
 ```
 
-### Testing
+### Debugging
 
-```bash
-# Run tests
-nimble test
-
-# Integration tests (requires database)
-nimble test --define:integration
-```
-
-### Project Structure
-
-```
-src/
-├── comms/           # Communication channels (Discord, CLI)
-├── autonomous/      # Task queue, scheduler, watchers
-├── workspace/       # Workspace management
-├── agent/           # Agent messaging and coordination
-├── core/            # Core logic, database, config
-├── api/             # LLM API integration
-├── tools/           # Tool implementations
-├── types/           # Type definitions
-└── ui/              # CLI interface
-```
-
-## 📚 Documentation
-
-- **[Architecture](doc/ARCHITECTURE.md)** - System design and components
-- **[Configuration](doc/CONFIG.md)** - Database configuration guide
-- **[Discord Setup](doc/DISCORD_SETUP.md)** - Discord bot configuration
-- **[Task System](doc/TASK_SYSTEM.md)** - Autonomous task execution
-- **[Workspace Guide](doc/WORKSPACES.md)** - Multi-project setup
+The `--dump` flag provides complete HTTP request and response logging and `--loglevel=DEBUG` provides detailed debug logging. Use `--loglevel=INFO` for general information logging.
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
-- Built with [Nim](https://nim-lang.org/) for performance and elegance
-- Inspired by the need for focused, autonomous coding assistance
-- Database persistence via [TiDB](https://www.pingcap.com/tidb/)
-
----
-
-**Niffler** - Your tireless coding companion. Works while you sleep.
+- **Nim Programming Language**: For providing an excellent, performant language for systems programming
+- **Original Octofriend**: For inspiring the feature set and a very friendly Discord

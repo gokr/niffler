@@ -13,11 +13,20 @@
 ## - Thread-safe operations with proper transaction handling
 ## - Efficient querying with prepared statements and indexing
 
-import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils]
+import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils, os]
 import ../types/[config, messages, mode]
 import config
 import debby/mysql
 import debby/pools
+
+# Debug wrapper for database operations
+template withDbDebug*(pool: Pool, body: untyped) =
+  ## Wrap database operation with debug logging
+  block:
+    debug("[DB] Entering database operation")
+    pool.withDb:
+      body
+    debug("[DB] Exited database operation")
 
 type
   DatabaseBackend* = ref object
@@ -184,6 +193,29 @@ type
     toolSchemaTokens*: int       ## Tool schema JSON tokens
     totalOverhead*: int          ## Complete API request overhead
 
+# Simple retry template for handling transient connection errors
+template withRetry*(body: untyped) =
+  ## Execute database operation with retry on connection errors
+  var lastError: string
+  for attempt in 0..1:
+    try:
+      body
+      break
+    except DbError as e:
+      let errMsg = e.msg.toLowerAscii()
+      if ("lost connection" in errMsg or "gone away" in errMsg) and attempt == 0:
+        debug(fmt"Database connection lost, retrying: {e.msg}")
+        lastError = e.msg
+        sleep(100)  # Brief pause before retry
+        continue
+      else:
+        raise
+    except Exception as e:
+      raise
+  if lastError.len > 0:
+    error(fmt"Database operation failed after retry: {lastError}")
+
+type
   # ============================================================
   # Autonomous Agent System Tables
   # ============================================================
@@ -234,7 +266,7 @@ type
     assignedAgent*: string
     conversationId*: Option[int]
 
-  # Agent identity and presence
+  # Agent identity and configuration
   AgentStatus* = enum
     asOnline = "online"
     asBusy = "busy"
@@ -245,30 +277,9 @@ type
     agentId*: string            ## Unique identifier
     persona*: string
     status*: AgentStatus
-    lastHeartbeat*: Option[DateTime]
     capabilities*: string        ## JSON: available tools, skills
-    config*: string            ## JSON: model, system prompt overrides
+    config*: string            ## JSON: model, system prompt overrides, NATS subject, Discord channel
     createdAt*: DateTime
-
-  # Agent messaging
-  AgentMessageType* = enum
-    amtTask = "task"
-    amtQuery = "query"
-    amtResponse = "response"
-    amtNotification = "notification"
-    amtBroadcast = "broadcast"
-
-  AgentMessage* = ref object of RootObj
-    id*: int
-    createdAt*: DateTime
-    fromAgent*: string
-    toAgent*: string            ## "null" for broadcast
-    messageType*: AgentMessageType
-    subject*: string
-    content*: string
-    metadata*: string            ## JSON
-    readAt*: Option[DateTime]
-    parentMessageId*: Option[int]
 
   # Scheduled jobs
   ScheduledJob* = ref object of RootObj
@@ -319,11 +330,6 @@ type
     key*: string                ## "personas", "models", "channels", etc.
     value*: string              ## JSON blob
     updatedAt*: DateTime
-    toolInstructionTokens*: int  ## TodoList/thinking instructions
-    availableToolsTokens*: int   ## Tools list tokens
-    systemPromptTotal*: int      ## Total system prompt tokens
-    toolSchemaTokens*: int       ## Tool schema JSON tokens
-    totalOverhead*: int          ## Complete API request overhead
 
 proc utcNow*(): string =
   ## Return current UTC time
@@ -355,35 +361,71 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     if not db.tableExists(TokenLogEntry):
       db.createTable(TokenLogEntry)
       # Create indexes for better performance (TEXT columns need key length)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_log_entry_model ON token_log_entry (model(255))")
-      db.createIndexIfNotExists(TokenLogEntry, "created_at")
+      try:
+        discard db.query("CREATE INDEX idx_token_log_entry_model ON token_log_entry (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(TokenLogEntry, "created_at")
+      except:
+        discard
 
     if not db.tableExists(PromptHistoryEntry):
       db.createTable(PromptHistoryEntry)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(PromptHistoryEntry, "created_at")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_prompt_history_entry_session_id ON prompt_history_entry (session_id(255))")
+      try:
+        db.createIndex(PromptHistoryEntry, "created_at")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_prompt_history_entry_session_id ON prompt_history_entry (session_id(255))")
+      except:
+        discard
 
     # Create new conversation tracking tables
     if not db.tableExists(Conversation):
       db.createTable(Conversation)
       # Create indexes for better performance (TEXT columns need key length)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_session_id ON conversation (session_id(255))")
-      db.createIndexIfNotExists(Conversation, "isActive")
+      try:
+        discard db.query("CREATE INDEX idx_conversation_session_id ON conversation (session_id(255))")
+      except:
+        discard
+      try:
+        db.createIndex(Conversation, "isActive")
+      except:
+        discard
 
     if not db.tableExists(ConversationMessage):
       db.createTable(ConversationMessage)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(ConversationMessage, "conversationId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_conversation_message_model ON conversation_message (model(255))")
-      db.createIndexIfNotExists(ConversationMessage, "created_at")
+      try:
+        db.createIndex(ConversationMessage, "conversationId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_conversation_message_model ON conversation_message (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(ConversationMessage, "created_at")
+      except:
+        discard
 
     if not db.tableExists(ModelTokenUsage):
       db.createTable(ModelTokenUsage)
       # Create indexes for better performance (TEXT columns need key length)
-      db.createIndexIfNotExists(ModelTokenUsage, "conversationId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_model_token_usage_model ON model_token_usage (model(255))")
-      db.createIndexIfNotExists(ModelTokenUsage, "created_at")
+      try:
+        db.createIndex(ModelTokenUsage, "conversationId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_model_token_usage_model ON model_token_usage (model(255))")
+      except:
+        discard
+      try:
+        db.createIndex(ModelTokenUsage, "created_at")
+      except:
+        discard
 
     # Create interleaved thinking blocks table (NEW)
     if not db.tableExists(MessageThinkingBlock):
@@ -417,28 +459,61 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Create todo system tables
     if not db.tableExists(TodoList):
       db.createTable(TodoList)
-      db.createIndexIfNotExists(TodoList, "conversationId")
-      db.createIndexIfNotExists(TodoList, "isActive")
+      try:
+        db.createIndex(TodoList, "conversationId")
+      except:
+        discard
+      try:
+        db.createIndex(TodoList, "isActive")
+      except:
+        discard
 
     if not db.tableExists(TodoItem):
       db.createTable(TodoItem)
-      db.createIndexIfNotExists(TodoItem, "listId")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_todo_item_state ON todo_item (state(50))")
-      db.createIndexIfNotExists(TodoItem, "orderIndex")
+      try:
+        db.createIndex(TodoItem, "listId")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_todo_item_state ON todo_item (state(50))")
+      except:
+        discard
+      try:
+        db.createIndex(TodoItem, "orderIndex")
+      except:
+        discard
 
     # Create token correction factor table
     if not db.tableExists(TokenCorrectionFactor):
       db.createTable(TokenCorrectionFactor)
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_token_correction_factor_model_name ON token_correction_factor (model_name(255))")
-      db.createIndexIfNotExists(TokenCorrectionFactor, "updatedAt")
+      try:
+        discard db.query("CREATE INDEX idx_token_correction_factor_model_name ON token_correction_factor (model_name(255))")
+      except:
+        discard
+      try:
+        db.createIndex(TokenCorrectionFactor, "updatedAt")
+      except:
+        discard
 
     # Create system prompt token usage table
     if not db.tableExists(SystemPromptTokenUsage):
       db.createTable(SystemPromptTokenUsage)
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "conversationId")
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "messageId")
-      db.createIndexIfNotExists(SystemPromptTokenUsage, "createdAt")
-      discard db.query("CREATE INDEX IF NOT EXISTS idx_system_prompt_token_usage_model ON system_prompt_token_usage (model(255))")
+      try:
+        db.createIndex(SystemPromptTokenUsage, "conversationId")
+      except:
+        discard
+      try:
+        db.createIndex(SystemPromptTokenUsage, "messageId")
+      except:
+        discard
+      try:
+        db.createIndex(SystemPromptTokenUsage, "createdAt")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_system_prompt_token_usage_model ON system_prompt_token_usage (model(255))")
+      except:
+        discard
 
     # ============================================================
     # Create Autonomous Agent System Tables
@@ -467,19 +542,6 @@ proc initializeDatabase*(backend: DatabaseBackend) =
       db.createTable(Agent)
       db.createIndexIfNotExists(Agent, "agentId")
       db.createIndexIfNotExists(Agent, "status")
-      db.createIndexIfNotExists(Agent, "lastHeartbeat")
-
-    # Agent messaging
-    if not db.tableExists(AgentMessage):
-      db.createTable(AgentMessage)
-      db.createIndexIfNotExists(AgentMessage, "toAgent")
-      db.createIndexIfNotExists(AgentMessage, "fromAgent")
-      db.createIndexIfNotExists(AgentMessage, "readAt")
-      db.createIndexIfNotExists(AgentMessage, "createdAt")
-      discard db.query("""
-        CREATE INDEX IF NOT EXISTS idx_agent_message_to_read 
-        ON agent_message (to_agent(100), read_at)
-      """)
 
     # Scheduled jobs
     if not db.tableExists(ScheduledJob):
@@ -530,7 +592,6 @@ proc checkDatabase*(backend: DatabaseBackend) =
     db.checkTable(Workspace)
     db.checkTable(TaskQueueEntry)
     db.checkTable(Agent)
-    db.checkTable(AgentMessage)
     db.checkTable(ScheduledJob)
     db.checkTable(WatchedPath)
     db.checkTable(WebhookEndpoint)
@@ -1009,7 +1070,7 @@ proc getConversationTokenBreakdown*(backend: DatabaseBackend, conversationId: in
 # New database-backed history procedures (replaces threadvar history)
 proc addUserMessageToDb*(pool: Pool, conversationId: int, content: string): int =
   ## Add user message to database and return message ID
-  pool.withDb:
+  withDbDebug(pool):
     let msg = ConversationMessage(
       id: 0,
       conversationId: conversationId,
@@ -1213,7 +1274,7 @@ proc getConversationContextFromDb*(pool: Pool, conversationId: int): tuple[messa
   let thinkingBlocksByMessage = getThinkingBlocksForConversation(pool, conversationId)
 
   try:
-    pool.withDb:
+    withDbDebug(pool):
       let messages = db.filter(ConversationMessage, it.conversationId == conversationId)
       # Convert to proper heap-allocated seq and sort
       var sortedMessages = @messages

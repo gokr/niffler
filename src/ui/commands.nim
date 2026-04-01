@@ -294,33 +294,43 @@ proc contextHandler(args: seq[string], session: var Session, currentModel: var c
   # Get token data from conversation cost details (more reliable than message role breakdown)
   var totalTokens = 0
   
+  debug("Getting conversation cost details...")
   if database != nil:
     try:
       let conversationId = getCurrentConversationId().int
       let conversationDetails = getConversationCostDetailed(database, conversationId)
       totalTokens = conversationDetails.totalInput + conversationDetails.totalOutput + conversationDetails.totalReasoning
+      debug(fmt"Got conversation cost details: {totalTokens} total tokens")
     except Exception as e:
       debug(fmt"Failed to get conversation tokens: {e.msg}")
   
   # Get reasoning token data (from both OpenAI-style and thinking token sources)
   var reasoningTokens = 0
+  debug("Getting reasoning tokens...")
   if database != nil:
     try:
       let conversationId = getCurrentConversationId().int
       # Get OpenAI-style reasoning tokens from model_token_usage
       let reasoningStats = getConversationReasoningTokens(database, conversationId)
       reasoningTokens = reasoningStats.totalReasoning
+      debug(fmt"Got reasoning tokens: {reasoningTokens}")
       
       # Add XML thinking tokens from conversation_thinking_token table
+      debug("Getting thinking tokens from DB...")
       let thinkingTokens = getConversationThinkingTokens(database, conversationId)
       reasoningTokens += thinkingTokens
+      debug(fmt"Got thinking tokens: {thinkingTokens}, total: {reasoningTokens}")
     except Exception as e:
       debug(fmt"Failed to get reasoning tokens: {e.msg}")
 
   # Create and display combined context table
+  debug("Generating context table...")
   try:
+    debug("Creating session...")
     let sess = initSession()
+    debug("Generating system prompt with tokens...")
     let systemPromptResult = generateSystemPromptWithTokens(getCurrentMode(), sess, modelNickname)
+    debug(fmt"System prompt generated: {systemPromptResult.tokens.total} tokens")
     let toolSchemaTokens = countToolSchemaTokens(modelNickname)
     
     let combinedTable = formatCombinedContextTable(
@@ -363,10 +373,19 @@ proc contextHandler(args: seq[string], session: var Session, currentModel: var c
 proc inspectHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Generate the HTTP JSON request that would be sent to the API
   var outputFile: string = ""
+  var section: string = ""
+  let validSections = ["messages", "tools", "model", "system"]
   
-  # Check if user provided a filename
+  # Support `/inspect <section>` to show only a specific part of the request
+  # while keeping `/inspect <filename>` as the existing file output behavior.
   if args.len > 0:
-    outputFile = args[0]
+    let firstArg = args[0].toLowerAscii()
+    if firstArg in validSections:
+      section = firstArg
+      if args.len > 1:
+        outputFile = args[1]
+    else:
+      outputFile = args[0]
   
   try:
     # Get existing conversation context without adding a new message
@@ -387,8 +406,56 @@ proc inspectHandler(args: seq[string], session: var Session, currentModel: var c
     # Convert to JSON using the same function as the actual API call
     let jsonRequest = toJson(chatRequest)
     
+    let outputJson =
+      if section == "messages":
+        if jsonRequest.hasKey("messages"):
+          jsonRequest["messages"]
+        else:
+          return CommandResult(
+            success: false,
+            message: "Generated request does not contain a messages field",
+            shouldExit: false,
+            shouldContinue: true
+          )
+      elif section == "tools":
+        if jsonRequest.hasKey("tools"):
+          jsonRequest["tools"]
+        else:
+          return CommandResult(
+            success: false,
+            message: "Generated request does not contain a tools field",
+            shouldExit: false,
+            shouldContinue: true
+          )
+      elif section == "model":
+        if jsonRequest.hasKey("model"):
+          jsonRequest["model"]
+        else:
+          return CommandResult(
+            success: false,
+            message: "Generated request does not contain a model field",
+            shouldExit: false,
+            shouldContinue: true
+          )
+      elif section == "system":
+        if jsonRequest.hasKey("messages"):
+          var systemMessages = newJArray()
+          for msg in jsonRequest["messages"]:
+            if msg.kind == JObject and msg.hasKey("role") and msg["role"].kind == JString and msg["role"].getStr() == "system":
+              systemMessages.add(msg)
+          systemMessages
+        else:
+          return CommandResult(
+            success: false,
+            message: "Generated request does not contain a messages field",
+            shouldExit: false,
+            shouldContinue: true
+          )
+      else:
+        jsonRequest
+
     # Pretty print the JSON
-    let prettyJson = jsonRequest.pretty(indent = 2)
+    let prettyJson = outputJson.pretty(indent = 2)
     
     if outputFile.len > 0:
       # Write to file
@@ -1417,7 +1484,7 @@ proc initializeCommands*() =
   # Agent commands - run in agent context
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler, ccAgent)
-  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[filename]", @[], inspectHandler, ccAgent)
+  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[messages|tools|model|system] [filename]", @[], inspectHandler, ccAgent)
   registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent)
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent)
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)

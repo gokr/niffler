@@ -39,14 +39,14 @@ template handleToolCallDisplay*(response: APIResponse,
     # Flush any buffered content before showing tool calls
     flushStreamingBuffer(redraw = false)
 
-    # Display tool request immediately with hourglass indicator
+    # Display tool request immediately
     let toolRequest = response.toolRequestInfo
     pendingToolCalls[toolRequest.toolCallId] = toolRequest
 
-    # Reset output tracking and display tool call with hourglass
+    # Reset output tracking and display tool call
     outputAfterToolCall = false
     let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-    stdout.write(formattedRequest & " ⏳\n")
+    stdout.write(formattedRequest & "\n")
     stdout.flushFile()
   
   of arkToolCallResult:
@@ -56,19 +56,9 @@ template handleToolCallDisplay*(response: APIResponse,
       let toolRequest = pendingToolCalls[toolResult.toolCallId]
       let formattedResult = formatCompactToolResultWithIndent(toolResult)
       
-      if not outputAfterToolCall:
-        # No output since tool call - move cursor up, clear hourglass, and add result
-        stdout.write("\r\e[K")  # Clear current line
-        stdout.write("\e[1A")   # Move cursor up one line
-        stdout.write("\r\e[K")  # Clear the tool call line with hourglass
-        
-        # Re-write tool call without hourglass and add result
-        let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-        stdout.write(formattedRequest & "\n" & formattedResult & "\n")
-      else:
-        # Output occurred since tool call - re-render both request and result
-        let formattedRequest = formatCompactToolRequestWithIndent(toolRequest)
-        stdout.write(formattedRequest & "\n" & formattedResult & "\n")
+      # Just print the result - request was already printed with hourglass
+      # Note: We don't re-print the request to avoid duplication
+      stdout.write("        " & formattedResult & "\n")
       
       # Remove from pending
       pendingToolCalls.del(toolResult.toolCallId)

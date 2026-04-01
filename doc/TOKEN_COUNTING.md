@@ -169,10 +169,10 @@ proc callLLM(request: LLMRequest): LLMResponse =
 
 ```bash
 # View recent token usage
-sqlite3 ~/.niffler/niffler.db "SELECT * FROM model_token_usage ORDER BY created_at DESC LIMIT 10"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SELECT * FROM model_token_usage ORDER BY created_at DESC LIMIT 10"
 
 # Calculate total costs for session
-sqlite3 ~/.niffler/niffler.db "SELECT model, SUM(total_cost) FROM model_token_usage WHERE created_at >= '2025-01-15T00:00:00' GROUP BY model"
+mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SELECT model, SUM(total_cost) FROM model_token_usage WHERE created_at >= '2025-01-15T00:00:00' GROUP BY model"
 ```
 
 ## Configuration

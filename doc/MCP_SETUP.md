@@ -28,7 +28,7 @@ choco install nodejs
 Add MCP server configurations to your `config.yaml`:
 
 ```yaml
-mcpServers:
+mcp_servers:
   filesystem:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
@@ -87,7 +87,7 @@ MCP Tools: 12 available
 Each MCP server supports the following configuration options:
 
 ```yaml
-mcpServers:
+mcp_servers:
   server-name:
     command: "executable"              # Required: Command to run
     args: ["-arg1", "value1", "-arg2"]  # Optional: Command line arguments
@@ -120,7 +120,7 @@ npm install -g @modelcontextprotocol/server-filesystem
 
 **Configuration:**
 ```yaml
-mcpServers:
+mcp_servers:
   filesystem:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"]
@@ -143,7 +143,7 @@ npm install -g @modelcontextprotocol/server-github
 
 **Configuration:**
 ```yaml
-mcpServers:
+mcp_servers:
   github:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
@@ -168,7 +168,7 @@ npm install -g @modelcontextprotocol/server-git
 
 **Configuration:**
 ```yaml
-mcpServers:
+mcp_servers:
   git:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-git"]
@@ -235,7 +235,7 @@ sudo mv mcp-server /usr/local/bin/
 Configure different timeouts based on server characteristics:
 
 ```yaml
-mcpServers:
+mcp_servers:
   # Fast local server
   filesystem:
     command: "npx"
@@ -258,7 +258,7 @@ mcpServers:
 Use environment variables for sensitive data:
 
 ```yaml
-mcpServers:
+mcp_servers:
   github:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
@@ -273,7 +273,7 @@ mcpServers:
 Enable/disable servers based on conditions:
 
 ```yaml
-mcpServers:
+mcp_servers:
   # Only enable in development
   dev-tools:
     command: "npx"
@@ -348,7 +348,7 @@ mcpServers:
 
 3. **Use absolute paths:**
    ```yaml
-   mcpServers:
+   mcp_servers:
      filesystem:
        command: "npx"
        args: ["-y", "@modelcontextprotocol/server-filesystem", "/absolute/path"]
@@ -421,13 +421,13 @@ Never commit sensitive data:
 
 ```yaml
 # ❌ Don't do this
-mcpServers:
+mcp_servers:
   github:
     env:
       GITHUB_TOKEN: "ghp_1234567890abcdef"  # HARD CODED SECRET!
 
 # ✅ Do this instead
-mcpServers:
+mcp_servers:
   github:
     env:
       GITHUB_TOKEN: "${GITHUB_TOKEN}"  # From environment
@@ -438,7 +438,7 @@ mcpServers:
 Limit filesystem access to necessary directories:
 
 ```yaml
-mcpServers:
+mcp_servers:
   filesystem:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/safe-dir"]
     # NOT "/" or "/home" which could access everything

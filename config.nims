@@ -16,3 +16,8 @@ switch("debugger", "native")
 
 # Enables system copy paste
 switch("d", "useSystemClipboard")
+
+if hostOS == "macosx":
+  # This adds the paths specifically when building on macOS
+  switch("passL", "-L/opt/homebrew/lib")
+  switch("passC", "-I/opt/homebrew/include")

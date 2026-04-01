@@ -19,6 +19,7 @@ requires "unittest2 >= 0.2.4"
 requires "nancy"                                     # For nice tabular output formatting
 requires "yaml"                                      # For YAML configuration parsing
 requires "dimscord"                                  # For Discord bot integration
+requires "https://github.com/gokr/natswrapper"       # For NATS client communication
 
 task testament, "Run all tests":
   exec "nimble install -d"

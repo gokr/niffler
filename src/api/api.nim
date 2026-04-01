@@ -1016,15 +1016,11 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
   # Check if LLM signaled completion (even if tool calls present)
   let completionSignal = detectCompletionSignal(initialContent)
   if completionSignal != csNone:
-    debug(fmt"Completion signal detected: {completionSignal}, stopping tool execution")
-    debugColored(COLOR_RECURSE, fmt"🟢 Task completion detected at depth {turn}")
-
-    # Store assistant message and return success (don't execute more tools)
-    if initialContent.strip().len > 0:
-      debugThreadSafe(fmt"[MSG-STORE] Storing completion message (depth: {turn})")
-      discard conversation_manager.addAssistantMessage(initialContent, some(toolCalls))
-
-    return true
+    if toolCalls.len == 0:
+      debug(fmt"Completion signal detected without pending tool calls: {completionSignal}")
+      debugColored(COLOR_RECURSE, fmt"🟢 Task completion detected at depth {turn}")
+    else:
+      debug(fmt"Ignoring completion signal {completionSignal} because {toolCalls.len} tool calls are pending")
 
   if turn >= maxTurns:
     debug(fmt"Max turns ({maxTurns}) exceeded at depth {turn}, stopping tool execution")
