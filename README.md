@@ -159,23 +159,43 @@ Niffler is a terminal-first coding assistant with:
 - Built-in tools plus MCP integration
 - Markdown rendering, prompt files, and model-specific settings
 
-## Multi-Agent
+## Multi-Agent Architecture
 
-In master mode, you can route prompts to agents with `@agent` syntax:
+Niffler supports a distributed multi-agent system with two modes:
+
+### Master Mode
+Master Niffler reads configuration from `~/.niffler/config.yaml` and syncs it to the database. It provides:
+- CLI interface with `@agent` routing
+- Discord integration for remote access
+- NATS-based coordination with agents
 
 ```bash
-./src/niffler
-
-> @coder fix the bug in main.nim
-> @researcher compare HTTP libraries for Nim
-> /agents
+./src/niffler  # Start master with CLI
+./src/niffler --nats-url=nats://localhost:4222  # Custom NATS URL
 ```
 
-Agents are normal Niffler processes:
+### Agent Mode
+Agents bootstrap from minimal CLI args, then pull all config from database:
+- No filesystem config needed
+- Connect to NATS and optional Discord channels
+- Stateless - can be deployed anywhere
 
 ```bash
-./src/niffler agent coder
-./src/niffler agent researcher
+./src/niffler agent coder --db-host=127.0.0.1 --db-port=4000 --db-name=niffler
+```
+
+### Communication Channels
+- **NATS**: Real-time agent coordination (required)
+- **Discord**: Alternative interface for master and agents (optional)
+- **Database**: Persistent task queue, configuration, and workspace management
+
+### Routing Examples
+```bash
+# In master CLI:
+> @coder fix the bug in main.nim
+> @researcher compare HTTP libraries for Nim
+> /agents  # List connected agents
+> /sync    # Reload config from YAML and sync to database
 ```
 
 More detail lives in:
@@ -190,6 +210,9 @@ More detail lives in:
 - Thinking-token support for models that expose reasoning
 - Token and cost tracking
 - MCP server integration
+- **Discord integration** - Use Niffler via Discord (see `src/comms/discord.nim`)
+- **Task queue** - Persistent task queue with priority and retry logic
+- **Workspace management** - Multi-project support with file watchers and webhooks
 
 Details live in:
 
