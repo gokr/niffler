@@ -560,7 +560,8 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
                         initialContent: string, database: DatabaseBackend,
                         turn: int = 0,
                         executedCalls: seq[string] = @[],
-                        maxTurns: int = 30,
+                        maxTurns: int = 50,
+                        reminderCount: int = 0,
                         duplicateTracker: var DuplicateFeedbackTracker): bool
 
 # Helper procedures for tool execution refactoring
@@ -616,7 +617,8 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
                              request: APIRequest, toolCalls: seq[LLMToolCall],
                              initialContent: string, turn: int,
                              updatedExecutedCalls: seq[string],
-                             maxTurns: int = 30,
+                             maxTurns: int = 50,
+                             reminderCount: int = 0,
                              duplicateTracker: var DuplicateFeedbackTracker): bool {.gcsafe.} =
   ## Handle the case when all tool calls are duplicates by providing feedback to the model
   ##
@@ -793,7 +795,7 @@ proc handleDuplicateToolCalls(channels: ptr ThreadChannels, client: var CurlyStr
     debug(fmt"Executing {followUpToolCalls.len} follow-up tool calls from duplicate feedback (depth: {turn})")
     {.gcsafe.}:
       discard executeAgenticLoop(channels, client, request, followUpToolCalls,
-                                         followUpContent, nil, turn + 1, updatedExecutedCalls, maxTurns, duplicateTracker)
+                                         followUpContent, nil, turn + 1, updatedExecutedCalls, maxTurns, reminderCount, duplicateTracker)
 
   return success
 
@@ -831,12 +833,14 @@ proc executeToolCallsBatch(channels: ptr ThreadChannels, toolCalls: seq[LLMToolC
     sendAPIResponse(channels, toolRequestResponse)
     
     # Send tool request to tool worker
+    let conversationId = getCurrentConversationId()
     let toolRequest = ToolRequest(
       kind: trkExecute,
       requestId: toolCall.id,
       toolName: toolCall.function.name,
       arguments: toolCall.function.arguments,
-      agentName: request.agentName  # Use agent's name for permission validation
+      agentName: request.agentName,  # Use agent's name for permission validation
+      conversationId: conversationId  # Pass conversation ID for context-scoped tools
     )
     debug("Tool request: " & $toolRequest)
     
@@ -1008,17 +1012,34 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
                                 initialContent: string, database: DatabaseBackend,
                                 turn: int = 0,
                                 executedCalls: seq[string] = @[],
-                                maxTurns: int = 30,
+                                maxTurns: int = 50,
+                                reminderCount: int = 0,
                                 duplicateTracker: var DuplicateFeedbackTracker): bool =
   ## Execute the agentic loop with tool calling
   ## Returns true if successful, false if max turns exceeded
+  ## 
+  ## The loop will check for active todolists and prevent premature completion
+  ## by reminding the LLM about remaining items. Max 5 reminders to prevent infinite loops.
 
+  const MAX_REMINDERS = 5
+  
   # Check if LLM signaled completion (even if tool calls present)
   let completionSignal = detectCompletionSignal(initialContent)
   if completionSignal != csNone:
     if toolCalls.len == 0:
       debug(fmt"Completion signal detected without pending tool calls: {completionSignal}")
-      debugColored(COLOR_RECURSE, fmt"🟢 Task completion detected at depth {turn}")
+      # Check todolist before deciding to stop
+      let todoStatus = getTodolistCompletionStatus(database)
+      if todoStatus.hasActiveTodolist and (todoStatus.pendingItems.len > 0 or todoStatus.inProgressItems.len > 0):
+        if reminderCount < MAX_REMINDERS:
+          debug(fmt"Todolist incomplete ({todoStatus.completedCount}/{todoStatus.totalCount}), sending reminder {reminderCount + 1}/{MAX_REMINDERS}")
+          debugColored(COLOR_RECURSE, fmt"🟡 Task completion detected but todolist incomplete - sending reminder")
+          # Don't stop - will inject reminder below
+        else:
+          debug(fmt"Max reminders ({MAX_REMINDERS}) reached, stopping even with incomplete todolist")
+          debugColored(COLOR_ERROR, fmt"🔴 MAX REMINDERS REACHED - stopping to prevent infinite loop")
+      else:
+        debugColored(COLOR_RECURSE, fmt"🟢 Task completion detected at depth {turn}")
     else:
       debug(fmt"Ignoring completion signal {completionSignal} because {toolCalls.len} tool calls are pending")
 
@@ -1028,6 +1049,86 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
     return false
 
   if toolCalls.len == 0:
+    # No tool calls - check if we should stop or remind about todolist
+    let todoStatus = getTodolistCompletionStatus(database)
+    if todoStatus.hasActiveTodolist and (todoStatus.pendingItems.len > 0 or todoStatus.inProgressItems.len > 0) and reminderCount < MAX_REMINDERS:
+      # Inject reminder and continue
+      let reminder = buildTodolistReminder(todoStatus)
+      if reminder.len > 0:
+        debug(fmt"Injecting todolist reminder (attempt {reminderCount + 1}/{MAX_REMINDERS})")
+        debugColored(COLOR_TOOL, fmt"📢 Injecting reminder: {todoStatus.pendingItems.len + todoStatus.inProgressItems.len} items remaining")
+        
+        # Build follow-up message with reminder
+        var reminderMessages = request.messages
+        reminderMessages.add(Message(
+          role: mrAssistant,
+          content: initialContent,
+          toolCalls: none(seq[LLMToolCall])
+        ))
+        reminderMessages.add(Message(
+          role: mrUser,
+          content: reminder
+        ))
+        
+        # Store the assistant message first
+        discard conversation_manager.addAssistantMessage(initialContent, none(seq[LLMToolCall]))
+        
+        # Make a follow-up request
+        let followUpRequest = APIRequest(
+          kind: arkChatRequest,
+          requestId: request.requestId & "_reminder_" & $reminderCount,
+          messages: reminderMessages,
+          model: request.model,
+          modelNickname: request.modelNickname,
+          maxTokens: request.maxTokens,
+          temperature: request.temperature,
+          baseUrl: request.baseUrl,
+          apiKey: request.apiKey,
+          enableTools: request.enableTools,
+          tools: request.tools,
+          agentName: request.agentName
+        )
+        
+        # Send reminder to UI
+        let reminderResponse = APIResponse(
+          requestId: request.requestId,
+          kind: arkStreamChunk,
+          content: "\n\n" & reminder & "\n\n",
+          done: false,
+          thinkingContent: none(string),
+          isEncrypted: none(bool)
+        )
+        sendAPIResponse(channels, reminderResponse)
+        
+        # Call LLM with reminder
+        let (responseContent, responseToolCalls, usage, success) = callLLMWithFollowUp(
+          channels, client, followUpRequest, reminderMessages, turn
+        )
+        
+        if not success:
+          debug("Reminder follow-up LLM call failed")
+          return false
+        
+        # If LLM responded with tool calls, recurse
+        if responseToolCalls.len > 0:
+          debug(fmt"Reminder triggered {responseToolCalls.len} tool calls, continuing loop")
+          return executeAgenticLoop(channels, client, request, responseToolCalls, 
+                                    responseContent, database, turn + 1, executedCalls, 
+                                    maxTurns, reminderCount + 1, duplicateTracker)
+        else:
+          # No tool calls after reminder - store and complete
+          if responseContent.len > 0:
+            discard conversation_manager.addAssistantMessage(responseContent, none(seq[LLMToolCall]))
+          
+          let completeResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamComplete,
+            usage: if usage.isSome(): usage.get() else: TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0),
+            finishReason: "stop"
+          )
+          sendAPIResponse(channels, completeResponse)
+          return true
+    
     return true
 
   debug(fmt"Executing {toolCalls.len} tool calls (recursion depth: {turn})")
@@ -1039,7 +1140,7 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
   if filteredToolCalls.len == 0:
     debugColored(COLOR_BUFFER, fmt"🟡 All tool calls were duplicates, handling duplicates")
     return handleDuplicateToolCalls(channels, client, request, toolCalls, initialContent,
-                                   turn, updatedExecutedCalls, maxTurns, duplicateTracker)
+                                   turn, updatedExecutedCalls, maxTurns, reminderCount, duplicateTracker)
 
   debug(fmt"After deduplication: {filteredToolCalls.len} unique tool calls")
   debugColored(COLOR_TOOL, fmt"🟢 Deduplication: {toolCalls.len - filteredToolCalls.len} duplicates removed")
@@ -1087,8 +1188,94 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
 
     # Check if we have more tool calls to execute
     if responseToolCalls.len == 0:
-      # No more tool calls - store final message and complete
-      debug(fmt"No more tool calls at depth {depth}, completing")
+      # No more tool calls - check todolist before completing
+      debug(fmt"No more tool calls at depth {depth}")
+      
+      # Check if todolist is incomplete
+      let todoStatus = getTodolistCompletionStatus(database)
+      if todoStatus.hasActiveTodolist and (todoStatus.pendingItems.len > 0 or todoStatus.inProgressItems.len > 0) and reminderCount < MAX_REMINDERS:
+        # Inject reminder and continue
+        let reminder = buildTodolistReminder(todoStatus)
+        if reminder.len > 0:
+          debug(fmt"Loop iteration: Injecting todolist reminder (attempt {reminderCount + 1}/{MAX_REMINDERS})")
+          debugColored(COLOR_TOOL, fmt"📢 Loop reminder: {todoStatus.pendingItems.len + todoStatus.inProgressItems.len} items remaining")
+          
+          # Build follow-up message with reminder
+          var reminderMessages = request.messages
+          reminderMessages.add(Message(
+            role: mrAssistant,
+            content: responseContent,
+            toolCalls: none(seq[LLMToolCall])
+          ))
+          reminderMessages.add(Message(
+            role: mrUser,
+            content: reminder
+          ))
+          
+          # Store the assistant message first
+          discard conversation_manager.addAssistantMessage(responseContent, none(seq[LLMToolCall]))
+          
+          # Make a follow-up request
+          let followUpRequest = APIRequest(
+            kind: arkChatRequest,
+            requestId: request.requestId & "_loop_reminder_" & $reminderCount,
+            messages: reminderMessages,
+            model: request.model,
+            modelNickname: request.modelNickname,
+            maxTokens: request.maxTokens,
+            temperature: request.temperature,
+            baseUrl: request.baseUrl,
+            apiKey: request.apiKey,
+            enableTools: request.enableTools,
+            tools: request.tools,
+            agentName: request.agentName
+          )
+          
+          # Send reminder to UI
+          let reminderResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamChunk,
+            content: "\n\n" & reminder & "\n\n",
+            done: false,
+            thinkingContent: none(string),
+            isEncrypted: none(bool)
+          )
+          sendAPIResponse(channels, reminderResponse)
+          
+          # Call LLM with reminder
+          let (reminderContent, reminderToolCalls, reminderUsage, reminderSuccess) = callLLMWithFollowUp(
+            channels, client, followUpRequest, reminderMessages, depth
+          )
+          
+          if not reminderSuccess:
+            debug("Loop reminder follow-up LLM call failed")
+            return false
+          
+          # If LLM responded with tool calls, update loop state and continue
+          if reminderToolCalls.len > 0:
+            debug(fmt"Loop reminder triggered {reminderToolCalls.len} tool calls, continuing")
+            let (filteredReminder, reminderExecuted) = filterDuplicateToolCalls(reminderToolCalls, currentExecutedCalls)
+            if filteredReminder.len > 0:
+              currentToolResults = executeToolCallsBatch(channels, filteredReminder, request)
+              currentContent = reminderContent
+              currentToolCalls = reminderToolCalls
+              currentExecutedCalls = reminderExecuted
+              # Don't increment depth for reminder - it's a continuation
+              # Continue the while loop
+              continue
+          
+          # No tool calls after reminder - complete normally
+          if reminderContent.len > 0:
+            discard conversation_manager.addAssistantMessage(reminderContent, none(seq[LLMToolCall]))
+          
+          let completeResponse = APIResponse(
+            requestId: request.requestId,
+            kind: arkStreamComplete,
+            usage: if reminderUsage.isSome(): reminderUsage.get() else: TokenUsage(inputTokens: 0, outputTokens: 0, totalTokens: 0),
+            finishReason: "stop"
+          )
+          sendAPIResponse(channels, completeResponse)
+          return true
 
       # Send completion signal
       let finalChunkResponse = APIResponse(
@@ -1189,16 +1376,16 @@ proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamin
 # ---------------------------------------------------------------------------
 
 proc executeAgenticLoop*(channels: ptr ThreadChannels, client: var CurlyStreamingClient,
-                                request: APIRequest, toolCalls: seq[LLMToolCall],
-                                initialContent: string, database: DatabaseBackend,
-                                turn: int = 0,
-                                executedCalls: seq[string] = @[],
-                                maxTurns: int = 30): bool =
+                        request: APIRequest, toolCalls: seq[LLMToolCall],
+                        initialContent: string, database: DatabaseBackend,
+                        turn: int = 0,
+                        executedCalls: seq[string] = @[],
+                        maxTurns: int = 50): bool =
   ## Backwards compatibility wrapper that creates a duplicate tracker automatically
   ## This allows existing code to continue working without modification
   var dummyTracker = createDuplicateFeedbackTracker()
   executeAgenticLoop(channels, client, request, toolCalls, initialContent,
-                            database, turn, executedCalls, maxTurns, dummyTracker)
+                            database, turn, executedCalls, maxTurns, 0, dummyTracker)
 
 proc handleConfigureRequest(request: APIRequest): Option[CurlyStreamingClient] {.gcsafe.} =
   ## Handle API client configuration requests
@@ -1661,7 +1848,7 @@ proc apiWorkerProc*(params: ThreadParams) {.thread, gcsafe.} =
                 # Use the backwards compatibility wrapper which doesn't require the tracker
                 let executeSuccess = executeAgenticLoop(channels, mutableClient, request,
                                                                    collectedToolCalls, fullContent, database,
-                                                                   0, @[], 30)
+                                                                   0, @[], 50)
                 
                 if not executeSuccess:
                   # Execution failed (likely max recursion depth exceeded)
