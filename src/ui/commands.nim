@@ -1451,16 +1451,16 @@ proc discordStatusHandler(args: seq[string], session: var Session, currentModel:
     let enabled = if config.hasKey("enabled"): config["enabled"].getBool() else: false
     let statusIcon = if enabled: "✅" else: "❌"
     let statusText = if enabled: "Enabled" else: "Disabled"
-    message &= fmt"  Status: {statusIcon} {statusText}\n"
+    message &= fmt("  Status: {statusIcon} {statusText}") & "\n"
     
     if config.hasKey("token"):
       let token = config["token"].getStr()
       let maskedToken = if token.len > 10: token[0..9] & "..." else: "***"
-      message &= fmt"  Token: {maskedToken}\n"
+      message &= fmt("  Token: {maskedToken}") & "\n"
     
     if config.hasKey("guildId") and config["guildId"].getStr().len > 0:
       let guildId = config["guildId"].getStr()
-      message &= fmt"  Guild ID: {guildId}\n"
+      message &= fmt("  Guild ID: {guildId}") & "\n"
     
     if config.hasKey("monitoredChannels") and config["monitoredChannels"].kind == JArray:
       let channels = config["monitoredChannels"]
@@ -1520,9 +1520,9 @@ proc discordConnectHandler(args: seq[string], session: var Session, currentModel
   saveDiscordConfigToDb(database, newConfig)
   
   var message = "✅ Discord configuration saved!\n\n"
-  message &= fmt"  Token: {token[0..min(9, token.len-1)]}...\n"
+  message &= fmt("  Token: {token[0..min(9, token.len-1)]}...") & "\n"
   if guildId.len > 0:
-    message &= fmt"  Guild ID: {guildId}\n"
+    message &= fmt("  Guild ID: {guildId}") & "\n"
   message &= "\n💡 Use '/discord status' to verify configuration"
   message &= "\n💡 Use '/discord channels add <name>' to monitor specific channels"
   
@@ -1707,7 +1707,7 @@ proc discordEnableHandler(args: seq[string], session: var Session, currentModel:
   
   return CommandResult(
     success: true,
-    message: "✅ Discord integration enabled\n\n💡 Restart agent to apply changes",
+    message: "✅ Discord integration enabled\n\n💡 Starting Discord bot...",
     shouldExit: false,
     shouldContinue: true
   )
@@ -1791,7 +1791,7 @@ proc discordTestHandler(args: seq[string], session: var Session, currentModel: v
     let discriminator = if userJson.hasKey("discriminator"): userJson["discriminator"].getStr() else: "0"
     
     var message = "✅ Discord connection successful!\n\n"
-    message &= fmt"  Bot: {username}#{discriminator}\n"
+    message &= fmt("  Bot: {username}#{discriminator}") & "\n"
     
     if config.hasKey("enabled") and config["enabled"].getBool():
       message &= "  Status: ✅ Enabled\n"

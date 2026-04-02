@@ -929,6 +929,15 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
               ui_state.currentModelName = currentModel.nickname
               if not configureAPIWorker(currentModel):
                 writeCompleteLine(formatWithStyle(fmt"Warning: Failed to configure API worker with model {currentModel.nickname}. Check API key.", currentTheme.error))
+            
+            elif command == "discord" and args.len > 0 and args[0] == "enable":
+              # Start Discord integration immediately after enabling
+              if not masterState.discordEnabled:
+                masterState.initializeDiscord(database)
+                if masterState.discordEnabled:
+                  writeCompleteLine(formatWithStyle("Discord bot started and connecting...", currentTheme.success))
+                else:
+                  writeCompleteLine(formatWithStyle("Failed to start Discord. Check token and try '/discord test' first.", currentTheme.error))
 
           if res.shouldExit:
             running = false
