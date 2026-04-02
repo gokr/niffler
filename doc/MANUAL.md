@@ -263,9 +263,11 @@ outputCostPerMToken: 0
 - **←/→ Arrow Keys**: Navigate within input line
 - **↑/↓ Arrow Keys**: Command history
 - **Home/End**: Jump to start/end of line
-- **Ctrl+C**: Graceful exit
+- **Ctrl+C**: Cancel current LLM stream or exit
 - **Colored prompts** with mode indicators
 - **Persistent history** across sessions
+
+Note: Ctrl+C cancels local LLM streaming. Agent requests via NATS cannot currently be canceled mid-flight.
 
 ### Conversation Management
 
@@ -378,6 +380,12 @@ Required sections:
 
 Optional sections:
 - `## Model` - Override default model
+
+**YAML vs Markdown Agents:**
+
+The `agents` section in `config.yaml` controls process behavior (auto-start, persistence).
+The markdown files under `agents/*.md` define runtime behavior (prompts, tool permissions).
+If both exist, markdown files are the source of truth for agent behavior.
 
 ### Managing Agents
 

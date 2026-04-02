@@ -1,39 +1,32 @@
 # Niffler Documentation
 
-This directory now keeps the current, user-facing documentation for the `niffler-nats` branch.
+This directory contains user-facing documentation for Niffler.
 
 ## Start Here
 
-- [../README.md](../README.md): installation, first run, TiDB playground, and quick start
-- [CONFIG.md](CONFIG.md): config file layout, active config directories, and prompt files
-- [MODELS.md](MODELS.md): model entries, credentials, local models, and provider examples
+- [../README.md](../README.md): Installation and quick start
+- [MANUAL.md](MANUAL.md): Comprehensive user manual
 
-## Core Guides
+## Guides
 
-- [TASK.md](TASK.md): master mode, agent mode, `@agent`, and agent definition files
-- [TOOLS.md](TOOLS.md): built-in tools and MCP-discovered tools
-- [MCP_SETUP.md](MCP_SETUP.md): how to configure MCP servers in `config.yaml`
-- [EXAMPLES.md](EXAMPLES.md): common workflows and command examples
-- [ARCHITECTURE.md](ARCHITECTURE.md): implementation-level system overview
-- [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md): TiDB tables and persisted data
-- [THINK.md](THINK.md): reasoning/thinking token behavior
-- [TOKEN_COUNTING.md](TOKEN_COUNTING.md): token estimation and cost tracking
+- [MCP_SETUP.md](MCP_SETUP.md): MCP server configuration
+- [DISCORD_SETUP.md](DISCORD_SETUP.md): Discord bot setup
+- [EXAMPLES.md](EXAMPLES.md): Usage examples and workflows
 
-## Research And Historical Material
+## Reference
 
-Older design notes, roadmap material, experiments, and superseded reference docs live under [research/](research/).
+- [TOOLS.md](TOOLS.md): Built-in tools reference
+- [CONTRIBUTING.md](CONTRIBUTING.md): How to contribute
+- [TODO.md](TODO.md): Development roadmap
 
-This includes:
+## Research and Historical Material
 
-- `research/ADVANCED_CONFIG.md`
-- `research/CCPROMPTS.md`
-- `research/DEVELOPMENT.md`
-- `research/MCP.md`
-- `research/TOKENS.md`
-- `research/TOKENIZER.md`
-- existing research notes already in `research/`
+Developer notes, architecture docs, and historical material live in [research/](research/):
 
-## Notes
-
-- The docs in this directory should describe current behavior in this branch.
-- Research docs may be historically interesting, but are not guaranteed to match the current implementation.
+- `ARCHITECTURE.md`, `ARCHITECTURE_MAP.md` - System architecture
+- `DATABASE_SCHEMA.md` - TiDB schema reference
+- `THINK.md` - Thinking token implementation
+- `TOKEN_COUNTING.md` - Token estimation internals
+- `DEVELOPMENT.md` - Development guide
+- `CCPROMPTS.md` - Claude Code prompts reference
+- `NEDIT_SYSTEM_PROMPT.md` - Nedit utility prompts
