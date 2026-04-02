@@ -6,7 +6,7 @@
 ##
 ## Key Features:
 ## - Structured todo management with markdown checklist parsing/generation
-## - State persistence across conversation turns using TiDB
+## - State persistence across conversation turns using database
 ## - User approval flows for todo updates
 ## - Progress integration linking todos to implementation progress
 ## - Plan mode integration for comprehensive task breakdown
