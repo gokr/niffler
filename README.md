@@ -15,7 +15,7 @@
 - Nim 2.2.4 or later
 - Git
 - NATS Server
-- TiDB
+- TiDB or MySQL
 
 #### Nim
 Install Nim (compiler and tools) via [choosenim](https://nim-lang.org/install_unix.html):
@@ -24,8 +24,11 @@ Install Nim (compiler and tools) via [choosenim](https://nim-lang.org/install_un
 curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 ```
 
-#### TiDB
-The easiest way to get TiDB running locally is to install `tiup` and start a named playground:
+#### TiDB or MySQL
+At the moment Niffler uses MySQL compatible features but **will eventually only support Tidb since we also will use Vector search**.
+Installing and starting a local MySQL is left as an exercise to the reader :)
+
+If you opt for Tidb, the easiest way to get TiDB running locally is to install `tiup` and start a named playground:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
@@ -58,7 +61,7 @@ tiup playground display
 
 Niffler expects TiDB on `127.0.0.1:4000` by default, which matches the normal playground setup.
 
-#### NATS Server Installation
+#### NATS Server
 Niffler requires a NATS server for communication between agents.
 
 macOS:

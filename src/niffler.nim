@@ -7,7 +7,6 @@ import std/[os, logging, parseopt, strutils, times, json, strformat]
 import core/[config, database, session, app, db_config]
 import ui/[cli, agent_cli, nats_monitor]
 import types/config as configTypes
-import autonomous/[task_queue]
 import workspace/[manager]
 
 const VERSION* = staticExec("cd " & currentSourcePath().parentDir().parentDir() & " && nimble dump | grep '^version:' | cut -d'\"' -f2")

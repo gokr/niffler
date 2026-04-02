@@ -6,7 +6,7 @@
 ## - Handle conversation session state
 ## - Integrate with database for persistence
 
-import std/[options, strformat, times, logging, locks, strutils, sequtils, json, sets]
+import std/[options, strformat, times, logging, locks, strutils, json, sets]
 import ../types/[mode, messages, thinking_tokens]
 import ../tokenization/tokenizer
 import database
@@ -924,7 +924,6 @@ proc addThinkingBlock*(pool: Pool, conversationId: int, messageId: int,
   if pool == nil or messageId == 0:
     return 0
 
-  var result = 0
   pool.withDb:
     try:
       # Create MessageThinkingBlock object for insertion

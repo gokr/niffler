@@ -3,12 +3,12 @@
 ## Handles task queue processing for autonomous agents. Tasks are pulled from
 ## the database and processed using the existing task execution system.
 
-import std/[options, json, strformat, strutils, times, os, logging]
+import std/[options, json, strformat, strutils, os, logging]
 import ../core/database
 import ../core/task_executor
 import ../core/channels
 import ../workspace/manager
-import ../types/[config, agents, messages]
+import ../types/[config, agents]
 import ../tools/registry
 import debby/pools
 import debby/mysql

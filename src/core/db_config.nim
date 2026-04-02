@@ -4,7 +4,7 @@
 ## Only minimal database connection configuration is read from a local config file
 ## (or environment variables), everything else is stored in the database.
 
-import std/[os, json, strformat, strutils, options, tables, sequtils, logging, times]
+import std/[os, json, strformat, strutils, options, tables, sequtils, logging]
 import ../types/config
 import ../core/database
 import debby/pools

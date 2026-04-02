@@ -5,7 +5,6 @@
 
 import std/[options, tables, os, json, strutils, strformat, times]
 import ../core/database
-import ../types/config
 import debby/pools
 import debby/mysql
 
