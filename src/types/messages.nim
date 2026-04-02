@@ -196,6 +196,7 @@ type
       toolName*: string
       arguments*: string
       agentName*: string  ## Name of agent executing (empty = main agent with full access)
+      conversationId*: int64  ## Conversation ID for context-scoped operations (e.g., todolist)
     of trkShutdown:
       discard
 

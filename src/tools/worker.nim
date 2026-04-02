@@ -35,6 +35,7 @@ import ../core/[channels, database]
 import ../core/session as sessionMod
 import registry
 import task
+import context  # For setCurrentToolConversationId
 import ../mcp/tools as mcpTools
 import debby/pools
 
@@ -83,6 +84,8 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
           
         of trkExecute:
           debug(fmt"Processing tool request '{request.toolName}' ({request.requestId}) with arguments: {request.arguments}")
+          # Set the current conversation ID for context-scoped tools
+          setCurrentToolConversationId(request.conversationId)
           try:
             # Parse the tool call from JSON arguments
             let toolCallJson = parseJson(request.arguments)

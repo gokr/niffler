@@ -14,6 +14,7 @@
 import std/[json, options, strformat, strutils, logging]
 import ../types/tools, ../types/tool_args
 import ../core/database
+import context  # For getCurrentToolConversationId
 
 type
   TodoOperation* = enum
@@ -114,8 +115,8 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
             else: tpMedium
         else: tpMedium
         
-        # Get or create active todo list (using conversation ID 1 for now)
-        let conversationId = 1
+        # Get or create active todo list for current conversation
+        let conversationId = getCurrentToolConversationId().int
         var listId = 0
         let maybeList = getActiveTodoList(db, conversationId)
         
@@ -137,8 +138,8 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
       of "update":
         let itemNumber = parsedArgs.itemNumber
 
-        # Get or create active todo list
-        let conversationId = 1
+        # Get or create active todo list for current conversation
+        let conversationId = getCurrentToolConversationId().int
         let maybeList = getActiveTodoList(db, conversationId)
 
         if maybeList.isNone():
@@ -200,8 +201,8 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
       of "delete":
         let itemNumber = parsedArgs.itemNumber
 
-        # Get active todo list
-        let conversationId = 1
+        # Get active todo list for current conversation
+        let conversationId = getCurrentToolConversationId().int
         let maybeList = getActiveTodoList(db, conversationId)
 
         if maybeList.isNone():
@@ -240,7 +241,7 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
           return $ %*{"error": fmt"Failed to cancel item {itemNumber}"}
 
       of "list", "show":
-        let conversationId = 1
+        let conversationId = getCurrentToolConversationId().int
         let maybeList = getActiveTodoList(db, conversationId)
         
         if maybeList.isSome():
@@ -266,7 +267,7 @@ proc executeTodolist*(args: JsonNode): string {.gcsafe.} =
       of "bulk_update":
         let updates = parseTodoUpdates(parsedArgs.todos)
         
-        let conversationId = 1
+        let conversationId = getCurrentToolConversationId().int
         var listId = 0
         let maybeList = getActiveTodoList(db, conversationId)
         
