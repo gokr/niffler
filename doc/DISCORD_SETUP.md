@@ -4,46 +4,10 @@ This guide walks you through setting up Niffler as a Discord bot that can receiv
 
 ## Prerequisites
 
+- Working Niffler installation with database (see main README)
 - Discord account
-- TiDB database running (see Database Setup below)
-- Nim 2.2.6+ installed
-- Niffler compiled from source
 
-## Step 1: Database Setup
-
-### Option A: Local TiDB with Docker
-
-```bash
-# Pull and run TiDB
-docker run -d --name tidb-server \
-  -p 4000:4000 \
-  pingcap/tidb:latest
-
-# Verify it's running
-docker ps | grep tidb
-```
-
-### Option B: Managed TiDB Cloud
-
-1. Sign up at https://tidbcloud.com/
-2. Create a free Serverless Tier cluster
-3. Get connection details (host, port, user, password)
-
-### Verify Database Connection
-
-```bash
-# Install MySQL client if needed
-# On Ubuntu/Debian: sudo apt install mysql-client
-# On macOS: brew install mysql
-
-# Test connection
-mysql -h 127.0.0.1 -P 4000 -u root
-
-# You should see the MySQL prompt
-# Type 'exit' to quit
-```
-
-## Step 2: Create Discord Bot
+## Step 1: Create Discord Bot
 
 ### Create Application
 
@@ -89,170 +53,71 @@ mysql -h 127.0.0.1 -P 4000 -u root
 5. Open it in a browser
 6. Select your server and authorize the bot
 
-## Step 3: Configure Niffler
+### Get Guild ID (Optional)
 
-### Create Database Config
-
-Create a minimal database configuration file:
-
-```bash
-mkdir -p ~/.config/niffler
-
-# Create config file
-cat > ~/.config/niffler/db_config.yaml << 'EOF'
-{
-  "host": "127.0.0.1",
-  "port": 4000,
-  "database": "niffler",
-  "username": "root",
-  "password": ""
-}
-EOF
-```
-
-**For TiDB Cloud**, use your connection details:
-
-```bash
-cat > ~/.config/niffler/db_config.yaml << 'EOF'
-{
-  "host": "gateway01.us-west-2.prod.aws.tidbcloud.com",
-  "port": 4000,
-  "database": "niffler",
-  "username": "your-username",
-  "password": "your-password"
-}
-EOF
-```
-
-### Store Discord Token in Database
-
-Connect to your database and store the Discord configuration:
-
-```bash
-# Connect to database
-mysql -h 127.0.0.1 -P 4000 -u root niffler
-
-# Run this SQL to add Discord config:
-INSERT INTO agent_config (`key`, value, updated_at) VALUES (
-  'discord',
-  '{
-    "enabled": true,
-    "token": "YOUR_DISCORD_BOT_TOKEN_HERE",
-    "guildId": "YOUR_GUILD_ID_HERE",
-    "monitoredChannels": ["general", "dev"]
-  }',
-  NOW()
-);
-```
-
-Replace:
-- `YOUR_DISCORD_BOT_TOKEN_HERE` with your actual bot token
-- `YOUR_GUILD_ID_HERE` with your server's guild ID (optional, for filtering)
-- `monitoredChannels` with the channels you want Niffler to monitor (optional)
-
-**How to get Guild ID:**
+For filtering to a specific server:
 1. In Discord, enable Developer Mode (User Settings → Advanced → Developer Mode)
 2. Right-click your server name
 3. Click "Copy Server ID"
 
-### Store Model Configuration
+## Step 2: Configure Discord in Niffler
 
-Add at least one AI model to the database:
+Start Niffler and use the `/discord` commands to configure:
 
-```sql
--- For OpenAI
-INSERT INTO agent_config (`key`, value, updated_at) VALUES (
-  'models',
-  '[
-    {
-      "nickname": "gpt4",
-      "model": "gpt-4",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-your-openai-key",
-      "context": 8192
-    }
-  ]',
-  NOW()
-);
+### Connect Discord Bot
 
--- For Claude (Anthropic)
-INSERT INTO agent_config (`key`, value, updated_at) VALUES (
-  'models',
-  '[
-    {
-      "nickname": "claude",
-      "model": "claude-3-sonnet-20240229",
-      "baseUrl": "https://api.anthropic.com/v1",
-      "apiKey": "sk-ant-your-claude-key",
-      "context": 200000
-    }
-  ]',
-  NOW()
-);
+```
+/discord connect YOUR_BOT_TOKEN [GUILD_ID]
 ```
 
-### Create a Workspace
-
-```sql
--- Create your first workspace
-INSERT INTO workspace (name, path, description, git_remote, default_branch, settings, created_at) VALUES (
-  'myproject',
-  '/home/user/projects/myproject',
-  'My main project',
-  'https://github.com/username/myproject.git',
-  'main',
-  '{}',
-  NOW()
-);
+Example:
+```
+/discord connect OTk2MTg5NjQxNjk3MjYzMDQw.GhK7Xa.abc123
+/discord connect OTk2MTg5NjQxNjk3MjYzMDQw.GhK7Xa.abc123 123456789
 ```
 
-## Step 4: Build Niffler
+### Test Connection
+
+```
+/discord test
+```
+
+This validates your token and shows the bot username.
+
+### Configure Channels (Optional)
+
+To monitor specific channels only:
+
+```
+/discord channels add general
+/discord channels add dev
+/discord channels list
+```
+
+When no channels are specified, the bot monitors all channels it has access to.
+
+### Enable/Disable Discord
+
+```
+/discord enable
+/discord disable
+```
+
+### Check Status
+
+```
+/discord status
+```
+
+## Step 3: Start the Agent
 
 ```bash
-# Clone or navigate to repository
-cd /path/to/niffler
-
-# Install dependencies
-nimble install -d
-
-# Build
-nim c src/niffler.nim
-
-# Verify it compiled
-ls -la src/niffler
+./src/niffler agent coder
 ```
 
-## Step 5: Run Niffler
+The agent will connect to Discord and start listening for messages.
 
-### Start the Agent
-
-```bash
-# Start with default model
-./src/niffler agent coder --model=gpt4
-
-# Or with specific model
-./src/niffler agent mybot --model=claude
-```
-
-You should see:
-```
-Agent 'coder' registered. Ready for tasks.
-Press Ctrl+C to stop.
-```
-
-### Check Logs
-
-In another terminal:
-
-```bash
-# View running processes
-ps aux | grep niffler
-
-# Check database for agent registration
-mysql -h 127.0.0.1 -P 4000 -u root niffler -e "SELECT * FROM agent;"
-```
-
-## Step 6: Test Discord Integration
+## Step 4: Test Discord Integration
 
 ### Send a Task via Discord
 
@@ -285,142 +150,47 @@ review the code in src/main.nim
 2. **Processing**: The task will be processed by the task queue
 3. **Result**: When complete, results will be stored in the database
 
-### Check Task Status
+## Discord Commands Reference
 
-```bash
-# Connect to database
-mysql -h 127.0.0.1 -P 4000 -u root niffler
-
-# List recent tasks
-SELECT id, status, instruction, result 
-FROM task_queue_entry 
-ORDER BY created_at DESC 
-LIMIT 5;
-
-# Check specific task
-SELECT * FROM task_queue_entry WHERE id = 123;
-```
-
-### View Results
-
-Results are stored as JSON in the `result` column:
-
-```sql
--- Get task result
-SELECT id, status, 
-       JSON_EXTRACT(result, '$.summary') as summary,
-       JSON_EXTRACT(result, '$.artifacts') as artifacts,
-       JSON_EXTRACT(result, '$.toolCalls') as tool_calls,
-       JSON_EXTRACT(result, '$.durationMs') as duration_ms
-FROM task_queue_entry 
-WHERE id = 123;
-```
+| Command | Description |
+|---------|-------------|
+| `/discord status` | Show current Discord configuration |
+| `/discord connect <token> [guildId]` | Set Discord bot token |
+| `/discord test` | Test Discord connection |
+| `/discord enable` | Enable Discord integration |
+| `/discord disable` | Disable Discord integration |
+| `/discord channels list` | List monitored channels |
+| `/discord channels add <name>` | Add channel to monitor |
+| `/discord channels remove <name>` | Remove channel from monitor |
 
 ## Troubleshooting
 
 ### Bot Not Responding
 
 1. **Check if bot is online** in Discord
-2. **Verify token**: Ensure the token in database matches your bot token
+2. **Verify token**: Run `/discord test` to validate
 3. **Check permissions**: Bot needs MESSAGE CONTENT INTENT enabled
-4. **Check database**: Verify agent is registered:
-   ```sql
-   SELECT * FROM agent WHERE agent_id = 'your-agent-name';
-   ```
+4. **Check status**: Run `/discord status` to see configuration
 
-### Database Connection Issues
+### Token Invalid
 
-1. **Verify TiDB is running**:
-   ```bash
-   docker ps | grep tidb
-   ```
-
-2. **Test connection**:
-   ```bash
-   mysql -h 127.0.0.1 -P 4000 -u root -e "SELECT 1"
-   ```
-
-3. **Check config file**:
-   ```bash
-   cat ~/.config/niffler/db_config.yaml
-   ```
+1. Go to Discord Developer Portal
+2. Reset the token
+3. Run `/discord connect <new-token>`
 
 ### Tasks Not Processing
 
-1. **Check task queue**:
-   ```sql
-   SELECT COUNT(*) FROM task_queue_entry WHERE status = 'pending';
-   ```
-
-2. **Check agent status**:
-   ```sql
-   SELECT agent_id, status, last_heartbeat FROM agent;
-   ```
-
-3. **View recent tasks**:
-   ```sql
-   SELECT id, status, instruction, error 
-   FROM task_queue_entry 
-   ORDER BY created_at DESC 
-   LIMIT 10;
-   ```
-
-### Compilation Errors
-
-If you get compilation errors:
-
-```bash
-# Clean and rebuild
-rm -f src/niffler
-nim c src/niffler.nim 2>&1 | head -100
-```
-
-## Advanced Configuration
-
-### Environment Variables
-
-You can also use environment variables instead of the config file:
-
-```bash
-export NIFFLER_DB_HOST=127.0.0.1
-export NIFFLER_DB_PORT=4000
-export NIFFLER_DB_DATABASE=niffler
-export NIFFLER_DB_USERNAME=root
-export NIFFLER_DB_PASSWORD=""
-export DISCORD_TOKEN="your-bot-token"
-
-./src/niffler agent coder
-```
-
-### Multiple Channels
-
-To monitor multiple channels:
-
-```sql
-UPDATE agent_config 
-SET value = '{
-  "enabled": true,
-  "token": "your-token",
-  "guildId": "your-guild-id",
-  "monitoredChannels": ["general", "dev", "alerts"]
-}'
-WHERE `key` = 'discord';
-```
-
-### Task Priority
-
-Tasks are automatically assigned priority based on source:
-- Discord mentions: High priority (10)
-- Direct messages: Medium priority (5)
-- Other: Normal priority (0)
+1. Verify agent is running: `ps aux | grep niffler`
+2. Check Discord status: `/discord status`
+3. Test connection: `/discord test`
 
 ## Security Notes
 
 ⚠️ **Never commit your Discord token or API keys to git!**
 
-- Store tokens in database only
-- Use environment variables if needed
-- Rotate tokens regularly
+- Tokens are stored in database only
+- Run `/discord status` shows masked token
+- Rotate tokens regularly via Discord Developer Portal
 - Use Discord's permission system to limit bot access
 
 ## Next Steps
@@ -428,19 +198,9 @@ Tasks are automatically assigned priority based on source:
 Once Discord is working:
 
 1. **Test different tasks**: Code review, refactoring, documentation
-2. **Configure workspaces**: Add more projects to work on
-3. **Set up scheduled jobs**: Regular maintenance tasks
+2. **Configure multiple channels**: `/discord channels add <channel>`
+3. **Set up workspaces**: See workspace documentation
 4. **Add file watchers**: React to code changes
-5. **Enable webhooks**: GitHub integration
-
-## Quick Reference
-
-| Command | Description |
-|---------|-------------|
-| `./src/niffler agent coder` | Start agent named "coder" |
-| `mysql -h 127.0.0.1 -P 4000 -u root niffler` | Connect to database |
-| `SELECT * FROM task_queue_entry ORDER BY created_at DESC LIMIT 5;` | View recent tasks |
-| `SELECT * FROM agent;` | View registered agents |
 
 ---
 

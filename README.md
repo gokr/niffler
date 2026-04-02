@@ -1,12 +1,68 @@
-# Niffler - AI Assistant in Nim
+# Niffler - Autonomous Swarm Software Development
 
 ![Nim](https://img.shields.io/badge/Nim-2.2.4-yellow.svg)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Version](https://img.shields.io/badge/Version-0.4.0-green.svg)
+![Version](https://img.shields.io/badge/Version-0.5.0-green.svg)
 
-**Niffler** is a "Claude Code" style AI assistant built in Nim with support for multiple AI models and providers, a builtin tool system and a fully persistent conversation model using TiDB (MySQL-compatible distributed database). Niffler is heavily inspired by Claude Code but was initially started when I stumbled over [Octofriend](https://github.com/synthetic-lab/octofriend/). It has evolved into a distributed multi agent system where each agent runs as its own Niffler process and collaborates in a "chat room style" using NATS.
+**Niffler** is an autonomous multi-agent system for software development. Multiple AI agents collaborate as a swarm, coordinated through a shared database and real-time NATS messaging. The master Niffler process acts as a control center, directing agents via CLI or Discord.
 
-**NOTE: Niffler is to a large extent coded using Claude Code!**
+**Key idea**: Instead of one AI assistant, run a swarm of specialized agents that discover each other, share context, and collaborate on complex software tasks.
+
+**NOTE: Niffler is largely coded using Claude Code and Niffler itself!**
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Master Niffler                            │
+│  - Control center with CLI/Discord interface                     │
+│  - Routes tasks to agents via NATS                               │
+│  - Syncs configuration to database                               │
+│  - Monitors agent health and presence                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ NATS (pub/sub)
+                              ▼
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   Agent: Coder   │  │ Agent: Researcher │  │  Agent: Tester   │
+│  - Reads DB      │  │  - Reads DB       │  │  - Reads DB      │
+│  - NATS messages │  │  - NATS messages  │  │  - NATS messages │
+│  - Independent   │  │  - Independent    │  │  - Independent   │
+│  - Specialized   │  │  - Specialized    │  │  - Specialized   │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
+                              │
+                              │ Shared Database (TiDB/MySQL)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    TiDB / MySQL Database                         │
+│  - Conversation persistence                                       │
+│  - Token usage and cost tracking                                  │
+│  - Task queue with priorities                                     │
+│  - Agent configuration and presence                               │
+│  - Workspace management                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Components
+
+**Master Niffler** - Control center that:
+- Provides CLI interface with `@agent` routing
+- Syncs configuration from `~/.niffler/config.yaml` to database
+- Discovers available agents via NATS presence
+- Routes requests and commands to agents
+- Optional Discord integration for remote control
+
+**Agent Nifflers** - Independent workers that:
+- Bootstrap from database (no local config needed)
+- Connect to NATS for real-time messaging
+- Execute tasks independently with tool access
+- Maintain presence and heartbeat
+- Can be deployed anywhere with DB/NATS access
+
+**Communication Channels**:
+- **NATS**: Real-time agent coordination (required)
+- **Discord**: Remote interface for master and agents (optional)
+- **Database**: Persistent state, configuration, task queues
 
 ## Quick Start
 
@@ -18,102 +74,55 @@
 - TiDB or MySQL
 
 #### Nim
-Install Nim (compiler and tools) via [choosenim](https://nim-lang.org/install_unix.html):
+Install Nim via [choosenim](https://nim-lang.org/install_unix.html):
 
 ```bash
 curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 ```
 
 #### TiDB or MySQL
-At the moment Niffler uses MySQL compatible features but **will eventually only support Tidb since we also will use Vector search**.
-Installing and starting a local MySQL is left as an exercise to the reader :)
+Niffler uses MySQL-compatible features. TiDB is preferred for future vector search support.
 
-If you opt for Tidb, the easiest way to get TiDB running locally is to install `tiup` and start a named playground:
-
+**TiDB Playground** (recommended):
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
-```
-
-Then start a persistent playground:
-
-```bash
 tiup playground --tag niffler
 ```
 
-Why use `--tag niffler`:
-
-- It stores the cluster data under `~/.tiup/data/niffler`
-- You can stop it and later start the same named playground again with the same command
-- Niffler can keep using the same local TiDB instance across restarts
-
-Useful playground commands:
-
+**MySQL** (local):
 ```bash
-# Start or resume the same named playground
-tiup playground --tag niffler
+# Ubuntu/Debian
+sudo apt install mysql-server
 
-# Connect with the built-in client
-tiup client
-
-# Show running playground processes
-tiup playground display
+# macOS
+brew install mysql
 ```
-
-Niffler expects TiDB on `127.0.0.1:4000` by default, which matches the normal playground setup.
 
 #### NATS Server
-Niffler requires a NATS server for communication between agents.
-
-macOS:
+Required for agent communication:
 
 ```bash
+# macOS
 brew install nats-server
-```
 
-Ubuntu/Debian:
+# Ubuntu/Debian
+sudo apt install nats-server
 
-```bash
-sudo apt update
-sudo apt install -y nats-server
-```
-
-Start it with:
-
-```bash
+# Start with JetStream
 nats-server -js
 ```
 
 ### 2. Install system libraries
 
-macOS:
-
+**macOS**:
 ```bash
-brew install cnats
-brew install mariadb-connector-c
+brew install cnats mariadb-connector-c
 ```
 
-If the MySQL client library is not found at runtime, you may also need:
-
+**Ubuntu/Debian**:
 ```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib:$DYLD_LIBRARY_PATH"
+sudo apt install libnats3.7t64 libnats-dev libmariadb-dev
 ```
-
-You may also need to help the compiler find Apple SDK headers:
-
-```bash
-export CPATH="$(xcrun --show-sdk-path)/usr/include"
-```
-
-Ubuntu/Debian:
-
-```bash
-sudo apt update
-sudo apt install -y libnats3.7t64 libnats-dev
-```
-
-Windows:
-
-> The NATS library is typically bundled with the Nim package on Windows.
 
 ### 3. Build Niffler
 
@@ -124,204 +133,202 @@ nimble build
 ### 4. Initialize config
 
 ```bash
-./src/niffler init
+./niffler init
 ```
 
-- macOS/Linux: `~/.niffler/config.yaml`
-- Windows: `%APPDATA%/niffler/config.yaml`
+### 5. Configure models
 
-### 5. Add credentials if needed
-
-The default config is meant to start cleanly on a fresh machine.
-
-- Local models such as Ollama and LM Studio can work without remote API keys
-- Enabled remote models without usable credentials are reported at startup
-- You can either edit `api_key` in `config.yaml` or set the matching `api_env_var`
+Edit `~/.niffler/config.yaml` to add your API keys, or set environment variables:
 
 ```bash
 export OPENROUTER_API_KEY="your-key-here"
-./src/niffler
+export REQUESTY_API_KEY="your-key-here"
 ```
 
-### 6. Start Niffler
+### 6. Start the swarm
 
+**Terminal 1 - Start NATS**:
 ```bash
-./src/niffler
+nats-server -js
 ```
 
-For more detailed setup and reference material, keep reading below.
-
-## Overview
-
-Niffler is a terminal-first coding assistant with:
-
-- Multiple model providers via OpenAI-compatible APIs
-- Local model support through Ollama and LM Studio
-- Persistent conversations stored in TiDB
-- Multi-agent routing over NATS with `@agent` syntax
-- Built-in tools plus MCP integration
-- Markdown rendering, prompt files, and model-specific settings
-
-## Multi-Agent Architecture
-
-Niffler supports a distributed multi-agent system with two modes:
-
-### Master Mode
-Master Niffler reads configuration from `~/.niffler/config.yaml` and syncs it to the database. It provides:
-- CLI interface with `@agent` routing
-- Discord integration for remote access
-- NATS-based coordination with agents
-
+**Terminal 2 - Start database** (if not running):
 ```bash
-./src/niffler  # Start master with CLI
-./src/niffler --nats-url=nats://localhost:4222  # Custom NATS URL
+tiup playground --tag niffler
+# or: mysql-server
 ```
 
-### Agent Mode
-Agents bootstrap from minimal CLI args, then pull all config from database:
-- No filesystem config needed
-- Connect to NATS and optional Discord channels
-- Stateless - can be deployed anywhere
-
+**Terminal 3 - Start master**:
 ```bash
-./src/niffler agent coder --db-host=127.0.0.1 --db-port=4000 --db-name=niffler
+./niffler
 ```
 
-### Communication Channels
-- **NATS**: Real-time agent coordination (required)
-- **Discord**: Alternative interface for master and agents (optional)
-- **Database**: Persistent task queue, configuration, and workspace management
-
-### Routing Examples
+**Terminal 4+ - Start agents**:
 ```bash
-# In master CLI:
-> @coder fix the bug in main.nim
-> @researcher compare HTTP libraries for Nim
-> /agents  # List connected agents
-> /sync    # Reload config from YAML and sync to database
+./niffler agent coder
+./niffler agent researcher
+./niffler agent tester
 ```
 
-More detail lives in:
+### 7. Route tasks to agents
 
-- [doc/TASK.md](doc/TASK.md)
-- [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
+In master CLI:
+```
+> @coder fix the build failure in src/api.nim
+> @researcher find the best NATS client for Nim
+> @coder /task implement error handling for the API
 
-## Features
-
-- Plan/code workflow with mode-aware prompting
-- Tool calling for shell, file, web, and task operations
-- Thinking-token support for models that expose reasoning
-- Token and cost tracking
-- MCP server integration
-- **Discord integration** - Use Niffler via Discord (see `src/comms/discord.nim`)
-- **Task queue** - Persistent task queue with priority and retry logic
-- **Workspace management** - Multi-project support with file watchers and webhooks
-
-Details live in:
-
-- [doc/TOOLS.md](doc/TOOLS.md)
-- [doc/MCP_SETUP.md](doc/MCP_SETUP.md)
-- [doc/TOKEN_COUNTING.md](doc/TOKEN_COUNTING.md)
-- [doc/MODELS.md](doc/MODELS.md)
-
-## 💻 Usage Examples
-
-### Interactive Mode (Master CLI)
-```bash
-# Start interactive mode with agent routing
-niffler
-
-# Within interactive mode, route to agents:
-> @coder fix the bug in main.nim
-> @researcher find the best HTTP library
-
-# List available models
-niffler model list
-
-# Use specific model
-niffler --model=gpt4
-
-# Set logging level
-niffler --loglevel=DEBUG       # Verbose debugging
-niffler --loglevel=INFO        # General information
-niffler --loglevel=NOTICE      # Default (notice and above)
-niffler --loglevel=WARN        # Warnings and above
-niffler --loglevel=ERROR       # Errors only
-
-# Enable HTTP request/response dumping for debugging
-niffler --dump
-
-# Combine loglevel and dump for maximum visibility
-niffler --loglevel=DEBUG --dump
+> /agents          # List available agents
+> /focus coder     # Set default agent
+> fix this bug     # Routes to focused agent
 ```
 
-### Single-Shot Tasks (Agent Mode)
+## Usage
+
+### Master Mode (Control Center)
+
+Start master with CLI interface:
 ```bash
-# Execute a single task with an agent and exit
-# Perfect for scripting and automation
-niffler agent coder --task="Create a README for this project"
-
-# With specific model
-niffler agent researcher --task="Find latest version of all dependencies" --model=kimi
-
-# Route a command with mode switching
-niffler agent coder --task="/plan analyze the codebase structure"
-
-# Script-friendly - chain multiple tasks
-niffler agent coder --task="Lint all source files"
-niffler agent researcher --task="Find latest version of all dependencies"
+./niffler                                    # Default NATS URL
+./niffler --nats-url=nats://localhost:4222   # Custom NATS
 ```
 
-### Configuration Management
-```bash
-# Initialize configuration
-niffler init
-
-# Initialize with custom path
-niffler init /path/to/config
+Master commands:
+```
+@coder fix the bug           # Route to specific agent
+/agents                      # List connected agents
+/focus coder                 # Set default agent
+/model synthetic-glm5        # Switch model
+/conv                        # List conversations
+/new                         # New conversation
+/help                        # Show all commands
 ```
 
-## 📚 Documentation
+### Agent Mode (Workers)
 
-- **[Documentation Index](doc/README.md)** - Overview of current docs and research notes
-- **[Configuration Guide](doc/CONFIG.md)** - Comprehensive configuration documentation
-- **[Model Setup](doc/MODELS.md)** - AI model configuration and providers
-- **[Tool System](doc/TOOLS.md)** - Tool execution, security, and extensions
-- **[MCP Setup](doc/MCP_SETUP.md)** - External tool server integration
-- **[Architecture](doc/ARCHITECTURE.md)** - System design and architecture
-- **[Usage Examples](doc/EXAMPLES.md)** - Common patterns and workflows
-- **[Multi-Agent System](doc/TASK.md)** - Agent-based architecture
-
-## 🧪 Development
-
-### Running Tests
+Start agents that pull config from database:
 ```bash
-# Run all tests
+./niffler agent coder --db-host=127.0.0.1 --db-port=4000 --db-name=niffler
+./niffler agent researcher --db-host=127.0.0.1 --db-port=4000
+```
+
+Single-shot tasks:
+```bash
+./niffler agent coder --task="Fix the build failure" --model=synthetic-glm5
+./niffler agent researcher --task="Find HTTP libraries for Nim"
+```
+
+### Discord Integration
+
+Agents and master can communicate via Discord:
+```bash
+./niffler --discord --discord-token="YOUR_BOT_TOKEN"
+./niffler agent coder --discord --discord-token="YOUR_BOT_TOKEN"
+```
+
+See [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) for configuration.
+
+## Agent Definitions
+
+Agents are defined in markdown files under `~/.niffler/<config>/agents/`:
+
+```markdown
+# Coder Agent
+
+## Description
+Specialized in code analysis and implementation.
+
+## Model
+synthetic-glm5
+
+## Allowed Tools
+- read
+- edit
+- create
+- bash
+- list
+- fetch
+
+## System Prompt
+
+You are a coding expert. Available tools: {availableTools}
+```
+
+Agent configuration in `config.yaml` controls process behavior:
+```yaml
+agents:
+  - id: "coder"
+    name: "Code Expert"
+    model: "synthetic-glm5"
+    auto_start: true
+    persistent: true
+    tool_permissions:
+      - read
+      - edit
+      - create
+      - bash
+      - list
+      - fetch
+```
+
+## Roadmap
+
+**Current**:
+- ✅ Master-agent routing over NATS
+- ✅ Conversation persistence in TiDB
+- ✅ Agent presence and discovery
+- ✅ Tool execution with permissions
+- ✅ Discord integration
+- ✅ Task queue with priorities
+
+**In Progress**:
+- 🔄 Agent-to-agent direct messaging
+- 🔄 Shared context store for collaboration
+- 🔄 Workflow orchestration
+
+**Planned**:
+- ⏳ Agent capability discovery and auto-matching
+- ⏳ Hierarchical task decomposition
+- ⏳ Multi-agent collaboration on single task
+- ⏳ Visual workflow definition
+- ⏳ Agent reputation and reliability scoring
+
+## Documentation
+
+- **[MANUAL.md](doc/MANUAL.md)** - Comprehensive user manual
+- **[TOOLS.md](doc/TOOLS.md)** - Built-in tools reference
+- **[MCP_SETUP.md](doc/MCP_SETUP.md)** - MCP server integration
+- **[EXAMPLES.md](doc/EXAMPLES.md)** - Usage patterns
+- **[DISCORD_SETUP.md](doc/DISCORD_SETUP.md)** - Discord bot setup
+- **[CONTRIBUTING.md](doc/CONTRIBUTING.md)** - Contributing guide
+
+Developer docs in [doc/research/](doc/research/):
+- Architecture details
+- Database schema
+- Implementation notes
+
+## Development
+
+```bash
+# Run tests
 nimble test
-```
 
-### Building
-```bash
 # Development build
 nim c src/niffler.nim
 
 # Release build
 nimble build
+
+# Debug logging
+./niffler --loglevel=DEBUG --dump
 ```
 
-### Debugging
+## License
 
-The `--dump` flag provides complete HTTP request and response logging and `--loglevel=DEBUG` provides detailed debug logging. Use `--loglevel=INFO` for general information logging.
+MIT License - see [LICENSE](LICENSE) file.
 
-## 🤝 Contributing
+## Acknowledgments
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Nim Programming Language**: For providing an excellent, performant language for systems programming
-- **Original Octofriend**: For inspiring the feature set and a very friendly Discord
+- **Nim Programming Language** - Performant systems programming
+- **Claude Code** - Inspiration for the tool-calling workflow
+- **Octofriend** - Initial Discord integration inspiration
