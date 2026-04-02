@@ -34,6 +34,7 @@ import ../api/api
 import ../api/curlyStreaming
 import ../tools/[worker, common]
 import ../mcp/[mcp, tools as mcpTools]
+import ../comms/discord
 import commands
 import theme
 import table_utils
@@ -833,12 +834,20 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
 
     if spawnedAgents.len > 0:
       writeCompleteLine(formatWithStyle(fmt"Auto-started {spawnedAgents.len} agent(s)", currentTheme.success))
+    
+    # Initialize Discord integration
+    masterState.initializeDiscord(database)
+    if masterState.discordEnabled:
+      writeCompleteLine(formatWithStyle("Discord integration enabled", currentTheme.success))
   else:
     writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
 
   # Interactive loop
   var running = true
   while running:
+    # Poll for Discord messages and route to agents
+    masterState.pollDiscordMessages()
+    
     try:
       # Read user input with dynamic prompt
       let input = readInputWithPrompt(currentModel)

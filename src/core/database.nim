@@ -1,7 +1,7 @@
 ## Database Management Module
 ##
 ## This module provides comprehensive database functionality for Niffler:
-## - TiDB (MySQL-compatible) backend with connection pooling
+## - Database (MySQL-compatible) backend with connection pooling
 ## - Conversation management with metadata tracking
 ## - Message persistence with tool call support
 ## - Token usage logging and cost tracking
@@ -636,8 +636,8 @@ proc init*(backend: DatabaseBackend) =
         error(fmt"  1. Using mysql client (if installed):")
         error(fmt"     mysql -h {host} -P {port} -u <admin_user> -p -e " & "\"CREATE DATABASE " & database & "\"")
         error("")
-        error("  2. Using TiDB Cloud console (if using cloud):")
-        error("     https://tidbcloud.com - navigate to your cluster and create database")
+        error("  2. Using your database console (if using managed service)")
+        error("     Navigate to your database dashboard to create the database")
         error("")
         error("  3. Have your database administrator create it for you")
         error("")
@@ -661,8 +661,8 @@ proc init*(backend: DatabaseBackend) =
           error(fmt"  1. Using mysql client (if installed):")
           error(fmt"     mysql -h {host} -P {port} -u root -p -e " & "\"CREATE DATABASE " & database & "\"")
           error("")
-          error("  2. Using TiDB Cloud console (if using cloud):")
-          error("     https://tidbcloud.com - navigate to your cluster and create database")
+          error("  2. Using your database console (if using managed service)")
+          error("     Navigate to your database dashboard to create the database")
           error("")
           error("  3. Contact your database administrator")
           error("")
@@ -675,9 +675,9 @@ proc init*(backend: DatabaseBackend) =
 
     # Single consolidated database message
     let status = if dbCreated: "created and opened" elif databaseOpened: "opened" else: "initialized"
-    info(fmt"TiDB database {status} with {poolSize} connections ({host}:{port}/{database})")
+    info(fmt"Database {status} with {poolSize} connections ({host}:{port}/{database})")
   except Exception as e:
-    error(fmt"Failed to initialize TiDB database pool: {e.msg}")
+    error(fmt"Failed to initialize database pool: {e.msg}")
     raise e
 
 proc close*(backend: DatabaseBackend) =
@@ -1413,8 +1413,8 @@ proc initializeGlobalDatabase*(level: Level): DatabaseBackend =
         debug("Database backend disabled in configuration")
         result = nil
     else:
-      # No database configuration found - create default TiDB configuration
-      debug("No database configuration found, creating default TiDB database")
+      # No database configuration found - create default configuration
+      debug("No database configuration found, creating default database")
       let defaultDbConfig = DatabaseConfig(
         enabled: true,
         host: "127.0.0.1",
