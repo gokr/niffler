@@ -1,6 +1,7 @@
 bin
 nimcache
 niffler
+nedit
 testresults
 *.log
 .roo
@@ -9,6 +10,8 @@ niffler.dSYM
 # Compiled Nim binaries
 tests/test_*
 !tests/test_*.nim
+src/api/api
+src/core/completion_detection
 
 .venv
 
