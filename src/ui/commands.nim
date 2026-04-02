@@ -149,7 +149,7 @@ Use '@agent prompt' to send to an agent, or '/focus agent' to set default.
 Use '/new <title>' to create a new conversation (routes to focused agent).
 Use '/plan' or '/code' to switch modes.
 
-Press Ctrl+C to stop streaming or exit. Ctrl-Z to suspend.
+Press Ctrl+C to cancel streaming or exit.
 
 """
   # Group commands by category
@@ -158,18 +158,18 @@ Press Ctrl+C to stop streaming or exit. Ctrl-Z to suspend.
 
   message &= "Global commands:\n"
   for cmd in globalCommands:
-    message &= "  /{cmd.name}".fmt
+    message &= fmt"  /{cmd.name}"
     if cmd.usage.len > 0:
-      message &= " {cmd.usage}".fmt
-    message &= " - {cmd.description}\n".fmt
+      message &= fmt" {cmd.usage}"
+    message &= fmt" - {cmd.description}\n"
 
   if agentCommands.len > 0:
     message &= "\nAgent commands (use @agent /cmd or /focus to set default):\n"
     for cmd in agentCommands:
-      message &= "  /{cmd.name}".fmt
+      message &= fmt"  /{cmd.name}"
       if cmd.usage.len > 0:
-        message &= " {cmd.usage}".fmt
-      message &= " - {cmd.description}\n".fmt
+        message &= fmt" {cmd.usage}"
+      message &= fmt" - {cmd.description}\n"
 
   return CommandResult(
     success: true,
@@ -1875,12 +1875,12 @@ proc initializeCommands*() =
   registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
   registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
   registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
-  registerCommand("discord", "Discord bot configuration", "<status|connect|channels|enable|disable|test>", @[], discordHandler, ccGlobal)
+  registerCommand("discord", "Discord bot configuration", "<status,connect,channels,enable,disable,test>", @[], discordHandler, ccGlobal)
 
   # Agent commands - run in agent context
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
   registerCommand("context", "Show conversation context information", "", @[], contextHandler, ccAgent)
-  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[messages|tools|model|system] [filename]", @[], inspectHandler, ccAgent)
+  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[messages,tools,model,system] [filename]", @[], inspectHandler, ccAgent)
   registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent)
   registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent)
   registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)
