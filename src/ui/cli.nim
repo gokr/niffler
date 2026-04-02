@@ -938,6 +938,12 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
                   writeCompleteLine(formatWithStyle("Discord bot started and connecting...", currentTheme.success))
                 else:
                   writeCompleteLine(formatWithStyle("Failed to start Discord. Check token and try '/discord test' first.", currentTheme.error))
+            
+            elif command == "discord" and args.len > 0 and (args[0] == "disable" or args[0] == "off"):
+              # Stop Discord integration immediately after disabling
+              if masterState.discordEnabled:
+                masterState.shutdownDiscord()
+                writeCompleteLine(formatWithStyle("Discord bot stopped", currentTheme.success))
 
           if res.shouldExit:
             running = false

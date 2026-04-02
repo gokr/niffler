@@ -130,6 +130,14 @@ proc initializeDiscord*(state: var MasterState, database: DatabaseBackend) =
   startDiscordThread(token, guildId, channels)
   info("Discord integration started")
 
+proc shutdownDiscord*(state: var MasterState) =
+  ## Stop Discord integration
+  if state.discordEnabled:
+    stopDiscordBot()
+    state.discordEnabled = false
+    state.discordToken = ""
+    info("Discord integration stopped")
+
 proc setCurrentAgent*(state: var MasterState, agentName: string) =
   ## Set the current/focused agent for command routing
   state.currentAgent = agentName

@@ -1480,13 +1480,13 @@ proc discordStatusHandler(args: seq[string], session: var Session, currentModel:
     shouldContinue: true
   )
 
-proc discordConnectHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Connect Discord bot with token
+proc discordTokenHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Set Discord bot token
   if args.len < 1:
     return CommandResult(
       success: false,
-      message: "❌ Usage: /discord connect <token> [guildId]\n\n" &
-                "Example: /discord connect OTk2MTg5NjQxNjk3MjYzMDQw.GhK7Xa.abc123 123456789",
+      message: "❌ Usage: /discord token <token> [guildId]\n\n" &
+                "Example: /discord token OTk2MTg5NjQxNjk3MjYzMDQw.GhK7Xa.abc123 123456789",
       shouldExit: false,
       shouldContinue: true
     )
@@ -1505,26 +1505,23 @@ proc discordConnectHandler(args: seq[string], session: var Session, currentModel
   
   # Load existing config or create new
   var config = loadDiscordConfigFromDb(database)
-  var newConfig = if config.isSome: config.get() else: %*{"enabled": true}
+  var newConfig = if config.isSome: config.get() else: %*{"enabled": false}
   
   newConfig["token"] = %token
   if guildId.len > 0:
     newConfig["guildId"] = %guildId
   
-  # Ensure enabled and has monitoredChannels array
-  if not newConfig.hasKey("enabled"):
-    newConfig["enabled"] = %true
+  # Ensure has monitoredChannels array
   if not newConfig.hasKey("monitoredChannels"):
     newConfig["monitoredChannels"] = %*[]
   
   saveDiscordConfigToDb(database, newConfig)
   
-  var message = "✅ Discord configuration saved!\n\n"
+  var message = "✅ Discord token saved!\n\n"
   message &= fmt("  Token: {token[0..min(9, token.len-1)]}...") & "\n"
   if guildId.len > 0:
     message &= fmt("  Guild ID: {guildId}") & "\n"
-  message &= "\n💡 Use '/discord status' to verify configuration"
-  message &= "\n💡 Use '/discord channels add <name>' to monitor specific channels"
+  message &= "\n💡 Use '/discord enable' to start the bot"
   
   return CommandResult(
     success: true,
@@ -1819,13 +1816,13 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
   if args.len < 1:
     return CommandResult(
       success: false,
-      message: "❌ Usage: /discord <status|connect|channels|enable|disable|test>\n\n" &
+      message: "❌ Usage: /discord <status|token|channels|enable|disable|test>\n\n" &
                 "Discord commands:\n" &
                 "  status   - Show current Discord configuration\n" &
-                "  connect  - Set Discord bot token\n" &
+                "  token    - Set Discord bot token\n" &
                 "  channels - Manage monitored channels\n" &
-                "  enable   - Enable Discord integration\n" &
-                "  disable  - Disable Discord integration\n" &
+                "  enable   - Enable and start Discord bot\n" &
+                "  disable  - Disable and stop Discord bot\n" &
                 "  test     - Test Discord connection",
       shouldExit: false,
       shouldContinue: true
@@ -1839,8 +1836,8 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
   case subcommand
   of "status":
     return discordStatusHandler(subArgs, session, currentModel)
-  of "connect":
-    return discordConnectHandler(subArgs, session, currentModel)
+  of "token", "connect":
+    return discordTokenHandler(subArgs, session, currentModel)
   of "channels", "channel":
     return discordChannelsHandler(subArgs, session, currentModel)
   of "enable", "on":
@@ -1875,7 +1872,7 @@ proc initializeCommands*() =
   registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
   registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
   registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
-  registerCommand("discord", "Discord bot configuration", "<status,connect,channels,enable,disable,test>", @[], discordHandler, ccGlobal)
+  registerCommand("discord", "Discord bot configuration", "<status,token,channels,enable,disable,test>", @[], discordHandler, ccGlobal)
 
   # Agent commands - run in agent context
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
