@@ -2,7 +2,7 @@
 ##
 ## This module defines all configuration-related types for Niffler:
 ## - Model configurations with OpenAI protocol parameters
-## - Database configuration for TiDB backend
+## - Database configuration for MySQL backend
 ## - Theme and UI configuration settings
 ## - Cost tracking and token usage types
 ##
@@ -16,7 +16,7 @@
 ## - Uses Option[T] for optional configuration fields
 ## - Separate enums for different configuration categories
 ## - Cost tracking built-in for all model configurations
-## - TiDB (MySQL-compatible) database backend
+## - MySQL-compatible database backend
 
 import std/[tables, options, locks]
 import messages

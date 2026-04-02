@@ -5,7 +5,7 @@
 ## - Managing API keys securely with file permissions
 ## - Platform-appropriate config directory detection
 ## - Model configuration with OpenAI protocol parameters
-## - Database configuration (TiDB)
+## - Database configuration (MySQL)
 ## - Theme configuration and built-in themes
 ##
 ## Configuration Structure:
@@ -215,7 +215,7 @@ proc getDatabaseConfig*(): DatabaseConfig =
   if globalConfig.database.isSome():
     return globalConfig.database.get()
 
-  # Default TiDB configuration
+  # Default database configuration
   return DatabaseConfig(
     enabled: true,
     host: "127.0.0.1",
