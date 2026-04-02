@@ -3,8 +3,8 @@
 ## This module provides utilities for testing conversation management functionality
 ## with real database operations and full system integration.
 
-import std/[unittest, options, strformat, times, os, tempfiles, strutils, algorithm]
-import ../src/core/[database, conversation_manager, config, mode_state]
+import std/[unittest, options, strformat, os, tempfiles, strutils, algorithm]
+import ../src/core/[database, conversation_manager, mode_state]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 import test_utils

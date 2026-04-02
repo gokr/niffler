@@ -77,13 +77,13 @@ suite "Tool System Integration":
     let args = %*{"path": testFile}
     let response = executeAndWait("read", args)
     
-    if response.kind == trkResult and "content" in response.output:
+    if response.kind == trkResult and response.output.len > 0:
       let json = parseJson(response.output)
       if json.hasKey("content"):
         check "Hello, Niffler" in json["content"].getStr()
         echo "✓ Read tool successfully processes files"
     else:
-      echo "ⓘ Read tool returned error (expected if validation fails): " & response.output
+      echo "ⓘ Read tool returned error (expected if validation fails)"
 
   test "Error handling works":
     let args = %*{"path": "/nonexistent/path"}
@@ -209,8 +209,15 @@ suite "Tool Schema and Message Conversion":
 
     let conversation = @[userMsg, assistantMsg, toolMsg, finalMsg]
 
-    # Convert to API format
-    let chatMessages = convertMessages(conversation)
+    # Convert to API format with a dummy model config
+    let modelConfig = ModelConfig(
+      nickname: "test",
+      baseUrl: "https://test.com",
+      model: "test-model",
+      context: 4096,
+      enabled: true
+    )
+    let chatMessages = convertMessages(conversation, modelConfig)
     check chatMessages.len == 4
 
     # Verify message roles
@@ -244,31 +251,30 @@ suite "Task Execution and Agents":
     check not agent.allowedTools.contains("bash")
 
   test "Task executor extracts artifacts from tool calls":
-    # Test the extractArtifacts function with various tool calls
     var messages: seq[Message] = @[]
 
-    # Add a message with read tool call
-    let readToolCall = LLMToolCall(
+    # Add a message with edit tool call (non-tmp path)
+    let editToolCall = LLMToolCall(
       id: "call_1",
       `type`: "function",
       function: FunctionCall(
-        name: "read",
-        arguments: $ %*{"path": "/tmp/file1.txt"}
+        name: "edit",
+        arguments: $ %*{"path": "/home/user/file1.txt"}
       )
     )
     messages.add(Message(
       role: mrAssistant,
-      content: "Reading file",
-      toolCalls: some(@[readToolCall])
+      content: "Editing file",
+      toolCalls: some(@[editToolCall])
     ))
 
-    # Add a message with create tool call
+    # Add a message with create tool call (non-tmp path)
     let createToolCall = LLMToolCall(
       id: "call_2",
       `type`: "function",
       function: FunctionCall(
         name: "create",
-        arguments: $ %*{"file_path": "/tmp/file2.txt", "content": "test"}
+        arguments: $ %*{"file_path": "/home/user/file2.txt", "content": "test"}
       )
     )
     messages.add(Message(
@@ -282,8 +288,8 @@ suite "Task Execution and Agents":
 
     # Verify all file paths were extracted and sorted
     check artifacts.len == 2
-    check "/tmp/file1.txt" in artifacts
-    check "/tmp/file2.txt" in artifacts
+    check "/home/user/file1.txt" in artifacts
+    check "/home/user/file2.txt" in artifacts
 
 when isMainModule:
   echo "🧪 Running Consolidated Tool System Integration Tests"

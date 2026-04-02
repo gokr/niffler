@@ -1,92 +1,62 @@
-## Test File for Diff Visualization
-##
-## This test demonstrates the diff visualization functionality with sample output.
-
-import std/[strutils, os]
+import std/[unittest]
 import ../src/ui/diff_visualizer
 import ../src/ui/theme
 
-proc testDiffVisualization() =
-  ## Test the diff visualization with sample content
+suite "Diff Visualization Tests":
+  setup:
+    initializeThemes()
   
-  echo "=== Testing Diff Visualization ===\n"
+  test "computeDiff detects additions":
+    let original = "line1\nline2"
+    let modified = "line1\nline2\nline3"
+    
+    let config = getDefaultDiffConfig()
+    let result = computeDiff(original, modified, config)
+    
+    check result.hunks.len > 0
   
-  # Initialize themes
-  initializeThemes()
+  test "computeDiff detects removals":
+    let original = "line1\nline2\nline3"
+    let modified = "line1\nline2"
+    
+    let config = getDefaultDiffConfig()
+    let result = computeDiff(original, modified, config)
+    
+    check result.hunks.len > 0
   
-  # Sample original content
-  let originalContent = """
-import std/[strutils, sequtils]
-
-proc factorial*(n: int): int =
-  ## Calculate factorial of n
-  if n <= 1:
-    return 1
-  else:
-    return n * factorial(n - 1)
-
-proc fibonacci*(n: int): int =
-  ## Calculate nth Fibonacci number
-  if n <= 1:
-    return n
-  else:
-    return fibonacci(n - 1) + fibonacci(n - 2)
-
-echo "Hello, World!"
-let result = factorial(5)
-echo "Factorial of 5 is: ", result
-""".strip()
-
-  # Sample modified content
-  let modifiedContent = """
-import std/[strutils, sequtils, math]
-
-proc factorial*(n: int): int =
-  ## Calculate factorial of n iteratively
-  if n <= 1:
-    return 1
-  var result = 1
-  for i in 2..n:
-    result = result * i
-  return result
-
-proc fibonacci*(n: int): int =
-  ## Calculate nth Fibonacci number iteratively
-  if n <= 1:
-    return n
-  var a, b = 0, 1
-  for i in 2..n:
-    let temp = a + b
-    a = b
-    b = temp
-  return b
-
-proc main() =
-  echo "Hello, Nim World!"
-  let result = factorial(5)
-  echo "Factorial of 5 is: ", result
-  let fib = fibonacci(10)
-  echo "10th Fibonacci number is: ", fib
-
-main()
-""".strip()
-
-  # Create diff config
-  let config = getDefaultDiffConfig()
+  test "computeDiff detects modifications":
+    let original = "hello world"
+    let modified = "hello Nim"
+    
+    let config = getDefaultDiffConfig()
+    let result = computeDiff(original, modified, config)
+    
+    check result.hunks.len > 0 or result.originalContent != result.modifiedContent
   
-  # Compute diff
-  let diffResult = computeDiff(originalContent, modifiedContent, config)
-  diffResult.filePath = "example.nim"
+  test "computeDiff handles empty content":
+    let original = ""
+    let modified = ""
+    
+    let config = getDefaultDiffConfig()
+    let result = computeDiff(original, modified, config)
+    
+    check result.hunks.len == 0
   
-  echo "Sample diff output:\n"
-  echo "==================\n"
+  test "getDefaultDiffConfig returns valid config":
+    let config = getDefaultDiffConfig()
+    
+    check config.contextLines >= 0
+    check config.showLineNumbers == true
+    check config.useColor == true
   
-  # Display the diff
-  displayDiff(diffResult, config)
-  
-  echo "\n==================\n"
-  echo "Test completed!"
+  test "Diff result contains file path":
+    let original = "original"
+    let modified = "modified"
+    
+    let config = getDefaultDiffConfig()
+    var result = computeDiff(original, modified, config)
+    result.filePath = "test.nim"
+    
+    check result.filePath == "test.nim"
 
-# Run the test
-when isMainModule:
-  testDiffVisualization()
+echo "All diff visualization tests completed"

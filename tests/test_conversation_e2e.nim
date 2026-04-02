@@ -3,10 +3,10 @@
 ## These tests exercise the complete conversation management system through
 ## real database operations and verify persistence across the entire stack.
 
-import std/[unittest, strformat, times, strutils, options, sequtils]
+import std/[unittest, strutils, options, sequtils]
 import test_conversation_infrastructure
 import test_utils
-import ../src/core/[conversation_manager, config, mode_state, database]
+import ../src/core/[conversation_manager, mode_state, database]
 import ../src/types/[config as configTypes, messages, mode]
 import ../src/ui/commands
 

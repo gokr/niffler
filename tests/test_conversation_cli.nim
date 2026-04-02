@@ -3,10 +3,10 @@
 ## These tests verify that all conversation management CLI commands work correctly
 ## through the full command execution pipeline with real database operations.
 
-import std/[unittest, strformat, times, strutils, sequtils, options]
+import std/[unittest, strformat, strutils, sequtils, options]
 import test_conversation_infrastructure
-import ../src/core/[conversation_manager, app, session, database]
-import ../src/types/[config as configTypes, messages, mode]
+import ../src/core/[conversation_manager, session, database]
+import ../src/types/[config as configTypes, mode]
 import ../src/ui/commands
 
 suite "CLI Command Integration Tests":
