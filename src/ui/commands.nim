@@ -10,7 +10,7 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
-import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense]
+import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, db_config]
 import ../types/[config as configTypes, messages, agents, mode]
 import ../tokenization/[tokenizer]
 import ../tools/registry
@@ -1422,6 +1422,442 @@ proc codeHandler(args: seq[string], session: var Session, currentModel: var conf
     shouldResetUI: true
   )
 
+# ========================================
+# Discord Configuration Commands
+# ========================================
+
+proc discordStatusHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Show current Discord configuration
+  var message = ""
+  let database = getGlobalDatabase()
+  
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let discordConfig = loadDiscordConfigFromDb(database)
+  
+  if discordConfig.isNone:
+    message = "📋 Discord not configured\n\n"
+    message &= "Use '/discord connect <token>' to set up Discord integration."
+  else:
+    let config = discordConfig.get()
+    message = "📋 Discord Configuration:\n\n"
+    
+    let enabled = if config.hasKey("enabled"): config["enabled"].getBool() else: false
+    let statusIcon = if enabled: "✅" else: "❌"
+    let statusText = if enabled: "Enabled" else: "Disabled"
+    message &= fmt"  Status: {statusIcon} {statusText}\n"
+    
+    if config.hasKey("token"):
+      let token = config["token"].getStr()
+      let maskedToken = if token.len > 10: token[0..9] & "..." else: "***"
+      message &= fmt"  Token: {maskedToken}\n"
+    
+    if config.hasKey("guildId") and config["guildId"].getStr().len > 0:
+      let guildId = config["guildId"].getStr()
+      message &= fmt"  Guild ID: {guildId}\n"
+    
+    if config.hasKey("monitoredChannels") and config["monitoredChannels"].kind == JArray:
+      let channels = config["monitoredChannels"]
+      if channels.len > 0:
+        message &= "  Monitored channels: "
+        var channelList: seq[string] = @[]
+        for ch in channels.items:
+          channelList.add(ch.getStr())
+        message &= channelList.join(", ") & "\n"
+    
+    message &= "\n💡 Use '/discord enable' or '/discord disable' to toggle"
+  
+  return CommandResult(
+    success: true,
+    message: message,
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc discordConnectHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Connect Discord bot with token
+  if args.len < 1:
+    return CommandResult(
+      success: false,
+      message: "❌ Usage: /discord connect <token> [guildId]\n\n" &
+                "Example: /discord connect OTk2MTg5NjQxNjk3MjYzMDQw.GhK7Xa.abc123 123456789",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let token = args[0]
+  let guildId = if args.len > 1: args[1] else: ""
+  
+  let database = getGlobalDatabase()
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  # Load existing config or create new
+  var config = loadDiscordConfigFromDb(database)
+  var newConfig = if config.isSome: config.get() else: %*{"enabled": true}
+  
+  newConfig["token"] = %token
+  if guildId.len > 0:
+    newConfig["guildId"] = %guildId
+  
+  # Ensure enabled and has monitoredChannels array
+  if not newConfig.hasKey("enabled"):
+    newConfig["enabled"] = %true
+  if not newConfig.hasKey("monitoredChannels"):
+    newConfig["monitoredChannels"] = %*[]
+  
+  saveDiscordConfigToDb(database, newConfig)
+  
+  var message = "✅ Discord configuration saved!\n\n"
+  message &= fmt"  Token: {token[0..min(9, token.len-1)]}...\n"
+  if guildId.len > 0:
+    message &= fmt"  Guild ID: {guildId}\n"
+  message &= "\n💡 Use '/discord status' to verify configuration"
+  message &= "\n💡 Use '/discord channels add <name>' to monitor specific channels"
+  
+  return CommandResult(
+    success: true,
+    message: message,
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc discordChannelsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Manage monitored Discord channels
+  if args.len < 1:
+    return CommandResult(
+      success: false,
+      message: "❌ Usage: /discord channels <add|remove|list> [channel]\n\n" &
+                "Examples:\n" &
+                "  /discord channels list\n" &
+                "  /discord channels add general\n" &
+                "  /discord channels remove general",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let action = args[0].toLowerAscii()
+  let database = getGlobalDatabase()
+  
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let discordConfig = loadDiscordConfigFromDb(database)
+  
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  var config = discordConfig.get()
+  
+  case action
+  of "list":
+    var message = "📋 Monitored Channels:\n\n"
+    if config.hasKey("monitoredChannels") and config["monitoredChannels"].kind == JArray:
+      let channels = config["monitoredChannels"]
+      if channels.len > 0:
+        var idx = 1
+        for ch in channels.items:
+          message &= fmt"  {idx}. {ch.getStr()}" & "\n"
+          idx += 1
+      else:
+        message &= "  (none - all channels monitored)\n"
+    else:
+      message &= "  (none - all channels monitored)\n"
+    message &= "\n💡 When no channels specified, bot monitors all channels it has access to"
+    return CommandResult(
+      success: true,
+      message: message,
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "add":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "❌ Usage: /discord channels add <channel>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let channel = args[1]
+    
+    if not config.hasKey("monitoredChannels") or config["monitoredChannels"].kind != JArray:
+      config["monitoredChannels"] = %*[]
+    
+    # Check if already in list
+    for ch in config["monitoredChannels"]:
+      if ch.getStr() == channel:
+        return CommandResult(
+          success: false,
+          message: fmt"❌ Channel '{channel}' is already in the list",
+          shouldExit: false,
+          shouldContinue: true
+        )
+    
+    config["monitoredChannels"].add(%channel)
+    saveDiscordConfigToDb(database, config)
+    
+    return CommandResult(
+      success: true,
+      message: fmt"✅ Added '{channel}' to monitored channels\n\n💡 Use '/discord channels list' to see all channels",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "remove", "rm", "delete":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "❌ Usage: /discord channels remove <channel>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let channel = args[1]
+    
+    if not config.hasKey("monitoredChannels") or config["monitoredChannels"].kind != JArray:
+      return CommandResult(
+        success: false,
+        message: "❌ No channels configured",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    var newChannels: seq[JsonNode] = @[]
+    var found = false
+    for ch in config["monitoredChannels"]:
+      if ch.getStr() != channel:
+        newChannels.add(ch)
+      else:
+        found = true
+    
+    if not found:
+      return CommandResult(
+        success: false,
+        message: fmt"❌ Channel '{channel}' not found in list",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    config["monitoredChannels"] = %newChannels
+    saveDiscordConfigToDb(database, config)
+    
+    return CommandResult(
+      success: true,
+      message: fmt"✅ Removed '{channel}' from monitored channels",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  else:
+    return CommandResult(
+      success: false,
+      message: fmt"❌ Unknown action '{action}'. Use: add, remove, or list",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+proc discordEnableHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Enable Discord integration
+  let database = getGlobalDatabase()
+  
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let discordConfig = loadDiscordConfigFromDb(database)
+  
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  var config = discordConfig.get()
+  config["enabled"] = %true
+  saveDiscordConfigToDb(database, config)
+  
+  return CommandResult(
+    success: true,
+    message: "✅ Discord integration enabled\n\n💡 Restart agent to apply changes",
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc discordDisableHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Disable Discord integration
+  let database = getGlobalDatabase()
+  
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let discordConfig = loadDiscordConfigFromDb(database)
+  
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  var config = discordConfig.get()
+  config["enabled"] = %false
+  saveDiscordConfigToDb(database, config)
+  
+  return CommandResult(
+    success: true,
+    message: "✅ Discord integration disabled",
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc discordTestHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Test Discord connection (validate token)
+  let database = getGlobalDatabase()
+  
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let discordConfig = loadDiscordConfigFromDb(database)
+  
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let config = discordConfig.get()
+  
+  if not config.hasKey("token"):
+    return CommandResult(
+      success: false,
+      message: "❌ Discord token not configured",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let token = config["token"].getStr()
+  
+  # Test token by calling Discord API
+  try:
+    var client = newHttpClient()
+    client.headers = newHttpHeaders({"Authorization": fmt"Bot {token}"})
+    
+    let response = client.getContent("https://discord.com/api/v10/users/@me")
+    let userJson = parseJson(response)
+    
+    let username = userJson["username"].getStr()
+    let discriminator = if userJson.hasKey("discriminator"): userJson["discriminator"].getStr() else: "0"
+    
+    var message = "✅ Discord connection successful!\n\n"
+    message &= fmt"  Bot: {username}#{discriminator}\n"
+    
+    if config.hasKey("enabled") and config["enabled"].getBool():
+      message &= "  Status: ✅ Enabled\n"
+    else:
+      message &= "  Status: ❌ Disabled (use '/discord enable')\n"
+    
+    message &= "\n💡 Bot is ready to receive messages. Start agent with: ./src/niffler agent coder"
+    
+    return CommandResult(
+      success: true,
+      message: message,
+      shouldExit: false,
+      shouldContinue: true
+    )
+  except Exception as e:
+    return CommandResult(
+      success: false,
+      message: fmt"❌ Discord connection failed: {e.msg}\n\n💡 Check that your token is valid",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+proc discordHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Discord command dispatcher
+  if args.len < 1:
+    return CommandResult(
+      success: false,
+      message: "❌ Usage: /discord <status|connect|channels|enable|disable|test>\n\n" &
+                "Discord commands:\n" &
+                "  status   - Show current Discord configuration\n" &
+                "  connect  - Set Discord bot token\n" &
+                "  channels - Manage monitored channels\n" &
+                "  enable   - Enable Discord integration\n" &
+                "  disable  - Disable Discord integration\n" &
+                "  test     - Test Discord connection",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let subcommand = args[0].toLowerAscii()
+  var subArgs: seq[string] = @[]
+  if args.len > 1:
+    subArgs = args[1..^1]
+  
+  case subcommand
+  of "status":
+    return discordStatusHandler(subArgs, session, currentModel)
+  of "connect":
+    return discordConnectHandler(subArgs, session, currentModel)
+  of "channels", "channel":
+    return discordChannelsHandler(subArgs, session, currentModel)
+  of "enable", "on":
+    return discordEnableHandler(subArgs, session, currentModel)
+  of "disable", "off":
+    return discordDisableHandler(subArgs, session, currentModel)
+  of "test":
+    return discordTestHandler(subArgs, session, currentModel)
+  else:
+    return CommandResult(
+      success: false,
+      message: fmt"❌ Unknown subcommand '{subcommand}'\n\n" &
+                "Use '/discord' to see available commands",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
@@ -1439,6 +1875,7 @@ proc initializeCommands*() =
   registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
   registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
   registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
+  registerCommand("discord", "Discord bot configuration", "<status|connect|channels|enable|disable|test>", @[], discordHandler, ccGlobal)
 
   # Agent commands - run in agent context
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
