@@ -9,8 +9,9 @@
 ## - Unified command execution interface
 ## - Extensible command registration system
 
-import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils]
+import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils, algorithm]
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, db_config]
+import ../core/agent_manager
 import ../types/[config as configTypes, messages, agents, mode]
 import ../tokenization/[tokenizer]
 import ../tools/registry
@@ -19,6 +20,7 @@ import ../mcp/[mcp, tools as mcpTools]
 import theme
 import table_utils
 import nancy
+import master_cli
 # import linecross  # Used only in comments
 
 type
@@ -161,7 +163,7 @@ Press Ctrl+C to cancel streaming or exit.
     message &= fmt"  /{cmd.name}"
     if cmd.usage.len > 0:
       message &= fmt" {cmd.usage}"
-    message &= fmt" - {cmd.description}\n"
+    message &= fmt(" - {cmd.description}") & "\n"
 
   if agentCommands.len > 0:
     message &= "\nAgent commands (use @agent /cmd or /focus to set default):\n"
@@ -169,7 +171,7 @@ Press Ctrl+C to cancel streaming or exit.
       message &= fmt"  /{cmd.name}"
       if cmd.usage.len > 0:
         message &= fmt" {cmd.usage}"
-      message &= fmt" - {cmd.description}\n"
+      message &= fmt(" - {cmd.description}") & "\n"
 
   return CommandResult(
     success: true,
@@ -1443,7 +1445,7 @@ proc discordStatusHandler(args: seq[string], session: var Session, currentModel:
   
   if discordConfig.isNone:
     message = "📋 Discord not configured\n\n"
-    message &= "Use '/discord connect <token>' to set up Discord integration."
+    message &= "Use '/discord token <token>' to set up Discord integration."
   else:
     let config = discordConfig.get()
     message = "📋 Discord Configuration:\n\n"
@@ -1461,6 +1463,23 @@ proc discordStatusHandler(args: seq[string], session: var Session, currentModel:
     if config.hasKey("guildId") and config["guildId"].getStr().len > 0:
       let guildId = config["guildId"].getStr()
       message &= fmt("  Guild ID: {guildId}") & "\n"
+
+    if config.hasKey("defaultAgent") and config["defaultAgent"].getStr().len > 0:
+      let defaultAgent = config["defaultAgent"].getStr()
+      message &= fmt("  Default agent: @{defaultAgent}") & "\n"
+
+    if config.hasKey("allowedPeople") and config["allowedPeople"].kind == JArray:
+      let allowedPeople = config["allowedPeople"]
+      if allowedPeople.len > 0:
+        message &= "  Allowed people: "
+        var peopleList: seq[string] = @[]
+        for person in allowedPeople.items:
+          peopleList.add(person.getStr())
+        message &= peopleList.join(", ") & "\n"
+      else:
+        message &= "  Allowed people: (none - everyone allowed)\n"
+    else:
+      message &= "  Allowed people: (none - everyone allowed)\n"
     
     if config.hasKey("monitoredChannels") and config["monitoredChannels"].kind == JArray:
       let channels = config["monitoredChannels"]
@@ -1471,6 +1490,8 @@ proc discordStatusHandler(args: seq[string], session: var Session, currentModel:
           channelList.add(ch.getStr())
         message &= channelList.join(", ") & "\n"
     
+    message &= "\n💡 Use '/discord agent <name>' to set Discord's default agent"
+    message &= "\n💡 Use '/discord people add <name>' to restrict who can talk to the bot"
     message &= "\n💡 Use '/discord enable' or '/discord disable' to toggle"
   
   return CommandResult(
@@ -1514,6 +1535,8 @@ proc discordTokenHandler(args: seq[string], session: var Session, currentModel: 
   # Ensure has monitoredChannels array
   if not newConfig.hasKey("monitoredChannels"):
     newConfig["monitoredChannels"] = %*[]
+  if not newConfig.hasKey("allowedPeople"):
+    newConfig["allowedPeople"] = %*[]
   
   saveDiscordConfigToDb(database, newConfig)
   
@@ -1560,7 +1583,7 @@ proc discordChannelsHandler(args: seq[string], session: var Session, currentMode
   if discordConfig.isNone:
     return CommandResult(
       success: false,
-      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      message: "❌ Discord not configured. Use '/discord token <token>' first.",
       shouldExit: false,
       shouldContinue: true
     )
@@ -1575,7 +1598,7 @@ proc discordChannelsHandler(args: seq[string], session: var Session, currentMode
       if channels.len > 0:
         var idx = 1
         for ch in channels.items:
-          message &= fmt"  {idx}. {ch.getStr()}" & "\n"
+          message &= fmt("  {idx}. {ch.getStr()}") & "\n"
           idx += 1
       else:
         message &= "  (none - all channels monitored)\n"
@@ -1676,6 +1699,150 @@ proc discordChannelsHandler(args: seq[string], session: var Session, currentMode
       shouldContinue: true
     )
 
+proc discordAgentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Set or show the default agent for Discord messages without @agent prefix
+  let database = getGlobalDatabase()
+
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let discordConfig = loadDiscordConfigFromDb(database)
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured. Use '/discord token <token>' first.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  var config = discordConfig.get()
+
+  if args.len == 0:
+    if config.hasKey("defaultAgent") and config["defaultAgent"].getStr().len > 0:
+      let defaultAgent = config["defaultAgent"].getStr()
+      return CommandResult(
+        success: true,
+        message: fmt("Discord default agent: @{defaultAgent}"),
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    return CommandResult(
+      success: true,
+      message: "Discord default agent not set. Use '/discord agent <name>' to set one.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let agentName = args[0]
+  if agentName == "none" or agentName == "clear":
+    if config.hasKey("defaultAgent"):
+      config.delete("defaultAgent")
+    saveDiscordConfigToDb(database, config)
+    return CommandResult(
+      success: true,
+      message: "✅ Cleared Discord default agent",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  config["defaultAgent"] = %agentName
+  saveDiscordConfigToDb(database, config)
+  return CommandResult(
+    success: true,
+    message: fmt("✅ Set Discord default agent to @{agentName}\n\n💡 Messages without @agent in Discord will now route there"),
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc discordPeopleHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Manage allowlist of Discord users who can talk to the bot
+  let database = getGlobalDatabase()
+
+  if database == nil:
+    return CommandResult(
+      success: false,
+      message: "❌ Database not available",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let discordConfig = loadDiscordConfigFromDb(database)
+  if discordConfig.isNone:
+    return CommandResult(
+      success: false,
+      message: "❌ Discord not configured. Use '/discord token <token>' first.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  var config = discordConfig.get()
+  if not config.hasKey("allowedPeople") or config["allowedPeople"].kind != JArray:
+    config["allowedPeople"] = %*[]
+
+  if args.len == 0:
+    return CommandResult(
+      success: false,
+      message: "❌ Usage: /discord people <add|remove|list|clear> [name]\n\nExamples:\n  /discord people list\n  /discord people add gokr\n  /discord people remove gokr\n  /discord people clear",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let action = args[0].toLowerAscii()
+  case action
+  of "list":
+    var message = "📋 Allowed Discord People:\n\n"
+    if config["allowedPeople"].len > 0:
+      var idx = 1
+      for person in config["allowedPeople"].items:
+        message &= fmt("  {idx}. {person.getStr()}") & "\n"
+        idx += 1
+    else:
+      message &= "  (none - everyone is allowed)\n"
+    message &= "\n💡 Entries match Discord username case-insensitively, or user ID exactly"
+    return CommandResult(success: true, message: message, shouldExit: false, shouldContinue: true)
+
+  of "add":
+    if args.len < 2:
+      return CommandResult(success: false, message: "❌ Usage: /discord people add <name-or-id>", shouldExit: false, shouldContinue: true)
+    let person = args[1]
+    for existing in config["allowedPeople"].items:
+      if existing.getStr().toLowerAscii() == person.toLowerAscii():
+        return CommandResult(success: false, message: fmt("❌ '{person}' is already allowed"), shouldExit: false, shouldContinue: true)
+    config["allowedPeople"].add(%person)
+    saveDiscordConfigToDb(database, config)
+    return CommandResult(success: true, message: fmt("✅ Added '{person}' to allowed Discord people"), shouldExit: false, shouldContinue: true)
+
+  of "remove", "rm", "delete":
+    if args.len < 2:
+      return CommandResult(success: false, message: "❌ Usage: /discord people remove <name-or-id>", shouldExit: false, shouldContinue: true)
+    let person = args[1]
+    var newPeople: seq[JsonNode] = @[]
+    var found = false
+    for existing in config["allowedPeople"].items:
+      if existing.getStr().toLowerAscii() == person.toLowerAscii():
+        found = true
+      else:
+        newPeople.add(existing)
+    if not found:
+      return CommandResult(success: false, message: fmt("❌ '{person}' not found in allowed people"), shouldExit: false, shouldContinue: true)
+    config["allowedPeople"] = %newPeople
+    saveDiscordConfigToDb(database, config)
+    return CommandResult(success: true, message: fmt("✅ Removed '{person}' from allowed Discord people"), shouldExit: false, shouldContinue: true)
+
+  of "clear":
+    config["allowedPeople"] = %*[]
+    saveDiscordConfigToDb(database, config)
+    return CommandResult(success: true, message: "✅ Cleared allowed Discord people list\n\n💡 Everyone can now talk to the bot", shouldExit: false, shouldContinue: true)
+
+  else:
+    return CommandResult(success: false, message: fmt("❌ Unknown action '{action}'. Use: add, remove, list, or clear"), shouldExit: false, shouldContinue: true)
+
 proc discordEnableHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Enable Discord integration
   let database = getGlobalDatabase()
@@ -1693,7 +1860,7 @@ proc discordEnableHandler(args: seq[string], session: var Session, currentModel:
   if discordConfig.isNone:
     return CommandResult(
       success: false,
-      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      message: "❌ Discord not configured. Use '/discord token <token>' first.",
       shouldExit: false,
       shouldContinue: true
     )
@@ -1759,7 +1926,7 @@ proc discordTestHandler(args: seq[string], session: var Session, currentModel: v
   if discordConfig.isNone:
     return CommandResult(
       success: false,
-      message: "❌ Discord not configured. Use '/discord connect <token>' first.",
+      message: "❌ Discord not configured. Use '/discord token <token>' first.",
       shouldExit: false,
       shouldContinue: true
     )
@@ -1795,7 +1962,7 @@ proc discordTestHandler(args: seq[string], session: var Session, currentModel: v
     else:
       message &= "  Status: ❌ Disabled (use '/discord enable')\n"
     
-    message &= "\n💡 Bot is ready to receive messages. Start agent with: ./src/niffler agent coder"
+    message &= "\n💡 Bot is ready to receive messages in the master process."
     
     return CommandResult(
       success: true,
@@ -1816,11 +1983,13 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
   if args.len < 1:
     return CommandResult(
       success: false,
-      message: "❌ Usage: /discord <status|token|channels|enable|disable|test>\n\n" &
+      message: "❌ Usage: /discord <status|token|channels|agent|people|enable|disable|test>\n\n" &
                 "Discord commands:\n" &
                 "  status   - Show current Discord configuration\n" &
                 "  token    - Set Discord bot token\n" &
                 "  channels - Manage monitored channels\n" &
+                "  agent    - Set/show Discord default agent\n" &
+                "  people   - Manage allowed Discord users\n" &
                 "  enable   - Enable and start Discord bot\n" &
                 "  disable  - Disable and stop Discord bot\n" &
                 "  test     - Test Discord connection",
@@ -1840,6 +2009,10 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
     return discordTokenHandler(subArgs, session, currentModel)
   of "channels", "channel":
     return discordChannelsHandler(subArgs, session, currentModel)
+  of "agent":
+    return discordAgentHandler(subArgs, session, currentModel)
+  of "people", "users":
+    return discordPeopleHandler(subArgs, session, currentModel)
   of "enable", "on":
     return discordEnableHandler(subArgs, session, currentModel)
   of "disable", "off":
@@ -1849,7 +2022,7 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
   else:
     return CommandResult(
       success: false,
-      message: fmt"❌ Unknown subcommand '{subcommand}'\n\n" &
+      message: fmt("❌ Unknown subcommand '{subcommand}'") & "\n\n" &
                 "Use '/discord' to see available commands",
       shouldExit: false,
       shouldContinue: true
@@ -1872,7 +2045,7 @@ proc initializeCommands*() =
   registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
   registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
   registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
-  registerCommand("discord", "Discord bot configuration", "<status,token,channels,enable,disable,test>", @[], discordHandler, ccGlobal)
+  registerCommand("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordHandler, ccGlobal)
 
   # Agent commands - run in agent context
   registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)

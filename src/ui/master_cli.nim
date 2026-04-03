@@ -15,11 +15,22 @@
 ## - @researcher /plan find docs  -> Plan mode task to researcher
 ## - Without @: use default agent or fall back to local processing
 
-import std/[logging, strformat, times, strutils, tables, random, options]
-import ../core/[nats_client, db_config, database]
+import std/[logging, strformat, times, strutils, tables, random, options, os]
+import ../core/[nats_client, database]
 import ../types/[nats_messages]
 import ../comms/discord
 import nats_listener
+import linecross
+import theme
+# Import Discord routing functions from nats_listener
+export nats_listener.addDiscordRoute, nats_listener.removeDiscordRoute, nats_listener.initDiscordRouting
+
+when compileOption("threads"):
+  import std/typedthreads
+else:
+  {.error: "This module requires threads support. Compile with --threads:on".}
+
+type DiscordProcessorThread = Thread[pointer]
 
 type
   PendingRequest* = object
@@ -28,6 +39,13 @@ type
     agentName*: string
     startTime*: Time
     input*: string
+    discordChannelId*: string      ## Empty = from CLI, non-empty = from Discord
+
+  DiscordDisplayMessage* = object
+    ## Message to display in CLI from Discord thread
+    author*: string
+    content*: string
+    agentName*: string            ## Target agent (for display)
 
   MasterState* = object
     ## Runtime state for master coordinator
@@ -41,11 +59,18 @@ type
     discordEnabled*: bool
     discordToken*: string
     discordDefaultAgent*: string  ## Default agent for Discord messages
+    discordAllowedPeople*: seq[string]
+    # Thread communication
+    discordDisplayChannel*: system.Channel[DiscordDisplayMessage]
+    discordProcessorRunning*: bool
+    discordProcessorThread*: DiscordProcessorThread
 
   AgentInput* = object
     ## Parsed agent routing information
     agentName*: string      # Target agent (empty = default/local)
     input*: string          # Full input to send to agent
+
+var globalMasterState*: ptr MasterState = nil
 
 proc parseAgentInput*(input: string): AgentInput =
   ## Parse @agent syntax from input
@@ -92,8 +117,17 @@ proc initializeMaster*(natsUrl: string, defaultAgent: string = ""): MasterState 
   result.discordEnabled = false
   result.discordToken = ""
   result.discordDefaultAgent = ""
+  result.discordAllowedPeople = @[]
 
   # Initialize NATS connection (no client ID for master - no presence needed)
+
+proc setGlobalMasterState*(state: ptr MasterState) =
+  ## Set shared master state for commands and completion
+  globalMasterState = state
+
+proc getGlobalMasterState*(): ptr MasterState =
+  ## Get shared master state for commands and completion
+  globalMasterState
   info(fmt("Connecting to NATS at {natsUrl}..."))
   try:
     result.natsClient = initNatsClient(natsUrl, "master", presenceTTL = 15)
@@ -113,7 +147,7 @@ proc initializeDiscord*(state: var MasterState, database: DatabaseBackend) =
   if discordCfg.isNone:
     return
   
-  let (token, guildId, channels) = discordCfg.get()
+  let (token, guildId, channels, defaultAgent, allowedPeople) = discordCfg.get()
   if token.len == 0:
     return
   
@@ -122,6 +156,8 @@ proc initializeDiscord*(state: var MasterState, database: DatabaseBackend) =
   
   state.discordEnabled = true
   state.discordToken = token
+  state.discordDefaultAgent = defaultAgent
+  state.discordAllowedPeople = allowedPeople
   
   # Initialize the global Discord message channel
   initDiscordChannel()
@@ -130,13 +166,20 @@ proc initializeDiscord*(state: var MasterState, database: DatabaseBackend) =
   startDiscordThread(token, guildId, channels)
   info("Discord integration started")
 
+proc stopDiscordProcessor*(state: var MasterState)
+  ## Stop the Discord processor thread
+
 proc shutdownDiscord*(state: var MasterState) =
   ## Stop Discord integration
   if state.discordEnabled:
+    stopDiscordProcessor(state)
     stopDiscordBot()
     state.discordEnabled = false
     state.discordToken = ""
     info("Discord integration stopped")
+
+proc formatDiscordDisplay*(msg: DiscordDisplayMessage): string
+  ## Format a Discord message for CLI display with special styling
 
 proc setCurrentAgent*(state: var MasterState, agentName: string) =
   ## Set the current/focused agent for command routing
@@ -173,10 +216,26 @@ proc isAgentAvailable*(state: MasterState, agentName: string): bool =
     warn(fmt("Failed to check agent availability: {e.msg}"))
     result = false
 
-proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string): tuple[success: bool, requestId: string, error: string] =
+proc isDiscordUserAllowed*(state: MasterState, authorName: string, authorId: string): bool =
+  ## Check if a Discord user is allowed to talk to the bot
+  if state.discordAllowedPeople.len == 0:
+    return true
+
+  let normalizedAuthor = authorName.toLowerAscii()
+  for allowed in state.discordAllowedPeople:
+    let normalizedAllowed = allowed.strip()
+    if normalizedAllowed.len == 0:
+      continue
+    if normalizedAllowed == authorId or normalizedAllowed.toLowerAscii() == normalizedAuthor:
+      return true
+
+  return false
+
+proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string, discordChannelId: string = ""): tuple[success: bool, requestId: string, error: string] =
   ## Send a request to an agent asynchronously (fire and forget)
   ## Returns success status, request ID, and error message
   ## Responses will arrive via the NATS listener thread
+  ## If discordChannelId is provided, responses will be relayed to Discord
   if not state.connected:
     return (false, "", "Not connected to NATS")
 
@@ -187,13 +246,14 @@ proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string)
   let requestId = generateRequestId()
   let subject = fmt("niffler.agent.{agentName}.request")
 
-  # Create and track request
+  # Create and track request with Discord context if applicable
   let request = createRequest(requestId, agentName, input)
   state.pendingRequests[requestId] = PendingRequest(
     requestId: requestId,
     agentName: agentName,
     startTime: getTime(),
-    input: input
+    input: input,
+    discordChannelId: discordChannelId
   )
 
   info(fmt("Sending async request {requestId} to agent '{agentName}'"))
@@ -208,62 +268,139 @@ proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string)
     state.pendingRequests.del(requestId)
     return (false, "", fmt("Failed to send request: {e.msg}"))
 
-proc pollDiscordMessages*(state: var MasterState) =
-  ## Poll for Discord messages and route to agents
-  ## Call this in the main loop
+proc processDiscordMessagesThread(stateArg: pointer) {.thread.} =
+  ## Background thread that processes Discord messages and routes to agents
+  {.gcsafe.}:
+    let statePtr = cast[ptr MasterState](stateArg)
+    info("Discord processor thread started")
+    
+    while statePtr[].discordProcessorRunning and statePtr[].discordEnabled:
+      # Block waiting for Discord messages
+      let recvResult = discordMessageChannel.tryRecv()
+      if recvResult.dataAvailable:
+        let msg = recvResult.msg
+        
+        # Skip messages from the bot itself
+        if msg.authorName == "Niffler":
+          debug("Skipping bot's own message")
+          continue
+
+        if not statePtr[].isDiscordUserAllowed(msg.authorName, msg.authorId):
+          info(fmt("Ignoring Discord message from non-allowed user {msg.authorName} ({msg.authorId})"))
+          continue
+        
+        debug(fmt("Processing Discord message from {msg.authorName}: {msg.content[0..min(30, msg.content.len-1)]}"))
+        
+        # Parse the message for agent routing
+        let parsed = parseAgentInput(msg.content)
+        
+        var targetAgent = parsed.agentName
+        if targetAgent.len == 0:
+          # Use default agent for Discord
+          if statePtr[].discordDefaultAgent.len > 0:
+            targetAgent = statePtr[].discordDefaultAgent
+          elif statePtr[].currentAgent.len > 0:
+            targetAgent = statePtr[].currentAgent
+          elif statePtr[].defaultAgent.len > 0:
+            targetAgent = statePtr[].defaultAgent
+        
+        if targetAgent.len == 0:
+          warn("Discord message received but no agent to route to")
+          sendDiscordMessage(statePtr[].discordToken, msg.channelId,
+            "No agent available. Start an agent with: niffler agent <name>")
+          continue
+        
+        # Check if agent is available
+        if not statePtr[].isAgentAvailable(targetAgent):
+          let available = statePtr[].discoverAgents()
+          var response = ""
+          if available.len > 0:
+            response = fmt("Agent '@{targetAgent}' not available. Available: {available.join(\", \")}")
+          else:
+            response = "No agents are running. Start an agent with: niffler agent <name>"
+          
+          sendDiscordMessage(statePtr[].discordToken, msg.channelId, response)
+          continue
+        
+        # Show Discord message immediately in CLI, even while readline is waiting
+        let displayMsg = DiscordDisplayMessage(
+          author: msg.authorName,
+          content: if parsed.input.len > 0: parsed.input else: msg.content,
+          agentName: targetAgent
+        )
+        writeOutputRaw(formatDiscordDisplay(displayMsg).replace("\n", "\r\n"), addNewline = true, redraw = true)
+        
+        # Send to agent with Discord context
+        let input = if parsed.input.len > 0: parsed.input else: msg.content
+        let (success, requestId, error) = statePtr[].sendToAgentAsync(targetAgent, input, msg.channelId)
+        
+        if success:
+          info(fmt("Routed Discord message from {msg.authorName} to @{targetAgent} (requestId: {requestId})"))
+          # Register for Discord relay
+          addDiscordRoute(requestId, msg.channelId, statePtr[].discordToken)
+        else:
+          warn(fmt("Failed to route Discord message: {error}"))
+          sendDiscordMessage(statePtr[].discordToken, msg.channelId, fmt("Error: {error}"))
+      else:
+        # No message available, small sleep to prevent busy-wait
+        sleep(10)
+    
+    info("Discord processor thread stopped")
+
+proc startDiscordProcessor*(state: var MasterState) =
+  ## Start the Discord processor background thread
   if not state.discordEnabled:
     return
   
-  let recvResult = discordMessageChannel.tryRecv()
-  if not recvResult.dataAvailable:
+  # Initialize the display channel
+  state.discordDisplayChannel.open(100)
+  state.discordProcessorRunning = true
+  
+  # Create a pointer to state for the thread
+  let statePtr = cast[pointer](addr state)
+  
+  # Start the thread
+  createThread(state.discordProcessorThread, processDiscordMessagesThread, statePtr)
+  
+  info("Discord processor thread started")
+
+proc stopDiscordProcessor*(state: var MasterState) =
+  ## Stop the Discord processor thread
+  if state.discordProcessorRunning:
+    state.discordProcessorRunning = false
+    joinThread(state.discordProcessorThread)
+    state.discordDisplayChannel.close()
+    info("Discord processor stopped")
+
+proc pollDiscordMessages*(state: var MasterState): seq[DiscordDisplayMessage] =
+  ## Poll for Discord display messages from the processor thread
+  ## Returns any messages that should be displayed in CLI
+  if not state.discordEnabled:
     return
   
-  let msg = recvResult.msg
-  debug(fmt("Processing Discord message from {msg.authorName}: {msg.content[0..min(30, msg.content.len-1)]}"))
-  
-  # Parse the message for agent routing
-  # Format: "@agent <message>" or just "<message>" (uses default agent)
-  let parsed = parseAgentInput(msg.content)
-  
-  var targetAgent = parsed.agentName
-  if targetAgent.len == 0:
-    # Use default agent for Discord
-    if state.discordDefaultAgent.len > 0:
-      targetAgent = state.discordDefaultAgent
-    elif state.defaultAgent.len > 0:
-      targetAgent = state.defaultAgent
-  
-  if targetAgent.len == 0:
-    # No agent to route to
-    warn("Discord message received but no agent to route to")
-    sendDiscordMessage(state.discordToken, msg.channelId,
-      "No agent available. Start an agent with: niffler agent <name>")
-    return
-  
-  # Check if agent is available
-  if not state.isAgentAvailable(targetAgent):
-    let available = state.discoverAgents()
-    var response = ""
-    if available.len > 0:
-      response = fmt("Agent '@{targetAgent}' not available. Available: {available.join(\", \")}")
-    else:
-      response = "No agents are running. Start an agent with: niffler agent <name>"
-    
-    sendDiscordMessage(state.discordToken, msg.channelId, response)
-    return
-  
-  # Send to agent
-  let input = if parsed.input.len > 0: parsed.input else: msg.content
-  let (success, requestId, error) = state.sendToAgentAsync(targetAgent, input)
-  
-  if success:
-    info(fmt("Routed Discord message to @{targetAgent} (requestId: {requestId})"))
-    # Acknowledge receipt
-    sendDiscordMessage(state.discordToken, msg.channelId,
-      fmt("Task created (ID: {requestId}). I'll work on this and report back."))
-  else:
-    warn(fmt("Failed to route Discord message: {error}"))
-    sendDiscordMessage(state.discordToken, msg.channelId, fmt("Error: {error}"))
+  # Check for display messages from Discord thread
+  while true:
+    let displayResult = state.discordDisplayChannel.tryRecv()
+    if not displayResult.dataAvailable:
+      break
+    result.add(displayResult.msg)
+
+proc formatDiscordDisplay*(msg: DiscordDisplayMessage): string =
+  ## Format a Discord message for CLI display with special styling
+  let labelStyle = createThemeStyle("magenta", "default", "bright")
+  let authorStyle = createThemeStyle("cyan", "default", "bright")
+  let arrowStyle = createThemeStyle("white", "default", "dim")
+  let agentStyle = createThemeStyle("yellow", "default", "bright")
+  let bodyStyle = currentTheme.normal
+
+  let header =
+    formatWithStyle("discord", labelStyle) & " " &
+    formatWithStyle(msg.author, authorStyle) & " " &
+    formatWithStyle("->", arrowStyle) & " " &
+    formatWithStyle("@" & msg.agentName, agentStyle)
+
+  let body = formatWithStyle("  " & msg.content, bodyStyle)
+  result = header & "\n" & body
 
 proc formatAgentResponse*(agentName: string, response: string, success: bool): string =
   ## Format agent response for display (chat-room style)
@@ -422,4 +559,3 @@ proc cleanup*(state: var MasterState) =
 
   state.running = false
   info("Master shutdown complete")
-

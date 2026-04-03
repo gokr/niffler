@@ -5,7 +5,7 @@
 ##
 ## This creates its own NATS connection to avoid thread-safety issues.
 
-import std/[options, strformat, logging, os, tables, hashes, strutils]
+import std/[options, strformat, logging, os, tables, hashes, strutils, locks]
 when compileOption("threads"):
   import std/typedthreads
 else:
@@ -13,12 +13,17 @@ else:
 
 import ../core/[nats_client]
 import ../types/[nats_messages]
+import ../comms/discord
 import linecross
 import sunny
 import theme
 import markdown_cli
 
 type
+  DiscordRoutingInfo* = object
+    channelId*: string
+    token*: string
+  
   NatsListenerParams* = ref object
     natsUrl*: string
     level*: Level
@@ -29,12 +34,42 @@ type
     isRunning*: bool
     runningFlag: bool
 
-  # Track pending requests for context (agent name lookup)
   PendingAgentRequest = object
     agentName: string
     input: string
 
+var discordRoutingTable*: Table[string, DiscordRoutingInfo]
+var routingTableLock*: Lock
 var pendingRequests {.threadvar.}: Table[string, PendingAgentRequest]
+
+proc initDiscordRouting*() =
+  ## Initialize the Discord routing table
+  initLock(routingTableLock)
+  discordRoutingTable = initTable[string, DiscordRoutingInfo]()
+
+proc addDiscordRoute*(requestId: string, channelId: string, token: string) =
+  ## Add a Discord route for a request
+  {.gcsafe.}:
+    withLock routingTableLock:
+      discordRoutingTable[requestId] = DiscordRoutingInfo(
+        channelId: channelId,
+        token: token
+      )
+
+proc removeDiscordRoute*(requestId: string) =
+  ## Remove a Discord route
+  {.gcsafe.}:
+    withLock routingTableLock:
+      if discordRoutingTable.hasKey(requestId):
+        discordRoutingTable.del(requestId)
+
+proc getDiscordRoute*(requestId: string): Option[DiscordRoutingInfo] =
+  ## Get Discord route info for a request
+  {.gcsafe.}:
+    withLock routingTableLock:
+      if discordRoutingTable.hasKey(requestId):
+        return some(discordRoutingTable[requestId])
+    return none(DiscordRoutingInfo)
 
 proc getAgentColor(agentName: string): ThemeStyle =
   ## Get deterministic color for agent name using hash
@@ -99,9 +134,23 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
               if response.content.len > 0:
                 let renderedContent = renderMarkdownTextCLI(response.content).replace("\n", "\r\n")
                 writeOutputRaw(fmt("{coloredName}: {renderedContent}"), addNewline = true, redraw = true)
+                
+                # Check if this response should be relayed to Discord
+                let discordRoute = getDiscordRoute(response.requestId)
+                if discordRoute.isSome():
+                  let route = discordRoute.get()
+                  debug(fmt("Relaying response to Discord channel {route.channelId}"))
+                  sendDiscordMessage(route.token, route.channelId, response.content)
+                  removeDiscordRoute(response.requestId)
               else:
                 let completedMark = formatWithStyle("✓", currentTheme.success)
                 writeOutputRaw(fmt("{coloredName}: {completedMark}"), addNewline = true, redraw = true)
+                
+                # Check if this empty completion should be relayed to Discord
+                let discordRoute = getDiscordRoute(response.requestId)
+                if discordRoute.isSome():
+                  removeDiscordRoute(response.requestId)
+              
               debug(fmt("Request {response.requestId} completed from {response.agentName}"))
             elif response.content.len > 0:
               # Streaming chunk - display directly, convert LF to CRLF

@@ -6,7 +6,7 @@
 ## This module runs Discord in a background thread and forwards
 ## messages to the agent via a thread-safe channel.
 
-import std/[asyncdispatch, json, options, strutils, strformat, logging, tables, os]
+import std/[asyncdispatch, json, options, strutils, strformat, logging]
 import dimscord
 import ../core/[database, db_config]
 import channel
@@ -113,20 +113,27 @@ proc runDiscordBot*(token: string, guildId: string = "", monitoredChannels: seq[
   ## Run the Discord bot (blocking, call in separate thread)
   try:
     let client = newDiscordClient(token)
-    
+    var botUserId = ""
+
     info("Starting Discord bot...")
-    
+
     # Set up event handlers using dimscord's event system
     client.events.on_ready = proc(s: Shard, r: Ready) {.async.} =
+      botUserId = r.user.id
       info("Discord bot connected and ready")
       discordRunning = true
-    
+
     client.events.message_create = proc(s: Shard, msg: Message) {.async.} =
       debug(fmt"Discord message: {msg.content[0..min(50, msg.content.len-1)]}")
-      
+
+      let cleanContent = if botUserId.len > 0:
+        extractCleanContent(msg.content, botUserId)
+      else:
+        msg.content.strip()
+
       # Create DiscordMessage and send to channel
       let discordMsg = DiscordMessage(
-        content: msg.content,
+        content: cleanContent,
         channelId: msg.channel_id,
         guildId: if msg.guild_id.isSome: msg.guild_id.get else: "",
         authorId: msg.author.id,
@@ -191,26 +198,32 @@ proc isDiscordEnabled*(db: DatabaseBackend): bool =
   
   return cfg["enabled"].getBool()
 
-proc getDiscordConfig*(db: DatabaseBackend): Option[tuple[token: string, guildId: string, channels: seq[string]]] =
+proc getDiscordConfig*(db: DatabaseBackend): Option[tuple[token: string, guildId: string, channels: seq[string], defaultAgent: string, allowedPeople: seq[string]]] =
   ## Get Discord configuration from database
   if db == nil:
-    return none(tuple[token: string, guildId: string, channels: seq[string]])
-  
+    return none(tuple[token: string, guildId: string, channels: seq[string], defaultAgent: string, allowedPeople: seq[string]])
+
   let config = getConfigValue(db, "discord")
   if config.isNone:
-    return none(tuple[token: string, guildId: string, channels: seq[string]])
-  
+    return none(tuple[token: string, guildId: string, channels: seq[string], defaultAgent: string, allowedPeople: seq[string]])
+
   let cfg = config.get()
-  
+
   if not cfg.hasKey("token"):
-    return none(tuple[token: string, guildId: string, channels: seq[string]])
-  
+    return none(tuple[token: string, guildId: string, channels: seq[string], defaultAgent: string, allowedPeople: seq[string]])
+
   let token = cfg["token"].getStr()
   let guildId = if cfg.hasKey("guildId"): cfg["guildId"].getStr() else: ""
-  
+  let defaultAgent = if cfg.hasKey("defaultAgent"): cfg["defaultAgent"].getStr() else: ""
+
   var channels: seq[string] = @[]
   if cfg.hasKey("monitoredChannels") and cfg["monitoredChannels"].kind == JArray:
     for ch in cfg["monitoredChannels"]:
       channels.add(ch.getStr())
-  
-  return some((token: token, guildId: guildId, channels: channels))
+
+  var allowedPeople: seq[string] = @[]
+  if cfg.hasKey("allowedPeople") and cfg["allowedPeople"].kind == JArray:
+    for person in cfg["allowedPeople"]:
+      allowedPeople.add(person.getStr())
+
+  return some((token: token, guildId: guildId, channels: channels, defaultAgent: defaultAgent, allowedPeople: allowedPeople))

@@ -22,19 +22,18 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat, terminal, options, times, math, tables]
+import std/[os, strutils, strformat, terminal, options, times, math, tables, json]
 import std/logging
 when defined(posix):
   import posix
 import linecross
-import ../core/[app, channels, conversation_manager, config, database, mode_state, session]
+import ../core/[app, channels, conversation_manager, config, database, db_config, mode_state, session]
 import ../core/log_file as logFileModule
 import ../types/[messages, config as configTypes, tools, agents]
 import ../api/api
 import ../api/curlyStreaming
 import ../tools/[worker, common]
 import ../mcp/[mcp, tools as mcpTools]
-import ../comms/discord
 import commands
 import theme
 import table_utils
@@ -58,9 +57,6 @@ var outputAfterToolCall: bool = false  # Track if any output occurred after show
 
 # State for thinking token display
 var isInThinkingBlock: bool = false  # Track if we're currently displaying thinking content
-
-# Global master state reference for completion callback access
-var globalMasterState: ptr MasterState = nil
 
 # Note: Streaming output functions are now in output_shared.nim to avoid circular imports
 
@@ -413,8 +409,9 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
         return ""
   of "agent":
     # Agent completion for @ prefix - query running agents via NATS
-    if globalMasterState != nil:
-      let agents = globalMasterState[].discoverAgents()
+    let masterStatePtr = getGlobalMasterState()
+    if masterStatePtr != nil:
+      let agents = masterStatePtr[].discoverAgents()
       var matchedAgents: seq[string] = @[]
 
       for agent in agents:
@@ -817,7 +814,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
 
   # Initialize master mode for agent routing
   var masterState = initializeMaster(natsUrl)
-  globalMasterState = addr masterState  # Make available for completion callback
+  setGlobalMasterState(addr masterState)
   var natsListenerWorker: NatsListenerWorker
   if masterState.connected:
     # writeCompleteLine(formatWithStyle("Connected to NATS - agent routing available (@agent prompt)", currentTheme.success))
@@ -836,17 +833,21 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
       writeCompleteLine(formatWithStyle(fmt"Auto-started {spawnedAgents.len} agent(s)", currentTheme.success))
     
     # Initialize Discord integration
+    initDiscordRouting()  # Initialize Discord routing table
     masterState.initializeDiscord(database)
     if masterState.discordEnabled:
       writeCompleteLine(formatWithStyle("Discord integration enabled", currentTheme.success))
+      masterState.startDiscordProcessor()  # Start Discord processor thread
   else:
     writeCompleteLine(formatWithStyle("NATS not connected - local mode only", currentTheme.error))
 
   # Interactive loop
   var running = true
   while running:
-    # Poll for Discord messages and route to agents
-    masterState.pollDiscordMessages()
+    # Poll for Discord display messages and show them
+    let discordMessages = masterState.pollDiscordMessages()
+    for msg in discordMessages:
+      writeCompleteLine(formatDiscordDisplay(msg))
     
     try:
       # Read user input with dynamic prompt
@@ -935,6 +936,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
               if not masterState.discordEnabled:
                 masterState.initializeDiscord(database)
                 if masterState.discordEnabled:
+                  masterState.startDiscordProcessor()  # Start the processor thread
                   writeCompleteLine(formatWithStyle("Discord bot started and connecting...", currentTheme.success))
                 else:
                   writeCompleteLine(formatWithStyle("Failed to start Discord. Check token and try '/discord test' first.", currentTheme.error))
@@ -944,6 +946,21 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
               if masterState.discordEnabled:
                 masterState.shutdownDiscord()
                 writeCompleteLine(formatWithStyle("Discord bot stopped", currentTheme.success))
+
+            elif command == "discord" and args.len > 0 and args[0] == "agent":
+              let discordConfig = loadDiscordConfigFromDb(database)
+              if discordConfig.isSome:
+                let config = discordConfig.get()
+                masterState.discordDefaultAgent = if config.hasKey("defaultAgent"): config["defaultAgent"].getStr() else: ""
+
+            elif command == "discord" and args.len > 0 and (args[0] == "people" or args[0] == "users"):
+              let discordConfig = loadDiscordConfigFromDb(database)
+              masterState.discordAllowedPeople = @[]
+              if discordConfig.isSome:
+                let config = discordConfig.get()
+                if config.hasKey("allowedPeople") and config["allowedPeople"].kind == JArray:
+                  for person in config["allowedPeople"].items:
+                    masterState.discordAllowedPeople.add(person.getStr())
 
           if res.shouldExit:
             running = false
@@ -1014,7 +1031,7 @@ proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, d
   if natsListenerWorker.isRunning:
     stopNatsListenerWorker(natsListenerWorker)
   masterState.cleanup()
-  globalMasterState = nil  # Clear global reference
+  setGlobalMasterState(nil)  # Clear global reference
 
   # Cleanup
   cleanupSystem(channels, apiWorker, toolWorker, mcpWorker, outputHandlerWorker, database)
