@@ -31,6 +31,7 @@ else:
   {.error: "This module requires threads support. Compile with --threads:on".}
 
 import ../types/[tools, messages, agents, config as configTypes]
+import ../actions/registry as actionRegistry
 import ../core/[channels, database]
 import ../core/session as sessionMod
 import registry
@@ -117,6 +118,21 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
               let errorMsg = fmt("Tool '{toolCall.name}' not allowed for agent '{agentContext.agent.name}'. Allowed tools: {allowedTools}")
               debug(errorMsg)
               raise newToolValidationError(toolCall.name, "access", "allowed tool", errorMsg)
+
+            if not agentContext.isMainAgent:
+              let capabilities = actionRegistry.getEffectiveActionCapabilities(
+                agentContext.agent.allowedTools,
+                agentContext.agent.capabilities
+              )
+              let actionPermission = actionRegistry.isActionToolCallAllowed(
+                toolCall.name,
+                toolCall.arguments,
+                capabilities
+              )
+              if not actionPermission.allowed:
+                let errorMsg = fmt("Tool '{toolCall.name}' not allowed for agent '{agentContext.agent.name}': {actionPermission.error}")
+                debug(errorMsg)
+                raise newToolValidationError(toolCall.name, "capability", "required capability", errorMsg)
 
             # Execute the tool call
             debug("Executing tool " & toolCall.name & " with arguments: " & $toolCall.arguments)

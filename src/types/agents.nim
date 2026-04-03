@@ -20,6 +20,7 @@ type
     name*: string
     description*: string
     allowedTools*: seq[string]
+    capabilities*: seq[string]
     systemPrompt*: string
     filePath*: string
     maxTurns*: Option[int]
@@ -38,6 +39,7 @@ proc createMainAgentContext*(): AgentContext =
       name: "main",
       description: "Main Niffler agent with full tool access",
       allowedTools: @[],  # Empty means all tools allowed
+      capabilities: @[],
       systemPrompt: "",
       filePath: "",
       model: none(string)  # Main agent uses default model selection
@@ -98,6 +100,7 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
   var currentSection = ""
   var descriptionLines: seq[string]
   var toolLines: seq[string]
+  var capabilityLines: seq[string]
   var promptLines: seq[string]
   var modelLine = ""  # Model should be a single line
 
@@ -110,6 +113,9 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
       continue
     elif line.startsWith("## Allowed Tools"):
       currentSection = "tools"
+      continue
+    elif line.startsWith("## Capabilities"):
+      currentSection = "capabilities"
       continue
     elif line.startsWith("## System Prompt"):
       currentSection = "prompt"
@@ -132,6 +138,12 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
         let tool = toolLine[1..^1].strip()
         if tool.len > 0:
           toolLines.add(tool)
+    of "capabilities":
+      let capabilityLine = line.strip()
+      if capabilityLine.startsWith("-") or capabilityLine.startsWith("*"):
+        let capability = capabilityLine[1..^1].strip()
+        if capability.len > 0:
+          capabilityLines.add(capability)
     of "prompt":
       promptLines.add(line)
     else:
@@ -139,6 +151,7 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
 
   result.description = descriptionLines.join(" ")
   result.allowedTools = toolLines
+  result.capabilities = capabilityLines
   result.systemPrompt = promptLines.join("\n").strip()
   # Set model if found
   if modelLine.len > 0:
