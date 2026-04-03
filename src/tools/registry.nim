@@ -19,12 +19,12 @@
 import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
 import ../tokenization/tokenizer
-import bash, create, edit, fetch, list, read, todolist, task, action_tools
+import bash, create, edit, fetch, list, read, todolist, task, skill, action_tools
 import ../mcp/tools as mcpTools
 
 type
   ToolKind* = enum
-    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask,
+    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask, tkSkill,
     tkAgentManage, tkTaskDispatch
 
   Tool* = object
@@ -47,6 +47,8 @@ type
       todolistExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTask:
       taskExecute*: proc(args: JsonNode): string {.gcsafe.}
+    of tkSkill:
+      skillExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkAgentManage:
       agentManageExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTaskDispatch:
@@ -399,6 +401,70 @@ proc createTaskTool(): Tool =
     taskExecute: executeTask
   )
 
+proc createSkillTool(): Tool =
+  let parameters = %*{
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "The skill operation to perform",
+        "enum": ["list", "load", "unload", "show", "search", "refresh", "download"]
+      },
+      "name": {
+        "type": "string",
+        "description": "Skill name for load/unload/show operations"
+      },
+      "query": {
+        "type": "string",
+        "description": "Search query for find operation"
+      },
+      "repo": {
+        "type": "string",
+        "description": "Repository to download from (e.g., 'vercel-labs/agent-skills')"
+      },
+      "skill": {
+        "type": "string",
+        "description": "Specific skill name to download (optional)"
+      },
+      "global": {
+        "type": "boolean",
+        "description": "Install globally instead of project-level"
+      },
+      "loaded_only": {
+        "type": "boolean",
+        "description": "List only loaded skills"
+      },
+      "language": {
+        "type": "string",
+        "description": "Filter by language"
+      },
+      "tag": {
+        "type": "string",
+        "description": "Filter by tag"
+      },
+      "all": {
+        "type": "boolean",
+        "description": "Unload all skills (for unload operation)"
+      }
+    },
+    "required": ["operation"]
+  }
+  let schema = ToolDefinition(
+    `type`: "function",
+    function: ToolFunction(
+      name: "skill",
+      description: "Manage skills - load workflow instructions into context. Skills are reusable instruction modules for specialized tasks.",
+      parameters: parameters
+    )
+  )
+
+  Tool(
+    kind: tkSkill,
+    requiresConfirmation: false,
+    schema: schema,
+    skillExecute: executeSkill
+  )
+
 proc createAgentManageTool(): Tool =
   let parameters = %*{
     "type": "object",
@@ -492,6 +558,7 @@ proc initializeRegistry() =
     createFetchTool(),
     createTodolistTool(),
     createTaskTool(),
+    createSkillTool(),
     createAgentManageTool(),
     createTaskDispatchTool()
   ]
@@ -528,6 +595,7 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
   of tkFetch: tool.fetchExecute(args)
   of tkTodolist: tool.todolistExecute(args)
   of tkTask: tool.taskExecute(args)
+  of tkSkill: tool.skillExecute(args)
   of tkAgentManage: tool.agentManageExecute(args)
   of tkTaskDispatch: tool.taskDispatchExecute(args)
 
