@@ -56,12 +56,23 @@ proc parseRunningAgent(line: string): RunningAgentInfo =
     return
 
   let parts = argsStr.splitWhitespace()
-  let agentIdx = parts.find("agent")
-  if agentIdx < 0 or agentIdx + 1 >= parts.len:
+  var baseAgentName = ""
+  for i, part in parts:
+    if part == "agent" and i + 1 < parts.len:
+      baseAgentName = parts[i + 1]
+      break
+    if part == "--agent" and i + 1 < parts.len:
+      baseAgentName = parts[i + 1]
+      break
+    if part.startsWith("--agent="):
+      baseAgentName = part[8..^1].strip()
+      break
+
+  if baseAgentName.len == 0:
     result.pid = 0
     return
 
-  result.baseAgentName = parts[agentIdx + 1]
+  result.baseAgentName = baseAgentName
   result.routingName = result.baseAgentName
 
   for part in parts:
@@ -79,7 +90,7 @@ proc listRunningAgentProcesses*(): seq[RunningAgentInfo] =
     return @[]
 
   for line in output.splitLines():
-    if "niffler" notin line or " agent " notin line:
+    if "niffler" notin line or (" agent " notin line and "--agent" notin line):
       continue
 
     let parsed = parseRunningAgent(line)
@@ -115,7 +126,16 @@ proc startAgent*(agentId: string, agentNick: string = "", modelOverride: string 
       break
 
   if not found:
-    raise newException(ValueError, fmt"Agent '{agentId}' not found in configuration")
+    agentConfig = AgentConfig(
+      id: agentId,
+      name: agentId,
+      description: "",
+      model: "",
+      capabilities: @[],
+      toolPermissions: @[],
+      autoStart: false,
+      persistent: false
+    )
 
   # Load agent definition to get model configuration
   var agentArgs = @["--agent", agentId]

@@ -54,7 +54,9 @@ proc readConfigField(path: string): Option[string] =
       if line.startsWith("config:") or line.startsWith("config "):
         let parts = line.split(':', 1)
         if parts.len == 2:
-          return some(parts[1].strip().strip(chars={'"'}))
+          let value = parts[1].strip().strip(chars={'"'})
+          if value.len > 0:
+            return some(value)
   except:
     discard
 

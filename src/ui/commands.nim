@@ -10,6 +10,8 @@
 ## - Extensible command registration system
 
 import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils, algorithm]
+import ../actions/[registry as actionRegistry, types as actionTypes]
+import ../actions/runtime as actionRuntime
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, db_config]
 import ../core/agent_manager
 import ../types/[config as configTypes, messages, agents, mode]
@@ -46,6 +48,24 @@ type
 
 var commandRegistry = initTable[string, tuple[info: CommandInfo, handler: CommandHandler]]()
 
+proc toCommandResult(actionResult: actionTypes.ActionResult): CommandResult =
+  CommandResult(
+    success: actionResult.success,
+    message: actionResult.message,
+    shouldExit: actionResult.shouldExit,
+    shouldContinue: actionResult.shouldContinue,
+    shouldResetUI: actionResult.shouldResetUI
+  )
+
+proc toActionResult(commandResult: CommandResult): actionTypes.ActionResult =
+  actionTypes.ActionResult(
+    success: commandResult.success,
+    message: commandResult.message,
+    shouldExit: commandResult.shouldExit,
+    shouldContinue: commandResult.shouldContinue,
+    shouldResetUI: commandResult.shouldResetUI
+  )
+
 proc registerCommand*(name: string, description: string, usage: string,
                      aliases: seq[string], handler: CommandHandler,
                      category: CommandCategory = ccGlobal) =
@@ -62,6 +82,48 @@ proc registerCommand*(name: string, description: string, usage: string,
   # Register aliases
   for alias in aliases:
     commandRegistry[alias] = (info, handler)
+
+proc registerCommandAction(name: string, description: string, usage: string,
+                          aliases: seq[string], handler: CommandHandler,
+                          category: CommandCategory, actionId: string,
+                          commandPattern: string, surfaces: set[actionTypes.ActionSurface],
+                          routableToAgent: bool = false,
+                          toolName: Option[string] = none(string),
+                          agentCapabilities: set[actionTypes.ActionCapability] = {},
+                          showInHelp: bool = true) =
+  ## Register a command and its corresponding action metadata
+  registerCommand(name, description, usage, aliases, handler, category)
+  actionRegistry.registerAction(actionTypes.ActionDefinition(
+    id: actionId,
+    description: description,
+    commandPattern: commandPattern,
+    aliases: aliases,
+    surfaces: surfaces,
+    routableToAgent: routableToAgent,
+    toolName: toolName,
+    agentCapabilities: agentCapabilities,
+    showInHelp: showInHelp
+  ))
+
+proc registerActionOnly(actionId: string, description: string, commandPattern: string,
+                       surfaces: set[actionTypes.ActionSurface],
+                       handler: actionTypes.ActionHandler,
+                       routableToAgent: bool = false,
+                       toolName: Option[string] = none(string),
+                       agentCapabilities: set[actionTypes.ActionCapability] = {},
+                       showInHelp: bool = true) =
+  ## Register metadata and executor for non-top-level action commands
+  actionRegistry.registerAction(actionTypes.ActionDefinition(
+    id: actionId,
+    description: description,
+    commandPattern: commandPattern,
+    aliases: @[],
+    surfaces: surfaces,
+    routableToAgent: routableToAgent,
+    toolName: toolName,
+    agentCapabilities: agentCapabilities,
+    showInHelp: showInHelp
+  ), handler)
 
 proc getAvailableCommands*(): seq[CommandInfo] =
   ## Get list of all available commands (excluding aliases)
@@ -143,6 +205,60 @@ proc executeCommand*(command: string, args: seq[string],
   let (_, handler) = commandRegistry[command]
   return handler(args, session, currentModel)
 
+proc padHelpName(name: string, width: int): string =
+  if name.len >= width:
+    return name
+  name & repeat(' ', width - name.len)
+
+proc renderHelpEntries(entries: seq[tuple[name: string, description: string]]): string =
+  if entries.len == 0:
+    return ""
+
+  var width = 0
+  for entry in entries:
+    width = max(width, entry.name.len)
+
+  let paddedWidth = min(width + 2, 44)
+  for entry in entries:
+    if entry.name.len >= paddedWidth:
+      result &= "  " & entry.name & "\n"
+      result &= repeat(' ', paddedWidth + 2) & entry.description & "\n"
+    else:
+      result &= "  " & padHelpName(entry.name, paddedWidth) & entry.description & "\n"
+
+proc buildToolHelpEntries(actions: seq[actionTypes.ActionDefinition]): seq[tuple[name: string, description: string]] =
+  var grouped = initOrderedTable[string, seq[actionTypes.ActionDefinition]]()
+
+  for action in actions:
+    let toolName = action.toolName.get()
+    if toolName notin grouped:
+      grouped[toolName] = @[]
+    grouped[toolName].add(action)
+
+  for toolName, groupedActions in grouped:
+    var descriptions: seq[string] = @[]
+    var capabilities: seq[string] = @[]
+
+    for action in groupedActions:
+      descriptions.add(action.description)
+      for capability in action.agentCapabilities:
+        let formatted = actionRegistry.formatActionCapability(capability)
+        if formatted notin capabilities:
+          capabilities.add(formatted)
+
+    let summary = if groupedActions.len == 1:
+      descriptions[0]
+    else:
+      let covered = groupedActions.mapIt("/" & it.commandPattern).join(", ")
+      fmt("Covers {covered}.")
+
+    let capabilitySuffix = if capabilities.len > 0:
+      " Requires: " & capabilities.join(", ").replace("_", "\\_")
+    else:
+      ""
+
+    result.add(("`" & toolName & "`", summary & capabilitySuffix))
+
 # Built-in command handlers
 proc helpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   var message = """
@@ -151,27 +267,37 @@ Use '@agent prompt' to send to an agent, or '/focus agent' to set default.
 Use '/new <title>' to create a new conversation (routes to focused agent).
 Use '/plan' or '/code' to switch modes.
 
-Press Ctrl+C to cancel streaming or exit.
+  Press Ctrl+C to cancel streaming or exit.
 
 """
-  # Group commands by category
-  let globalCommands = getCommandsByCategory(ccGlobal)
-  let agentCommands = getCommandsByCategory(ccAgent)
+  let masterActions = actionRegistry.getMasterCliActions()
+  let routedActions = actionRegistry.getRoutableAgentActions()
+  let toolActions = actionRegistry.getToolCallableActions()
 
-  message &= "Global commands:\n"
-  for cmd in globalCommands:
-    message &= fmt"  /{cmd.name}"
-    if cmd.usage.len > 0:
-      message &= fmt" {cmd.usage}"
-    message &= fmt(" - {cmd.description}") & "\n"
+  let masterOnlyActions = masterActions.filterIt(it.toolName.isNone())
+  let masterToolActions = masterActions.filterIt(it.toolName.isSome())
 
-  if agentCommands.len > 0:
-    message &= "\nAgent commands (use @agent /cmd or /focus to set default):\n"
-    for cmd in agentCommands:
-      message &= fmt"  /{cmd.name}"
-      if cmd.usage.len > 0:
-        message &= fmt" {cmd.usage}"
-      message &= fmt(" - {cmd.description}") & "\n"
+  let masterOnlyEntries = masterOnlyActions.mapIt(("/" & it.commandPattern, it.description))
+  let masterToolEntries = masterToolActions.mapIt(("/" & it.commandPattern, it.description))
+  let routedEntries = routedActions.mapIt(("/" & it.commandPattern, it.description))
+  let toolEntries = buildToolHelpEntries(toolActions)
+
+  if masterOnlyEntries.len > 0:
+    message &= formatWithStyle("Master-Only Commands:", currentTheme.header2) & "\n"
+    message &= renderHelpEntries(masterOnlyEntries)
+
+  if masterToolEntries.len > 0:
+    message &= "\n" & formatWithStyle("Master Actions:", currentTheme.header2) & "\n"
+    message &= renderHelpEntries(masterToolEntries)
+
+  if routedEntries.len > 0:
+    message &= "\n" & formatWithStyle("Agent Commands:", currentTheme.header2) & "\n"
+    message &= "  Route with `@agent` or `/focus`.\n"
+    message &= renderHelpEntries(routedEntries)
+
+  if toolEntries.len > 0:
+    message &= "\n" & formatWithStyle("Agent-Callable Tools:", currentTheme.header2) & "\n"
+    message &= renderHelpEntries(toolEntries)
 
   return CommandResult(
     success: true,
@@ -1116,99 +1242,73 @@ proc formatMcpStatus(status: string): string =
   of "mssError": "Error"
   else: status
 
-proc agentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Handle /agent command for showing agent definitions
+proc renderAgentDefinitionList(session: Session): CommandResult =
   let agentsDir = session.getAgentsDir()
   let agents = loadAgentDefinitions(agentsDir)
   let knownTools = getAllToolNames()
 
-  if args.len == 0:
-    # Show table of all agents
-    if agents.len == 0:
-      return CommandResult(
-        success: true,
-        message: fmt("No agents found in {agentsDir}\nAgents will be created on next startup."),
-        shouldExit: false,
-        shouldContinue: true
-      )
-
-    var table: TerminalTable
-    table.add(bold("Name"), bold("Description"), bold("Tools"), bold("Status"))
-
-    for agent in agents:
-      let status = validateAgentDefinition(agent, knownTools)
-      let statusIcon = if status.valid:
-                         green("✓")
-                       elif status.unknownTools.len > 0:
-                         yellow("⚠")
-                       else:
-                         red("✗")
-      table.add(
-        agent.name,
-        truncate(agent.description, 50),
-        $agent.allowedTools.len,
-        statusIcon
-      )
-
-    let tableOutput = renderTableToString(table, maxWidth = 120)
-
+  if agents.len == 0:
     return CommandResult(
       success: true,
-      message: tableOutput & "\n\nUse /agent <name> to view details",
+      message: fmt("No agents found in {agentsDir}\nAgents will be created on next startup."),
       shouldExit: false,
       shouldContinue: true
     )
-  else:
-    # Show specific agent details
-    let agentName = args[0]
-    let agentOpt = agents.filterIt(it.name == agentName)
 
-    if agentOpt.len == 0:
-      return CommandResult(
-        success: false,
-        message: fmt("Agent '{agentName}' not found. Use /agent to list all agents."),
-        shouldExit: false,
-        shouldContinue: true
-      )
+  var table: TerminalTable
+  table.add(bold("Name"), bold("Description"), bold("Tools"), bold("Status"))
 
-    let agent = agentOpt[0]
+  for agent in agents:
     let status = validateAgentDefinition(agent, knownTools)
+    let statusIcon = if status.valid:
+                       green("✓")
+                     elif status.unknownTools.len > 0:
+                       yellow("⚠")
+                     else:
+                       red("✗")
+    table.add(
+      agent.name,
+      truncate(agent.description, 50),
+      $agent.allowedTools.len,
+      statusIcon
+    )
 
-    var message = fmt("┌─ {agent.name} ") & "─".repeat(max(0, 70 - agent.name.len - 3)) & "┐\n"
-    message &= fmt("│ Description: {agent.description}\n")
-    message &= "│\n"
-    message &= fmt("│ Allowed Tools: {agent.allowedTools.join(\", \")}\n")
-    message &= "│\n"
+  return CommandResult(
+    success: true,
+    message: renderTableToString(table, maxWidth = 120) & "\n\nUse /agent show <name> to view details",
+    shouldExit: false,
+    shouldContinue: true
+  )
 
-    if status.valid:
-      if status.unknownTools.len > 0:
-        message &= fmt("│ Status: ⚠ Valid (unknown tools: {status.unknownTools.join(\", \")})\n")
-      else:
-        message &= "│ Status: ✓ Valid\n"
-    else:
-      message &= fmt("│ Status: ✗ {status.error}\n")
+proc renderAgentDefinitionDetails(session: Session, agentName: string): CommandResult =
+  let agents = loadAgentDefinitions(session.getAgentsDir())
+  let knownTools = getAllToolNames()
+  let agentOpt = agents.filterIt(it.name == agentName)
 
-    message &= "│\n"
-    message &= fmt("│ File: {agent.filePath}\n")
-    message &= "└" & "─".repeat(70) & "┘"
-
+  if agentOpt.len == 0:
     return CommandResult(
-      success: true,
-      message: message,
+      success: false,
+      message: fmt("Agent '{agentName}' not found. Use /agent list to see available definitions."),
       shouldExit: false,
       shouldContinue: true
     )
 
-proc agentsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
-  ## Handle /agents command for showing registered agents
-  ## Currently shows placeholder - NATS-based presence coming soon
-  let message = """Agent presence is tracked via NATS.
+  let agent = agentOpt[0]
+  let status = validateAgentDefinition(agent, knownTools)
 
-To start an agent:
-  ./src/niffler agent coder
-  ./src/niffler agent researcher --model=claude
+  var message = fmt("Agent: {agent.name}\n")
+  message &= fmt("Description: {agent.description}\n\n")
+  message &= fmt("Allowed Tools: {agent.allowedTools.join(\", \")}\n")
 
-Agents connect via NATS for real-time coordination."""
+  if status.valid:
+    if status.unknownTools.len > 0:
+      message &= fmt("Status: ⚠ Valid (unknown tools: {status.unknownTools.join(\", \")})\n")
+    else:
+      message &= "Status: ✓ Valid\n"
+  else:
+    message &= fmt("Status: ✗ {status.error}\n")
+
+  message &= fmt("File: {agent.filePath}")
 
   return CommandResult(
     success: true,
@@ -1216,6 +1316,142 @@ Agents connect via NATS for real-time coordination."""
     shouldExit: false,
     shouldContinue: true
   )
+
+proc renderRunningAgents(): CommandResult =
+  let runningAgents = listRunningAgentProcesses().sortedByIt(it.routingName)
+  let masterStatePtr = getGlobalMasterState()
+  let presentAgents = if masterStatePtr != nil and masterStatePtr[].connected:
+    masterStatePtr[].discoverAgents()
+  else:
+    @[]
+
+  if runningAgents.len == 0 and presentAgents.len == 0:
+    return CommandResult(
+      success: true,
+      message: "No running agents.",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  var table: TerminalTable
+  table.add(bold("Agent"), bold("PID"), bold("Model"), bold("Presence"))
+
+  for agent in runningAgents:
+    let modelName = if agent.modelName.len > 0: agent.modelName else: "-"
+    let presence = if agent.routingName in presentAgents: green("online") else: yellow("starting")
+    table.add(formatRunningAgentLabel(agent), $agent.pid, modelName, presence)
+
+  for agentName in presentAgents:
+    if runningAgents.anyIt(it.routingName == agentName):
+      continue
+    table.add(agentName, "-", "-", green("online"))
+
+  return CommandResult(
+    success: true,
+    message: renderTableToString(table, maxWidth = 120),
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc agentListAction(args: seq[string], session: var Session,
+                    currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard args
+  discard currentModel
+  result = toActionResult(renderAgentDefinitionList(session))
+
+proc agentShowAction(args: seq[string], session: var Session,
+                    currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard currentModel
+  if args.len < 1:
+    return actionTypes.ActionResult(success: false, message: "Usage: /agent show <name>", shouldExit: false, shouldContinue: true)
+  result = toActionResult(renderAgentDefinitionDetails(session, args[0]))
+
+proc agentRunningAction(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard args
+  discard session
+  discard currentModel
+  result = toActionResult(renderRunningAgents())
+
+proc agentStartAction(args: seq[string], session: var Session,
+                     currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard session
+  discard currentModel
+  if args.len < 1:
+    return actionTypes.ActionResult(success: false, message: "Usage: /agent start <name> [--nick=<nick>] [--model=<model>]", shouldExit: false, shouldContinue: true)
+
+  let agentName = args[0]
+  var nick = ""
+  var model = ""
+  for arg in args[1..^1]:
+    if arg.startsWith("--nick="):
+      nick = arg[7..^1]
+    elif arg.startsWith("--model="):
+      model = arg[8..^1]
+    else:
+      return actionTypes.ActionResult(success: false, message: fmt("Unknown option '{arg}'. Use --nick= or --model="), shouldExit: false, shouldContinue: true)
+
+  try:
+    return actionRuntime.startAgentInstance(agentName, nick, model)
+  except Exception as e:
+    return actionTypes.ActionResult(success: false, message: fmt("Failed to start agent: {e.msg}"), shouldExit: false, shouldContinue: true)
+
+proc agentStopAction(args: seq[string], session: var Session,
+                    currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard session
+  discard currentModel
+  if args.len < 1:
+    return actionTypes.ActionResult(success: false, message: "Usage: /agent stop <routing-name>", shouldExit: false, shouldContinue: true)
+
+  let routingName = args[0]
+  return actionRuntime.stopAgentInstance(routingName)
+
+proc taskDispatchAction(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  discard session
+  discard currentModel
+  if args.len < 2:
+    return actionTypes.ActionResult(success: false, message: "Usage: task_dispatch <target> <description>", shouldExit: false, shouldContinue: true)
+
+  let target = args[0]
+  let description = args[1..^1].join(" ")
+  return actionRuntime.dispatchTaskToAgent(target, description)
+
+proc agentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle /agent subcommands for definitions and running agents
+  if args.len == 0:
+    return CommandResult(
+      success: true,
+      message: """Agent commands:
+
+  /agent list
+  /agent show <name>
+  /agent running
+  /agent start <name> [--nick=<nick>] [--model=<model>]
+  /agent stop <routing-name>
+
+Shorthand:
+  /agent <name>        Show definition details
+
+Use @name to route a prompt to a running agent.""",
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let subcommand = args[0].toLowerAscii()
+  case subcommand
+  of "list":
+    return toCommandResult(actionRegistry.executeAction("agent.listDefinitions", @[], session, currentModel))
+  of "show":
+    return toCommandResult(actionRegistry.executeAction("agent.showDefinition", if args.len > 1: @[args[1]] else: @[], session, currentModel))
+  of "running":
+    return toCommandResult(actionRegistry.executeAction("agent.listRunning", @[], session, currentModel))
+  of "start":
+    return toCommandResult(actionRegistry.executeAction("agent.start", if args.len > 1: args[1..^1] else: @[], session, currentModel))
+  of "stop":
+    return toCommandResult(actionRegistry.executeAction("agent.stop", if args.len > 1: @[args[1]] else: @[], session, currentModel))
+  else:
+    return toCommandResult(actionRegistry.executeAction("agent.showDefinition", @[args[0]], session, currentModel))
 
 proc mcpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /mcp command for showing MCP server status
@@ -2031,30 +2267,72 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
-  registerCommand("help", "Show help and available commands", "", @[], helpHandler, ccGlobal)
-  registerCommand("focus", "Set/show focused agent for commands", "[agent|none]", @[], focusPlaceholder, ccGlobal)
-  registerCommand("exit", "Exit Niffler", "", @["quit"], exitHandler, ccGlobal)
-  registerCommand("config", "Switch or list configs", "[name]", @[], configHandler, ccGlobal)
-  registerCommand("cost", "Show session cost summary and projections", "", @[], costHandler, ccGlobal)
-  registerCommand("theme", "Switch theme or show current", "[name]", @[], themeHandler, ccGlobal)
-  registerCommand("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler, ccGlobal)
-  registerCommand("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler, ccGlobal)
-  registerCommand("agent", "List/view agent definitions", "[name]", @[], agentHandler, ccGlobal)
-  registerCommand("agents", "Show running agents via NATS", "", @[], agentsHandler, ccGlobal)
-  registerCommand("archive", "Archive a conversation", "<id>", @[], archiveHandler, ccGlobal)
-  registerCommand("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal)
-  registerCommand("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal)
-  registerCommand("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal)
-  registerCommand("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordHandler, ccGlobal)
+  registerCommandAction("help", "Show help and available commands", "", @[], helpHandler, ccGlobal,
+    "system.help", "help", {actionTypes.asMasterCli})
+  registerCommandAction("focus", "Set/show focused agent for commands", "[agent|none]", @[], focusPlaceholder, ccGlobal,
+    "agent.focus", "focus [agent|none]", {actionTypes.asMasterCli})
+  registerCommandAction("exit", "Exit Niffler", "", @["quit"], exitHandler, ccGlobal,
+    "system.exit", "exit", {actionTypes.asMasterCli})
+  registerCommandAction("config", "Switch or list configs", "[name]", @[], configHandler, ccGlobal,
+    "system.config", "config [name]", {actionTypes.asMasterCli})
+  registerCommandAction("cost", "Show session cost summary and projections", "", @[], costHandler, ccGlobal,
+    "system.cost", "cost", {actionTypes.asMasterCli})
+  registerCommandAction("theme", "Switch theme or show current", "[name]", @[], themeHandler, ccGlobal,
+    "system.theme", "theme [name]", {actionTypes.asMasterCli})
+  registerCommandAction("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler, ccGlobal,
+    "system.markdown", "markdown [on|off]", {actionTypes.asMasterCli})
+  registerCommandAction("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler, ccGlobal,
+    "system.mcp", "mcp [status]", {actionTypes.asMasterCli})
+  registerCommandAction("agent", "Manage agent definitions and live agents", "[subcommand]", @[], agentHandler, ccGlobal,
+    "agent.help", "agent", {actionTypes.asMasterCli}, showInHelp = false)
+  registerCommandAction("archive", "Archive a conversation", "<id>", @[], archiveHandler, ccGlobal,
+    "conversation.archive", "archive <id>", {actionTypes.asMasterCli})
+  registerCommandAction("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal,
+    "conversation.unarchive", "unarchive <id>", {actionTypes.asMasterCli})
+  registerCommandAction("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal,
+    "conversation.search", "search <query>", {actionTypes.asMasterCli})
+  registerCommandAction("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal,
+    "system.models", "models", {actionTypes.asMasterCli})
+  registerCommandAction("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordHandler, ccGlobal,
+    "system.discord", "discord <status,token,channels,agent,people,enable,disable,test>", {actionTypes.asMasterCli})
 
   # Agent commands - run in agent context
-  registerCommand("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent)
-  registerCommand("context", "Show conversation context information", "", @[], contextHandler, ccAgent)
-  registerCommand("inspect", "Generate HTTP JSON request for API inspection", "[messages,tools,model,system] [filename]", @[], inspectHandler, ccAgent)
-  registerCommand("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent)
-  registerCommand("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent)
-  registerCommand("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent)
-  registerCommand("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent)
-  registerCommand("task", "Execute a task in fresh context", "<description>", @[], taskHandler, ccAgent)
-  registerCommand("plan", "Switch to plan mode", "", @[], planHandler, ccAgent)
-  registerCommand("code", "Switch to code mode", "", @[], codeHandler, ccAgent)
+  registerCommandAction("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent,
+    "agent.model", "model [name]", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("context", "Show conversation context information", "", @[], contextHandler, ccAgent,
+    "agent.context", "context", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("inspect", "Generate HTTP JSON request for API inspection", "[messages,tools,model,system] [filename]", @[], inspectHandler, ccAgent,
+    "agent.inspect", "inspect [messages,tools,model,system] [filename]", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent,
+    "conversation.condense", "condense [strategy]", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent,
+    "conversation.switch", "conv [id|title]", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent,
+    "conversation.new", "new [title]", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent,
+    "conversation.info", "info", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("task", "Execute a task in fresh context", "<description>", @[], taskHandler, ccAgent,
+    "task.dispatch", "task <description>", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("plan", "Switch to plan mode", "", @[], planHandler, ccAgent,
+    "agent.plan", "plan", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("code", "Switch to code mode", "", @[], codeHandler, ccAgent,
+    "agent.code", "code", {actionTypes.asAgentCli}, routableToAgent = true)
+
+  registerActionOnly("agent.listDefinitions", "List available agent definitions.", "agent list",
+    {actionTypes.asMasterCli, actionTypes.asTool}, agentListAction,
+    toolName = some("agent_manage"), agentCapabilities = {actionTypes.acInspectAgents})
+  registerActionOnly("agent.showDefinition", "Show details for a specific agent definition.", "agent show <name>",
+    {actionTypes.asMasterCli, actionTypes.asTool}, agentShowAction,
+    toolName = some("agent_manage"), agentCapabilities = {actionTypes.acInspectAgents})
+  registerActionOnly("agent.listRunning", "List running agent instances and presence state.", "agent running",
+    {actionTypes.asMasterCli, actionTypes.asTool}, agentRunningAction,
+    toolName = some("agent_manage"), agentCapabilities = {actionTypes.acInspectAgents})
+  registerActionOnly("agent.start", "Start a new agent instance from a definition.", "agent start <name> [--nick=<nick>] [--model=<model>]",
+    {actionTypes.asMasterCli, actionTypes.asTool}, agentStartAction,
+    toolName = some("agent_manage"), agentCapabilities = {actionTypes.acManageAgents})
+  registerActionOnly("agent.stop", "Stop a running agent by routing name.", "agent stop <routing-name>",
+    {actionTypes.asMasterCli, actionTypes.asTool}, agentStopAction,
+    toolName = some("agent_manage"), agentCapabilities = {actionTypes.acManageAgents})
+  registerActionOnly("task.dispatchToAgent", "Dispatch a fresh-context /task request to a running agent.", "task_dispatch <target> <description>",
+    {actionTypes.asTool}, taskDispatchAction,
+    toolName = some("task_dispatch"), agentCapabilities = {actionTypes.acDispatchTasks})

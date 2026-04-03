@@ -22,7 +22,7 @@
 ## - System initialization shared between interactive and single-shot modes
 ## - Real-time streaming display for immediate feedback
 
-import std/[os, strutils, strformat, terminal, options, times, math, tables, json]
+import std/[os, strutils, strformat, terminal, options, times, math, tables, json, sequtils]
 import std/logging
 when defined(posix):
   import posix
@@ -257,31 +257,80 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
         else:
           return ""
       of "agent":
-        # Agent completion
         let agentsDir = session.getAgentsDir()
         let agents = loadAgentDefinitions(agentsDir)
-        var matchedAgents: seq[AgentDefinition] = @[]
+        let parts = argPrefix.split(' ', 1)
+        let subcommands = @["list", "show", "running", "start", "stop"]
 
-        for agent in agents:
-          if agent.name.toLower().startsWith(argPrefix.toLower()):
-            matchedAgents.add(agent)
+        if parts.len == 1:
+          var matches: seq[string] = @[]
+          for subcommand in subcommands:
+            if subcommand.startsWith(parts[0].toLower()):
+              matches.add(subcommand)
+          for agent in agents:
+            if agent.name.toLower().startsWith(parts[0].toLower()):
+              matches.add(agent.name)
 
-        if matchedAgents.len == 1:
-          # Single match - complete it with space
-          let suffix = matchedAgents[0].name[argPrefix.len..^1] & " "
-          debug(fmt"Single agent match: returning '{suffix}'")
-          clearInfo()
-          return suffix
-        elif matchedAgents.len > 1:
-          if isSecondTab:
-            # Show agent options in info area
-            var infoLines: seq[string] = @["Available agents:"]
-            for agent in matchedAgents:
-              infoLines.add(fmt"  {agent.name}")
-            setInfo(infoLines)
-            redraw()
-            debug(fmt"Showing {matchedAgents.len} agent options in info area")
-          return ""
+          if matches.len == 1:
+            let suffix = matches[0][parts[0].len..^1] & " "
+            clearInfo()
+            return suffix
+          elif matches.len > 1:
+            if isSecondTab:
+              var infoLines: seq[string] = @["Agent commands and definitions:"]
+              for entry in matches:
+                infoLines.add(fmt"  {entry}")
+              setInfo(infoLines)
+              redraw()
+            return ""
+          else:
+            return ""
+
+        let subcommand = parts[0].toLowerAscii()
+        let valuePrefix = parts[1]
+
+        case subcommand
+        of "show", "start":
+          var matches: seq[string] = @[]
+          for agent in agents:
+            if agent.name.toLower().startsWith(valuePrefix.toLower()):
+              matches.add(agent.name)
+
+          if matches.len == 1:
+            let suffix = matches[0][valuePrefix.len..^1] & " "
+            clearInfo()
+            return suffix
+          elif matches.len > 1:
+            if isSecondTab:
+              var infoLines: seq[string] = @["Available agent definitions:"]
+              for entry in matches:
+                infoLines.add(fmt"  {entry}")
+              setInfo(infoLines)
+              redraw()
+            return ""
+          else:
+            return ""
+        of "stop":
+          let runningAgents = listRunningAgentProcesses()
+          var matches: seq[string] = @[]
+          for agent in runningAgents:
+            if agent.routingName.toLower().startsWith(valuePrefix.toLower()):
+              matches.add(agent.routingName)
+
+          if matches.len == 1:
+            let suffix = matches[0][valuePrefix.len..^1] & " "
+            clearInfo()
+            return suffix
+          elif matches.len > 1:
+            if isSecondTab:
+              var infoLines: seq[string] = @["Running agents:"]
+              for entry in matches:
+                infoLines.add(fmt"  {entry}")
+              setInfo(infoLines)
+              redraw()
+            return ""
+          else:
+            return ""
         else:
           return ""
       of "conv", "archive":
@@ -412,6 +461,7 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
     let masterStatePtr = getGlobalMasterState()
     if masterStatePtr != nil:
       let agents = masterStatePtr[].discoverAgents()
+      let runningAgents = listRunningAgentProcesses()
       var matchedAgents: seq[string] = @[]
 
       for agent in agents:
@@ -429,7 +479,11 @@ proc nifflerCompletionCallback(buffer: string, cursorPos: int, isSecondTab: bool
           # Show agent options in info area
           var infoLines: seq[string] = @["Running agents:"]
           for agent in matchedAgents:
-            infoLines.add(fmt"  @{agent}")
+            let runningInfo = runningAgents.filterIt(it.routingName == agent)
+            if runningInfo.len > 0:
+              infoLines.add(fmt"  @{formatRunningAgentLabel(runningInfo[0])}")
+            else:
+              infoLines.add(fmt"  @{agent}")
           setInfo(infoLines)
           redraw()
           debug(fmt"Showing {matchedAgents.len} agent options in info area")
@@ -681,6 +735,8 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
 
 proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false, dumpsse: bool = false, natsUrl: string = "nats://localhost:4222") =
   ## Start the CLI mode with enhanced interface
+
+  session = initSession()
 
   # Load configuration to get theme settings
   let (config, markdownEnabled) = initializeSystemComponents()

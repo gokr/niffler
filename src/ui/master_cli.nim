@@ -16,7 +16,7 @@
 ## - Without @: use default agent or fall back to local processing
 
 import std/[logging, strformat, times, strutils, tables, random, options, os]
-import ../core/[nats_client, database]
+import ../core/[nats_client, database, agent_dispatch]
 import ../types/[nats_messages]
 import ../comms/discord
 import nats_listener
@@ -99,12 +99,6 @@ proc parseAgentInput*(input: string): AgentInput =
     result.agentName = ""
     result.input = trimmed
 
-proc generateRequestId(): string =
-  ## Generate a unique request ID
-  let timestamp = getTime().toUnix()
-  let randomVal = rand(999999)
-  result = fmt("{timestamp}-{randomVal}")
-
 proc initializeMaster*(natsUrl: string, defaultAgent: string = ""): MasterState =
   ## Initialize master state and connect to NATS
   info("Initializing master mode...")
@@ -120,14 +114,6 @@ proc initializeMaster*(natsUrl: string, defaultAgent: string = ""): MasterState 
   result.discordAllowedPeople = @[]
 
   # Initialize NATS connection (no client ID for master - no presence needed)
-
-proc setGlobalMasterState*(state: ptr MasterState) =
-  ## Set shared master state for commands and completion
-  globalMasterState = state
-
-proc getGlobalMasterState*(): ptr MasterState =
-  ## Get shared master state for commands and completion
-  globalMasterState
   info(fmt("Connecting to NATS at {natsUrl}..."))
   try:
     result.natsClient = initNatsClient(natsUrl, "master", presenceTTL = 15)
@@ -136,6 +122,14 @@ proc getGlobalMasterState*(): ptr MasterState =
   except Exception as e:
     warn(fmt("Failed to connect to NATS: {e.msg}"))
     warn("Master mode will operate in local-only mode")
+
+proc setGlobalMasterState*(state: ptr MasterState) =
+  ## Set shared master state for commands and completion
+  globalMasterState = state
+
+proc getGlobalMasterState*(): ptr MasterState =
+  ## Get shared master state for commands and completion
+  result = globalMasterState
 
 proc initializeDiscord*(state: var MasterState, database: DatabaseBackend) =
   ## Initialize Discord integration for master
@@ -239,33 +233,29 @@ proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string,
   if not state.connected:
     return (false, "", "Not connected to NATS")
 
-  # Check if agent is available
-  if not state.isAgentAvailable(agentName):
-    return (false, "", fmt("Agent '{agentName}' is not available"))
-
-  let requestId = generateRequestId()
-  let subject = fmt("niffler.agent.{agentName}.request")
+  let prepared = prepareAgentRequest(state.natsClient, agentName, input)
+  if not prepared.success:
+    return (false, "", prepared.error)
 
   # Create and track request with Discord context if applicable
-  let request = createRequest(requestId, agentName, input)
-  state.pendingRequests[requestId] = PendingRequest(
-    requestId: requestId,
+  state.pendingRequests[prepared.request.requestId] = PendingRequest(
+    requestId: prepared.request.requestId,
     agentName: agentName,
     startTime: getTime(),
     input: input,
     discordChannelId: discordChannelId
   )
 
-  info(fmt("Sending async request {requestId} to agent '{agentName}'"))
+  info(fmt("Sending async request {prepared.request.requestId} to agent '{agentName}'"))
 
   # Publish request and return immediately
   try:
-    state.natsClient.publish(subject, $request)
+    publishAgentRequest(state.natsClient, prepared.request)
     # Track request for response display
-    trackAgentRequest(requestId, agentName, input)
-    return (true, requestId, "")
+    trackAgentRequest(prepared.request.requestId, agentName, input)
+    return (true, prepared.request.requestId, "")
   except Exception as e:
-    state.pendingRequests.del(requestId)
+    state.pendingRequests.del(prepared.request.requestId)
     return (false, "", fmt("Failed to send request: {e.msg}"))
 
 proc processDiscordMessagesThread(stateArg: pointer) {.thread.} =
