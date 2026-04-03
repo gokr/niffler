@@ -522,6 +522,32 @@ proc addToolMessage*(content: string, toolCallId: string): Message =
     finally:
       release(globalSession.lock)
 
+proc addDeveloperMessage*(content: string): Message =
+  ## Add developer message to current conversation (for runtime instructions like skills)
+  ## Note: Not all models support developer role - check supportsDeveloperMessage in model config
+  let conversationId = getCurrentConversationId().int
+  {.gcsafe.}:
+    acquire(globalSession.lock)
+    try:
+      # Add to database if pool is available
+      if globalSession.pool != nil and conversationId > 0:
+        discard addDeveloperMessageToDb(globalSession.pool, conversationId, content)
+        let backend = getGlobalDatabase()
+        if backend != nil:
+          updateConversationMessageCount(backend, conversationId)
+
+      result = Message(
+        role: mrDeveloper,
+        content: content
+      )
+
+      debug(fmt"Added developer message: {content[0..min(50, content.len-1)]}")
+
+      # Invalidate conversation context cache
+      invalidateConversationCache()
+    finally:
+      release(globalSession.lock)
+
 proc getRecentMessages*(maxMessages: int = 10): seq[Message] =
   ## Get recent messages from current conversation for display purposes
   let conversationId = getCurrentConversationId().int  # Get ID before acquiring lock to avoid deadlock

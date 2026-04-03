@@ -1167,6 +1167,26 @@ proc addToolMessageToDb*(pool: Pool, conversationId: int, content: string,
     db.insert(msg)
     return msg.id
 
+proc addDeveloperMessageToDb*(pool: Pool, conversationId: int, content: string): int =
+  ## Add developer message to database and return message ID
+  ## Developer messages contain runtime instructions (like skills)
+  pool.withDb:
+    let msg = ConversationMessage(
+      id: 0,
+      conversationId: conversationId,
+      created_at: now().utc(),
+      role: "developer",
+      content: content,
+      toolCallId: none(string),
+      model: "",
+      outputTokens: 0,
+      toolCalls: none(string),
+      sequenceId: none(int),
+      messageType: "developer"
+    )
+    db.insert(msg)
+    return msg.id
+
 proc getRecentMessagesFromDb*(pool: Pool, conversationId: int, maxMessages: int = 10): seq[Message] =
   ## Get recent messages from database, converted to Message format for LLM
   pool.withDb:

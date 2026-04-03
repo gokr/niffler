@@ -53,6 +53,7 @@ type
     mrAssistant = "assistant"
     mrSystem = "system"
     mrTool = "tool"
+    mrDeveloper = "developer"
 
   # OpenAI-compatible tool calling types
   FunctionCall* = object

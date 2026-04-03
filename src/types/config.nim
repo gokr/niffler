@@ -52,6 +52,7 @@ type
     includeReasoningInContext*: Option[bool]         # NEW: Override auto behavior
     thinkingFormat*: Option[string]                  # "anthropic", "openai", "auto"
     maxThinkingTokens*: Option[int]                  # NEW: Limit thinking context
+    supportsDeveloperMessage*: Option[bool]           # NEW: Use developer role for skills
     
     # OpenAI protocol parameters
     temperature*: Option[float]
