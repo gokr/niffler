@@ -11,12 +11,14 @@
 ## - Tool availability awareness
 ## - Environment information injection
 
-import std/[strformat, strutils, os, times, osproc, sequtils, options, tables]
-import ../types/[mode, messages]
+import std/[strformat, strutils, os, times, osproc, sequtils, options, tables, logging]
+import ../types/[mode, messages, context_assembly]
 import ../tools/registry
+import ../tools/skill
 import ../tokenization/tokenizer
 import config
 import session
+import context_assembly
 
 type
   SystemPromptTokens* = object
@@ -27,6 +29,7 @@ type
     instructionFiles*: int    # CLAUDE.md, README.md, etc.
     toolInstructions*: int    # TodoList, thinking token guidance
     availableTools*: int      # Tools list in prompt
+    skills*: int              # Loaded skills content
     total*: int              # Sum of all components
   
   SystemPromptResult* = object
@@ -551,9 +554,24 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: 
     systemPrompt.add(instructionFiles)
     instructionTokens = countTokensForModel(instructionFiles, modelName)
   
+  # Add loaded skills (adapted for Niffler)
+  # Only add skills that weren't injected as developer messages
+  var skillsTokens = 0
+  let loadedSkills = getSkillsForSystemPrompt()
+  if loadedSkills.len > 0:
+    let contextPlan = buildContextPlan(loadedSkills)
+    let adaptedContent = getAdaptedSkillContent(contextPlan)
+    if adaptedContent.len > 0:
+      systemPrompt.add("\n\n## Active Skills\n\n")
+      systemPrompt.add(adaptedContent)
+      skillsTokens = countTokensForModel(adaptedContent, modelName)
+    
+    if contextPlan.contextNotes.len > 0:
+      logging.debug(contextPlan.contextNotes)
+  
   # Calculate total tokens
   let totalTokens = basePromptTokens + environmentTokens + availableToolsTokens + 
-                   modePromptTokens + todoTokens + thinkingTokens + instructionTokens
+                   modePromptTokens + todoTokens + thinkingTokens + instructionTokens + skillsTokens
   
   result = SystemPromptResult(
     content: systemPrompt,
@@ -564,6 +582,7 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: 
       instructionFiles: instructionTokens,
       toolInstructions: todoTokens + thinkingTokens,
       availableTools: availableToolsTokens,
+      skills: skillsTokens,
       total: totalTokens
     )
   )
