@@ -34,6 +34,7 @@ type
     toolName*: Option[string]
     agentCapabilities*: set[ActionCapability]
     showInHelp*: bool
+    localOnly*: bool              # Execute immediately, don't send to LLM
 
   ActionHandler* = proc(args: seq[string], session: var Session,
                        currentModel: var configTypes.ModelConfig): ActionResult
