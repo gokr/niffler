@@ -4,12 +4,14 @@ This directory contains the consolidated test suite for the Niffler AI terminal 
 
 ## Test Structure
 
-The test suite has been consolidated from 32 to 24 files to reduce redundancy while maintaining full coverage.
+The test suite has been consolidated to reduce redundancy while maintaining full coverage.
 
 ### Core Test Categories
 
 - **Basic Functionality**: `test_basic.nim` - Core types and schema validation
 - **Tool Integration**: `test_tool_integration.nim` - Consolidated tool testing, task execution, and agent handling
+- **Skills System**: `test_skills.nim`, `test_context_assembly.nim` - Skills discovery, adaptation, and context assembly
+- **Actions**: `test_action_capabilities.nim`, `test_agent_dispatch.nim` - Action system and agent dispatch
 - **TodayList**:
   - `test_todolist_core.nim` - Functional tests + validation (merged)
   - `test_todolist_database.nim` - Database integration
@@ -35,9 +37,9 @@ nim c -r tests/test_tool_integration.nim
 ## Consolidation Results
 
 - **Before**: 32 test files with significant redundancy
-- **After**: 24 test files with minimal overlap
-- **Reduction**: 25% fewer files, ~20% line count reduction
-- **Coverage**: All critical functionality maintained
+- **After**: ~30 test files covering all functionality
+- **Reduction**: ~6% fewer files, organized by domain
+- **Coverage**: All critical functionality maintained, including skills and actions
 
 ### Key Consolidations
 
@@ -52,6 +54,8 @@ nim c -r tests/test_tool_integration.nim
 |----------|-------|---------|
 | Core | 1 | Basic functionality and schemas |
 | Integration | 1 | Tool system, task execution, agents |
+| Skills | 2 | Skills discovery and context assembly |
+| Actions | 2 | Action capabilities and agent dispatch |
 | Todolist | 3 | Core/functional, database, e2e |
 | Conversation | 4 | CLI, infrastructure, modes, e2e |
 | Specialized | 11 | Individual component testing |
