@@ -11,13 +11,14 @@
 3. [Models & AI Providers](#models--ai-providers)
 4. [Using Niffler](#using-niffler)
 5. [Multi-Agent System](#multi-agent-system)
-6. [Tools](#tools)
-7. [MCP Integration](#mcp-integration)
-8. [Plan & Code Modes](#plan--code-modes)
-9. [Thinking Tokens](#thinking-tokens)
-10. [Cost Tracking](#cost-tracking)
-11. [Command Reference](#command-reference)
-12. [Troubleshooting](#troubleshooting)
+6. [Skills System](#skills-system)
+7. [Tools](#tools)
+8. [MCP Integration](#mcp-integration)
+9. [Plan & Code Modes](#plan--code-modes)
+10. [Thinking Tokens](#thinking-tokens)
+11. [Cost Tracking](#cost-tracking)
+12. [Command Reference](#command-reference)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -370,6 +371,11 @@ sonnet
 - bash
 - list
 
+## Capabilities
+- inspect_agents
+- manage_agents
+- dispatch_tasks
+
 ## System Prompt
 
 You are a coding expert. Available tools: {availableTools}
@@ -382,6 +388,7 @@ Required sections:
 
 Optional sections:
 - `## Model` - Override default model
+- `## Capabilities` - Action capabilities for tool filtering
 
 The active config directory is selected by the current config and runtime session.
 Typical locations are:
@@ -439,6 +446,102 @@ When an agent starts, its model can come from multiple places. The precedence is
 ```
 /agents              # List all agents
 /agent coder         # Show agent details
+```
+
+---
+
+## Skills System
+
+Skills are reusable instruction modules that can be loaded on demand to provide specialized guidance for specific tasks. Skills are loaded from the [Agent Skills specification](https://agentskills.io) and can be shared across different AI agents.
+
+### Skill Discovery
+
+Niffler discovers skills from multiple locations:
+
+| Path | Purpose |
+|------|---------|
+| `.agents/skills/` | Project-level skills (checked into git) |
+| `.claude/skills/` | Claude Code compatible skills |
+| `~/.agents/skills/` | User-level skills (personal) |
+| `~/.niffler/skills/` | Niffler-specific skills |
+
+### Installing Skills
+
+From [skills.sh](https://skills.sh) registry:
+
+```
+/skill download saisudhir14/golang-agent-skill
+/skill download damusix/skills --skill htmx
+/skill download vercel-labs/agent-skills --skill frontend-design --global
+```
+
+### Loading Skills
+
+Skills are loaded into the current agent's context:
+
+```
+/skill list                    # List available skills
+/skill list --loaded           # List only loaded skills
+/skill load golang             # Load a skill
+/skill load htmx               # Load another skill
+/skill show golang             # View skill details
+/skill search go               # Find skills by query
+/skill unload golang           # Remove skill from context
+/skill unload --all            # Remove all skills
+```
+
+### How Skills Work
+
+When a skill is loaded:
+
+1. **Developer Message (preferred)**: If the model supports `developer` role (OpenAI o1/o3), the skill is injected as a developer message into the conversation.
+
+2. **System Prompt (fallback)**: For other models, the skill content is added to the system prompt.
+
+Skills are adapted from other harnesses using heuristic tool mapping:
+
+| Original Tool | Maps To |
+|--------------|---------|
+| `Bash` | `bash` |
+| `GlobTool` | `list` |
+| `apply_patch` | `edit` |
+| `ReadFile` | `read` |
+
+### Developer Message Support
+
+Some models support a special `developer` role for runtime instructions:
+
+```yaml
+models:
+  - nickname: o1
+    model: o1-preview
+    supportsDeveloperMessage: true  # Enable developer message injection
+```
+
+Models with developer message support:
+- OpenAI o1-preview, o1-mini
+- OpenAI o3 series
+
+### Skill Format
+
+Skills are defined in `SKILL.md` files with YAML frontmatter:
+
+```yaml
+---
+name: golang
+description: Go language best practices
+version: "2.0.0"
+compatibility:
+  languages: [go]
+  agents: [claude-code, opencode, niffler]
+metadata:
+  tags: [golang, best-practices]
+allowed-tools: Bash(git:*) Read
+---
+
+# Go Best Practices
+
+Instructions for writing production Go code...
 ```
 
 ---
@@ -759,6 +862,19 @@ GROUP BY DATE(created_at);
 | `/agents` | List agents |
 | `/agent <name>` | Show agent details |
 
+### Skills Commands
+
+| Command | Description |
+|---------|-------------|
+| `/skill` | Show skill commands help |
+| `/skill list [--loaded]` | List available/loaded skills |
+| `/skill load <name>` | Load skill into context |
+| `/skill unload <name|--all>` | Remove skill(s) |
+| `/skill show <name>` | Display skill details |
+| `/skill search <query>` | Find skills by name/description |
+| `/skill refresh` | Re-scan skill directories |
+| `/skill download <repo> [--skill <name>]` | Install from skills.sh |
+
 ### MCP Commands
 
 | Command | Description |
@@ -774,6 +890,7 @@ GROUP BY DATE(created_at);
 | `/tokens` | Show token usage |
 | `/todo` | Manage todo lists |
 | `/dump` | Toggle HTTP dump mode |
+| `/inspect [filename]` | Generate HTTP JSON for inspection |
 
 ---
 
@@ -865,5 +982,5 @@ Enable debug logging for troubleshooting:
 
 ---
 
-**Last Updated:** 2025-04-01
-**Version:** 0.4.0
+**Last Updated:** 2025-04-04
+**Version:** 0.5.0

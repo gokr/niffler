@@ -5,6 +5,7 @@ This document provides detailed examples and usage patterns for Niffler's featur
 ## Table of Contents
 
 - [Multi-Agent System](#multi-agent-system)
+- [Skills System](#skills-system)
 - [Plan/Code Mode System](#plancode-mode-system)
 - [Thinking Token Support](#thinking-token-support)
 - [Plan Mode File Protection](#plan-mode-file-protection)
@@ -191,6 +192,147 @@ agents:
    - Tool execution visible for debugging
 
 **Learn more:** See [doc/TASK.md](doc/TASK.md) for complete multi-agent architecture documentation and [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) for implementation details.
+
+## Skills System
+
+Skills are reusable instruction modules that can be loaded dynamically to provide specialized guidance. See [SKILLS.md](../SKILLS.md) for full documentation.
+
+### Basic Skill Usage
+
+**Install a skill from skills.sh:**
+```bash
+# Download from skills.sh registry
+> /skill download saisudhir14/golang-agent-skill
+> /skill download damusix/skills --skill htmx
+
+# Refresh to discover newly installed skills
+> /skill refresh
+Refreshed skill registry. Found 2 skills.
+```
+
+**List and load skills:**
+```bash
+# List available skills
+> /skill list
+Skills (2):
+  • golang (v2.0.0) - Use when writing, reviewing, or refactoring Go code...
+  • htmx - Implements HTMX interactions, configures swap behaviors...
+
+# Load skills into context
+> /skill load golang
+Loaded skill: golang
+Use when writing, reviewing, or refactoring Go code...
+
+> /skill load htmx
+Loaded skill: htmx
+...
+
+# View loaded skills
+> /skill list --loaded
+Skills (2):
+  • golang (v2.0.0) - ... [loaded]
+  • htmx - ... [loaded]
+```
+
+### Skill Search and Discovery
+
+```bash
+# Search for skills by name, description, or tag
+> /skill search go
+Found 1 skill(s):
+  • golang - Use when writing, reviewing, or refactoring Go code...
+
+# Show skill details
+> /skill show golang
+# Skill: golang
+Version: 2.0.0
+
+Use when writing, reviewing, or refactoring Go code...
+```
+
+### Skills in Agent Workflows
+
+**Load skills before starting work:**
+```bash
+# In master CLI
+> @coder /skill load golang
+> @coder "Write a Go HTTP server with proper error handling"
+
+# Skills persist for the agent session
+> @coder "Add middleware for logging"
+# golang skill is still active
+```
+
+**Use different skills for different agents:**
+```bash
+# Load frontend skills for frontend agent
+> @frontend /skill load htmx
+> @frontend /skill load tailwind
+
+# Load backend skills for backend agent
+> @backend /skill load golang
+> @backend /skill load postgresql
+```
+
+### Developer Message Support
+
+Models that support the `developer` role receive skills differently:
+
+```yaml
+# config.yaml
+models:
+  - nickname: o1
+    model: o1-preview
+    supportsDeveloperMessage: true  # Skills injected as developer messages
+```
+
+**Behavior differences:**
+- **With developer message support**: Skills are injected as `developer` role messages in conversation history
+- **Without developer message support**: Skills are appended to the system prompt
+
+### Creating Custom Skills
+
+Create `.agents/skills/my-skill/SKILL.md`:
+
+```yaml
+---
+name: my-project-skill
+description: Project-specific conventions and patterns
+version: "1.0.0"
+compatibility:
+  languages: [nim]
+metadata:
+  tags: [nim, conventions]
+allowed-tools: read edit bash
+---
+
+# Project Conventions
+
+## Naming
+
+Use camelCase for all Nim identifiers.
+
+## File Organization
+
+- `src/types/` - Type definitions
+- `src/core/` - Core business logic
+- `src/tools/` - Tool implementations
+```
+
+**Use the custom skill:**
+```bash
+> /skill refresh
+> /skill load my-project-skill
+```
+
+### Skill Best Practices
+
+1. **Load only what you need**: Skills add to context, so load only relevant skills
+2. **Unload when done**: Use `/skill unload <name>` to free context
+3. **Project-level skills**: Store in `.agents/skills/` for team sharing
+4. **User-level skills**: Store in `~/.agents/skills/` for personal use
+
+**Learn more:** See [SKILLS.md](../SKILLS.md) for complete documentation.
 
 ## Plan/Code Mode System
 

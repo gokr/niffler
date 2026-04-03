@@ -297,6 +297,8 @@ agents:
 
 - **[MANUAL.md](doc/MANUAL.md)** - Comprehensive user manual
 - **[TOOLS.md](doc/TOOLS.md)** - Built-in tools reference
+- **[SKILLS.md](SKILLS.md)** - Skills system (reusable instruction modules)
+- **[ACTIONS.md](ACTIONS.md)** - Action system architecture
 - **[MCP_SETUP.md](doc/MCP_SETUP.md)** - MCP server integration
 - **[EXAMPLES.md](doc/EXAMPLES.md)** - Usage patterns
 - **[DISCORD_SETUP.md](doc/DISCORD_SETUP.md)** - Discord bot setup

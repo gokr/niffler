@@ -269,6 +269,53 @@ Fetch web content with HTTP/HTTPS support and content extraction.
 }
 ```
 
+#### Skill Tool
+Manage reusable instruction modules (skills).
+
+**Signature:**
+```json
+{
+  "name": "skill",
+  "arguments": {
+    "operation": "string",      // list, load, unload, show, search, refresh, download
+    "name": "string",           // Skill name (for load/unload/show)
+    "query": "string",          // Search query
+    "repo": "string",           // Repository for download
+    "global": false             // Install globally
+  }
+}
+```
+
+**Operations:**
+- `list` - List available skills
+- `load` - Load skill into context
+- `unload` - Remove skill from context
+- `show` - Display skill details
+- `search` - Find skills by name/description
+- `refresh` - Re-scan skill directories
+- `download` - Install from skills.sh registry
+
+**Example Usage:**
+```json
+{
+  "name": "skill",
+  "arguments": {
+    "operation": "load",
+    "name": "golang"
+  }
+}
+```
+
+```json
+{
+  "name": "skill",
+  "arguments": {
+    "operation": "download",
+    "repo": "saisudhir14/golang-agent-skill"
+  }
+}
+```
+
 ## Security Architecture
 
 ### Multi-Layer Security
