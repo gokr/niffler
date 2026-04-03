@@ -340,12 +340,14 @@ Master Process (./src/niffler)
 - Creates fresh context
 - No conversation history
 - Returns result and summary
+- Good for one-off work where you do not want to pollute the current conversation
 - Example: `@coder /task "Create unit tests"`
 
 **Ask** (`@agent prompt`) - Conversation continuation:
 - Continues existing context
 - Multi-turn collaboration
 - Builds on previous interactions
+- Good for iterative work where follow-up messages should keep context
 - Example: `@coder "Refactor the code"`
 
 ### Agent Configuration
@@ -381,11 +383,56 @@ Required sections:
 Optional sections:
 - `## Model` - Override default model
 
+The active config directory is selected by the current config and runtime session.
+Typical locations are:
+
+- `~/.niffler/<active-config>/agents/`
+- `.niffler/<active-config>/agents/`
+
 **YAML vs Markdown Agents:**
 
-The `agents` section in `config.yaml` controls process behavior (auto-start, persistence).
-The markdown files under `agents/*.md` define runtime behavior (prompts, tool permissions).
-If both exist, markdown files are the source of truth for agent behavior.
+The markdown file is the authoritative runtime definition for agent behavior.
+
+The `agents` section in `config.yaml` is used for process metadata such as:
+
+- auto-start behavior
+- persistent or ephemeral intent
+- default model metadata used by the agent manager
+
+The markdown files under `agents/*.md` define runtime behavior such as:
+
+- prompt content
+- allowed tools
+- markdown-defined behavior
+- optional agent-specific model override
+
+If both exist, markdown files are the source of truth for runtime agent behavior.
+
+### Auto-Start Rules
+
+Auto-start requires both master-level and agent-level configuration:
+
+```yaml
+masters:
+  auto_start_agents: true
+
+agents:
+  - id: "coder"
+    auto_start: true
+```
+
+Both conditions must be true:
+
+- `masters.auto_start_agents` must be enabled
+- the individual agent entry must also have `auto_start: true`
+
+### Agent Model Precedence
+
+When an agent starts, its model can come from multiple places. The precedence is:
+
+1. `--model` passed when starting the agent
+2. the markdown agent definition if it declares a model
+3. normal fallback model selection from the active config
 
 ### Managing Agents
 
