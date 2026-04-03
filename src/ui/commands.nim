@@ -2690,6 +2690,22 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
       shouldContinue: true
     )
 
+proc skillAction(args: seq[string], session: var Session,
+                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(skillHandler(args, session, currentModel))
+
+proc discordAction(args: seq[string], session: var Session,
+                  currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(discordHandler(args, session, currentModel))
+
+proc skillActionHandler(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.skill", args, session, currentModel))
+
+proc discordActionHandler(args: seq[string], session: var Session,
+                         currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.discord", args, session, currentModel))
+
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
