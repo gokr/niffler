@@ -1,5 +1,6 @@
 import std/[unittest, json, options, strutils]
 import ../src/tools/[todolist, common]
+import ../src/tools/context
 import ../src/tools/registry
 import ../src/core/database
 import ../src/types/tools
@@ -13,6 +14,7 @@ suite "Todolist Functional Tests":
     db = createTestDatabaseBackend()
     clearTestDatabase(db)
     setGlobalDatabase(db)
+    setCurrentToolConversationId(1)
 
   teardown:
     if db != nil:
@@ -233,6 +235,7 @@ suite "Todolist Database Tests":
     db = createTestDatabaseBackend()
     clearTestDatabase(db)
     setGlobalDatabase(db)
+    setCurrentToolConversationId(1)
 
   teardown:
     if db != nil:
@@ -327,6 +330,7 @@ suite "Todolist Workflow Tests":
     db = createTestDatabaseBackend()
     clearTestDatabase(db)
     setGlobalDatabase(db)
+    setCurrentToolConversationId(1)
 
   teardown:
     if db != nil:

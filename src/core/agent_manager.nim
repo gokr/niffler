@@ -7,13 +7,15 @@
 ## - Prevent duplicate agent spawns
 ## - Wait for agent readiness via NATS presence
 
-import std/[osproc, os, strformat, times]
+import std/[osproc, os, strformat, times, strutils, sequtils]
 import ../types/config
 import ../types/agents
 import nats_client, config
 from std/options import isSome, isNone, get
 import natswrapper
 import ../core/session
+when defined(posix):
+  import posix
 
 type
   SpawnedAgent* = object
@@ -21,7 +23,82 @@ type
     pid*: int
     startTime*: times.Time
 
-proc startAgent*(agentId: string, nifflerPath: string = "./src/niffler"): SpawnedAgent =
+  RunningAgentInfo* = object
+    pid*: int
+    baseAgentName*: string
+    routingName*: string
+    modelName*: string
+
+proc formatRunningAgentLabel*(agent: RunningAgentInfo): string =
+  ## Format a running agent label for CLI display
+  if agent.routingName.len > 0 and agent.routingName != agent.baseAgentName:
+    return fmt"{agent.routingName} ({agent.baseAgentName})"
+  agent.baseAgentName
+
+proc parseRunningAgent(line: string): RunningAgentInfo =
+  ## Parse a ps output line into running agent info
+  let trimmed = line.strip()
+  if trimmed.len == 0:
+    return
+
+  let firstSpace = trimmed.find({' ', '\t'})
+  if firstSpace <= 0:
+    return
+
+  let pidStr = trimmed[0..<firstSpace].strip()
+  let argsStr = trimmed[firstSpace + 1..^1].strip()
+  if pidStr.len == 0 or argsStr.len == 0:
+    return
+
+  try:
+    result.pid = parseInt(pidStr)
+  except ValueError:
+    return
+
+  let parts = argsStr.splitWhitespace()
+  let agentIdx = parts.find("agent")
+  if agentIdx < 0 or agentIdx + 1 >= parts.len:
+    result.pid = 0
+    return
+
+  result.baseAgentName = parts[agentIdx + 1]
+  result.routingName = result.baseAgentName
+
+  for part in parts:
+    if part.startsWith("--nick="):
+      let nick = part[7..^1].strip()
+      if nick.len > 0:
+        result.routingName = nick
+    elif part.startsWith("--model="):
+      result.modelName = part[8..^1].strip()
+
+proc listRunningAgentProcesses*(): seq[RunningAgentInfo] =
+  ## List running niffler agent processes from the local process table
+  let (output, exitCode) = execCmdEx("ps -eo pid=,args=")
+  if exitCode != 0:
+    return @[]
+
+  for line in output.splitLines():
+    if "niffler" notin line or " agent " notin line:
+      continue
+
+    let parsed = parseRunningAgent(line)
+    if parsed.pid > 0 and parsed.baseAgentName.len > 0:
+      result.add(parsed)
+
+proc stopAgent*(routingName: string): bool =
+  ## Stop a running agent by routing name (nick or base name)
+  let runningAgents = listRunningAgentProcesses().filterIt(it.routingName == routingName)
+  if runningAgents.len != 1:
+    return false
+
+  when defined(posix):
+    result = kill(Pid(runningAgents[0].pid), SIGTERM) == 0
+  else:
+    discard execCmdEx(fmt"kill {runningAgents[0].pid}")
+    result = true
+
+proc startAgent*(agentId: string, agentNick: string = "", modelOverride: string = "", nifflerPath: string = "./src/niffler"): SpawnedAgent =
   ## Spawn an agent process
   ## Returns: SpawnedAgent with PID
   ## Note: Agent displays to its own terminal (no stdin/stdout redirection)
@@ -42,11 +119,17 @@ proc startAgent*(agentId: string, nifflerPath: string = "./src/niffler"): Spawne
 
   # Load agent definition to get model configuration
   var agentArgs = @["--agent", agentId]
+  if agentNick.len > 0:
+    agentArgs.add("--nick=" & agentNick)
+
+  if modelOverride.len > 0:
+    agentArgs.add("--model=" & modelOverride)
+
   try:
     # Try to load agent definition from agents directory
     let agentsDir = session.getAgentsDir()
     let agentFile = agentsDir / agentId & ".md"
-    if fileExists(agentFile):
+    if modelOverride.len == 0 and fileExists(agentFile):
       let content = readFile(agentFile)
       let agentDef = parseAgentDefinition(content, agentFile)
       if agentDef.model.isSome():
@@ -76,7 +159,8 @@ proc startAgent*(agentId: string, nifflerPath: string = "./src/niffler"): Spawne
     startTime: times.getTime()
   )
 
-  echo fmt"→ Spawned @{agentId} (pid: {pid})"
+  let displayName = if agentNick.len > 0: fmt"@{agentNick} ({agentId})" else: fmt"@{agentId}"
+  echo fmt"→ Spawned {displayName} (pid: {pid})"
 
 proc waitForAgentReady*(natsClient: NifflerNatsClient, agentId: string, timeoutSec: int = 10): bool =
   ## Poll for agent presence heartbeat with timeout
@@ -132,7 +216,7 @@ proc autoStartAgents*(config: Config, natsClient: NifflerNatsClient, nifflerPath
 
     # Spawn agent
     try:
-      let spawned = startAgent(agent.id, nifflerPath)
+      let spawned = startAgent(agent.id, nifflerPath = nifflerPath)
 
       # Wait for agent readiness (heartbeat)
       if waitForAgentReady(natsClient, agent.id, timeoutSec = 15):

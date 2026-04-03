@@ -327,8 +327,8 @@ type
   # Agent configuration (JSON blob stored in database)
   AgentConfigDB* = ref object of RootObj
     id*: int
-    key*: string                ## "personas", "models", "channels", etc.
-    value*: string              ## JSON blob
+    configKey*: string          ## "personas", "models", "channels", etc.
+    configValue*: string        ## JSON blob
     updatedAt*: DateTime
 
 proc utcNow*(): string =
@@ -522,15 +522,27 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Workspace management
     if not db.tableExists(Workspace):
       db.createTable(Workspace)
-      db.createIndexIfNotExists(Workspace, "name")
-      db.createIndexIfNotExists(Workspace, "path")
+      try:
+        discard db.query("CREATE INDEX idx_workspace_name ON workspace (name(255))")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_workspace_path ON workspace (path(255))")
+      except:
+        discard
 
     # Task queue
     if not db.tableExists(TaskQueueEntry):
       db.createTable(TaskQueueEntry)
       db.createIndexIfNotExists(TaskQueueEntry, "workspaceId")
-      db.createIndexIfNotExists(TaskQueueEntry, "status")
-      db.createIndexIfNotExists(TaskQueueEntry, "assignedAgent")
+      try:
+        discard db.query("CREATE INDEX idx_task_queue_entry_status ON task_queue_entry (status(50))")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_task_queue_entry_assigned_agent ON task_queue_entry (assigned_agent(255))")
+      except:
+        discard
       db.createIndexIfNotExists(TaskQueueEntry, "createdAt")
       discard db.query("""
         CREATE INDEX IF NOT EXISTS idx_task_queue_status_priority 
@@ -540,8 +552,14 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Agent identity and presence
     if not db.tableExists(Agent):
       db.createTable(Agent)
-      db.createIndexIfNotExists(Agent, "agentId")
-      db.createIndexIfNotExists(Agent, "status")
+      try:
+        discard db.query("CREATE INDEX idx_agent_agent_id ON agent (agent_id(255))")
+      except:
+        discard
+      try:
+        discard db.query("CREATE INDEX idx_agent_status ON agent (status(50))")
+      except:
+        discard
 
     # Scheduled jobs
     if not db.tableExists(ScheduledJob):
@@ -560,7 +578,10 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Webhook endpoints
     if not db.tableExists(WebhookEndpoint):
       db.createTable(WebhookEndpoint)
-      db.createIndexIfNotExists(WebhookEndpoint, "path")
+      try:
+        discard db.query("CREATE INDEX idx_webhook_endpoint_path ON webhook_endpoint (path(255))")
+      except:
+        discard
       db.createIndexIfNotExists(WebhookEndpoint, "enabled")
 
     # Webhook events
@@ -573,7 +594,10 @@ proc initializeDatabase*(backend: DatabaseBackend) =
     # Agent configuration storage
     if not db.tableExists(AgentConfigDB):
       db.createTable(AgentConfigDB)
-      db.createIndexIfNotExists(AgentConfigDB, "key")
+      try:
+        discard db.query("CREATE INDEX idx_agent_config_db_config_key ON agent_config_d_b (config_key(255))")
+      except:
+        discard
 
 proc checkDatabase*(backend: DatabaseBackend) =
   ## Verify structure of database against model definitions

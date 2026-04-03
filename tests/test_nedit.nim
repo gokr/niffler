@@ -5,10 +5,22 @@
 import std/[unittest, os, strutils, strformat, osproc]
 
 const
-  NeditPath = "../nedit"
+  NeditPath = "./nedit"
+  NeditSourcePath = "src/nedit.nim"
   TestDir = "test_nedit_temp"
 
+proc ensureNeditBuilt() =
+  let needsBuild = not fileExists(NeditPath)
+
+  if not needsBuild:
+    return
+
+  let (output, exitCode) = execCmdEx(&"nim c -o:{NeditPath} {NeditSourcePath} 2>&1")
+  if exitCode != 0:
+    raise newException(IOError, "Failed to build nedit test binary:\n" & output)
+
 proc runNedit(args: string): tuple[output: string, exitCode: int] =
+  ensureNeditBuilt()
   let cmd = &"{NeditPath} {args} 2>&1"
   let (output, exitCode) = execCmdEx(cmd)
   return (output.strip, exitCode)
@@ -164,7 +176,7 @@ suite "nedit edit command":
   test "replace text":
     let (output, code) = runNedit(&"edit {TestDir}/sample.py replace \"Hello\" \"Hi\"")
     check code == 0
-    check "Replaced" in output
+    check "Edited" in output
     let content = readFile(&"{TestDir}/sample.py")
     check "Hi, World!" in content
 

@@ -105,7 +105,7 @@ proc getConfigValue*(db: DatabaseBackend, configKey: string): Option[JsonNode] =
     return none(JsonNode)
   
   db.pool.withDb:
-    let rows = db.query("SELECT value FROM agent_config WHERE `key` = ?", configKey)
+    let rows = db.query("SELECT config_value FROM agent_config WHERE config_key = ?", configKey)
     if rows.len > 0:
       try:
         return some(parseJson(rows[0][0]))
@@ -123,13 +123,13 @@ proc setConfigValue*(db: DatabaseBackend, configKey: string, value: JsonNode) =
   
   db.pool.withDb:
     # Check if key exists
-    let existing = db.query("SELECT id FROM agent_config WHERE `key` = ?", configKey)
+    let existing = db.query("SELECT id FROM agent_config WHERE config_key = ?", configKey)
     if existing.len > 0:
       # Update existing
-      db.query("UPDATE agent_config SET value = ?, updated_at = NOW() WHERE `key` = ?", valueStr, configKey)
+      db.query("UPDATE agent_config SET config_value = ?, updated_at = NOW() WHERE config_key = ?", valueStr, configKey)
     else:
       # Insert new
-      db.query("INSERT INTO agent_config (`key`, value, updated_at) VALUES (?, ?, NOW())", configKey, valueStr)
+      db.query("INSERT INTO agent_config (config_key, config_value, updated_at) VALUES (?, ?, NOW())", configKey, valueStr)
 
 proc deleteConfigValue*(db: DatabaseBackend, configKey: string) =
   ## Delete a configuration value from the database
@@ -137,7 +137,7 @@ proc deleteConfigValue*(db: DatabaseBackend, configKey: string) =
     return
   
   db.pool.withDb:
-    db.query("DELETE FROM agent_config WHERE `key` = ?", configKey)
+    db.query("DELETE FROM agent_config WHERE config_key = ?", configKey)
 
 proc listConfigKeys*(db: DatabaseBackend): seq[string] =
   ## List all configuration keys in the database
@@ -145,7 +145,7 @@ proc listConfigKeys*(db: DatabaseBackend): seq[string] =
     return @[]
   
   db.pool.withDb:
-    let rows = db.query("SELECT `key` FROM agent_config")
+    let rows = db.query("SELECT config_key FROM agent_config")
     result = rows.mapIt(it[0])
 
 # ============================================================================
