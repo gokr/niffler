@@ -20,9 +20,11 @@
 import std/[logging, strformat, times, os, options, strutils, json, tables, atomics]
 import ../core/[nats_client, command_parser, config, database, channels, app, session, mode_state, conversation_manager, log_file, system_prompt]
 import ../core/task_executor
+import ../core/context_assembly
+import ../actions/[registry as actionRegistry]
 import ../types/[nats_messages, agents, config as configTypes, messages, mode]
 import ../api/[api]
-import ../tools/[worker, registry]
+import ../tools/[worker, registry, skill]
 import ../mcp/[mcp, tools as mcpTools]
 import output_shared
 import tool_visualizer
@@ -86,6 +88,7 @@ proc classifyCommand(request: NatsRequest): CommandClass =
 proc expandAgentSystemPrompt(promptTemplate: string, allowedTools: seq[string]): string =
   ## Expand template variables in agent system prompt
   ## Replaces {availableTools}, {currentDir}, {currentTime}, {osInfo}, {gitInfo}, {projectInfo}
+  ## Appends loaded skills content (only those not injected as developer messages)
   let availableToolsStr = allowedTools.join(", ")
   let currentDir = getCurrentDirectoryInfo()
   let currentTime = now().utc().format("yyyy-MM-dd HH:mm:ss 'UTC'")
@@ -101,6 +104,14 @@ proc expandAgentSystemPrompt(promptTemplate: string, allowedTools: seq[string]):
     ("{gitInfo}", gitInfo),
     ("{projectInfo}", projectInfo)
   ])
+  
+  # Append loaded skills (only those not injected as developer messages)
+  let loadedSkills = getSkillsForSystemPrompt()
+  if loadedSkills.len > 0:
+    let contextPlan = buildContextPlan(loadedSkills)
+    let adaptedContent = getAdaptedSkillContent(contextPlan)
+    if adaptedContent.len > 0:
+      result &= "\n\n## Active Skills\n\n" & adaptedContent
 
 proc loadAgentDefinition(agentName: string): AgentDefinition =
   ## Load agent definition from the active config's agents directory
@@ -325,12 +336,18 @@ proc executeAsk(state: var AgentState, prompt: string, requestId: string): tuple
 
   # Refresh tool schemas to include MCP tools discovered after initialization
   let currentToolSchemas = getAllToolSchemas()
+  let effectiveCapabilities = actionRegistry.getEffectiveActionCapabilities(
+    state.definition.allowedTools,
+    state.definition.capabilities
+  )
 
   # Prepare tool schemas filtered by agent's allowed tools
   var agentToolSchemas: seq[ToolDefinition] = @[]
   for tool in currentToolSchemas:
     if tool.function.name in state.definition.allowedTools:
-      agentToolSchemas.add(tool)
+      let filteredTool = actionRegistry.filterToolSchemaForCapabilities(tool, effectiveCapabilities)
+      if filteredTool.isSome():
+        agentToolSchemas.add(filteredTool.get())
 
   # Create and send API request - API worker will handle all tool execution
   let request = APIRequest(
@@ -457,22 +474,20 @@ proc processQuickCommand(state: var AgentState, request: NatsRequest) =
     let input = request.input.strip()
     let (command, args) = commands.parseCommand(input)
 
-    # Handle local commands
-    const localCommands = ["info", "conv", "new", "context", "inspect", "condense"]
-
-    if command in localCommands:
+    # Handle local commands (execute immediately without LLM)
+    if command.len > 0 and actionRegistry.isLocalCommand(command):
       info(fmt"Executing local command: /{command}")
       sendStatusUpdate(state, request.requestId, fmt"Executing command: /{command}")
-
+      
       var sess = initSession()
       var currentModel = state.modelConfig
       let commandResult = executeCommand(command, args, sess, currentModel)
       sendResponse(state, request.requestId, commandResult.message, done = true)
-
+      
       # Update model if command changed it
       if currentModel.nickname != state.modelConfig.nickname:
         state.modelConfig = currentModel
-
+      
       info(fmt"Command /{command} executed successfully")
       return
 

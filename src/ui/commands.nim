@@ -9,20 +9,20 @@
 ## - Unified command execution interface
 ## - Extensible command registration system
 
-import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils, algorithm]
+import std/[strutils, strformat, tables, times, options, logging, json, httpclient, sequtils, osproc]
 import ../actions/[registry as actionRegistry, types as actionTypes]
 import ../actions/runtime as actionRuntime
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, db_config]
-import ../core/agent_manager
-import ../types/[config as configTypes, messages, agents, mode]
+import ../core/skills_discovery
+import ../core/context_assembly
+import ../types/[config as configTypes, messages, mode, skills]
 import ../tokenization/[tokenizer]
 import ../tools/registry
+import ../tools/skill
 import ../api/curlyStreaming
 import ../mcp/[mcp, tools as mcpTools]
 import theme
 import table_utils
-import nancy
-import master_cli
 # import linecross  # Used only in comments
 
 type
@@ -90,7 +90,8 @@ proc registerCommandAction(name: string, description: string, usage: string,
                           routableToAgent: bool = false,
                           toolName: Option[string] = none(string),
                           agentCapabilities: set[actionTypes.ActionCapability] = {},
-                          showInHelp: bool = true) =
+                          showInHelp: bool = true,
+                          localOnly: bool = false) =
   ## Register a command and its corresponding action metadata
   registerCommand(name, description, usage, aliases, handler, category)
   actionRegistry.registerAction(actionTypes.ActionDefinition(
@@ -102,7 +103,8 @@ proc registerCommandAction(name: string, description: string, usage: string,
     routableToAgent: routableToAgent,
     toolName: toolName,
     agentCapabilities: agentCapabilities,
-    showInHelp: showInHelp
+    showInHelp: showInHelp,
+    localOnly: localOnly
   ))
 
 proc registerActionOnly(actionId: string, description: string, commandPattern: string,
@@ -111,7 +113,8 @@ proc registerActionOnly(actionId: string, description: string, commandPattern: s
                        routableToAgent: bool = false,
                        toolName: Option[string] = none(string),
                        agentCapabilities: set[actionTypes.ActionCapability] = {},
-                       showInHelp: bool = true) =
+                       showInHelp: bool = true,
+                       localOnly: bool = false) =
   ## Register metadata and executor for non-top-level action commands
   actionRegistry.registerAction(actionTypes.ActionDefinition(
     id: actionId,
@@ -122,7 +125,8 @@ proc registerActionOnly(actionId: string, description: string, commandPattern: s
     routableToAgent: routableToAgent,
     toolName: toolName,
     agentCapabilities: agentCapabilities,
-    showInHelp: showInHelp
+    showInHelp: showInHelp,
+    localOnly: localOnly
   ), handler)
 
 proc getAvailableCommands*(): seq[CommandInfo] =
@@ -1242,136 +1246,28 @@ proc formatMcpStatus(status: string): string =
   of "mssError": "Error"
   else: status
 
-proc renderAgentDefinitionList(session: Session): CommandResult =
-  let agentsDir = session.getAgentsDir()
-  let agents = loadAgentDefinitions(agentsDir)
-  let knownTools = getAllToolNames()
-
-  if agents.len == 0:
-    return CommandResult(
-      success: true,
-      message: fmt("No agents found in {agentsDir}\nAgents will be created on next startup."),
-      shouldExit: false,
-      shouldContinue: true
-    )
-
-  var table: TerminalTable
-  table.add(bold("Name"), bold("Description"), bold("Tools"), bold("Status"))
-
-  for agent in agents:
-    let status = validateAgentDefinition(agent, knownTools)
-    let statusIcon = if status.valid:
-                       green("✓")
-                     elif status.unknownTools.len > 0:
-                       yellow("⚠")
-                     else:
-                       red("✗")
-    table.add(
-      agent.name,
-      truncate(agent.description, 50),
-      $agent.allowedTools.len,
-      statusIcon
-    )
-
-  return CommandResult(
-    success: true,
-    message: renderTableToString(table, maxWidth = 120) & "\n\nUse /agent show <name> to view details",
-    shouldExit: false,
-    shouldContinue: true
-  )
-
-proc renderAgentDefinitionDetails(session: Session, agentName: string): CommandResult =
-  let agents = loadAgentDefinitions(session.getAgentsDir())
-  let knownTools = getAllToolNames()
-  let agentOpt = agents.filterIt(it.name == agentName)
-
-  if agentOpt.len == 0:
-    return CommandResult(
-      success: false,
-      message: fmt("Agent '{agentName}' not found. Use /agent list to see available definitions."),
-      shouldExit: false,
-      shouldContinue: true
-    )
-
-  let agent = agentOpt[0]
-  let status = validateAgentDefinition(agent, knownTools)
-
-  var message = fmt("Agent: {agent.name}\n")
-  message &= fmt("Description: {agent.description}\n\n")
-  message &= fmt("Allowed Tools: {agent.allowedTools.join(\", \")}\n")
-
-  if status.valid:
-    if status.unknownTools.len > 0:
-      message &= fmt("Status: ⚠ Valid (unknown tools: {status.unknownTools.join(\", \")})\n")
-    else:
-      message &= "Status: ✓ Valid\n"
-  else:
-    message &= fmt("Status: ✗ {status.error}\n")
-
-  message &= fmt("File: {agent.filePath}")
-
-  return CommandResult(
-    success: true,
-    message: message,
-    shouldExit: false,
-    shouldContinue: true
-  )
-
-proc renderRunningAgents(): CommandResult =
-  let runningAgents = listRunningAgentProcesses().sortedByIt(it.routingName)
-  let masterStatePtr = getGlobalMasterState()
-  let presentAgents = if masterStatePtr != nil and masterStatePtr[].connected:
-    masterStatePtr[].discoverAgents()
-  else:
-    @[]
-
-  if runningAgents.len == 0 and presentAgents.len == 0:
-    return CommandResult(
-      success: true,
-      message: "No running agents.",
-      shouldExit: false,
-      shouldContinue: true
-    )
-
-  var table: TerminalTable
-  table.add(bold("Agent"), bold("PID"), bold("Model"), bold("Presence"))
-
-  for agent in runningAgents:
-    let modelName = if agent.modelName.len > 0: agent.modelName else: "-"
-    let presence = if agent.routingName in presentAgents: green("online") else: yellow("starting")
-    table.add(formatRunningAgentLabel(agent), $agent.pid, modelName, presence)
-
-  for agentName in presentAgents:
-    if runningAgents.anyIt(it.routingName == agentName):
-      continue
-    table.add(agentName, "-", "-", green("online"))
-
-  return CommandResult(
-    success: true,
-    message: renderTableToString(table, maxWidth = 120),
-    shouldExit: false,
-    shouldContinue: true
-  )
+proc mcpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
+proc configHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
 
 proc agentListAction(args: seq[string], session: var Session,
                     currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
   discard args
   discard currentModel
-  result = toActionResult(renderAgentDefinitionList(session))
+  result = actionRuntime.renderAgentDefinitionList(session)
 
 proc agentShowAction(args: seq[string], session: var Session,
                     currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
   discard currentModel
   if args.len < 1:
     return actionTypes.ActionResult(success: false, message: "Usage: /agent show <name>", shouldExit: false, shouldContinue: true)
-  result = toActionResult(renderAgentDefinitionDetails(session, args[0]))
+  result = actionRuntime.renderAgentDefinitionDetails(session, args[0])
 
 proc agentRunningAction(args: seq[string], session: var Session,
                        currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
   discard args
   discard session
   discard currentModel
-  result = toActionResult(renderRunningAgents())
+  result = actionRuntime.renderRunningAgents()
 
 proc agentStartAction(args: seq[string], session: var Session,
                      currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
@@ -1406,6 +1302,26 @@ proc agentStopAction(args: seq[string], session: var Session,
   let routingName = args[0]
   return actionRuntime.stopAgentInstance(routingName)
 
+proc conversationNewAction(args: seq[string], session: var Session,
+                          currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(newConversationHandler(args, session, currentModel))
+
+proc conversationArchiveAction(args: seq[string], session: var Session,
+                              currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(archiveHandler(args, session, currentModel))
+
+proc conversationUnarchiveAction(args: seq[string], session: var Session,
+                                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(unarchiveHandler(args, session, currentModel))
+
+proc conversationInfoAction(args: seq[string], session: var Session,
+                           currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(conversationInfoHandler(args, session, currentModel))
+
+proc conversationSwitchAction(args: seq[string], session: var Session,
+                             currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(convHandler(args, session, currentModel))
+
 proc taskDispatchAction(args: seq[string], session: var Session,
                        currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
   discard session
@@ -1416,6 +1332,167 @@ proc taskDispatchAction(args: seq[string], session: var Session,
   let target = args[0]
   let description = args[1..^1].join(" ")
   return actionRuntime.dispatchTaskToAgent(target, description)
+
+proc newConversationActionHandler(args: seq[string], session: var Session,
+                                 currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.new", args, session, currentModel))
+
+proc archiveActionHandler(args: seq[string], session: var Session,
+                         currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.archive", args, session, currentModel))
+
+proc unarchiveActionHandler(args: seq[string], session: var Session,
+                           currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.unarchive", args, session, currentModel))
+
+proc conversationInfoActionHandler(args: seq[string], session: var Session,
+                                  currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.info", args, session, currentModel))
+
+proc conversationSwitchActionHandler(args: seq[string], session: var Session,
+                                    currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.switch", args, session, currentModel))
+
+proc focusPlaceholder(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
+proc taskHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
+proc planHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
+proc codeHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult
+
+proc costAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(costHandler(args, session, currentModel))
+
+proc themeAction(args: seq[string], session: var Session,
+                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(themeHandler(args, session, currentModel))
+
+proc markdownAction(args: seq[string], session: var Session,
+                   currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(markdownHandler(args, session, currentModel))
+
+proc modelsAction(args: seq[string], session: var Session,
+                 currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(modelsHandler(args, session, currentModel))
+
+proc mcpAction(args: seq[string], session: var Session,
+              currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(mcpHandler(args, session, currentModel))
+
+proc configAction(args: seq[string], session: var Session,
+                 currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(configHandler(args, session, currentModel))
+
+proc costActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.cost", args, session, currentModel))
+
+proc themeActionHandler(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.theme", args, session, currentModel))
+
+proc markdownActionHandler(args: seq[string], session: var Session,
+                          currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.markdown", args, session, currentModel))
+
+proc modelsActionHandler(args: seq[string], session: var Session,
+                        currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.models", args, session, currentModel))
+
+proc mcpActionHandler(args: seq[string], session: var Session,
+                     currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.mcp", args, session, currentModel))
+
+proc configActionHandler(args: seq[string], session: var Session,
+                        currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.config", args, session, currentModel))
+
+proc exitAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(exitHandler(args, session, currentModel))
+
+proc focusAction(args: seq[string], session: var Session,
+                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(focusPlaceholder(args, session, currentModel))
+
+proc modelAction(args: seq[string], session: var Session,
+                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(modelHandler(args, session, currentModel))
+
+proc contextAction(args: seq[string], session: var Session,
+                  currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(contextHandler(args, session, currentModel))
+
+proc inspectAction(args: seq[string], session: var Session,
+                  currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(inspectHandler(args, session, currentModel))
+
+proc condenseAction(args: seq[string], session: var Session,
+                   currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(condenseHandler(args, session, currentModel))
+
+proc planAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(planHandler(args, session, currentModel))
+
+proc codeAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(codeHandler(args, session, currentModel))
+
+proc exitActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.exit", args, session, currentModel))
+
+proc focusActionHandler(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.focus", args, session, currentModel))
+
+proc modelActionHandler(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.model", args, session, currentModel))
+
+proc contextActionHandler(args: seq[string], session: var Session,
+                         currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.context", args, session, currentModel))
+
+proc inspectActionHandler(args: seq[string], session: var Session,
+                         currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.inspect", args, session, currentModel))
+
+proc condenseActionHandler(args: seq[string], session: var Session,
+                          currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.condense", args, session, currentModel))
+
+proc planActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.plan", args, session, currentModel))
+
+proc codeActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("agent.code", args, session, currentModel))
+
+proc helpAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(helpHandler(args, session, currentModel))
+
+proc searchAction(args: seq[string], session: var Session,
+                 currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(searchConversationsHandler(args, session, currentModel))
+
+proc taskAction(args: seq[string], session: var Session,
+               currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(taskHandler(args, session, currentModel))
+
+proc helpActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.help", args, session, currentModel))
+
+proc searchActionHandler(args: seq[string], session: var Session,
+                        currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("conversation.search", args, session, currentModel))
+
+proc taskActionHandler(args: seq[string], session: var Session,
+                      currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("task.dispatch", args, session, currentModel))
 
 proc agentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /agent subcommands for definitions and running agents
@@ -1452,6 +1529,355 @@ Use @name to route a prompt to a running agent.""",
     return toCommandResult(actionRegistry.executeAction("agent.stop", if args.len > 1: @[args[1]] else: @[], session, currentModel))
   else:
     return toCommandResult(actionRegistry.executeAction("agent.showDefinition", @[args[0]], session, currentModel))
+
+proc skillHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## Handle /skill subcommands for skill management
+  if args.len == 0:
+    return CommandResult(
+      success: true,
+      message: """Skill commands:
+
+  /skill list [--loaded]       List available or loaded skills
+  /skill load <name>           Load a skill into active context
+  /skill unload <name|--all>   Remove skill(s) from context
+  /skill show <name>           Display skill details
+  /skill search <query>        Find skills by name/description/tag
+  /skill refresh               Re-scan skill directories
+  /skill download <repo> [--skill <name>] [--global]
+                               Install from skills.sh registry
+
+Skills are reusable instruction modules loaded on demand.
+Loaded skills are injected into the system prompt.
+
+Tip: Use --skill to install a specific skill from repos with multiple skills.
+Example: /skill download damusix/skills --skill htmx""",
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  let subcommand = args[0].toLowerAscii()
+  
+  case subcommand
+  of "list", "ls":
+    let loadedOnly = args.len > 1 and ("--loaded" in args or "-l" in args)
+    let language = if args.len > 1 and args[1].startsWith("--lang="): args[1][7..^1] else: ""
+    let tag = if args.len > 1 and args[1].startsWith("--tag="): args[1][6..^1] else: ""
+    
+    let registry = getGlobalSkillRegistry()
+    var skills: seq[Skill] = @[]
+    
+    if loadedOnly:
+      skills = getLoadedSkillsList()
+    elif language.len > 0:
+      skills = getSkillsByLanguage(registry, language)
+    elif tag.len > 0:
+      skills = getSkillsByTag(registry, tag)
+    else:
+      for name, skill in registry.skills.pairs:
+        skills.add(skill)
+    
+    if skills.len == 0:
+      return CommandResult(
+        success: true,
+        message: if loadedOnly: "No skills currently loaded." else: "No skills found. Try 'refresh' or 'download'.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    var lines: seq[string] = @[]
+    lines.add(fmt("Skills ({skills.len}):"))
+    for skill in skills:
+      var line = fmt("  • {skill.name}")
+      if skill.version.isSome:
+        line &= fmt(" (v{skill.version.get})")
+      let desc = if skill.description.len > 60: skill.description[0..60] & "..." else: skill.description
+      line &= fmt(" - {desc}")
+      if isSkillLoadedGlobal(skill.name):
+        line &= " [loaded]"
+      lines.add(line)
+    
+    return CommandResult(
+      success: true,
+      message: lines.join("\n"),
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "load":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "Usage: /skill load <name>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let skillName = args[1]
+    let registry = getGlobalSkillRegistry()
+    
+    if skillName notin registry.skills:
+      return CommandResult(
+        success: false,
+        message: fmt("Skill '{skillName}' not found. Use '/skill list' to see available skills."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    if isSkillLoadedGlobal(skillName):
+      return CommandResult(
+        success: true,
+        message: fmt("Skill '{skillName}' is already loaded."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    if loadSkillGlobal(skillName):
+      let skill = registry.skills[skillName]
+      let loadedCount = getGlobalSkillRegistry().loadedSkills.len
+      
+      # Check if model supports developer messages
+      let supportsDeveloper = currentModel.supportsDeveloperMessage.get(false)
+      
+      if supportsDeveloper:
+        # Inject skill as developer message (Option C)
+        let contextPlan = buildContextPlan(@[skill])
+        let adaptedContent = getAdaptedSkillContent(contextPlan)
+        if adaptedContent.len > 0:
+          let devContent = "## Skill: " & skillName & "\n\n" & adaptedContent
+          discard conversation_manager.addDeveloperMessage(devContent)
+          markSkillInjectedAsDeveloper(skillName)
+          return CommandResult(
+            success: true,
+            message: fmt("Loaded skill: {skillName}\n{skill.description}\n\nInjected as developer message.\nLoaded skills: {loadedCount}"),
+            shouldExit: false,
+            shouldContinue: true
+          )
+      
+      # Fallback to system prompt injection (Option A)
+      return CommandResult(
+        success: true,
+        message: fmt("Loaded skill: {skillName}\n{skill.description}\n\nWill be included in system prompt.\nLoaded skills: {loadedCount}"),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: "Failed to load skill",
+        shouldExit: false,
+        shouldContinue: true
+      )
+  
+  of "unload":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "Usage: /skill unload <name|--all>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    if args[1] == "--all" or args[1] == "-a":
+      unloadAllSkillsGlobal()
+      return CommandResult(
+        success: true,
+        message: "All skills unloaded. Note: Developer messages remain in history.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let skillName = args[1]
+    if not isSkillLoadedGlobal(skillName):
+      return CommandResult(
+        success: false,
+        message: fmt("Skill '{skillName}' is not loaded."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    if unloadSkillGlobal(skillName):
+      unmarkSkillInjectedAsDeveloper(skillName)
+      let loadedCount = getGlobalSkillRegistry().loadedSkills.len
+      return CommandResult(
+        success: true,
+        message: fmt("Unloaded skill: {skillName}. Loaded skills: {loadedCount}"),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    else:
+      return CommandResult(
+        success: false,
+        message: "Failed to unload skill",
+        shouldExit: false,
+        shouldContinue: true
+      )
+  
+  of "show":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "Usage: /skill show <name>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let skillName = args[1]
+    let registry = getGlobalSkillRegistry()
+    
+    if skillName notin registry.skills:
+      return CommandResult(
+        success: false,
+        message: fmt("Skill '{skillName}' not found."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let skill = registry.skills[skillName]
+    var lines: seq[string] = @[]
+    lines.add(fmt("# Skill: {skill.name}"))
+    
+    if skill.version.isSome:
+      lines.add(fmt("Version: {skill.version.get}"))
+    if skill.license.isSome:
+      lines.add(fmt("License: {skill.license.get}"))
+    
+    lines.add("")
+    lines.add(skill.description)
+    
+    if skill.compatibility.isSome:
+      let compat = skill.compatibility.get
+      if compat.languages.len > 0:
+        lines.add(fmt("Languages: {compat.languages.join(\", \")}"))
+      if compat.agents.len > 0:
+        lines.add(fmt("Compatible with: {compat.agents.join(\", \")}"))
+    
+    if skill.metadata.isSome:
+      let meta = skill.metadata.get
+      if meta.author.isSome:
+        lines.add(fmt("Author: {meta.author.get}"))
+      if meta.tags.len > 0:
+        lines.add(fmt("Tags: {meta.tags.join(\", \")}"))
+    
+    lines.add("")
+    lines.add("Loaded: " & (if isSkillLoadedGlobal(skillName): "Yes" else: "No"))
+    
+    return CommandResult(
+      success: true,
+      message: lines.join("\n"),
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "search", "find":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: "Usage: /skill search <query>",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let query = args[1..^1].join(" ")
+    let registry = getGlobalSkillRegistry()
+    let matches = findSkillInRegistry(registry, query)
+    
+    if matches.len == 0:
+      return CommandResult(
+        success: true,
+        message: fmt("No skills matching '{query}'."),
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    var lines: seq[string] = @[]
+    lines.add(fmt("Found {matches.len} skill(s):"))
+    for skill in matches:
+      lines.add(fmt("  • {skill.name} - {skill.description[0..min(60, skill.description.len-1)]}"))
+    
+    return CommandResult(
+      success: true,
+      message: lines.join("\n"),
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "refresh":
+    refreshSkillRegistry()
+    let registry = getGlobalSkillRegistry()
+    return CommandResult(
+      success: true,
+      message: fmt("Refreshed skill registry. Found {registry.skills.len} skills."),
+      shouldExit: false,
+      shouldContinue: true
+    )
+  
+  of "download", "install", "add":
+    if args.len < 2:
+      return CommandResult(
+        success: false,
+        message: """Usage: /skill download <repo> [--skill <name>] [--global]
+
+Repos often contain multiple skills. Use --skill to install only one.
+
+Examples:
+  /skill download damusix/skills --skill htmx
+  /skill download vercel-labs/agent-skills --skill frontend-design
+  /skill download saisudhir14/golang-agent-skill
+  /skill download damusix/skills --global""",
+        shouldExit: false,
+        shouldContinue: true
+      )
+    
+    let repo = args[1]
+    var skillName = ""
+    var global = false
+    
+    for i in 2..<args.len:
+      if args[i] == "--skill" and i + 1 < args.len:
+        skillName = args[i + 1]
+      elif args[i] == "--global" or args[i] == "-g":
+        global = true
+    
+    var cmd = "npx skills add " & repo
+    if skillName.len > 0:
+      cmd &= " --skill " & skillName
+    if global:
+      cmd &= " -g"
+    cmd &= " -a opencode -y"
+    
+    try:
+      let (output, exitCode) = execCmdEx(cmd)
+      if exitCode == 0:
+        refreshSkillRegistry()
+        let registry = getGlobalSkillRegistry()
+        return CommandResult(
+          success: true,
+          message: fmt("Skill installed successfully.\n\n{output}\n\nFound {registry.skills.len} skills. Use '/skill list' to see them."),
+          shouldExit: false,
+          shouldContinue: true
+        )
+      else:
+        return CommandResult(
+          success: false,
+          message: fmt("Failed to install skill (exit code {exitCode}):\n\n{output}"),
+          shouldExit: false,
+          shouldContinue: true
+        )
+    except Exception as e:
+      return CommandResult(
+        success: false,
+        message: "Failed to run skills CLI: " & e.msg & "\n\nMake sure Node.js and npm are installed.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+  
+  else:
+    return CommandResult(
+      success: false,
+      message: fmt("Unknown subcommand: {subcommand}. Type '/skill' for usage."),
+      shouldExit: false,
+      shouldContinue: true
+    )
 
 proc mcpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /mcp command for showing MCP server status
@@ -2267,55 +2693,57 @@ proc discordHandler(args: seq[string], session: var Session, currentModel: var c
 proc initializeCommands*() =
   ## Initialize the built-in commands
   # Global commands - run in master niffler only
-  registerCommandAction("help", "Show help and available commands", "", @[], helpHandler, ccGlobal,
+  registerCommandAction("help", "Show help and available commands", "", @[], helpActionHandler, ccGlobal,
     "system.help", "help", {actionTypes.asMasterCli})
-  registerCommandAction("focus", "Set/show focused agent for commands", "[agent|none]", @[], focusPlaceholder, ccGlobal,
+  registerCommandAction("focus", "Set/show focused agent for commands", "[agent|none]", @[], focusActionHandler, ccGlobal,
     "agent.focus", "focus [agent|none]", {actionTypes.asMasterCli})
-  registerCommandAction("exit", "Exit Niffler", "", @["quit"], exitHandler, ccGlobal,
+  registerCommandAction("exit", "Exit Niffler", "", @["quit"], exitActionHandler, ccGlobal,
     "system.exit", "exit", {actionTypes.asMasterCli})
-  registerCommandAction("config", "Switch or list configs", "[name]", @[], configHandler, ccGlobal,
+  registerCommandAction("config", "Switch or list configs", "[name]", @[], configActionHandler, ccGlobal,
     "system.config", "config [name]", {actionTypes.asMasterCli})
-  registerCommandAction("cost", "Show session cost summary and projections", "", @[], costHandler, ccGlobal,
+  registerCommandAction("cost", "Show session cost summary and projections", "", @[], costActionHandler, ccGlobal,
     "system.cost", "cost", {actionTypes.asMasterCli})
-  registerCommandAction("theme", "Switch theme or show current", "[name]", @[], themeHandler, ccGlobal,
+  registerCommandAction("theme", "Switch theme or show current", "[name]", @[], themeActionHandler, ccGlobal,
     "system.theme", "theme [name]", {actionTypes.asMasterCli})
-  registerCommandAction("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownHandler, ccGlobal,
+  registerCommandAction("markdown", "Toggle markdown rendering", "[on|off]", @["md"], markdownActionHandler, ccGlobal,
     "system.markdown", "markdown [on|off]", {actionTypes.asMasterCli})
-  registerCommandAction("mcp", "Show MCP server status and tools", "[status]", @[], mcpHandler, ccGlobal,
+  registerCommandAction("mcp", "Show MCP server status and tools", "[status]", @[], mcpActionHandler, ccGlobal,
     "system.mcp", "mcp [status]", {actionTypes.asMasterCli})
   registerCommandAction("agent", "Manage agent definitions and live agents", "[subcommand]", @[], agentHandler, ccGlobal,
     "agent.help", "agent", {actionTypes.asMasterCli}, showInHelp = false)
-  registerCommandAction("archive", "Archive a conversation", "<id>", @[], archiveHandler, ccGlobal,
+  registerCommandAction("archive", "Archive a conversation", "<id>", @[], archiveActionHandler, ccGlobal,
     "conversation.archive", "archive <id>", {actionTypes.asMasterCli})
-  registerCommandAction("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveHandler, ccGlobal,
+  registerCommandAction("unarchive", "Unarchive a conversation", "<id>", @[], unarchiveActionHandler, ccGlobal,
     "conversation.unarchive", "unarchive <id>", {actionTypes.asMasterCli})
-  registerCommandAction("search", "Search conversations", "<query>", @[], searchConversationsHandler, ccGlobal,
+  registerCommandAction("search", "Search conversations", "<query>", @[], searchActionHandler, ccGlobal,
     "conversation.search", "search <query>", {actionTypes.asMasterCli})
-  registerCommandAction("models", "List available models from API endpoint", "", @[], modelsHandler, ccGlobal,
+  registerCommandAction("models", "List available models from API endpoint", "", @[], modelsActionHandler, ccGlobal,
     "system.models", "models", {actionTypes.asMasterCli})
   registerCommandAction("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordHandler, ccGlobal,
     "system.discord", "discord <status,token,channels,agent,people,enable,disable,test>", {actionTypes.asMasterCli})
+  registerCommandAction("skill", "Manage skills - reusable instruction modules", "<subcommand>", @["skills"], skillHandler, ccAgent,
+    "system.skill", "skill <subcommand>", {actionTypes.asMasterCli, actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
 
   # Agent commands - run in agent context
-  registerCommandAction("model", "Switch model or show current", "[name]", @[], modelHandler, ccAgent,
-    "agent.model", "model [name]", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("context", "Show conversation context information", "", @[], contextHandler, ccAgent,
-    "agent.context", "context", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("inspect", "Generate HTTP JSON request for API inspection", "[messages,tools,model,system] [filename]", @[], inspectHandler, ccAgent,
-    "agent.inspect", "inspect [messages,tools,model,system] [filename]", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseHandler, ccAgent,
-    "conversation.condense", "condense [strategy]", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("conv", "List/switch conversations", "[id|title]", @[], convHandler, ccAgent,
-    "conversation.switch", "conv [id|title]", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("new", "Create new conversation", "[title]", @[], newConversationHandler, ccAgent,
-    "conversation.new", "new [title]", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("info", "Show current conversation info", "", @[], conversationInfoHandler, ccAgent,
-    "conversation.info", "info", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("task", "Execute a task in fresh context", "<description>", @[], taskHandler, ccAgent,
+  registerCommandAction("model", "Switch model or show current", "[name]", @[], modelActionHandler, ccAgent,
+    "agent.model", "model [name]", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("context", "Show conversation context information", "", @[], contextActionHandler, ccAgent,
+    "agent.context", "context", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("inspect", "Generate HTTP JSON request for API inspection", "[messages,tools,model,system] [filename]", @[], inspectActionHandler, ccAgent,
+    "agent.inspect", "inspect [messages,tools,model,system] [filename]", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("condense", "Create condensed conversation with LLM summary", "[strategy]", @[], condenseActionHandler, ccAgent,
+    "conversation.condense", "condense [strategy]", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("conv", "List/switch conversations", "[id|title]", @[], conversationSwitchActionHandler, ccAgent,
+    "conversation.switch", "conv [id|title]", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("new", "Create new conversation", "[title]", @[], newConversationActionHandler, ccAgent,
+    "conversation.new", "new [title]", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("info", "Show current conversation info", "", @[], conversationInfoActionHandler, ccAgent,
+    "conversation.info", "info", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
+  registerCommandAction("task", "Execute a task in fresh context", "<description>", @[], taskActionHandler, ccAgent,
     "task.dispatch", "task <description>", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("plan", "Switch to plan mode", "", @[], planHandler, ccAgent,
+  registerCommandAction("plan", "Switch to plan mode", "", @[], planActionHandler, ccAgent,
     "agent.plan", "plan", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("code", "Switch to code mode", "", @[], codeHandler, ccAgent,
+  registerCommandAction("code", "Switch to code mode", "", @[], codeActionHandler, ccAgent,
     "agent.code", "code", {actionTypes.asAgentCli}, routableToAgent = true)
 
   registerActionOnly("agent.listDefinitions", "List available agent definitions.", "agent list",
@@ -2333,6 +2761,50 @@ proc initializeCommands*() =
   registerActionOnly("agent.stop", "Stop a running agent by routing name.", "agent stop <routing-name>",
     {actionTypes.asMasterCli, actionTypes.asTool}, agentStopAction,
     toolName = some("agent_manage"), agentCapabilities = {actionTypes.acManageAgents})
+  registerActionOnly("conversation.new", "Create a new conversation.", "new [title]",
+    {actionTypes.asAgentCli}, conversationNewAction, routableToAgent = true)
+  registerActionOnly("conversation.switch", "List or switch conversations.", "conv [id|title]",
+    {actionTypes.asAgentCli}, conversationSwitchAction, routableToAgent = true)
+  registerActionOnly("conversation.archive", "Archive a conversation.", "archive <id>",
+    {actionTypes.asMasterCli}, conversationArchiveAction)
+  registerActionOnly("conversation.unarchive", "Unarchive a conversation.", "unarchive <id>",
+    {actionTypes.asMasterCli}, conversationUnarchiveAction)
+  registerActionOnly("conversation.info", "Show current conversation info.", "info",
+    {actionTypes.asAgentCli}, conversationInfoAction, routableToAgent = true)
+  registerActionOnly("system.exit", "Exit Niffler.", "exit",
+    {actionTypes.asMasterCli}, exitAction)
+  registerActionOnly("system.help", "Show help and available commands.", "help",
+    {actionTypes.asMasterCli}, helpAction)
+  registerActionOnly("agent.focus", "Set or show focused agent.", "focus [agent|none]",
+    {actionTypes.asMasterCli}, focusAction)
+  registerActionOnly("agent.model", "Switch model or show current.", "model [name]",
+    {actionTypes.asAgentCli}, modelAction, routableToAgent = true)
+  registerActionOnly("agent.context", "Show conversation context information.", "context",
+    {actionTypes.asAgentCli}, contextAction, routableToAgent = true)
+  registerActionOnly("agent.inspect", "Generate HTTP JSON request for API inspection.", "inspect [messages,tools,model,system] [filename]",
+    {actionTypes.asAgentCli}, inspectAction, routableToAgent = true)
+  registerActionOnly("conversation.condense", "Create condensed conversation with LLM summary.", "condense [strategy]",
+    {actionTypes.asAgentCli}, condenseAction, routableToAgent = true)
+  registerActionOnly("conversation.search", "Search conversations.", "search <query>",
+    {actionTypes.asMasterCli}, searchAction)
+  registerActionOnly("agent.plan", "Switch to plan mode.", "plan",
+    {actionTypes.asAgentCli}, planAction, routableToAgent = true)
+  registerActionOnly("agent.code", "Switch to code mode.", "code",
+    {actionTypes.asAgentCli}, codeAction, routableToAgent = true)
+  registerActionOnly("system.config", "Switch or list configs.", "config [name]",
+    {actionTypes.asMasterCli}, configAction)
+  registerActionOnly("system.cost", "Show session cost summary and projections.", "cost",
+    {actionTypes.asMasterCli}, costAction)
+  registerActionOnly("system.theme", "Switch theme or show current.", "theme [name]",
+    {actionTypes.asMasterCli}, themeAction)
+  registerActionOnly("system.markdown", "Toggle markdown rendering.", "markdown [on|off]",
+    {actionTypes.asMasterCli}, markdownAction)
+  registerActionOnly("system.mcp", "Show MCP server status and tools.", "mcp [status]",
+    {actionTypes.asMasterCli}, mcpAction)
+  registerActionOnly("system.models", "List available models from the API endpoint.", "models",
+    {actionTypes.asMasterCli}, modelsAction)
+  registerActionOnly("task.dispatch", "Execute a task in fresh context.", "task <description>",
+    {actionTypes.asAgentCli}, taskAction, routableToAgent = true)
   registerActionOnly("task.dispatchToAgent", "Dispatch a fresh-context /task request to a running agent.", "task_dispatch <target> <description>",
     {actionTypes.asTool}, taskDispatchAction,
     toolName = some("task_dispatch"), agentCapabilities = {actionTypes.acDispatchTasks})
