@@ -19,12 +19,13 @@
 import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
 import ../tokenization/tokenizer
-import bash, create, edit, fetch, list, read, todolist, task
+import bash, create, edit, fetch, list, read, todolist, task, action_tools
 import ../mcp/tools as mcpTools
 
 type
   ToolKind* = enum
-    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask
+    tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask,
+    tkAgentManage, tkTaskDispatch
 
   Tool* = object
     requiresConfirmation*: bool
@@ -46,6 +47,10 @@ type
       todolistExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTask:
       taskExecute*: proc(args: JsonNode): string {.gcsafe.}
+    of tkAgentManage:
+      agentManageExecute*: proc(args: JsonNode): string {.gcsafe.}
+    of tkTaskDispatch:
+      taskDispatchExecute*: proc(args: JsonNode): string {.gcsafe.}
 
 # Accessor methods for Tool fields
 proc name*(tool: Tool): string = tool.schema.function.name
@@ -394,6 +399,81 @@ proc createTaskTool(): Tool =
     taskExecute: executeTask
   )
 
+proc createAgentManageTool(): Tool =
+  let parameters = %*{
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "Agent management operation",
+        "enum": ["list_definitions", "show_definition", "list_running", "start", "stop"]
+      },
+      "name": {
+        "type": "string",
+        "description": "Agent definition name"
+      },
+      "nick": {
+        "type": "string",
+        "description": "Optional routing nickname when starting an agent"
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional model override when starting an agent"
+      },
+      "routing_name": {
+        "type": "string",
+        "description": "Routing name of running agent to stop"
+      }
+    },
+    "required": ["operation"]
+  }
+  let schema = ToolDefinition(
+    `type`: "function",
+    function: ToolFunction(
+      name: "agent_manage",
+      description: "Inspect agent definitions, inspect running agents, and start or stop running agent instances.",
+      parameters: parameters
+    )
+  )
+
+  Tool(
+    kind: tkAgentManage,
+    requiresConfirmation: false,
+    schema: schema,
+    agentManageExecute: executeAgentManage
+  )
+
+proc createTaskDispatchTool(): Tool =
+  let parameters = %*{
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string",
+        "description": "Running agent routing name"
+      },
+      "description": {
+        "type": "string",
+        "description": "Task description to send as a /task request"
+      }
+    },
+    "required": ["target", "description"]
+  }
+  let schema = ToolDefinition(
+    `type`: "function",
+    function: ToolFunction(
+      name: "task_dispatch",
+      description: "Dispatch a fresh-context /task request to a running agent over NATS.",
+      parameters: parameters
+    )
+  )
+
+  Tool(
+    kind: tkTaskDispatch,
+    requiresConfirmation: false,
+    schema: schema,
+    taskDispatchExecute: executeTaskDispatch
+  )
+
 proc initializeRegistry() =
   ## Initialize the tool registry with all available tools (thread-safe, idempotent)
   if registryInitialized:
@@ -411,7 +491,9 @@ proc initializeRegistry() =
     createCreateTool(),
     createFetchTool(),
     createTodolistTool(),
-    createTaskTool()
+    createTaskTool(),
+    createAgentManageTool(),
+    createTaskDispatchTool()
   ]
   
   for tool in tools:
@@ -446,6 +528,8 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
   of tkFetch: tool.fetchExecute(args)
   of tkTodolist: tool.todolistExecute(args)
   of tkTask: tool.taskExecute(args)
+  of tkAgentManage: tool.agentManageExecute(args)
+  of tkTaskDispatch: tool.taskDispatchExecute(args)
 
 proc getAllToolSchemas*(): seq[ToolDefinition] =
   ## Get JSON schemas for all registered tools (for LLM function calling)
