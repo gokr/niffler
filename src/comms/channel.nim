@@ -4,7 +4,7 @@
 ## Each channel implements these methods to provide a uniform way to
 ## send and receive messages regardless of the underlying transport.
 
-import std/[json, options, times, asyncdispatch, tables]
+import std/[json, options, times, asyncdispatch]
 
 type
   ChannelMessage* = object

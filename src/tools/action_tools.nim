@@ -89,7 +89,6 @@ proc listRunningOutput(): string =
       continue
     lines.add(fmt("- {agentName} | online"))
   lines.join("\n")
-import ../core/session as sessionMod
 
 proc executeAgentManage*(args: JsonNode): string {.gcsafe.} =
   {.gcsafe.}:
@@ -98,7 +97,7 @@ proc executeAgentManage*(args: JsonNode): string {.gcsafe.} =
         return $ %*{"error": "Missing required argument: operation"}
 
       let operation = args["operation"].getStr()
-      let result =
+      let operationResult =
         case operation
         of "list_definitions":
           (true, listDefinitionsOutput())
@@ -124,8 +123,8 @@ proc executeAgentManage*(args: JsonNode): string {.gcsafe.} =
           return $ %*{"error": fmt("Unknown operation '{operation}'")}
 
       return $ %*{
-        "success": result[0],
-        "message": result[1]
+        "success": operationResult[0],
+        "message": operationResult[1]
       }
     except Exception as e:
       return $ %*{"error": fmt("agent_manage error: {e.msg}")}
@@ -138,10 +137,10 @@ proc executeTaskDispatch*(args: JsonNode): string {.gcsafe.} =
       if not args.hasKey("description"):
         return $ %*{"error": "Missing required argument: description"}
 
-      let result = dispatchTaskToAgent(args["target"].getStr(), args["description"].getStr())
+      let dispatchResult = dispatchTaskToAgent(args["target"].getStr(), args["description"].getStr())
       return $ %*{
-        "success": result.success,
-        "message": result.message
+        "success": dispatchResult.success,
+        "message": dispatchResult.message
       }
     except Exception as e:
       return $ %*{"error": fmt("task_dispatch error: {e.msg}")}

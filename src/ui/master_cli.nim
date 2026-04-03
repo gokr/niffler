@@ -15,9 +15,8 @@
 ## - @researcher /plan find docs  -> Plan mode task to researcher
 ## - Without @: use default agent or fall back to local processing
 
-import std/[logging, strformat, times, strutils, tables, random, options, os]
+import std/[logging, strformat, times, strutils, tables, options, os]
 import ../core/[nats_client, database, agent_dispatch]
-import ../types/[nats_messages]
 import ../comms/discord
 import nats_listener
 import linecross
@@ -471,7 +470,7 @@ proc sendSinglePromptMaster*(
   shouldWait: bool,
   natsUrl: string,
   timeout: int = 30000
-): int {.gcsafe.} =
+): int =
   ## Send single prompt via master mode and exit
   ## Returns: 0 on success, 1 on failure
 

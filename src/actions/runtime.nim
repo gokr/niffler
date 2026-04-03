@@ -1,23 +1,18 @@
 ## Shared action runtime for CLI commands and tools
 
-import std/[algorithm, options, sequtils, strformat, strutils]
+import std/[algorithm, sequtils, strformat, strutils]
 import types
 import ../core/[agent_manager, session]
-import ../types/[agents, config as configTypes]
+import ../types/agents
+import ../tools/registry
 import ../ui/master_cli
 import ../ui/table_utils
-import ../ui/theme
 import nancy
-
-const KnownToolNames = @[
-  "bash", "read", "list", "edit", "create", "fetch", "todolist", "task",
-  "skill", "agent_manage", "task_dispatch"
-]
 
 proc renderAgentDefinitionList*(currentSession: Session): ActionResult =
   let agentsDir = currentSession.getAgentsDir()
   let agents = loadAgentDefinitions(agentsDir)
-  let knownTools = KnownToolNames
+  let knownTools = getAllToolNames()
 
   if agents.len == 0:
     return ActionResult(
@@ -49,7 +44,7 @@ proc renderAgentDefinitionList*(currentSession: Session): ActionResult =
 
 proc renderAgentDefinitionDetails*(currentSession: Session, agentName: string): ActionResult =
   let agents = loadAgentDefinitions(currentSession.getAgentsDir())
-  let knownTools = KnownToolNames
+  let knownTools = getAllToolNames()
   let agentOpt = agents.filterIt(it.name == agentName)
 
   if agentOpt.len == 0:

@@ -83,7 +83,7 @@ proc collectAgentResult*(client: NifflerNatsClient, requestId: string,
 
           if response.done:
             let finalMessage = if responseChunks.len > 0:
-              responseChunks.join("\n")
+              responseChunks.join("")
             elif latestStatus.len > 0:
               latestStatus
             else:

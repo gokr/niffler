@@ -736,8 +736,6 @@ proc executeBashCommand(command: string, database: DatabaseBackend, currentModel
 proc startCLIMode*(session: var Session, modelConfig: configTypes.ModelConfig, database: DatabaseBackend, level: Level, dump: bool = false, dumpsse: bool = false, natsUrl: string = "nats://localhost:4222") =
   ## Start the CLI mode with enhanced interface
 
-  session = initSession()
-
   # Load configuration to get theme settings
   let (config, markdownEnabled) = initializeSystemComponents()
   
