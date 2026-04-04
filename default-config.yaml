@@ -3,6 +3,12 @@
 # Usual location on Unix: ~/.niffler/config.yaml
 # Usual location on Windows: %APPDATA%/niffler/config.yaml
 
+# Active configuration profile. This determines which subdirectory
+# under ~/.niffler/ contains the NIFFLER.md system prompt.
+# Create multiple profiles (e.g., "default", "cc", "minimal") to have
+# different system prompts for different workflows.
+config: "default"
+
 # Theme used for markdown rendering in the CLI.
 current_theme: "default"
 
