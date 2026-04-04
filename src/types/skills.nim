@@ -29,6 +29,25 @@ type
     category*: Option[string]
     internal*: bool
 
+  SkillRelationKind* = enum
+    srkChildSkill
+    srkReference
+    srkScript
+    srkAsset
+    srkExternalSkill
+
+  SkillResource* = object
+    kind*: SkillRelationKind
+    name*: string
+    relativePath*: string
+    description*: string
+    gitUrl*: Option[string]
+
+  SkillSummary* = object
+    name*: string
+    description*: string
+    relativePath*: string
+
   Skill* = object
     name*: string
     description*: string
@@ -39,6 +58,10 @@ type
     compatibility*: Option[SkillCompatibility]
     metadata*: Option[SkillMetadata]
     allowedTools*: seq[string]
+    rootDir*: string
+    parentSkill*: Option[string]
+    childSkills*: seq[SkillSummary]
+    resources*: seq[SkillResource]
 
   SkillRegistry* = object
     skills*: Table[string, Skill]
@@ -58,7 +81,10 @@ proc createEmptySkill*(): Skill =
     name: "",
     description: "",
     content: "",
-    filePath: ""
+    filePath: "",
+    rootDir: "",
+    childSkills: @[],
+    resources: @[]
   )
 
 proc isValidSkillName*(name: string): bool =

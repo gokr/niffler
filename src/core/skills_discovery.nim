@@ -2,6 +2,7 @@
 ##
 ## This module handles discovering, parsing, and loading skills from
 ## the filesystem. Skills are stored as SKILL.md files with YAML frontmatter.
+## Supports nested skills with parent/child relationships and resource discovery.
 
 import std/[os, strutils, tables, options, logging, streams]
 import yaml
@@ -115,7 +116,101 @@ proc parseMetadata(node: YamlNode): SkillMetadata =
   
   result.internal = getYamlBool(node, "internal", false)
 
-proc parseSkillFile*(path: string): SkillParseResult =
+proc discoverResourcesInDir(skillDir: string): seq[SkillResource] =
+  result = @[]
+  
+  let refDir = skillDir / "references"
+  if dirExists(refDir):
+    for kind, path in walkDir(refDir):
+      if kind == pcFile and path.endsWith(".md"):
+        let name = path.splitFile.name
+        result.add(SkillResource(
+          kind: srkReference,
+          name: name,
+          relativePath: "references/" & path.extractFilename,
+          description: "",
+          gitUrl: none(string)
+        ))
+  
+  let scriptDir = skillDir / "scripts"
+  if dirExists(scriptDir):
+    for kind, path in walkDir(scriptDir):
+      if kind == pcFile:
+        let name = path.splitFile.name
+        result.add(SkillResource(
+          kind: srkScript,
+          name: name,
+          relativePath: "scripts/" & path.extractFilename,
+          description: "",
+          gitUrl: none(string)
+        ))
+  
+  let assetDir = skillDir / "assets"
+  if dirExists(assetDir):
+    for kind, path in walkDir(assetDir):
+      if kind == pcFile:
+        let name = path.splitFile.name
+        result.add(SkillResource(
+          kind: srkAsset,
+          name: name,
+          relativePath: "assets/" & path.extractFilename,
+          description: "",
+          gitUrl: none(string)
+        ))
+
+proc extractExternalSkillHints*(content: string): seq[SkillResource] =
+  result = @[]
+  let lines = content.splitLines()
+  for line in lines:
+    let lineLower = line.toLowerAscii().strip()
+    var url = ""
+    if lineLower.startsWith("skill:") or lineLower.startsWith("skills:"):
+      let parts = line.split(":", 1)
+      if parts.len > 1:
+        url = parts[1].strip()
+    elif lineLower.startsWith("subskill:") or lineLower.startsWith("sub-skill:"):
+      let parts = line.split(":", 1)
+      if parts.len > 1:
+        url = parts[1].strip()
+    
+    if url.len > 0 and url.startsWith("http"):
+      let cleanUrl = url.splitWhitespace()[0]
+      result.add(SkillResource(
+        kind: srkExternalSkill,
+        name: cleanUrl.extractFilename,
+        relativePath: "",
+        description: "external skill suggestion",
+        gitUrl: some(cleanUrl)
+      ))
+
+proc discoverChildSkillsInDir(skillDir: string): seq[SkillSummary] =
+  result = @[]
+  let skillsDir = skillDir / "skills"
+  if not dirExists(skillsDir):
+    return
+  
+  for kind, childDir in walkDir(skillsDir):
+    if kind == pcDir:
+      let childSkillFile = childDir / "SKILL.md"
+      if fileExists(childSkillFile):
+        try:
+          let content = readFile(childSkillFile)
+          let (frontmatter, _) = splitYamlFrontmatter(content)
+          if frontmatter.len > 0:
+            let yamlNode = parseYamlFrontmatter(frontmatter)
+            if yamlNode.kind == yMapping:
+              let name = getYamlString(yamlNode, "name", childDir.splitFile.name)
+              let desc = getYamlString(yamlNode, "description", "")
+              let relPath = "skills/" & childDir.extractFilename
+              result.add(SkillSummary(
+                name: name,
+                description: desc,
+                relativePath: relPath
+              ))
+        except:
+          discard
+
+proc parseSkillFile*(path: string, parentName: string = ""): SkillParseResult =
   let fileName = path.splitFile.name
   let parentDir = path.parentDir.splitFile.name
   
@@ -142,14 +237,26 @@ proc parseSkillFile*(path: string): SkillParseResult =
     let name = getYamlString(yamlNode, "name", skillName)
     let description = getYamlString(yamlNode, "description")
     
+    let skillDir = path.parentDir
+    
     var skill = Skill(
       name: name,
       description: description,
       content: body,
       filePath: path,
       version: if getYamlString(yamlNode, "version").len > 0: some(getYamlString(yamlNode, "version")) else: none(string),
-      license: if getYamlString(yamlNode, "license").len > 0: some(getYamlString(yamlNode, "license")) else: none(string)
+      license: if getYamlString(yamlNode, "license").len > 0: some(getYamlString(yamlNode, "license")) else: none(string),
+      rootDir: skillDir,
+      childSkills: discoverChildSkillsInDir(skillDir),
+      resources: discoverResourcesInDir(skillDir)
     )
+    
+    if parentName.len > 0:
+      skill.parentSkill = some(parentName)
+    
+    let externalHints = extractExternalSkillHints(body)
+    for hint in externalHints:
+      skill.resources.add(hint)
     
     let compatNode = getYamlNode(yamlNode, "compatibility")
     if compatNode.isSome:
@@ -175,6 +282,27 @@ proc parseSkillFile*(path: string): SkillParseResult =
       success: false,
       error: "Failed to parse " & path & ": " & e.msg
     )
+
+proc discoverSkillsRecursive*(basePath: string, parentName: string = ""): seq[Skill] =
+  result = @[]
+  
+  if not dirExists(basePath):
+    return
+  
+  for kind, path in walkDir(basePath):
+    if kind == pcDir:
+      let skillFile = path / "SKILL.md"
+      if fileExists(skillFile):
+        let parseResult = parseSkillFile(skillFile, parentName)
+        if parseResult.success:
+          result.add(parseResult.skill)
+          
+          let skillsDir = path / "skills"
+          if dirExists(skillsDir):
+            let childSkills = discoverSkillsRecursive(skillsDir, parseResult.skill.name)
+            result.add(childSkills)
+        else:
+          debug("Failed to parse skill: " & parseResult.error)
 
 proc discoverSkillsInPath*(basePath: string): seq[Skill] =
   result = @[]
@@ -216,7 +344,7 @@ proc discoverAllSkills*(): seq[Skill] =
   var seen = initTable[string, bool]()
   
   for searchPath in searchPaths:
-    let skills = discoverSkillsInPath(searchPath)
+    let skills = discoverSkillsRecursive(searchPath)
     for skill in skills:
       if skill.name notin seen:
         seen[skill.name] = true
@@ -265,3 +393,26 @@ proc findSkillInRegistry*(registry: SkillRegistry, query: string): seq[Skill] =
         if name notin seen and name in registry.skills:
           result.add(registry.skills[name])
           seen[name] = true
+
+proc findSkillByPath*(registry: SkillRegistry, path: string): Option[Skill] =
+  let normalized = path.replace("\\", "/").strip(chars = {'/'})
+  for name, skill in registry.skills:
+    let skillPath = skill.filePath.replace("\\", "/").parentDir.strip(chars = {'/'})
+    if skillPath == normalized or skillPath.endsWith("/" & normalized):
+      return some(skill)
+  none(Skill)
+
+proc getChildSkills*(registry: SkillRegistry, parentName: string): seq[Skill] =
+  result = @[]
+  for name, skill in registry.skills:
+    if skill.parentSkill.isSome and skill.parentSkill.get == parentName:
+      result.add(skill)
+
+proc loadResourceContent*(skill: Skill, relativePath: string): Option[string] =
+  let fullPath = skill.rootDir / relativePath
+  if fileExists(fullPath):
+    try:
+      return some(readFile(fullPath))
+    except:
+      return none(string)
+  none(string)
