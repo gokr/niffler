@@ -1,7 +1,7 @@
 ## Skill Tool Implementation
 ##
 ## This module implements the skill tool for dynamic skill management.
-## Operations: list, load, unload, show, search
+## Operations: list, load, unload, show, search, list_resources, load_resource
 
 import std/[json, strutils, strformat, osproc, options, tables, locks, sequtils]
 import ../types/skills
@@ -27,6 +27,15 @@ proc tryLoadSkillState(skillName: string): tuple[loaded: bool, alreadyLoaded: bo
     ensureSkillRegistryInitialized()
 
     if skillName notin globalSkillRegistry.skills:
+      let pathSkill = findSkillByPath(globalSkillRegistry, skillName)
+      if pathSkill.isSome:
+        let actualName = pathSkill.get.name
+        if isSkillLoaded(globalSkillRegistry, actualName):
+          return (false, true, some(globalSkillRegistry.skills[actualName]), globalSkillRegistry.loadedSkills.len, "")
+        let loaded = loadSkill(globalSkillRegistry, actualName)
+        if loaded:
+          return (true, false, some(globalSkillRegistry.skills[actualName]), globalSkillRegistry.loadedSkills.len, "")
+        return (false, false, none(Skill), globalSkillRegistry.loadedSkills.len, "Failed to load skill")
       return (false, false, none(Skill), globalSkillRegistry.loadedSkills.len,
         fmt("Skill '{skillName}' not found. Use 'list' to see available skills."))
 
@@ -111,7 +120,6 @@ proc wasSkillInjectedAsDeveloper*(skillName: string): bool {.gcsafe.} =
       return skillName in skillsInjectedAsDeveloper
 
 proc getSkillsForSystemPrompt*(): seq[Skill] {.gcsafe.} =
-  ## Get skills that should be included in system prompt (not injected as developer messages)
   {.gcsafe.}:
     withLock(skillRegistryLock):
       ensureSkillRegistryInitialized()
@@ -153,7 +161,10 @@ proc formatSkillList*(skills: seq[Skill], includeContent: bool = false): string 
     var line = fmt("• {skill.name}")
     if skill.version.isSome:
       line &= fmt(" (v{skill.version.get})")
-    line &= fmt(" - {skill.description[0..min(80, skill.description.len-1)]}")
+    let descPreview = if skill.description.len > 80: skill.description[0..77] & "..." else: skill.description
+    line &= fmt(" - {descPreview}")
+    if skill.parentSkill.isSome:
+      line &= fmt(" (parent: {skill.parentSkill.get})")
     lines.add(line)
   
   return lines.join("\n")
@@ -170,6 +181,9 @@ proc formatSkillDetail*(skill: Skill): string =
   
   lines.add("")
   lines.add(fmt("**Description:** {skill.description}"))
+  
+  if skill.parentSkill.isSome:
+    lines.add(fmt("**Parent:** {skill.parentSkill.get}"))
   
   if skill.compatibility.isSome:
     let compat = skill.compatibility.get
@@ -190,6 +204,24 @@ proc formatSkillDetail*(skill: Skill): string =
   lines.add("")
   lines.add(skill.content)
   
+  if skill.childSkills.len > 0:
+    lines.add("")
+    lines.add("## Child Skills")
+    for child in skill.childSkills:
+      lines.add(fmt("- {child.name}: {child.description} ({child.relativePath})"))
+  
+  if skill.resources.len > 0:
+    lines.add("")
+    lines.add("## Resources")
+    for res in skill.resources:
+      let kindStr = case res.kind
+        of srkReference: "reference"
+        of srkScript: "script"
+        of srkAsset: "asset"
+        of srkExternalSkill: "external"
+        of srkChildSkill: "child"
+      lines.add(fmt("- [{kindStr}] {res.name}: {res.relativePath}"))
+  
   return lines.join("\n")
 
 proc executeSkillList*(args: JsonNode): string {.gcsafe.} =
@@ -197,6 +229,7 @@ proc executeSkillList*(args: JsonNode): string {.gcsafe.} =
   let loadedOnly = args.hasKey("loaded_only") and args["loaded_only"].getBool()
   let language = if args.hasKey("language"): args["language"].getStr() else: ""
   let tag = if args.hasKey("tag"): args["tag"].getStr() else: ""
+  let includeNested = args.hasKey("include_nested") and args["include_nested"].getBool()
   
   var skills: seq[Skill] = @[]
   
@@ -208,7 +241,8 @@ proc executeSkillList*(args: JsonNode): string {.gcsafe.} =
     skills = getSkillsByTag(registry, tag)
   else:
     for name, skill in registry.skills.pairs:
-      skills.add(skill)
+      if includeNested or not skill.parentSkill.isSome:
+        skills.add(skill)
   
   if skills.len == 0:
     return $ %*{"result": "No skills found.", "count": 0}
@@ -235,11 +269,18 @@ proc executeSkillLoad*(args: JsonNode): string {.gcsafe.} =
       return $ %*{"result": fmt("Skill '{skillName}' is already loaded."), "already_loaded": true}
 
     let skill = loadResult.skill.get()
+    
+    var children: seq[JsonNode] = @[]
+    for child in skill.childSkills:
+      children.add(%*{"name": child.name, "description": child.description})
+    
     return $ %*{
       "result": fmt("Loaded skill: {skillName}"),
       "skill": {
         "name": skill.name,
-        "description": skill.description
+        "description": skill.description,
+        "child_skills": children,
+        "resource_count": skill.resources.len
       },
       "loaded_count": loadResult.loadedCount
     }
@@ -266,14 +307,23 @@ proc executeSkillShow*(args: JsonNode): string {.gcsafe.} =
   
   let registry = getGlobalSkillRegistry()
   
-  if skillName notin registry.skills:
+  var skill: Option[Skill] = none(Skill)
+  if skillName in registry.skills:
+    skill = some(registry.skills[skillName])
+  else:
+    skill = findSkillByPath(registry, skillName)
+  
+  if skill.isNone:
     return $ %*{"error": fmt("Skill '{skillName}' not found.")}
   
-  let skill = registry.skills[skillName]
-  let detail = formatSkillDetail(skill)
+  let s = skill.get()
+  let detail = formatSkillDetail(s)
   return $ %*{
     "result": detail,
-    "loaded": isSkillLoaded(registry, skillName)
+    "loaded": isSkillLoaded(registry, s.name),
+    "name": s.name,
+    "child_skills": s.childSkills.len,
+    "resources": s.resources.len
   }
 
 proc executeSkillSearch*(args: JsonNode): string {.gcsafe.} =
@@ -307,6 +357,78 @@ proc executeSkillRefresh*(args: JsonNode): string {.gcsafe.} =
       "result": fmt("Refreshed skill registry. Found {registry.skills.len} skills."),
       "count": registry.skills.len
     }
+
+proc executeSkillListResources*(args: JsonNode): string {.gcsafe.} =
+  let skillName = if args.hasKey("skill"): args["skill"].getStr() else: ""
+  
+  if skillName.len == 0:
+    return $ %*{"error": "Missing required parameter 'skill'"}
+  
+  let registry = getGlobalSkillRegistry()
+  
+  var skill: Option[Skill] = none(Skill)
+  if skillName in registry.skills:
+    skill = some(registry.skills[skillName])
+  else:
+    skill = findSkillByPath(registry, skillName)
+  
+  if skill.isNone:
+    return $ %*{"error": fmt("Skill '{skillName}' not found.")}
+  
+  let s = skill.get()
+  var resources: seq[JsonNode] = @[]
+  for res in s.resources:
+    let kindStr = case res.kind
+      of srkReference: "reference"
+      of srkScript: "script"
+      of srkAsset: "asset"
+      of srkExternalSkill: "external"
+      of srkChildSkill: "child"
+    resources.add(%*{
+      "kind": kindStr,
+      "name": res.name,
+      "path": res.relativePath,
+      "description": res.description,
+      "git_url": res.gitUrl
+    })
+  
+  return $ %*{
+    "skill": s.name,
+    "resources": resources,
+    "count": resources.len
+  }
+
+proc executeSkillLoadResource*(args: JsonNode): string {.gcsafe.} =
+  let skillName = if args.hasKey("skill"): args["skill"].getStr() else: ""
+  let resourcePath = if args.hasKey("path"): args["path"].getStr() else: ""
+  
+  if skillName.len == 0:
+    return $ %*{"error": "Missing required parameter 'skill'"}
+  if resourcePath.len == 0:
+    return $ %*{"error": "Missing required parameter 'path'"}
+  
+  let registry = getGlobalSkillRegistry()
+  
+  var skill: Option[Skill] = none(Skill)
+  if skillName in registry.skills:
+    skill = some(registry.skills[skillName])
+  else:
+    skill = findSkillByPath(registry, skillName)
+  
+  if skill.isNone:
+    return $ %*{"error": fmt("Skill '{skillName}' not found.")}
+  
+  let s = skill.get()
+  let content = loadResourceContent(s, resourcePath)
+  
+  if content.isNone:
+    return $ %*{"error": fmt("Resource '{resourcePath}' not found in skill '{skillName}'")}
+  
+  return $ %*{
+    "skill": s.name,
+    "resource": resourcePath,
+    "content": content.get()
+  }
 
 proc executeSkillDownload*(args: JsonNode): string {.gcsafe.} =
   let repo = if args.hasKey("repo"): args["repo"].getStr() else: ""
@@ -360,6 +482,10 @@ proc executeSkill*(args: JsonNode): string {.gcsafe.} =
     return executeSkillRefresh(args)
   of "download", "install", "add":
     return executeSkillDownload(args)
+  of "list_resources", "resources":
+    return executeSkillListResources(args)
+  of "load_resource", "resource":
+    return executeSkillLoadResource(args)
   else:
-    let msg = "Unknown operation: " & operation & ". Valid: list, load, unload, show, search, refresh, download"
+    let msg = "Unknown operation: " & operation & ". Valid: list, load, unload, show, search, refresh, download, list_resources, load_resource"
     return $ %*{"error": msg}

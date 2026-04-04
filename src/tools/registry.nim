@@ -19,13 +19,13 @@
 import std/[options, json, tables, sequtils, strutils]
 import ../types/messages
 import ../tokenization/tokenizer
-import bash, create, edit, fetch, list, read, todolist, task, skill, action_tools
+import bash, create, edit, fetch, list, read, todolist, task, skill, action_tools, discord_tool
 import ../mcp/tools as mcpTools
 
 type
   ToolKind* = enum
     tkBash, tkRead, tkList, tkEdit, tkCreate, tkFetch, tkTodolist, tkTask, tkSkill,
-    tkAgentManage, tkTaskDispatch
+    tkAgentManage, tkTaskDispatch, tkDiscord
 
   Tool* = object
     requiresConfirmation*: bool
@@ -53,6 +53,8 @@ type
       agentManageExecute*: proc(args: JsonNode): string {.gcsafe.}
     of tkTaskDispatch:
       taskDispatchExecute*: proc(args: JsonNode): string {.gcsafe.}
+    of tkDiscord:
+      discordExecute*: proc(args: JsonNode): string {.gcsafe.}
 
 # Accessor methods for Tool fields
 proc name*(tool: Tool): string = tool.schema.function.name
@@ -540,6 +542,53 @@ proc createTaskDispatchTool(): Tool =
     taskDispatchExecute: executeTaskDispatch
   )
 
+proc createDiscordTool(): Tool =
+  let parameters = %*{
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "Discord operation to perform",
+        "enum": ["recent_messages", "send_message"]
+      },
+      "channel_id": {
+        "type": "string",
+        "description": "Discord channel ID"
+      },
+      "content": {
+        "type": "string",
+        "description": "Message content for send_message"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of messages to fetch",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "before_message_id": {
+        "type": "string",
+        "description": "Fetch messages before this Discord message ID"
+      }
+    },
+    "required": ["operation", "channel_id"]
+  }
+  let schema = ToolDefinition(
+    `type`: "function",
+    function: ToolFunction(
+      name: "discord",
+      description: "Read and send Discord channel data using the configured bot token. Supports fetching recent channel messages and sending a message.",
+      parameters: parameters
+    )
+  )
+
+  Tool(
+    kind: tkDiscord,
+    requiresConfirmation: false,
+    schema: schema,
+    discordExecute: executeDiscord
+  )
+
 proc initializeRegistry() =
   ## Initialize the tool registry with all available tools (thread-safe, idempotent)
   if registryInitialized:
@@ -560,7 +609,8 @@ proc initializeRegistry() =
     createTaskTool(),
     createSkillTool(),
     createAgentManageTool(),
-    createTaskDispatchTool()
+    createTaskDispatchTool(),
+    createDiscordTool()
   ]
   
   for tool in tools:
@@ -598,6 +648,7 @@ proc executeTool*(tool: Tool, args: JsonNode): string =
   of tkSkill: tool.skillExecute(args)
   of tkAgentManage: tool.agentManageExecute(args)
   of tkTaskDispatch: tool.taskDispatchExecute(args)
+  of tkDiscord: tool.discordExecute(args)
 
 proc getAllToolSchemas*(): seq[ToolDefinition] =
   ## Get JSON schemas for all registered tools (for LLM function calling)

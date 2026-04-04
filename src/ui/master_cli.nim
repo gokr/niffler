@@ -257,6 +257,21 @@ proc sendToAgentAsync*(state: var MasterState, agentName: string, input: string,
     state.pendingRequests.del(prepared.request.requestId)
     return (false, "", fmt("Failed to send request: {e.msg}"))
 
+proc buildDiscordAgentInput*(msg: DiscordMessage, input: string): string =
+  ## Add minimal Discord sender context without breaking command parsing
+  var contextBlock = fmt("[Discord]\nauthor: {msg.authorName}\nauthorId: {msg.authorId}\nchannelId: {msg.channelId}\ntrigger: {msg.trigger}\nreplyRequested: {msg.replyRequested}")
+  if msg.guildId.len > 0:
+    contextBlock &= fmt("\nguildId: {msg.guildId}")
+
+  if input.startsWith("/task "):
+    let taskBody = input[6..^1].strip()
+    return "/task " & contextBlock & "\n\nUser message:\n" & taskBody
+
+  if input.startsWith("/"):
+    return input
+
+  contextBlock & "\n\n" & input
+
 proc processDiscordMessagesThread(stateArg: pointer) {.thread.} =
   ## Background thread that processes Discord messages and routes to agents
   {.gcsafe.}:
@@ -288,8 +303,6 @@ proc processDiscordMessagesThread(stateArg: pointer) {.thread.} =
           # Use default agent for Discord
           if statePtr[].discordDefaultAgent.len > 0:
             targetAgent = statePtr[].discordDefaultAgent
-          elif statePtr[].currentAgent.len > 0:
-            targetAgent = statePtr[].currentAgent
           elif statePtr[].defaultAgent.len > 0:
             targetAgent = statePtr[].defaultAgent
         
@@ -321,12 +334,15 @@ proc processDiscordMessagesThread(stateArg: pointer) {.thread.} =
         
         # Send to agent with Discord context
         let input = if parsed.input.len > 0: parsed.input else: msg.content
-        let (success, requestId, error) = statePtr[].sendToAgentAsync(targetAgent, input, msg.channelId)
+        let forwardedInput = buildDiscordAgentInput(msg, input)
+        let discordChannelId = if msg.replyRequested: msg.channelId else: ""
+        let (success, requestId, error) = statePtr[].sendToAgentAsync(targetAgent, forwardedInput, discordChannelId)
         
         if success:
           info(fmt("Routed Discord message from {msg.authorName} to @{targetAgent} (requestId: {requestId})"))
-          # Register for Discord relay
-          addDiscordRoute(requestId, msg.channelId, statePtr[].discordToken)
+          # Auto-reply only for direct Discord triggers (DM, mention, !)
+          if msg.replyRequested:
+            addDiscordRoute(requestId, msg.channelId, statePtr[].discordToken)
         else:
           warn(fmt("Failed to route Discord message: {error}"))
           sendDiscordMessage(statePtr[].discordToken, msg.channelId, fmt("Error: {error}"))

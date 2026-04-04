@@ -12,7 +12,7 @@
 ## - Environment information injection
 
 import std/[strformat, strutils, os, times, osproc, sequtils, options, tables, logging]
-import ../types/[mode, messages, context_assembly]
+import ../types/[mode, messages, context_assembly, skills]
 import ../tools/registry
 import ../tools/skill
 import ../tokenization/tokenizer
@@ -558,13 +558,55 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: 
   # Only add skills that weren't injected as developer messages
   var skillsTokens = 0
   let loadedSkills = getSkillsForSystemPrompt()
+  let registry = getGlobalSkillRegistry()
+  
+  if registry.skills.len > 0:
+    var catalogLines: seq[string] = @["## Available Skills", ""]
+    catalogLines.add("Skills can be loaded with: skill(operation=\"load\", name=\"skill-name\")")
+    catalogLines.add("")
+    var topSkills: seq[Skill] = @[]
+    for name, s in registry.skills:
+      if not s.parentSkill.isSome:
+        topSkills.add(s)
+    for s in topSkills:
+      var line = fmt("- **{s.name}**: {s.description}")
+      if s.childSkills.len > 0:
+        line &= fmt(" ({s.childSkills.len} sub-skills)")
+      catalogLines.add(line)
+    let catalog = catalogLines.join("\n")
+    systemPrompt.add("\n\n" & catalog)
+    skillsTokens += countTokensForModel(catalog, modelName)
+  
   if loadedSkills.len > 0:
     let contextPlan = buildContextPlan(loadedSkills)
     let adaptedContent = getAdaptedSkillContent(contextPlan)
     if adaptedContent.len > 0:
       systemPrompt.add("\n\n## Active Skills\n\n")
       systemPrompt.add(adaptedContent)
-      skillsTokens = countTokensForModel(adaptedContent, modelName)
+      skillsTokens += countTokensForModel(adaptedContent, modelName)
+    
+    var relatedLines: seq[string] = @["## Related Resources", ""]
+    var hasRelated = false
+    for s in loadedSkills:
+      if s.childSkills.len > 0:
+        hasRelated = true
+        relatedLines.add(fmt("### Child skills of {s.name}:"))
+        for child in s.childSkills:
+          relatedLines.add(fmt("- {child.name}: {child.description}"))
+          relatedLines.add(fmt("  Load with: skill(operation=\"load\", name=\"{child.name}\")"))
+        relatedLines.add("")
+      if s.resources.len > 0:
+        hasRelated = true
+        for res in s.resources:
+          if res.kind == srkExternalSkill and res.gitUrl.isSome:
+            relatedLines.add(fmt("### External skill suggestion:"))
+            relatedLines.add(fmt("- {res.gitUrl.get}"))
+            relatedLines.add("  Install with explicit user approval via skill(operation=\"download\", repo=\"...\")")
+            relatedLines.add("")
+    if hasRelated:
+      let related = relatedLines.join("\n")
+      systemPrompt.add("\n\n" & related)
+      skillsTokens += countTokensForModel(related, modelName)
     
     if contextPlan.contextNotes.len > 0:
       logging.debug(contextPlan.contextNotes)

@@ -24,6 +24,8 @@ type
     authorId*: string
     authorName*: string
     messageId*: string
+    trigger*: string
+    replyRequested*: bool
 
   DiscordChannel* = ref object of CommunicationChannel
     ## Discord communication channel
@@ -83,10 +85,26 @@ proc shouldProcessMessage*(channel: DiscordChannel, msg: Message): bool =
   if channel.monitoredChannels.len > 0:
     # Get channel name from ID would require API call
     # For now, check against channel IDs
-    if msg.channel_id notin channel.monitoredChannels:
-      return false
-  
-  return true
+    return msg.channel_id in channel.monitoredChannels
+
+  return false
+
+proc classifyDiscordTrigger*(channel: DiscordChannel, msg: Message): tuple[trigger: string, replyRequested: bool] =
+  ## Classify why a Discord message is being processed
+  if msg.guild_id.isNone:
+    return ("dm", true)
+
+  for mention in msg.mention_users:
+    if mention.id == channel.myUserId:
+      return ("mention", true)
+
+  if msg.content.startsWith(DiscordCommandPrefix):
+    return ("bang", true)
+
+  if channel.monitoredChannels.len > 0 and msg.channel_id in channel.monitoredChannels:
+    return ("monitored_channel", false)
+
+  ("unknown", false)
 
 proc extractCleanContent*(content: string, myUserId: string): string =
   ## Clean message content by removing mentions
@@ -136,12 +154,19 @@ proc runDiscordBot*(token: string, guildId: string = "", monitoredChannels: seq[
       discordRunning = true
 
     client.events.message_create = proc(s: Shard, msg: Message) {.async.} =
+      let channel = newDiscordChannel(token, guildId, monitoredChannels)
+      channel.myUserId = botUserId
+      if not shouldProcessMessage(channel, msg):
+        return
+
       debug(fmt"Discord message: {msg.content[0..min(50, msg.content.len-1)]}")
 
       let cleanContent = if botUserId.len > 0:
         extractCleanContent(msg.content, botUserId)
       else:
         msg.content.strip()
+
+      let (trigger, replyRequested) = classifyDiscordTrigger(channel, msg)
 
       # Create DiscordMessage and send to channel
       let discordMsg = DiscordMessage(
@@ -150,7 +175,9 @@ proc runDiscordBot*(token: string, guildId: string = "", monitoredChannels: seq[
         guildId: if msg.guild_id.isSome: msg.guild_id.get else: "",
         authorId: msg.author.id,
         authorName: msg.author.username,
-        messageId: msg.id
+        messageId: msg.id,
+        trigger: trigger,
+        replyRequested: replyRequested
       )
       try:
         discordMessageChannel.send(discordMsg)
