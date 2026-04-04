@@ -6,7 +6,7 @@
 ## This module runs Discord in a background thread and forwards
 ## messages to the agent via a thread-safe channel.
 
-import std/[asyncdispatch, json, options, strutils, strformat, logging]
+import std/[asyncdispatch, json, options, strutils, strformat, logging, atomics, tables, os]
 import dimscord
 import ../core/[database, db_config]
 import channel
@@ -38,11 +38,14 @@ type
 var
   discordThread*: Thread[tuple[token: string, guildId: string, channels: seq[string]]]
   discordRunning* {.global.}: bool = false
+  discordThreadStarted {.global.}: bool = false
+  discordStopRequested {.global.}: Atomic[bool]
   discordMessageChannel* {.global.}: system.Channel[DiscordMessage]
 
 proc initDiscordChannel*() =
   ## Initialize the Discord message channel
   discordMessageChannel.open(100)
+  discordStopRequested.store(false)
 
 proc newDiscordChannel*(token: string, guildId: string = "", monitoredChannels: seq[string] = @[]): DiscordChannel =
   ## Create a new Discord channel
@@ -115,6 +118,15 @@ proc runDiscordBot*(token: string, guildId: string = "", monitoredChannels: seq[
     let client = newDiscordClient(token)
     var botUserId = ""
 
+    proc watchDiscordShutdown() {.async.} =
+      while not discordStopRequested.load():
+        await sleepAsync(100)
+
+      try:
+        await client.endSession()
+      except CatchableError:
+        discard
+
     info("Starting Discord bot...")
 
     # Set up event handlers using dimscord's event system
@@ -145,29 +157,51 @@ proc runDiscordBot*(token: string, guildId: string = "", monitoredChannels: seq[
       except:
         error("Failed to send Discord message to channel")
     
+    asyncCheck watchDiscordShutdown()
+
     # Start session (blocking)
     waitFor client.startSession(
       gateway_intents = {giGuildMessages, giDirectMessages, giMessageContent}
     )
-    
+
   except Exception as e:
-    error(fmt"Discord bot error: {e.msg}")
+    if not discordStopRequested.load():
+      error(fmt"Discord bot error: {e.msg}")
     discordRunning = false
 
 proc startDiscordThread*(token: string, guildId: string = "", monitoredChannels: seq[string] = @[]) =
   ## Start Discord bot in background thread
+  if discordThreadStarted:
+    return
+
+  discordStopRequested.store(false)
+
   proc discordThreadProc(params: tuple[token: string, guildId: string, channels: seq[string]]) {.thread, gcsafe.} =
     {.gcsafe.}:
       runDiscordBot(params.token, params.guildId, params.channels)
   
   createThread(discordThread, discordThreadProc, (token: token, guildId: guildId, channels: monitoredChannels))
+  discordThreadStarted = true
   
   info("Discord thread started")
 
 proc stopDiscordBot*() =
   ## Stop the Discord bot
+  if not discordThreadStarted:
+    discordRunning = false
+    return
+
+  let wasRunning = discordRunning
+  discordStopRequested.store(true)
   discordRunning = false
-  # Note: dimscord doesn't have explicit stop, thread will exit when session ends
+  if not wasRunning:
+    for _ in 0..<50:
+      if discordRunning:
+        break
+      sleep(100)
+
+  joinThread(discordThread)
+  discordThreadStarted = false
 
 proc sendDiscordMessage*(token: string, channelId: string, content: string) =
   ## Send a message to a Discord channel (blocking)

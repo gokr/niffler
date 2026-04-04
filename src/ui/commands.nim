@@ -2735,9 +2735,9 @@ proc initializeCommands*() =
     "conversation.search", "search <query>", {actionTypes.asMasterCli})
   registerCommandAction("models", "List available models from API endpoint", "", @[], modelsActionHandler, ccGlobal,
     "system.models", "models", {actionTypes.asMasterCli})
-  registerCommandAction("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordHandler, ccGlobal,
+  registerCommandAction("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordActionHandler, ccGlobal,
     "system.discord", "discord <status,token,channels,agent,people,enable,disable,test>", {actionTypes.asMasterCli})
-  registerCommandAction("skill", "Manage skills - reusable instruction modules", "<subcommand>", @["skills"], skillHandler, ccAgent,
+  registerCommandAction("skill", "Manage skills - reusable instruction modules", "<subcommand>", @["skills"], skillActionHandler, ccAgent,
     "system.skill", "skill <subcommand>", {actionTypes.asMasterCli, actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
 
   # Agent commands - run in agent context
@@ -2819,6 +2819,10 @@ proc initializeCommands*() =
     {actionTypes.asMasterCli}, mcpAction)
   registerActionOnly("system.models", "List available models from the API endpoint.", "models",
     {actionTypes.asMasterCli}, modelsAction)
+  registerActionOnly("system.discord", "Discord bot configuration.", "discord <status,token,channels,agent,people,enable,disable,test>",
+    {actionTypes.asMasterCli}, discordAction)
+  registerActionOnly("system.skill", "Manage skills - reusable instruction modules.", "skill <subcommand>",
+    {actionTypes.asMasterCli, actionTypes.asAgentCli}, skillAction, routableToAgent = true)
   registerActionOnly("task.dispatch", "Execute a task in fresh context.", "task <description>",
     {actionTypes.asAgentCli}, taskAction, routableToAgent = true)
   registerActionOnly("task.dispatchToAgent", "Dispatch a fresh-context /task request to a running agent.", "task_dispatch <target> <description>",

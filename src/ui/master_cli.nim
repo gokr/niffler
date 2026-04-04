@@ -538,6 +538,9 @@ proc cleanup*(state: var MasterState) =
   ## Cleanup master resources
   info("Cleaning up master...")
 
+  if state.discordEnabled:
+    stopDiscordProcessor(state)
+
   # Stop Discord bot
   if state.discordEnabled:
     stopDiscordBot()

@@ -8,6 +8,7 @@ import ../src/core/[config, session, app, database, conversation_manager, nats_c
 import ../src/types/[messages, config as configTypes, mode]
 import ../src/api/api
 import ../src/ui/[cli, master_cli]
+import test_utils
 import debby/pools
 
 # Test configuration - can be overridden via environment variables
@@ -36,13 +37,7 @@ suite "Integration Tests with Real LLM":
           temperature: some(0.1)
         )
       ],
-      database: some(DatabaseConfig(
-        host: "127.0.0.1",
-        port: 4000,
-        database: "niffler_test",
-        username: "root",
-        password: ""
-      ))
+      database: some(getPreferredTestDatabaseConfig())
     )
 
     # Initialize test database
@@ -231,6 +226,7 @@ suite "Integration Test Utilities":
 
   test "Test environment validation":
     #[ Verify test environment is properly configured ]#
+    let dbConfig = getPreferredTestDatabaseConfig()
 
     # We expect these to be configurable, not all required
     if TEST_API_KEY.len > 0:
@@ -250,19 +246,12 @@ suite "Integration Test Utilities":
       echo "  Start NATS with: nats-server -js"
 
     try:
-      let dbConfig = DatabaseConfig(
-        host: "127.0.0.1",
-        port: 4000,
-        database: "niffler_test",
-        username: "root",
-        password: ""
-      )
       let testDb = createDatabaseBackend(dbConfig)
       testDb.close()
       echo "✅ Database available for testing"
     except:
       echo "⚠️  Database not available - persistence tests will fail"
-      echo "  Ensure TiDB/MySQL is running on localhost:4000"
+      echo fmt("  Ensure MySQL/TiDB is running on {dbConfig.host}:{dbConfig.port}")
 
 when isMainModule:
   # Run with: nim c -r tests/test_integration_framework.nim

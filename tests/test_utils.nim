@@ -1,52 +1,82 @@
 ## Test utilities for niffler tests
-## Provides centralized test configuration and TiDB connection setup
+## Provides centralized test configuration for local MySQL/TiDB setup
 
+import std/[os, strutils, strformat]
 import ../src/core/database
 import ../src/types/config
 import debby/pools
 import debby/mysql
 
-let testHost = "127.0.0.1"
-let testPort = 4000
-let testUser = "root"
-let testDatabaseName = "niffler_test"
-let testPassword = ""
+let testHost = getEnv("NIFFLER_TEST_DB_HOST", "127.0.0.1")
+let testUser = getEnv("NIFFLER_TEST_DB_USER", "root")
+let testDatabaseName = getEnv("NIFFLER_TEST_DB_NAME", "niffler_test")
+let testPassword = getEnv("NIFFLER_TEST_DB_PASSWORD", "")
 let testPoolSize = 1
 
-proc createTestDatabaseBackend*(): DatabaseBackend =
-  ## Create a test database backend connected to local TiDB
-  let dbConfig = DatabaseConfig(
-    enabled: true,
-    host: testHost,
-    port: testPort,
-    database: testDatabaseName,
-    username: testUser,
-    password: testPassword,
-    poolSize: testPoolSize
-  )
+proc getTestDatabasePorts*(): seq[int] =
+  let explicitPort = getEnv("NIFFLER_TEST_DB_PORT", "")
+  if explicitPort.len > 0:
+    try:
+      return @[parseInt(explicitPort)]
+    except ValueError:
+      discard
+  return @[3306, 4000]
 
-  try:
-    result = createDatabaseBackend(dbConfig)
-    echo "\e[32m✓ TiDB connected at ", testHost, ":", testPort, "/", testDatabaseName, "\e[0m"
-  except CatchableError as e:
-    echo "\e[31m✗ Failed to connect to TiDB at ", testHost, ":", testPort, "\e[0m"
-    echo "Error: ", e.msg
-    echo ""
-    echo "To run tests, you need TiDB running locally:"
-    echo ""
-    echo "1. Install TiUP (easiest method):"
-    echo "   curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh"
-    echo ""
-    echo "2. Start TiDB playground:"
-    echo "   tiup playground"
-    echo ""
-    echo "3. Alternative: Use Docker:"
-    echo "   docker run -d --name tidb -p 4000:4000 pingcap/tidb:latest"
-    echo ""
-    echo "4. Create test database:"
-    echo "   mysql -h 127.0.0.1 -P 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS niffler_test'"
-    echo ""
-    quit(1)
+proc getTestDatabaseConfigs*(): seq[DatabaseConfig] =
+  for port in getTestDatabasePorts():
+    result.add(DatabaseConfig(
+      enabled: true,
+      host: testHost,
+      port: port,
+      database: testDatabaseName,
+      username: testUser,
+      password: testPassword,
+      poolSize: testPoolSize
+    ))
+
+proc getPreferredTestDatabaseConfig*(): DatabaseConfig =
+  ## Return the first configured test DB target (MySQL first, then TiDB fallback)
+  return getTestDatabaseConfigs()[0]
+
+proc tryCreateTestDatabaseBackend*(): tuple[backend: DatabaseBackend, config: DatabaseConfig, error: string] =
+  ## Try configured test DB targets without exiting on failure
+  var errors: seq[string] = @[]
+
+  for dbConfig in getTestDatabaseConfigs():
+    try:
+      let backend = createDatabaseBackend(dbConfig)
+      return (backend, dbConfig, "")
+    except CatchableError as e:
+      errors.add(fmt("{dbConfig.host}:{dbConfig.port} -> {e.msg}"))
+
+  let preferred = getPreferredTestDatabaseConfig()
+  return (nil, preferred, errors.join("; "))
+
+proc createTestDatabaseBackend*(): DatabaseBackend =
+  ## Create a test database backend connected to local MySQL first, TiDB second
+  let attempt = tryCreateTestDatabaseBackend()
+  if attempt.backend != nil:
+    let engineName = if attempt.config.port == 3306: "MySQL" else: "TiDB"
+    echo "\e[32m✓ ", engineName, " connected at ", attempt.config.host, ":", attempt.config.port, "/", attempt.config.database, "\e[0m"
+    return attempt.backend
+
+  echo "\e[31m✗ Failed to connect to local test database\e[0m"
+  echo "Tried these targets:"
+  for err in attempt.error.split("; "):
+    echo err
+  echo ""
+  echo "To run tests, you can use either local MySQL or TiDB:"
+  echo ""
+  echo "MySQL example:"
+  echo "  mysql -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE IF NOT EXISTS niffler_test'"
+  echo ""
+  echo "TiDB example:"
+  echo "  docker run -d --name tidb -p 4000:4000 pingcap/tidb:latest"
+  echo "  mysql -h 127.0.0.1 -P 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS niffler_test'"
+  echo ""
+  echo "Environment overrides:"
+  echo "  NIFFLER_TEST_DB_HOST, NIFFLER_TEST_DB_PORT, NIFFLER_TEST_DB_USER, NIFFLER_TEST_DB_PASSWORD, NIFFLER_TEST_DB_NAME"
+  quit(1)
 
 proc clearTestDatabase*(backend: DatabaseBackend) =
   ## Clear all data from test database tables (delete data, keep schema)
