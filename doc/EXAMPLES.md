@@ -700,41 +700,23 @@ Other sections (e.g., `# Project Guidelines`) are included as instruction conten
 
 ### Variable Substitution
 
-System prompts support these template variables:
+**Note on Template Variables:**
 
-- `{availableTools}` - List of available tools
-- `{currentDir}` - Current working directory
-- `{currentTime}` - Current timestamp
-- `{osInfo}` - Operating system information
-- `{gitInfo}` - Git repository information
-- `{projectInfo}` - Project context information
+Template variables in NIFFLER.md have been deprecated in favor of:
+- **Dynamic tool descriptions**: Tools are described in the API request
+- **Runtime environment discovery**: Use `bash`, `list`, or `read` tools when environment info is needed
 
-### Example NIFFLER.md
+This change improves prompt caching and reduces token usage.
 
+**Old format (deprecated):**
 ```markdown
-# Common System Prompt
-
-You are Niffler, a specialized assistant for this project.
 Available tools: {availableTools}
 Working in: {currentDir}
+```
 
-# Plan Mode Prompt
-
-In plan mode, focus on:
-- Analyzing requirements
-- Breaking down tasks
-- Research and planning
-
-# Code Mode Prompt
-
-In code mode, focus on:
-- Implementation
-- Testing
-- Bug fixes
-
-# Project Guidelines
-
-These guidelines will appear in instruction files, not system prompts.
+**Current format:**
+```markdown
+You have access to tools. Use them as needed.
 ```
 
 ### File Inclusion

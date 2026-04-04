@@ -129,29 +129,16 @@ NIFFLER.md files contain system prompts with special sections:
 - `# Plan Mode Prompt` - Additional instructions for Plan mode
 - `# Code Mode Prompt` - Additional instructions for Code mode
 
-**Variable Substitution:**
+**Variable Substitution (Legacy):**
+
+Note: Template variables in NIFFLER.md have been deprecated. Previously these were supported:
 - `{availableTools}` - List of available tools
 - `{currentDir}` - Working directory
 - `{currentTime}` - Current timestamp
 - `{osInfo}` - Operating system info
 - `{gitInfo}` - Git repository info
 
-**Example NIFFLER.md:**
-```markdown
-# Common System Prompt
-
-You are Niffler, a helpful AI assistant.
-Available tools: {availableTools}
-Working in: {currentDir}
-
-# Plan Mode Prompt
-
-Focus on analysis and planning before implementation.
-
-# Code Mode Prompt
-
-Focus on implementation and execution.
-```
+These are now **dynamically provided** via tool descriptions and the agent should use `bash`, `list`, or `read` tools to gather environment information when needed.
 
 ### File Inclusion
 
@@ -378,7 +365,18 @@ sonnet
 
 ## System Prompt
 
-You are a coding expert. Available tools: {availableTools}
+You are a coding expert.
+
+## Allowed Tools
+- read
+- edit
+- create
+- bash
+- list
+
+## Capabilities
+- inspect_agents
+- dispatch_tasks
 ```
 
 Required sections:
