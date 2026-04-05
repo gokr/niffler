@@ -15,7 +15,7 @@ import ../actions/runtime as actionRuntime
 import ../core/[conversation_manager, config, app, database, mode_state, system_prompt, session, condense, db_config]
 import ../core/skills_discovery
 import ../core/context_assembly
-import ../types/[config as configTypes, messages, mode, skills]
+import ../types/[config as configTypes, messages, mode, skills, agents]
 import ../tokenization/[tokenizer]
 import ../tools/registry
 import ../tools/skill
@@ -263,6 +263,18 @@ proc buildToolHelpEntries(actions: seq[actionTypes.ActionDefinition]): seq[tuple
 
     result.add(("`" & toolName & "`", summary & capabilitySuffix))
 
+proc renderToolCatalog(entries: seq[tuple[name: string, description: string]]): string =
+  if entries.len == 0:
+    return "No tools available."
+
+  var width = 0
+  for entry in entries:
+    width = max(width, entry.name.len)
+
+  let paddedWidth = min(width + 2, 26)
+  for entry in entries:
+    result &= "  " & padHelpName(entry.name, paddedWidth) & entry.description & "\n"
+
 # Built-in command handlers
 proc helpHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   var message = """
@@ -302,6 +314,55 @@ Use '/plan' or '/code' to switch modes.
   if toolEntries.len > 0:
     message &= "\n" & formatWithStyle("Agent-Callable Tools:", currentTheme.header2) & "\n"
     message &= renderHelpEntries(toolEntries)
+
+  return CommandResult(
+    success: true,
+    message: message,
+    shouldExit: false,
+    shouldContinue: true
+  )
+
+proc toolsHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
+  ## List all tools or tool access for a specific agent definition
+  discard currentModel
+
+  let allTools = getAllTools().mapIt((it.name, it.description))
+
+  if args.len == 0:
+    return CommandResult(
+      success: true,
+      message: "Available tools:\n" & renderToolCatalog(allTools),
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let agentName = args[0]
+  let agents = loadAgentDefinitions(session.getAgentsDir())
+  let agentOpt = agents.filterIt(it.name == agentName)
+  if agentOpt.len == 0:
+    return CommandResult(
+      success: false,
+      message: fmt("Agent '{agentName}' not found. Use /agent list to see available definitions."),
+      shouldExit: false,
+      shouldContinue: true
+    )
+
+  let agent = agentOpt[0]
+  var allowedEntries: seq[tuple[name: string, description: string]] = @[]
+  var blockedEntries: seq[tuple[name: string, description: string]] = @[]
+
+  let allowAll = agent.allowedTools.len == 0
+  for tool in getAllTools():
+    let entry = (tool.name, tool.description)
+    if allowAll or tool.name in agent.allowedTools:
+      allowedEntries.add(entry)
+    else:
+      blockedEntries.add(entry)
+
+  var message = fmt("Tools for agent '{agent.name}':\n")
+  message &= "\nAllowed:\n" & renderToolCatalog(allowedEntries)
+  if blockedEntries.len > 0:
+    message &= "\nNot allowed:\n" & renderToolCatalog(blockedEntries)
 
   return CommandResult(
     success: true,
@@ -1493,6 +1554,14 @@ proc searchActionHandler(args: seq[string], session: var Session,
 proc taskActionHandler(args: seq[string], session: var Session,
                       currentModel: var configTypes.ModelConfig): CommandResult =
   toCommandResult(actionRegistry.executeAction("task.dispatch", args, session, currentModel))
+
+proc toolsAction(args: seq[string], session: var Session,
+                currentModel: var configTypes.ModelConfig): actionTypes.ActionResult =
+  result = toActionResult(toolsHandler(args, session, currentModel))
+
+proc toolsActionHandler(args: seq[string], session: var Session,
+                       currentModel: var configTypes.ModelConfig): CommandResult =
+  toCommandResult(actionRegistry.executeAction("system.tools", args, session, currentModel))
 
 proc agentHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Handle /agent subcommands for definitions and running agents
@@ -2735,6 +2804,8 @@ proc initializeCommands*() =
     "conversation.search", "search <query>", {actionTypes.asMasterCli})
   registerCommandAction("models", "List available models from API endpoint", "", @[], modelsActionHandler, ccGlobal,
     "system.models", "models", {actionTypes.asMasterCli})
+  registerCommandAction("tools", "List all tools or show tool access for an agent", "[agent]", @[], toolsActionHandler, ccGlobal,
+    "system.tools", "tools [agent]", {actionTypes.asMasterCli})
   registerCommandAction("discord", "Discord bot configuration", "<status,token,channels,agent,people,enable,disable,test>", @[], discordActionHandler, ccGlobal,
     "system.discord", "discord <status,token,channels,agent,people,enable,disable,test>", {actionTypes.asMasterCli})
   registerCommandAction("skill", "Manage skills - reusable instruction modules", "<subcommand>", @["skills"], skillActionHandler, ccAgent,
@@ -2819,6 +2890,8 @@ proc initializeCommands*() =
     {actionTypes.asMasterCli}, mcpAction)
   registerActionOnly("system.models", "List available models from the API endpoint.", "models",
     {actionTypes.asMasterCli}, modelsAction)
+  registerActionOnly("system.tools", "List all tools or show tool access for a specific agent.", "tools [agent]",
+    {actionTypes.asMasterCli}, toolsAction)
   registerActionOnly("system.discord", "Discord bot configuration.", "discord <status,token,channels,agent,people,enable,disable,test>",
     {actionTypes.asMasterCli}, discordAction)
   registerActionOnly("system.skill", "Manage skills - reusable instruction modules.", "skill <subcommand>",

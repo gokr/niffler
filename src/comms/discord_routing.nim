@@ -1,98 +1,180 @@
-## Discord Routing Module
+## Discord Routing via NATS
 ##
-## Routes Discord tool calls from agents through the Master Niffler process.
+## Routes Discord tool calls from agents through Master via NATS.
 ## This ensures centralized rate limiting, access control, and token security.
 ##
-## Agent sends NATS request to: niffler.discord.execute
-## Master handles Discord API calls and returns results
+## Subject: niffler.discord.execute (request)
+##          niffler.discord.response.{requestId} (reply)
 
-import std/[json, strformat, options, asyncdispatch, strutils]
+import std/[json, strformat, options, times]
+import ../core/nats_client
 import ../core/database
 import ../core/db_config
 import ../comms/discord
-import ../types/nats_messages
 
 const DiscordExecuteSubject = "niffler.discord.execute"
-const DiscordResponseSubject = "niffler.discord.response"
 
+## Types for Discord requests/responses
 type
-  DiscordExecuteRequest* = object
+  DiscordOperation* = enum
+    doRecentMessages
+    doSendMessage
+
+  DiscordRequest* = object
     requestId*: string
     agentName*: string
-    operation*: string
+    operation*: DiscordOperation
     channelId*: string
     content*: string
     limit*: int
     beforeMessageId*: string
 
-  DiscordExecuteResponse* = object
+  DiscordResponse* = object
     requestId*: string
     success*: bool
     error*: string
     data*: JsonNode
 
-proc parseDiscordExecuteRequest*(data: JsonNode): Option[DiscordExecuteRequest] =
-  ## Parse Discord execute request from JSON
-  try:
-    if not data.hasKey("operation") or not data.hasKey("channel_id"):
-      return none(DiscordExecuteRequest)
-    
-    result = some(DiscordExecuteRequest(
-      requestId: if data.hasKey("request_id"): data["request_id"].getStr() else: "",
-      agentName: if data.hasKey("agent_name"): data["agent_name"].getStr() else: "unknown",
-      operation: data["operation"].getStr(),
-      channelId: data["channel_id"].getStr(),
-      content: if data.hasKey("content"): data["content"].getStr() else: "",
-      limit: if data.hasKey("limit"): data["limit"].getInt() else: 20,
-      beforeMessageId: if data.hasKey("before_message_id"): data["before_message_id"].getStr() else: ""
-    ))
-  except Exception as e:
-    debug(fmt"Failed to parse Discord execute request: {e.msg}")
-    return none(DiscordExecuteRequest)
+proc newDiscordRequest*(
+  agentName: string,
+  operation: string,
+  channelId: string,
+  content: string = "",
+  limit: int = 20,
+  beforeMessageId: string = ""
+): DiscordRequest =
+  ## Create a new Discord request from tool arguments
+  result.requestId = fmt"discord_{getTime().toUnix()}_{rand(100000)}"
+  result.agentName = agentName
+  result.channelId = channelId
+  result.content = content
+  result.limit = limit
+  result.beforeMessageId = beforeMessageId
 
-proc executeDiscordViaMaster*(request: DiscordExecuteRequest): DiscordExecuteResponse =
+  case operation
+  of "recent_messages": result.operation = doRecentMessages
+  of "send_message": result.operation = doSendMessage
+  else: raise newException(ValueError, "Unknown operation: " & operation)
+
+proc toJson*(req: DiscordRequest): string =
+  ## Serialize request to JSON
+  result = $ %*{
+    "request_id": req.requestId,
+    "agent_name": req.agentName,
+    "operation": $req.operation,
+    "channel_id": req.channelId,
+    "content": req.content,
+    "limit": req.limit,
+    "before_message_id": req.beforeMessageId
+  }
+
+proc fromJsonDiscordRequest*(jsonStr: string): DiscordRequest =
+  ## Deserialize request from JSON
+  let data = parseJson(jsonStr)
+  result.requestId = data["request_id"].getStr()
+  result.agentName = data["agent_name"].getStr()
+  result.channelId = data["channel_id"].getStr()
+  result.content = data["content"].getStr()
+  result.limit = data["limit"].getInt()
+  result.beforeMessageId = data["before_message_id"].getStr()
+
+  let opStr = data["operation"].getStr()
+  case opStr
+  of "doRecentMessages": result.operation = doRecentMessages
+  of "doSendMessage": result.operation = doSendMessage
+  else: raise newException(ValueError, "Unknown operation: " & opStr)
+
+proc toJson*(resp: DiscordResponse): string =
+  ## Serialize response to JSON
+  result = $ %*{
+    "request_id": resp.requestId,
+    "success": resp.success,
+    "error": resp.error,
+    "data": resp.data
+  }
+
+proc fromJsonDiscordResponse*(jsonStr: string): DiscordResponse =
+  ## Deserialize response from JSON
+  let data = parseJson(jsonStr)
+  result.requestId = data["request_id"].getStr()
+  result.success = data["success"].getBool()
+  result.error = data["error"].getStr()
+  result.data = data["data"]
+
+## Agent-side: Send Discord request via NATS
+proc sendDiscordRequestViaNats*(
+  natsClient: NifflerNatsClient,
+  request: DiscordRequest,
+  timeoutMs: int = 30000
+): DiscordResponse =
+  ## Send Discord request to Master via NATS and wait for response
+  ## This runs in the Agent process (tool worker thread)
+
+  let jsonRequest = request.toJson()
+  let responseOpt = natsClient.request(DiscordExecuteSubject, jsonRequest, timeoutMs)
+
+  if responseOpt.isNone:
+    return DiscordResponse(
+      requestId: request.requestId,
+      success: false,
+      error: "No response from Master (timeout or Master not running)",
+      data: newJNull()
+    )
+
+  try:
+    return fromJsonDiscordResponse(responseOpt.get())
+  except Exception as e:
+    return DiscordResponse(
+      requestId: request.requestId,
+      success: false,
+      error: "Failed to parse response: " & e.msg,
+      data: newJNull()
+    )
+
+## Master-side: Execute Discord request
+proc executeDiscordRequestInMaster*(request: DiscordRequest): DiscordResponse =
   ## Execute Discord operation via Master's connection
   ## This runs in the Master process
-  
-  result = DiscordExecuteResponse(
+
+  result = DiscordResponse(
     requestId: request.requestId,
     success: false,
     error: "",
     data: newJNull()
   )
-  
+
   # Check if Discord is enabled
   let database = getGlobalDatabase()
   if database == nil:
     result.error = "Database not available"
     return
-  
+
   let discordConfig = getDiscordConfig(database)
   if discordConfig.isNone():
     result.error = "Discord is not configured"
     return
-  
+
   let (token, _, _, _, _) = discordConfig.get()
   if token.len == 0:
     result.error = "Discord token is not configured"
     return
-  
+
   # Execute the operation
   try:
     let client = newDiscordClient(token)
-    
+
     case request.operation
-    of "recent_messages":
+    of doRecentMessages:
       var limit = request.limit
       if limit < 1: limit = 1
       if limit > 100: limit = 100
-      
-      let messages = asyncdispatch.waitFor client.api.getChannelMessages(
-        request.channelId, 
-        before = request.beforeMessageId, 
+
+      let messages = waitFor client.api.getChannelMessages(
+        request.channelId,
+        before = request.beforeMessageId,
         limit = limit
       )
-      
+
       var formattedMessages = newJArray()
       for message in messages:
         formattedMessages.add(%*{
@@ -103,53 +185,69 @@ proc executeDiscordViaMaster*(request: DiscordExecuteRequest): DiscordExecuteRes
           "timestamp": message.timestamp,
           "content": message.content
         })
-      
+
       result.success = true
       result.data = %*{
-        "operation": request.operation,
+        "operation": "recent_messages",
         "channel_id": request.channelId,
         "count": messages.len,
         "messages": formattedMessages
       }
-    
-    of "send_message":
+
+    of doSendMessage:
       if request.content.len == 0:
         result.error = "content cannot be empty"
         return
-      
-      let sentMessage = asyncdispatch.waitFor client.api.sendMessage(
-        request.channelId, 
+
+      let sentMessage = waitFor client.api.sendMessage(
+        request.channelId,
         formatResponse(request.content)
       )
-      
+
       result.success = true
       result.data = %*{
-        "operation": request.operation,
+        "operation": "send_message",
         "channel_id": request.channelId,
         "message_id": sentMessage.id
       }
-    
-    else:
-      result.error = fmt("Unknown discord operation '{request.operation}'")
-  
+
   except Exception as e:
     result.error = fmt("Discord API error: {e.msg}")
-    debug(fmt"Discord execute error: {e.msg}")
 
-proc formatDiscordExecuteResponse*(response: DiscordExecuteResponse): string =
-  ## Format response as JSON for NATS
-  result = $ %*{
-    "request_id": response.requestId,
-    "success": response.success,
-    "error": response.error,
-    "data": response.data
-  }
+## Master-side: Subscribe to Discord requests
+proc startDiscordRoutingSubscriber*(natsClient: NifflerNatsClient) =
+  ## Start subscriber for Discord requests in Master
+  ## This should be called once when Master starts
 
-proc formatDiscordExecuteError*(requestId, errorMsg: string): string =
-  ## Format error response
-  result = $ %*{
-    "request_id": requestId,
-    "success": false,
-    "error": errorMsg,
-    "data": newJNull()
-  }
+  proc handleDiscordRequest(subject: string, replySubject: string, data: string) =
+    try:
+      let request = fromJsonDiscordRequest(data)
+      info(fmt"Discord request from {request.agentName}: {request.operation}")
+
+      let response = executeDiscordRequestInMaster(request)
+      let jsonResponse = response.toJson()
+
+      # Publish reply
+      if replySubject.len > 0:
+        natsClient.nc.publish(replySubject, jsonResponse)
+      else:
+        warn("No reply subject for Discord request")
+
+    except Exception as e:
+      error(fmt"Failed to handle Discord request: {e.msg}")
+      # Try to send error response if we have a reply subject
+      if replySubject.len > 0:
+        let errorResponse = DiscordResponse(
+          requestId: "",
+          success: false,
+          error: "Failed to process request: " & e.msg,
+          data: newJNull()
+        )
+        natsClient.nc.publish(replySubject, errorResponse.toJson())
+
+  # Subscribe to Discord execute subject
+  try:
+    natsClient.subscribe(DiscordExecuteSubject, handleDiscordRequest)
+    info(fmt"Discord routing subscriber started on {DiscordExecuteSubject}")
+  except Exception as e:
+    error(fmt"Failed to start Discord subscriber: {e.msg}")

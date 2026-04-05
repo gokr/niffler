@@ -33,6 +33,9 @@ type
     dumpJson*: bool
     database*: DatabaseBackend  # Keep for backward compatibility
     pool*: Pool                 # New database pool for cross-thread sharing
+    isAgentMode*: bool          # Whether running in agent mode
+    agentName*: string          # Agent name (empty if not in agent mode)
+    natsUrl*: string            # NATS server URL for agent mode tools
 
   ThreadChannels* = object
     # API Thread Communication
