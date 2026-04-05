@@ -73,6 +73,16 @@ proc executeCreate*(args: JsonNode): string =
   if not validOctal:
     raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", parsedArgs.permissions)
 
+  {.gcsafe.}:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        let mutationCheck = checkCodeModeMutationReady(database, conversationId)
+        if not mutationCheck.ready:
+          raise newToolValidationError("create", "workflow", mutationCheck.reason, mutationCheck.reason)
+
   try:
     # Check if file exists
     let fileExistsBefore = fileExists(sanitizedPath)

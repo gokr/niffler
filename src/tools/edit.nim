@@ -258,7 +258,17 @@ proc executeEdit*(args: JsonNode): string {.gcsafe.} =
     raise newToolValidationError("edit", "file_protection", 
       "Cannot edit existing files in plan mode. You can only edit files created during this plan mode session, or create new files. Switch to code mode to edit existing files.",
       fmt"File '{sanitizedPath}' cannot be edited in plan mode")
-  
+
+  {.gcsafe.}:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        let mutationCheck = checkCodeModeMutationReady(database, conversationId)
+        if not mutationCheck.ready:
+          raise newToolValidationError("edit", "workflow", mutationCheck.reason, mutationCheck.reason)
+
   try:
     # Read original content
     let originalContent = attemptUntrackedRead(sanitizedPath)

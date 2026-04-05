@@ -103,7 +103,7 @@ proc listConversations*(backend: DatabaseBackend, filter: ConversationFilter = c
       let query = fmt"""
         SELECT id, created_at, updated_at, session_id, title, is_active,
                mode, model_nickname, message_count, last_activity,
-               plan_mode_entered_at, plan_mode_created_files,
+               plan_mode_entered_at, plan_mode_created_files, plan_file_path,
                parent_conversation_id, condensed_from_message_count,
                condensation_strategy, condensation_metadata
         FROM conversation
@@ -369,7 +369,7 @@ proc searchConversations*(backend: DatabaseBackend, query: string): seq[Conversa
                c.is_active, c.mode, c.model_nickname, c.message_count, c.last_activity,
                c.plan_mode_entered_at, c.plan_mode_created_files,
                c.parent_conversation_id, c.condensed_from_message_count,
-               c.condensation_strategy, c.condensation_metadata
+               c.condensation_strategy, c.condensation_metadata, c.plan_file_path
         FROM conversation c
         LEFT JOIN conversation_message cm ON c.id = cm.conversation_id
         WHERE c.title LIKE ? OR cm.content LIKE ?
@@ -1015,5 +1015,3 @@ proc storeThinkingBlockFromStreaming*(conversationId: int, blockType: ThinkingBl
       return none(ThinkingBlock)
     finally:
       release(globalSession.lock)
-
-

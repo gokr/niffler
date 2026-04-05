@@ -170,7 +170,7 @@ suite "Tool Schema and Message Conversion":
     check request.model == "gpt-4"
     check request.messages.len == 1
     check request.tools.isSome()
-    check request.tools.get().len == 8
+    check request.tools.get().len == tools.len
 
   test "JSON serialization works":
     let messages = @[Message(role: mrUser, content: "Test")]

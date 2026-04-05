@@ -69,11 +69,11 @@ type
     lastActivity*: DateTime
     planModeEnteredAt*: DateTime  # When plan mode was entered (default epoch if never entered)
     planModeCreatedFiles*: string  # JSON array of files created during this plan mode session
-    planFilePath*: string  # Path to plan file (e.g., plans/2024-01-15-title.md)
     parentConversationId*: Option[int]  # Link to parent conversation if this is a condensed conversation
     condensedFromMessageCount*: int  # Number of messages in original before condensation
     condensationStrategy*: string  # Strategy used: "llm_summary", "truncate", "smart_window"
     condensationMetadata*: string  # JSON metadata: timestamp, token savings, etc.
+    planFilePath*: string  # Path to plan file (e.g., plans/2024-01-15-title.md)
 
   ConversationSession* = object
     conversation*: Conversation

@@ -5,7 +5,7 @@
 
 import std/[unittest, strformat, strutils, sequtils, options]
 import test_conversation_infrastructure
-import ../src/core/[conversation_manager, session, database]
+import ../src/core/[conversation_manager, session, database, mode_state]
 import ../src/types/[config as configTypes, mode]
 import ../src/ui/commands
 
@@ -113,6 +113,48 @@ suite "CLI Command Integration Tests":
     let switchNonExistent = executeCommand("conv", @["NonExistent"], session, testModel)
     check switchNonExistent.success == false
     check "No conversation found matching 'NonExistent'" in switchNonExistent.message
+
+  testConversationLifecycle "Plan and code commands enforce plan artifact workflow":
+    var testModel = createTestModelConfig()
+    var session = initSession()
+
+    let convOpt = createConversation(testDb.backend, "Plan Workflow Test", amCode, testModel.nickname)
+    check convOpt.isSome()
+    let convId = convOpt.get().id
+
+    discard switchToConversation(testDb.backend, convId)
+    initSessionManager(testDb.backend.pool)
+    setCurrentMode(amCode)
+
+    let codeBlocked = executeCommand("code", @[], session, testModel)
+    check codeBlocked.success == false
+    check "Cannot switch to Code mode without a plan" in codeBlocked.message
+
+    let planResult = executeCommand("plan", @[], session, testModel)
+    check planResult.success == true
+    check "Plan file:" in planResult.message
+    check hasActivePlan(testDb.backend, convId) == true
+
+    let codeAllowed = executeCommand("code", @[], session, testModel)
+    check codeAllowed.success == true
+    check "Switched to Code mode" in codeAllowed.message
+
+  testConversationLifecycle "Code force creates override plan artifact":
+    var testModel = createTestModelConfig()
+    var session = initSession()
+
+    let convOpt = createConversation(testDb.backend, "Force Workflow Test", amCode, testModel.nickname)
+    check convOpt.isSome()
+    let convId = convOpt.get().id
+
+    discard switchToConversation(testDb.backend, convId)
+    initSessionManager(testDb.backend.pool)
+    setCurrentMode(amCode)
+
+    let codeForced = executeCommand("code", @["--force"], session, testModel)
+    check codeForced.success == true
+    check "override" in codeForced.message.toLowerAscii()
+    check hasActivePlan(testDb.backend, convId) == true
 
   testConversationLifecycle "Archive command functionality":
     var testModel = createTestModelConfig()

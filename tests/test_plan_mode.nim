@@ -139,9 +139,62 @@ suite "Plan Mode File Protection Tests":
     
     check checkPlanModeProtection("existing_file1.txt") == false
     check checkPlanModeProtection("existing_file2.nim") == false
+
+  test "Code mode mutations require todolist":
+    switchToCodeMode()
+    discard ensurePlanFile(testDb, testConvId, "Mutation Requirement Plan")
+
+    let createArgs = %*{
+      "path": "blocked_without_todo.txt",
+      "content": "Should not be created"
+    }
+
+    expect ToolValidationError:
+      discard executeCreate(createArgs)
+
+    let editArgs = %*{
+      "path": "existing_file1.txt",
+      "operation": "replace",
+      "old_text": "This file existed before plan mode",
+      "new_text": "Blocked without todo"
+    }
+
+    expect ToolValidationError:
+      discard executeEdit(editArgs)
+
+  test "Code mode mutations allowed with plan and todolist":
+    switchToCodeMode()
+    let planPath = ensurePlanFile(testDb, testConvId, "Implementation Plan")
+    check planPath.isSome()
+    check hasActivePlan(testDb, testConvId) == true
+    let listId = createTodoList(testDb, testConvId, "Implementation Tasks")
+    discard addTodoItem(testDb, listId, "Make code change", tpHigh)
+
+    let createArgs = %*{
+      "path": "allowed_with_todo.txt",
+      "content": "Created with todo"
+    }
+
+    let createResult = parseJson(executeCreate(createArgs))
+    check createResult["created"].getBool() == true
+
+    let editArgs = %*{
+      "path": "existing_file1.txt",
+      "operation": "replace",
+      "old_text": "This file existed before plan mode",
+      "new_text": "Allowed with todo"
+    }
+
+    let editResult = parseJson(executeEdit(editArgs))
+    check editResult["changes_made"].getBool() == true
   
   test "Edit tool works normally in code mode":
     switchToCodeMode()
+    let planPath = ensurePlanFile(testDb, testConvId, "Code Mode Edit Plan")
+    check planPath.isSome()
+    check hasActivePlan(testDb, testConvId) == true
+    let listId = createTodoList(testDb, testConvId, "Edit Tasks")
+    discard addTodoItem(testDb, listId, "Edit existing file", tpHigh)
     
     let editArgs = %*{
       "path": "existing_file1.txt",
