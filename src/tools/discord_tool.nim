@@ -1,31 +1,42 @@
-## Discord Tool
+## Discord Tool (Master Only)
 ##
-## Provides read-only Discord operations using the configured bot token.
+## Discord operations are centralized through the Master Niffler process.
+## Agents must route Discord requests through Master via NATS.
+##
+## IMPORTANT: This tool checks if Discord is enabled in Master before executing.
+## When Master runs `/discord disable`, all Discord operations stop.
 
 import std/[json, strformat, options, asyncdispatch]
-import dimscord
 import ../core/database
+import ../core/db_config
 import ../comms/discord
 
 proc executeDiscord*(args: JsonNode): string {.gcsafe.} =
+  ## Execute Discord tool operation
+  ## Checks if Discord is enabled before executing
+  
   {.gcsafe.}:
     try:
       if not args.hasKey("operation") or args["operation"].kind != JString:
         return $ %*{"error": "Missing required string argument: operation"}
 
       let operation = args["operation"].getStr()
+      
+      # Check database and Discord configuration
       let database = getGlobalDatabase()
       if database == nil:
         return $ %*{"error": "Database not available"}
 
+      # Check if Discord is enabled
       let discordConfig = getDiscordConfig(database)
       if discordConfig.isNone():
-        return $ %*{"error": "Discord is not configured"}
+        return $ %*{"error": "Discord is not configured. Use '/discord connect <token>' in Master to enable."}
 
       let (token, _, _, _, _) = discordConfig.get()
       if token.len == 0:
         return $ %*{"error": "Discord token is not configured"}
-
+      
+      # Execute the Discord operation
       let client = newDiscordClient(token)
 
       case operation
@@ -65,6 +76,7 @@ proc executeDiscord*(args: JsonNode): string {.gcsafe.} =
           "count": messages.len,
           "messages": formattedMessages
         }
+      
       of "send_message":
         if not args.hasKey("channel_id") or args["channel_id"].kind != JString:
           return $ %*{"error": "Missing required string argument: channel_id"}
@@ -83,7 +95,9 @@ proc executeDiscord*(args: JsonNode): string {.gcsafe.} =
           "channel_id": channelId,
           "message_id": sentMessage.id
         }
+      
       else:
         return $ %*{"error": fmt("Unknown discord operation '{operation}'")}
+    
     except Exception as e:
       return $ %*{"error": fmt("discord tool error: {e.msg}")}
