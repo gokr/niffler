@@ -562,7 +562,10 @@ proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: 
   
   if registry.skills.len > 0:
     var catalogLines: seq[string] = @["## Available Skills", ""]
-    catalogLines.add("Skills can be loaded with: skill(operation=\"load\", name=\"skill-name\")")
+    catalogLines.add("When starting a larger programming task, ALWAYS check this catalog first and load relevant skills.")
+    catalogLines.add("Skills provide specialized knowledge for languages, frameworks, and best practices.")
+    catalogLines.add("")
+    catalogLines.add("Load with: skill(operation=\"load\", name=\"skill-name\")")
     catalogLines.add("")
     var topSkills: seq[Skill] = @[]
     for name, s in registry.skills:
