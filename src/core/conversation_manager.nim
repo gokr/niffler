@@ -155,7 +155,8 @@ proc createConversation*(backend: DatabaseBackend, title: string = "",
     messageCount: 0,
     lastActivity: now().utc(),
     planModeEnteredAt: if mode == amPlan: now().utc() else: fromUnix(0).utc(),  # Set to current time if creating in plan mode
-    planModeCreatedFiles: ""  # Initialize to empty string
+    planModeCreatedFiles: "",  # Initialize to empty string
+    planFilePath: ""  # Initialize to empty string
   )
 
   try:
@@ -176,7 +177,7 @@ proc getConversationById*(backend: DatabaseBackend, id: int): Option[Conversatio
       let query = """
         SELECT id, created_at, updated_at, session_id, title, is_active,
                mode, model_nickname, message_count, last_activity,
-               plan_mode_entered_at, plan_mode_created_files,
+               plan_mode_entered_at, plan_mode_created_files, plan_file_path,
                parent_conversation_id, condensed_from_message_count,
                condensation_strategy, condensation_metadata
         FROM conversation
