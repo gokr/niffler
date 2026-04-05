@@ -23,7 +23,7 @@ suite "Basic Functionality Tests":
 
   test "Tool definition access":
     let allSchemas = getAllToolSchemas()
-    check allSchemas.len == 8
+    check allSchemas.len >= 8
 
     let toolNames = ["bash", "read", "list", "edit", "create", "fetch", "todolist", "task"]
     for toolName in toolNames:

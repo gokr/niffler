@@ -99,7 +99,7 @@ proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelCon
     let mode = getCurrentMode()
     let modeStr = fmt"({$mode})"
     if agent.len > 0:
-      return fmt"@{agent} {modeStr} > "
+      return fmt"{agent} {modeStr} > "
     else:
       return fmt"niffler {modeStr} > "
   else:

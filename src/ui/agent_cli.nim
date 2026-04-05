@@ -247,6 +247,20 @@ proc sendStatusUpdate(state: var AgentState, requestId: string, status: string) 
   state.natsClient.publish("niffler.master.status", $update)
   debug(fmt"Sent status update: {status}")
 
+proc currentContextSizeLabel(): string =
+  let messages = getConversationContext()
+  var totalBytes = 0
+  for msg in messages:
+    totalBytes += msg.content.len
+
+  let kiloBytes = (totalBytes + 1023) div 1024
+  fmt("{kiloBytes} KB")
+
+proc modeLabel(mode: AgentMode): string =
+  case mode:
+  of amPlan: "Plan"
+  of amCode: "Code"
+
 proc ensureAgentConversation(state: var AgentState): bool =
   ## Ensure agent has an active conversation for Ask mode
   ## Creates a new conversation if needed, or uses existing one
@@ -662,8 +676,9 @@ proc listenForRequests(state: var AgentState) =
 
         info(fmt"Received request: {request.requestId}")
         let mode = getCurrentMode()
+        let contextLabel = currentContextSizeLabel()
         echo fmt"[REQUEST] {request.input}"
-        echo fmt"[MODE: {$mode}]"
+        echo fmt"[MODE: {modeLabel(mode)} | CONTEXT: {contextLabel}]"
         echo ""
 
         # Classify and route the request

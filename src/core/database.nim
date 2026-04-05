@@ -16,6 +16,7 @@
 import std/[options, tables, strformat, times, strutils, algorithm, logging, json, sequtils, os]
 import ../types/[config, messages, mode]
 import config
+import mode_state
 import debby/mysql
 import debby/pools
 
@@ -336,6 +337,44 @@ proc utcNow*(): string =
   ## Return current UTC time
   now().utc().format("yyyy-MM-dd'T'HH:mm:ss")
 
+const plansDirName* = "plans"
+
+proc ensurePlansDir*(): string =
+  result = plansDirName
+  if not dirExists(result):
+    createDir(result)
+
+proc sanitizePlanTitle(title: string): string =
+  var slug = title.toLowerAscii()
+  for ch in slug.mitems:
+    if ch notin {'a'..'z', '0'..'9'}:
+      ch = '-'
+
+  while "--" in slug:
+    slug = slug.replace("--", "-")
+
+  slug = slug.strip(chars = {'-'})
+  if slug.len == 0:
+    return "plan"
+  if slug.len > 48:
+    return slug[0..47].strip(chars = {'-'})
+  slug
+
+proc buildPlanTemplate*(title: string, forcedOverride: bool = false): string =
+  let heading = if title.len > 0: title else: "Plan"
+  let overrideNote = if forcedOverride:
+    "\n> Code mode was forced without a prior plan. Fill this in before substantial implementation.\n"
+  else:
+    ""
+
+  let timestamp = now().utc().format("yyyy-MM-dd HH:mm:ss 'UTC'")
+  result = fmt("# {heading}\n\nGenerated: {timestamp}\n{overrideNote}\n## Goals\n\n- \n\n## Constraints\n\n- \n\n## Plan\n\n1. \n\n## Verification\n\n- \n")
+
+proc generatePlanPath*(title: string): string =
+  let datePrefix = now().format("yyyy-MM-dd")
+  let slug = sanitizePlanTitle(title)
+  result = plansDirName / fmt("{datePrefix}-{slug}.md")
+
 # Helper procedures for tool call serialization
 proc serializeToolCalls*(toolCalls: seq[LLMToolCall]): string =
   ## Convert LLMToolCall sequence to JSON string for database storage
@@ -395,6 +434,11 @@ proc initializeDatabase*(backend: DatabaseBackend) =
         db.createIndex(Conversation, "isActive")
       except:
         discard
+
+    try:
+      discard db.query("ALTER TABLE conversation ADD COLUMN plan_file_path VARCHAR(1024) NOT NULL DEFAULT ''")
+    except:
+      discard
 
     if not db.tableExists(ConversationMessage):
       db.createTable(ConversationMessage)
@@ -1674,6 +1718,88 @@ proc getActiveTodoList*(backend: DatabaseBackend, conversationId: int): Option[T
       return some(lists[0])
     else:
       return none(TodoList)
+
+proc getPlanFilePath*(backend: DatabaseBackend, conversationId: int): Option[string] =
+  ## Get the stored plan file path for a conversation
+  if backend == nil or conversationId == 0:
+    return none(string)
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
+        return none(string)
+
+      let planPath = conversations[0].planFilePath
+      if planPath.len == 0:
+        return none(string)
+
+      return some(planPath)
+    except Exception as e:
+      error(fmt"Failed to get plan file path: {e.msg}")
+      return none(string)
+
+proc setPlanFilePath*(backend: DatabaseBackend, conversationId: int, planPath: string): bool =
+  ## Persist plan file path for a conversation
+  if backend == nil or conversationId == 0:
+    return false
+
+  backend.pool.withDb:
+    try:
+      let conversations = db.filter(Conversation, it.id == conversationId)
+      if conversations.len == 0:
+        return false
+
+      var conversation = conversations[0]
+      conversation.planFilePath = planPath
+      conversation.updated_at = now().utc()
+      db.update(conversation)
+      return true
+    except Exception as e:
+      error(fmt"Failed to set plan file path: {e.msg}")
+      return false
+
+proc hasActivePlan*(backend: DatabaseBackend, conversationId: int): bool =
+  ## Check whether the conversation has a usable plan artifact
+  let planPathOpt = getPlanFilePath(backend, conversationId)
+  if planPathOpt.isNone():
+    return false
+  fileExists(planPathOpt.get())
+
+proc ensurePlanFile*(backend: DatabaseBackend, conversationId: int, title: string,
+                     forcedOverride: bool = false): Option[string] =
+  ## Reuse existing plan file when present, otherwise create one.
+  let existingPlan = getPlanFilePath(backend, conversationId)
+  if existingPlan.isSome() and fileExists(existingPlan.get()):
+    return existingPlan
+
+  discard ensurePlansDir()
+  let planPath = generatePlanPath(title)
+
+  try:
+    writeFile(planPath, buildPlanTemplate(title, forcedOverride))
+    if not setPlanFilePath(backend, conversationId, planPath):
+      return none(string)
+    return some(planPath)
+  except Exception as e:
+    error(fmt"Failed to create plan file: {e.msg}")
+    return none(string)
+
+proc checkCodeModeMutationReady*(backend: DatabaseBackend, conversationId: int): tuple[ready: bool, reason: string] =
+  ## Enforce plan + todolist before mutating in code mode.
+  if getCurrentMode() != amCode:
+    return (true, "")
+
+  if backend == nil or conversationId == 0:
+    return (true, "")
+
+  if not hasActivePlan(backend, conversationId):
+    return (false, "No active plan file. Switch to Plan mode first or use '/code --force' to create an override plan artifact.")
+
+  if getActiveTodoList(backend, conversationId).isNone():
+    return (false, "No active todo list. Create a todo list before making code changes in Code mode.")
+
+  return (true, "")
 
 # Plan Mode Protection functions
 proc setPlanModeCreatedFiles*(backend: DatabaseBackend, conversationId: int, createdFiles: seq[string]): bool =

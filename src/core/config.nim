@@ -16,6 +16,7 @@
 import std/[os, appdirs, tables, options, locks, strformat, strutils]
 import ../types/[config, messages, agents]
 import config_yaml
+import templates
 
 const KEY_FILE_NAME = "keys"
 const CONFIG_FILE_NAME = "config.yaml"
@@ -387,3 +388,43 @@ proc getDuplicateFeedbackConfig*(): DuplicateFeedbackConfig =
     maxTotalAttempts: 6,
     attemptRecovery: true
   )
+
+proc initializeConfigDirectory*(configName: string = "default"): void =
+  ## Initialize a complete config directory with NIFFLER.md and agent definitions
+  let nifflerHome = getConfigDir()
+  let configDir = nifflerHome / configName
+  
+  if not dirExists(nifflerHome):
+    createDir(nifflerHome)
+  
+  if not dirExists(configDir):
+    createDir(configDir)
+    echo fmt("Created config directory: {configDir}")
+  
+  let nifflerMdPath = configDir / "NIFFLER.md"
+  if not fileExists(nifflerMdPath):
+    writeFile(nifflerMdPath, NIFFLER_TEMPLATE)
+    echo fmt("Created {nifflerMdPath}")
+  else:
+    echo fmt("NIFFLER.md already exists at {nifflerMdPath}")
+  
+  let agentsDir = configDir / "agents"
+  if not dirExists(agentsDir):
+    createDir(agentsDir)
+    echo fmt("Created agents directory: {agentsDir}")
+  
+  let coderAgentPath = agentsDir / "coder.md"
+  if not fileExists(coderAgentPath):
+    writeFile(coderAgentPath, CODER_AGENT_MD)
+    echo fmt("Created {coderAgentPath}")
+  
+  let researcherAgentPath = agentsDir / "researcher.md"
+  if not fileExists(researcherAgentPath):
+    writeFile(researcherAgentPath, RESEARCHER_AGENT_MD)
+    echo fmt("Created {researcherAgentPath}")
+  
+  let configPath = nifflerHome / "config.yaml"
+  if not fileExists(configPath):
+    writeFile(configPath, DEFAULT_CONFIG_TEMPLATE)
+    echo fmt("Created default configuration at {configPath}")
+    echo "Please edit the file to add your models and preferences"
