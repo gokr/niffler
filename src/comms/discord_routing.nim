@@ -6,7 +6,8 @@
 ## Subject: niffler.discord.execute (request)
 ##          niffler.discord.response.{requestId} (reply)
 
-import std/[json, strformat, options, times]
+import std/[json, strformat, options, times, random, asyncdispatch, logging]
+import dimscord
 import ../core/nats_client
 import ../core/database
 import ../core/db_config
@@ -215,39 +216,26 @@ proc executeDiscordRequestInMaster*(request: DiscordRequest): DiscordResponse =
     result.error = fmt("Discord API error: {e.msg}")
 
 ## Master-side: Subscribe to Discord requests
-proc startDiscordRoutingSubscriber*(natsClient: NifflerNatsClient) =
+proc startDiscordRoutingSubscriber*(natsClient: NifflerNatsClient): NatsSubscription =
   ## Start subscriber for Discord requests in Master
-  ## This should be called once when Master starts
+  ## Returns subscription for caller to poll
+  
+  result = natsClient.subscribe(DiscordExecuteSubject)
+  info(fmt"Discord routing subscriber started on {DiscordExecuteSubject}")
 
-  proc handleDiscordRequest(subject: string, replySubject: string, data: string) =
-    try:
-      let request = fromJsonDiscordRequest(data)
-      info(fmt"Discord request from {request.agentName}: {request.operation}")
-
-      let response = executeDiscordRequestInMaster(request)
-      let jsonResponse = response.toJson()
-
-      # Publish reply
-      if replySubject.len > 0:
-        natsClient.nc.publish(replySubject, jsonResponse)
-      else:
-        warn("No reply subject for Discord request")
-
-    except Exception as e:
-      error(fmt"Failed to handle Discord request: {e.msg}")
-      # Try to send error response if we have a reply subject
-      if replySubject.len > 0:
-        let errorResponse = DiscordResponse(
-          requestId: "",
-          success: false,
-          error: "Failed to process request: " & e.msg,
-          data: newJNull()
-        )
-        natsClient.nc.publish(replySubject, errorResponse.toJson())
-
-  # Subscribe to Discord execute subject
+proc handleDiscordRoutingMessage*(natsClient: NifflerNatsClient, msg: NatsMessage) =
+  ## Handle a single Discord routing message
+  ## Parse request, execute Discord API, send reply
   try:
-    natsClient.subscribe(DiscordExecuteSubject, handleDiscordRequest)
-    info(fmt"Discord routing subscriber started on {DiscordExecuteSubject}")
+    let request = fromJsonDiscordRequest(msg.data)
+    info(fmt"Discord request from {request.agentName}: {request.operation}")
+
+    let response = executeDiscordRequestInMaster(request)
+    let jsonResponse = response.toJson()
+
+    # Publish reply to response subject (based on request ID)
+    let replySubject = fmt"niffler.discord.response.{request.requestId}"
+    natsClient.publish(replySubject, jsonResponse)
+
   except Exception as e:
-    error(fmt"Failed to start Discord subscriber: {e.msg}")
+    error(fmt"Failed to handle Discord request: {e.msg}")

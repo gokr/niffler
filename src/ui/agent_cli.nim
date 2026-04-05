@@ -661,7 +661,9 @@ proc listenForRequests(state: var AgentState) =
         let request = fromJson(NatsRequest, msg.data)
 
         info(fmt"Received request: {request.requestId}")
+        let mode = getCurrentMode()
         echo fmt"[REQUEST] {request.input}"
+        echo fmt"[MODE: {$mode}]"
         echo ""
 
         # Classify and route the request
@@ -785,7 +787,13 @@ proc startAgentMode*(agentName: string, agentNick: string = "", modelName: strin
     if not configureAPIWorker(state.modelConfig):
       warn(fmt("Failed to configure API worker with model {state.modelConfig.nickname}"))
 
-    state.toolWorker = startToolWorker(state.channels, level, dump, database = state.database)
+    state.toolWorker = startToolWorker(
+      state.channels, level, dump,
+      database = state.database,
+      isAgentMode = true,
+      agentName = state.name,
+      natsUrl = "nats://localhost:4222"
+    )
     info("Tool worker started")
 
     state.mcpWorker = startMcpWorker(state.channels, level)

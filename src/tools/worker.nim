@@ -32,11 +32,12 @@ else:
 
 import ../types/[tools, messages, agents, config as configTypes]
 import ../actions/registry as actionRegistry
-import ../core/[channels, database]
+import ../core/[channels, database, nats_client]
 import ../core/session as sessionMod
 import registry
 import task
 import context  # For setCurrentToolConversationId
+import discord_tool
 import ../mcp/tools as mcpTools
 import debby/pools
 
@@ -69,6 +70,18 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
     let toolSchemas = getAllToolSchemas()
     let db = getGlobalDatabase()  # Get global database for task execution
     setTaskToolContext(channels, configTypes.ModelConfig(), toolSchemas, db)
+
+    # Initialize Discord tool context if in agent mode
+    if params.isAgentMode and params.natsUrl.len > 0:
+      try:
+        let natsClient = initNatsClient(params.natsUrl, params.agentName)
+        initDiscordToolContext(natsClient, params.agentName, true)
+        debug(fmt"Discord tool initialized for agent: {params.agentName}")
+      except Exception as e:
+        warn(fmt"Failed to initialize Discord tool NATS client: {e.msg}")
+    else:
+      # Master mode - no NATS routing needed
+      initDiscordToolContext(NifflerNatsClient(), "", false)
 
   debug("Tool worker thread started")
     
@@ -230,7 +243,7 @@ proc toolWorkerProc(params: ThreadParams) {.thread, gcsafe.} =
   finally:
     debug("Tool worker thread stopped")
 
-proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil): ToolWorker =
+proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = false, database: DatabaseBackend = nil, pool: Pool = nil, isAgentMode: bool = false, agentName: string = "", natsUrl: string = ""): ToolWorker =
   result.isRunning = true
   # Create params as heap-allocated object to ensure it stays alive for thread lifetime
   var params = new(ThreadParams)
@@ -240,6 +253,9 @@ proc startToolWorker*(channels: ptr ThreadChannels, level: Level, dump: bool = f
   params.dumpsse = false  # Tool worker doesn't need SSE dumping
   params.database = database
   params.pool = pool
+  params.isAgentMode = isAgentMode
+  params.agentName = agentName
+  params.natsUrl = natsUrl
   createThread(result.thread, toolWorkerProc, params)
 
 proc stopToolWorker*(worker: var ToolWorker) =
