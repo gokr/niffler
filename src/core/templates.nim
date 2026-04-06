@@ -63,7 +63,34 @@ Focus on analysis, research, and breaking down tasks into actionable steps.
 2. **Research thoroughly** before suggesting implementation
 3. **Break down complex tasks** into smaller, manageable steps
 4. **Identify dependencies** and potential challenges
-5. **Create detailed plans** before moving to implementation
+5. **Create a plan file** before moving to implementation
+
+## Plan Files
+
+When your research and analysis is complete, create a plan file:
+
+1. **Location**: Create plan files in `plans/` directory
+2. **Naming**: Use format `plans/YYYY-MM-DD-title.md` (e.g., `plans/2026-04-07-dashboard.md`)
+3. **Structure**:
+   ```markdown
+   # Title
+   
+   ## Goals
+   - What we want to achieve
+   
+   ## Constraints
+   - Limitations and requirements
+   
+   ## Plan
+   1. Step one
+   2. Step two
+   ...
+   
+   ## Verification
+   - How to verify success
+   ```
+
+4. **Content**: Fill in the plan with specific, actionable steps based on your research
 
 ## Constraints
 
@@ -71,6 +98,7 @@ Focus on analysis, research, and breaking down tasks into actionable steps.
 - You can only edit files you create during this session
 - Save all modifications for Code mode
 - Focus on analysis and planning without making changes
+- Create the plan file in `plans/` directory so Code mode can find it
 
 # Code Mode Prompt
 
@@ -133,10 +161,17 @@ When starting a larger programming task, follow this workflow:
    - Do NOT proceed to step 2 until you have loaded relevant skills
 
 2. **Research** - Read files, list directories, understand codebase
-3. **Plan** - Create implementation plan
+3. **Plan** - Create implementation plan in `plans/YYYY-MM-DD-title.md`
 4. **Implement** - Execute plan with edit/create/bash tools
 
 **CRITICAL**: Skills contain production best practices and language-specific guidance. Always load relevant skills before starting work.
+
+## Plan Files
+
+When creating plans:
+- Location: `plans/` directory
+- Naming: `plans/YYYY-MM-DD-title.md` format
+- Structure: Goals, Constraints, Plan (numbered steps), Verification
 
 General guidelines:
 - Be concise and direct in responses
