@@ -7,7 +7,7 @@
 ## Key Features:
 ## - Mode-specific prompts for Plan vs Code behavior
 ## - Workspace context detection (git status, current directory)
-## - Automatic instruction file discovery (CLAUDE.md, README.md)
+## - Automatic NIFFLER.md discovery in the project hierarchy
 ## - Tool availability awareness
 ## - Environment information injection
 
@@ -16,7 +16,6 @@ import ../types/[mode, messages, context_assembly, skills]
 import ../tools/registry
 import ../tools/skill
 import ../tokenization/tokenizer
-import config
 import session
 import context_assembly
 
@@ -26,7 +25,7 @@ type
     basePrompt*: int          # Common system prompt template
     modePrompt*: int          # Plan/Code mode specific instructions  
     environmentInfo*: int     # Directory, git, OS, project info
-    instructionFiles*: int    # CLAUDE.md, README.md, etc.
+    instructionFiles*: int    # Additional NIFFLER.md project instructions
     toolInstructions*: int    # TodoList, thinking token guidance
     availableTools*: int      # Tools list in prompt
     skills*: int              # Loaded skills content
@@ -383,115 +382,69 @@ proc processFileIncludes*(content: string, basePath: string): string =
   
   result = processedLines.join("\n")
 
-proc extractSystemPromptsFromNiffler*(sess: Session): tuple[common: string, planMode: string, codeMode: string] =
-  ## Extract custom system prompts from NIFFLER.md in active config or project hierarchy
-  var searchPaths: seq[string] = @[]
-
-  # First search active config directory
-  try:
-    let activeConfigDir = getActiveConfigDir(sess)
-    searchPaths.add(activeConfigDir)
-  except:
-    discard
-
-  # Then search up the project hierarchy (for project-specific overrides)
+proc findNearestNifflerPath(): Option[string] =
+  ## Find the nearest NIFFLER.md starting from cwd and walking up to root.
   var searchPath = getCurrentDir()
-  let maxDepth = 3
 
-  for depth in 0..<maxDepth:
-    searchPaths.add(searchPath)
+  while true:
+    let nifflerPath = searchPath / "NIFFLER.md"
+    if fileExists(nifflerPath):
+      return some(nifflerPath)
+
     let parentPath = searchPath.parentDir()
-    if parentPath == searchPath:  # Reached root
+    if parentPath == searchPath:
       break
     searchPath = parentPath
 
-  # Search all paths for NIFFLER.md
-  for searchDir in searchPaths:
-    let nifflerPath = searchDir / "NIFFLER.md"
-    if fileExists(nifflerPath):
-      try:
-        let rawContent = readFile(nifflerPath)
-        # Process any @include directives
-        let content = processFileIncludes(rawContent, searchDir)
-        let sections = parseMarkdownSections(content)
+  return none(string)
 
-        let commonPrompt = sections.getOrDefault("Common System Prompt", "")
-        let planPrompt = sections.getOrDefault("Plan Mode Prompt", "")
-        let codePrompt = sections.getOrDefault("Code Mode Prompt", "")
+proc extractSystemPromptsFromNiffler*(sess: Session): tuple[common: string, planMode: string, codeMode: string] =
+  ## Extract custom system prompts from the nearest NIFFLER.md in the project hierarchy.
+  discard sess
 
-        return (commonPrompt, planPrompt, codePrompt)
-      except:
-        discard
+  let nifflerPath = findNearestNifflerPath()
+  if nifflerPath.isSome():
+    try:
+      let path = nifflerPath.get()
+      let rawContent = readFile(path)
+      let content = processFileIncludes(rawContent, path.parentDir())
+      let sections = parseMarkdownSections(content)
+
+      let commonPrompt = sections.getOrDefault("Common System Prompt", "")
+      let planPrompt = sections.getOrDefault("Plan Mode Prompt", "")
+      let codePrompt = sections.getOrDefault("Code Mode Prompt", "")
+
+      return (commonPrompt, planPrompt, codePrompt)
+    except:
+      discard
 
   return ("", "", "")
 
 proc findInstructionFiles*(sess: Session): string =
-  ## Find and include instruction files from active config directory or project hierarchy
-  var instructionContent = ""
+  ## Include non-system-prompt content from the nearest NIFFLER.md only.
+  discard sess
 
-  # Get instruction files from config, or use defaults
-  let config = loadConfig()
-  let instructionFiles = if config.instructionFiles.isSome():
-    config.instructionFiles.get()
-  else:
-    @["NIFFLER.md", "CLAUDE.md", "OCTO.md", "AGENT.md"]
+  let nifflerPath = findNearestNifflerPath()
+  if nifflerPath.isNone():
+    return ""
 
-  # Build search paths with priority:
-  # 1. Active config directory (for global config)
-  # 2. Project hierarchy (for project-specific overrides)
-  var searchPaths: seq[string] = @[]
-
-  # Add active config directory first
   try:
-    let activeConfigDir = getActiveConfigDir(sess)
-    searchPaths.add(activeConfigDir)
+    let path = nifflerPath.get()
+    let rawContent = readFile(path)
+    let contentWithIncludes = processFileIncludes(rawContent, path.parentDir())
+    let sections = parseMarkdownSections(contentWithIncludes)
+    var filteredContent = ""
+
+    for heading, sectionContent in sections:
+      if heading notin ["Common System Prompt", "Plan Mode Prompt", "Code Mode Prompt", "Tool Descriptions"]:
+        filteredContent.add(fmt("# {heading}\n\n{sectionContent}\n\n"))
+
+    if filteredContent.len > 0:
+      return fmt("\n\n--- NIFFLER.md ---\n{filteredContent}")
   except:
     discard
 
-  # Add current project hierarchy
-  var searchPath = getCurrentDir()
-  let maxDepth = 3
-
-  for depth in 0..<maxDepth:
-    searchPaths.add(searchPath)
-    let parentPath = searchPath.parentDir()
-    if parentPath == searchPath:  # Reached root
-      break
-    searchPath = parentPath
-
-  # Search all paths for instruction files
-  for depth, searchDir in searchPaths:
-    for filename in instructionFiles:
-      let fullPath = searchDir / filename
-      if fileExists(fullPath):
-        try:
-          let rawContent = readFile(fullPath)
-          let relativePath = if depth == 0: filename else: "../".repeat(depth) & filename
-
-          # For NIFFLER.md, exclude the system prompt sections but include everything else
-          if filename == "NIFFLER.md":
-            # Process includes first
-            let contentWithIncludes = processFileIncludes(rawContent, searchDir)
-            let sections = parseMarkdownSections(contentWithIncludes)
-            var filteredContent = ""
-
-            for heading, sectionContent in sections:
-              # Skip the system prompt sections
-              if heading notin ["Common System Prompt", "Plan Mode Prompt", "Code Mode Prompt", "Tool Descriptions"]:
-                filteredContent.add(fmt("# {heading}\n\n{sectionContent}\n\n"))
-
-            if filteredContent.len > 0:
-              instructionContent.add(fmt("\n\n--- {relativePath} ---\n{filteredContent}"))
-          else:
-            # Process includes for non-NIFFLER.md files too
-            let contentWithIncludes = processFileIncludes(rawContent, searchDir)
-            instructionContent.add(fmt("\n\n--- {relativePath} ---\n{contentWithIncludes}"))
-
-          return instructionContent  # Return after finding the first instruction file
-        except:
-          continue
-
-  return instructionContent
+  return ""
 
 proc generateSystemPromptWithTokens*(mode: AgentMode, sess: Session, modelName: string = "default"): SystemPromptResult =
   ## Generate complete context-aware system prompt with token breakdown

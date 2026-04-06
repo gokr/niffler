@@ -162,6 +162,22 @@ proc getConfigSource*(): string =
   else:
     return "user"
 
+proc findNearestProjectNifflerMd(): Option[string] =
+  ## Find the nearest project NIFFLER.md walking up from cwd to root.
+  var searchPath = getCurrentDir()
+
+  while true:
+    let candidate = searchPath / "NIFFLER.md"
+    if fileExists(candidate):
+      return some(candidate)
+
+    let parentPath = searchPath.parentDir()
+    if parentPath == searchPath:
+      break
+    searchPath = parentPath
+
+  return none(string)
+
 proc diagnoseConfig*(session: Session): ConfigDiagnostics =
   ## Diagnose the current config and return detailed status
   result.warnings = @[]
@@ -221,13 +237,15 @@ proc diagnoseConfig*(session: Session): ConfigDiagnostics =
     result.configSource = "none"
     result.errors.add(fmt"Config '{configName}' not found in project or global directories")
 
-  # Check for NIFFLER.md warnings
-  if not result.nifflerMdExists and result.configExists:
-    result.warnings.add(fmt"NIFFLER.md not found: {result.nifflerMdPath}")
-
-  # Check for conflicting project NIFFLER.md that might shadow config
-  if result.configSource == "global" and fileExists("./NIFFLER.md"):
-    result.warnings.add("Project ./NIFFLER.md found (may shadow global config prompts)")
+  let projectPrompt = findNearestProjectNifflerMd()
+  if projectPrompt.isSome():
+    result.nifflerMdPath = projectPrompt.get()
+    result.nifflerMdExists = true
+  else:
+    result.nifflerMdPath = getCurrentDir() / "NIFFLER.md"
+    result.nifflerMdExists = false
+    if result.configExists:
+      result.warnings.add(fmt"Project NIFFLER.md not found from {getCurrentDir()} upward")
 
   return result
 
@@ -249,9 +267,9 @@ proc getConfigInfoString*(session: Session): string =
 
   # Show NIFFLER.md status
   if diag.nifflerMdExists:
-    lines.add(fmt("  ✓ System prompts: {diag.nifflerMdPath}"))
+    lines.add(fmt("  ✓ Project instructions: {diag.nifflerMdPath}"))
   else:
-    lines.add(fmt("  ✗ System prompts: {diag.nifflerMdPath} (not found)"))
+    lines.add(fmt("  ✗ Project instructions: {diag.nifflerMdPath} (not found)"))
 
   # Show agents status
   if diag.agentCount > 0:

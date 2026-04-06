@@ -80,22 +80,29 @@ Focus on implementation and execution of planned tasks.
 - Focus on working, tested solutions
 """
 
-const CODER_AGENT_MD* = """# Coder Agent
+const CODER_AGENT_MD* = """---
+allowed_tools:
+  - read
+  - create
+  - edit
+  - bash
+  - list
+  - fetch
+  - todolist
+  - skill
+capabilities:
+  - coding
+  - debugging
+  - refactoring
+auto_start: false
+persistent: true
+---
+
+# Coder Agent
 
 ## Description
 
 Specialized coding agent for implementing features, fixing bugs, and writing tests. Has access to full file manipulation and execution capabilities.
-
-## Allowed Tools
-
-- read
-- create
-- edit
-- bash
-- list
-- fetch
-- todolist
-- skill
 
 ## System Prompt
 
@@ -158,17 +165,24 @@ When complete, say something like "Done. Created hello.go, compiled and ran it s
 - Use `skill` to load language/framework-specific guidance
 """
 
-const RESEARCHER_AGENT_MD* = """# Researcher Agent
+const RESEARCHER_AGENT_MD* = """---
+allowed_tools:
+  - read
+  - list
+  - fetch
+capabilities:
+  - research
+  - documentation
+  - analysis
+auto_start: false
+persistent: false
+---
+
+# Researcher Agent
 
 ## Description
 
 Fast research agent for documentation lookup, web search, and code analysis. Read-only access for safe exploration without modifications.
-
-## Allowed Tools
-
-- read
-- list
-- fetch
 
 ## System Prompt
 
@@ -195,18 +209,24 @@ You are a specialized research agent focused on finding information, analyzing c
 When you complete research, provide a clear summary of findings, sources consulted, and any relevant file paths you examined.
 """
 
-const DEFAULT_AGENT_MD* = """# General Purpose Agent
+const DEFAULT_AGENT_MD* = """---
+allowed_tools:
+  - read
+  - list
+  - bash
+  - fetch
+  - todolist
+  - skill
+capabilities:
+  - research
+  - execution
+auto_start: false
+persistent: false
+---
+
+# General Purpose Agent
 
 A general-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.
-
-## Tool Access
-
-- read
-- list
-- bash
-- fetch
-- todolist
-- skill
 
 ## Description
 

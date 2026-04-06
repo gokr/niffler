@@ -1,6 +1,7 @@
 ## Agent type definitions, validation, and markdown parsing
 
-import std/[strutils, os, options]
+import std/[strutils, os, options, streams, tables]
+import yaml
 
 type
   AgentValidationError* = enum
@@ -17,7 +18,7 @@ type
     unknownTools*: seq[string]
 
   AgentDefinition* = object
-    name*: string
+    name*: string                ## Routing name, derived from file name
     description*: string
     allowedTools*: seq[string]
     capabilities*: seq[string]
@@ -25,6 +26,8 @@ type
     filePath*: string
     maxTurns*: Option[int]
     model*: Option[string]  # Default model for this agent
+    autoStart*: bool
+    persistent*: bool
 
   AgentContext* = object
     ## Context about which agent is executing (for tool access control)
@@ -42,10 +45,74 @@ proc createMainAgentContext*(): AgentContext =
       capabilities: @[],
       systemPrompt: "",
       filePath: "",
-      model: none(string)  # Main agent uses default model selection
+      model: none(string),  # Main agent uses default model selection
+      autoStart: false,
+      persistent: true
     ),
     isMainAgent: true
   )
+
+proc splitYamlFrontmatter(content: string): tuple[frontmatter: string, body: string] =
+  let lines = content.splitLines()
+  if lines.len < 2 or lines[0] != "---":
+    return ("", content)
+
+  var endIndex = -1
+  for i in 1..<lines.len:
+    if lines[i] == "---":
+      endIndex = i
+      break
+
+  if endIndex < 0:
+    return ("", content)
+
+  result.frontmatter = lines[1..<endIndex].join("\n")
+  result.body = lines[(endIndex + 1)..<lines.len].join("\n").strip()
+
+proc parseYamlFrontmatter(frontmatter: string): YamlNode =
+  var stream = newStringStream(frontmatter)
+  var root: YamlNode
+  load(stream, root)
+  stream.close()
+  result = root
+
+proc getYamlString(node: YamlNode, key: string, default: string = ""): string =
+  if node.kind != yMapping:
+    return default
+  for k, v in node.fields.pairs:
+    if k.content == key and v.kind == yScalar:
+      return v.content
+  return default
+
+proc getYamlSeq(node: YamlNode, key: string): seq[string] =
+  result = @[]
+  if node.kind != yMapping:
+    return
+  for k, v in node.fields.pairs:
+    if k.content == key and v.kind == ySequence:
+      for item in v.elems:
+        if item.kind == yScalar:
+          result.add(item.content)
+
+proc getYamlBool(node: YamlNode, key: string, default: bool): bool =
+  if node.kind != yMapping:
+    return default
+  for k, v in node.fields.pairs:
+    if k.content == key and v.kind == yScalar:
+      let content = v.content.toLowerAscii()
+      return content == "true" or content == "yes" or content == "1"
+  return default
+
+proc getYamlInt(node: YamlNode, key: string): Option[int] =
+  if node.kind != yMapping:
+    return none(int)
+  for k, v in node.fields.pairs:
+    if k.content == key and v.kind == yScalar:
+      try:
+        return some(parseInt(v.content))
+      except ValueError:
+        return none(int)
+  return none(int)
 
 proc createAgentContext*(agent: AgentDefinition): AgentContext =
   ## Create an agent context for a specific agent
@@ -95,8 +162,38 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
   ## Parse markdown file into agent definition
   result.filePath = filePath
   result.name = filePath.splitFile.name
+  result.autoStart = false
+  result.persistent = true
 
-  var lines = mdContent.splitLines()
+  let (frontmatter, bodyContent) = splitYamlFrontmatter(mdContent)
+
+  if frontmatter.len > 0:
+    let yamlNode = parseYamlFrontmatter(frontmatter)
+
+    let description = getYamlString(yamlNode, "description")
+    if description.len > 0:
+      result.description = description
+
+    let allowedTools = getYamlSeq(yamlNode, "allowed_tools")
+    if allowedTools.len > 0:
+      result.allowedTools = allowedTools
+
+    let capabilities = getYamlSeq(yamlNode, "capabilities")
+    if capabilities.len > 0:
+      result.capabilities = capabilities
+
+    let model = getYamlString(yamlNode, "model")
+    if model.len > 0:
+      result.model = some(model)
+
+    let maxTurns = getYamlInt(yamlNode, "max_turns")
+    if maxTurns.isSome():
+      result.maxTurns = maxTurns
+
+    result.autoStart = getYamlBool(yamlNode, "auto_start", false)
+    result.persistent = getYamlBool(yamlNode, "persistent", true)
+
+  var lines = bodyContent.splitLines()
   var currentSection = ""
   var descriptionLines: seq[string]
   var toolLines: seq[string]
@@ -149,12 +246,18 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
     else:
       discard
 
-  result.description = descriptionLines.join(" ")
-  result.allowedTools = toolLines
-  result.capabilities = capabilityLines
+  if result.description.len == 0:
+    result.description = descriptionLines.join(" ")
+
+  if result.allowedTools.len == 0:
+    result.allowedTools = toolLines
+
+  if result.capabilities.len == 0:
+    result.capabilities = capabilityLines
+
   result.systemPrompt = promptLines.join("\n").strip()
-  # Set model if found
-  if modelLine.len > 0:
+
+  if modelLine.len > 0 and result.model.isNone():
     result.model = some(modelLine)
 
 proc validateAgentDefinition*(agent: AgentDefinition, knownTools: seq[string]): AgentStatus =

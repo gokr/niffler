@@ -11,7 +11,7 @@
 ## Configuration Structure:
 ## - Main config: ~/.niffler/config.yaml (Unix) or %APPDATA%/niffler/config.yaml (Windows)
 ## - API keys: ~/.niffler/keys (with restricted permissions)
-## - System prompts: ~/.niffler/NIFFLER.md
+## - Agent definitions: ~/.niffler/<config>/agents/*.md
 
 import std/[os, appdirs, tables, options, locks, strformat, strutils]
 import ../types/[config, messages, agents]
@@ -390,7 +390,7 @@ proc getDuplicateFeedbackConfig*(): DuplicateFeedbackConfig =
   )
 
 proc initializeConfigDirectory*(configName: string = "default"): void =
-  ## Initialize a complete config directory with NIFFLER.md and agent definitions
+  ## Initialize a config directory with agent definitions.
   let nifflerHome = getConfigDir()
   let configDir = nifflerHome / configName
   
@@ -400,13 +400,6 @@ proc initializeConfigDirectory*(configName: string = "default"): void =
   if not dirExists(configDir):
     createDir(configDir)
     echo fmt("Created config directory: {configDir}")
-  
-  let nifflerMdPath = configDir / "NIFFLER.md"
-  if not fileExists(nifflerMdPath):
-    writeFile(nifflerMdPath, NIFFLER_TEMPLATE)
-    echo fmt("Created {nifflerMdPath}")
-  else:
-    echo fmt("NIFFLER.md already exists at {nifflerMdPath}")
   
   let agentsDir = configDir / "agents"
   if not dirExists(agentsDir):
