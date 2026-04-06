@@ -12,7 +12,7 @@
 ## - Supports content creation with proper encoding
 ## - Error handling with detailed feedback
 
-import std/[os, json, times, logging, strformat, options]
+import std/[os, json, times, logging, strformat, strutils, options]
 import ../types/tools, ../types/mode, ../types/tool_args
 import ../core/database, ../core/conversation_manager, ../core/mode_state
 import common
@@ -114,6 +114,13 @@ proc executeCreate*(args: JsonNode): string =
             
             discard addPlanModeCreatedFile(database, conversationId, relativePath)
             debug(fmt"Tracked created file in plan mode: {relativePath}")
+            
+            # If this is a plan file, register it in the database
+            if relativePath.startsWith("plans/") and relativePath.endsWith(".md"):
+              if setPlanFilePath(database, conversationId, relativePath):
+                debug(fmt"Registered plan file: {relativePath}")
+              else:
+                debug(fmt"Failed to register plan file: {relativePath}")
       except Exception as e:
         debug(fmt"Failed to track plan mode created file: {e.msg}")
     
