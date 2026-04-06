@@ -95,7 +95,6 @@ capabilities:
   - debugging
   - refactoring
 auto_start: false
-persistent: true
 ---
 
 # Coder Agent
@@ -175,7 +174,6 @@ capabilities:
   - documentation
   - analysis
 auto_start: false
-persistent: false
 ---
 
 # Researcher Agent
@@ -221,7 +219,6 @@ capabilities:
   - research
   - execution
 auto_start: false
-persistent: false
 ---
 
 # General Purpose Agent

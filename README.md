@@ -233,43 +233,35 @@ See [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) for configuration.
 Agents are defined in markdown files under `~/.niffler/<config>/agents/`:
 
 ```markdown
+---
+model: synthetic-glm5
+allowed_tools:
+  - read
+  - edit
+  - create
+  - bash
+  - list
+  - fetch
+auto_start: true
+---
+
 # Coder Agent
 
 ## Description
 Specialized in code analysis and implementation.
-
-## Model
-synthetic-glm5
-
-## Allowed Tools
-- read
-- edit
-- create
-- bash
-- list
-- fetch
 
 ## System Prompt
 
 You are a coding expert. Available tools: {availableTools}
 ```
 
-Agent configuration in `config.yaml` controls process behavior:
-```yaml
-agents:
-  - id: "coder"
-    name: "Code Expert"
-    model: "synthetic-glm5"
-    auto_start: true
-    persistent: true
-    tool_permissions:
-      - read
-      - edit
-      - create
-      - bash
-      - list
-      - fetch
-```
+Frontmatter fields:
+- `allowed_tools`: required tool whitelist
+- `model`: optional model override
+- `auto_start`: optional startup hint used when `master.auto_start_agents` is enabled
+- `capabilities`: optional advanced permission layer for action-backed orchestration tools
+
+Most agents do not need `capabilities`. Normal tools like `read`, `edit`, `create`, `bash`, `fetch`, and `todolist` are controlled only by `allowed_tools`.
 
 ## Roadmap
 

@@ -27,7 +27,6 @@ type
     maxTurns*: Option[int]
     model*: Option[string]  # Default model for this agent
     autoStart*: bool
-    persistent*: bool
 
   AgentContext* = object
     ## Context about which agent is executing (for tool access control)
@@ -46,8 +45,7 @@ proc createMainAgentContext*(): AgentContext =
       systemPrompt: "",
       filePath: "",
       model: none(string),  # Main agent uses default model selection
-      autoStart: false,
-      persistent: true
+      autoStart: false
     ),
     isMainAgent: true
   )
@@ -163,7 +161,6 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
   result.filePath = filePath
   result.name = filePath.splitFile.name
   result.autoStart = false
-  result.persistent = true
 
   let (frontmatter, bodyContent) = splitYamlFrontmatter(mdContent)
 
@@ -191,7 +188,6 @@ proc parseAgentDefinition*(mdContent: string, filePath: string): AgentDefinition
       result.maxTurns = maxTurns
 
     result.autoStart = getYamlBool(yamlNode, "auto_start", false)
-    result.persistent = getYamlBool(yamlNode, "persistent", true)
 
   var lines = bodyContent.splitLines()
   var currentSection = ""

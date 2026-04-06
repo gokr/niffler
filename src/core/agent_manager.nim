@@ -117,8 +117,7 @@ proc fallbackAgentConfig(agentId: string): AgentConfig =
     model: "",
     capabilities: @[],
     toolPermissions: @[],
-    autoStart: false,
-    persistent: false
+    autoStart: false
   )
 
 proc loadAgentRuntimeConfig(agentId: string): AgentConfig =
@@ -138,8 +137,7 @@ proc loadAgentRuntimeConfig(agentId: string): AgentConfig =
     model: agentDef.model.get(""),
     capabilities: agentDef.capabilities,
     toolPermissions: agentDef.allowedTools,
-    autoStart: agentDef.autoStart,
-    persistent: agentDef.persistent
+    autoStart: agentDef.autoStart
   )
 
 proc startAgent*(agentId: string, agentNick: string = "", modelOverride: string = "", nifflerPath: string = "./src/niffler"): SpawnedAgent =

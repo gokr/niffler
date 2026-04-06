@@ -8,7 +8,6 @@ allowed_tools:
 capabilities:
   - research
 auto_start: false
-persistent: false
 ---
 
 # General Agent
@@ -58,7 +57,6 @@ capabilities:
   - debugging
   - refactoring
 auto_start: false
-persistent: true
 ---
 
 # Coder Agent
@@ -146,7 +144,6 @@ capabilities:
   - documentation
   - analysis
 auto_start: false
-persistent: false
 ---
 
 # Researcher Agent

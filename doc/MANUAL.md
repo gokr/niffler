@@ -343,50 +343,42 @@ Master Process (./src/niffler)
 Agents are defined via markdown files in `~/.niffler/<config>/agents/`:
 
 ```markdown
+---
+model: sonnet
+allowed_tools:
+  - read
+  - edit
+  - create
+  - bash
+  - list
+capabilities:
+  - inspect_agents
+  - dispatch_tasks
+auto_start: true
+---
+
 # Coder Agent
 
 ## Description
 Specialized in code analysis and implementation.
 
-## Model
-sonnet
-
-## Allowed Tools
-- read
-- edit
-- create
-- bash
-- list
-
-## Capabilities
-- inspect_agents
-- manage_agents
-- dispatch_tasks
-
 ## System Prompt
 
 You are a coding expert.
-
-## Allowed Tools
-- read
-- edit
-- create
-- bash
-- list
-
-## Capabilities
-- inspect_agents
-- dispatch_tasks
 ```
 
 Required sections:
 - `## Description` - Agent purpose
-- `## Allowed Tools` - Whitelist of tools
 - `## System Prompt` - LLM instructions
 
-Optional sections:
-- `## Model` - Override default model
-- `## Capabilities` - Action capabilities for tool filtering
+Common frontmatter fields:
+- `allowed_tools` - Whitelist of tools available to the agent
+- `model` - Optional model override
+- `auto_start` - Optional startup hint used by master auto-start
+- `capabilities` - Optional advanced permission layer for action-backed orchestration tools
+- `max_turns` - Optional per-agent turn limit override
+
+`capabilities` is only needed for orchestration-style tools and actions such as agent management or task dispatch. It does not affect ordinary tools like `read`, `edit`, `create`, `bash`, or `fetch`, which are governed by `allowed_tools`.
 
 The active config directory is selected by the current config and runtime session.
 Typical locations are:
@@ -394,42 +386,21 @@ Typical locations are:
 - `~/.niffler/<active-config>/agents/`
 - `.niffler/<active-config>/agents/`
 
-**YAML vs Markdown Agents:**
-
-The markdown file is the authoritative runtime definition for agent behavior.
-
-The `agents` section in `config.yaml` is used for process metadata such as:
-
-- auto-start behavior
-- persistent or ephemeral intent
-- default model metadata used by the agent manager
-
-The markdown files under `agents/*.md` define runtime behavior such as:
-
-- prompt content
-- allowed tools
-- markdown-defined behavior
-- optional agent-specific model override
-
-If both exist, markdown files are the source of truth for runtime agent behavior.
+The markdown file is the authoritative runtime definition for the agent.
 
 ### Auto-Start Rules
 
-Auto-start requires both master-level and agent-level configuration:
+Auto-start requires both master-level configuration and an agent file with `auto_start: true` in frontmatter:
 
 ```yaml
-masters:
+master:
   auto_start_agents: true
-
-agents:
-  - id: "coder"
-    auto_start: true
 ```
 
 Both conditions must be true:
 
-- `masters.auto_start_agents` must be enabled
-- the individual agent entry must also have `auto_start: true`
+- `master.auto_start_agents` must be enabled
+- the agent markdown file must declare `auto_start: true`
 
 ### Agent Model Precedence
 

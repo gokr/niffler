@@ -43,7 +43,6 @@ capabilities:
   - coding
   - debugging
 auto_start: true
-persistent: false
 max_turns: 12
 description: Frontmatter description
 ---
@@ -63,7 +62,6 @@ Do useful work.
     check agent.model.isSome()
     check agent.model.get() == "synthetic-glm5"
     check agent.autoStart == true
-    check agent.persistent == false
     check agent.maxTurns.isSome()
     check agent.maxTurns.get() == 12
     check agent.systemPrompt == "Do useful work."

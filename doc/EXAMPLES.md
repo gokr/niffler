@@ -104,27 +104,34 @@ Niffler's distributed multi-agent architecture allows specialized agents to coll
 **Auto-start agents on master launch:**
 ```yaml
 # ~/.niffler/config.yaml
-masters:
-  enabled: true
+master:
   auto_start_agents: true
   default_agent: "coder"
+```
 
-agents:
-  - id: "coder"
-    name: "Coder Agent"
-    auto_start: true
-    persistent: true
-    model: "claude-sonnet"
-    capabilities: ["coding", "debugging", "architecture"]
-    tool_permissions: ["read", "edit", "create", "bash", "list", "fetch"]
+```markdown
+---
+model: claude-sonnet
+allowed_tools:
+  - read
+  - edit
+  - create
+  - bash
+  - list
+  - fetch
+auto_start: true
+# capabilities is optional and only needed for action-backed orchestration tools
+# capabilities:
+#   - dispatch_tasks
+---
 
-  - id: "researcher"
-    name: "Research Agent"
-    auto_start: true
-    persistent: false
-    model: "haiku"
-    capabilities: ["research", "analysis"]
-    tool_permissions: ["read", "list", "fetch"]
+# Coder Agent
+
+## Description
+Coder agent.
+
+## System Prompt
+You are a coding expert.
 ```
 
 ### Single-Shot Tasks with Agent Mode

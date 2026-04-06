@@ -250,10 +250,9 @@ master:
 # allowed_tools:
 #   - read
 #   - edit
-# capabilities:
-#   - coding
+# capabilities:        # Optional, advanced: only for action-backed orchestration tools
+#   - dispatch_tasks
 # auto_start: true
-# persistent: true
 # ---
 
 # Example MCP server block.
