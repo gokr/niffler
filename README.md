@@ -116,12 +116,12 @@ nats-server -js
 
 **macOS**:
 ```bash
-brew install cnats mariadb-connector-c
+brew install cnats mariadb-connector-c pcre
 ```
 
 **Ubuntu/Debian**:
 ```bash
-sudo apt install libnats3.7t64 libnats-dev libmariadb-dev
+sudo apt install libnats3.7t64 libnats-dev libmariadb-dev xsel libpcre3 libpcre3-dev
 ```
 
 ### 3. Build Niffler

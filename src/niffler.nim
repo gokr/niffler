@@ -194,51 +194,6 @@ proc startMasterMode(modelName: string, level: Level, dump: bool, dumpsse: bool,
   var session: Session
   startCLIMode(session, modelConfig, database, level, dump, dumpsse, natsUrl)
 
-proc startAgentMode(
-  agentName: string,
-  modelName: string,
-  level: Level,
-  dump: bool,
-  dumpsse: bool,
-  dumpJson: bool,
-  logFile: string = ""
-) =
-  ## Start agent mode with autonomous capabilities
-  
-  # Load minimal DB config
-  let minimalConfig = loadMinimalDbConfig()
-  let dbConfig = toDatabaseConfig(minimalConfig)
-  
-  # Initialize database
-  let database = createDatabaseBackend(dbConfig)
-  if database == nil:
-    handleError("Failed to initialize database. Check your database configuration.")
-  
-  # Initialize workspace manager
-  let workspaceMgr = newWorkspaceManager(database)
-  
-  # Register this agent
-  let agentId = if agentName.len > 0: agentName else: "niffler-" & $getTime().toUnix()
-  let capabilities = %*{}
-  let agentConfig = %*{
-    "model": modelName
-  }
-  
-  # TODO: Implement agent registration with NATS
-  # if not registerAgent(database, agentId, "default", capabilities, agentConfig):
-  #   handleError("Failed to register agent")
-  
-  # TODO: Start task processor with proper agent and model config
-  # For now, skip task processor startup (will be implemented in full integration)
-  # let taskProcessor = newTaskProcessor(database, workspaceMgr, agentId, agent, modelConfig, channels)
-  # startTaskProcessor(taskProcessor)
-  
-  # TODO: Implement NATS-based agent communication
-  # Connect to NATS, subscribe to agent subject, etc.
-  
-  echo fmt("Agent '{agentId}' registered. Ready for tasks.")
-  echo "Press Ctrl+C to stop."
-
 proc parseCliArgsMain(): CliArgs =
   ## Parse command line arguments with error handling
   try:

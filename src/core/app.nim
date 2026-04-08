@@ -32,7 +32,6 @@ proc initializePlanModeCreatedFiles*(database: DatabaseBackend, conversationId: 
 
 # Simple file reference processing
 proc isValidTextFileForReference*(path: string): bool =
-  ## Check if a file is valid for @ referencing (text files only, no binary files)
   ## Check if a file is valid for @ referencing (text files only)
   let info = getFileInfo(path)
   
