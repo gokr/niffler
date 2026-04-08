@@ -24,3 +24,6 @@ nimble.develop
 # Development/presentation materials
 presentation/
 .agents/
+.opencode/
+samples/
+plans/

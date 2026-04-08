@@ -6,7 +6,7 @@
 
 Niffler is an AI terminal assistant written in Nim. It supports local interactive use, tool calling, reusable skills, and optional multi-agent orchestration over NATS.
 
-The current branch adds and tightens several user-facing workflows that should be reflected when this is merged back to `main`:
+Current user-facing workflows include:
 
 - plan and code modes with stronger plan-mode protections
 - reusable skills that can be loaded or downloaded on demand
@@ -23,6 +23,52 @@ The current branch adds and tightens several user-facing workflows that should b
 - Optional multi-agent routing with `@agent` commands over NATS
 - Discord integration for remote access
 - Database-backed conversation persistence and token usage tracking
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph Users
+        U[User Terminal]
+        D[Discord Client]
+    end
+
+    subgraph Niffler Cluster
+        M[Master Niffler<br/>CLI Interface]
+        A1[Agent: Coder]
+        A2[Agent: Researcher]
+        A3[Agent: Tester]
+    end
+
+    subgraph Infrastructure
+        N[NATS Server<br/>Message Broker]
+        DB[(Shared Database<br/>TiDB/MySQL)]
+    end
+
+    U -->|Interactive CLI| M
+    D <-->|Discord Bot| M
+
+    M <-->|Task Dispatch| N
+    A1 <-->|Task Subscription| N
+    A2 <-->|Task Subscription| N
+    A3 <-->|Task Subscription| N
+
+    M <-->|Conversation & Token Tracking| DB
+    A1 <-->|Task Results & State| DB
+    A2 <-->|Task Results & State| DB
+    A3 <-->|Task Results & State| DB
+
+    style M fill:#f9f,stroke:#333,stroke-width:2px
+    style N fill:#bbf,stroke:#333,stroke-width:2px
+    style DB fill:#bfb,stroke:#333,stroke-width:2px
+```
+
+**Key Components:**
+
+- **Master Niffler**: Terminal interface for user interaction, task dispatch, and Discord routing
+- **Agent Nifflers**: Specialized workers subscribed to task channels via NATS
+- **NATS Server**: Message broker for real-time agent communication
+- **Shared Database**: Persistent storage for conversations, agent state, and token usage
 
 ## Quick Start
 
@@ -181,10 +227,33 @@ Niffler can also run a master process and multiple named agents that communicate
 
 ### Start infrastructure
 
-Database:
+Database (choose one):
 
 ```bash
+# Option 1: TiUP (recommended for production-like setup)
 tiup playground --tag niffler
+
+# Option 2: Docker
+docker run -d --name tidb -p 4000:4000 pingcap/tidb:latest
+
+# Option 3: Podman
+podman run -d --name tidb -p 4000:4000 pingcap/tidb:latest
+```
+
+You may also need a MySQL client for initial setup:
+
+```bash
+# Ubuntu/Debian
+sudo apt install mysql-client
+
+# macOS
+brew install mysql-client
+```
+
+Create the test database:
+
+```bash
+mysql -h 127.0.0.1 -P 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS niffler_test'
 ```
 
 NATS:
