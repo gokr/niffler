@@ -48,13 +48,13 @@ Optional for multi-agent mode:
 macOS:
 
 ```bash
-brew install cnats mariadb-connector-c
+brew install cnats mariadb-connector-c pcre
 ```
 
 Ubuntu/Debian:
 
 ```bash
-sudo apt install libnats3.7t64 libnats-dev libmariadb-dev
+sudo apt install libnats3.7t64 libnats-dev libmariadb-dev xsel libpcre3 libpcre3-dev
 ```
 
 For a typical Ubuntu/Debian setup, this is usually enough to build and run the local assistant:
