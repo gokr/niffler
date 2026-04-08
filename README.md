@@ -197,7 +197,7 @@ Analyze the codebase and propose the smallest safe fix.
 Implement the approved fix and run the tests.
 ```
 
-See `doc/MANUAL.md` for the full plan/code workflow.
+See [doc/MANUAL.md](doc/MANUAL.md) for the full plan/code workflow.
 
 ## Skills
 
@@ -335,19 +335,19 @@ The markdown file is the authoritative runtime definition for the agent.
 
 Discord support is optional and works alongside the master and agent flow.
 
-See `doc/DISCORD_SETUP.md` for setup and command details.
+See [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) for setup and command details.
 
 ## Documentation
 
-- `doc/MANUAL.md` - full user manual
-- `doc/EXAMPLES.md` - workflows and examples
-- `doc/TOOLS.md` - built-in tools reference
-- `SKILLS.md` - skills system details
-- `ACTIONS.md` - action and orchestration model
-- `doc/DISCORD_SETUP.md` - Discord setup
-- `doc/MCP_SETUP.md` - MCP server integration
-- `doc/CONTRIBUTING.md` - contributor guide
-- `doc/README.md` - documentation index
+- [doc/MANUAL.md](doc/MANUAL.md) - full user manual
+- [doc/EXAMPLES.md](doc/EXAMPLES.md) - workflows and examples
+- [doc/TOOLS.md](doc/TOOLS.md) - built-in tools reference
+- [SKILLS.md](SKILLS.md) - skills system details
+- [ACTIONS.md](ACTIONS.md) - action and orchestration model
+- [doc/DISCORD_SETUP.md](doc/DISCORD_SETUP.md) - Discord setup
+- [doc/MCP_SETUP.md](doc/MCP_SETUP.md) - MCP server integration
+- [doc/CONTRIBUTING.md](doc/CONTRIBUTING.md) - contributor guide
+- [doc/README.md](doc/README.md) - documentation index
 
 ## Development
 
@@ -360,4 +360,4 @@ nimble build
 
 ## License
 
-MIT License. See `LICENSE`.
+MIT License. See [LICENSE](LICENSE).
