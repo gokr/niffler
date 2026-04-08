@@ -28,8 +28,15 @@ The current branch adds and tightens several user-facing workflows that should b
 
 ### 1. Install prerequisites
 
+Build requirements:
+
 - Nim 2.2.4 or later
 - Git
+- Clang
+- libclang development headers (`libclang-dev` on Debian/Ubuntu)
+
+Runtime requirements:
+
 - TiDB or MySQL
 
 Optional for multi-agent mode:
@@ -48,6 +55,18 @@ Ubuntu/Debian:
 
 ```bash
 sudo apt install libnats3.7t64 libnats-dev libmariadb-dev
+```
+
+For a typical Ubuntu/Debian setup, this is usually enough to build and run the local assistant:
+
+```bash
+sudo apt install clang libclang-dev libmariadb-dev
+```
+
+If you want multi-agent mode, also install NATS support and the server:
+
+```bash
+sudo apt install libnats-dev nats-server
 ```
 
 ### 3. Build
