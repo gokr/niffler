@@ -91,15 +91,17 @@ proc updateStatusLine*() =
 
 proc generatePrompt*(modelConfig: configTypes.ModelConfig = configTypes.ModelConfig()): string =
   ## Generate prompt based on runtime mode:
-  ## - Master mode: shows focused agent or just "niffler"
+  ## - Master mode: shows focused agent and mode
   ## - Agent mode: shows model, plan/code mode, and conversation ID
   if isMasterMode():
-    # Master mode - show focused agent
+    # Master mode - show focused agent and mode
     let agent = getCurrentAgentForPrompt()
+    let mode = getCurrentMode()
+    let modeStr = fmt"({$mode})"
     if agent.len > 0:
-      return fmt("@{agent} > ")
+      return fmt"{agent} {modeStr} > "
     else:
-      return "niffler > "
+      return fmt"niffler {modeStr} > "
   else:
     # Agent mode - show detailed context
     let currentSession = getCurrentSession()

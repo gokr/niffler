@@ -112,7 +112,7 @@ When no channels are specified, the bot monitors all channels it has access to.
 ## Step 3: Start the Agent
 
 ```bash
-./src/niffler agent coder
+./niffler agent coder
 ```
 
 The agent will connect to Discord and start listening for messages.

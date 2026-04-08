@@ -1,3 +1,5 @@
+import std/os
+
 switch("threads", "on")
 switch("d", "ssl")
 #switch("passL", "-lcrypto")
@@ -16,6 +18,9 @@ switch("debugger", "native")
 
 # Enables system copy paste
 switch("d", "useSystemClipboard")
+
+if dirExists("../natswrapper/src"):
+  switch("path", "../natswrapper/src")
 
 if hostOS == "macosx":
   # This adds the paths specifically when building on macOS

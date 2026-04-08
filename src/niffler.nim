@@ -292,11 +292,9 @@ proc dispatchCmd(args: CliArgs) =
     quit(0)
 
   of "init":
-    let path = if args.initPath.len > 0: args.initPath else: ""
-    let fullPath = if path.len == 0: getDefaultConfigPath() else: path
-    initializeConfigManager()
-    createDefaultConfigFile(fullPath)
-    echo "Configuration initialized at: ", fullPath
+    let configName = if args.initPath.len > 0: args.initPath else: "default"
+    initializeConfigDirectory(configName)
+    echo "Configuration initialized for: ", configName
     quit(0)
 
   of "nats-monitor":

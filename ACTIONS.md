@@ -107,13 +107,20 @@ This means existing agents keep working while newer definitions can become more 
 
 ## Agent Definitions
 
-Agent definitions may now include:
+Agent definitions may include frontmatter like:
 
 ```md
-## Capabilities
-- inspect_agents
-- dispatch_tasks
+---
+allowed_tools:
+  - read
+  - task_dispatch
+capabilities:
+  - dispatch_tasks
+---
 ```
+
+`capabilities` is an advanced permission layer only for action-backed orchestration tools.
+It is usually unnecessary for normal coding or research agents.
 
 If omitted, transitional defaults are derived from action-backed tool names.
 

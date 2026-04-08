@@ -2117,19 +2117,29 @@ proc taskHandler(args: seq[string], session: var Session, currentModel: var conf
 
 proc planHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to plan mode
+  discard args
+  discard session
+  discard currentModel
+
   setCurrentMode(amPlan)
   updateCurrentSessionMode(amPlan)
 
   # Persist mode change to database
   let database = getGlobalDatabase()
+  var message = "Switched to Plan mode - focus on analysis and planning"
   if database != nil:
     let conversationId = getCurrentConversationId().int
     if conversationId > 0:
       updateConversationMode(database, conversationId, amPlan)
+      let conversationOpt = getConversationById(database, conversationId)
+      if conversationOpt.isSome():
+        let planPathOpt = ensurePlanFile(database, conversationId, conversationOpt.get().title)
+        if planPathOpt.isSome():
+          message &= fmt("\nPlan file: {planPathOpt.get()}")
 
   return CommandResult(
     success: true,
-    message: "Switched to Plan mode - focus on analysis and planning",
+    message: message,
     shouldExit: false,
     shouldContinue: true,
     shouldResetUI: true
@@ -2137,19 +2147,46 @@ proc planHandler(args: seq[string], session: var Session, currentModel: var conf
 
 proc codeHandler(args: seq[string], session: var Session, currentModel: var configTypes.ModelConfig): CommandResult =
   ## Switch to code mode
+  discard session
+  discard currentModel
+
+  let forceOverride = args.len > 0 and args[0] == "--force"
+  let database = getGlobalDatabase()
+  let conversationId = getCurrentConversationId().int
+  var message = "Switched to Code mode - ready for implementation"
+
+  if database != nil and conversationId > 0 and not hasActivePlan(database, conversationId):
+    if not forceOverride:
+      return CommandResult(
+        success: false,
+        message: "Cannot switch to Code mode without a plan. Switch to Plan mode first, or use '/code --force' to create an override plan artifact.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    let conversationOpt = getConversationById(database, conversationId)
+    let conversationTitle = if conversationOpt.isSome(): conversationOpt.get().title else: "plan"
+    let forcedPlanOpt = ensurePlanFile(database, conversationId, conversationTitle, forcedOverride = true)
+    if forcedPlanOpt.isNone():
+      return CommandResult(
+        success: false,
+        message: "Failed to create override plan artifact for Code mode.",
+        shouldExit: false,
+        shouldContinue: true
+      )
+
+    message = fmt("Switched to Code mode with override\nPlan file: {forcedPlanOpt.get()}")
+
   setCurrentMode(amCode)
   updateCurrentSessionMode(amCode)
 
   # Persist mode change to database
-  let database = getGlobalDatabase()
-  if database != nil:
-    let conversationId = getCurrentConversationId().int
-    if conversationId > 0:
-      updateConversationMode(database, conversationId, amCode)
+  if database != nil and conversationId > 0:
+    updateConversationMode(database, conversationId, amCode)
 
   return CommandResult(
     success: true,
-    message: "Switched to Code mode - ready for implementation",
+    message: message,
     shouldExit: false,
     shouldContinue: true,
     shouldResetUI: true
@@ -2828,10 +2865,10 @@ proc initializeCommands*() =
     "conversation.info", "info", {actionTypes.asAgentCli}, routableToAgent = true, localOnly = true)
   registerCommandAction("task", "Execute a task in fresh context", "<description>", @[], taskActionHandler, ccAgent,
     "task.dispatch", "task <description>", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("plan", "Switch to plan mode", "", @[], planActionHandler, ccAgent,
+  registerCommandAction("plan", "Switch to plan mode and create a plan artifact", "", @[], planActionHandler, ccAgent,
     "agent.plan", "plan", {actionTypes.asAgentCli}, routableToAgent = true)
-  registerCommandAction("code", "Switch to code mode", "", @[], codeActionHandler, ccAgent,
-    "agent.code", "code", {actionTypes.asAgentCli}, routableToAgent = true)
+  registerCommandAction("code", "Switch to code mode (requires plan, or use --force)", "[--force]", @[], codeActionHandler, ccAgent,
+    "agent.code", "code [--force]", {actionTypes.asAgentCli}, routableToAgent = true)
 
   registerActionOnly("agent.listDefinitions", "List available agent definitions.", "agent list",
     {actionTypes.asMasterCli, actionTypes.asTool}, agentListAction,

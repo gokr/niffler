@@ -5,6 +5,7 @@
 ## - Agent: Routes requests through Master via NATS
 
 import std/[json, strformat, options, asyncdispatch, times, random]
+import dimscord
 import ../core/database
 import ../core/db_config
 import ../comms/discord

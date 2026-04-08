@@ -12,7 +12,7 @@
 ## - Supports content creation with proper encoding
 ## - Error handling with detailed feedback
 
-import std/[os, json, times, logging, strformat, options]
+import std/[os, json, times, logging, strformat, strutils, options]
 import ../types/tools, ../types/mode, ../types/tool_args
 import ../core/database, ../core/conversation_manager, ../core/mode_state
 import common
@@ -73,6 +73,16 @@ proc executeCreate*(args: JsonNode): string =
   if not validOctal:
     raise newToolValidationError("create", "permissions", "3-digit octal (e.g., '644')", parsedArgs.permissions)
 
+  {.gcsafe.}:
+    let currentSession = getCurrentSession()
+    if currentSession.isSome():
+      let database = getGlobalDatabase()
+      if database != nil:
+        let conversationId = currentSession.get().conversation.id
+        let mutationCheck = checkCodeModeMutationReady(database, conversationId)
+        if not mutationCheck.ready:
+          raise newToolValidationError("create", "workflow", mutationCheck.reason, mutationCheck.reason)
+
   try:
     # Check if file exists
     let fileExistsBefore = fileExists(sanitizedPath)
@@ -104,6 +114,13 @@ proc executeCreate*(args: JsonNode): string =
             
             discard addPlanModeCreatedFile(database, conversationId, relativePath)
             debug(fmt"Tracked created file in plan mode: {relativePath}")
+            
+            # If this is a plan file, register it in the database
+            if relativePath.startsWith("plans/") and relativePath.endsWith(".md"):
+              if setPlanFilePath(database, conversationId, relativePath):
+                debug(fmt"Registered plan file: {relativePath}")
+              else:
+                debug(fmt"Failed to register plan file: {relativePath}")
       except Exception as e:
         debug(fmt"Failed to track plan mode created file: {e.msg}")
     

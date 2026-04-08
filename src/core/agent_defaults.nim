@@ -1,17 +1,19 @@
 ## Default agent definitions embedded in binary
 
-const generalAgent* = """# General Agent
+const generalAgent* = """---
+allowed_tools:
+  - read
+  - list
+  - fetch
+capabilities:
+  - research
+auto_start: false
+---
+
+# General Agent
 
 ## Description
 Safe research and analysis agent for gathering information without modifying the system.
-
-## Model
-default
-
-## Allowed Tools
-- read
-- list
-- fetch
 
 ## System Prompt
 
@@ -41,22 +43,26 @@ a clear summary with:
 Be thorough but efficient. Focus on providing actionable information.
 """
 
-const coderAgent* = """# Coder Agent
+const coderAgent* = """---
+allowed_tools:
+  - read
+  - create
+  - edit
+  - bash
+  - list
+  - fetch
+  - todolist
+capabilities:
+  - coding
+  - debugging
+  - refactoring
+auto_start: false
+---
+
+# Coder Agent
 
 ## Description
 Specialized coding agent for implementing features, fixing bugs, and writing tests. Has access to full file manipulation and execution capabilities.
-
-## Model
-coder-model
-
-## Allowed Tools
-- read
-- create
-- edit
-- bash
-- list
-- fetch
-- todolist
 
 ## System Prompt
 
@@ -128,18 +134,22 @@ todolist(operation="bulk_update", todos="- [ ] Read existing code\n- [ ] Impleme
 ```
 """
 
-const researcherAgent* = """# Researcher Agent
+const researcherAgent* = """---
+allowed_tools:
+  - read
+  - list
+  - fetch
+capabilities:
+  - research
+  - documentation
+  - analysis
+auto_start: false
+---
+
+# Researcher Agent
 
 ## Description
 Fast research agent for documentation lookup, web search, and code analysis. Read-only access for safe exploration without modifications.
-
-## Model
-research-model
-
-## Allowed Tools
-- read
-- list
-- fetch
 
 ## System Prompt
 

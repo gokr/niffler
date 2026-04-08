@@ -13,7 +13,7 @@ else:
 
 import ../core/[nats_client]
 import ../types/[nats_messages]
-import ../comms/discord
+import ../comms/[discord, discord_routing]
 import linecross
 import sunny
 import theme
@@ -105,11 +105,22 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
     # Subscribe to response and status channels
     var responseSubscription = client.subscribe("niffler.master.response")
     var statusSubscription = client.subscribe("niffler.master.status")
+    var discordSubscription = client.subscribe("niffler.discord.execute")
 
-    debug("NATS listener subscribed to response and status channels")
+    debug("NATS listener subscribed to response, status, and discord channels")
 
     try:
       while params.running[]:
+        # Check for Discord tool requests from agents
+        let maybeDiscord = discordSubscription.nextMsg(timeoutMs = 50)
+        if maybeDiscord.isSome():
+          try:
+            let discordMsg = maybeDiscord.get()
+            debug(fmt("Discord tool request received"))
+            handleDiscordRoutingMessage(client, discordMsg)
+          except Exception as e:
+            debug(fmt("Failed to handle Discord request: {e.msg}"))
+
         # Check for status updates (but don't display them for cleaner UX)
         let maybeStatus = statusSubscription.nextMsg(timeoutMs = 50)
         if maybeStatus.isSome():
@@ -167,6 +178,7 @@ proc natsListenerProc(params: NatsListenerParams) {.thread, gcsafe.} =
     finally:
       responseSubscription.unsubscribe()
       statusSubscription.unsubscribe()
+      discordSubscription.unsubscribe()
       client.close()
       debug("NATS listener thread stopped")
 

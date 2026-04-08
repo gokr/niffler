@@ -236,89 +236,24 @@ database:
 master:
   # Agent to route to when none is specified explicitly.
   default_agent: "coder"
-  # Whether master mode should auto-start agents from the `agents` section below.
+  # Whether master mode should auto-start agent markdown definitions that have
+  # `auto_start: true` in their YAML frontmatter.
   auto_start_agents: true
   # Seconds between agent heartbeat checks.
   heartbeat_check_interval: 30
 
-# Agent process metadata used for discovery and optional auto-start.
-# The actual agent instructions, prompt, allowed tools, and markdown-based definition
-# live in the active config's agents directory, usually ~/.niffler/<config>/agents/*.md.
-# If both exist, the markdown agent definition is the authoritative runtime definition.
-agents:
-  - # Unique ID used to address this agent.
-    id: "coder"
-    # Human-friendly display name.
-    name: "Code Expert"
-    # Short description of the agent's purpose.
-    description: "General code implementation and debugging"
-    # Model nickname from the `models` section.
-    model: "openrouter-free"
-    # Capability labels used for discovery and routing hints.
-    capabilities:
-      - "coding"
-      - "debugging"
-      - "refactoring"
-    # Tool names this agent is allowed to use.
-    tool_permissions:
-      - "read"
-      - "edit"
-      - "create"
-      - "bash"
-      - "list"
-      - "fetch"
-    # Start this agent automatically with master mode.
-    auto_start: true
-    # Keep this agent running between requests.
-    persistent: true
-
-  - # Unique ID used to address this agent.
-    id: "researcher"
-    # Human-friendly display name.
-    name: "Research Assistant"
-    # Short description of the agent's purpose.
-    description: "Read-only research and documentation lookup"
-    # Model nickname from the `models` section.
-    model: "openrouter-free"
-    # Capability labels used for discovery and routing hints.
-    capabilities:
-      - "research"
-      - "documentation"
-      - "analysis"
-    # Tool names this agent is allowed to use.
-    tool_permissions:
-      - "read"
-      - "list"
-      - "fetch"
-    # Start this agent automatically with master mode.
-    auto_start: false
-    # Keep this agent running between requests.
-    persistent: false
-
-  - # Unique ID used to address this agent.
-    id: "local"
-    # Human-friendly display name.
-    name: "Local Model Agent"
-    # Short description of the agent's purpose.
-    description: "General local-agent profile for Ollama or LM Studio"
-    # Model nickname from the `models` section.
-    model: "ollama-qwen35"
-    # Capability labels used for discovery and routing hints.
-    capabilities:
-      - "coding"
-      - "chat"
-      - "local"
-    # Tool names this agent is allowed to use.
-    tool_permissions:
-      - "read"
-      - "edit"
-      - "create"
-      - "bash"
-      - "list"
-    # Start this agent automatically with master mode.
-    auto_start: false
-    # Keep this agent running between requests.
-    persistent: true
+# Agent metadata lives in markdown files under the active config directory,
+# usually ~/.niffler/<config>/agents/*.md, using YAML frontmatter such as:
+#
+# ---
+# model: "openrouter-free"
+# allowed_tools:
+#   - read
+#   - edit
+# capabilities:        # Optional, advanced: only for action-backed orchestration tools
+#   - dispatch_tasks
+# auto_start: true
+# ---
 
 # Example MCP server block.
 # mcp_servers:

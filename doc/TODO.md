@@ -230,9 +230,9 @@ Niffler is an AI-powered terminal assistant written in Nim with Plan/Code workfl
 
 For comprehensive technical details, architecture decisions, and implementation patterns, see:
 
-- **[Development Guide](DEVELOPMENT.md)** - Detailed architecture, patterns, and implementation
-- **[Architecture Overview](ARCHITECTURE.md)** - System design and technical architecture
-- **[Task System](TASK.md)** - Multi-agent architecture and agent system design
+- **[Development Guide](research/DEVELOPMENT.md)** - Detailed architecture, patterns, and implementation
+- **[Architecture Overview](research/ARCHITECTURE.md)** - System design and technical architecture
+- **[Manual](MANUAL.md)** - Current user-facing multi-agent and workflow documentation
 - **[Examples](EXAMPLES.md)** - Common usage patterns and workflows
 
 ## Proposed Integration Tests

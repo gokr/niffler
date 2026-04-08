@@ -1,6 +1,6 @@
 # Niffler User Manual
 
-**Niffler** is an AI-powered terminal assistant written in Nim that provides a conversational interface to interact with AI models while supporting tool calling for file operations, command execution, and web fetching.
+**Niffler** is an AI-powered terminal assistant written in Nim that supports tool calling, reusable skills, plan/code workflows, and optional multi-agent orchestration over NATS.
 
 ---
 
@@ -42,7 +42,7 @@ nimble build
 
 ```bash
 # Create default configuration
-./src/niffler init
+./niffler init
 
 # This creates:
 # - ~/.niffler/config.yaml - Main configuration
@@ -68,7 +68,7 @@ Edit `~/.niffler/config.yaml`:
 models:
   - nickname: "sonnet"
     base_url: "https://api.anthropic.com/v1"
-    api_key_env: "ANTHROPIC_API_KEY"
+    api_env_var: "ANTHROPIC_API_KEY"
     model: "claude-sonnet-4-5-20250929"
     context: 200000
     inputCostPerMToken: 3000
@@ -84,13 +84,13 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ```bash
 # Interactive mode
-./src/niffler
+./niffler
 
 # Single prompt
-./src/niffler -p "Hello, world!"
+./niffler -p "Hello, world!"
 
 # With specific model
-./src/niffler --model sonnet
+./niffler --model sonnet
 ```
 
 ---
@@ -165,7 +165,7 @@ Niffler supports any OpenAI-compatible API:
 ```yaml
 nickname: "sonnet"
 base_url: "https://api.anthropic.com/v1"
-api_key_env: "ANTHROPIC_API_KEY"
+api_env_var: "ANTHROPIC_API_KEY"
 model: "claude-sonnet-4-5-20250929"
 context: 200000
 inputCostPerMToken: 3000
@@ -176,7 +176,7 @@ outputCostPerMToken: 15000
 ```yaml
 nickname: "gpt4o"
 base_url: "https://api.openai.com/v1"
-api_key_env: "OPENAI_API_KEY"
+api_env_var: "OPENAI_API_KEY"
 model: "gpt-4o"
 context: 128000
 inputCostPerMToken: 250
@@ -187,7 +187,7 @@ outputCostPerMToken: 1000
 ```yaml
 nickname: "deepseek"
 base_url: "https://openrouter.ai/api/v1"
-api_key_env: "OPENROUTER_API_KEY"
+api_env_var: "OPENROUTER_API_KEY"
 model: "deepseek/deepseek-chat"
 context: 64000
 ```
@@ -196,7 +196,7 @@ context: 64000
 ```yaml
 nickname: "local"
 base_url: "http://localhost:11434/v1"
-api_key_env: "OLLAMA_API_KEY"
+api_key: "ollama"
 model: "llama3.3:70b"
 context: 128000
 inputCostPerMToken: 0
@@ -209,7 +209,8 @@ outputCostPerMToken: 0
 |-------|----------|-------------|
 | `nickname` | Yes | Short name for selection |
 | `base_url` | Yes | API endpoint |
-| `api_key_env` | Yes | Environment variable for API key |
+| `api_env_var` | No | Environment variable used when the key is not stored directly in `api_key` |
+| `api_key` | No | Direct API key value or placeholder for local servers |
 | `model` | Yes | Full model identifier |
 | `context` | No | Context window size (default: 128000) |
 | `inputCostPerMToken` | No | Cost per million input tokens (cents) |
@@ -231,19 +232,19 @@ outputCostPerMToken: 0
 
 ```bash
 # Interactive mode
-./src/niffler
+./niffler
 
 # Single prompt (non-interactive)
-./src/niffler -p "Explain quantum computing"
+./niffler -p "Explain quantum computing"
 
 # Specify model
-./src/niffler --model sonnet
+./niffler --model sonnet
 
 # Enable debug logging
-./src/niffler --loglevel=DEBUG
+./niffler --loglevel=DEBUG
 
 # Dump HTTP requests/responses
-./src/niffler --dump
+./niffler --dump
 ```
 
 ### Terminal Features
@@ -291,7 +292,7 @@ Niffler supports distributed multi-agent architecture where specialized agents r
 ### Architecture
 
 ```
-Master Process (./src/niffler)
+Master Process (./niffler)
     |
     | NATS Message Bus
     |
@@ -305,14 +306,14 @@ Master Process (./src/niffler)
 **Terminal 1 - Start Agents:**
 ```bash
 # Start specialized agents
-./src/niffler agent coder
-./src/niffler agent researcher
+./niffler agent coder
+./niffler agent researcher
 ```
 
 **Terminal 2 - Master CLI:**
 ```bash
 # Start master
-./src/niffler
+./niffler
 
 # Check available agents
 > /agents
@@ -343,50 +344,44 @@ Master Process (./src/niffler)
 Agents are defined via markdown files in `~/.niffler/<config>/agents/`:
 
 ```markdown
+---
+model: sonnet
+allowed_tools:
+  - read
+  - edit
+  - create
+  - bash
+  - list
+capabilities:
+  - inspect_agents
+  - dispatch_tasks
+auto_start: true
+---
+
 # Coder Agent
 
 ## Description
 Specialized in code analysis and implementation.
 
-## Model
-sonnet
-
-## Allowed Tools
-- read
-- edit
-- create
-- bash
-- list
-
-## Capabilities
-- inspect_agents
-- manage_agents
-- dispatch_tasks
-
 ## System Prompt
 
 You are a coding expert.
-
-## Allowed Tools
-- read
-- edit
-- create
-- bash
-- list
-
-## Capabilities
-- inspect_agents
-- dispatch_tasks
 ```
 
 Required sections:
 - `## Description` - Agent purpose
-- `## Allowed Tools` - Whitelist of tools
 - `## System Prompt` - LLM instructions
 
-Optional sections:
-- `## Model` - Override default model
-- `## Capabilities` - Action capabilities for tool filtering
+Common frontmatter fields:
+- `allowed_tools` - Whitelist of tools available to the agent
+- `model` - Optional model override
+- `auto_start` - Optional startup hint used by master auto-start
+- `capabilities` - Optional advanced permission layer for action-backed orchestration tools
+- `max_turns` - Optional per-agent turn limit override
+
+`capabilities` is only needed for orchestration-style tools and actions such as agent management or task dispatch. It does not affect ordinary tools like `read`, `edit`, `create`, `bash`, or `fetch`, which are governed by `allowed_tools`.
+
+The markdown file is the authoritative runtime definition for the agent.
 
 The active config directory is selected by the current config and runtime session.
 Typical locations are:
@@ -394,42 +389,19 @@ Typical locations are:
 - `~/.niffler/<active-config>/agents/`
 - `.niffler/<active-config>/agents/`
 
-**YAML vs Markdown Agents:**
-
-The markdown file is the authoritative runtime definition for agent behavior.
-
-The `agents` section in `config.yaml` is used for process metadata such as:
-
-- auto-start behavior
-- persistent or ephemeral intent
-- default model metadata used by the agent manager
-
-The markdown files under `agents/*.md` define runtime behavior such as:
-
-- prompt content
-- allowed tools
-- markdown-defined behavior
-- optional agent-specific model override
-
-If both exist, markdown files are the source of truth for runtime agent behavior.
-
 ### Auto-Start Rules
 
-Auto-start requires both master-level and agent-level configuration:
+Auto-start requires both master-level configuration and an agent file with `auto_start: true` in frontmatter:
 
 ```yaml
-masters:
+master:
   auto_start_agents: true
-
-agents:
-  - id: "coder"
-    auto_start: true
 ```
 
 Both conditions must be true:
 
-- `masters.auto_start_agents` must be enabled
-- the individual agent entry must also have `auto_start: true`
+- `master.auto_start_agents` must be enabled
+- the agent markdown file must declare `auto_start: true`
 
 ### Agent Model Precedence
 
@@ -737,6 +709,7 @@ Focus on implementation and execution:
 When in Plan mode:
 - Files existing before plan mode are **protected**
 - Only files created during the session can be edited
+- Plan files created during the session are registered so they remain editable while the session stays in plan mode
 - Switching to Code mode removes all restrictions
 
 ---
@@ -953,13 +926,13 @@ env | grep GITHUB_TOKEN
 
 Enable debug logging for troubleshooting:
 ```bash
-./src/niffler --loglevel=DEBUG
+./niffler --loglevel=DEBUG
 
 # With HTTP dump
-./src/niffler --dump
+./niffler --dump
 
 # Both
-./src/niffler --loglevel=DEBUG --dump
+./niffler --loglevel=DEBUG --dump
 ```
 
 ### Common Issues

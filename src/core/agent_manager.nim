@@ -10,7 +10,7 @@
 import std/[osproc, os, strformat, times, strutils, sequtils]
 import ../types/config
 import ../types/agents
-import nats_client, config
+import nats_client
 from std/options import isSome, isNone, get
 import natswrapper
 import ../core/session
@@ -109,33 +109,43 @@ proc stopAgent*(routingName: string): bool =
     discard execCmdEx(fmt"kill {runningAgents[0].pid}")
     result = true
 
+proc fallbackAgentConfig(agentId: string): AgentConfig =
+  AgentConfig(
+    id: agentId,
+    name: agentId,
+    description: "",
+    model: "",
+    capabilities: @[],
+    toolPermissions: @[],
+    autoStart: false
+  )
+
+proc loadAgentRuntimeConfig(agentId: string): AgentConfig =
+  ## Load runtime agent configuration from the agent markdown definition.
+  let agentsDir = session.getAgentsDir()
+  let agentFile = agentsDir / agentId & ".md"
+
+  if not fileExists(agentFile):
+    return fallbackAgentConfig(agentId)
+
+  let content = readFile(agentFile)
+  let agentDef = parseAgentDefinition(content, agentFile)
+  return AgentConfig(
+    id: agentId,
+    name: agentId,
+    description: agentDef.description,
+    model: agentDef.model.get(""),
+    capabilities: agentDef.capabilities,
+    toolPermissions: agentDef.allowedTools,
+    autoStart: agentDef.autoStart
+  )
+
 proc startAgent*(agentId: string, agentNick: string = "", modelOverride: string = "", nifflerPath: string = "./src/niffler"): SpawnedAgent =
   ## Spawn an agent process
   ## Returns: SpawnedAgent with PID
   ## Note: Agent displays to its own terminal (no stdin/stdout redirection)
 
-  # Find agent configuration
-  let globalConfig = getGlobalConfig()
-  var agentConfig: AgentConfig
-
-  var found = false
-  for agent in globalConfig.agents:
-    if agent.id == agentId:
-      agentConfig = agent
-      found = true
-      break
-
-  if not found:
-    agentConfig = AgentConfig(
-      id: agentId,
-      name: agentId,
-      description: "",
-      model: "",
-      capabilities: @[],
-      toolPermissions: @[],
-      autoStart: false,
-      persistent: false
-    )
+  let agentConfig = loadAgentRuntimeConfig(agentId)
 
   # Load agent definition to get model configuration
   var agentArgs = @["--agent", agentId]
@@ -213,16 +223,17 @@ proc autoStartAgents*(config: Config, natsClient: NifflerNatsClient, nifflerPath
 
   echo "→ Auto-starting agents..."
 
-  # Filter agents with auto_start: true
-  for agent in config.agents:
+  let agents = loadAgentDefinitions(session.getAgentsDir())
+
+  for agent in agents:
     if not agent.autoStart:
       continue
 
-    echo fmt"Checking @{agent.id}..."
+    echo fmt"Checking @{agent.name}..."
 
     # Check if already running (avoid duplicates)
-    if natsClient.isPresent(agent.id):
-      echo fmt"✓ @{agent.id} already running"
+    if natsClient.isPresent(agent.name):
+      echo fmt"✓ @{agent.name} already running"
       continue
 
     # Check niffler binary exists
@@ -230,23 +241,23 @@ proc autoStartAgents*(config: Config, natsClient: NifflerNatsClient, nifflerPath
       let absPath = getCurrentDir() / nifflerPath
       if not fileExists(absPath):
         echo fmt"✗ Niffler binary not found: {nifflerPath}"
-        echo fmt"✗ Skipping auto-start of @{agent.id}"
+        echo fmt"✗ Skipping auto-start of @{agent.name}"
         continue
       # Note: We could use absolute path here, but keeping simple for MVP
 
     # Spawn agent
     try:
-      let spawned = startAgent(agent.id, nifflerPath = nifflerPath)
+      let spawned = startAgent(agent.name, nifflerPath = nifflerPath)
 
       # Wait for agent readiness (heartbeat)
-      if waitForAgentReady(natsClient, agent.id, timeoutSec = 15):
+      if waitForAgentReady(natsClient, agent.name, timeoutSec = 15):
         result.add(spawned)
-        echo fmt"✓ @{agent.id} auto-started successfully"
+        echo fmt"✓ @{agent.name} auto-started successfully"
       else:
-        echo fmt"✗ @{agent.id} failed to report ready (timeout)"
+        echo fmt"✗ @{agent.name} failed to report ready (timeout)"
 
     except Exception as e:
-      echo fmt"✗ Failed to spawn @{agent.id}: {e.msg}"
+      echo fmt"✗ Failed to spawn @{agent.name}: {e.msg}"
       # Continue with other agents
 
   # Summary
@@ -256,15 +267,14 @@ proc autoStartAgents*(config: Config, natsClient: NifflerNatsClient, nifflerPath
     echo "→ No agents auto-started"
 
 proc getAgentConfig*(agentId: string): AgentConfig =
-  ## Get configuration for a specific agent by ID
-  ## Raises: ValueError if agent not found
+  ## Get agent runtime configuration from the markdown definition
+  let agentsDir = session.getAgentsDir()
+  let agentFile = agentsDir / agentId & ".md"
+  if not fileExists(agentFile):
+    raise newException(ValueError, fmt"Agent '{agentId}' not found")
 
-  let globalConfig = getGlobalConfig()
-  for agent in globalConfig.agents:
-    if agent.id == agentId:
-      return agent
-
-  raise newException(ValueError, fmt"Agent '{agentId}' not found in configuration")
+  let config = loadAgentRuntimeConfig(agentId)
+  return config
 
 # Required imports for configuration access
 # Note: These should be available from the calling context

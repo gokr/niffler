@@ -157,9 +157,8 @@ type
     duplicateFeedback*: Option[DuplicateFeedbackConfig]
     # Active config directory selection
     config*: Option[string]
-    # Master and agent configuration
+    # Master configuration
     master*: Option[MasterConfig]
-    agents*: seq[AgentConfig]
 
   KeyConfig* = Table[string, string]
 
@@ -227,8 +226,7 @@ type
     capabilities*: seq[string]
     toolPermissions*: seq[string]
     autoStart*: bool
-    persistent*: bool
-    # Future: Could add maxIdleSeconds, workingDir, etc.
+    # Runtime metadata derived from agent markdown frontmatter.
 
   ConfigManager* = object
     config*: Config
