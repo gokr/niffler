@@ -41,7 +41,7 @@ Niffler is an AI-powered terminal assistant written in Nim that provides convers
 4. **Configuration**
    ```bash
    # Initialize config
-   ./src/niffler init
+   ./niffler init
 
    # Edit configuration
   ~/.niffler/config.yaml
@@ -314,14 +314,14 @@ Brief description of the change
 
 Enable debug mode:
 ```bash
-./src/niffler --loglevel=DEBUG
+./niffler --loglevel=DEBUG
 ```
 
 Note: topics-based debugging not yet implemented. Use log levels for filtering:
 ```bash
-./src/niffler --loglevel=INFO     # General information
-./src/niffler --loglevel=WARN     # Warnings and above
-./src/niffler --loglevel=ERROR    # Errors only
+./niffler --loglevel=INFO     # General information
+./niffler --loglevel=WARN     # Warnings and above
+./niffler --loglevel=ERROR    # Errors only
 ```
 
 ### Profiling
@@ -329,7 +329,7 @@ Note: topics-based debugging not yet implemented. Use log levels for filtering:
 Use Nim's built-in profiler:
 ```bash
 nim c --profiler:on --stacktrace:on src/niffler
-./src/niffler
+./niffler
 nimprof profile_result.txt
 ```
 

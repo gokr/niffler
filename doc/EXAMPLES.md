@@ -24,8 +24,8 @@ Niffler's distributed multi-agent architecture allows specialized agents to coll
 **Start your agents (Terminal 1):**
 ```bash
 # Start multiple specialized agents
-./src/niffler agent coder
-./src/niffler agent researcher
+./niffler agent coder
+./niffler agent researcher
 
 # Agent terminals will display:
 # [AGENT] coder listening on niffler.agent.coder.request
@@ -35,7 +35,7 @@ Niffler's distributed multi-agent architecture allows specialized agents to coll
 **Use the master CLI (Terminal 2):**
 ```bash
 # Start master
-./src/niffler
+./niffler
 
 # Check which agents are available
 > /agents
@@ -139,7 +139,7 @@ You are a coding expert.
 **Fire-and-forget tasks:**
 ```bash
 # Start agent and send single task, then exit
-./src/niffler agent coder --task="Create a README for this project"
+./niffler agent coder --task="Create a README for this project"
 
 # Output appears in the agent's terminal
 ```
@@ -150,9 +150,9 @@ You are a coding expert.
 # batch_tasks.sh
 
 # Send multiple tasks to different agents
-./src/niffler agent coder --task="Lint all source files"
-./src/niffler agent researcher --task="Find latest version of all dependencies"
-./src/niffler agent coder --task="Update dependencies to latest versions"
+./niffler agent coder --task="Lint all source files"
+./niffler agent researcher --task="Find latest version of all dependencies"
+./niffler agent coder --task="Update dependencies to latest versions"
 ```
 
 **Note:** The `--task` flag is used with the `agent` command for single-shot tasks. The master CLI interactive mode only supports `@agent` syntax routing, not direct prompt execution.
@@ -198,7 +198,7 @@ You are a coding expert.
    - Real-time streaming of responses
    - Tool execution visible for debugging
 
-**Learn more:** See [doc/TASK.md](doc/TASK.md) for complete multi-agent architecture documentation and [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) for implementation details.
+**Learn more:** See [MANUAL.md](MANUAL.md) for the multi-agent overview and [research/DEVELOPMENT.md](research/DEVELOPMENT.md) for implementation details.
 
 ## Skills System
 

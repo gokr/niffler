@@ -12,6 +12,8 @@ This directory contains user-facing documentation for Niffler.
 - [MCP_SETUP.md](MCP_SETUP.md): MCP server configuration
 - [DISCORD_SETUP.md](DISCORD_SETUP.md): Discord bot setup
 - [EXAMPLES.md](EXAMPLES.md): Usage examples and workflows
+- [../SKILLS.md](../SKILLS.md): Skills system and skill format
+- [../ACTIONS.md](../ACTIONS.md): Action-backed orchestration model
 
 ## Reference
 
