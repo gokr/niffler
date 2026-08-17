@@ -1,10 +1,13 @@
-# mini Niffler — build and run without knowing Go, Nim or Wails.
+# Niffler — build and run without knowing Go, Nim or Wails.
 #
-#   make up     single command: build everything, ensure a bus + core are
-#               running, then open the desktop UI
+#   make up     single command: build only what changed, ensure a bus + core
+#               are running, then open the desktop UI
 #   make down   stop the UI, core and the bus core spawned
 #   make setup  install all prerequisites for this platform (Ubuntu/macOS)
 #   make doctor check prerequisites and report what is missing
+#
+# Every binary target tracks its sources, so `make up` / `make all` are no-ops
+# when nothing changed. Nim keeps its own incremental cache (nimcache/) on top.
 #
 # Full install instructions per platform: README.md.
 
@@ -19,9 +22,23 @@ IS_MAC  := $(filter Darwin,$(UNAME_S))
 IS_LNX  := $(filter Linux,$(UNAME_S))
 SUDO    := $(if $(filter 0,$(shell id -u)),,sudo)
 
+# per-binary sources: a change in one component rebuilds only that binary;
+# a change in the SDK rebuilds everything that imports it
+SDK_NIM  := $(wildcard sdk/*.nim sdk/niffler/*.nim)
+CORE_NIM := $(wildcard core/*.nim)
+SDK_GO   := $(wildcard sdk/go/*.go)
+NIM_CONF := config.nims niffler.nimble
+
+# UI sources, excluding generated/installed trees (wailsjs, dist, build, deps)
+UI_INPUTS := $(shell find ui \( -path ui/build -o -path ui/frontend/node_modules \
+             -o -path ui/frontend/dist -o -path ui/frontend/wailsjs \
+             -o -name package.json.md5 \) -prune -o -type f -print)
+
+UI_BIN := ui/build/bin/niffler-ui
+
 .DEFAULT_GOAL := all
 
-.PHONY: help all build ui run up down status test smoke dev clean \
+.PHONY: help all build components ui run up down status test smoke dev clean \
         setup doctor install-go install-nim install-nats install-node \
         install-wails install-ui-deps
 
@@ -41,18 +58,56 @@ help:
 
 all: build ui
 
-build:
-	nimble all
+# ---------------------------------------------------------------------------
+# core + components
 
-ui:
+var/bin:
+	@mkdir -p var/bin
+
+var/bin/niffler: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off -o:$@ core/core.nim
+
+var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/store/main.nim
+
+var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/bash/main.nim
+
+var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
+
+var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
+	cd components/llm-openai && go build -o ../../var/bin/llm-openai .
+
+components: var/bin/niffler var/bin/store var/bin/bash var/bin/builder var/bin/llm-openai
+
+build: components
+
+# ---------------------------------------------------------------------------
+# desktop UI
+
+ui: $(UI_BIN)
+
+$(UI_BIN): $(UI_INPUTS)
 	@if [ ! -x "$(WAILS)" ]; then \
 		echo "wails CLI not found (looked at $(WAILS))."; \
 		echo "Install: make install-wails"; \
 		exit 1; fi
 	cd ui && "$(WAILS)" build $(UI_TAGS)
 
+# ---------------------------------------------------------------------------
+# run / test
+
 run: build
 	./var/bin/niffler
+
+var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ tests/smoke.nim
+
+test: build var/bin/smoke
+	NIF_ROOT=$(ROOT) ./var/bin/smoke
+
+smoke: test  # alias
 
 up: all
 	./scripts/niffler.sh up
@@ -62,9 +117,6 @@ down:
 
 status:
 	./scripts/niffler.sh status
-
-test: build
-	nimble smoke
 
 dev:
 	cd ui/frontend && npm run dev
