@@ -1,4 +1,4 @@
-// Package sdk is the mini Niffler component SDK (Go).
+// Package sdk is the Niffler component SDK (Go).
 //
 // Mirrors sdk/niffler.nim 1:1 — the envelope (docs/WIRE.md) is the artifact.
 // The Go port uses nats.go callbacks (goroutines) serialized with a mutex,

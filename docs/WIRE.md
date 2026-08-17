@@ -1,4 +1,4 @@
-# Wire protocol — mini Niffler
+# Wire protocol — Niffler
 
 One page. Versioned, boring, identical on every transport (NATS, stdio/NDJSON
 behind pipewrap, future HTTP gateway). JSON everywhere by default; codec

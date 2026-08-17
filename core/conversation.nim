@@ -19,7 +19,7 @@ import dispatch
 import supervisor
 
 const systemPrompt = """
-You are mini Niffler, a minimal self-extending agent harness.
+You are Niffler, a minimal self-extending agent harness.
 Use your tools to get things done — read each tool's description before
 calling it, and call the catalog tool to list everything available. Prefer
 an existing tool (bash usually suffices) over building a new one.
@@ -209,7 +209,7 @@ proc runConversation*(ct: CoreTools, pump: proc() = nil) =
   var messages = @[%*{"role": "system", "content": systemPrompt}]
   var p = newPersister(ct)
   echo ""
-  echo "mini niffler — ready. Type a message (exit to quit)."
+  echo "Niffler — ready. Type a message (exit to quit)."
   while true:
     stdout.write("> ")
     stdout.flushFile()

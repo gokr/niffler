@@ -1,4 +1,4 @@
-# Reboot — mini Niffler
+# Reboot — Niffler
 
 A design summary for a minimal, self-extending agent harness, distilled from a
 design conversation (2026-08) covering the DeepSeek Harness, the Cordis plugin
@@ -75,7 +75,7 @@ Rejected alternatives:
 ## Architecture
 
 ```
-┌─ mini Niffler core ──────────────────────────────┐
+┌─ Niffler core ──────────────────────────────────┐
 │ conversation loop, supervisor (spawn/drain/kill),│
 │ catalog (JetStream KV or DB), NATS connection    │
 └───────────────────────┬──────────────────────────┘
@@ -286,7 +286,7 @@ speakers; anything request/reply can live behind `pipewrap`.
 Not ported: the `ToolKind` enum/object-variant tool registry — a tool is now
 just a queue-grouped subject; compile-time dispatch is exactly what we're
 escaping. Niffler is client-only re: NATS (no embedding in code; only roadmap
-docs discuss it) — mini Niffler adds the spawn-if-missing fallback (3 lines of
+docs discuss it) — Niffler adds the spawn-if-missing fallback (3 lines of
 `startProcess` on a random loopback port).
 
 ## Open threads

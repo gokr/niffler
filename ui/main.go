@@ -1,4 +1,4 @@
-// Package main is the mini Niffler UI shell — Wails v2 + Svelte 5.
+// Package main is the Niffler UI shell — Wails v2 + Svelte 5.
 //
 // The UI is a bus citizen, not a driver: the conversation loop lives in
 // core (svc.core.call "session" tool). The bridge exposes exactly three
@@ -24,7 +24,7 @@ func main() {
 	app := NewBridge()
 
 	err := wails.Run(&options.App{
-		Title:  "mini Niffler",
+		Title:  "Niffler",
 		Width:  1100,
 		Height: 780,
 		AssetServer: &assetserver.Options{

@@ -38,7 +38,7 @@ func NewBridge() *Bridge {
 	return b
 }
 
-// uiRoot returns the mini root: <root>/ui/build/bin/niffler-ui → 4 levels up.
+// uiRoot returns the Niffler root: <root>/ui/build/bin/niffler-ui → 4 levels up.
 func uiRoot() string {
 	exe, err := os.Executable()
 	if err != nil {

@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "Göran Krampe"
-description   = "mini Niffler — minimal self-extending agent harness (NATS + processes)"
+description   = "Niffler — minimal self-extending agent harness (NATS + processes)"
 license       = "MIT"
 bin           = @[]
 

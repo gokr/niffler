@@ -1,4 +1,4 @@
-## Envelope codec — mini Niffler wire protocol (docs/WIRE.md)
+## Envelope codec — Niffler wire protocol (docs/WIRE.md)
 ##
 ## Pure std/json so the SDK stays trivially portable; this is runtime data
 ## by design (schemas-as-runtime-data), not a typed seam.

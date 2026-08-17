@@ -1,4 +1,4 @@
-## mini Niffler component SDK (Nim)
+## Niffler component SDK (Nim)
 ##
 ## ~250 lines. Ports in other languages (sdk/go) mirror this file 1:1 — the
 ## envelope (sdk/envelope.nim + docs/WIRE.md) is the artifact, SDKs follow.

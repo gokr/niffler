@@ -1,4 +1,4 @@
-## mini Niffler core — entry point.
+## Niffler core — entry point.
 ##
 ## Boot sequence (docs/REBOOT.md): spawn NATS (if no NATS_URL) → open catalog →
 ## resolve manifest to binaries → spawn children → converge on the required

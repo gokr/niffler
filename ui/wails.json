@@ -10,9 +10,9 @@
     "name": "Göran Krampe"
   },
   "info": {
-    "companyName": "mini Niffler",
-    "productName": "mini Niffler",
+    "companyName": "Niffler",
+    "productName": "Niffler",
     "productVersion": "0.1.0",
-    "comments": "Web SPA shell for the mini Niffler harness — all interaction over NATS"
+    "comments": "Web SPA shell for the Niffler harness — all interaction over NATS"
   }
 }

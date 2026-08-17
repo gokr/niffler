@@ -1,4 +1,4 @@
-# mini Niffler compiler config
+# Niffler compiler config
 # All dependencies come from nimble (niffler.nimble); the pkgs2 scan below
 # keeps plain `nim c` invocations (builder, smoke test) resolving them even
 # when nimble.paths is stale.

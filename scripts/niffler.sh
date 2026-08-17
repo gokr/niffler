@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mini Niffler runner — start/stop the harness without knowing its internals.
+# Niffler runner — start/stop the harness without knowing its internals.
 #
 #   up      ensure a bus + core are running, then launch the desktop UI
 #   down    stop the UI, core, and the bus core spawned

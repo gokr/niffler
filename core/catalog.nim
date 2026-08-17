@@ -40,7 +40,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "description": "Start a compiled component binary; it registers itself and its tools appear in your toolset. To stop it again: core.kill (restored on next boot) or core.remove (forgotten permanently)",
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
-        "binary": {"type": "string", "description": "Path to the compiled binary (relative to the mini root or absolute)"}
+        "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"}
       },
       "required": ["name", "binary"],
       "x-harness": {"approval": "always"}

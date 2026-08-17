@@ -1,4 +1,4 @@
-// Package sdk is the mini Niffler component SDK (Go).
+// Package sdk is the Niffler component SDK (Go).
 //
 // The package name is 'sdk' so callers import the module `niffler.dev/sdk` and
 // reference it as `sdk.New(...)` / `sdk.Component` — matching the module
@@ -42,7 +42,7 @@ type eventBinding struct {
 	handler EventHandler
 }
 
-// Component is a mini Niffler component.
+// Component is a Niffler component.
 type Component struct {
 	Name    string
 	Version string
