@@ -16,3 +16,6 @@ ui/frontend/dist/
 # local secrets/config
 .env
 /tests/smoke
+ui/niffler-ui
+ui/frontend/wailsjs/
+ui/frontend/package.json.md5
