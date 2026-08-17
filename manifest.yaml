@@ -1,0 +1,34 @@
+# Bootstrap manifest — YAML bootstraps fresh systems; the DB catalog
+# becomes authoritative later (docs/REBOOT.md).
+#
+# build: {lang, src} kept as documentation; `nimble build` compiles all
+# shipped components. Agent-written components go through builder + spawn.
+
+components:
+  - name: store
+    build: {lang: nim, src: components/store/main.nim}
+    binary: var/bin/store
+    autostart: true
+    required: true
+    restart: on-failure
+
+  - name: bash
+    build: {lang: nim, src: components/bash/main.nim}
+    binary: var/bin/bash
+    autostart: true
+    required: true
+    restart: on-failure
+
+  - name: builder
+    build: {lang: nim, src: components/builder/main.nim}
+    binary: var/bin/builder
+    autostart: true
+    required: true
+    restart: on-failure
+
+  - name: llm-openai
+    build: {lang: go, src: components/llm-openai}
+    binary: var/bin/llm-openai
+    autostart: true
+    required: true
+    restart: on-failure

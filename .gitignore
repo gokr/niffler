@@ -1,0 +1,18 @@
+# runtime artifacts
+var/
+nimcache/
+
+# Go
+*.exe
+
+# OS
+.DS_Store
+
+# Wails UI
+ui/build/
+ui/frontend/node_modules/
+ui/frontend/dist/
+
+# local secrets/config
+.env
+/tests/smoke

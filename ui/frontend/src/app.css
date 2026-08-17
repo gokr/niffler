@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #101014;
+  --color-ink-900: #16161c;
+  --color-ink-800: #1e1e26;
+  --color-ink-700: #2a2a34;
+  --color-ink-600: #3a3a46;
+  --color-ink-400: #6b6b78;
+  --color-ink-300: #9a9aa8;
+  --color-ink-200: #c8c8d4;
+  --color-accent: #7dd3fc;
+  --color-accent-dim: #38bdf8;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-200);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: rgb(56 189 248 / 0.25);
+}
+
+/* chat bubbles */
+.msg-user {
+  @apply bg-ink-700 text-ink-200 rounded-xl rounded-br-sm px-4 py-2.5 max-w-[85%] self-end whitespace-pre-wrap;
+}
+.msg-assistant {
+  @apply text-ink-200 max-w-[92%] self-start px-1 py-1;
+}
+.msg-assistant pre {
+  @apply bg-ink-900 border border-ink-600 rounded-lg p-3 overflow-x-auto text-[13px];
+}
+.msg-assistant code {
+  @apply text-accent;
+}
+.msg-assistant pre code {
+  @apply text-ink-200;
+}
+
+/* tool call cards */
+.tool-card {
+  @apply border border-ink-600 rounded-lg bg-ink-900/60 px-3 py-2 text-[13px];
+}
+.tool-card summary {
+  @apply cursor-pointer select-none font-mono text-accent-dim;
+}
+.tool-card pre {
+  @apply text-ink-300 text-[12px] overflow-x-auto;
+}
+
+/* sidebar sessions */
+.session-item {
+  @apply w-full text-left px-3 py-2 rounded-md text-[13px] text-ink-300 hover:bg-ink-700 hover:text-ink-200 truncate cursor-pointer;
+}
+.session-item.active {
+  @apply bg-ink-700 text-ink-200;
+}
+
+/* scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-600);
+  border-radius: 4px;
+}

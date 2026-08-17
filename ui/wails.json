@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "niffler",
+  "outputfilename": "niffler-ui",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev:wails",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Göran Krampe"
+  },
+  "info": {
+    "companyName": "mini Niffler",
+    "productName": "mini Niffler",
+    "productVersion": "0.1.0",
+    "comments": "Web SPA shell for the mini Niffler harness — all interaction over NATS"
+  }
+}
