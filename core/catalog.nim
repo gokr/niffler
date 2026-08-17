@@ -37,12 +37,28 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "spawn", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Start a compiled component binary; it registers itself and its tools appear in your toolset",
+      "description": "Start a compiled component binary; it registers itself and its tools appear in your toolset. To stop it again: core.kill (restored on next boot) or core.remove (forgotten permanently)",
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
         "binary": {"type": "string", "description": "Path to the compiled binary (relative to the mini root or absolute)"}
       },
       "required": ["name", "binary"],
+      "x-harness": {"approval": "always"}
+    }))
+  coreReg.tools.add(ToolReg(name: "kill", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Stop a running component (drain + terminate). It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
+      "properties": {"name": {"type": "string", "description": "Component name"}},
+      "required": ["name"],
+      "x-harness": {"approval": "always"}
+    }))
+  coreReg.tools.add(ToolReg(name: "remove", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Stop a component and delete its persisted record — it will not be restored on the next boot",
+      "properties": {"name": {"type": "string", "description": "Component name"}},
+      "required": ["name"],
       "x-harness": {"approval": "always"}
     }))
   coreReg.tools.add(ToolReg(name: "catalog", component: "core",

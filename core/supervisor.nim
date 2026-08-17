@@ -65,6 +65,33 @@ proc pump*(sup: Supervisor, cat: Catalog) =
          ", backoff " & $backoff.int & "ms)"
     startChild(sup, c)
 
+proc removeChild*(sup: Supervisor, name: string): bool =
+  ## Stop one child for good, then drop it from the managed set (no restart,
+  ## no restore on boot). SIGTERM alone is the graceful path for a single
+  ## child — the SDKs treat SIGTERM like ev.sys.drain (depart + exit) —
+  ## whereas ev.sys.drain is a broadcast and would shut down every component.
+  ## Returns false if no such child exists.
+  var idx = -1
+  for i, c in sup.children:
+    if c.name == name:
+      idx = i
+      break
+  if idx < 0: return false
+  let c = sup.children[idx]
+  c.wanted = false
+  if c.process != nil and c.process.running():
+    c.process.terminate()   # SIGTERM: component departs gracefully
+    sleep(600)
+  if c.process != nil and c.process.running():
+    c.process.kill()        # SIGKILL
+    sleep(50)
+  if c.process != nil and not c.process.running():
+    c.process.close()
+    c.process = nil
+  delete(sup.children, idx)
+  echo "supervisor: removed " & name
+  return true
+
 proc drain*(sup: Supervisor) =
   ## Reverse registration order: drain event → grace → SIGTERM → SIGKILL.
   echo "supervisor: draining " & $sup.children.len & " children"

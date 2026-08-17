@@ -42,6 +42,29 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
     return %*{"ok": true, "name": name}
+  of "kill":
+    ## Stop a running component: drain, then terminate. It stays persisted
+    ## in the store and is restored on the next boot.
+    let name = args{"name"}.getStr("")
+    if name.len == 0:
+      return %*{"error": "kill needs name"}
+    if not ct.sup.removeChild(name):
+      return %*{"error": "no such component: " & name}
+    ct.cat.dropComponent(name)
+    return %*{"ok": true, "name": name, "persisted": true}
+  of "remove":
+    ## Stop a component AND delete its persisted record, so it does not
+    ## come back on the next boot.
+    let name = args{"name"}.getStr("")
+    if name.len == 0:
+      return %*{"error": "remove needs name"}
+    discard ct.sup.removeChild(name)
+    ct.cat.dropComponent(name)
+    try:
+      discard ct.dispatchToolCall("del", %*{"kind": "component", "id": name})
+    except CatchableError as e:
+      echo "core: warning — component record not deleted (store down?): " & e.msg
+    return %*{"ok": true, "name": name, "persisted": false}
   of "catalog":
     if args{"op"}.getStr("") == "list":
       return %*{"tools": ct.cat.allTools()}
@@ -51,7 +74,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode =
-  if tool in ["spawn", "catalog"]:
+  if tool in ["spawn", "catalog", "kill", "remove"]:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
       raise newException(ValueError, r{"error"}.getStr("core tool error"))

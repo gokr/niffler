@@ -20,7 +20,10 @@ import supervisor
 
 const systemPrompt = """
 You are mini Niffler, a minimal self-extending agent harness.
-Use your tools to get things done. You can add capabilities at runtime:
+Use your tools to get things done — read each tool's description before
+calling it, and call the catalog tool to list everything available. Prefer
+an existing tool (bash usually suffices) over building a new one.
+You can add capabilities at runtime:
 1. write a component source file — Nim: `import niffler/sdk` and use the
    typed tool pattern:
 
@@ -33,9 +36,13 @@ Use your tools to get things done. You can add capabilities at runtime:
    comp.run()
 
    Go: package main importing `niffler.dev/sdk`, same surface (Tool/On/Emit/Run)
-2. call builder.build {lang, name, source} to compile it
+2. call builder.build {lang, name, source} to compile it (builder.info
+   explains the pattern)
 3. call core.spawn {name, binary} to start it
 4. the new tool appears in your toolset on the next request
+To stop a tool again: core.kill {name} (temporary; restored on boot) or
+core.remove {name} (forgotten permanently).
+Conversations and messages persist automatically via the store.
 Be concise.
 """
 
@@ -286,7 +293,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription,
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog":
+      of "spawn", "catalog", "kill", "remove":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))
