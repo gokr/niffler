@@ -34,12 +34,20 @@
     sessionId = null;
     refreshKey++;
   }
+
+  function handleDelete(id: string) {
+    if (sessionId === id) newSession();
+  }
+
+  function short(id: string): string {
+    return id.startsWith("conv-") ? id.slice(5, 13) : id.slice(0, 8);
+  }
 </script>
 
 <div class="flex h-screen">
   <aside class="w-64 shrink-0 border-r border-ink-700 flex flex-col bg-ink-900">
     <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
-      <span class="font-semibold text-ink-200">mini Niffler</span>
+      <span class="font-semibold text-ink-200">Niffler</span>
       <span
         class="w-2 h-2 rounded-full"
         class:bg-accent={connected === true}
@@ -48,7 +56,7 @@
         title={connected === null ? "connecting…" : connected ? "bus connected" : "bus unreachable"}
       ></span>
     </div>
-    <Sessions {selectSession} {sessionId} {refreshKey} />
+    <Sessions {selectSession} {sessionId} {refreshKey} onDelete={handleDelete} />
     <div class="p-3 border-t border-ink-700">
       <button
         class="w-full rounded-md bg-accent-dim/15 text-accent px-3 py-2 text-sm font-medium hover:bg-accent-dim/25"
@@ -61,7 +69,7 @@
 
   <main class="flex-1 flex flex-col min-w-0">
     <header class="px-4 py-2 border-b border-ink-700 text-[13px] text-ink-400">
-      {sessionId ?? "new session"}
+      {sessionId ? "session " + short(sessionId) : "new session"}
       {#if url}
         <span class="ml-3 font-mono text-ink-600">{url}</span>
       {/if}
@@ -78,8 +86,6 @@
         <code class="font-mono">NATS_URL={url || "nats://127.0.0.1:4222"} ./var/bin/niffler</code>
       </div>
     {/if}
-    {#key sessionId}
-      <Chat {sessionId} />
-    {/key}
+    <Chat bind:sessionId={sessionId} />
   </main>
 </div>

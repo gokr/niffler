@@ -29,6 +29,10 @@
   let input = $state("");
   let busy = $state(false);
   let scrollEl: HTMLDivElement | undefined = $state();
+  // The id we minted ourselves this turn (a brand-new session). While set,
+  // session switches initiated by our own send must not clobber live messages.
+  let createdHere = $state<string | null>(null);
+  let createdTitle = $state("");
 
   function push(msg: Msg) {
     messages = [...messages, msg];
@@ -37,8 +41,38 @@
     });
   }
 
-  // ---- load history from the store --------------------------------------
-  onMount(async () => {
+  async function loadHistory() {
+    if (!sessionId) return;
+    try {
+      const resp = await send("store", "list", {
+        kind: "message",
+        idPrefix: sessionId + ":",
+      });
+      const stored: Msg[] = [];
+      for (const item of resp.items ?? []) {
+        const v = item.value ?? {};
+        if (v.role === "tool") {
+          stored.push({ role: "tool", content: v.content, tool: v.name });
+        } else if (v.role === "assistant") {
+          stored.push({
+            role: "assistant",
+            content: v.content ?? "",
+            model: v.model,
+            context: v.context,
+            usage: v.usage,
+          });
+        } else {
+          stored.push({ role: "user", content: v.content ?? "" });
+        }
+      }
+      messages = stored;
+      tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
+    } catch {
+      /* store unavailable — start empty */
+    }
+  }
+
+  onMount(() => {
     const off = on("ev.session.", (ev) => {
       const p = ev.payload ?? {};
       if (p.sessionId !== sessionId) return;
@@ -76,37 +110,18 @@
         }
       }
     });
-
-    if (sessionId) {
-      try {
-        const resp = await send("store", "list", {
-          kind: "message",
-          idPrefix: sessionId + ":",
-        });
-        const stored: Msg[] = [];
-        for (const item of resp.items ?? []) {
-          const v = item.value ?? {};
-          if (v.role === "tool") {
-            stored.push({ role: "tool", content: v.content, tool: v.name });
-          } else if (v.role === "assistant") {
-            stored.push({
-              role: "assistant",
-              content: v.content ?? "",
-              model: v.model,
-              context: v.context,
-              usage: v.usage,
-            });
-          } else {
-            stored.push({ role: "user", content: v.content ?? "" });
-          }
-        }
-        messages = stored;
-        tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
-      } catch {
-        /* store unavailable — start empty */
-      }
-    }
+    loadHistory();
     return off;
+  });
+
+  // Session changed from outside (sidebar click, "+ New session"): reload.
+  // Skipped when the change is our own new-session mint — those messages are
+  // still live and must not be replaced by an empty history read.
+  $effect(() => {
+    if (createdHere && sessionId === createdHere) return;
+    createdHere = null;
+    messages = [];
+    loadHistory();
   });
 
   // ---- send ---------------------------------------------------------------
@@ -119,6 +134,8 @@
     let sid = sessionId;
     if (!sid) {
       sid = crypto.randomUUID();
+      createdHere = sid;
+      createdTitle = text;
       sessionId = sid;
     }
     push({ role: "user", content: text });
@@ -126,8 +143,26 @@
 
     try {
       await send("core", "session", { sessionId: sid, content: text }, 600000);
+      if (createdHere === sid) {
+        createdHere = null;
+        await titleSession(sid, createdTitle);
+      }
     } catch (e) {
       push({ role: "assistant", content: "⚠ " + String(e) });
+    }
+  }
+
+  // Name a brand-new session after its first message so the sidebar shows
+  // something readable instead of a UUID fragment.
+  async function titleSession(sid: string, title: string) {
+    try {
+      const g = await send("store", "get", { kind: "conversation", id: sid });
+      const v = g.value ?? {};
+      if (v.title) return; // someone renamed it meanwhile — keep theirs
+      const t = title.length > 60 ? title.slice(0, 60) + "…" : title;
+      await send("store", "put", { kind: "conversation", id: sid, value: { ...v, title: t } });
+    } catch {
+      /* store unreachable — title stays empty */
     }
   }
 </script>
@@ -179,7 +214,7 @@
     <textarea
       class="flex-1 resize-none rounded-lg bg-ink-800 border border-ink-600 px-3 py-2 text-[14px] text-ink-200 outline-none focus:border-accent-dim"
       rows="2"
-      placeholder="Ask mini Niffler to do something…"
+      placeholder="Ask Niffler to do something…"
       bind:value={input}
       onkeydown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) {
