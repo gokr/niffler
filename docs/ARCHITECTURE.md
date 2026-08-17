@@ -1,0 +1,96 @@
+# Architecture — why core is core
+
+Everything is a component except the irreducible control plane. This file is the
+answer to "why is this in core instead of a component?" — the design test, the
+five mechanisms, and the deliberate exclusions.
+
+## The component test
+
+A mechanism can be a component iff:
+
+1. it can exist *after* the bus exists, and
+2. the agent must be able to kill, remove, or rebuild it at runtime.
+
+Anything that must precede the bus, or must outlive the agent's power to remove
+things, is core. Components are the expendable layer by definition; the agent
+retires them with `core.kill`/`core.remove`. The trust anchors are the ones that
+must never be retirable — otherwise the harness loses its only handle on
+processes, its namespace authority, or its own mind.
+
+## The irreducible mechanisms
+
+### 1. Bus bootstrap — `core/core.nim`
+
+NATS spawn/attach, port pick, `.env` load, manifest read, `var/nats-url`.
+Everything else is defined relative to the bus — components *are* bus
+subscribers — so this runs before any component can exist. Irreducible by
+definition.
+
+### 2. Supervisor — `core/supervisor.nim`
+
+Process lifecycle: start, crash detection, drain ordering, SIGTERM→SIGKILL
+escalation on shutdown. `core.spawn`/`kill`/`remove` are its API surface.
+
+Two separate reasons it cannot be a component:
+
+- *Chicken-and-egg*: someone must start the first process, and something must
+  restart the supervisor when it crashes. It must be the OS parent-of-record —
+  correct pid-based crash detection and clean drain ordering only work from
+  that position.
+- *Trust*: the whole point of `core.kill`/`core.remove` is that the agent can
+  retire anything. The supervisor is the one thing that must be un-retirable —
+  a removed supervisor would orphan every child, lose crash recovery and drain.
+  A killable supervisor defeats the architecture's own validation criterion.
+
+### 3. Conversation loop + session entry — `core/conversation.nim`
+
+The `session` tool (hidden) and the loop that drives the LLM, dispatches tools,
+and composes the system prompt. This is the agent's own mind.
+
+Crash isolation (docs/REBOOT.md: a component must never corrupt the agent's
+mind) means the mind must not be a peer of things it can remove — otherwise the
+agent could `core.remove` its own brain mid-conversation. It must also exist
+before any component answers `svc.core.call`. The mind's *state* is a component
+(`store`); the mind itself is not.
+
+### 4. Catalog authority — `core/catalog.nim`
+
+The live registry: `reg.publish`/`reg.depart` handling, global tool-name
+uniqueness enforcement, hidden-tool filtering (`x-harness.hidden`), schema
+normalization, `ev.catalog.updated` announcements.
+
+The borderline case — it is almost a component (a `reg.>` subscriber). It stays
+in core because it must (a) exist before any component registers — boot order —
+and (b) be the un-killable authority for what counts as a tool. A removed
+catalog would let two components squat the same tool name and blind the harness
+to its own body.
+
+### 5. Approval / policy — `core/dispatch.nim` (the seam)
+
+`x-harness.approval` and `x-harness.timeoutMs` are honored on the dispatch path.
+Approval is deliberately kept as a synchronous interceptor in core rather than
+a bus hop: policy must be synchronous and central, and a multi-hop middleware
+chain over NATS would be slower and less trustworthy (docs/REBOOT.md, open
+threads). Unlike 1–4 this is a *choice*, not a structural necessity — it could
+become a component the day the harness outgrows one interceptor.
+
+## What is deliberately outside core
+
+The mechanisms that *are* components, and the capability they carry:
+
+| Component | Capability | Notes |
+|---|---|---|
+| `store` | state/persistence | single-writer KV; the mind's state lives here, not in core |
+| `llm-openai` | LLM access | hidden `chat` tool; the actual model is an OpenAI-compatible endpoint |
+| `builder` | compilation | agent-written Nim/Go → binary |
+| `bash` | execution | general-purpose machine access |
+
+The pattern: state, access, build, and exec are all replaceable peers. If a
+mechanism can be rebuilt by the agent at runtime, it must be one.
+
+## Where the boundary shows
+
+`core.kill` works on every component — `bash`, `builder`, `store`,
+`llm-openai`, anything the agent added. What it cannot touch is exactly the
+list above: the supervisor's children-ownership, the catalog, the loop, the
+bus. That asymmetry is the architecture, not an implementation detail.

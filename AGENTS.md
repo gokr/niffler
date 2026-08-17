@@ -1,12 +1,14 @@
-# AGENTS.md — mini Niffler
+# AGENTS.md — Niffler
 
-mini Niffler is **the new Niffler** — a minimal, self-extending agent harness.
+Niffler is a minimal, self-extending agent harness.
 It replaces, not extends, the old Niffler codebase (now at `~/git/niffler-old`);
 only its **Nim style guidelines** (in `~/git/niffler-old/CLAUDE.md`) apply here:
 camelCase, `fmt("...")` as a proc call, no asyncdispatch, doc comments with `##`.
 
 Design rationale: [docs/REBOOT.md](docs/REBOOT.md). The one wire spec:
-[docs/WIRE.md](docs/WIRE.md). Read both before changing anything structural.
+[docs/WIRE.md](docs/WIRE.md). Why core is core:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Read these before changing
+anything structural.
 
 ## What this is (architecture invariants)
 
@@ -152,7 +154,7 @@ NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   for `catalog: ui v` to prove the bridge connected.
 - Killing all component processes leaves the NATS server orphaned; either
   use the harness's own spawn (`./var/bin/niffler` spawns nats if `NATS_URL`
-  unset) or `pkill -f nats-server; pkill -f mini/var/bin` before a cold start.
+  unset) or `pkill -f nats-server; pkill -f niffler/var/bin` before a cold start.
 
 ## Working in this repo
 
