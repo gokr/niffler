@@ -143,12 +143,28 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.sup.pump(ct.cat)
 
     let content = resp{"content"}.getStr("")
+    # Model + token usage surfaced by the llm component (informational).
+    let usedModel = resp{"model"}.getStr("")
+    let ctxSize = resp{"context"}.getInt(0)
+    let usage = resp{"usage"}
+    var usageObj = newJObject()
+    if usage != nil:
+      for k in ["prompt_tokens", "completion_tokens", "total_tokens"]:
+        if usage{k} != nil:
+          usageObj[k] = usage{k}
     if content.len > 0:
       let assistantMsg = %*{"role": "assistant", "content": content}
+      if usedModel.len > 0: assistantMsg["model"] = %usedModel
+      if ctxSize > 0: assistantMsg["context"] = %ctxSize
+      if usageObj.len > 0: assistantMsg["usage"] = usageObj
       messages.add(assistantMsg)
       p.persistMsg(assistantMsg)
       if onEvent != nil:
-        onEvent("assistant", %*{"sessionId": sessionId, "content": content})
+        var ev = %*{"sessionId": sessionId, "content": content}
+        if usedModel.len > 0: ev["model"] = %usedModel
+        if ctxSize > 0: ev["context"] = %ctxSize
+        if usageObj.len > 0: ev["usage"] = usageObj
+        onEvent("assistant", ev)
 
     let toolCalls = resp{"tool_calls"}
     if toolCalls == nil or toolCalls.kind != JArray or toolCalls.len == 0:
