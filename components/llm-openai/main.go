@@ -30,8 +30,6 @@ type chatArgs struct {
 func contextWindow(model string) int {
 	m := strings.ToLower(model)
 	switch {
-	case strings.HasPrefix(m, "gpt-4o-mini"):
-		return 128000
 	case strings.HasPrefix(m, "gpt-4o"), strings.HasPrefix(m, "gpt-4.1"):
 		return 128000
 	case strings.HasPrefix(m, "gpt-4-turbo"):
@@ -65,7 +63,7 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		model = os.Getenv("OPENAI_MODEL")
 	}
 	if model == "" {
-		model = "gpt-4o-mini"
+		model = "deepseek-chat"
 	}
 	base := os.Getenv("OPENAI_BASE_URL")
 	if base == "" {
