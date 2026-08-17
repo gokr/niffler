@@ -13,6 +13,9 @@ if dirExists(pkgsDir):
       if base.startsWith(prefix):
         switch("path", path)
 
+# futhark (via natswrapper) emits a bogus FILE-size warning for the C header
+switch("warning", "User:off")
+
 when defined(release):
   switch("opt", "speed")
 else:

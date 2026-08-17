@@ -9,7 +9,6 @@ import yaml/tojson
 import natswrapper
 when defined(posix):
   import std/posix
-import ../sdk/envelope
 import ../sdk/dotenv
 import catalog
 import conversation

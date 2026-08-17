@@ -4,7 +4,7 @@
 ## Restart policy per child: never | on-failure (with backoff). Drain order:
 ## ev.sys.drain event → grace period → SIGTERM → SIGKILL.
 
-import std/[json, os, osproc, strtabs, times]
+import std/[json, os, osproc, times]
 import natswrapper
 import ../sdk/envelope
 import catalog

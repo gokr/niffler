@@ -5,7 +5,7 @@
 ## go.mod with a replace to the local SDK if they don't have one.
 ## The agent's next step is core.spawn {name, binary}.
 
-import std/[json, os, osproc, streams, strutils]
+import std/[json, os, osproc, streams]
 import niffler/sdk
 
 proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =

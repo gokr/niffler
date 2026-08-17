@@ -42,7 +42,14 @@ proc getRev(kind, id: string): int =
 
 comp.tool:
   proc put(kind: string, id: string, value: JsonNode, expectRev: int = 0): JsonNode =
-    ## Upsert a document. expectRev > 0 → fail if the current rev differs.
+    ## Upsert a document into the store. Hidden from the LLM: writes are
+    ## made by core on the agent's behalf (conversations, messages,
+    ## spawned component records). expectRev > 0 → fail if the current
+    ## revision differs (optimistic concurrency).
+    ## - kind: Document kind (conversation, message, component, ...)
+    ## - id: Document id within the kind
+    ## - value: The document body (any JSON)
+    ## - expectRev: Require this current revision, or fail with rev-conflict
     let cur = getRev(kind, id)
     if expectRev > 0:
       if cur == 0:
@@ -58,7 +65,12 @@ comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
 
 comp.tool:
   proc get(kind: string, id: string): JsonNode =
-    ## Fetch a document by kind and id
+    ## Fetch a document by kind and id. Read-only; use it to inspect
+    ## persisted state. Kinds in use: conversation (id conv-*), message
+    ## (id <convId>:<n>), component (id <name>). Returns ok, rev and value,
+    ## or ok:false with code not-found.
+    ## - kind: Document kind
+    ## - id: Document id within the kind
     let rev = getRev(kind, id)
     if rev == 0:
       return %*{"ok": false, "error": "not found", "code": "not-found"}
@@ -66,7 +78,13 @@ comp.tool:
 
 comp.tool:
   proc list(kind: string, idPrefix: string = "", limit: int = 100): JsonNode =
-    ## List documents of a kind, optionally filtered by id prefix
+    ## List documents of a kind, ordered by id, optionally filtered by an
+    ## id prefix. Read-only; use it to enumerate conversations (kind
+    ## conversation) or the messages of one conversation (kind message,
+    ## idPrefix <convId>:). Returns ok and items [{id, rev, value}].
+    ## - kind: Document kind
+    ## - idPrefix: Only items whose id starts with this
+    ## - limit: Max items (default 100, cap 1000)
     let prefix = "d:" & kind & ":" & idPrefix
     let (keys, _, _) =   db.keysByPrefix(prefix, min(limit, 1000))
     var items = newJArray()
@@ -80,7 +98,10 @@ comp.tool:
 
 comp.tool:
   proc del(kind: string, id: string): JsonNode =
-    ## Delete a document
+    ## Delete a document. Hidden from the LLM: deletes are made by core
+    ## (e.g. core.remove dropping a component record).
+    ## - kind: Document kind
+    ## - id: Document id within the kind
     discard   db.delete(docKey(kind, id))
     discard   db.delete(revKey(kind, id))
     return %*{"ok": true}

@@ -3,7 +3,7 @@
 ## Spawns a NATS server, starts the bash component, waits for its
 ## registration, calls svc.bash.call with a call envelope, checks the reply.
 
-import std/[json, net, os, osproc, strtabs, strutils, times]
+import std/[json, net, os, osproc, strtabs, strutils]
 import natswrapper
 import envelope
 import niffler/sdk

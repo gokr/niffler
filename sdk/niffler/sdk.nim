@@ -21,7 +21,7 @@
 ## - Teardown = exit; the OS is the disposer. On SIGTERM/SIGINT/ev.sys.drain
 ##   we announce reg.depart, finish the current message, then quit.
 
-import std/[json, os, osproc, strutils, tables]
+import std/[json, os, strutils, tables]
 import std/macros
 import natswrapper
 import ../envelope
@@ -383,7 +383,6 @@ macro tool*(c: untyped, procDef: untyped): untyped =
     if not hasDefault:
       required.add(%pname)
 
-  echo "PROCDEF: ", procDef.treeRepr
   let (description, paramDocs) = extractToolDocs(procDef)
   for b in bindings:
     if paramDocs.hasKey(b.name):
