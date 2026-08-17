@@ -10,9 +10,15 @@ let comp = newComponent("bash", "0.1.0")
 
 comp.tool:
   proc bash(command: string, timeoutMs: int = 30000): JsonNode =
-    ## Run a command in bash; returns exit code and combined stdout/stderr.
-    ## - command: Shell command to run
-    ## - timeoutMs: Timeout in ms (default 30000)
+    ## Execute a shell command via bash -c. This is your general-purpose
+    ## interface to the machine: files, git, builds, tests, processes,
+    ## network. Use it for any task no existing tool covers, and prefer it
+    ## over writing a new component whenever one command or a short script
+    ## suffices. Returns the combined stdout/stderr and the exit code of
+    ## the last command; on timeout the process is killed and exit_code is
+    ## 124.
+    ## - command: The shell command line to run (bash -c)
+    ## - timeoutMs: Kill the command after this many ms (default 30000)
     var p = startProcess("bash", args = ["-c", command],
                          options = {poUsePath, poStdErrToStdOut})
     var code = p.waitForExit(timeoutMs)

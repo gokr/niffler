@@ -28,8 +28,16 @@ let comp = newComponent("builder", "0.1.0")
 
 comp.tool:
   proc build(lang: string, name: string, source: string): JsonNode =
-    ## Compile a component source into a binary under var/bin; then call core.spawn.
-    ## - lang: Language: nim or go
+    ## Compile a new component from source into a binary under var/bin.
+    ## Use this when the harness lacks a capability that no existing tool
+    ## covers: write the component source yourself (Nim: import niffler/sdk
+    ## with the comp.tool: pattern; Go: import niffler "niffler.dev/sdk"),
+    ## then call core.spawn with the returned binary — the component
+    ## registers itself and its tools appear in your toolset on the next
+    ## request. Call the info tool first to see the SDK locations and the
+    ## exact code pattern. Returns ok, the binary path and a log tail
+    ## (compile errors are truncated to 2000 chars).
+    ## - lang: Language of the component: nim or go
     ## - name: Component name (also the binary name)
     ## - source: Full source code of the component
     let root = getEnv("NIF_ROOT", ".")
