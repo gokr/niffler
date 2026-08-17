@@ -4,6 +4,12 @@
   import { renderMarkdown } from "$lib/markdown";
   import ToolCall from "./ToolCall.svelte";
 
+  interface Usage {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  }
+
   interface Msg {
     role: "user" | "assistant" | "tool";
     content?: string;
@@ -12,6 +18,9 @@
     result?: any;
     error?: string;
     pending?: boolean;
+    model?: string;
+    context?: number;
+    usage?: Usage;
   }
 
   let { sessionId = $bindable(null) } = $props<{ sessionId: string | null }>();
@@ -52,7 +61,13 @@
           });
         }
       } else if (kind === "assistant") {
-        push({ role: "assistant", content: p.content });
+        push({
+          role: "assistant",
+          content: p.content,
+          model: p.model,
+          context: p.context,
+          usage: p.usage,
+        });
       } else if (kind === "done") {
         busy = false;
         if (p.error) push({ role: "assistant", content: "⚠ " + p.error });
@@ -74,7 +89,13 @@
           if (v.role === "tool") {
             stored.push({ role: "tool", content: v.content, tool: v.name });
           } else if (v.role === "assistant") {
-            stored.push({ role: "assistant", content: v.content ?? "" });
+            stored.push({
+              role: "assistant",
+              content: v.content ?? "",
+              model: v.model,
+              context: v.context,
+              usage: v.usage,
+            });
           } else {
             stored.push({ role: "user", content: v.content ?? "" });
           }
@@ -124,6 +145,24 @@
             <span class="text-ink-400 animate-pulse">thinking…</span>
           {:else}
             {@html renderMarkdown(m.content ?? "")}
+          {/if}
+          {#if m.model || m.usage}
+            <div class="msg-meta">
+              {#if m.model}
+                <span class="msg-meta-item">{m.model}</span>
+              {/if}
+              {#if m.usage?.prompt_tokens != null || m.usage?.completion_tokens != null}
+                <span class="msg-meta-item">
+                  ⤴ {m.usage?.prompt_tokens ?? 0} · ⤵ {m.usage?.completion_tokens ?? 0}
+                </span>
+              {/if}
+              {#if m.usage?.total_tokens != null}
+                <span class="msg-meta-item">Σ {m.usage.total_tokens}</span>
+              {/if}
+              {#if m.model && m.context}
+                <span class="msg-meta-item">ctx {m.context.toLocaleString()}</span>
+              {/if}
+            </div>
           {/if}
         </div>
       {/if}

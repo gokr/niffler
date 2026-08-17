@@ -43,6 +43,12 @@ body,
 .msg-assistant pre code {
   @apply text-ink-200;
 }
+.msg-meta {
+  @apply mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-400;
+}
+.msg-meta-item {
+  @apply font-mono;
+}
 
 /* tool call cards */
 .tool-card {
