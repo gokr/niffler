@@ -28,6 +28,7 @@ import ../envelope
 import ../dotenv
 
 export envelope
+export json  # components write %*{"..."} and JsonNode without their own import
 
 type
   ToolHandler* = proc(c: Component, args: JsonNode): JsonNode
@@ -269,17 +270,23 @@ proc procBody(procDef: NimNode): NimNode =
 
 proc extractToolDocs(procDef: NimNode): tuple[description: string,
                                               paramDocs: Table[string, string]] =
+  ## Doc comments become the tool schema: all prose lines of the first
+  ## comment block join into the description (so authors can write a full
+  ## paragraph, not just one line), "- param: text" lines become
+  ## per-parameter descriptions.
   let body = procBody(procDef)
   for stmt in body:
     if stmt.kind == nnkCommentStmt:
+      var desc: seq[string] = @[]
       for line in stmt.strVal.splitLines():
         let clean = line.strip()
         if clean.startsWith("- "):
           let parts = clean[2 .. ^1].split(":", 1)
           if parts.len == 2:
             result.paramDocs[parts[0].strip()] = parts[1].strip()
-        elif clean.len > 0 and result.description.len == 0:
-          result.description = clean
+        elif clean.len > 0:
+          desc.add(clean)
+      result.description = desc.join(" ")
       break
 
 # arg helpers: required vs defaulted, with clear errors for the LLM
