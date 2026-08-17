@@ -1,7 +1,7 @@
 # Niffler
 
-A minimal, self-extending agent harness. The agent adds capabilities at
-runtime — write source, compile it with the `builder` component, start it via
+This is Niffler (reborn), a minimal, self-extending agent harness. The agent adds capabilities at
+runtime — writes source, compiles it with the `builder` component, starts it via
 `core.spawn` — mid-conversation. Design rationale:
 [docs/REBOOT.md](docs/REBOOT.md). Wire protocol: [docs/WIRE.md](docs/WIRE.md).
 
@@ -148,8 +148,9 @@ Go — `import niffler "niffler.dev/sdk"` with the same surface
 the envelope is the artifact (~200 lines).
 
 Then: `builder.build {lang, name, source}` → `core.spawn {name, binary}` →
-the tool is live. The agent does this itself, mid-conversation — that is the
-architecture's validation criterion.
+the tool is live. Retire it with `core.remove {name}` (kill it temporarily
+with `core.kill {name}`). The agent does this itself, mid-conversation —
+that is the architecture's validation criterion.
 
 ## Milestone status
 

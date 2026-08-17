@@ -16,8 +16,9 @@ Design rationale: [docs/REBOOT.md](docs/REBOOT.md). The one wire spec:
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `llm-openai` are peers. Adding a capability = write source → `builder.build`
-  → `core.spawn`. The agent does this to itself, mid-conversation — that is the
-  architecture's validation criterion.
+  → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
+  (also deletes the persisted record). The agent does this to itself,
+  mid-conversation — that is the architecture's validation criterion.
 - Nim SDK has **no callbacks and no threads**: handlers poll
   `natsSubscription_NextMsg` on the main thread, serialized, with normal GC.
   The `{.gcsafe.}` pragmas dance from the old codebase is not needed and must not
@@ -29,6 +30,10 @@ Design rationale: [docs/REBOOT.md](docs/REBOOT.md). The one wire spec:
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
   e.g. `chat`), `x-harness.approval`, `x-harness.timeoutMs` (see
   `components/builder/main.nim`).
+- Tool doc comments are the LLM's only window into a tool: all prose lines of
+  the first comment block join into the schema description, `- param: text`
+  lines become parameter docs. Write *when-to-use* guidance there — the LLM
+  decides tool choice from that text alone.
 
 ## Commands
 

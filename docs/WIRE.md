@@ -50,7 +50,8 @@ ev.session.done        # {sessionId, reply} or {sessionId, error}
 ```
 
 `svc.core.call` is core's own service surface, served by core itself
-(queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`.
+(queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
+`kill`, `remove`.
 
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash).
