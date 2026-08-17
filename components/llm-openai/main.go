@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	sdk "niffler.dev/sdk"
@@ -21,6 +22,33 @@ type chatArgs struct {
 	Messages []map[string]any `json:"messages"`
 	Tools    []map[string]any `json:"tools"`
 	Model    string           `json:"model"`
+}
+
+// contextWindow returns a best-effort context size for a model name,
+// derived from the common OpenAI/DeepSeek model families. Unknown models
+// default to a conservative OpenAI value. This is informational only.
+func contextWindow(model string) int {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "gpt-4o-mini"):
+		return 128000
+	case strings.HasPrefix(m, "gpt-4o"), strings.HasPrefix(m, "gpt-4.1"):
+		return 128000
+	case strings.HasPrefix(m, "gpt-4-turbo"):
+		return 128000
+	case strings.HasPrefix(m, "gpt-4"):
+		return 8192
+	case strings.HasPrefix(m, "gpt-3.5"):
+		return 16385
+	case strings.HasPrefix(m, "deepseek-chat"):
+		return 64000
+	case strings.HasPrefix(m, "deepseek-reasoner"):
+		return 64000
+	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
+		return 200000
+	default:
+		return 128000
+	}
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -79,6 +107,12 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 
 	var out struct {
+		Model string `json:"model"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 		Choices []struct {
 			Message struct {
 				Content   *string `json:"content"`
@@ -101,7 +135,29 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("no choices in llm response")
 	}
 	msg := out.Choices[0].Message
+
+	// If the server didn't echo the model, fall back to what we requested.
+	usedModel := out.Model
+	if usedModel == "" {
+		usedModel = model
+	}
+	ctx := contextWindow(usedModel)
+
 	result := map[string]any{"content": msg.Content}
+	// Surface which model answered, token usage, and the approximate context
+	// window so the UI can show them without any extra round-trip.
+	if usedModel != "" {
+		result["model"] = usedModel
+		result["context"] = ctx
+	}
+	usage := map[string]any{
+		"prompt_tokens":     out.Usage.PromptTokens,
+		"completion_tokens": out.Usage.CompletionTokens,
+		"total_tokens":      out.Usage.TotalTokens,
+	}
+	if out.Usage.TotalTokens > 0 || out.Usage.PromptTokens > 0 || out.Usage.CompletionTokens > 0 {
+		result["usage"] = usage
+	}
 	if len(msg.ToolCalls) > 0 {
 		tcs := make([]map[string]any, 0, len(msg.ToolCalls))
 		for _, tc := range msg.ToolCalls {
