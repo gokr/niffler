@@ -14,6 +14,17 @@ type
     rpNever = "never"
     rpOnFailure = "on-failure"
 
+proc parsePolicy*(s: string): RestartPolicy =
+  ## Manifest/store policy strings → enum. Unknown values fall back to
+  ## on-failure (the safe default: a crashed component comes back).
+  case s
+  of "never": rpNever
+  of "on-failure": rpOnFailure
+  else:
+    echo "supervisor: unknown restart policy '" & s & "' — using on-failure"
+    rpOnFailure
+
+type
   Child* = ref object
     name*: string
     binary*: string

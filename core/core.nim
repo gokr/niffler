@@ -110,7 +110,7 @@ proc main() =
     if not fileExists(binary):
       echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binary & ")"
       continue
-    discard sup.addChild(name, binary)
+    discard sup.addChild(name, binary, parsePolicy(c{"restart"}.getStr("on-failure")))
     if c{"required"}.getBool(false):
       required.add(name)
   for c in sup.children:
@@ -147,7 +147,8 @@ proc main() =
         if alreadyManifest: continue  # shipped manifest definition wins
         if fileExists(binary):
           echo "core: restoring " & name & " from store (" & binary & ")"
-          discard sup.addChild(name, binary)
+          discard sup.addChild(name, binary,
+            parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
           sup.startChild(sup.children[^1])
         else:
           echo "core: WARNING stored component " & name &
