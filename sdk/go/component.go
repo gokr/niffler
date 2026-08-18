@@ -121,7 +121,7 @@ func (c *Component) Connect() error {
 	// .env from cwd and the harness root (existing env always wins)
 	LoadDotEnv(".env", filepath.Join(os.Getenv("NIF_ROOT"), ".env"))
 
-	url := os.Getenv("NATS_URL")
+	url := os.Getenv("NIF_NATS_URL")
 	if url == "" {
 		url = "nats://127.0.0.1:4222"
 	}

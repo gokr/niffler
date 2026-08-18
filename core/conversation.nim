@@ -78,7 +78,7 @@ proc newPersister*(ct: CoreTools): Persister =
     discard ct.dispatchToolCall("put", %*{
       "kind": "conversation", "id": result.convId,
       "value": %*{"createdAt": epochTime(),
-                  "model": getEnv("OPENAI_MODEL", ""), "title": ""}})
+                  "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
   except CatchableError:
     discard
 
@@ -269,7 +269,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
         discard ct.dispatchToolCall("put", %*{
           "kind": "conversation", "id": sessionId,
           "value": %*{"createdAt": epochTime(),
-                      "model": getEnv("OPENAI_MODEL", ""), "title": ""}})
+                      "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
       except CatchableError:
         discard
     for m in stored:

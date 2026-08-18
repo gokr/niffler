@@ -60,18 +60,18 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 
 	model := args.Model
 	if model == "" {
-		model = os.Getenv("OPENAI_MODEL")
+		model = os.Getenv("NIF_OPENAI_MODEL")
 	}
 	if model == "" {
 		model = "deepseek-chat"
 	}
-	base := os.Getenv("OPENAI_BASE_URL")
+	base := os.Getenv("NIF_OPENAI_BASE_URL")
 	if base == "" {
 		base = "https://api.openai.com/v1"
 	}
-	key := os.Getenv("OPENAI_API_KEY")
+	key := os.Getenv("NIF_OPENAI_API_KEY")
 	if key == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY not set")
+		return nil, fmt.Errorf("NIF_OPENAI_API_KEY not set")
 	}
 
 	body := map[string]any{"model": model, "messages": args.Messages}

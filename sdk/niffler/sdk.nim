@@ -174,7 +174,7 @@ proc run*(c: Component) =
   installSignals()
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
-  let url = getEnv("NATS_URL", "nats://127.0.0.1:4222")
+  let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
   c.nc = connect(url)
 
   # queue-grouped call subject: N replicas, one gets each call

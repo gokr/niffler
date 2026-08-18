@@ -1,6 +1,6 @@
 ## Niffler core — entry point.
 ##
-## Boot sequence (docs/REBOOT.md): spawn NATS (if no NATS_URL) → open catalog →
+## Boot sequence (docs/REBOOT.md): spawn NATS (if no NIF_NATS_URL) → open catalog →
 ## resolve manifest to binaries → spawn children → converge on the required
 ## set → conversation loop. Core speaks exactly one protocol.
 
@@ -71,7 +71,7 @@ proc main() =
   openNatsLib()
 
   # --- 1. NATS: env/.env → try the default port → spawn if needed ---------
-  var natsUrl = getEnv("NATS_URL")
+  var natsUrl = getEnv("NIF_NATS_URL")
   var serverProc: Process = nil
   if natsUrl.len == 0:
     # default: prefer a bus already running on 4222; only spawn when absent
@@ -87,8 +87,8 @@ proc main() =
       echo "core: spawning nats-server on port " & $port
       serverProc = startProcess("nats-server", args = ["-p", $port],
                                 options = {poUsePath})
-  os.putEnv("NATS_URL", natsUrl)  # children inherit the bus address
-  # discovery file for UIs: the bridge reads var/nats-url when NATS_URL unset
+  os.putEnv("NIF_NATS_URL", natsUrl)  # children inherit the bus address
+  # discovery file for UIs: the bridge reads var/nats-url when NIF_NATS_URL unset
   try:
     createDir(root / "var")
     writeFile(root / "var" / "nats-url", natsUrl & "\n")

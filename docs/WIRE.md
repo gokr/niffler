@@ -63,7 +63,7 @@ ev.session.done        # {sessionId, reply} or {sessionId, error}
 
 ## Lifecycle
 
-1. Core boots: spawn NATS if no `NATS_URL` → read `manifest.yaml` → build cache
+1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → build cache
    check → spawn children (no ordering; ordering emerges from the bus).
 2. Component connects, publishes `reg.publish` with its tool schemas.
 3. Core converges when the required set (llm, bash, builder) has registered;

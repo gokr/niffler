@@ -45,7 +45,7 @@ proc main() =
     quit(1)
   var env = newStringTable(modeCaseSensitive)
   env["NIF_ROOT"] = root
-  env["NATS_URL"] = natsUrl
+  env["NIF_NATS_URL"] = natsUrl
   let bashProc = startProcess(bashBin, workingDir = root, env = env,
                               options = {poUsePath})
 
@@ -111,7 +111,7 @@ proc main() =
     quit(1)
   var storeEnv = newStringTable(modeCaseSensitive)
   storeEnv["NIF_ROOT"] = root
-  storeEnv["NATS_URL"] = natsUrl
+  storeEnv["NIF_NATS_URL"] = natsUrl
   let storeProc = startProcess(storeBin, workingDir = root, env = storeEnv,
                                options = {poUsePath})
   var storeUp = false

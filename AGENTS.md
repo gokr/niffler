@@ -87,10 +87,10 @@ The SPA is a NATS client, not a Wails client: it only talks to
   `gokr/natswrapper` and `gokr/bitbarrel` (GitHub URLs); nimble installs them
   automatically on first build. `config.nims` scans `~/.nimble/pkgs2` so plain
   `nim c` invocations (builder, smoke test) resolve them without nimble.paths.
-- **`.env` (gitignored) holds a real API key** (`OPENAI_API_KEY`, OPENAI_*
+- **`.env` (gitignored) holds a real API key** (`NIF_OPENAI_API_KEY`, NIF_OPENAI_*
   pointed at DeepSeek). Components load it via `sdk/dotenv.nim`; existing shell
-  env wins. Never commit it.
-- `NATS_URL` set → attach to that bus (can be remote); unset → core spawns
+  env wins. Never commit it. Full env var reference: docs/MANUAL.md.
+- `NIF_NATS_URL` set → attach to that bus (can be remote); unset → core spawns
   `nats-server` (must be on PATH) on a random loopback port and writes it to
   `var/nats-url`.
 - The `store` component is single-writer: exactly one process owns
@@ -98,7 +98,7 @@ The SPA is a NATS client, not a Wails client: it only talks to
 - `llm-openai` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.
 - Harness in service mode (for the UI, no tty):
-  `NATS_URL=... OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
+  `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
 - **`wails build`, never `go build`, for the UI.** `go build ./...` or
   `go build -o build/bin/niffler-ui .` overwrites the binary with a stub that
   prints "Wails applications will not build without the correct build tags."
@@ -127,7 +127,7 @@ Probe a session turn (uses core's own session service; no UI involved):
 import std/[json, os, times]
 import natswrapper
 import niffler/sdk
-let nc = connect(getEnv("NATS_URL", "nats://127.0.0.1:4222"))
+let nc = connect(getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222"))
 let data = callEnvelope("session",
   %*{"sessionId": "probe-" & $int(epochTime()), "content": "Ping"}).encode()
 var msg: ptr natsMsg
@@ -142,7 +142,7 @@ Build & run, no leftover files:
 
 ```bash
 nim c --hints:off --path:sdk -o:/tmp/probe tests/probe.nim
-NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
+NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 ```
 
 - `nimble smoke` is the scripted end-to-end equivalent of this (spawns its own
@@ -153,7 +153,7 @@ NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 - The `ui` component also registers on the bus (0 tools) — grep core's stdout
   for `catalog: ui v` to prove the bridge connected.
 - Killing all component processes leaves the NATS server orphaned; either
-  use the harness's own spawn (`./var/bin/niffler` spawns nats if `NATS_URL`
+  use the harness's own spawn (`./var/bin/niffler` spawns nats if `NIF_NATS_URL`
   unset) or `pkill -f nats-server; pkill -f niffler/var/bin` before a cold start.
 
 ## Working in this repo

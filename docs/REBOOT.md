@@ -297,7 +297,7 @@ docs discuss it) — Niffler adds the spawn-if-missing fallback (3 lines of
   the tools parameter per request; keep schema *names* stable across swaps to
   protect prompt caches.
 - Dynamic-language component (Janet/Lua) for instant, compile-free tools.
-- NATS spawn fallback: `NATS_URL` set → use it; else spawn `nats-server` on a
+- NATS spawn fallback: `NIF_NATS_URL` set → use it; else spawn `nats-server` on a
   random loopback port.
 
 ## First milestone

@@ -47,10 +47,10 @@ func uiRoot() string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(exe))))
 }
 
-// resolveNatsUrl: NATS_URL env → var/nats-url discovery file (written by
+// resolveNatsUrl: NIF_NATS_URL env → var/nats-url discovery file (written by
 // core) → well-known default.
 func resolveNatsUrl() string {
-	if u := os.Getenv("NATS_URL"); u != "" {
+	if u := os.Getenv("NIF_NATS_URL"); u != "" {
 		return u
 	}
 	for _, p := range []string{

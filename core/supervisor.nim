@@ -32,7 +32,7 @@ proc newSupervisor*(root: string, nc: NatsConnection): Supervisor =
   Supervisor(root: root, nc: nc)
 
 proc startChild*(sup: Supervisor, c: Child) =
-  # env = nil inherits the parent environment (NATS_URL, PATH, API keys);
+  # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
   putEnv("NIF_ROOT", sup.root)
   c.process = startProcess(c.binary, workingDir = sup.root,
