@@ -131,6 +131,12 @@ proc handle(cat: Catalog, subject, data: string) =
   let name = node{"name"}.getStr("")
   if name.len == 0: return
 
+  # "core" is the control plane itself — its tools are seeded above and
+  # must not be spoofable or replaceable by a bus citizen (docs/ARCHITECTURE.md)
+  if name == "core":
+    echo "catalog: rejecting " & name & " — reserved component name"
+    return
+
   if subject == "reg.publish":
     var reg = ComponentReg(name: name,
                            version: node{"version"}.getStr(""),
