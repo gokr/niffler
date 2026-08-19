@@ -35,7 +35,28 @@ You can add capabilities at runtime:
        %*{"greeting": "Hello, " & name}
    comp.run()
 
-   Go: package main importing `niffler.dev/sdk`, same surface (Tool/On/Emit/Run)
+   Go: package main importing `niffler.dev/sdk` (module path; import it as
+   `sdk`, matching the module basename — do not invent other import paths),
+   same surface (New/Tool/On/Emit/Run):
+
+   package main
+   import (
+     "encoding/json"
+     sdk "niffler.dev/sdk"
+   )
+   func main() {
+     comp := sdk.New("greet", "0.1.0")
+     comp.Tool("greet", map[string]any{
+       "type": "object",
+       "properties": map[string]any{"name": map[string]any{"type": "string"}},
+       "required": []string{"name"},
+     }, func(c *sdk.Component, args json.RawMessage) (any, error) {
+       var a struct{ Name string `json:"name"` }
+       if err := json.Unmarshal(args, &a); err != nil { return nil, err }
+       return map[string]any{"greeting": "Hello, " + a.Name}, nil
+     })
+     if err := comp.Run(); err != nil { panic(err) }
+   }
 2. call builder.build {lang, name, source} to compile it (builder.info
    explains the pattern)
 3. call core.spawn {name, binary} to start it

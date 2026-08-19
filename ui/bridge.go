@@ -91,6 +91,14 @@ func (b *Bridge) connectLoop() {
 			return
 		default:
 		}
+		// Component.Connect() only reads NIF_NATS_URL (defaulting to the
+		// well-known port); resolveNatsUrl() also discovers var/nats-url
+		// (core's actual bus, which can land on a random port if the
+		// well-known one wasn't free). Feed that discovery back in so the
+		// real connection attempt matches what the status banner reports.
+		if u := resolveNatsUrl(); u != "" {
+			os.Setenv("NIF_NATS_URL", u)
+		}
 		if err := b.comp.Connect(); err != nil {
 			slog.Warn("bus connect failed", "url", resolveNatsUrl(), "err", err)
 			status(false)

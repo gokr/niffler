@@ -95,7 +95,7 @@ $(UI_BIN): $(UI_INPUTS)
 		echo "wails CLI not found (looked at $(WAILS))."; \
 		echo "Install: make install-wails"; \
 		exit 1; fi
-	cd ui && "$(WAILS)" build $(UI_TAGS)
+	cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage
 
 # ---------------------------------------------------------------------------
 # run / test

@@ -35,6 +35,21 @@
   let createdHere = $state<string | null>(null);
   let createdTitle = $state("");
 
+  // Resolve the in-flight turn's "thinking…" placeholder in place (found via
+  // `messages` itself, like the toolcall case below — mutating a raw object
+  // reference captured before it went into the $state array is invisible to
+  // Svelte's reactivity, since the array holds its own proxied copy) instead
+  // of leaving it stuck forever with a separate reply bubble appended after.
+  function resolvePending(update: Partial<Msg>) {
+    const existing = messages.find((m) => m.role === "assistant" && m.pending);
+    if (existing) {
+      Object.assign(existing, update, { pending: false });
+      tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
+    } else {
+      push({ role: "assistant", ...update });
+    }
+  }
+
   function push(msg: Msg) {
     messages = [...messages, msg];
     tick().then(() => {
@@ -96,8 +111,7 @@
           });
         }
       } else if (kind === "assistant") {
-        push({
-          role: "assistant",
+        resolvePending({
           content: p.content,
           model: p.model,
           context: p.context,
@@ -105,9 +119,9 @@
         });
       } else if (kind === "done") {
         busy = false;
-        if (p.error) push({ role: "assistant", content: "⚠ " + p.error });
+        if (p.error) resolvePending({ content: "⚠ " + p.error });
         else if (p.reply && messages.at(-1)?.content !== p.reply) {
-          push({ role: "assistant", content: p.reply });
+          resolvePending({ content: p.reply });
         }
       } else if (kind === "context") {
         if (p.trimmed) {
@@ -157,7 +171,8 @@
         await titleSession(sid, createdTitle);
       }
     } catch (e) {
-      push({ role: "assistant", content: "⚠ " + String(e) });
+      busy = false;
+      resolvePending({ content: "⚠ " + String(e) });
     }
   }
 
