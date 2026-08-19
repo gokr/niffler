@@ -106,10 +106,19 @@ automatically by nimble on the first build (`make build`).
 | `make down` | stop UI, core and the bus core spawned |
 | `make status` | show what is running where |
 | `make run` | terminal harness (interactive) |
-| `make test` | end-to-end smoke test (spawns its own bus) |
+| `make test` | the bus-contract test suite (8 tests, each spawns its own bus) — `make test-<comp>` runs one: test-bash, test-store, test-builder, test-console, test-plugins, test-core, test-cli, test-smoke |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
+
+**Testing.** `make test` runs the whole suite: one script per non-LLM
+component, each booting the real binaries and driving them over the bus
+(the envelope is the artifact — the same harness tests Nim and Go
+components). Core-based tests need no other harness running (store
+single-writer). Opt-ins: `NIF_TEST_INSTALL=1` installs
+`gokr/niffler-weather` for real and validates its tools; the install
+pipeline itself is covered hermetically via a local `file://` git repo.
+Details in [docs/MANUAL.md](docs/MANUAL.md#testing).
 
 **Bus autostart.** With no `NIF_NATS_URL`, core reuses a bus on the default port
 (127.0.0.1:4222) if one is live, otherwise it spawns nats-server on a random
@@ -137,7 +146,9 @@ sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
 sdk/go/              Go component SDK (mirror of the Nim one)
 core/                catalog, supervisor, dispatch, conversation loop
-components/          bash, builder, store, plugins (Nim), llm-openai (Go)
+components/          bash, builder, store, plugins, cli, console (Nim),
+                     llm-openai (Go)
+tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
 ```
@@ -203,9 +214,11 @@ records.
 
 Example package: [`gokr/niffler-weather`](https://github.com/gokr/niffler-weather)
 (Open-Meteo weather, no API key). Its README documents the manifest
-format; its release workflow dogfoods — it boots a harness and installs
-the package through `plugin_install`, so every tag proves the package
-installs cleanly.
+format; its release workflow dogfoods — it boots a harness and drives it
+with the **cli component** (`./var/bin/cli`: `catalog` / `wait` / `call`
+/ `install <repo>[@<ref>]`, exit 0 on success), so every tag proves the
+package installs and its tools work. That cli flow is the preferred way
+to CI any plugin repo — Niffler testing itself.
 
 ## Milestone status
 

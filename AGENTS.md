@@ -64,12 +64,13 @@ Underlying nimble tasks (same thing, one level down):
 
 ```bash
 nimble all            # build core + all components into var/bin (Nim + Go)
-nimble smoke          # the only test: spawns its own NATS, exercises bash + store
-                      # end-to-end. Requires a prior nimble all.
+nimble smoke          # legacy: the original end-to-end script (bash + store).
+                      # Prefer `make test` — the full bus-contract suite.
 ```
 
-- There is no test framework — `tests/smoke.nim` is a single end-to-end script that
-  exits non-zero on failure. Run it after bus/SDK changes.
+- There is no test framework — `tests/` holds plain scripts (helpers.nim +
+  one `t_*.nim` per component) that exit non-zero on failure. Run
+  `make test` after bus/SDK changes.
 - Binaries land in `var/bin/`; `var/` is gitignored runtime state (build cache,
   `barrel-db` store file, `nats-url` of the last spawned bus).
 - `scripts/niffler.sh` is the up/down/status logic behind `make up/down/status`:
@@ -151,8 +152,8 @@ nim c --hints:off --path:sdk -o:/tmp/probe tests/probe.nim
 NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 ```
 
-- `nimble smoke` is the scripted end-to-end equivalent of this (spawns its own
-  NATS + bash/store). Prefer it for repeat checks; one-off probes for something
+- `make test` is the scripted end-to-end suite (spawns its own NATS per
+  test). Prefer it for repeat checks; one-off probes for something
   specific (was this tool registered? does spawn work? LLM roundtrip?).
 - To inspect what core actually advertises to the LLM (catches bad schemas):
   call `catalog {op: list}` and check each tool's `schema.type` is `"object"`.
@@ -186,7 +187,8 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   Sample package: `gokr/niffler-weather`. Install records: store kind
   `plugin`. Never loop over a possibly-missing JSON key in component code —
   `{}` returns nil and iterating nil SIGSEGVs (json.nim items iterator).
-- Verification = `nimble all && nimble smoke`, plus a live harness run for
+- Verification = `make build && make test` (bus-contract suite, see
+  docs/MANUAL.md#testing), plus a live harness run for
   conversation-loop changes.
 - Milestone status and open quests live in `README.md` — update it when you
   complete one.
