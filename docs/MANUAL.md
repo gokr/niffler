@@ -9,7 +9,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Path | What it is |
 |---|---|
 | `core/` | the control plane (bus bootstrap, supervisor, catalog, dispatch, conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins` (Nim), `llm-openai` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `cli`, `console` (Nim), `llm` (Go) |
 | `sdk/` | Nim SDK + `sdk/go` (Go SDK); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -22,6 +22,19 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | `var/build/` | source files of agent-built components (builder's scratch dir) |
 | `nimcache/`, `ui/build/`, `ui/frontend/node_modules/`, `ui/frontend/dist/` | build artifacts; `make clean` removes them |
 
+### Shipped components
+
+| Component | Language | Manifest | What it does |
+|---|---|---|---|
+| `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency) |
+| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
+| `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
+| `llm` | Go | required | streaming OpenAI-compatible chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
+| `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
+| `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
+| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
+| `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
+
 ## Environment variables
 
 All components load `.env` (from the harness root and cwd, existing shell
@@ -31,10 +44,10 @@ env always wins — see below) and inherit core's environment. The full set:
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` on a random loopback port and writes `var/nats-url` | auto |
-| `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm-openai`). Required for any conversation turn | — |
+| `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |
 | `NIF_OPENAI_BASE_URL` | OpenAI-compatible endpoint | `https://api.openai.com/v1` |
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
-| `NIF_OPENAI_CONTEXT` | context window (tokens) the llm reports to core's context guard | `llm-openai`'s small built-in table (DeepSeek: 1M), else `128000` |
+| `NIF_OPENAI_CONTEXT` | context window (tokens) the llm reports to core's context guard | `llm`'s small built-in table (DeepSeek: 1M), else `128000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
 
 Every Niffler variable carries the `NIF_` prefix, so the harness never
@@ -66,15 +79,25 @@ Core speaks exactly one protocol: JSON envelopes over NATS (details in
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
 reg.depart             graceful shutdown announcement
 svc.<component>.call   queue-grouped tool call request/reply
-ev.session.assistant   {sessionId, content, model?, usage?}   (live model text)
+ev.session.assistant   {sessionId, content, model?, usage?}   (complete model text)
+ev.session.token       {sessionId, content, reasoning}        (live token deltas)
 ev.session.toolcall    {sessionId, tool, args, result|error}
 ev.session.done        {sessionId, reply} | {sessionId, error}
+ev.session.context     {sessionId, promptTokens, context, warning?|trimmed?}
 ev.catalog.updated     full tool list after any registration change
+ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
 ev.approval.request    core → UI: {id, tool, args} — human gate (see below)
 ev.approval.reply      UI → core: {id, ok}
 ev.cancel.<call-id>    cancellation signal (components may subscribe)
 ```
+
+**Streaming.** The `llm` component streams tokens while generating:
+`ev.llm.token` deltas (content + reasoning) → core forwards them for the
+active turn as `ev.session.token` → the UI appends them to the live
+assistant bubble. The final `ev.session.assistant` event always carries
+the complete content, so a missed last frame heals itself. Abort an
+in-flight call by publishing to `llm.cancel.<sessionId>`.
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
 Or better: **the console component** (`./var/bin/console`, not in the
@@ -105,7 +128,8 @@ install from local git repos (hermetic tests, mirrors).
 ## Approvals
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
-`bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove` — are
+`bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
+`plugin_install`, `plugin_update`, `plugin_remove` — are
 gated on a human before they execute:
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
@@ -124,14 +148,14 @@ Core watches how much of the model's context window a conversation uses
 and acts *trivially* — no summaries, no token math beyond what the model
 reports:
 
-- The window size (`context`) is informational, reported by `llm-openai` on
+- The window size (`context`) is informational, reported by `llm` on
   every chat call: `NIF_OPENAI_CONTEXT` overrides it, else a small
   built-in table covers the default model family (DeepSeek: 1M), else a
   conservative 128K. There is no model database and nothing is fetched
   at runtime — the only window that matters is your configured model's.
 
 - After every chat call the model's own `usage.prompt_tokens` and the
-  window size (`context`, informational from `llm-openai`) are recorded
+  window size (`context`, informational from `llm`) are recorded
   and persisted with the assistant message, so the accounting survives
   restarts and session resume.
 - At **75%** of the window, core warns once (terminal log; the UI shows a

@@ -82,7 +82,7 @@ Rejected alternatives:
                         │ NATS (spawned locally if no external URL)
       ┌─────────────────┼──────────────────┬───────────────┐
    ┌──▼───┐       ┌─────▼────┐       ┌──────▼────┐    ┌─────▼─────┐
-   │ bash │       │ builder  │       │ llm-openai│    │ your tool │
+   │ bash │       │ builder  │       │    llm    │    │ your tool │
    │ (Nim)│       │  (Nim)   │       │   (Go)    │    │ (any lang)│
    └──────┘       └──────────┘       └───────────┘    └───────────┘
    every box = a small binary using its language's component SDK

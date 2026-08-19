@@ -16,7 +16,8 @@ starts it via `core.spawn` — mid-conversation. Design rationale:
 core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
-                     ├── llm-openai (Go SDK)
+                     ├── hashline-edit (Nim SDK)
+                     ├── llm (Go SDK)
                      └── your tool (any language with an SDK port)
 ```
 
@@ -24,10 +25,11 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 [docs/WIRE.md](docs/WIRE.md)); everything else — bash, the builder, the LLM
 adapter — is a separate process component with its own language's SDK.
 
-The shipped set proves the multi-language point: `bash`, `builder` and
-`store` are written against the Nim SDK, while the LLM adapter
-`llm-openai` is deliberately in Go — both SDKs exist from the start, and
-the agent adds components in either language mid-conversation.
+The shipped set proves the multi-language point: `bash`, `builder`,
+`store`, `plugins`, `hashline-edit`, `cli` and `console` are written
+against the Nim SDK, while the LLM adapter `llm` is deliberately in Go —
+both SDKs exist from the start, and the agent adds components in either
+language mid-conversation.
 
 Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
 bus, approvals, recovery, troubleshooting). Changelog:
@@ -146,8 +148,8 @@ sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
 sdk/go/              Go component SDK (mirror of the Nim one)
 core/                catalog, supervisor, dispatch, conversation loop
-components/          bash, builder, store, plugins, cli, console (Nim),
-                     llm-openai (Go)
+components/          bash, builder, store, plugins, hashline-edit, cli,
+                     console (Nim), llm (Go)
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -163,8 +165,9 @@ envelopes — so backend choice is contained and swappable (a store-tidb
 variant with FTS/vector later is a drop-in with the same tools).
 
 Barrel's pubsub is deliberately **not** used — NATS is the one and only
-bus. Kind keys: `component`, `conversation`, `message`. Core persists
-spawned components (restored on boot) and conversation messages.
+bus. Kind keys: `component`, `conversation`, `message`, `plugin` (the
+plugins component's install records). Core persists spawned components
+(restored on boot) and conversation messages.
 
 **Recovery.** The repo is the snapshot; `var/` is disposable build output.
 If a component is damaged — overwritten binary, broken self-added
@@ -224,7 +227,7 @@ to CI any plugin repo — Niffler testing itself.
 
 - [x] wire spec, envelope, Nim + Go SDKs
 - [x] supervisor (spawn/monitor/restart/drain), catalog, dispatch
-- [x] bash + builder components, llm-openai (OpenAI-compatible) in Go
+- [x] bash + builder components, llm adapter (streaming OpenAI-compatible) in Go
 - [x] typed tool definitions (nimcp-inspired: schema + handler from a proc)
 - [x] **agent adds itself a tool end-to-end** (docs/REBOOT.md milestone, live
       test with DeepSeek: wrote → built → spawned → called `greet`)
@@ -243,11 +246,32 @@ to CI any plugin repo — Niffler testing itself.
 - [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
       binaries from source, wipe spawned-component records, keep conversations
 - [x] **plugins component** — ecosystem discovery + install as a bus
-      service: GitHub topic search, `niffler.json` package manifest, release
-      assets or source build via the builder, spawn/update/remove, store
-      records; live-tested end-to-end with `gokr/niffler-weather`
+      service: GitHub topic search, `niffler.json` package manifest, always
+      builds from source via the builder (or `file://` local repos for
+      hermetic installs), spawn/update/remove, store records;
+      live-tested end-to-end with `gokr/niffler-weather`
+- [x] **console component** — passive bus viewer: subscribes to everything
+      and renders the wire traffic readably (run it in a second terminal)
+- [x] **cli component** — drive the harness from a terminal or a script
+      (`catalog` / `wait` / `call` / `install`), exit 0 on success; the
+      preferred way to CI a plugin repo (niffler-weather's workflow uses it)
+- [x] **core re-entry** — dispatch polls a private inbox and serves
+      `svc.core.call` mid-turn, so a component calling back into core
+      (`plugin_install` → `core.spawn`) cannot deadlock the session;
+      concurrent session requests are stashed, never nested
+- [x] **bus-contract test suite** — `make test`: one script per non-LLM
+      component (bash, store, builder, console, plugins, core, cli), each
+      booting the real binaries over its own NATS; hermetic plugin installs
+      via `file://`; network opt-ins behind `NIF_TEST_INSTALL`/`NIF_TEST_NETWORK`
+- [x] **streaming** — `llm` adapter streams `ev.llm.token` deltas (content
+      + reasoning), core forwards them as `ev.session.token`, the UI appends
+      them to the live assistant bubble; per-call cancellation
+      (`llm.cancel.<sessionId>`); final assistant event always carries the
+      complete content
+- [x] **hashline-edit** — hash-anchored `read`/`replace`/`undo_last_replace`
+      (Nim port of pi-hashline-edit-pro), anchors stable across edits
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
-- [ ] streaming (chunk frames + `ev.*` token events), cancellation
+- [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
 

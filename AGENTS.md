@@ -17,7 +17,7 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `llm-openai` are peers. Adding a capability = write source → `builder.build`
+  `plugins`, `hashline-edit`, `llm` are peers. Adding a capability = write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
@@ -27,8 +27,9 @@ anything structural.
   be copied here.
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
-- Naming: components lowercase-hyphens (`llm-openai`), tools lowercase underscores.
-  Tool names are globally unique — core rejects duplicates at registration.
+- Naming: components lowercase-hyphens (`hashline-edit`), tools lowercase
+  underscores. Tool names are globally unique — core rejects duplicates at
+  registration.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
   e.g. `chat`), `x-harness.approval` (**enforced**: terminal y/N prompt, UI
   dialog, or deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),
@@ -102,8 +103,11 @@ The SPA is a NATS client, not a Wails client: it only talks to
   `var/nats-url`.
 - The `store` component is single-writer: exactly one process owns
   `var/barrel-db`. Never run two stores against the same file.
-- `llm-openai` is Go (`sdk/go`); the builder gives agent-written Go components a
+- `llm` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.
+  It streams live tokens as `ev.llm.token` deltas; core re-emits them as
+  `ev.session.token` for the active turn. `components/llm-openai` is the
+  minimal non-streaming example adapter.
 - Harness in service mode (for the UI, no tty):
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
 - **`wails build`, never `go build`, for the UI.** `go build ./...` or

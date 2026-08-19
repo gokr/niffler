@@ -74,6 +74,14 @@ chain over NATS would be slower and less trustworthy (docs/REBOOT.md, open
 threads). Unlike 1–4 this is a *choice*, not a structural necessity — it could
 become a component the day the harness outgrows one interceptor.
 
+Dispatch also owns the mid-turn re-entry path: tool calls are sent as
+poll-loop requests on a private inbox, and every idle slot serves core's
+own `svc.core.call` surface (spawn/kill/remove/catalog) plus the live
+`ev.llm.token` stream. Without this, a component calling back into core
+during a session turn (`plugin_install` → `core.spawn`) would deadlock
+against the in-flight turn. Concurrent `session` requests are stashed,
+never nested, and drained when the turn ends.
+
 ## What is deliberately outside core
 
 The mechanisms that *are* components, and the capability they carry:
@@ -81,16 +89,18 @@ The mechanisms that *are* components, and the capability they carry:
 | Component | Capability | Notes |
 |---|---|---|
 | `store` | state/persistence | single-writer KV; the mind's state lives here, not in core |
-| `llm-openai` | LLM access | hidden `chat` tool; the actual model is an OpenAI-compatible endpoint |
+| `llm` | LLM access | hidden `chat` tool; streaming with live `ev.llm.token` deltas, reasoning tokens, per-call cancellation |
 | `builder` | compilation | agent-written Nim/Go → binary |
 | `bash` | execution | general-purpose machine access |
+| `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
+| `hashline-edit` | editing | hash-anchored read/replace/undo for files the model has seen |
 
 The pattern: state, access, build, and exec are all replaceable peers. If a
 mechanism can be rebuilt by the agent at runtime, it must be one.
 
 ## Where the boundary shows
 
-`core.kill` works on every component — `bash`, `builder`, `store`,
-`llm-openai`, anything the agent added. What it cannot touch is exactly the
-list above: the supervisor's children-ownership, the catalog, the loop, the
-bus. That asymmetry is the architecture, not an implementation detail.
+`core.kill` works on every component — `bash`, `builder`, `store`, `llm`,
+`plugins`, `hashline-edit`, anything the agent added. What it cannot touch is
+exactly the list above: the supervisor's children-ownership, the catalog, the
+loop, the bus. That asymmetry is the architecture, not an implementation detail.

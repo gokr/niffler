@@ -44,12 +44,21 @@ subscribe `ev.session.>` and render live):
 
 ```
 ev.session.assistant   # {sessionId, content, model?, context?, usage?}   model text
-                       #   (chunked streaming comes later)
+                       #   (complete content of each LLM round)
+ev.session.token       # {sessionId, content, reasoning}   live token deltas
+                       #   (streamed while the model generates)
 ev.session.toolcall    # {sessionId, tool, args, result | error}
 ev.session.context     # {sessionId, promptTokens, context, warning?|trimmed?}
                        #   context-window pressure (75% warn, 90% trim)
 ev.session.done        # {sessionId, reply} or {sessionId, error}
 ```
+
+LLM streaming (adapter → core → UI): the `llm` component emits
+`ev.llm.token {sessionId, content, reasoning}` deltas while generating;
+core forwards matching deltas for the active turn as `ev.session.token`
+and heals any last-frame race with the final assistant event (which
+always carries the complete content). Cancellation: publish an envelope
+to `llm.cancel.<sessionId>` to abort an in-flight streaming call.
 
 Approval subjects (human gate for `x-harness.approval: "always"` tools):
 
@@ -60,7 +69,15 @@ ev.approval.reply      # UI → core: {id, ok}           (id-matched)
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
-`kill`, `remove`.
+`kill`, `remove`. `catalog` ops: `list` (LLM-facing tools, hidden ones
+filtered) and `components` (component→tools view for bus clients that
+missed the registrations — the cli seeds its catalog from it).
+
+Core stays responsive while a turn dispatch is in flight: tool calls from
+components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
+calling `core.spawn`) are served from the dispatch's idle slot, and
+concurrent `session` requests are stashed and answered when the turn
+ends — turns never nest.
 
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash).
@@ -97,7 +114,7 @@ publishes `ev.approval.request` and waits id-matched on `ev.approval.reply`
 
 ## Conventions
 
-- Component names: lowercase, hyphens (`llm-openai`). Tool names: lowercase,
+- Component names: lowercase, hyphens (`hashline-edit`). Tool names: lowercase,
   letters/digits/underscore (LLM function-calling grammar).
 - Big payloads (tool output > ~64KB): reference, never inline —
   `{"ref": "store://bucket/key"}`; JetStream Object Store later, filesystem
