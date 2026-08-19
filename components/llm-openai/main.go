@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,29 +25,35 @@ type chatArgs struct {
 	Model    string           `json:"model"`
 }
 
-// contextWindow returns a best-effort context size for a model name,
-// derived from the common OpenAI/DeepSeek model families. Unknown models
-// default to a conservative OpenAI value. This is informational only.
+// ---------------------------------------------------------------------------
+// Model context window
+//
+// No model database and no runtime fetch — the only window that matters
+// is the configured model's, and that belongs in config: NIF_OPENAI_CONTEXT
+// wins, then a tiny table for the models this adapter is pointed at by
+// default, else a conservative default. The value rides chat responses as
+// `context`; core's context guard (docs/MANUAL.md) consumes it.
+
+const defaultContext = 128000 // conservative fallback for unknown models
+
+// knownContext: model id (lowercase) -> context window (tokens).
+var knownContext = map[string]int{
+	"deepseek-chat":     1000000,
+	"deepseek-reasoner": 1000000,
+}
+
+// contextWindow returns the context size for a model: NIF_OPENAI_CONTEXT
+// env override → built-in table → conservative default.
 func contextWindow(model string) int {
-	m := strings.ToLower(model)
-	switch {
-	case strings.HasPrefix(m, "gpt-4o"), strings.HasPrefix(m, "gpt-4.1"):
-		return 128000
-	case strings.HasPrefix(m, "gpt-4-turbo"):
-		return 128000
-	case strings.HasPrefix(m, "gpt-4"):
-		return 8192
-	case strings.HasPrefix(m, "gpt-3.5"):
-		return 16385
-	case strings.HasPrefix(m, "deepseek-chat"):
-		return 64000
-	case strings.HasPrefix(m, "deepseek-reasoner"):
-		return 64000
-	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
-		return 200000
-	default:
-		return 128000
+	if v := os.Getenv("NIF_OPENAI_CONTEXT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
 	}
+	if c, ok := knownContext[strings.ToLower(model)]; ok {
+		return c
+	}
+	return defaultContext
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {

@@ -28,6 +28,7 @@
   let messages = $state<Msg[]>([]);
   let input = $state("");
   let busy = $state(false);
+  let ctxNote = $state("");
   let scrollEl: HTMLDivElement | undefined = $state();
   // The id we minted ourselves this turn (a brand-new session). While set,
   // session switches initiated by our own send must not clobber live messages.
@@ -108,6 +109,13 @@
         else if (p.reply && messages.at(-1)?.content !== p.reply) {
           push({ role: "assistant", content: p.reply });
         }
+      } else if (kind === "context") {
+        if (p.trimmed) {
+          ctxNote = `context trimmed — dropped ${p.trimmed} earlier messages`;
+        } else if (p.warning) {
+          const pct = p.context ? Math.round((p.promptTokens / p.context) * 100) : 0;
+          ctxNote = `context at ${pct}% — will trim soon`;
+        }
       }
     });
     loadHistory();
@@ -121,6 +129,7 @@
     if (createdHere && sessionId === createdHere) return;
     createdHere = null;
     messages = [];
+    ctxNote = "";
     loadHistory();
   });
 
@@ -203,6 +212,10 @@
       {/if}
     {/each}
   </div>
+
+  {#if ctxNote}
+    <div class="px-6 pb-1 text-[12px] text-amber-400/90">{ctxNote}</div>
+  {/if}
 
   <form
     class="px-6 py-4 border-t border-ink-700 flex gap-2"

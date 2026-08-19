@@ -9,7 +9,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, os, sequtils, strutils, tables, times]
 when defined(posix):
   import std/posix
 import natswrapper
@@ -76,6 +76,9 @@ type
     ct: CoreTools
     convId*: string
     seqNo*: int
+    promptTokens*: int   ## model-reported tokens of the last chat request
+    ctxSize*: int        ## model context window (informational from llm)
+    ctxWarned*: bool     ## warned once per session until the next trim
     failing: bool
 
   Session* = object
@@ -111,8 +114,11 @@ proc persistMsg*(p: var Persister, value: JsonNode) =
       p.failing = true
       echo "core: WARNING persistence down (messages not saved): " & e.msg
 
-proc loadStoredMessages*(ct: CoreTools, convId: string): seq[JsonNode] =
+proc loadStoredMessages*(ct: CoreTools, convId: string,
+                         promptTokens: var int, ctxSize: var int): seq[JsonNode] =
   ## Rebuild a conversation's message list from the store (resume).
+  ## promptTokens/ctxSize are filled from the last assistant message's
+  ## persisted usage so the context check survives restarts.
   result = @[]
   try:
     let resp = ct.dispatchToolCall("list", %*{
@@ -126,8 +132,79 @@ proc loadStoredMessages*(ct: CoreTools, convId: string): seq[JsonNode] =
         if v{field} != nil:
           msg[field] = v{field}
       result.add(msg)
+      if v{"role"}.getStr("") == "assistant":
+        if v{"usage"}{"prompt_tokens"} != nil:
+          promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
+        if v{"context"} != nil:
+          ctxSize = v{"context"}.getInt(0)
   except CatchableError:
     discard
+
+# ---------------------------------------------------------------------------
+# Context window — trivial warning + trim
+# ---------------------------------------------------------------------------
+
+const
+  ctxWarnRatio = 0.75  ## warn once when this fraction of the window is used
+  ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
+  minKeepTurns = 2     ## never trim below this many user turns
+
+proc estimateTokens*(messages: seq[JsonNode]): int =
+  ## Rough token proxy (chars/4) used until the model reports real usage.
+  for m in messages:
+    result += m{"content"}.getStr("").len div 4
+
+proc trimContext*(messages: var seq[JsonNode]): int =
+  ## Drop whole turns from the front, keeping the system prompt. A turn is
+  ## one user message plus everything up to the next user message (assistant
+  ## text, tool calls, tool results) — whole-turn drops keep tool_call_id
+  ## pairs intact. Returns the number of dropped messages.
+  result = 0
+  while messages.len > 2:
+    var turns = 0
+    for m in messages:
+      if m{"role"}.getStr("") == "user": inc turns
+    if turns <= minKeepTurns: break
+    # find the second user message; drop everything before it
+    var second = -1
+    var seen = 0
+    for i in 1 ..< messages.len:
+      if messages[i]{"role"}.getStr("") == "user":
+        inc seen
+        if seen == 2:
+          second = i
+          break
+    if second < 0: break
+    inc result, second - 1
+    messages.delete(1 .. second - 1)
+
+proc checkContext*(p: var Persister, messages: var seq[JsonNode],
+                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil) =
+  ## Called before each chat request: warn once at ctxWarnRatio, trim whole
+  ## turns at ctxTrimRatio. Token accounting comes from the model's own
+  ## usage (persisted with assistant messages, restored on resume); before
+  ## the first response a chars/4 estimate stands in.
+  if p.ctxSize <= 0: return
+  let used = if p.promptTokens > 0: p.promptTokens else: estimateTokens(messages)
+  let pct = int(used.float * 100.0 / p.ctxSize.float)
+  if used.float >= p.ctxSize.float * ctxTrimRatio:
+    let dropped = trimContext(messages)
+    if dropped > 0:
+      messages.insert(%*{"role": "system", "content":
+        "[context trimmed: dropped " & $dropped &
+        " earlier messages to fit the model window]"}, 1)
+      p.ctxWarned = false
+      echo "core: context at " & $pct & "% — trimmed " & $dropped & " messages"
+      if onEvent != nil:
+        onEvent("context", %*{"sessionId": p.convId, "promptTokens": used,
+                              "context": p.ctxSize, "trimmed": dropped})
+  elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
+    p.ctxWarned = true
+    echo "core: WARNING context at " & $pct & "% — will trim at " &
+         $(int(ctxTrimRatio * 100)) & "%"
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "promptTokens": used,
+                            "context": p.ctxSize, "warning": true})
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
@@ -139,6 +216,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   var rounds = 0
   while rounds < 20:
     rounds += 1
+    checkContext(p, messages, onEvent)
     # rebuild the tool list from the live catalog (self-extension!)
     let llmArgs = %*{"messages": messages,
                      "tools": ct.cat.allTools().formatToolsForLlm()}
@@ -163,6 +241,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       for k in ["prompt_tokens", "completion_tokens", "total_tokens"]:
         if usage{k} != nil:
           usageObj[k] = usage{k}
+    # token accounting for the context check on the next round
+    if usageObj{"prompt_tokens"} != nil:
+      p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+    if ctxSize > 0:
+      p.ctxSize = ctxSize
     if content.len > 0:
       let assistantMsg = %*{"role": "assistant", "content": content}
       if usedModel.len > 0: assistantMsg["model"] = %usedModel
@@ -273,7 +356,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry = sessions[sessionId]
   else:
     entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.sup.root)}]
-    let stored = loadStoredMessages(ct, sessionId)
+    var pt = 0
+    var cs = 0
+    let stored = loadStoredMessages(ct, sessionId, pt, cs)
     if stored.len == 0:
       # brand new session: create the conversation header
       try:
@@ -285,7 +370,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
         discard
     for m in stored:
       entry.messages.add(m)
-    entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len)
+    entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
+                                promptTokens: pt, ctxSize: cs)
 
   let userMsg = %*{"role": "user", "content": content}
   entry.messages.add(userMsg)

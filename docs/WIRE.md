@@ -43,9 +43,11 @@ Session subjects (core emits during `svc.core.call` session turns — UIs
 subscribe `ev.session.>` and render live):
 
 ```
-ev.session.assistant   # {sessionId, content}   model text as it completes
+ev.session.assistant   # {sessionId, content, model?, context?, usage?}   model text
                        #   (chunked streaming comes later)
 ev.session.toolcall    # {sessionId, tool, args, result | error}
+ev.session.context     # {sessionId, promptTokens, context, warning?|trimmed?}
+                       #   context-window pressure (75% warn, 90% trim)
 ev.session.done        # {sessionId, reply} or {sessionId, error}
 ```
 
