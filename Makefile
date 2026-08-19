@@ -90,8 +90,11 @@ var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	cd components/llm-openai && go build -o ../../var/bin/llm-openai .
 
+var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
+	cd components/llm && go build -o ../../var/bin/llm .
+
 components: var/bin/niffler var/bin/store var/bin/bash var/bin/builder \
-	var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai
+	var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai var/bin/llm
 
 build: components
 

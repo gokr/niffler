@@ -86,6 +86,21 @@ func (c *Component) Emit(subject string, payload any) error {
 	return c.nc.Publish(subject, data)
 }
 
+// Subscribe subscribes to a subject pattern and returns an unsubscribe
+// function. Handlers run on their own goroutine, NOT serialized by the
+// component mutex — intended for side channels a blocking tool handler
+// needs while it runs (e.g. cancellation).
+func (c *Component) Subscribe(pattern string, h func(subject string, payload json.RawMessage)) (func(), error) {
+	sub, err := c.nc.Subscribe(pattern, func(m *nats.Msg) {
+		env := ParseEnvelope(m.Data)
+		h(m.Subject, env.Payload)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("subscribe %s: %w", pattern, err)
+	}
+	return func() { _ = sub.Unsubscribe() }, nil
+}
+
 // Request calls a tool on another component over the bus.
 // Returns the result value; errors on timeout or error envelope.
 func (c *Component) Request(component, tool string, args any, timeout time.Duration) (json.RawMessage, error) {

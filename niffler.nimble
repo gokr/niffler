@@ -26,6 +26,7 @@ task all, "Build core and all shipped components":
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."
+  exec "cd components/llm && go build -o ../../var/bin/llm ."
 
 task run, "Build and run the harness":
   exec "nimble all"
