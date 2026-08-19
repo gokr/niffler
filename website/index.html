@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Niffler — a self-extending agent harness</title>
+<meta name="description" content="Niffler is a minimal, self-extending agent harness. Components are processes, the bus is NATS, and the agent writes, builds and spawns its own tools mid-conversation.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+
+<header class="nav">
+  <a class="nav-brand" href="#top"><span class="caret">$</span> niffler</a>
+  <nav class="nav-links">
+    <a href="#why">why</a>
+    <a href="#architecture">architecture</a>
+    <a href="#quickstart">quickstart</a>
+    <a href="#components">components</a>
+    <a href="#wire">wire</a>
+    <a href="#status">status</a>
+    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener">git clone</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="hero-ascii" aria-hidden="true">
+<pre>
+ _ _   ___    _____    _____    ___   _____    ____
+| \ |  |_  |  |  ___|  |  ___|  |  |  |  ___|  |  _ \
+|  \|   |  |  | |_     | |_     |  |  | |__    | |_) |
+|   |   |  |  |  _|    |  _|    |  |  |  __|   |  _ <
+|_  |   |  |  |_|      |_|      |_|   |_____|  |_| \_\
+</pre>
+  </div>
+  <h1>A harness that builds<br><span class="accent">itself out</span> — mid-conversation.</h1>
+  <p class="hero-sub">
+    Niffler is a minimal, self-extending agent harness. Components are
+    <strong>processes</strong>, the bus is <strong>NATS</strong>, and the agent
+    writes, compiles and spawns its own tools while you talk to it.
+  </p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="#quickstart">make up</a>
+    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github →</a>
+  </div>
+  <div class="badges">
+    <span class="badge">nim</span><span class="badge">go</span><span class="badge">nats</span><span class="badge">wails</span><span class="badge">svelte 5</span>
+  </div>
+</section>
+
+<!-- ============ TERMINAL ============ -->
+<section class="term-wrap" aria-label="Terminal demo">
+  <div class="term">
+    <div class="term-bar">
+      <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+      <span class="term-title">gokr@dev: ~/niffler</span>
+    </div>
+    <div class="term-body">
+      <p><span class="p">$</span> make up</p>
+      <p class="dim">build core + components + desktop UI · ensure bus + core · open UI</p>
+      <p class="dim">→ spawning nats-server on 127.0.0.1:4222</p>
+      <p class="dim">→ core listening on svc.core.call</p>
+      <p class="dim">→ catalog: bash v0.1.0, builder v0.1.0, store v0.1.0, llm-openai v0.1.0</p>
+      <p><span class="p">$</span> <span class="typed"></span><span class="cursor">▌</span></p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHY ============ -->
+<section class="section" id="why">
+  <h2 class="sec-title"><span class="comment">#</span> why</h2>
+  <div class="cards">
+    <article class="card">
+      <h3><span class="num">01</span> processes, not plugins</h3>
+      <p>No dlopen, no ABI borders, no image rot. A component is a process —
+      teardown is <code>exit()</code>, and the OS is the perfect disposer.
+      A crash never takes the harness down.</p>
+    </article>
+    <article class="card">
+      <h3><span class="num">02</span> one protocol</h3>
+      <p>Core speaks exactly one wire format: JSON envelopes over NATS.
+      The codec is ~200 lines and pure <code>std/json</code> — SDKs in Nim,
+      Go, or whatever you port next.</p>
+    </article>
+    <article class="card">
+      <h3><span class="num">03</span> self-extension</h3>
+      <p>The agent writes source → calls <code>builder.build</code> → calls
+      <code>core.spawn</code> → the tool is live. Adding a capability is a
+      tool call, and the LLM does it to itself mid-conversation.</p>
+    </article>
+    <article class="card">
+      <h3><span class="num">04</span> persistence of shape</h3>
+      <p>Capabilities survive restarts: spawned components are recorded in the
+      store and restored on boot. The repo is the snapshot, <code>var/</code>
+      is disposable.</p>
+    </article>
+  </div>
+</section>
+
+<!-- ============ ARCHITECTURE ============ -->
+<section class="section" id="architecture">
+  <h2 class="sec-title"><span class="comment">#</span> architecture</h2>
+  <div class="arch">
+    <div class="arch-core box">
+      <span class="box-tag">core (nim)</span>
+      conversation loop · supervisor<br>
+      catalog · dispatch
+    </div>
+    <div class="arch-bus">
+      <span class="bus-label">svc.core.call · ev.* · NATS</span>
+      <div class="bus-line"></div>
+    </div>
+    <div class="arch-cols">
+      <div class="box">bash<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">builder<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">store<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">llm-openai<br><span class="box-lang">go sdk</span></div>
+      <div class="box box-your">your tool<br><span class="box-lang">any language</span></div>
+    </div>
+    <p class="arch-note">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
+  </div>
+</section>
+
+<!-- ============ LOOP ============ -->
+<section class="section" id="loop">
+  <h2 class="sec-title"><span class="comment">#</span> the self-extension loop</h2>
+  <div class="loop">
+    <div class="step">
+      <span class="step-cmd">write</span>
+      <pre>comp.tool:
+  proc weather(city: string): JsonNode =
+    ## Current weather for a city
+    ## - city: the city name</pre>
+    </div>
+    <span class="step-arrow">→</span>
+    <div class="step">
+      <span class="step-cmd">build</span>
+      <pre>builder.build {
+  lang: "nim",
+  source: ... }</pre>
+    </div>
+    <span class="step-arrow">→</span>
+    <div class="step">
+      <span class="step-cmd">spawn</span>
+      <pre>core.spawn {
+  name: "weather",
+  binary: ... }</pre>
+    </div>
+    <span class="step-arrow">→</span>
+    <div class="step">
+      <span class="step-cmd">call</span>
+      <pre>{"tool": "weather",
+ "args": {"city": "Berlin"}}</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============ QUICKSTART ============ -->
+<section class="section" id="quickstart">
+  <h2 class="sec-title"><span class="comment">#</span> quickstart</h2>
+  <div class="qs">
+    <div class="term term-sm">
+      <div class="term-bar">
+        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+        <span class="term-title">terminal</span>
+      </div>
+      <div class="term-body">
+        <p><span class="p">$</span> git clone git@github.com:gokr/niffler.git && cd niffler</p>
+        <p><span class="p">$</span> make setup        <span class="dim"># prerequisites (Ubuntu / macOS)</span></p>
+        <p><span class="p">$</span> make up           <span class="dim"># build, bus, core, desktop UI</span></p>
+        <p><span class="p">$</span> make test         <span class="dim"># end-to-end smoke test</span></p>
+        <p class="dim">│</p>
+        <p class="dim">└─ make down / status / recover · see docs/MANUAL.md</p>
+      </div>
+    </div>
+    <div class="qs-side">
+      <h3>requirements</h3>
+      <ul class="reqs">
+        <li><span class="check">✓</span> nim 2.x</li>
+        <li><span class="check">✓</span> go</li>
+        <li><span class="check">✓</span> nats-server</li>
+        <li><span class="check">✓</span> node / npm</li>
+        <li><span class="check">✓</span> wails cli <span class="dim">(UI only)</span></li>
+      </ul>
+      <p class="dim small">all deps come from nimble — yaml, natswrapper, bitbarrel — installed automatically on first build.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COMPONENTS ============ -->
+<section class="section" id="components">
+  <h2 class="sec-title"><span class="comment">#</span> shipped components</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>component</th><th>language</th><th>purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>core</td><td>nim</td><td>conversation loop, supervisor, catalog, dispatch</td></tr>
+        <tr><td>bash</td><td>nim</td><td>shell access as a tool — approval-gated</td></tr>
+        <tr><td>builder</td><td>nim</td><td>compiles agent-written source → binary</td></tr>
+        <tr><td>store</td><td>nim</td><td>document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
+        <tr><td>llm-openai</td><td>go</td><td>OpenAI-compatible adapter (DeepSeek by default)</td></tr>
+        <tr><td>ui</td><td>go + svelte 5</td><td>Wails SPA — a NATS client, not a Wails client</td></tr>
+        <tr class="row-your"><td>your tool</td><td>any</td><td>port the SDK — the envelope is the artifact (~200 lines)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ WIRE ============ -->
+<section class="section" id="wire">
+  <h2 class="sec-title"><span class="comment">#</span> one wire to rule them</h2>
+  <div class="wire">
+    <div class="term term-sm">
+      <div class="term-bar">
+        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+        <span class="term-title">envelope.json</span>
+      </div>
+      <div class="term-body">
+<pre>{
+  "v": 1,
+  "id": "01J…",
+  "op": "call",
+  "svc": "bash",
+  "tool": "exec",
+  "args": { "cmd": "uname -a" },
+  "meta": { "sessionId": "s-01J…" }
+}
+</pre>
+      </div>
+    </div>
+    <div class="wire-notes">
+      <p>core → <code>svc.core.call</code>, components → <code>svc.&lt;name&gt;.call</code>,<br>
+      events on <code>ev.*</code>. that's the whole bus contract.</p>
+      <p class="dim">spec: <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> · rationale: <a href="https://github.com/gokr/niffler/blob/main/docs/REBOOT.md" target="_blank" rel="noopener">docs/REBOOT.md</a></p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STATUS ============ -->
+<section class="section" id="status">
+  <h2 class="sec-title"><span class="comment">#</span> status</h2>
+  <div class="status">
+    <ul class="done">
+      <li><span class="check">✓</span> wire spec, envelope, Nim + Go SDKs</li>
+      <li><span class="check">✓</span> supervisor, catalog, dispatch</li>
+      <li><span class="check">✓</span> bash + builder + store + llm-openai</li>
+      <li><span class="check">✓</span> agent adds itself a tool end-to-end (live, with DeepSeek)</li>
+      <li><span class="check">✓</span> persistence of shape across restarts</li>
+      <li><span class="check">✓</span> session service + Wails SPA shell</li>
+      <li><span class="check">✓</span> approvals (terminal y/N, UI dialog, headless deny)</li>
+      <li><span class="check">✓</span> recover mode — <code>make recover</code></li>
+    </ul>
+    <ul class="todo">
+      <li><span class="todo-x">✗</span> Level 1 UI dynamism (x-ui schema hints)</li>
+      <li><span class="todo-x">✗</span> streaming + cancellation</li>
+      <li><span class="todo-x">✗</span> store-tidb with FTS + vector memory</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <pre class="footer-ascii" aria-hidden="true">
+ ══════════════════════════════════════════ 
+║ niffler — a self-extending agent harness ║
+ ══════════════════════════════════════════ 
+  </pre>
+  <p class="dim">niffler — a self-extending agent harness · <a href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github.com/gokr/niffler</a></p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
