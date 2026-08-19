@@ -30,20 +30,22 @@
   let busy = $state(false);
   let ctxNote = $state("");
   let scrollEl: HTMLDivElement | undefined = $state();
+  // Index of this turn's live assistant bubble. Core emits one assistant
+  // event per LLM round — after the first one the pending bubble is no
+  // longer pending, so finding it by `m.pending` would push a new bubble
+  // per round (duplicate/intermediate bubbles). Update the same bubble in
+  // place instead; a turn has exactly one assistant bubble.
+  let liveIdx = $state<number | null>(null);
   // The id we minted ourselves this turn (a brand-new session). While set,
   // session switches initiated by our own send must not clobber live messages.
   let createdHere = $state<string | null>(null);
   let createdTitle = $state("");
 
-  // Resolve the in-flight turn's "thinking…" placeholder in place (found via
-  // `messages` itself, like the toolcall case below — mutating a raw object
-  // reference captured before it went into the $state array is invisible to
-  // Svelte's reactivity, since the array holds its own proxied copy) instead
-  // of leaving it stuck forever with a separate reply bubble appended after.
+  // Update the in-flight turn's assistant bubble in place, or append one if
+  // there is no live turn (e.g. events arriving after a session switch).
   function resolvePending(update: Partial<Msg>) {
-    const existing = messages.find((m) => m.role === "assistant" && m.pending);
-    if (existing) {
-      Object.assign(existing, update, { pending: false });
+    if (liveIdx != null && liveIdx < messages.length && messages[liveIdx]) {
+      Object.assign(messages[liveIdx], update, { pending: false });
       tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
     } else {
       push({ role: "assistant", ...update });
@@ -82,6 +84,7 @@
         }
       }
       messages = stored;
+      liveIdx = null;
       tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
     } catch {
       /* store unavailable — start empty */
@@ -119,10 +122,9 @@
         });
       } else if (kind === "done") {
         busy = false;
+        liveIdx = null;
         if (p.error) resolvePending({ content: "⚠ " + p.error });
-        else if (p.reply && messages.at(-1)?.content !== p.reply) {
-          resolvePending({ content: p.reply });
-        }
+        else if (p.reply) resolvePending({ content: p.reply });
       } else if (kind === "context") {
         if (p.trimmed) {
           ctxNote = `context trimmed — dropped ${p.trimmed} earlier messages`;
@@ -143,6 +145,7 @@
     if (createdHere && sessionId === createdHere) return;
     createdHere = null;
     messages = [];
+    liveIdx = null;
     ctxNote = "";
     loadHistory();
   });
@@ -163,6 +166,7 @@
     }
     push({ role: "user", content: text });
     push({ role: "assistant", content: "", pending: true });
+    liveIdx = messages.length - 1;
 
     try {
       await send("core", "session", { sessionId: sid, content: text }, 600000);
@@ -172,6 +176,7 @@
       }
     } catch (e) {
       busy = false;
+      liveIdx = null;
       resolvePending({ content: "⚠ " + String(e) });
     }
   }
