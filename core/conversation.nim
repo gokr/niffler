@@ -409,6 +409,19 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription,
                     sessions: var Table[string, Session]) =
   ## Serve pending svc.core.call messages (session/spawn/catalog).
+  ## Session requests stashed while a turn was busy are drained first —
+  ## turns never nest, but they must not be lost either.
+  for pend in ct.pending.items:
+    var resp: Envelope
+    try:
+      let r = handleSessionCall(ct, pend.env.args, sessions)
+      if r{"error"} != nil:
+        raise newException(ValueError, r{"error"}.getStr("session error"))
+      resp = resultEnvelope(pend.env.id, r)
+    except CatchableError as e:
+      resp = errorEnvelope(pend.env.id, "boom", e.msg)
+    ct.nc.publish(pend.reply, resp.encode())
+  ct.pending.items = @[]
   while true:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, sub, 1)

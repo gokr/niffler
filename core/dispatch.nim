@@ -18,6 +18,11 @@ type
     cat*: Catalog
     sup*: Supervisor
     approval*: Approval
+    coreSub*: ptr natsSubscription        ## svc.core.call (set by core.nim)
+    pending*: PendingCalls                ## session calls stashed during a turn
+
+  PendingCalls* = ref object
+    items*: seq[tuple[env: Envelope, reply: string]]
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode
@@ -79,6 +84,37 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
+proc pumpCoreWhileBusy*(ct: CoreTools) =
+  ## Serve core's own svc.core.call surface while a turn dispatch is
+  ## blocked waiting for a component reply. Without this, a component
+  ## calling back into core (plugin_install → core.spawn) would deadlock
+  ## against the in-flight turn: core waits for the install, the install
+  ## waits for core. Concurrent session requests are stashed — turns must
+  ## never nest — and drained by pumpCoreCalls once the turn ends.
+  if ct.coreSub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.coreSub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    let reply = $natsMsg_GetReply(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekCall or reply.len == 0: continue
+    if env.tool == "session":
+      ct.pending.items.add((env: env, reply: reply))
+      continue
+    var resp: Envelope
+    try:
+      let r = ct.handleCoreTool(env.tool, env.args)
+      if r{"error"} != nil:
+        raise newException(ValueError, r{"error"}.getStr("core tool error"))
+      resp = resultEnvelope(env.id, r)
+    except CatchableError as e:
+      resp = errorEnvelope(env.id, "boom", e.msg)
+    ct.nc.publish(reply, resp.encode())
+
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode =
   if tool in ["spawn", "catalog", "kill", "remove"]:
@@ -103,21 +139,37 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   if schema != nil:
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
 
+  # Poll-loop request on a private inbox: while waiting for the component's
+  # reply, pump core's own service surface (pumpCoreWhileBusy) so a
+  # component calling back into core mid-turn cannot deadlock the session.
   let env = callEnvelope(tool, args)
   let data = env.encode()
   let subject = "svc." & comp & ".call"
-  var msg: ptr natsMsg
-  let st = natsConnection_Request(addr msg, ct.nc.conn, subject.cstring,
-                                  data.cstring, data.len.cint,
-                                  timeoutMs.int64 * 1_000_000)
-  if st == NATS_TIMEOUT:
-    raise newException(IOError,
-      "tool '" & tool & "' timed out after " & $timeoutMs & "ms")
+  let inbox = "_INBOX." & newId()
+  var sub: ptr natsSubscription
+  var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
   if not checkStatus(st):
-    raise newException(IOError, "dispatch " & tool & ": " & getErrorString(st))
-  let resp = decode($natsMsg_GetData(msg))
-  natsMsg_Destroy(msg)
-  if resp.kind == ekError:
-    raise newException(ValueError,
-      resp.error{"message"}.getStr("component error"))
-  return resp.args
+    raise newException(IOError, "subscribe inbox: " & getErrorString(st))
+  defer: natsSubscription_Destroy(sub)
+  st = natsConnection_PublishRequest(ct.nc.conn, subject.cstring,
+                                     inbox.cstring, data.cstring,
+                                     data.len.cint)
+  if not checkStatus(st):
+    raise newException(IOError, "publish request: " & getErrorString(st))
+  let deadline = epochTime() + timeoutMs.float / 1000.0
+  while epochTime() < deadline:
+    var msg: ptr natsMsg
+    let ns = natsSubscription_NextMsg(addr msg, sub, 100)
+    if ns == NATS_OK:
+      let resp = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if resp.kind == ekError:
+        raise newException(ValueError,
+          resp.error{"message"}.getStr("component error"))
+      return resp.args
+    # idle slot: keep core responsive to its own tools and the catalog
+    pumpCoreWhileBusy(ct)
+    ct.cat.pump()
+    ct.sup.pump(ct.cat)
+  raise newException(IOError,
+    "tool '" & tool & "' timed out after " & $timeoutMs & "ms")
