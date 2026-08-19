@@ -13,6 +13,7 @@
   interface Msg {
     role: "user" | "assistant" | "tool";
     content?: string;
+    reasoning?: string;
     tool?: string;
     args?: any;
     result?: any;
@@ -43,20 +44,55 @@
 
   // Update the in-flight turn's assistant bubble in place, or append one if
   // there is no live turn (e.g. events arriving after a session switch).
+  // If the turn's anchor was lost (done resets liveIdx), fall back to the
+  // most recent assistant message so a finalize never spawns a duplicate bubble.
   function resolvePending(update: Partial<Msg>) {
+    let target: Msg | null = null;
     if (liveIdx != null && liveIdx < messages.length && messages[liveIdx]) {
-      Object.assign(messages[liveIdx], update, { pending: false });
+      target = messages[liveIdx];
+    } else {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          target = messages[i];
+          break;
+        }
+      }
+    }
+    if (target) {
+      Object.assign(target, update, { pending: false });
       tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
     } else {
       push({ role: "assistant", ...update });
     }
   }
 
+
   function push(msg: Msg) {
     messages = [...messages, msg];
     tick().then(() => {
       scrollEl?.scrollTo({ top: scrollEl.scrollHeight });
     });
+  }
+
+  // Live LLM deltas (ev.session.token): append to the turn's assistant
+  // bubble without resolving it — "done" finalizes. Same anchor fallback
+  // as resolvePending so a late frame never spawns a duplicate bubble.
+  function appendToken(content: string, reasoning: string) {
+    let target: Msg | null = null;
+    if (liveIdx != null && liveIdx < messages.length && messages[liveIdx]) {
+      target = messages[liveIdx];
+    } else {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          target = messages[i];
+          break;
+        }
+      }
+    }
+    if (!target) return;
+    if (content) target.content = (target.content ?? "") + content;
+    if (reasoning) target.reasoning = (target.reasoning ?? "") + reasoning;
+    tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
   }
 
   async function loadHistory() {
@@ -75,6 +111,7 @@
           stored.push({
             role: "assistant",
             content: v.content ?? "",
+            reasoning: v.reasoning ?? "",
             model: v.model,
             context: v.context,
             usage: v.usage,
@@ -120,6 +157,8 @@
           context: p.context,
           usage: p.usage,
         });
+      } else if (kind === "token") {
+        appendToken(p.content ?? "", p.reasoning ?? "");
       } else if (kind === "done") {
         busy = false;
         liveIdx = null;
@@ -205,9 +244,12 @@
         <div class="msg-user">{m.content}</div>
       {:else}
         <div class="msg-assistant">
-          {#if m.pending && !m.content}
+          {#if m.pending && !m.content && !m.reasoning}
             <span class="text-ink-400 animate-pulse">thinking…</span>
           {:else}
+            {#if m.reasoning}
+              <div class="msg-reasoning">{m.reasoning}</div>
+            {/if}
             {@html renderMarkdown(m.content ?? "")}
           {/if}
           {#if m.model || m.usage}

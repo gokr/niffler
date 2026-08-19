@@ -34,6 +34,9 @@ body,
 .msg-assistant {
   @apply text-ink-200 max-w-[92%] self-start px-1 py-1;
 }
+.msg-reasoning {
+  @apply mb-1.5 whitespace-pre-wrap border-l-2 border-ink-600 pl-2.5 text-[12px] italic leading-relaxed text-ink-400;
+}
 .msg-assistant pre {
   @apply bg-ink-900 border border-ink-600 rounded-lg p-3 overflow-x-auto text-[13px];
 }
