@@ -80,7 +80,17 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   of "catalog":
     if args{"op"}.getStr("") == "list":
       return %*{"tools": ct.cat.allTools()}
-    return %*{"error": "catalog op must be 'list'"}
+    if args{"op"}.getStr("") == "components":
+      ## component→tools view for bus clients that missed the registrations
+      ## (cli seeds its catalog from this)
+      var comps = newJObject()
+      for name, reg in ct.cat.components:
+        var tools = newJArray()
+        for t in reg.tools:
+          tools.add(%t.name)
+        comps[name] = tools
+      return %*{"components": comps}
+    return %*{"error": "catalog op must be 'list' or 'components'"}
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
