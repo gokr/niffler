@@ -39,8 +39,8 @@ UI_BIN := ui/build/bin/niffler-ui
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components ui run up down status test smoke dev clean \
-        setup doctor install-go install-nim install-nats install-node \
-        install-wails install-ui-deps
+        setup doctor recover install-go install-nim install-nats \
+        install-node install-wails install-ui-deps
 
 help:
 	@echo 'make all       build core + components + desktop UI (default)'
@@ -55,6 +55,8 @@ help:
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
 	@echo 'make clean     remove all build artifacts'
+	@echo 'make recover   stop everything, rebuild shipped binaries, wipe spawned'
+	@echo '               component records, restart interactively (--recover)'
 
 all: build ui
 
@@ -192,3 +194,6 @@ install-ui-deps:
 		echo "webkit2gtk-4.1: already installed"; \
 	else echo "Installing webkit2gtk 4.1 + GTK3 dev packages ..."; \
 		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config; fi
+
+# note: Ubuntu 24.04 ships node 18 (fine for Vite 5). Older Ubuntu needs
+# NodeSource/nvm — see docs/MANUAL.md.

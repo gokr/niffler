@@ -4,7 +4,7 @@
 ## resolve manifest to binaries → spawn children → converge on the required
 ## set → conversation loop. Core speaks exactly one protocol.
 
-import std/[json, net, os, osproc, sequtils, strutils, tables, terminal, times]
+import std/[json, net, os, osproc, sequtils, streams, strutils, tables, terminal, times]
 import yaml/tojson
 import natswrapper
 when defined(posix):
@@ -65,7 +65,35 @@ proc loadManifest(root: string): JsonNode =
     raise newException(IOError, "manifest is empty: " & path)
   result = nodes[0]
 
+proc tail(s: string, n: int): string =
+  if s.len <= n: return s
+  return "…" & s[^n .. ^1]
+
+proc rebuildShipped(root: string): bool =
+  ## Recover mode: rebuild the shipped binaries from source. The git repo
+  ## is the snapshot — var/ is disposable build output (docs/MANUAL.md).
+  ## Tries the Makefile front door first, then nimble directly.
+  for (tool, args) in [("make", @["build"]), ("nimble", @["all"])]:
+    try:
+      let p = startProcess(tool, args = args, workingDir = root,
+                           options = {poUsePath, poStdErrToStdOut})
+      let code = p.waitForExit(600_000)
+      let output = p.outputStream.readAll()
+      p.close()
+      if code == 0:
+        echo "core: recover — rebuilt with `" & tool & " " & args.join(" ") & "`"
+        return true
+      echo "core: recover — `" & tool & " " & args.join(" ") &
+           "` failed (exit " & $code & "):"
+      echo tail(output, 1200)
+    except CatchableError as e:
+      echo "core: recover — cannot run " & tool & ": " & e.msg
+  return false
+
 proc main() =
+  let recovering = paramCount() >= 1 and paramStr(1) == "--recover"
+  if recovering:
+    echo "core: RECOVER mode — rebuild shipped binaries, wipe spawned-component records"
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", root / ".env")
@@ -97,6 +125,10 @@ proc main() =
     discard
   let nc = connectWithRetry(natsUrl)
   echo "core: connected to " & natsUrl
+
+  # recover: the repo is the snapshot — rebuild var/bin from source first
+  if recovering:
+    discard rebuildShipped(root)
 
   # --- 2. catalog + supervisor ------------------------------------------
   var cat = newCatalog(nc)
@@ -134,9 +166,20 @@ proc main() =
 
   # --- 4b. restore spawned components from the store ---------------------
   # Persistence of shape: components added via core.spawn come back on boot.
+  # Recover mode wipes those records first — back to the manifest set.
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval)
   if cat.components.hasKey("store"):
+    if recovering:
+      echo "core: recover — wiping stored component records (spawned components will not be restored)"
+      try:
+        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
+        for item in resp{"items"}:
+          let id = item{"id"}.getStr("")
+          if id.len > 0:
+            discard ct.dispatchToolCall("del", %*{"kind": "component", "id": id})
+      except CatchableError as e:
+        echo "core: WARNING recover wipe failed: " & e.msg
     try:
       let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
       for item in resp{"items"}:

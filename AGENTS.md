@@ -50,6 +50,8 @@ make up               # single command: ensure bus + core, then open the UI
 make down             # stop what `make up` started (UI, core, spawned bus)
 make status
 make test             # = nimble smoke; the only test, end-to-end
+make recover          # stop everything, rebuild shipped binaries, wipe
+                      # spawned-component records, restart (--recover)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
 make dev              # Svelte dev server in a browser (bridge stubbed)

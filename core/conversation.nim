@@ -18,7 +18,7 @@ import catalog
 import dispatch
 import supervisor
 
-const systemPrompt = """
+const systemPromptFmt = """
 You are Niffler, a minimal self-extending agent harness.
 Use your tools to get things done — read each tool's description before
 calling it, and call the catalog tool to list everything available. Prefer
@@ -43,8 +43,19 @@ You can add capabilities at runtime:
 To stop a tool again: core.kill {name} (temporary; restored on boot) or
 core.remove {name} (forgotten permanently).
 Conversations and messages persist automatically via the store.
+
+Your home is $# — the git repo Niffler runs from. Shipped component
+sources: components/ (manifest.yaml lists the boot set), SDK: sdk/ +
+sdk/go (builder.info has exact paths), design docs: docs/, build front
+door: Makefile (make build / make test / make help). var/ is disposable
+runtime state (binaries, barrel-db, agent builds) — gitignored; the repo
+is the snapshot and `--recover` rebuilds it.
+
 Be concise.
 """
+
+proc systemPrompt(root: string): string =
+  result = systemPromptFmt % [root]
 
 proc formatToolsForLlm(tools: JsonNode): JsonNode =
   result = newJArray()
@@ -206,7 +217,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 proc runConversation*(ct: CoreTools, pump: proc() = nil) =
   ## Interactive stdin loop (headless demo mode). While waiting for input,
   ## the loop keeps serving svc.core.call (via `pump`) so UIs stay responsive.
-  var messages = @[%*{"role": "system", "content": systemPrompt}]
+  var messages = @[%*{"role": "system", "content": systemPrompt(ct.sup.root)}]
   var p = newPersister(ct)
   echo ""
   echo "Niffler — ready. Type a message (exit to quit)."
@@ -261,7 +272,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
   else:
-    entry.messages = @[%*{"role": "system", "content": systemPrompt}]
+    entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.sup.root)}]
     let stored = loadStoredMessages(ct, sessionId)
     if stored.len == 0:
       # brand new session: create the conversation header
