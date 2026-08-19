@@ -78,10 +78,17 @@ var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
 
+var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
+
+var/bin/console: components/console/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/console/main.nim
+
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	cd components/llm-openai && go build -o ../../var/bin/llm-openai .
 
-components: var/bin/niffler var/bin/store var/bin/bash var/bin/builder var/bin/llm-openai
+components: var/bin/niffler var/bin/store var/bin/bash var/bin/builder \
+	var/bin/plugins var/bin/console var/bin/llm-openai
 
 build: components
 
@@ -200,7 +207,7 @@ install-ui-deps:
 	elif pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
 		echo "webkit2gtk-4.1: already installed"; \
 	else echo "Installing webkit2gtk 4.1 + GTK3 dev packages ..."; \
-		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config; fi
+		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config libssl-dev; fi
 
 # note: Ubuntu 24.04 ships node 18 (fine for Vite 5). Older Ubuntu needs
 # NodeSource/nvm — see docs/MANUAL.md.

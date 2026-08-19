@@ -26,6 +26,13 @@ components:
     required: true
     restart: on-failure
 
+  - name: plugins
+    build: {lang: nim, src: components/plugins/main.nim}
+    binary: var/bin/plugins
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: llm-openai
     build: {lang: go, src: components/llm-openai}
     binary: var/bin/llm-openai

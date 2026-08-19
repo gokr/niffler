@@ -9,7 +9,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Path | What it is |
 |---|---|
 | `core/` | the control plane (bus bootstrap, supervisor, catalog, dispatch, conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store` (Nim), `llm-openai` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins` (Nim), `llm-openai` (Go) |
 | `sdk/` | Nim SDK + `sdk/go` (Go SDK); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -77,6 +77,15 @@ ev.cancel.<call-id>    cancellation signal (components may subscribe)
 ```
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
+Or better: **the console component** (`./var/bin/console`, not in the
+manifest — start it yourself in a second terminal) subscribes to
+everything and renders the wire traffic readably: calls with tool + args,
+results, errors, events, approvals — it is how you follow a live install
+or a stuck-tool call:
+
+```bash
+./var/bin/console    # in a separate terminal while the harness runs
+```
 
 ## Approvals
 
@@ -141,6 +150,41 @@ The agent adds capabilities at runtime, mid-conversation:
 catalog and the supervisor are not removable — that asymmetry is the
 architecture (ARCHITECTURE.md).
 
+## Component ecosystem (`plugins`)
+
+The `plugins` component is the ecosystem front door — community component
+packages are plain GitHub repos with a `niffler.json` manifest at the root
+(one repo = one package = N components). Repos tagged with the GitHub
+topic `niffler-component` are discoverable without any registry:
+
+| Tool | What it does |
+|---|---|
+| `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |
+| `plugin_installed` | the packages installed on this harness |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build` (single-file SDK components), then `core.spawn` each (approved) |
+| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref |
+| `plugin_remove {package}` | `core.remove` every component, delete the clone, drop the record |
+
+- Install/update/remove all carry `x-harness.approval: "always"` — they
+  run third-party code, and every individual spawn/remove is approved
+  again by core. Never run them with `NIF_AUTO_APPROVE=1` unless you trust
+  the publisher.
+- The default ref is the latest release tag, else the default branch.
+  `version` pins a tag or branch explicitly.
+- Components always build from source via the `builder` — the same path
+  agent-written components take. Running Niffler already provides the
+  toolchain (Nim/Go, nats.c, libclang), so no extra requirements; every
+  platform compiles with its own toolchain.
+- Install records live in the store (kind `plugin`, id = package name);
+  they are wiped by `--recover` like all component records — a fresh boot
+  re-clones from the recorded repo/ref on reinstall.
+- The GitHub API is used unauthenticated (60 req/h/IP).
+- Publishing: add the `niffler-component` topic and tag releases
+  (`v1.0.0`). The release workflow in the
+  [`gokr/niffler-weather`](https://github.com/gokr/niffler-weather) sample
+  dogfoods: it boots a harness and installs the package through
+  `plugin_install`, so every tag proves the package installs cleanly.
+
 ## Recovery — `--recover`
 
 The repo is the snapshot; `var/` is disposable build output. If the agent
@@ -182,6 +226,7 @@ Kinds in use by core:
 | `conversation` | `conv-<ts>` | `{createdAt, model, title}` |
 | `message` | `<convId>:<seq>` | `{conversationId, role, content, ...}` |
 | `component` | `<name>` | `{name, binary, policy, addedAt}` |
+| `plugin` | `<pkg name>` | `{name, repo, ref, dir, version, components, addedAt}` — install record of the `plugins` component |
 
 Backend is an embedded BitBarrel (bitcask-style) at `var/barrel-db`.
 **Exactly one process owns that file** — never run two `store` processes

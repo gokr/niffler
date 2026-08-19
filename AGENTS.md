@@ -17,7 +17,7 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `llm-openai` are peers. Adding a capability = write source → `builder.build`
+  `plugins`, `llm-openai` are peers. Adding a capability = write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
@@ -153,6 +153,12 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   specific (was this tool registered? does spawn work? LLM roundtrip?).
 - To inspect what core actually advertises to the LLM (catches bad schemas):
   call `catalog {op: list}` and check each tool's `schema.type` is `"object"`.
+- `./var/bin/console` (not in the manifest) — subscribes `>` and renders
+  every envelope readably; run it in a second terminal to follow any
+  harness activity live. Better than `nats sub '>'` (decoded envelopes).
+- Never wrap a single HttpClient across multiple GitHub (or any) API calls:
+  a stale pooled connection (server closed it, e.g. after a 404) hangs the
+  next read forever — fresh client per call (see plugins' resolveTag).
 - The `ui` component also registers on the bus (0 tools) — grep core's stdout
   for `catalog: ui v` to prove the bridge connected.
 - Killing all component processes leaves the NATS server orphaned; either
@@ -163,6 +169,14 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 
 - Prefer dogfooding: to try a new tool, build it as a component through the
   harness's own `builder` + `core.spawn` before hard-wiring anything into core.
+- **Component ecosystem**: third-party packages are GitHub repos with a
+  `niffler.json` manifest + the `niffler-component` topic. The shipped
+  `plugins` component installs them (`plugin_search`/`install`/`update`/
+  `remove`) — clone into `var/plugins/<pkg>@<ref>/`, always build from
+  source via `builder.build`, then `core.spawn`.
+  Sample package: `gokr/niffler-weather`. Install records: store kind
+  `plugin`. Never loop over a possibly-missing JSON key in component code —
+  `{}` returns nil and iterating nil SIGSEGVs (json.nim items iterator).
 - Verification = `nimble all && nimble smoke`, plus a live harness run for
   conversation-loop changes.
 - Milestone status and open quests live in `README.md` — update it when you

@@ -15,6 +15,7 @@ starts it via `core.spawn` — mid-conversation. Design rationale:
 ```
 core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
+                     ├── plugins (Nim SDK)   ← component ecosystem
                      ├── llm-openai (Go SDK)
                      └── your tool (any language with an SDK port)
 ```
@@ -136,7 +137,7 @@ sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
 sdk/go/              Go component SDK (mirror of the Nim one)
 core/                catalog, supervisor, dispatch, conversation loop
-components/          bash, builder, store (Nim), llm-openai (Go)
+components/          bash, builder, store, plugins (Nim), llm-openai (Go)
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
 ```
@@ -185,6 +186,27 @@ the tool is live. Retire it with `core.remove {name}` (kill it temporarily
 with `core.kill {name}`). The agent does this itself, mid-conversation —
 that is the architecture's validation criterion.
 
+## Component ecosystem
+
+Third-party component packages are distributed as plain GitHub repos — one
+repo = one package = N components, with a `niffler.json` manifest at the
+root. Repos tagged with the GitHub topic
+[`niffler-component`](https://github.com/topics/niffler-component) are
+discoverable from inside a conversation (say "find me a weather
+component") or via `plugin_search`; `plugin_install {repo}` clones the
+repo into `var/plugins/<pkg>@<ref>/`, compiles each component from source
+via the `builder` (the same path agent-written components take — no extra
+toolchain, every platform builds with its own), then `core.spawn`s every
+component (human-approved). `plugin_update` / `plugin_remove` manage
+installed packages; installs survive restarts via the store's `plugin`
+records.
+
+Example package: [`gokr/niffler-weather`](https://github.com/gokr/niffler-weather)
+(Open-Meteo weather, no API key). Its README documents the manifest
+format; its release workflow dogfoods — it boots a harness and installs
+the package through `plugin_install`, so every tag proves the package
+installs cleanly.
+
 ## Milestone status
 
 - [x] wire spec, envelope, Nim + Go SDKs
@@ -207,6 +229,10 @@ that is the architecture's validation criterion.
       human is reachable; verified end-to-end (service + tty probes)
 - [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
       binaries from source, wipe spawned-component records, keep conversations
+- [x] **plugins component** — ecosystem discovery + install as a bus
+      service: GitHub topic search, `niffler.json` package manifest, release
+      assets or source build via the builder, spawn/update/remove, store
+      records; live-tested end-to-end with `gokr/niffler-weather`
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] streaming (chunk frames + `ev.*` token events), cancellation
 
@@ -224,3 +250,6 @@ that is the architecture's validation criterion.
    (see ui/README.md).
 5. **store-tidb** — same tools, SQL tables, FTS + vector search for
    conversation memory; sharing across harnesses/hosts.
+6. **component package template repo** — the niffler-weather repo layout
+   + release CI as a `gh repo create`-able template; optionally a curated
+   index repo for `plugin_search` ranking.

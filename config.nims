@@ -13,6 +13,11 @@ if dirExists(pkgsDir):
       if base.startsWith(prefix):
         switch("path", path)
 
+# HTTPS for std/httpclient in every build (shipped components, builder-built
+# tools, plugins, smoke, probes). Needs libssl-dev (Ubuntu) / Xcode CLT
+# (macOS) — `make setup` installs it.
+switch("define", "ssl")
+
 # futhark (via natswrapper) emits a bogus FILE-size warning for the C header
 switch("warning", "User:off")
 
