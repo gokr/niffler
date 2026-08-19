@@ -33,9 +33,25 @@ components:
     required: false
     restart: on-failure
 
-  - name: llm-openai
-    build: {lang: go, src: components/llm-openai}
-    binary: var/bin/llm-openai
+  - name: llm
+    build: {lang: go, src: components/llm}
+    binary: var/bin/llm
     autostart: true
     required: true
     restart: on-failure
+
+  - name: hashline-edit
+    build: {lang: nim, src: components/hashline-edit/main.nim}
+    binary: var/bin/hashline-edit
+    autostart: true
+    required: false
+    restart: on-failure
+
+  # Minimal example adapter (same tool contract, no streaming). Swap it
+  # back in place of `llm` to test: comment out llm, uncomment llm-openai.
+  # - name: llm-openai
+  #   build: {lang: go, src: components/llm-openai}
+  #   binary: var/bin/llm-openai
+  #   autostart: true
+  #   required: true
+  #   restart: on-failure
