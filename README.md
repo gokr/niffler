@@ -1,8 +1,15 @@
 # Niffler
 
-This is Niffler (reborn), a minimal, self-extending agent harness. The agent adds capabilities at
-runtime — writes source, compiles it with the `builder` component, starts it via
-`core.spawn` — mid-conversation. Design rationale:
+This is Niffler (reborn), a minimalistic, self-extending agent harness similar in philosophy
+to [Pi](https://pi.dev) or the new [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Niffler takes a completely different approach to
+software composition though and relies on a Unix-style "components run as processes"
+and use NATS as the communication plane. This allows components to be written in different
+languages, be strictly isolated from each other and even run remotely.
+
+Niffler is meant to be cloned out and run using its own git repo as "home".
+
+The agent adds capabilities at runtime — writes source, compiles it with the `builder` component,
+starts it via `core.spawn` — mid-conversation. Design rationale:
 [docs/REBOOT.md](docs/REBOOT.md). Wire protocol: [docs/WIRE.md](docs/WIRE.md).
 
 ```
@@ -15,6 +22,11 @@ core (Nim) ── NATS ──┬── bash (Nim SDK)
 Core speaks exactly one protocol (JSON envelopes over NATS, see
 [docs/WIRE.md](docs/WIRE.md)); everything else — bash, the builder, the LLM
 adapter — is a separate process component with its own language's SDK.
+
+The shipped set proves the multi-language point: `bash`, `builder` and
+`store` are written against the Nim SDK, while the LLM adapter
+`llm-openai` is deliberately in Go — both SDKs exist from the start, and
+the agent adds components in either language mid-conversation.
 
 Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
 bus, approvals, recovery, troubleshooting). Changelog:
@@ -66,7 +78,7 @@ sudo apt install nodejs npm
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
 # Wails build deps: webkit2gtk 4.1, GTK3, build tooling
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config libssl-dev
 ```
 
 ### macOS (Homebrew)
@@ -164,7 +176,7 @@ comp.tool:
 comp.run()
 ```
 
-Go — `import niffler "niffler.dev/sdk"` with the same surface
+Go — `import sdk "niffler.dev/sdk"` with the same surface
 (`Tool`, `On`, `Emit`, `Request`, `Run`). Other languages: port the SDK —
 the envelope is the artifact (~200 lines).
 
