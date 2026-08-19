@@ -75,6 +75,9 @@ var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/bash/main.nim
 
+var/bin/hashline-edit: components/hashline-edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/hashline-edit/main.nim
+
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
 
@@ -93,7 +96,7 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	cd components/llm && go build -o ../../var/bin/llm .
 
-components: var/bin/niffler var/bin/store var/bin/bash \
+components: var/bin/niffler var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/builder var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai var/bin/llm
 
 build: components
@@ -123,7 +126,8 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # tests: one binary per tests/*.nim; `make test` runs the whole suite
 # sequentially (each boots its own NATS; none may run while a harness is
 # using this repo's var/barrel-db). Individual: make test-bash, test-store,
-# test-builder, test-console, test-plugins, test-core, test-cli, test-smoke.
+# test-builder, test-console, test-plugins, test-core, test-cli,
+# test-hashline, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -144,6 +148,7 @@ test-console: build var/bin/test_t_console ; NIF_ROOT=$(ROOT) ./var/bin/test_t_c
 test-plugins: build var/bin/test_t_plugins ; NIF_ROOT=$(ROOT) ./var/bin/test_t_plugins
 test-core:    build var/bin/test_t_core    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_core
 test-cli:     build var/bin/test_t_cli     ; NIF_ROOT=$(ROOT) ./var/bin/test_t_cli
+test-hashline: build var/bin/test_t_hashline ; NIF_ROOT=$(ROOT) ./var/bin/test_t_hashline
 test-smoke:   build var/bin/test_smoke     ; NIF_ROOT=$(ROOT) ./var/bin/test_smoke
 
 smoke: test-smoke  # legacy alias

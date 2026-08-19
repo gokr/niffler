@@ -60,6 +60,12 @@ comp.tool:
     ## 124. Output over 200KB is capped (head + tail kept) with a marker
     ## showing exactly how many bytes were cut — narrow the command
     ## (grep/head/tail/wc) rather than assume you saw everything.
+    ## For READING text file content prefer the hashline-edit read tool
+    ## over `cat`: it returns hash anchors per line, is pageable, and
+    ## integrates with its replace tool (bash cat shows no anchors, so a
+    ## later replace can only guess). Use bash for cat only when read
+    ## cannot serve (e.g. piping, ranges, binary inspection, or files
+    ## read rejects).
     ## - command: The shell command line to run (bash -c)
     ## - timeoutMs: Kill the command after this many ms (default 30000)
     inc callCounter

@@ -21,6 +21,7 @@ task all, "Build core and all shipped components":
   exec "nim c --hints:off -o:var/bin/niffler core/core.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/store components/store/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/bash components/bash/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/hashline-edit components/hashline-edit/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/builder components/builder/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/plugins components/plugins/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
