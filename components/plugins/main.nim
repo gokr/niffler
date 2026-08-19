@@ -33,9 +33,17 @@ proc ghClient(): HttpClient =
   result.headers = newHttpHeaders({"Accept": "application/vnd.github+json"})
 
 proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
+  ## NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
+  ## returns 137, so the timeout branch would never fire — poll
+  ## peekExitCode and own the kill (exit code 124 on timeout).
   var p = startProcess("bash", args = ["-c", cmd],
                        options = {poUsePath, poStdErrToStdOut})
-  result.code = p.waitForExit(timeoutMs)
+  result.code = -1
+  let deadline = epochTime() + timeoutMs.float / 1000.0
+  while epochTime() < deadline:
+    result.code = p.peekExitCode()
+    if result.code != -1: break
+    sleep(50)
   if result.code == -1:
     p.terminate()
     sleep(200)
@@ -52,7 +60,14 @@ proc tail(s: string, n: int): string =
 # repo/ref plumbing
 
 proc normalizeRepo(repoArg: string): string =
-  ## Accepts "owner/name" or github.com URLs (https or ssh) → "owner/name".
+  ## Accepts "owner/name", github.com URLs (https or ssh) → "owner/name",
+  ## or a "file:///path/to/repo" URL (local git repos — tests, mirrors).
+  if repoArg.strip().startsWith("file://"):
+    let r = repoArg.strip()
+    for ch in r:
+      if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.', '/', ':', '~'}:
+        raise newException(ValueError, "malformed repo URL: " & repoArg)
+    return r
   var r = repoArg.strip()
   r.removeSuffix(".git")
   for pre in ["https://github.com/", "http://github.com/", "git@github.com:"]:
@@ -69,6 +84,14 @@ proc normalizeRepo(repoArg: string): string =
     for ch in p:
       if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.'}:
         raise newException(ValueError, "malformed repo name: " & repoArg)
+
+proc repoSlug(repo: string): string =
+  ## Directory slug for a repo: basename for file:// URLs, owner/name's
+  ## name part for GitHub repos.
+  if repo.startsWith("file://"):
+    result = repo.rsplit('/', 1)[^1]
+  else:
+    result = repo.split('/')[1]
 
 proc checkRef(r: string): string =
   result = r.strip()
@@ -191,14 +214,17 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
                 "error": "build failed: " & e.msg}
 
 proc doInstall(repo, refArg: string): JsonNode =
-  ## Resolve ref (latest release tag, else default branch), clone, then
-  ## build each component, spawn it and persist the record.
+  ## Resolve ref (latest release tag, else default branch — skipped for
+  ## local file:// repos, which clone HEAD), clone, then build each
+  ## component, spawn it and persist the record.
+  let local = repo.startsWith("file://")
   var refTag = checkRef(refArg)
-  if refTag.len == 0:
+  if refTag.len == 0 and not local:
     refTag = resolveTag(repo)
-  if refTag.len == 0:
+  if refTag.len == 0 and not local:
     refTag = defaultBranch(repo)
-  let pkgSlug = repo.split('/')[1] & "@" & refTag
+  let slug = repoSlug(repo)
+  let pkgSlug = slug & "@" & (if refTag.len > 0: refTag else: "head")
   let dest = root() / "var" / "plugins" / pkgSlug
   if dirExists(dest):
     # a leftover clone from a failed/aborted install is stale when no
@@ -214,8 +240,11 @@ proc doInstall(repo, refArg: string): JsonNode =
                 " — use plugin_update, or plugin_remove first"}
     removeDir(dest)
   createDir(dest.parentDir())
-  let (cout, ccode) = runCmd("git clone --depth 1 --branch " & refTag &
-    " https://github.com/" & repo & ".git " & dest)
+  let url = if local: repo else: "https://github.com/" & repo & ".git"
+  let (cout, ccode) = if refTag.len > 0:
+    runCmd("git clone --depth 1 --branch " & refTag & " " & url & " " & dest)
+  else:
+    runCmd("git clone --depth 1 " & url & " " & dest)
   if ccode != 0:
     if dirExists(dest): removeDir(dest)
     return %*{"ok": false, "error": "git clone failed", "output": tail(cout, 800)}
@@ -314,9 +343,9 @@ comp.tool:
     if findExe("git").len == 0:
       return %*{"ok": false, "error": "git not found on PATH"}
     let cleanRepo = normalizeRepo(repo)
-    if pluginRecord(cleanRepo.split('/')[1]) != nil:
+    if pluginRecord(repoSlug(cleanRepo)) != nil:
       return %*{"ok": false, "error": "already installed: " &
-                cleanRepo.split('/')[1] &
+                repoSlug(cleanRepo) &
                 " — use plugin_update for a newer version, or plugin_remove first"}
     let r = doInstall(cleanRepo, version)
     if not r{"ok"}.getBool(false): return r
