@@ -16,6 +16,10 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 [docs/WIRE.md](docs/WIRE.md)); everything else — bash, the builder, the LLM
 adapter — is a separate process component with its own language's SDK.
 
+Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
+bus, approvals, recovery, troubleshooting). Changelog:
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Quickstart
 
 ```bash
@@ -41,7 +45,7 @@ make doctor   # checks what's installed and what's missing
 The Makefile finds wails in `~/go/bin` even when it's not on PATH. The
 manual commands below are what `make setup` runs.
 
-### Ubuntu 22.04+
+### Ubuntu 24.04+
 
 ```bash
 # Go — or download from https://go.dev/dl
@@ -53,7 +57,9 @@ curl -sSf https://nim-lang.org/choosenim/init.sh | sh
 # nats-server — or grab a binary from https://github.com/nats-io/nats-server/releases
 go install github.com/nats-io/nats-server/v2@latest
 
-# Node/npm (frontend; wails runs `npm install` itself)
+# Node/npm (frontend; wails runs `npm install` itself). Ubuntu 24.04 ships
+# node 18, which is fine. Older Ubuntu versions need NodeSource or nvm —
+# see docs/MANUAL.md.
 sudo apt install nodejs npm
 
 # Wails CLI (lands in ~/go/bin — the Makefile finds it there)
@@ -88,17 +94,26 @@ automatically by nimble on the first build (`make build`).
 | `make status` | show what is running where |
 | `make run` | terminal harness (interactive) |
 | `make test` | end-to-end smoke test (spawns its own bus) |
+| `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
 
-**Bus autostart.** With no `NATS_URL`, core reuses a bus on the default port
+**Bus autostart.** With no `NIF_NATS_URL`, core reuses a bus on the default port
 (127.0.0.1:4222) if one is live, otherwise it spawns nats-server on a random
 loopback port and writes `var/nats-url`. The UI bridge reads that file, so
-`make up` just works. Set `NATS_URL` to attach to any bus, even a remote one.
+`make up` just works. Set `NIF_NATS_URL` to attach to any bus, even a remote one.
 
-**Secrets.** `.env` (gitignored) holds `OPENAI_API_KEY` and `OPENAI_BASE_URL`
-(DeepSeek by default); an existing shell env always wins. Service mode (no
-tty): `NATS_URL=... OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`.
+**Approvals.** Tools that change the machine or the harness (`bash`,
+`builder.build`, `core.spawn`/`kill`/`remove`) carry `x-harness.approval:
+"always"` and are gated on a human: a y/N prompt in the terminal harness, a
+dialog in the web UI. Headless (no UI attached) calls are denied — never
+silently approved. `NIF_AUTO_APPROVE=1` bypasses the gate (see
+[docs/MANUAL.md](docs/MANUAL.md)).
+
+**Secrets.** `.env` (gitignored) holds `NIF_OPENAI_API_KEY` and
+`NIF_OPENAI_BASE_URL` (DeepSeek by default); an existing shell env always
+wins. Service mode (no tty): `NIF_NATS_URL=... NIF_OPENAI_API_KEY=...
+./var/bin/niffler < /dev/null`.
 
 ## Layout
 
@@ -126,6 +141,12 @@ variant with FTS/vector later is a drop-in with the same tools).
 Barrel's pubsub is deliberately **not** used — NATS is the one and only
 bus. Kind keys: `component`, `conversation`, `message`. Core persists
 spawned components (restored on boot) and conversation messages.
+
+**Recovery.** The repo is the snapshot; `var/` is disposable build output.
+If a component is damaged — overwritten binary, broken self-added
+component, corrupted record — `make recover` rebuilds the shipped binaries
+from source, wipes the spawned-component records and starts fresh
+(conversations survive). See docs/MANUAL.md.
 
 ## Writing a component
 
@@ -167,12 +188,15 @@ that is the architecture's validation criterion.
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
 - [x] **Wails SPA shell** — Go bridge (bus citizen), Svelte 5 chat:
-      sessions from the store, live tool cards, markdown; builds + verified
-      end-to-end against core in service mode
-- [ ] approvals via `svc.ui.call` (x-harness interceptor in dispatch)
+      sessions from the store, live tool cards, markdown, conversation
+      resume, model/token/context display; builds + verified end-to-end
+- [x] **approvals** — x-harness.approval interceptor in dispatch: terminal
+      prompt (tty) or UI dialog (ev.approval.request/reply); deny when no
+      human is reachable; verified end-to-end (service + tty probes)
+- [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
+      binaries from source, wipe spawned-component records, keep conversations
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] streaming (chunk frames + `ev.*` token events), cancellation
-- [ ] conversation resume in the UI (store reload wired, needs UI polish)
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
 
