@@ -240,7 +240,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     checkContext(p, messages, onEvent)
     # rebuild the tool list from the live catalog (self-extension!)
     let llmArgs = %*{"messages": messages,
-                     "tools": ct.cat.allTools().formatToolsForLlm()}
+                     "tools": ct.cat.allTools().formatToolsForLlm(),
+                     "sessionId": sessionId}
     var resp: JsonNode
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
