@@ -83,7 +83,7 @@
         class:bg-accent={connected === true}
         class:bg-red-500={connected === false}
         class:bg-ink-600={connected === null}
-        title={connected === null ? "connecting…" : connected ? "bus connected" : "bus unreachable"}
+        title={connected === null ? "connecting…" : (connected ? "bus connected" : "bus unreachable") + (url ? " · " + url : "")}
       ></span>
     </div>
     <Sessions {selectSession} {sessionId} {refreshKey} onDelete={handleDelete} />
@@ -102,6 +102,12 @@
       {sessionId ? "session " + short(sessionId) : "new session"}
       {#if url}
         <span class="ml-3 font-mono text-ink-600">{url}</span>
+      {/if}
+      {#if __BUILD_COMMIT__}
+        <span
+          class="ml-3 inline-block rounded px-1.5 py-0.5 text-[11px] font-mono text-ink-400 border border-ink-600"
+          title="UI built from commit {__BUILD_COMMIT__}"
+        >{__BUILD_COMMIT__}</span>
       {/if}
     </header>
     {#if !isWails()}
