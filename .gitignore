@@ -19,3 +19,6 @@ ui/frontend/dist/
 ui/niffler-ui
 ui/frontend/wailsjs/
 ui/frontend/package.json.md5
+nimble.develop
+nimble.paths
+nimbledeps

@@ -120,6 +120,13 @@ down:
 status:
 	./scripts/niffler.sh status
 
+# recover: back to factory shape. The repo is the snapshot; var/ is
+# disposable build output. Core's --recover rebuilds binaries from source
+# and wipes store component records (conversations survive).
+recover: build
+	@./scripts/niffler.sh down 2>/dev/null || true
+	./var/bin/niffler --recover
+
 dev:
 	cd ui/frontend && npm run dev
 
