@@ -10,6 +10,7 @@ import natswrapper
 when defined(posix):
   import std/posix
 import ../sdk/dotenv
+import approval
 import catalog
 import conversation
 import dispatch
@@ -133,7 +134,8 @@ proc main() =
 
   # --- 4b. restore spawned components from the store ---------------------
   # Persistence of shape: components added via core.spawn come back on boot.
-  var ct = CoreTools(nc: nc, cat: cat, sup: sup)
+  var approval = newApproval(nc, cat, isatty(stdin))
+  var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval)
   if cat.components.hasKey("store"):
     try:
       let resp = ct.dispatchToolCall("list", %*{"kind": "component"})

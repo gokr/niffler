@@ -2,11 +2,13 @@
 ##
 ## Core's own tools (spawn, catalog) are handled locally; everything else
 ## goes to svc.<component>.call as a request/reply call envelope.
-## Approval interceptor hooks here later (x-harness.approval, svc.ui.call).
+## The approval interceptor (x-harness.approval, see approval.nim) gates
+## both paths: core tools here, component tools below.
 
 import std/[json, os, strutils, tables, times]
 import natswrapper
 import ../sdk/envelope
+import approval
 import catalog
 import supervisor
 
@@ -15,11 +17,16 @@ type
     nc*: NatsConnection
     cat*: Catalog
     sup*: Supervisor
+    approval*: Approval
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
+  # the self-extension tools change the harness itself — human gate first
+  if tool in ["spawn", "kill", "remove"] and ct.approval != nil:
+    if not ct.approval.ask(tool, args):
+      return %*{"error": "approval denied for " & tool}
   case tool
   of "spawn":
     ## Register and start a built component binary; it announces itself on
@@ -85,9 +92,14 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     raise newException(ValueError,
       "no component provides tool '" & tool & "' — is it registered?")
 
+  let schema = ct.cat.toolSchema(tool)
+  # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
+  if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
+    if ct.approval == nil or not ct.approval.ask(tool, args):
+      raise newException(ValueError, "approval denied for tool '" & tool & "'")
+
   # per-tool timeout from its schema (x-harness.timeoutMs)
   var timeoutMs = defaultTimeoutMs
-  let schema = ct.cat.toolSchema(tool)
   if schema != nil:
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
 

@@ -11,10 +11,17 @@ plain browser against a WebSocket/SSE proxy later with zero SPA changes
 The bridge is also a bus citizen — a component like any other:
 
 ```
-svc.ui.call   # tools: confirm (approval prompts), notify (toasts)
-ev.session.*  # session list/state for the sidebar
-ev.catalog.*  # tool list changes → rebuild the tools panel
+svc.ui.call        # (reserved for future tools; none yet)
+ev.session.*       # session list/state for the sidebar
+ev.catalog.*       # tool list changes → rebuild the tools panel
+ev.approval.*      # approval gate (see below)
 ```
+
+**Approvals need no bridge code.** Core publishes `ev.approval.request
+{id, tool, args}` for tools with `x-harness.approval`; the bridge's
+`On(">")` already forwards every event to the SPA, which shows the modal
+(App.svelte) and answers via `emit("ev.approval.reply", {id, ok})`. The
+SPA-only change was the modal — the transport stayed the bus.
 
 ## Two kinds of dynamism
 

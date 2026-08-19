@@ -30,8 +30,9 @@ anything structural.
 - Naming: components lowercase-hyphens (`llm-openai`), tools lowercase underscores.
   Tool names are globally unique — core rejects duplicates at registration.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
-  e.g. `chat`), `x-harness.approval`, `x-harness.timeoutMs` (see
-  `components/builder/main.nim`).
+  e.g. `chat`), `x-harness.approval` (**enforced**: terminal y/N prompt, UI
+  dialog, or deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),
+  `x-harness.timeoutMs` (see `components/builder/main.nim`).
 - Tool doc comments are the LLM's only window into a tool: all prose lines of
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM

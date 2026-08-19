@@ -49,6 +49,13 @@ ev.session.toolcall    # {sessionId, tool, args, result | error}
 ev.session.done        # {sessionId, reply} or {sessionId, error}
 ```
 
+Approval subjects (human gate for `x-harness.approval: "always"` tools):
+
+```
+ev.approval.request    # core → UI: {id, tool, args}   (terminal harness prompts instead)
+ev.approval.reply      # UI → core: {id, ok}           (id-matched)
+```
+
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
 `kill`, `remove`.
@@ -77,6 +84,14 @@ ev.session.done        # {sessionId, reply} or {sessionId, error}
 No transport-native cancellation in NATS. Components that care subscribe to
 `ev.cancel.<call-id>` on call start and check it between output chunks.
 Core publishes it on user cancel. ~10 lines in the SDK.
+
+## Approvals
+
+Dispatch honors `x-harness.approval` on the tool schema (docs/REBOOT.md,
+"policy rides the schema"): a tool marked `"always"` is held until a human
+answers. Terminal harness: y/N prompt on stdin. Service mode: core
+publishes `ev.approval.request` and waits id-matched on `ev.approval.reply`
+(timeout → deny). No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
 
 ## Conventions
 

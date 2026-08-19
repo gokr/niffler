@@ -2,12 +2,19 @@
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
-  import { online, onStatus, isWails, busUrl } from "./nats";
+  import { online, onStatus, isWails, busUrl, on, emit } from "./nats";
+
+  interface ApprovalReq {
+    id: string;
+    tool: string;
+    args: any;
+  }
 
   let connected = $state<boolean | null>(null);
   let url = $state("");
   let sessionId = $state<string | null>(null);
   let refreshKey = $state(0);
+  let approvals = $state<ApprovalReq[]>([]);
 
   onMount(async () => {
     if (!isWails()) {
@@ -25,6 +32,29 @@
       if (urlNow) url = urlNow;
     });
   });
+
+  // Approval gate: core publishes ev.approval.request for tools with
+  // x-harness.approval; our answer goes back on ev.approval.reply.
+  onMount(() =>
+    on("ev.approval.request", (ev) => {
+      const p = ev.payload ?? {};
+      if (p.id && p.tool) {
+        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args }];
+      }
+    })
+  );
+
+  function prettyArgs(args: any): string {
+    const s = JSON.stringify(args ?? {}, null, 2);
+    return s.length > 3000 ? s.slice(0, 3000) + "…" : s;
+  }
+
+  function answerApproval(ok: boolean) {
+    const req = approvals[0];
+    if (!req) return;
+    emit("ev.approval.reply", { id: req.id, ok });
+    approvals = approvals.slice(1);
+  }
 
   function selectSession(id: string) {
     sessionId = id;
@@ -89,3 +119,36 @@
     <Chat bind:sessionId={sessionId} />
   </main>
 </div>
+
+{#if approvals.length > 0}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div class="w-[520px] max-w-[92vw] rounded-xl border border-ink-600 bg-ink-900 p-5 shadow-2xl">
+      <div class="text-[15px] font-semibold text-ink-200">Approval required</div>
+      <div class="mt-1 text-[13px] text-ink-400">
+        A tool call with <code class="font-mono text-ink-300">x-harness.approval</code> is
+        waiting for your ok:
+      </div>
+      <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
+        <div class="font-mono text-[13px] text-accent">{approvals[0].tool}</div>
+        <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
+      </div>
+      {#if approvals.length > 1}
+        <div class="mt-2 text-[12px] text-ink-500">+ {approvals.length - 1} more waiting</div>
+      {/if}
+      <div class="mt-4 flex justify-end gap-2">
+        <button
+          class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
+          onclick={() => answerApproval(false)}
+        >
+          Deny
+        </button>
+        <button
+          class="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-semibold text-ink-950 hover:opacity-90"
+          onclick={() => answerApproval(true)}
+        >
+          Approve
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
