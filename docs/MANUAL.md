@@ -270,7 +270,7 @@ covered hermetically by `t_plugins` via a local `file://` git repo.
 ```bash
 make up          # build (incremental), ensure bus + core, open the UI
 make run         # terminal harness
-make test        # end-to-end smoke test (spawns its own bus)
+make test        # the bus-contract suite (8 tests, each spawns its own bus)
 make status      # what is running where
 make down        # stop UI, core, and the bus core spawned
 make doctor      # check prerequisites
