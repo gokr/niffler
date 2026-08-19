@@ -84,11 +84,14 @@ var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/console: components/console/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/console/main.nim
 
+var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/cli/main.nim
+
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	cd components/llm-openai && go build -o ../../var/bin/llm-openai .
 
 components: var/bin/niffler var/bin/store var/bin/bash var/bin/builder \
-	var/bin/plugins var/bin/console var/bin/llm-openai
+	var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai
 
 build: components
 
@@ -113,10 +116,34 @@ run: build
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ tests/smoke.nim
 
-test: build var/bin/smoke
-	NIF_ROOT=$(ROOT) ./var/bin/smoke
+# ---------------------------------------------------------------------------
+# tests: one binary per tests/*.nim; `make test` runs the whole suite
+# sequentially (each boots its own NATS; none may run while a harness is
+# using this repo's var/barrel-db). Individual: make test-bash, test-store,
+# test-builder, test-console, test-plugins, test-core, test-cli, test-smoke.
 
-smoke: test  # alias
+TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
+TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
+
+var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ tests/$*.nim
+
+test: build $(TEST_BINS)
+	@for t in $(TEST_BINS); do \
+		echo "== $$t"; \
+		NIF_ROOT=$(ROOT) ./$$t || exit 1; \
+	done
+
+test-bash:    build var/bin/test_t_bash    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_bash
+test-store:   build var/bin/test_t_store   ; NIF_ROOT=$(ROOT) ./var/bin/test_t_store
+test-builder: build var/bin/test_t_builder ; NIF_ROOT=$(ROOT) ./var/bin/test_t_builder
+test-console: build var/bin/test_t_console ; NIF_ROOT=$(ROOT) ./var/bin/test_t_console
+test-plugins: build var/bin/test_t_plugins ; NIF_ROOT=$(ROOT) ./var/bin/test_t_plugins
+test-core:    build var/bin/test_t_core    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_core
+test-cli:     build var/bin/test_t_cli     ; NIF_ROOT=$(ROOT) ./var/bin/test_t_cli
+test-smoke:   build var/bin/test_smoke     ; NIF_ROOT=$(ROOT) ./var/bin/test_smoke
+
+smoke: test-smoke  # legacy alias
 
 up: all
 	./scripts/niffler.sh up
