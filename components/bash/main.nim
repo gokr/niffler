@@ -3,10 +3,28 @@
 ## The agent's normal path to self-extension: write source files with bash,
 ## compile with builder, spawn with core.
 
-import std/[json, os, osproc]
+import std/[json, os, osproc, times]
 import niffler/sdk
 
 let comp = newComponent("bash", "0.1.0")
+
+proc runWithTimeout(command: string, timeoutMs: int): tuple[code: int, output: string] =
+  ## Run a command, kill it on timeout. NOTE: osproc's waitForExit(timeout)
+  ## SIGKILLs the child itself and returns 137 — the timeout branch would
+  ## never fire — so poll peekExitCode and own the kill.
+  var p = startProcess("bash", args = ["-c", command], options = {poUsePath})
+  result.code = -1
+  let deadline = epochTime() + timeoutMs.float / 1000.0
+  while epochTime() < deadline:
+    result.code = p.peekExitCode()
+    if result.code != -1: break
+    sleep(50)
+  if result.code == -1:
+    p.terminate()
+    sleep(200)
+    if p.running(): p.kill()
+    result.code = 124
+  p.close()
 
 const maxOutputBytes = 200_000
   ## Generous but bounded: unbounded output risks blowing past NATS/LLM
@@ -57,17 +75,10 @@ comp.tool:
     # out. Wrapped in a subshell so the redirection covers the whole
     # command (incl. `;`/`&&`-chains), not just its last statement.
     let wrapped = "( " & command & " ) > " & quoteShell(tmpPath) & " 2>&1"
-    var p = startProcess("bash", args = ["-c", wrapped], options = {poUsePath})
-    var code = p.waitForExit(timeoutMs)
+    let (code, _) = runWithTimeout(wrapped, timeoutMs)
     var output = ""
-    if code == -1:
-      # timeout: terminate, give it a moment, then kill
-      p.terminate()
-      sleep(200)
-      if p.running(): p.kill()
-      code = 124
+    if code == 124:
       output = "[timed out after " & $timeoutMs & "ms]\n"
-    p.close()
     try:
       if fileExists(tmpPath):
         output = output & readFile(tmpPath)

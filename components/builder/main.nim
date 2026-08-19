@@ -5,13 +5,21 @@
 ## go.mod with a replace to the local SDK if they don't have one.
 ## The agent's next step is core.spawn {name, binary}.
 
-import std/[json, os, osproc, streams]
+import std/[json, os, osproc, streams, times]
 import niffler/sdk
 
 proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
+  ## NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
+  ## returns 137, so the timeout branch would never fire — poll
+  ## peekExitCode and own the kill (exit code 124 on timeout).
   var p = startProcess("bash", args = ["-c", cmd],
                        options = {poUsePath, poStdErrToStdOut})
-  result.code = p.waitForExit(timeoutMs)
+  result.code = -1
+  let deadline = epochTime() + timeoutMs.float / 1000.0
+  while epochTime() < deadline:
+    result.code = p.peekExitCode()
+    if result.code != -1: break
+    sleep(50)
   if result.code == -1:
     p.terminate()
     sleep(200)
