@@ -49,7 +49,10 @@ make run              # build, then ./var/bin/niffler (interactive harness)
 make up               # single command: ensure bus + core, then open the UI
 make down             # stop what `make up` started (UI, core, spawned bus)
 make status
-make test             # = nimble smoke; the only test, end-to-end
+make test             # the whole bus-contract suite: smoke + t_bash, t_store,
+                      # t_builder, t_console, t_plugins, t_core, t_cli — each
+                      # boots its own NATS; core-based tests need no other
+                      # harness running (store single-writer)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
@@ -156,6 +159,12 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 - `./var/bin/console` (not in the manifest) — subscribes `>` and renders
   every envelope readably; run it in a second terminal to follow any
   harness activity live. Better than `nats sub '>'` (decoded envelopes).
+- `./var/bin/cli` (not in the manifest) — drive the harness from a script:
+  `catalog` / `wait <comp>` / `call <tool> '<json>'` / `install <repo>[@<ref>]`,
+  each exiting 0 on success. Its catalog seeds from core (`catalog {op:
+  components}`) so it works against an already-running harness. This is
+  the preferred way to CI a plugin repo: boot the harness, `cli install`,
+  `cli call` the tools, assert on output.
 - Never wrap a single HttpClient across multiple GitHub (or any) API calls:
   a stale pooled connection (server closed it, e.g. after a 404) hangs the
   next read forever — fresh client per call (see plugins' resolveTag).

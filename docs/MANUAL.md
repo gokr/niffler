@@ -87,6 +87,21 @@ or a stuck-tool call:
 ./var/bin/console    # in a separate terminal while the harness runs
 ```
 
+**The cli component** (`./var/bin/cli`) drives the same bus from a
+terminal or a script, CI-friendly (exit 0 on success):
+
+```bash
+./var/bin/cli catalog                        # components + their tools
+./var/bin/cli wait <component> [secs]        # wait for registration
+./var/bin/cli call <tool> '<json args>'      # dispatch, print the result
+./var/bin/cli install <repo>[@<ref>]         # plugin_install + verify
+```
+
+`cli install` clones, builds via the builder, spawns every component and
+waits for each registration — a plugin repo's CI proves a package by
+running the harness itself through this one command. `file://` repo URLs
+install from local git repos (hermetic tests, mirrors).
+
 ## Approvals
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
@@ -232,6 +247,23 @@ Backend is an embedded BitBarrel (bitcask-style) at `var/barrel-db`.
 **Exactly one process owns that file** — never run two `store` processes
 against the same barrel (a second core booted against the same root would
 do exactly that; use a temp `NIF_ROOT` copy for experiments).
+
+## Testing
+
+```bash
+make test        # the whole bus-contract suite (spawns its own NATS per test)
+make test-bash   # ... or just one: test-store, test-builder, test-console,
+                 # test-plugins, test-core, test-cli, test-smoke
+```
+
+Each test boots the real component binaries (Nim *and* Go — the envelope
+is the artifact, so one harness tests every SDK) and drives them over the
+bus. Core-based tests (`t_core`, `t_plugins`, `t_cli`) require **no other
+harness running** against this repo's `var/barrel-db` (store
+single-writer). Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
+`cli install gokr/niffler-weather` + tool validation; `NIF_TEST_NETWORK=1`
+runs `plugin_search` against GitHub. The install pipeline itself is
+covered hermetically by `t_plugins` via a local `file://` git repo.
 
 ## Common tasks
 
