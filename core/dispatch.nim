@@ -20,6 +20,17 @@ type
     approval*: Approval
     coreSub*: ptr natsSubscription        ## svc.core.call (set by core.nim)
     pending*: PendingCalls                ## session calls stashed during a turn
+    # Streaming turn channel: while a session turn is running, runTurn installs
+    # a subscription on ev.llm.token and dispatchToolCall pumps it during its
+    # blocking wait so live deltas reach the UI without a second thread.
+    # A ref so mutations survive CoreTools' by-value copies (constructed once
+    # in core.nim, shared everywhere).
+    tokenStream*: TokenStream
+
+  TokenStream* = ref object
+    sub*: ptr natsSubscription
+    session*: string                ## "" = not streaming a turn
+    cb*: proc(sid, content, reasoning: string) {.closure.}
 
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
@@ -125,6 +136,26 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
       resp = errorEnvelope(env.id, "boom", e.msg)
     ct.nc.publish(reply, resp.encode())
 
+proc pumpTokenStream*(ct: CoreTools) =
+  ## Drain ev.llm.token frames matching the active streaming turn and forward
+  ## each parsed delta to the turn's callback. Called from the dispatch idle
+  ## slot so a blocking turn call keeps the live token stream flowing.
+  if ct.tokenStream == nil or ct.tokenStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.tokenStream.sub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekEvent or env.payload == nil: continue
+    let p = env.payload
+    if p{"sessionId"}.getStr("") != ct.tokenStream.session: continue
+    if ct.tokenStream.cb != nil:
+      ct.tokenStream.cb(p{"sessionId"}.getStr(""),
+                        p{"content"}.getStr(""),
+                        p{"reasoning"}.getStr(""))
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode =
   if tool in ["spawn", "catalog", "kill", "remove"]:
@@ -177,9 +208,11 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
         raise newException(ValueError,
           resp.error{"message"}.getStr("component error"))
       return resp.args
-    # idle slot: keep core responsive to its own tools and the catalog
+    # idle slot: keep core responsive to its own tools, the catalog, and the
+    # live LLM token stream (so streaming thinking reaches the UI while we wait)
     pumpCoreWhileBusy(ct)
     ct.cat.pump()
     ct.sup.pump(ct.cat)
+    pumpTokenStream(ct)
   raise newException(IOError,
     "tool '" & tool & "' timed out after " & $timeoutMs & "ms")

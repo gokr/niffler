@@ -149,7 +149,7 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
       var msg = newJObject()
       msg["role"] = v{"role"}
       msg["content"] = v{"content"}
-      for field in ["tool_call_id", "name", "tool_calls"]:
+      for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
         if v{field} != nil:
           msg[field] = v{field}
       result.add(msg)
@@ -227,13 +227,54 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
       onEvent("context", %*{"sessionId": p.convId, "promptTokens": used,
                             "context": p.ctxSize, "warning": true})
 
+proc startTokenStream*(ct: CoreTools, sessionId: string,
+                       cb: proc(sid, content, reasoning: string) {.closure.}) =
+  ## Begin forwarding live ev.llm.token deltas for `sessionId` to `cb`. The
+  ## subscription is pumped from dispatch's blocking wait, so no thread is
+  ## needed. Call stopTokenStream in a finally when the turn ends.
+  if ct.tokenStream == nil: return
+  if ct.tokenStream.sub != nil:
+    natsSubscription_Destroy(ct.tokenStream.sub)
+  var sub: ptr natsSubscription
+  if not checkStatus(natsConnection_SubscribeSync(addr sub, ct.nc.conn,
+                                                  "ev.llm.token".cstring)):
+    ct.tokenStream.sub = nil
+    return
+  ct.tokenStream.sub = sub
+  ct.tokenStream.session = sessionId
+  ct.tokenStream.cb = cb
+
+proc stopTokenStream*(ct: CoreTools) =
+  if ct.tokenStream == nil: return
+  if ct.tokenStream.sub != nil:
+    # The last token frame races the chat reply (different NATS subjects,
+    # no cross-subject ordering) — drain whatever already arrived before
+    # tearing the subscription down. Anything still on the wire is healed
+    # by the final assistant event carrying the complete content.
+    pumpTokenStream(ct)
+    natsSubscription_Destroy(ct.tokenStream.sub)
+    ct.tokenStream.sub = nil
+  ct.tokenStream.session = ""
+  ct.tokenStream.cb = nil
+
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
   ## ("assistant", {sessionId, content}), ("toolcall", {sessionId, tool, args,
-  ## result|error}), ("done", {sessionId, reply}) as they happen.
+  ## result|error}), ("token", {sessionId, content, reasoning} live deltas),
+  ## ("done", {sessionId, reply}) as they happen.
   let sessionId = p.convId
+  # Live LLM token stream: subscribe before the first chat call so no
+  # delta is missed, and forward every frame to the caller as a "token"
+  # event (the UI renders them as streaming text/thinking). The frames
+  # are pumped from dispatch's blocking wait (pumpTokenStream), so no
+  # thread is needed.
+  startTokenStream(ct, sessionId, proc(sid, content, reasoning: string) {.closure.} =
+    if onEvent != nil:
+      onEvent("token", %*{"sessionId": sid, "content": content,
+                          "reasoning": reasoning}))
+  defer: stopTokenStream(ct)
   var rounds = 0
   while rounds < 20:
     rounds += 1
@@ -241,7 +282,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # rebuild the tool list from the live catalog (self-extension!)
     let llmArgs = %*{"messages": messages,
                      "tools": ct.cat.allTools().formatToolsForLlm(),
-                     "sessionId": sessionId}
+                     "sessionId": sessionId,
+                     "stream": true}
     var resp: JsonNode
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
@@ -254,6 +296,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.sup.pump(ct.cat)
 
     let content = resp{"content"}.getStr("")
+    let reasoning = resp{"reasoning"}.getStr("")
     # Model + token usage surfaced by the llm component (informational).
     let usedModel = resp{"model"}.getStr("")
     let ctxSize = resp{"context"}.getInt(0)
@@ -270,6 +313,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       p.ctxSize = ctxSize
     if content.len > 0:
       let assistantMsg = %*{"role": "assistant", "content": content}
+      if reasoning.len > 0: assistantMsg["reasoning"] = %reasoning
       if usedModel.len > 0: assistantMsg["model"] = %usedModel
       if ctxSize > 0: assistantMsg["context"] = %ctxSize
       if usageObj.len > 0: assistantMsg["usage"] = usageObj
@@ -277,6 +321,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       p.persistMsg(assistantMsg)
       if onEvent != nil:
         var ev = %*{"sessionId": sessionId, "content": content}
+        if reasoning.len > 0: ev["reasoning"] = %reasoning
         if usedModel.len > 0: ev["model"] = %usedModel
         if ctxSize > 0: ev["context"] = %ctxSize
         if usageObj.len > 0: ev["usage"] = usageObj

@@ -169,7 +169,8 @@ proc main() =
   # Recover mode wipes those records first — back to the manifest set.
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
-                     pending: PendingCalls(items: @[]))
+                     pending: PendingCalls(items: @[]),
+                     tokenStream: new(TokenStream))
   if cat.components.hasKey("store"):
     if recovering:
       echo "core: recover — wiping stored component records (spawned components will not be restored)"
