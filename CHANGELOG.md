@@ -81,7 +81,8 @@ process component.
 - **Components** — `bash` (exec), `builder` (compiles agent-written Nim/Go
   sources), `store` (document store over the bus: put/get/list/del,
   rev-based optimistic concurrency, embedded BitBarrel), `llm-openai`
-  (OpenAI-compatible chat adapter, DeepSeek-friendly flat tool_calls).
+  (OpenAI-compatible chat adapter, `deepseek-chat` by default,
+  DeepSeek-friendly flat tool_calls).
 - **Self-extension end-to-end** — write → `builder.build` → `core.spawn`
   → tool appears in the LLM's toolset; `core.kill` (temporary) and
   `core.remove` (permanent) lifecycle.
