@@ -19,7 +19,7 @@ processes, its namespace authority, or its own mind.
 
 ## The irreducible mechanisms
 
-### 1. Bus bootstrap — `core/core.nim`
+### 1. Bus bootstrap — `core/niffler.nim`
 
 NATS spawn/attach, port pick, `.env` load, manifest read, `var/nats-url`.
 Everything else is defined relative to the bus — components *are* bus
