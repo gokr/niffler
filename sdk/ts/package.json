@@ -1,0 +1,15 @@
+{
+  "name": "niffler-sdk",
+  "version": "0.1.0",
+  "description": "Niffler component SDK (TypeScript/Node.js) — mirror of sdk/go and sdk/niffler",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "dependencies": {
+    "nats": "^2.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -39,13 +39,14 @@ comp.tool:
     ## Compile a new component from source into a binary under var/bin.
     ## Use this when the harness lacks a capability that no existing tool
     ## covers: write the component source yourself (Nim: import niffler/sdk
-    ## with the comp.tool: pattern; Go: import niffler "niffler.dev/sdk"),
-    ## then call core.spawn with the returned binary — the component
-    ## registers itself and its tools appear in your toolset on the next
-    ## request. Call the info tool first to see the SDK locations and the
-    ## exact code pattern. Returns ok, the binary path and a log tail
-    ## (compile errors are truncated to 2000 chars).
-    ## - lang: Language of the component: nim or go
+    ## with the comp.tool: pattern; Go: import sdk "niffler.dev/sdk";
+    ## TypeScript: import sdk from "niffler-sdk" with the comp.tool(...)
+    ## pattern), then call core.spawn with the returned binary — the
+    ## component registers itself and its tools appear in your toolset on
+    ## the next request. Call the info tool first to see the SDK locations
+    ## and the exact code pattern. Returns ok, the binary path and a log
+    ## tail (compile errors are truncated to 2000 chars).
+    ## - lang: Language of the component: nim, go or ts
     ## - name: Component name (also the binary name)
     ## - source: Full source code of the component
     let root = getEnv("NIF_ROOT", ".")
@@ -80,9 +81,51 @@ comp.tool:
         return %*{"ok": false, "lang": lang, "error": tail(output, 2000)}
       return %*{"ok": true, "lang": lang, "name": name,
                 "binary": binDir / name, "log": tail(output, 500)}
+    of "ts":
+      if findExe("node").len == 0 or findExe("npm").len == 0:
+        return %*{"ok": false, "lang": lang,
+                  "error": "node and npm are required on PATH for ts components"}
+      let dir = srcDir / name
+      createDir(dir)
+      writeFile(dir / "main.ts", source)
+      writeFile(dir / "package.json",
+        "{\n  \"name\": \"" & name & "\",\n  \"private\": true,\n" &
+        "  \"dependencies\": {\n    \"nats\": \"^2.29.0\",\n" &
+        "    \"niffler-sdk\": \"file:" & root / "sdk" / "ts" & "\"\n  },\n" &
+        "  \"devDependencies\": {\n    \"typescript\": \"^5.5.0\",\n" &
+        "    \"@types/node\": \"^22.0.0\"\n  }\n}\n")
+      writeFile(dir / "tsconfig.json",
+        "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n" &
+        "    \"module\": \"commonjs\",\n    \"moduleResolution\": \"node\",\n" &
+        "    \"outDir\": \"dist\",\n    \"strict\": true,\n" &
+        "    \"esModuleInterop\": true,\n    \"skipLibCheck\": true\n  },\n" &
+        "  \"include\": [\"main.ts\"]\n}\n")
+      let (io, ic) = runCmd(
+        "cd " & dir & " && npm install --no-audit --no-fund --loglevel=error",
+        300000)
+      if ic != 0:
+        return %*{"ok": false, "lang": lang, "error": tail(io, 2000)}
+      let (co, cc) = runCmd("cd " & dir & " && ./node_modules/.bin/tsc",
+                            120000)
+      if cc != 0:
+        return %*{"ok": false, "lang": lang, "error": tail(co, 2000)}
+      if not fileExists(dir / "dist" / "main.js"):
+        return %*{"ok": false, "lang": lang,
+                  "error": "tsc produced no dist/main.js"}
+      # the "binary" is a node wrapper around the compiled entry
+      let binary = binDir / name
+      writeFile(binary,
+        "#!/usr/bin/env node\n" &
+        "require(" & $ %absolutePath(dir / "dist" / "main.js") & ");\n")
+      setFilePermissions(binary, {fpUserExec, fpUserRead, fpUserWrite,
+                                  fpGroupExec, fpGroupRead,
+                                  fpOthersExec, fpOthersRead})
+      return %*{"ok": true, "lang": lang, "name": name,
+                "binary": binary,
+                "log": tail(io & "\n" & co, 500)}
     else:
       return %*{"ok": false, "error": "unsupported lang '" & lang &
-                "' (supported: nim, go)"}
+                "' (supported: nim, go, ts)"}
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
 
@@ -90,8 +133,8 @@ comp.tool:
   proc info(): JsonNode =
     ## Info about the builder and SDK locations
     let root = getEnv("NIF_ROOT", ".")
-    return %*{"langs": ["nim", "go"], "sdk": root / "sdk",
-              "sdkGo": root / "sdk" / "go",
-              "note": "Nim: import niffler/sdk; Go: import niffler.dev/sdk; then core.spawn {name, binary}"}
+    return %*{"langs": ["nim", "go", "ts"], "sdk": root / "sdk",
+              "sdkGo": root / "sdk" / "go", "sdkTs": root / "sdk" / "ts",
+              "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then core.spawn {name, binary}"}
 
 comp.run()

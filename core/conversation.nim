@@ -57,6 +57,23 @@ You can add capabilities at runtime:
      })
      if err := comp.Run(); err != nil { panic(err) }
    }
+
+   TypeScript (runs under Node.js; requires node + npm on PATH): package
+   `niffler-sdk` (the builder wires it via a file: dependency — do not
+   invent other import paths), same surface (newComponent/Tool/On/Emit/
+   Request/Run). Handlers may be async:
+
+   import sdk from "niffler-sdk";
+   const comp = sdk.newComponent("greet", "0.1.0");
+   comp.tool("greet", {
+     type: "object",
+     description: "Greet someone",
+     properties: { name: { type: "string" } },
+     required: ["name"],
+   }, async (_c, args: any) => {
+     return { greeting: "Hello, " + (args?.name ?? "world") };
+   });
+   comp.run();
 2. call builder.build {lang, name, source} to compile it (builder.info
    explains the pattern)
 3. call core.spawn {name, binary} to start it
@@ -66,11 +83,11 @@ core.remove {name} (forgotten permanently).
 Conversations and messages persist automatically via the store.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
-sources: components/ (manifest.yaml lists the boot set), SDK: sdk/ +
-sdk/go (builder.info has exact paths), design docs: docs/, build front
-door: Makefile (make build / make test / make help). var/ is disposable
-runtime state (binaries, barrel-db, agent builds) — gitignored; the repo
-is the snapshot and `--recover` rebuilds it.
+sources: components/ (manifest.yaml lists the boot set), SDKs: sdk/ +
+sdk/go + sdk/ts (builder.info has exact paths), design docs: docs/, build
+front door: Makefile (make build / make test / make help). var/ is
+disposable runtime state (binaries, barrel-db, agent builds) — gitignored;
+the repo is the snapshot and `--recover` rebuilds it.
 
 Be concise.
 """
