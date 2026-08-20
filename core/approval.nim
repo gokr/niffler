@@ -21,6 +21,9 @@ type
     tty*: bool             ## terminal prompt instead of UI dialog
     replySub*: ptr natsSubscription  ## ev.approval.reply (id-matched)
     timeoutMs*: int        ## how long to wait for a UI answer
+    session*: string       ## active conversation/context for the current call (set
+                           ## around a turn; "" = direct harness call, not a session)
+
 
 proc newApproval*(nc: NatsConnection, cat: Catalog, tty: bool,
                   timeoutMs = 300000): Approval =
@@ -55,7 +58,8 @@ proc askUi(a: Approval, tool: string, args: JsonNode): bool =
     return false
   let id = newId()
   let req = Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"id": id, "tool": tool, "args": args})
+                     payload: %*{"id": id, "tool": tool, "args": args,
+                                 "sessionId": a.session})
   a.nc.publish("ev.approval.request", req.encode())
   echo "core: approval requested for " & tool & " (" & id & ") — waiting for the UI"
   let deadline = epochTime() + a.timeoutMs.float / 1000.0
