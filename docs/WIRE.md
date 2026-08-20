@@ -36,8 +36,18 @@ reg.publish            # component announces itself on connect
                        #   {name, version, pid, tools: [ {name, schema} ]}
 reg.depart             # same shape, graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
+svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
+                       #   tool "session" {sessionId, content} — one turn; emits ev.session.*
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
 ```
+
+Session runners: one conversation = one process. The system harness
+(`svc.core.call`, tool `session`) ensures a runner for the session id
+(spawns `var/bin/session <id>` if none is alive — presence of component
+`session-<id>` in the catalog is the readiness signal) and forwards the
+turn to `svc.session.<id>.call`. Clients keep a single stable address
+(`svc.core.call`); runners are ephemeral — history lives in the store,
+a fresh runner resumes the conversation on the next call.
 
 Session subjects (core emits during `svc.core.call` session turns — UIs
 subscribe `ev.session.>` and render live):
@@ -70,8 +80,10 @@ ev.approval.reply      # UI → core: {id, ok}           (id-matched)
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
 `kill`, `remove`. `catalog` ops: `list` (LLM-facing tools, hidden ones
-filtered) and `components` (component→tools view for bus clients that
-missed the registrations — the cli seeds its catalog from it).
+filtered), `components` (component→tools view for bus clients that
+missed the registrations — the cli seeds its catalog from it) and
+`snapshot` (full registration payloads incl. schemas — session runners
+seed their catalog from it at startup, then follow `reg.>` live).
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`

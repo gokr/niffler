@@ -42,16 +42,22 @@ Two separate reasons it cannot be a component:
   a removed supervisor would orphan every child, lose crash recovery and drain.
   A killable supervisor defeats the architecture's own validation criterion.
 
-### 3. Conversation loop + session entry — `core/conversation.nim`
+### 3. Conversation loop + session entry — `core/conversation.nim` + `core/session.nim`
 
 The `session` tool (hidden) and the loop that drives the LLM, dispatches tools,
 and composes the system prompt. This is the agent's own mind.
 
-Crash isolation (docs/REBOOT.md: a component must never corrupt the agent's
-mind) means the mind must not be a peer of things it can remove — otherwise the
-agent could `core.remove` its own brain mid-conversation. It must also exist
-before any component answers `svc.core.call`. The mind's *state* is a component
-(`store`); the mind itself is not.
+The mind is split across two processes: the *system harness* (`niffler.nim`,
+the irreducible root) owns the `session` tool's address — it ensures a
+*session runner* (`session.nim`, `var/bin/session <id>`) per conversation and
+forwards to `svc.session.<id>.call` — and the runner executes turns, one
+process per conversation. Crash isolation (docs/REBOOT.md) works because the
+mind's *state* is a component (`store`); the mind's *code* is a spawned
+process that can be restarted freely: a killed runner loses nothing but the
+in-flight turn — the next session call spawns a fresh runner that resumes
+from the store. The agent cannot remove the loop itself: there is no tool
+that retires `niffler.nim` (it is the bus), and `session-<id>` runners are
+internal children (restart policy `never`), not agent capabilities.
 
 ### 4. Catalog authority — `core/catalog.nim`
 
@@ -104,3 +110,9 @@ mechanism can be rebuilt by the agent at runtime, it must be one.
 `plugins`, `hashline-edit`, anything the agent added. What it cannot touch is
 exactly the list above: the supervisor's children-ownership, the catalog, the
 loop, the bus. That asymmetry is the architecture, not an implementation detail.
+
+Session runners are the one deliberate crack in that wall: their processes
+belong to the supervisor (restart policy `never`) and can be killed without
+losing the conversation — the mind survives in the store and the loop code,
+not in the process. The unit of isolation for the agent's own mind is the
+process, exactly like everything else.

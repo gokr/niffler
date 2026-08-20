@@ -21,6 +21,13 @@ anything structural.
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
+- One conversation = one process: the system harness (`niffler.nim`) is the
+  irreducible root; it ensures a **session runner** (`var/bin/session <id>`,
+  `core/session.nim`) per conversation and forwards `session` tool calls to
+  `svc.session.<id>.call` (clients keep calling `svc.core.call`). Runners are
+  internal children (restart `never`), ephemeral, and resume from the store;
+  killing one loses only the in-flight turn. The tty REPL still runs turns
+  in the system process — turns never nest.
 - Nim SDK has **no callbacks and no threads**: handlers poll
   `natsSubscription_NextMsg` on the main thread, serialized, with normal GC.
   The `{.gcsafe.}` pragmas dance from the old codebase is not needed and must not
@@ -116,6 +123,12 @@ The SPA is a NATS client, not a Wails client: it only talks to
   model).
 - Harness in service mode (for the UI, no tty):
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
+- Session turns run in **session runner processes** (`var/bin/session <id>`),
+  spawned on demand by the system and present in the catalog as
+  `session-<id>` (0 tools). Missing `var/bin/session` → session calls fail
+  with "session runner binary missing — run `make build`". Runners resume
+  conversations from the store, so they are disposable; a runner whose
+  conversation id came from a killed runner is recreated automatically.
 - **`wails build`, never `go build`, for the UI.** `go build ./...` or
   `go build -o build/bin/niffler-ui .` overwrites the binary with a stub that
   prints "Wails applications will not build without the correct build tags."

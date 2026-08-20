@@ -258,6 +258,11 @@ to CI any plugin repo — Niffler testing itself.
       restore on boot (persistence of shape, verified live across restarts)
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
+- [x] **session runners** — one conversation = one process: the system
+      ensures `var/bin/session <id>` per session and forwards turns to
+      `svc.session.<id>.call`; runners are ephemeral, resume from the
+      store, and killing one loses only the in-flight turn (verified
+      live: fresh runner + resume + clean drain)
 - [x] **Wails SPA shell** — Go bridge (bus citizen), Svelte 5 chat:
       sessions from the store, live tool cards, markdown, conversation
       resume, model/token/context display; builds + verified end-to-end

@@ -8,13 +8,13 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Path | What it is |
 |---|---|
-| `core/` | the control plane (bus bootstrap, supervisor, catalog, dispatch, conversation loop) |
+| `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
 | `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `cli`, `console` (Nim), `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
-| `var/bin/` | built binaries (core + components). Rebuilt by `make build` |
+| `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
 | `var/barrel-db` | the store's embedded KV file — **single-writer**: exactly one `store` process may open it |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
 | `var/nats-url`, `var/core.log` | written by `scripts/niffler.sh` when `make up` starts core |
@@ -34,6 +34,21 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
+
+### Session runners
+
+One conversation = one process (`var/bin/session <sessionId>`), spawned by
+the system harness on demand. Clients keep calling `svc.core.call`
+(tool `session`); the system ensures a runner per session id and forwards
+the turn to `svc.session.<sessionId>.call`. The runner is a supervised
+child (restart policy `never`); it announces itself as component
+`session-<id>` with zero tools, seeds its catalog from
+`catalog {op: snapshot}` at startup, and emits the same `ev.session.*`
+events as the classic in-core loop. Sessions are ephemeral: history lives
+in the store, so a fresh runner resumes the conversation on the next call.
+Killing a runner kills only that conversation — the process is the unit of
+isolation. (The tty REPL still runs turns inside the system process;
+turns never nest either way.)
 
 ## Environment variables
 
