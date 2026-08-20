@@ -49,6 +49,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `make test-<comp>` runs one. Network opt-ins:
   `NIF_TEST_INSTALL=1` (real install + tool validation),
   `NIF_TEST_NETWORK=1` (plugin_search).
+- **TypeScript/Node.js component SDK** — `sdk/ts` (npm package
+  `niffler-sdk`), a 1:1 mirror of the Go SDK: same surface
+  (`newComponent`/`tool`/`on`/`emit`/`request`/`run`), async handlers
+  serialized through a promise chain (the Nim single-thread model).
+  The builder compiles `lang: "ts"` components: generated package.json
+  (wires the SDK via a `file:` dependency) + tsconfig, `npm install`,
+  `tsc`, and a `#!/usr/bin/env node` wrapper binary under `var/bin`.
+  Verified live end-to-end: builder → spawn → call from Node.js.
 - **HTTPS in all Nim builds** — `-d:ssl` is now set repo-wide
   (`config.nims`), so every component (and builder-built tool) can use
   std/httpclient against https endpoints. Prerequisite: `libssl-dev`

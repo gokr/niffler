@@ -108,6 +108,12 @@ The SPA is a NATS client, not a Wails client: it only talks to
   It streams live tokens as `ev.llm.token` deltas; core re-emits them as
   `ev.session.token` for the active turn. `components/llm-openai` is the
   minimal non-streaming example adapter.
+- TypeScript components (`sdk/ts`, npm package `niffler-sdk`) build with
+  `builder.build {lang: "ts", ...}`: npm install (registry access needed)
+  + tsc, producing a node wrapper binary; the builder wires the SDK via a
+  `file:` dependency in the generated package.json. Handlers may be async;
+  the SDK serializes them through a promise chain (the Nim single-thread
+  model).
 - Harness in service mode (for the UI, no tty):
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
 - **`wails build`, never `go build`, for the UI.** `go build ./...` or

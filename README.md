@@ -28,8 +28,8 @@ adapter — is a separate process component with its own language's SDK.
 The shipped set proves the multi-language point: `bash`, `builder`,
 `store`, `plugins`, `hashline-edit`, `cli` and `console` are written
 against the Nim SDK, while the LLM adapter `llm` is deliberately in Go —
-both SDKs exist from the start, and the agent adds components in either
-language mid-conversation.
+and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
+any of the three languages mid-conversation.
 
 Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
 bus, approvals, recovery, troubleshooting). Changelog:
@@ -147,6 +147,7 @@ manifest.yaml        bootstrap component manifest
 sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
 sdk/go/              Go component SDK (mirror of the Nim one)
+sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          bash, builder, store, plugins, hashline-edit, cli,
                      console (Nim), llm (Go)
@@ -192,8 +193,26 @@ comp.run()
 ```
 
 Go — `import sdk "niffler.dev/sdk"` with the same surface
-(`Tool`, `On`, `Emit`, `Request`, `Run`). Other languages: port the SDK —
-the envelope is the artifact (~200 lines).
+(`Tool`, `On`, `Emit`, `Request`, `Run`).
+
+TypeScript — runs under Node.js (`import sdk from "niffler-sdk"`,
+same surface, handlers may be async):
+
+```ts
+import sdk from "niffler-sdk";
+const comp = sdk.newComponent("weather", "0.1.0");
+comp.tool("weather", {
+  type: "object",
+  description: "Current weather for a city",
+  properties: { city: { type: "string" } },
+  required: ["city"],
+}, async (_c, args: any) => {
+  return { temp: 21, city: args.city };
+});
+comp.run();
+```
+
+Other languages: port the SDK — the envelope is the artifact (~200 lines).
 
 Then: `builder.build {lang, name, source}` → `core.spawn {name, binary}` →
 the tool is live. Retire it with `core.remove {name}` (kill it temporarily
@@ -225,7 +244,7 @@ to CI any plugin repo — Niffler testing itself.
 
 ## Milestone status
 
-- [x] wire spec, envelope, Nim + Go SDKs
+- [x] wire spec, envelope, Nim + Go + TypeScript SDKs
 - [x] supervisor (spawn/monitor/restart/drain), catalog, dispatch
 - [x] bash + builder components, llm adapter (streaming OpenAI-compatible) in Go
 - [x] typed tool definitions (nimcp-inspired: schema + handler from a proc)
@@ -270,6 +289,9 @@ to CI any plugin repo — Niffler testing itself.
       complete content
 - [x] **hashline-edit** — hash-anchored `read`/`replace`/`undo_last_replace`
       (Nim port of pi-hashline-edit-pro), anchors stable across edits
+- [x] **TypeScript SDK** — sdk/ts (npm package, mirror of the Go SDK);
+      the builder compiles `lang: "ts"` components via tsc into a node
+      wrapper binary; verified live (builder → spawn → call from Node.js)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
 
@@ -280,7 +302,8 @@ to CI any plugin repo — Niffler testing itself.
    is the artifact; Niffler can read its own sources (`bash cat …/store/main.nim`),
    build, spawn and benchmark the variant — a true dogfooding quest.
 2. **node/TS component SDK** — port sdk/go (~200 lines) to TypeScript; lets
-   the agent add JS tools without a compile step.
+   the agent add JS tools without a compile step. (Done — sdk/ts + builder
+   `lang: "ts"`; JS-without-compile via tsx remains a possible follow-up.)
 3. **pipewrap** — stdio/NDJSON bridge so plain scripts become components.
 4. **Level 2 UI dynamism** — builder compiles Svelte components to JS modules,
    catalog registers ui-modules, bridge serves var/ui/, SPA blob-imports

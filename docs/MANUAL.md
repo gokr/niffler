@@ -10,7 +10,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 |---|---|
 | `core/` | the control plane (bus bootstrap, supervisor, catalog, dispatch, conversation loop) |
 | `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `cli`, `console` (Nim), `llm` (Go) |
-| `sdk/` | Nim SDK + `sdk/go` (Go SDK); the envelope in `sdk/envelope.nim` is the artifact |
+| `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
@@ -280,14 +280,15 @@ make test-bash   # ... or just one: test-store, test-builder, test-console,
                  # test-plugins, test-core, test-cli, test-smoke
 ```
 
-Each test boots the real component binaries (Nim *and* Go — the envelope
-is the artifact, so one harness tests every SDK) and drives them over the
-bus. Core-based tests (`t_core`, `t_plugins`, `t_cli`) require **no other
-harness running** against this repo's `var/barrel-db` (store
-single-writer). Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
+Each test boots the real component binaries (Nim, Go *and* TypeScript —
+the envelope is the artifact, so one harness tests every SDK) and drives
+them over the bus. Core-based tests (`t_core`, `t_plugins`, `t_cli`)
+require **no other harness running** against this repo's `var/barrel-db`
+(store single-writer). Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
 `cli install gokr/niffler-weather` + tool validation; `NIF_TEST_NETWORK=1`
-runs `plugin_search` against GitHub. The install pipeline itself is
-covered hermetically by `t_plugins` via a local `file://` git repo.
+runs `plugin_search` against GitHub and the TypeScript builder build
+(npm registry). The install pipeline itself is covered hermetically by
+`t_plugins` via a local `file://` git repo.
 
 ## Common tasks
 
