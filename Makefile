@@ -67,7 +67,7 @@ var/bin:
 	@mkdir -p var/bin
 
 var/bin/niffler: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off -o:$@ core/core.nim
+	nim c --hints:off -o:$@ core/niffler.nim
 
 var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/store/main.nim
@@ -206,6 +206,8 @@ doctor:
 	else \
 		echo "  webkit2gtk-4.1: MISSING — run 'make install-ui-deps'"; \
 	fi)
+	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
+	@echo "                  npm registry access needed for 'builder.build {lang: \"ts\"}'"
 	@echo "Then: make up"
 
 install-go:

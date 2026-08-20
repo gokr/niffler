@@ -48,9 +48,11 @@ Only the terminal harness? `make run`. Just build? `make` (or `make all`).
 
 ## Prerequisites
 
-Core + components need **Nim**, **Go** and **nats-server**; the desktop UI
-additionally needs **Node/npm**, the **wails CLI** and (on Linux) the
-WebKit/GTK dev libraries.
+Core + components need **Nim**, **Go** and **nats-server**; TypeScript
+components and the desktop UI additionally need **Node/npm** (the
+builder's `lang: "ts"` pulls typescript from the npm registry per build);
+the UI also needs the **wails CLI** and (on Linux) WebKit/GTK dev
+libraries.
 
 ```bash
 make setup    # installs everything for your platform (Ubuntu/macOS)
