@@ -6,6 +6,7 @@
 ## both paths: core tools here, component tools below.
 
 import std/[json, os, strutils, tables, times]
+import yaml/tojson
 import natswrapper
 import ../sdk/envelope
 import approval
@@ -16,15 +17,17 @@ type
   CoreTools* = object
     nc*: NatsConnection
     cat*: Catalog
-    sup*: Supervisor
+    sup*: Supervisor                      ## nil in session runners (no children)
+    root*: string                         ## harness root (var/, components/, sdk/)
     approval*: Approval
-    coreSub*: ptr natsSubscription        ## svc.core.call (set by core.nim)
+    coreSub*: ptr natsSubscription        ## svc.core.call (set by niffler.nim; nil in runners)
     pending*: PendingCalls                ## session calls stashed during a turn
+    runner*: bool                         ## true in a session runner: core tools go over the bus
     # Streaming turn channel: while a session turn is running, runTurn installs
     # a subscription on ev.llm.token and dispatchToolCall pumps it during its
     # blocking wait so live deltas reach the UI without a second thread.
     # A ref so mutations survive CoreTools' by-value copies (constructed once
-    # in core.nim, shared everywhere).
+    # in niffler.nim or session.nim, shared everywhere).
     tokenStream*: TokenStream
 
   TokenStream* = ref object
@@ -101,7 +104,51 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%t.name)
         comps[name] = tools
       return %*{"components": comps}
-    return %*{"error": "catalog op must be 'list' or 'components'"}
+    if args{"op"}.getStr("") == "snapshot":
+      ## Full registration view ({name, version, pid, tools with schemas}) —
+      ## session runners (and any late-joining client) seed their catalog
+      ## from this, then follow reg.> live from there. Plus per-component
+      ## details for UIs: lang/src from the manifest, binary path + file
+      ## size/mtime from disk, registeredAt for uptime.
+      var langTable = newTable[string, JsonNode]()
+      var binaryTable = newTable[string, string]()
+      for c in ct.sup.children:
+        binaryTable[c.name] = c.binary
+      try:
+        let mpath = ct.root / "manifest.yaml"
+        if fileExists(mpath):
+          let nodes = loadToJson(readFile(mpath))
+          if nodes.len > 0:
+            for c in nodes[0]{"components"}:
+              let cn = c{"name"}.getStr("")
+              if cn.len > 0: langTable[cn] = c
+      except CatchableError:
+        discard
+      var comps = newJArray()
+      for name, reg in ct.cat.components:
+        if name == "core": continue  # seeded locally by every newCatalog
+        var tools = newJArray()
+        for t in reg.tools:
+          tools.add(%*{"name": t.name, "schema": t.schema})
+        var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
+                       "tools": tools, "registeredAt": reg.registeredAt}
+        let m = langTable.getOrDefault(name)
+        if m != nil:
+          if m{"build"}{"lang"}.getStr("").len > 0:
+            entry["lang"] = %m{"build"}{"lang"}.getStr("")
+          if m{"build"}{"src"}.getStr("").len > 0:
+            entry["src"] = %m{"build"}{"src"}.getStr("")
+        let binary = binaryTable.getOrDefault(name)
+        if binary.len > 0:
+          entry["binary"] = %binary
+          try:
+            entry["size"] = %getFileSize(binary)
+            entry["mtime"] = %getLastModificationTime(binary).toUnixFloat()
+          except CatchableError:
+            discard
+        comps.add(entry)
+      return %*{"components": comps}
+    return %*{"error": "catalog op must be 'list', 'components' or 'snapshot'"}
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
@@ -156,36 +203,14 @@ proc pumpTokenStream*(ct: CoreTools) =
       ct.tokenStream.cb(p{"sessionId"}.getStr(""),
                         p{"content"}.getStr(""),
                         p{"reasoning"}.getStr(""))
-proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000): JsonNode =
-  if tool in ["spawn", "catalog", "kill", "remove"]:
-    let r = ct.handleCoreTool(tool, args)
-    if r{"error"} != nil:
-      raise newException(ValueError, r{"error"}.getStr("core tool error"))
-    return r
-
-  let comp = ct.cat.toolIndex.getOrDefault(tool)
-  if comp.len == 0:
-    raise newException(ValueError,
-      "no component provides tool '" & tool & "' — is it registered?")
-
-  let schema = ct.cat.toolSchema(tool)
-  # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
-  if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
-    if ct.approval == nil or not ct.approval.ask(tool, args):
-      raise newException(ValueError, "approval denied for tool '" & tool & "'")
-
-  # per-tool timeout from its schema (x-harness.timeoutMs)
-  var timeoutMs = defaultTimeoutMs
-  if schema != nil:
-    timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
-
-  # Poll-loop request on a private inbox: while waiting for the component's
-  # reply, pump core's own service surface (pumpCoreWhileBusy) so a
-  # component calling back into core mid-turn cannot deadlock the session.
+proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
+                          args: JsonNode, timeoutMs: int): JsonNode =
+  ## Request/reply to an explicit subject (svc.<comp>.call or a scoped
+  ## session subject). While waiting for the reply, keep the service surface
+  # alive: core's own tools (so a component calling back into core mid-turn
+  # cannot deadlock), the catalog, the supervisor, the live token stream.
   let env = callEnvelope(tool, args)
   let data = env.encode()
-  let subject = "svc." & comp & ".call"
   let inbox = "_INBOX." & newId()
   var sub: ptr natsSubscription
   var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
@@ -212,7 +237,37 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     # live LLM token stream (so streaming thinking reaches the UI while we wait)
     pumpCoreWhileBusy(ct)
     ct.cat.pump()
-    ct.sup.pump(ct.cat)
+    if ct.sup != nil:
+      ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
   raise newException(IOError,
-    "tool '" & tool & "' timed out after " & $timeoutMs & "ms")
+    "tool '" & tool & "' (" & subject & ") timed out after " &
+    $timeoutMs & "ms")
+
+proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
+                       defaultTimeoutMs: int = 120000): JsonNode =
+  # Core tools: executed locally by the system harness; in a session runner
+  # they are forwarded over the bus (svc.core.call) — one implementation.
+  if tool in ["spawn", "catalog", "kill", "remove"] and not ct.runner:
+    let r = ct.handleCoreTool(tool, args)
+    if r{"error"} != nil:
+      raise newException(ValueError, r{"error"}.getStr("core tool error"))
+    return r
+
+  let comp = ct.cat.toolIndex.getOrDefault(tool)
+  if comp.len == 0:
+    raise newException(ValueError,
+      "no component provides tool '" & tool & "' — is it registered?")
+
+  let schema = ct.cat.toolSchema(tool)
+  # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
+  if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
+    if ct.approval == nil or not ct.approval.ask(tool, args):
+      raise newException(ValueError, "approval denied for tool '" & tool & "'")
+
+  # per-tool timeout from its schema (x-harness.timeoutMs)
+  var timeoutMs = defaultTimeoutMs
+  if schema != nil:
+    timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+
+  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, args, timeoutMs)

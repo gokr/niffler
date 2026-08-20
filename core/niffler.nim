@@ -169,6 +169,7 @@ proc main() =
   # Recover mode wipes those records first — back to the manifest set.
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
+                     root: root, runner: false,
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream))
   if cat.components.hasKey("store"):
@@ -212,8 +213,7 @@ proc main() =
   if not checkStatus(cs):
     raise newException(IOError, "subscribe svc.core.call: " & getErrorString(cs))
   ct.coreSub = coreSub
-  echo "core: serving svc.core.call (session/spawn/catalog)"
-  var sessions = initTable[string, Session]()
+  echo "core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)"
 
   when defined(posix):
     discard signal(SIGTERM, onSig)
@@ -221,7 +221,7 @@ proc main() =
 
   if isatty(stdin):
     try:
-      runConversation(ct, proc() = pumpCoreCalls(ct, coreSub, sessions))
+      runConversation(ct, proc() = pumpCoreCalls(ct, coreSub))
     except EOFError:
       discard
     except CatchableError as e:
@@ -229,7 +229,7 @@ proc main() =
   else:
     echo "core: service mode (no tty) — serving svc.core.call"
     while not gStop:
-      pumpCoreCalls(ct, coreSub, sessions)
+      pumpCoreCalls(ct, coreSub)
       cat.pump()
       sup.pump(cat)
       sleep(20)

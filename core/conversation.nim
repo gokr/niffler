@@ -1,10 +1,11 @@
-## Conversation loop — the only "product logic" in core.
+## Conversation loop — the only "product logic" in the harness.
 ##
-## The loop runs here (not in clients) so approvals, persistence and catalog
-## freshness stay in one place. Two drivers:
-## - stdin (interactive mode): runConversation
-## - svc.core.call "session" tool (service mode): runTurn per request,
-##   emitting ev.session.* events for UIs to render live
+## Three drivers:
+## - stdin (interactive mode): runConversation, in the system process
+## - session runners (core/session.nim): one process per conversation,
+##   serving svc.session.<sessionId>.call, emitting ev.session.* events
+## - svc.core.call "session" (service mode): the system ensures a runner
+##   per sessionId and forwards — clients keep one stable address
 ##
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
@@ -178,6 +179,22 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
   except CatchableError:
     discard
 
+proc ensureConversationHeader*(ct: CoreTools, convId: string) =
+  ## Make sure a conversation header doc exists in the store, creating it
+  ## only if missing (idempotent — never clobbers an existing createdAt, so
+  ## the sidebar ordering stays stable). Called at runner spawn and on the
+  ## first message, so a session shows up as soon as it becomes live.
+  try:
+    let resp = ct.dispatchToolCall("get", %*{"kind": "conversation", "id": convId})
+    if resp{"ok"}.getBool(false):
+      return  # already present — preserve its createdAt
+    discard ct.dispatchToolCall("put", %*{
+      "kind": "conversation", "id": convId,
+      "value": %*{"createdAt": epochTime(),
+                  "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
+  except CatchableError:
+    discard
+
 # ---------------------------------------------------------------------------
 # Context window — trivial warning + trim
 # ---------------------------------------------------------------------------
@@ -282,6 +299,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ## result|error}), ("token", {sessionId, content, reasoning} live deltas),
   ## ("done", {sessionId, reply}) as they happen.
   let sessionId = p.convId
+  # Tag approvals raised during this turn with the active session so the UI
+  # can offer/apply per-conversation auto-approve. Cleared when the turn ends
+  # so a direct (non-session) harness call reads as session "".
+  if ct.approval != nil:
+    ct.approval.session = sessionId
+  defer:
+    if ct.approval != nil: ct.approval.session = ""
   # Live LLM token stream: subscribe before the first chat call so no
   # delta is missed, and forward every frame to the caller as a "token"
   # event (the UI renders them as streaming text/thinking). The frames
@@ -310,7 +334,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         onEvent("done", %*{"sessionId": sessionId, "error": msg})
       return msg
     ct.cat.pump()
-    ct.sup.pump(ct.cat)
+    if ct.sup != nil:
+      ct.sup.pump(ct.cat)
 
     let content = resp{"content"}.getStr("")
     let reasoning = resp{"reasoning"}.getStr("")
@@ -364,7 +389,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       try:
         let toolResult = ct.dispatchToolCall(name, args)
         ct.cat.pump()
-        ct.sup.pump(ct.cat)
+        if ct.sup != nil:
+          ct.sup.pump(ct.cat)
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": $toolResult}
         messages.add(toolMsg)
@@ -384,7 +410,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 proc runConversation*(ct: CoreTools, pump: proc() = nil) =
   ## Interactive stdin loop (headless demo mode). While waiting for input,
   ## the loop keeps serving svc.core.call (via `pump`) so UIs stay responsive.
-  var messages = @[%*{"role": "system", "content": systemPrompt(ct.sup.root)}]
+  var messages = @[%*{"role": "system", "content": systemPrompt(ct.root)}]
   var p = newPersister(ct)
   echo ""
   echo "Niffler — ready. Type a message (exit to quit)."
@@ -439,19 +465,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
   else:
-    entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.sup.root)}]
+    entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.root)}]
     var pt = 0
     var cs = 0
     let stored = loadStoredMessages(ct, sessionId, pt, cs)
     if stored.len == 0:
-      # brand new session: create the conversation header
-      try:
-        discard ct.dispatchToolCall("put", %*{
-          "kind": "conversation", "id": sessionId,
-          "value": %*{"createdAt": epochTime(),
-                      "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
-      except CatchableError:
-        discard
+      # brand new session: make sure the conversation header exists (it is
+      # normally pre-created at runner spawn; keep this as a safe fallback).
+      ensureConversationHeader(ct, sessionId)
     for m in stored:
       entry.messages.add(m)
     entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
@@ -469,15 +490,72 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   sessions[sessionId] = entry
   return %*{"ok": true, "sessionId": sessionId, "reply": reply}
 
-proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription,
-                    sessions: var Table[string, Session]) =
+# ---------------------------------------------------------------------------
+# Session runners — one process per conversation (system side: ensure/forward)
+# ---------------------------------------------------------------------------
+
+proc sanitizeSessionId*(s: string): string =
+  ## Session ids become a NATS subject token (svc.session.<id>.call) and a
+  ## catalog component name; keep alnum/-/_ and replace everything else.
+  for c in s:
+    result.add(if c in Letters + Digits + {'-', '_'}: c else: '-')
+
+proc runnerName*(sessionId: string): string =
+  "session-" & sanitizeSessionId(sessionId)
+
+proc sessionSubject*(sessionId: string): string =
+  "svc.session." & sanitizeSessionId(sessionId) & ".call"
+
+proc ensureRunner*(ct: CoreTools, sessionId: string): string =
+  ## Return the scoped call subject for `sessionId`, spawning its session
+  ## runner (a supervised child, policy never) if it is not alive. The
+  ## runner announces itself as component "session-<id>" with 0 tools —
+  ## presence in the catalog is the readiness signal.
+  let rname = runnerName(sessionId)
+  if not ct.cat.components.hasKey(rname):
+    var spawning = false
+    for c in ct.sup.children:
+      if c.name == rname: spawning = true
+    if not spawning:
+      let bin = ct.root / "var" / "bin" / "session"
+      if not fileExists(bin):
+        raise newException(IOError,
+          "session runner binary missing: " & bin & " — run `make build`")
+      discard ct.sup.addChild(rname, bin, rpNever)
+      ct.sup.startChild(ct.sup.children[^1], @[sessionId])
+    let deadline = epochTime() + 10
+    while epochTime() < deadline:
+      # Serve svc.core.call while waiting: the fresh runner seeds its catalog
+      # via catalog {op: snapshot} and would deadlock us without this pump.
+      pumpCoreWhileBusy(ct)
+      ct.cat.pump()
+      ct.sup.pump(ct.cat)
+      if ct.cat.components.hasKey(rname): break
+      sleep(100)
+  if not ct.cat.components.hasKey(rname):
+    raise newException(IOError,
+      "session runner for " & sessionId & " did not come up")
+  sessionSubject(sessionId)
+
+proc callSession*(ct: CoreTools, args: JsonNode): JsonNode =
+  ## Service-mode path for the "session" tool: ensure the runner for this
+  ## sessionId, forward the turn, return its result. Core tools and other
+  ## svc.core.call traffic stay responsive during the wait
+  ## (dispatchSubjectCall pumps them); concurrent session calls are stashed
+  ## (pumpCoreWhileBusy) — turns never nest, but they must not be lost.
+  let sessionId = args{"sessionId"}.getStr("")
+  if sessionId.len == 0:
+    return %*{"error": "session needs sessionId and content"}
+  let subject = ensureRunner(ct, sessionId)
+  dispatchSubjectCall(ct, subject, "session", args, 1800_000)
+
+proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
   ## Serve pending svc.core.call messages (session/spawn/catalog).
-  ## Session requests stashed while a turn was busy are drained first —
-  ## turns never nest, but they must not be lost either.
+  ## Session requests stashed while a forward was busy are drained first.
   for pend in ct.pending.items:
     var resp: Envelope
     try:
-      let r = handleSessionCall(ct, pend.env.args, sessions)
+      let r = callSession(ct, pend.env.args)
       if r{"error"} != nil:
         raise newException(ValueError, r{"error"}.getStr("session error"))
       resp = resultEnvelope(pend.env.id, r)
@@ -499,7 +577,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription,
     try:
       case env.tool
       of "session":
-        let r = handleSessionCall(ct, env.args, sessions)
+        let r = callSession(ct, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)

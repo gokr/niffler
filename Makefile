@@ -69,6 +69,9 @@ var/bin:
 var/bin/niffler: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off -o:$@ core/niffler.nim
 
+var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off -o:$@ core/session.nim
+
 var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/store/main.nim
 
@@ -96,7 +99,7 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	cd components/llm && go build -o ../../var/bin/llm .
 
-components: var/bin/niffler var/bin/store var/bin/bash var/bin/hashline-edit \
+components: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/builder var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai var/bin/llm
 
 build: components

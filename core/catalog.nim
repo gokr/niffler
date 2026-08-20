@@ -5,7 +5,7 @@
 ## Every change is announced as ev.catalog.updated so the LLM tools
 ## parameter and any UI stay fresh.
 
-import std/[json, os, tables]
+import std/[json, os, tables, times]
 import natswrapper
 import ../sdk/envelope
 
@@ -20,6 +20,7 @@ type
     version*: string
     pid*: int
     tools*: seq[ToolReg]
+    registeredAt*: float  ## epochTime of reg.publish (uptime for UIs)
 
   Catalog* = ref object
     nc*: NatsConnection
@@ -140,7 +141,8 @@ proc handle(cat: Catalog, subject, data: string) =
   if subject == "reg.publish":
     var reg = ComponentReg(name: name,
                            version: node{"version"}.getStr(""),
-                           pid: node{"pid"}.getInt(0))
+                           pid: node{"pid"}.getInt(0),
+                           registeredAt: epochTime())
     for t in node{"tools"}:
       let tname = t{"name"}.getStr("")
       if tname.len == 0: continue
@@ -165,6 +167,12 @@ proc handle(cat: Catalog, subject, data: string) =
       cat.components.del(name)
       echo "catalog: " & name & " departed"
       cat.announce()
+
+proc applyReg*(cat: Catalog, node: JsonNode) =
+  ## Inject one registration payload ({name, version, pid, tools}) as if it
+  ## had arrived on reg.publish — used by session runners to seed their
+  ## catalog from the system's snapshot taken at startup.
+  handle(cat, "reg.publish", $node)
 
 proc dropComponent*(cat: Catalog, name: string) =
   ## Called by the supervisor when a child process dies (crash — no reg.depart).
