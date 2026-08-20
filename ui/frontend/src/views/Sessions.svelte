@@ -106,7 +106,7 @@
     >
       {#if editingId === s.id}
         <input
-          class="w-full rounded bg-ink-800 border border-accent-dim px-1.5 py-0.5 text-[12px] text-ink-100 outline-none"
+          class="w-full rounded bg-ink-800 border border-accent-dim px-1.5 py-0.5 text-[12px] text-ink-200 outline-none"
           bind:value={editTitle}
           autofocus
           onclick={(e) => e.stopPropagation()}
@@ -133,7 +133,7 @@
             </button>
             <button
               class="rounded px-1 hover:bg-ink-600"
-              class:text-red-400={confirmId === s.id}
+              class:text-danger={confirmId === s.id}
               class:text-ink-400={confirmId !== s.id}
               title={confirmId === s.id ? "Click again to delete" : "Delete session"}
               onclick={(e) => {

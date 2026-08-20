@@ -1,16 +1,56 @@
 @import "tailwindcss";
 
+/* Semantic tokens. @theme maps Tailwind utilities (bg-ink-950 etc.) onto
+ * these so one palette swap covers both modes. Light is :root default;
+ * the "dark" class on <html> (see lib/theme.ts) flips it. */
+:root {
+  color-scheme: light;
+  --ink-950: #f7f7f9;
+  --ink-900: #f0f0f4;
+  --ink-800: #e6e6ec;
+  --ink-700: #d9d9e1;
+  --ink-600: #bfbfca;
+  --ink-400: #878792;
+  --ink-300: #5f5f6b;
+  --ink-200: #32323c;
+  --accent: #0369a1;
+  --accent-dim: #0284c7;
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #dc2626;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --ink-950: #101014;
+  --ink-900: #16161c;
+  --ink-800: #1e1e26;
+  --ink-700: #2a2a34;
+  --ink-600: #3a3a46;
+  --ink-400: #6b6b78;
+  --ink-300: #9a9aa8;
+  --ink-200: #c8c8d4;
+  --accent: #7dd3fc;
+  --accent-dim: #38bdf8;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
+}
+
 @theme {
-  --color-ink-950: #101014;
-  --color-ink-900: #16161c;
-  --color-ink-800: #1e1e26;
-  --color-ink-700: #2a2a34;
-  --color-ink-600: #3a3a46;
-  --color-ink-400: #6b6b78;
-  --color-ink-300: #9a9aa8;
-  --color-ink-200: #c8c8d4;
-  --color-accent: #7dd3fc;
-  --color-accent-dim: #38bdf8;
+  --color-ink-950: var(--ink-950);
+  --color-ink-900: var(--ink-900);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-600: var(--ink-600);
+  --color-ink-400: var(--ink-400);
+  --color-ink-300: var(--ink-300);
+  --color-ink-200: var(--ink-200);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
 }
 
 html,
@@ -53,15 +93,75 @@ body,
   @apply font-mono;
 }
 
-/* tool call cards */
-.tool-card {
-  @apply border border-ink-600 rounded-lg bg-ink-900/60 px-3 py-2 text-[13px];
+/* tool run cards — a run of consecutive tool calls in one card */
+.tool-run {
+  @apply border border-ink-600 rounded-lg bg-ink-900/60 text-[13px];
 }
-.tool-card summary {
-  @apply cursor-pointer select-none font-mono text-accent-dim;
+.tool-run > summary {
+  @apply cursor-pointer select-none list-none px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-1;
 }
-.tool-card pre {
-  @apply text-ink-300 text-[12px] overflow-x-auto;
+.tool-run > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-run[open] > summary {
+  @apply border-b border-ink-600;
+}
+.tool-run-chevron {
+  @apply text-ink-400 text-[10px] transition-transform;
+}
+.tool-run[open] .tool-run-chevron {
+  transform: rotate(90deg);
+}
+.tool-run-summary {
+  @apply font-mono text-[12px] text-ink-300;
+}
+.tool-chip {
+  @apply font-mono text-[11px] px-1.5 py-0.5 rounded border border-ink-600 bg-ink-800/70 text-ink-300;
+}
+.tool-chip.errored {
+  @apply border-danger/50 text-danger;
+}
+.tool-chip.running {
+  @apply border-accent-dim/50 text-accent;
+}
+.tool-run-item {
+  @apply border-b border-ink-600/60 last:border-b-0;
+}
+.tool-run-item > summary {
+  @apply cursor-pointer select-none list-none px-3 py-1.5 flex items-center gap-2 hover:bg-ink-800/60;
+}
+.tool-run-item > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-run-item[open] > summary {
+  @apply bg-ink-800/40;
+}
+.tool-run-glyph {
+  @apply text-[11px] w-4 text-center shrink-0;
+}
+.tool-run-glyph.ok {
+  @apply text-ok;
+}
+.tool-run-glyph.err {
+  @apply text-danger;
+}
+.tool-run-glyph.run {
+  @apply text-accent;
+}
+.tool-run-name {
+  @apply font-mono text-[12px] text-accent-dim shrink-0;
+}
+.tool-run-preview {
+  @apply truncate font-mono text-[11px] text-ink-400 flex-1 min-w-0;
+}
+.tool-run-item pre {
+  @apply bg-ink-800/50 rounded-md p-2 text-ink-300 text-[12px] overflow-x-auto;
+}
+.tool-run-label {
+  @apply text-[10px] uppercase tracking-wide text-ink-400;
+}
+.tool-run-detail {
+  @apply px-3 pb-2 flex flex-col gap-1.5;
 }
 
 /* sidebar sessions */

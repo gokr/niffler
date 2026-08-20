@@ -3,11 +3,14 @@
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
   import { online, onStatus, isWails, busUrl, on, emit } from "./nats";
+  import Components from "./views/Components.svelte";
+  import { initTheme, toggleTheme } from "./lib/theme";
 
   interface ApprovalReq {
     id: string;
     tool: string;
     args: any;
+    sessionId: string;
   }
 
   let connected = $state<boolean | null>(null);
@@ -15,43 +18,66 @@
   let sessionId = $state<string | null>(null);
   let refreshKey = $state(0);
   let approvals = $state<ApprovalReq[]>([]);
+  let theme = $state<"light" | "dark">(initTheme());
+  // Tools the user chose to auto-approve, keyed by session: future requests
+  // for that (session, tool) pair are answered ok without showing a dialog.
+  let autoApproved = $state<Record<string, string[]>>({});
 
-  onMount(async () => {
-    if (!isWails()) {
-      connected = false;
-      return;
-    }
-    try {
-      url = await busUrl();
-      connected = await online();
-    } catch {
-      connected = false;
-    }
-    onStatus((onlineNow, urlNow) => {
-      connected = onlineNow;
-      if (urlNow) url = urlNow;
-    });
-  });
+  function isAutoApproved(sid: string, tool: string): boolean {
+    return (autoApproved[sid] ?? []).includes(tool);
+  }
+
+  function rememberAutoApprove(sid: string, tool: string) {
+    if (!sid) return;
+    const list = autoApproved[sid] ?? [];
+    if (!list.includes(tool)) autoApproved[sid] = [...list, tool];
+  }
 
   // Approval gate: core publishes ev.approval.request for tools with
   // x-harness.approval; our answer goes back on ev.approval.reply.
+  // Requests for an auto-approved (session, tool) pair are answered
+  // silently — no dialog.
   onMount(() =>
     on("ev.approval.request", (ev) => {
       const p = ev.payload ?? {};
       if (p.id && p.tool) {
-        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args }];
+        const sid = p.sessionId ?? "";
+        if (isAutoApproved(sid, p.tool)) {
+          emit("ev.approval.reply", { id: p.id, ok: true });
+        } else {
+          approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
+        }
       }
     })
   );
+
+  // Keyboard: Enter approves, Escape denies — but only while the dialog is
+  // up (the overlay blocks the chat input anyway). preventDefault stops a
+  // focused button (e.g. Deny after tabbing) from double-firing.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (approvals.length === 0) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        answerApproval(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        answerApproval(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   function prettyArgs(args: any): string {
     const s = JSON.stringify(args ?? {}, null, 2);
     return s.length > 3000 ? s.slice(0, 3000) + "…" : s;
   }
 
-  function answerApproval(ok: boolean) {
+  function answerApproval(ok: boolean, auto = false) {
     const req = approvals[0];
     if (!req) return;
+    if (auto) rememberAutoApprove(req.sessionId, req.tool);
     emit("ev.approval.reply", { id: req.id, ok });
     approvals = approvals.slice(1);
   }
@@ -81,7 +107,7 @@
       <span
         class="w-2 h-2 rounded-full"
         class:bg-accent={connected === true}
-        class:bg-red-500={connected === false}
+        class:bg-danger={connected === false}
         class:bg-ink-600={connected === null}
         title={connected === null ? "connecting…" : (connected ? "bus connected" : "bus unreachable") + (url ? " · " + url : "")}
       ></span>
@@ -95,28 +121,31 @@
         + New session
       </button>
     </div>
+    <Components />
   </aside>
 
   <main class="flex-1 flex flex-col min-w-0">
-    <header class="px-4 py-2 border-b border-ink-700 text-[13px] text-ink-400">
-      {sessionId ? "session " + short(sessionId) : "new session"}
+    <header class="flex items-center gap-2 px-4 py-2 border-b border-ink-700 text-[13px] text-ink-400">
+      <span>{sessionId ? "session " + short(sessionId) : "new session"}</span>
       {#if url}
-        <span class="ml-3 font-mono text-ink-600">{url}</span>
+        <span class="font-mono text-ink-600">{url}</span>
       {/if}
-      {#if __BUILD_COMMIT__}
-        <span
-          class="ml-3 inline-block rounded px-1.5 py-0.5 text-[11px] font-mono text-ink-400 border border-ink-600"
-          title="UI built from commit {__BUILD_COMMIT__}"
-        >{__BUILD_COMMIT__}</span>
-      {/if}
+      <button
+        class="ml-auto rounded-md border border-ink-600 px-2 py-1 text-[13px] hover:bg-ink-700"
+        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        aria-label="Toggle theme"
+        onclick={() => (theme = toggleTheme())}
+      >
+        {theme === "dark" ? "☀" : "☾"}
+      </button>
     </header>
     {#if !isWails()}
-      <div class="mx-6 mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-[13px] text-red-300">
+      <div class="mx-6 mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger">
         Running in a browser — the bus bridge only exists inside the desktop
         shell. Launch it with <code class="font-mono">./ui/build/bin/niffler-ui</code>
       </div>
     {:else if connected === false}
-      <div class="mx-6 mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-[13px] text-red-300">
+      <div class="mx-6 mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger">
         bus unreachable at <code class="font-mono">{url || "nats://127.0.0.1:4222"}</code>
         — start the harness and keep its terminal open:
         <code class="font-mono">NATS_URL={url || "nats://127.0.0.1:4222"} ./var/bin/niffler</code>
@@ -139,21 +168,38 @@
         <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
       </div>
       {#if approvals.length > 1}
-        <div class="mt-2 text-[12px] text-ink-500">+ {approvals.length - 1} more waiting</div>
+        <div class="mt-2 text-[12px] text-ink-400">+ {approvals.length - 1} more waiting</div>
       {/if}
-      <div class="mt-4 flex justify-end gap-2">
-        <button
-          class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
-          onclick={() => answerApproval(false)}
-        >
-          Deny
-        </button>
-        <button
-          class="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-semibold text-ink-950 hover:opacity-90"
-          onclick={() => answerApproval(true)}
-        >
-          Approve
-        </button>
+      {#if (autoApproved[approvals[0].sessionId] ?? []).length > 0}
+        <div class="mt-2 text-[12px] text-ink-400">
+          auto-approving this session: <span class="font-mono">{autoApproved[approvals[0].sessionId].join(", ")}</span>
+        </div>
+      {/if}
+      <div class="mt-4 flex items-center justify-between gap-2">
+        <span class="text-[11px] text-ink-400">Enter approve · Esc deny</span>
+        <div class="flex gap-2">
+          <button
+            class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
+            onclick={() => answerApproval(false)}
+          >
+            Deny
+          </button>
+          {#if approvals[0].sessionId}
+            <button
+              class="rounded-lg border border-accent-dim/50 px-4 py-1.5 text-[13px] text-accent hover:bg-accent-dim/10"
+              title="Approve and don't ask again for this tool for the rest of this session"
+              onclick={() => answerApproval(true, true)}
+            >
+              Auto approve
+            </button>
+          {/if}
+          <button
+            class="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-semibold text-ink-950 hover:opacity-90"
+            onclick={() => answerApproval(true)}
+          >
+            Approve
+          </button>
+        </div>
       </div>
     </div>
   </div>
