@@ -96,6 +96,27 @@ proc main() =
                 %*{"lang": "python", "name": "x", "source": "print(1)"})
   check("builder rejects unknown lang", not r4{"ok"}.getBool(false), $r4)
 
+  # TypeScript build (npm registry — network-gated)
+  if getEnv("NIF_TEST_NETWORK") == "1":
+    const tsSrc = """
+      import sdk from "niffler-sdk";
+      const comp = sdk.newComponent("tcompts", "0.1.0");
+      comp.tool("ts_ping", {
+        type: "object",
+        description: "Ping the TypeScript test component",
+        properties: {},
+      }, async () => ({ pong: true }));
+      comp.run();
+      """.dedent()
+    let r5 = call(nc, "builder", "build",
+                  %*{"lang": "ts", "name": "tcompts", "source": tsSrc},
+                  400_000)
+    check("builder ts build ok", r5{"ok"}.getBool(false), $r5)
+    check("builder ts binary exists",
+          fileExists(tmp / "var" / "bin" / "tcompts"), $r5)
+  else:
+    echo "NOTE: set NIF_TEST_NETWORK=1 to run the TypeScript build test"
+
   drain(nc)
   sleep(500)
   server.terminate()
