@@ -66,7 +66,7 @@
       <p class="dim">build core + components + desktop UI · ensure bus + core · open UI</p>
       <p class="dim">→ spawning nats-server on 127.0.0.1:4222</p>
       <p class="dim">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: bash v0.1.0, builder v0.1.0, store v0.1.0, llm-openai v0.1.0</p>
+      <p class="dim">→ catalog: bash v0.1.0, builder v0.1.0, store v0.1.0, plugins v0.1.0, hashline-edit v0.1.0, llm v0.1.0</p>
       <p><span class="p">$</span> <span class="typed"></span><span class="cursor">▌</span></p>
     </div>
   </div>
@@ -92,7 +92,10 @@
       <h3><span class="num">03</span> self-extension</h3>
       <p>The agent writes source → calls <code>builder.build</code> → calls
       <code>core.spawn</code> → the tool is live. Adding a capability is a
-      tool call, and the LLM does it to itself mid-conversation.</p>
+      tool call, and the LLM does it to itself mid-conversation. Community
+      packages install the same way: <code>plugin_install</code> clones,
+      compiles from source and spawns — approval-gated, always built from
+      the published code.</p>
     </article>
     <article class="card">
       <h3><span class="num">04</span> persistence of shape</h3>
@@ -120,7 +123,9 @@
       <div class="box">bash<br><span class="box-lang">nim sdk</span></div>
       <div class="box">builder<br><span class="box-lang">nim sdk</span></div>
       <div class="box">store<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">llm-openai<br><span class="box-lang">go sdk</span></div>
+      <div class="box">plugins<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">hashline-edit<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">llm<br><span class="box-lang">go sdk</span></div>
       <div class="box box-your">your tool<br><span class="box-lang">any language</span></div>
     </div>
     <p class="arch-note">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
@@ -174,7 +179,7 @@
         <p><span class="p">$</span> git clone git@github.com:gokr/niffler.git && cd niffler</p>
         <p><span class="p">$</span> make setup        <span class="dim"># prerequisites (Ubuntu / macOS)</span></p>
         <p><span class="p">$</span> make up           <span class="dim"># build, bus, core, desktop UI</span></p>
-        <p><span class="p">$</span> make test         <span class="dim"># end-to-end smoke test</span></p>
+        <p><span class="p">$</span> make test         <span class="dim"># bus-contract suite — 8 tests, one per component</span></p>
         <p class="dim">│</p>
         <p class="dim">└─ make down / status / recover · see docs/MANUAL.md</p>
       </div>
@@ -206,7 +211,11 @@
         <tr><td>bash</td><td>nim</td><td>shell access as a tool — approval-gated</td></tr>
         <tr><td>builder</td><td>nim</td><td>compiles agent-written source → binary</td></tr>
         <tr><td>store</td><td>nim</td><td>document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
-        <tr><td>llm-openai</td><td>go</td><td>OpenAI-compatible adapter (DeepSeek by default)</td></tr>
+        <tr><td>plugins</td><td>nim</td><td>component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
+        <tr><td>hashline-edit</td><td>nim</td><td>hash-anchored file editing: <code>read</code>/<code>replace</code>/<code>undo_last_replace</code> on stable line anchors</td></tr>
+        <tr><td>llm</td><td>go</td><td>streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
+        <tr><td>cli</td><td>nim</td><td>drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
+        <tr><td>console</td><td>nim</td><td>bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
         <tr><td>ui</td><td>go + svelte 5</td><td>Wails SPA — a NATS client, not a Wails client</td></tr>
         <tr class="row-your"><td>your tool</td><td>any</td><td>port the SDK — the envelope is the artifact (~200 lines)</td></tr>
       </tbody>
@@ -251,16 +260,21 @@
     <ul class="done">
       <li><span class="check">✓</span> wire spec, envelope, Nim + Go SDKs</li>
       <li><span class="check">✓</span> supervisor, catalog, dispatch</li>
-      <li><span class="check">✓</span> bash + builder + store + llm-openai</li>
+      <li><span class="check">✓</span> bash + builder + store + llm (streaming adapter)</li>
       <li><span class="check">✓</span> agent adds itself a tool end-to-end (live, with DeepSeek)</li>
       <li><span class="check">✓</span> persistence of shape across restarts</li>
       <li><span class="check">✓</span> session service + Wails SPA shell</li>
       <li><span class="check">✓</span> approvals (terminal y/N, UI dialog, headless deny)</li>
       <li><span class="check">✓</span> recover mode — <code>make recover</code></li>
+      <li><span class="check">✓</span> plugins — component ecosystem (discover, install, update, remove)</li>
+      <li><span class="check">✓</span> hashline-edit — hash-anchored file editing</li>
+      <li><span class="check">✓</span> console + cli — follow and drive the bus from a terminal</li>
+      <li><span class="check">✓</span> streaming — live <code>ev.session.token</code> deltas in the UI</li>
+      <li><span class="check">✓</span> bus-contract test suite — <code>make test</code></li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> Level 1 UI dynamism (x-ui schema hints)</li>
-      <li><span class="todo-x">✗</span> streaming + cancellation</li>
+      <li><span class="todo-x">✗</span> cancellation in the terminal harness + UI</li>
       <li><span class="todo-x">✗</span> store-tidb with FTS + vector memory</li>
     </ul>
   </div>
