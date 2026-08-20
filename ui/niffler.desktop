@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Niffler
+Comment=Self-extending agent harness
+Exec=/home/CHANGEME
+Icon=niffler
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=niffler-ui
+StartupNotify=true

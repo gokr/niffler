@@ -36,9 +36,14 @@ UI_INPUTS := $(shell find ui \( -path ui/build -o -path ui/frontend/node_modules
 
 UI_BIN := ui/build/bin/niffler-ui
 
+# Commit hash shown in the About dialog (injected via -ldflags; the SPA no
+# longer embeds it — the header chip moved into the native About dialog).
+UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components ui run up down status test smoke dev clean \
+.PHONY: help all build components ui ui-install ui-uninstall run up down status \
+        test smoke dev clean \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
 
@@ -46,6 +51,8 @@ help:
 	@echo 'make all       build core + components + desktop UI (default)'
 	@echo 'make build     build core + components only (no UI)'
 	@echo 'make ui        build the Wails desktop UI'
+	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
+	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
 	@echo 'make run       run the harness in the terminal'
 	@echo 'make up        ensure bus + core, then open the UI (one command)'
 	@echo 'make down      stop UI, core and the spawned bus'
@@ -114,7 +121,37 @@ $(UI_BIN): $(UI_INPUTS)
 		echo "wails CLI not found (looked at $(WAILS))."; \
 		echo "Install: make install-wails"; \
 		exit 1; fi
-	cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage
+	cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
+		-ldflags "-X main.buildCommit=$(UI_COMMIT)"
+
+# Desktop integration (Linux): the appicon the window shows comes from the
+# embedded icon in main.go, but the launcher/taskbar icon needs a desktop
+# entry + hicolor icons — the same pattern as flatout's install-desktop.
+BIN_DIR      := $(HOME)/.local/bin
+DESKTOP_DIR  := $(HOME)/.local/share/applications
+ICON_DIR     := $(HOME)/.local/share/icons/hicolor
+DESKTOP_DST  := $(DESKTOP_DIR)/niffler.desktop
+
+ui-install: ui
+	@echo "Installing Niffler desktop integration..."
+	@mkdir -p $(BIN_DIR) $(DESKTOP_DIR) $(ICON_DIR)/48x48/apps $(ICON_DIR)/256x256/apps
+	cp $(UI_BIN) $(BIN_DIR)/niffler-ui
+	chmod +x $(BIN_DIR)/niffler-ui
+	sed 's|Exec=.*|Exec=$(BIN_DIR)/niffler-ui|' ui/niffler.desktop > $(DESKTOP_DST)
+	cp ui/appicon-48.png $(ICON_DIR)/48x48/apps/niffler.png
+	cp ui/appicon-256.png $(ICON_DIR)/256x256/apps/niffler.png
+	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
+	@echo "Launcher 'Niffler' installed (executable: $(BIN_DIR)/niffler-ui)."
+	@echo "You may need to log out and back in for the icon to appear."
+
+ui-uninstall:
+	@echo "Removing Niffler desktop integration..."
+	rm -f $(BIN_DIR)/niffler-ui
+	rm -f $(DESKTOP_DST)
+	rm -f $(ICON_DIR)/48x48/apps/niffler.png
+	rm -f $(ICON_DIR)/256x256/apps/niffler.png
+	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
+	@echo "Done."
 
 # ---------------------------------------------------------------------------
 # run / test

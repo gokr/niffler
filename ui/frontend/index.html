@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Niffler</title>
+    <script>
+      // No-flash theme: mirror lib/theme.ts before first paint.
+      (() => {
+        const t = localStorage.getItem("niffler-theme");
+        const dark =
+          t === "dark" ||
+          (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
