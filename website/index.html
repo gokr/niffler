@@ -115,6 +115,9 @@
       conversation loop · supervisor<br>
       catalog · dispatch
     </div>
+    <p class="arch-note">one conversation = one process: the system spawns a
+      <code>var/bin/session &lt;id&gt;</code> runner per conversation — kill a
+      runner, every other session keeps going.</p>
     <div class="arch-bus">
       <span class="bus-label">svc.core.call · ev.* · NATS</span>
       <div class="bus-line"></div>
@@ -264,12 +267,14 @@
       <li><span class="check">✓</span> agent adds itself a tool end-to-end (live, with DeepSeek)</li>
       <li><span class="check">✓</span> persistence of shape across restarts</li>
       <li><span class="check">✓</span> session service + Wails SPA shell</li>
-      <li><span class="check">✓</span> approvals (terminal y/N, UI dialog, headless deny)</li>
+      <li><span class="check">✓</span> session runners — one conversation = one process</li>
+      <li><span class="check">✓</span> approvals (terminal y/N, UI dialog, headless deny, session-tagged)</li>
       <li><span class="check">✓</span> recover mode — <code>make recover</code></li>
       <li><span class="check">✓</span> plugins — component ecosystem (discover, install, update, remove)</li>
       <li><span class="check">✓</span> hashline-edit — hash-anchored file editing</li>
       <li><span class="check">✓</span> console + cli — follow and drive the bus from a terminal</li>
       <li><span class="check">✓</span> streaming — live <code>ev.session.token</code> deltas in the UI</li>
+      <li><span class="check">✓</span> UI: components panel, tool-run view, light/dark theme, About dialog</li>
       <li><span class="check">✓</span> bus-contract test suite — <code>make test</code></li>
     </ul>
     <ul class="todo">

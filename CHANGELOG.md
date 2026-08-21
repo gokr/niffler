@@ -8,6 +8,30 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Session runners — one conversation = one process** — the system
+  harness spawns a `var/bin/session <id>` runner per conversation
+  (present in the catalog as `session-<id>`, 0 tools), serving
+  `svc.session.<id>.call` and emitting `ev.session.*`; runners resume the
+  conversation from the store on first use, so they are ephemeral and
+  disposable — killing one loses only that conversation's in-flight turn.
+  Core tools (spawn/kill/remove/catalog) go back over the bus to
+  `svc.core.call`; a new `catalog {op: snapshot}` lets late joiners seed
+  their view (reg.publish is fire-once). The tty REPL still runs turns in
+  the system process; turns never nest.
+- **UI: components panel** — the sidebar now lists the live bus
+  components and their tools (name, version, pid, registration time,
+  language/source where known), fed by `ev.catalog.updated`.
+- **UI: tool-run view** — `ToolRun.svelte` replaces the tool-call card:
+  a dedicated view per tool call with the run's arguments, result and
+  error rendering.
+- **UI: app theme** — light/dark theming (`theme.ts`): a `dark` class on
+  `<html>` with a localStorage override of the OS default, applied inline
+  before first paint (no flash of the wrong theme).
+- **UI: chrome** — window menu, About dialog showing the build commit
+  hash, and a Linux desktop entry with app icons (launcher + icon files).
+- **Approval requests carry the session** — `ev.approval.request` payloads
+  now include `sessionId` ("" for direct harness calls), enabling
+  per-conversation auto-approve decisions in the UI.
 - **plugins component** — the ecosystem front door as a bus service:
   `plugin_search` (GitHub `topic:niffler-component` discovery, no
   registry), `plugin_install`/`plugin_update`/`plugin_remove`,
@@ -94,6 +118,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Session turns run in per-session runner processes** — the session
+  service moved out of the system process into `var/bin/session <id>`
+  (see Added); the system harness only ensures a runner per conversation
+  and forwards `session` tool calls to `svc.session.<id>.call` (clients
+  keep calling `svc.core.call`).
+- **Core entry point renamed** — `core/core.nim` → `core/niffler.nim`
+  (matches the binary name).
 - **All environment variables now carry the `NIF_` prefix**:
   `NATS_URL` → `NIF_NATS_URL`, `OPENAI_API_KEY` → `NIF_OPENAI_API_KEY`,
   `OPENAI_BASE_URL` → `NIF_OPENAI_BASE_URL`, `OPENAI_MODEL` →
