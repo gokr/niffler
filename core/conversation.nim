@@ -581,7 +581,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog", "kill", "remove":
+      of "spawn", "catalog", "kill", "remove", "status":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

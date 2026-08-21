@@ -5,7 +5,7 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, os, osproc, strutils, tables, times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
@@ -149,6 +149,58 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         comps.add(entry)
       return %*{"components": comps}
     return %*{"error": "catalog op must be 'list', 'components' or 'snapshot'"}
+  of "status":
+    ## Live components: the supervisor is the source of truth for what is
+    ## running (process state). Cross-reference the catalog for tools/schemas
+    ## and the manifest for build metadata. Same shape as the UI's snapshot
+    ## so the frontend can switch to pure pull without re-mapping.
+    if ct.sup == nil:
+      return %*{"error": "no supervisor here (session runner?)"}
+    let now = epochTime()
+    # manifest build metadata: name -> {lang, src} from manifest.yaml
+    var langTable = newTable[string, JsonNode]()
+    try:
+      let mpath = ct.root / "manifest.yaml"
+      if fileExists(mpath):
+        let nodes = loadToJson(readFile(mpath))
+        if nodes.len > 0:
+          for c in nodes[0]{"components"}:
+            let cn = c{"name"}.getStr("")
+            if cn.len > 0: langTable[cn] = c
+    except CatchableError:
+      discard
+    var comps = newJArray()
+    for c in ct.sup.children:
+      # authoritative liveness straight from the process object
+      let running = c.process != nil and c.process.running()
+      # the catalog entry, if the component has registered yet (crashed-but-
+      # not-yet-departed, or not-yet-registered, may be absent)
+      let reg = ct.cat.components.getOrDefault(c.name)
+      var tools = newJArray()
+      for t in reg.tools:
+        tools.add(%*{"name": t.name, "schema": t.schema})
+      var entry = %*{
+        "name": c.name,
+        "version": reg.version,
+        "binary": c.binary,
+        "running": running,
+        "wanted": c.wanted,
+        "policy": $c.policy,
+        "restarts": c.restarts,
+        "pid": reg.pid,
+        "registeredAt": reg.registeredAt,
+        "tools": tools}
+      let m = langTable.getOrDefault(c.name)
+      if m != nil:
+        entry["lang"] = %m{"build"}{"lang"}.getStr("")
+        entry["src"] = %m{"build"}{"src"}.getStr("")
+      try:
+        entry["size"] = %getFileSize(c.binary)
+        entry["mtime"] = %getLastModificationTime(c.binary).toUnixFloat()
+      except CatchableError:
+        discard
+      comps.add(entry)
+    return %*{"components": comps, "at": now}
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
@@ -248,7 +300,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode =
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
-  if tool in ["spawn", "catalog", "kill", "remove"] and not ct.runner:
+  if tool in ["spawn", "catalog", "kill", "remove", "status"] and not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
       raise newException(ValueError, r{"error"}.getStr("core tool error"))

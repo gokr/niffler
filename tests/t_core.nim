@@ -53,6 +53,20 @@ proc main() =
         coreCat.output.contains("\"spawn\"") and
         coreCat.output.contains("\"remove\""), coreCat.output)
 
+  # core.status: authoritative live set from the supervisor
+  let st = call(nc, "core", "status", newJObject(), 10_000)
+  check("core.status returns the shipped components",
+        st{"components"} != nil and
+        st{"error"} == nil, $st)
+  var seenNames = 0
+  var anyRunning = false
+  var anyTools = false
+  for c in st{"components"}:
+    if c{"name"}.getStr("").len > 0: seenNames.inc
+    if c{"running"}.getBool(false): anyRunning = true
+    if c{"tools"} != nil and c{"tools"}.len > 0: anyTools = true
+  check("status lists running shipped components with tools",
+        seenNames > 0 and anyRunning and anyTools, $st)
   # --- self-extension lifecycle --------------------------------------------
   # build a tiny component via the builder, spawn it, call it, kill it, remove it
   const src = """

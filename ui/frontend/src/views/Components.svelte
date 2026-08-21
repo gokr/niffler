@@ -1,22 +1,27 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { on, send, onStatus } from "../nats";
+  import { send } from "../nats";
 
-  interface RegInfo {
+  interface StatusComp {
     name: string;
     version?: string;
+    binary?: string;
+    running?: boolean;
+    wanted?: boolean;
+    policy?: string;
+    restarts?: number;
     pid?: number;
-    tools?: { name: string }[];
     registeredAt?: number;
+    tools?: { name: string }[];
     lang?: string;
     src?: string;
-    binary?: string;
     size?: number;
     mtime?: number;
   }
 
-  let components = $state<Record<string, RegInfo>>({});
+  let components = $state<Record<string, StatusComp>>({});
   let openName = $state<string | null>(null);
+
   // Collapse state is sticky: localStorage so the panel stays the way you
   // left it. Default collapsed (the panel should not eat sidebar space).
   let collapsed = $state(localStorage.getItem("niffler-components-collapsed") !== "0");
@@ -28,38 +33,23 @@
     return Date.now() / 1000;
   });
 
-  // reg.publish/reg.depart only announce transitions, so components that
-  // were already registered when the UI connected would never appear.
-  // Seed from core's live catalog snapshot, then follow reg.> for changes.
+  // Source of truth lives in core: `core.status` reports the supervisor's
+  // live set (authoritative process state) cross-referenced with the catalog
+  // and manifest. We just poll it — no local event store to drift or miss
+  // registrations, and crashes vanish on the next poll.
   async function sync() {
     try {
-      const resp = await send("core", "catalog", { op: "snapshot" });
-      const next: Record<string, RegInfo> = {};
+      const resp = await send("core", "status", {});
+      const next: Record<string, StatusComp> = {};
       for (const c of resp.components ?? []) {
         if (c?.name) next[c.name] = c;
       }
       components = next;
     } catch {
-      /* core unreachable — keep whatever we have */
+      // core unreachable — keep whatever we have
     }
   }
 
-  function upsert(ev: any) {
-    const p: RegInfo = ev.payload ?? {};
-    if (!p.name) return;
-    // Live arrivals carry no registeredAt (that field comes from core's
-    // snapshot); approximate with our own arrival time for the uptime readout.
-    components = { ...components, [p.name]: { ...p, registeredAt: p.registeredAt ?? Date.now() / 1000 } };
-  }
-
-  function depart(ev: any) {
-    const p: RegInfo = ev.payload ?? {};
-    if (!p.name) return;
-    const next = { ...components };
-    delete next[p.name];
-    if (openName === p.name) openName = null;
-    components = next;
-  }
 
   function humanBytes(n?: number): string {
     if (n == null || isNaN(n)) return "?";
@@ -95,24 +85,16 @@
   }
 
   onMount(() => {
-    // Components announce themselves on reg.publish at startup and
-    // reg.depart on shutdown; both already flow through the bridge's
-    // `>` subscription into the SPA as nats events.
-    const a = on("reg.publish", upsert);
-    const b = on("reg.depart", depart);
+    // Source of truth lives in core: `core.status` reports the supervisor's
+    // live set (authoritative process state), so we just poll it — no local
+    // event store to drift, and dead components vanish on the next poll.
     sync();
-    // Resync after a bus reconnect: registrations that happened while we
-    // were disconnected are missed by the subscriptions above.
-    let wasOnline = false;
-    const offStatus = onStatus((onlineNow) => {
-      if (onlineNow && !wasOnline) sync();
-      wasOnline = onlineNow;
-    });
+    // Refresh the component list every 5s; the 30s tick only bumps the
+    // clock so uptime/modified labels stay fresh in between.
+    const poll = setInterval(sync, 5000);
     const t = setInterval(() => tick++, 30000);
     return () => {
-      a();
-      b();
-      offStatus();
+      clearInterval(poll);
       clearInterval(t);
     };
   });
@@ -142,7 +124,7 @@
             class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-ink-800"
             onclick={() => (openName = openName === name ? null : name)}
           >
-            <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+            <span class="h-1.5 w-1.5 shrink-0 rounded-full {c.running === false ? 'bg-red-500' : 'bg-accent'}"></span>
             <span class="min-w-0 flex-1">
               <span class="block truncate font-mono text-[12px] text-ink-200">{c.name}</span>
               <span class="block truncate text-[10px] text-ink-400">

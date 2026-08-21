@@ -65,9 +65,15 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "catalog", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Inspect the component catalog",
+      "description": "Inspect the component catalog (list = LLM toolset)",
       "properties": {"op": {"type": "string", "enum": ["list"]}},
       "required": ["op"]
+    }))
+  coreReg.tools.add(ToolReg(name: "status", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Report the live set of components the supervisor is running and their health. Source of truth is the supervisor (process state), cross-referenced with the catalog. Corresponds to the UI's Live components view.",
+      "properties": {}
     }))
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{

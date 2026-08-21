@@ -213,5 +213,16 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
 - Verification = `make build && make test` (bus-contract suite, see
   docs/MANUAL.md#testing), plus a live harness run for
   conversation-loop changes.
+- **Trust a green test run — don't re-run to see "more" output.** `make`
+  targets print each check as `OK: …` and end with `<NAME> TEST PASSED`,
+  and the exit code reflects the whole suite. If that line prints and the
+  command exits 0, capture the tail once and move on; re-running the same
+  green suite only to see more of the output is wasted work. Rerun *only*
+  when there is a failure to diagnose or you changed code since the last
+  run.
+- **A failed/partial run is the only case that needs investigation**: when
+  the suite breaks, re-run the *narrowest* target that reproduces it
+  (`make test-core`, `make test-bash`, …) with output captured, and fix
+  before re-running broadly.
 - Milestone status and open quests live in `README.md` — update it when you
   complete one.
