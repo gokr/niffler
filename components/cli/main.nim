@@ -156,8 +156,8 @@ proc cmdCall(nc: NatsConnection, sub: ptr natsSubscription,
 
 proc cmdInstall(nc: NatsConnection, sub: ptr natsSubscription,
                 repoRef: string): int =
-  ## plugin_install, then wait for every spawned component to register —
-  ## the end-to-end "does this package work" check.
+  ## plugin_install, then wait for every spawned service component to
+  ## register. Interactive components are verified by their successful build.
   var repo = repoRef
   var version = ""
   let at = repo.rfind('@')
@@ -182,6 +182,15 @@ proc cmdInstall(nc: NatsConnection, sub: ptr natsSubscription,
   for c in inst{"components"}:
     let name = c{"name"}.getStr("")
     if name.len == 0: continue
+    if c{"interactive"}.getBool(false):
+      if c{"built"}.getStr("").len == 0:
+        echo "cli: FAIL — " & name & " was not built: " &
+             c{"error"}.getStr("unknown error")
+        inc failed
+      else:
+        echo "cli: " & name & " built at " & c{"binary"}.getStr("") &
+             " (interactive; start manually)"
+      continue
     if not c{"spawned"}.getBool(false):
       echo "cli: FAIL — " & name & " not spawned: " &
            c{"error"}.getStr("unknown error")

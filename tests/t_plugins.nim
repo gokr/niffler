@@ -3,16 +3,27 @@
 ## Boots full core headless (NIF_AUTO_APPROVE=1) and installs a package
 ## from a LOCAL git repo (file:// support) — no network needed. Covers
 ## the whole pipeline: clone → manifest → builder.build → core.spawn →
-## registration → tool callable; duplicate-install rejection; stale-clone
-## cleanup; plugin_remove teardown. Cleanup leaves no records behind.
+## registration → tool callable; interactive-only packages build without
+## spawning; duplicate-install rejection; plugin_remove teardown. Cleanup
+## leaves no records behind.
 ##
 ## With NIF_TEST_NETWORK=1 the test additionally runs plugin_search
 ## against the real GitHub topic search.
 
 import std/[json, os, osproc, strutils]
 import natswrapper
-import envelope
 import helpers
+
+proc commitRepo(repoDir: string) =
+  let g = startProcess("git", args = ["-C", repoDir, "init", "-q", "-b", "main"],
+                       options = {poUsePath})
+  discard g.waitForExit()
+  g.close()
+  let gc = startProcess("bash", args = ["-c",
+      "cd " & repoDir & " && git config user.email t@t && git config user.name t && " &
+      "git add -A && git commit -qm init"], options = {poUsePath})
+  discard gc.waitForExit()
+  gc.close()
 
 proc main() =
 
@@ -44,18 +55,30 @@ proc main() =
         %*{"pong": true, "pkg": "testpkg"}
     comp.run()
     """.dedent())
+
+  let interactiveRepo = pkgDir / "ituirepo"
+  createDir(interactiveRepo / "itui")
+  writeFile(interactiveRepo / "niffler.json", """{
+    "name": "testinteractive",
+    "version": "1.0.0",
+    "components": [
+      {"name": "itui", "lang": "nim", "main": "itui/main.nim", "interactive": true}
+    ]
+  }
+  """)
+  writeFile(interactiveRepo / "itui" / "main.nim", """
+    import niffler/sdk
+    let comp = newComponent("itui", "0.1.0")
+    comp.run()
+    """.dedent())
   defer:
     removeDir(pkgDir)
+    for name in ["tplug", "itui"]:
+      let binary = root / "var" / "bin" / name
+      if fileExists(binary): removeFile(binary)
 
-  let g = startProcess("git", args = ["-C", repoDir, "init", "-q", "-b", "main"],
-                       options = {poUsePath})
-  discard g.waitForExit()
-  g.close()
-  let gc = startProcess("bash", args = ["-c",
-      "cd " & repoDir & " && git config user.email t@t && git config user.name t && " &
-      "git add -A && git commit -qm init"], options = {poUsePath})
-  discard gc.waitForExit()
-  gc.close()
+  commitRepo(repoDir)
+  commitRepo(interactiveRepo)
 
   # --- boot core ----------------------------------------------------------
   let (server, url) = startNats()
@@ -105,6 +128,24 @@ proc main() =
   check("plugin_installed lists testpkg",
         list.output.contains("testpkg"), list.output)
 
+  # An interactive-only package is installed by building its binary, but it
+  # is not core.spawned and therefore never appears in the live catalog.
+  let iinst = runCli(cliBin, url,
+                     @["install", "file://" & interactiveRepo], 300_000)
+  check("interactive plugin install ok", iinst.code == 0 and
+        iinst.output.contains("INSTALL OK"), iinst.output)
+  check("interactive component built, not spawned",
+        iinst.output.contains("itui built at") and
+        iinst.output.contains("interactive; start manually") and
+        fileExists(root / "var" / "bin" / "itui"), iinst.output)
+  let icat = runCli(cliBin, url, @["catalog"])
+  check("interactive component not registered",
+        not icat.output.contains("itui:"), icat.output)
+  let ilist = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 30_000)
+  check("interactive install persisted",
+        ilist.output.contains("testinteractive") and
+        ilist.output.contains("\"interactive\":true"), ilist.output)
+
   # network-gated: real GitHub discovery
   if getEnv("NIF_TEST_NETWORK") == "1":
     let search = runCli(cliBin, url,
@@ -113,6 +154,16 @@ proc main() =
           search.output.contains("gokr/niffler-weather"), search.output)
 
   # --- teardown: remove leaves no traces -----------------------------------
+  let irem = runCli(cliBin, url,
+                    @["call", "plugin_remove", """{"package":"testinteractive"}"""],
+                    60_000)
+  check("interactive plugin_remove ok", irem.code == 0 and
+        irem.output.contains("\"ok\":true") and
+        irem.output.contains("\"interactive\":true"), irem.output)
+  let igone = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 30_000)
+  check("interactive record gone after remove",
+        not igone.output.contains("testinteractive"), igone.output)
+
   let rem = runCli(cliBin, url,
                    @["call", "plugin_remove", """{"package":"testpkg"}"""], 60_000)
   check("plugin_remove ok", rem.code == 0 and

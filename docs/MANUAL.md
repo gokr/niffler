@@ -215,9 +215,9 @@ topic `niffler-component` are discoverable without any registry:
 |---|---|
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |
 | `plugin_installed` | the packages installed on this harness |
-| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build` (single-file SDK components), then `core.spawn` each (approved) |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build`, then `core.spawn` each service component (approved) |
 | `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref |
-| `plugin_remove {package}` | `core.remove` every component, delete the clone, drop the record |
+| `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
 - Install/update/remove all carry `x-harness.approval: "always"` — they
   run third-party code, and every individual spawn/remove is approved
@@ -229,6 +229,11 @@ topic `niffler-component` are discoverable without any registry:
   agent-written components take. Running Niffler already provides the
   toolchain (Nim/Go, nats.c, libclang), so no extra requirements; every
   platform compiles with its own toolchain.
+- A component manifest entry with `"interactive": true` is built into
+  `var/bin` but is not passed to `core.spawn`. It is a terminal client (for
+  example a TUI) that the user starts manually, so it is not supervised or
+  restarted on boot. Stop any running client manually before removing or
+  updating its package.
 - Install records live in the store (kind `plugin`, id = package name);
   they are wiped by `--recover` like all component records — a fresh boot
   re-clones from the recorded repo/ref on reinstall.

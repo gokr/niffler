@@ -232,9 +232,10 @@ component") or via `plugin_search`; `plugin_install {repo}` clones the
 repo into `var/plugins/<pkg>@<ref>/`, compiles each component from source
 via the `builder` (the same path agent-written components take — no extra
 toolchain, every platform builds with its own), then `core.spawn`s every
-component (human-approved). `plugin_update` / `plugin_remove` manage
-installed packages; installs survive restarts via the store's `plugin`
-records.
+service component (human-approved). Components marked `"interactive": true`
+are built into `var/bin` but not spawned; the user starts them in a terminal.
+`plugin_update` / `plugin_remove` manage installed packages; installs survive
+restarts via the store's `plugin` records.
 
 Example package: [`gokr/niffler-weather`](https://github.com/gokr/niffler-weather)
 (Open-Meteo weather, no API key). Its README documents the manifest

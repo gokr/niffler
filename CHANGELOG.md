@@ -38,7 +38,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `plugin_installed`. Packages are git repos with a `niffler.json`
   manifest; installs always compile from source via the builder
   (the harness already ships the toolchain), then `core.spawn` each
-  component (approval-gated). Install records live in the store
+  service component (approval-gated). Components marked
+  `"interactive": true` are built into `var/bin` but left for the user to
+  start in a terminal. Install records live in the store
   (kind `plugin`) and survive restarts. `file://` repo URLs install
   from local git repos — hermetic installs, mirrors.
 - **console component** — passive bus viewer: subscribes to everything

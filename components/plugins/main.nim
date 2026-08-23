@@ -2,13 +2,16 @@
 ##
 ## Third-party components are distributed as plain git repos: one repo = one
 ## package = N components, described by a niffler.json manifest at the root
-## ({"name", "version", "components": [{"name", "lang", "main", "env"?}]}).
+## ({"name", "version", "components":
+##   [{"name", "lang", "main", "env"?, "interactive"?}]}).
 ## Discovery is GitHub topic search (topic:niffler-component) — no registry.
 ##
 ## Install: shallow clone into var/plugins/<repo>@<ref>/, then build every
 ## component from source through the builder component (the same path the
 ## agent uses for its own components — the harness already ships Nim/Go and
-## builds its own extensions) and core.spawn it. Installed packages are
+## builds its own extensions). Service components are core.spawned;
+## interactive components are built for the user to start in a terminal.
+## Installed packages are
 ## recorded in the store (kind "plugin") so plugin_update and plugin_remove
 ## know their shape. var/ is disposable runtime state; the store record is
 ## what survives (docs/MANUAL.md).
@@ -145,7 +148,8 @@ proc dropRecord(pkg: string) =
 # install / update / remove internals
 
 type
-  ManifestComp = tuple[name, lang, main: string, env: seq[string]]
+  ManifestComp = tuple[name, lang, main: string, env: seq[string],
+                       interactive: bool]
   Manifest = tuple[name, version: string, comps: seq[ManifestComp]]
 
 proc readManifest(dir: string): Manifest =
@@ -166,6 +170,7 @@ proc readManifest(dir: string): Manifest =
     mc.name = e{"name"}.getStr("")
     mc.lang = e{"lang"}.getStr("").toLowerAscii()
     mc.main = e{"main"}.getStr("")
+    mc.interactive = e{"interactive"}.getBool(false)
     mc.env = @[]
     let envArr = e{"env"}
     if envArr != nil:
@@ -202,7 +207,12 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
     let r = comp.request("builder", "build", %*{"lang": mc.lang,
         "name": mc.name, "source": readFile(dest / mc.main)}, 320_000)
     if r{"ok"}.getBool(false):
-      result = spawnComponent(mc, absolutePath(binary))
+      let absBinary = absolutePath(binary)
+      if mc.interactive:
+        result = %*{"name": mc.name, "binary": absBinary,
+                    "interactive": true, "spawned": false}
+      else:
+        result = spawnComponent(mc, absBinary)
       result["built"] = %"source"
       if mc.env.len > 0:
         result["env"] = %mc.env
@@ -216,7 +226,8 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
 proc doInstall(repo, refArg: string): JsonNode =
   ## Resolve ref (latest release tag, else default branch — skipped for
   ## local file:// repos, which clone HEAD), clone, then build each
-  ## component, spawn it and persist the record.
+  ## component, spawn service components and persist the record. Interactive
+  ## components are installed binaries that the user starts in a terminal.
   let local = repo.startsWith("file://")
   var refTag = checkRef(refArg)
   if refTag.len == 0 and not local:
@@ -252,15 +263,18 @@ proc doInstall(repo, refArg: string): JsonNode =
   let mf = readManifest(dest)
   let binDir = root() / "var" / "bin"
   var components = newJArray()
-  var spawned = 0
+  var installed = 0
   for mc in mf.comps:
     let st = installComp(mc, dest, binDir)
-    if st{"spawned"}.getBool(false): inc spawned
+    if st{"spawned"}.getBool(false) or
+       (st{"interactive"}.getBool(false) and
+        st{"built"}.getStr("").len > 0):
+      inc installed
     components.add(st)
 
-  if spawned == 0:
+  if installed == 0:
     removeDir(dest)
-    return %*{"ok": false, "error": "no component could be spawned",
+    return %*{"ok": false, "error": "no component could be installed",
               "components": components}
 
   saveRecord(mf.name, %*{"name": mf.name, "repo": repo, "ref": refTag,
@@ -277,6 +291,10 @@ proc removeComps(rec: JsonNode): JsonNode =
   for e in comps:
     let name = e{"name"}.getStr("")
     if name.len == 0: continue
+    if e{"interactive"}.getBool(false):
+      result.add(%*{"name": name, "removed": true, "interactive": true,
+                    "note": "not supervised; stop any running terminal client manually"})
+      continue
     try:
       discard comp.request("core", "remove", %*{"name": name}, 360_000)
       result.add(%*{"name": name, "removed": true})
@@ -334,8 +352,10 @@ comp.tool:
     ## Install a community component package from GitHub: clones the repo
     ## into var/plugins (pinned to version, else the latest release tag,
     ## else the default branch), compiles every component from source via
-    ## the builder component, then spawns each one — every spawn asks the
-    ## human for separate approval. Discover packages with plugin_search
+    ## the builder component, then spawns each service component — every
+    ## spawn asks the human for separate approval. Manifest components with
+    ## interactive:true are built but not spawned; the user starts their
+    ## binary in a terminal. Discover packages with plugin_search
     ## first whenever possible; installs run third-party code on this
     ## machine (source builds, so exactly the published code).
     ## - repo: "owner/name" or a github.com URL, e.g. "gokr/niffler-weather"
@@ -349,7 +369,7 @@ comp.tool:
                 " — use plugin_update for a newer version, or plugin_remove first"}
     let r = doInstall(cleanRepo, version)
     if not r{"ok"}.getBool(false): return r
-    r["note"] = %"components restart automatically on harness boot (persisted by core.spawn)"
+    r["note"] = %"service components restart on harness boot; interactive components must be started manually"
     return r
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 600000}
@@ -357,8 +377,9 @@ comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 60000
 comp.tool:
   proc plugin_update(package: string): JsonNode =
     ## Update an installed package to its latest release tag: removes its
-    ## current components and reinstalls at the new ref (each removal and
-    ## spawn asks the human for approval). Reports updated:false when the
+    ## current components and reinstalls at the new ref (each service removal
+    ## and spawn asks the human for approval). Interactive components are
+    ## rebuilt but not started. Reports updated:false when the
     ## pinned ref is already the latest release.
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
@@ -388,9 +409,10 @@ comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 60000
 
 comp.tool:
   proc plugin_remove(package: string): JsonNode =
-    ## Uninstall a package: core.remove each of its components (they will
-    ## not come back on the next boot), delete the local clone and drop
-    ## the install record. Each removal asks the human for approval.
+    ## Uninstall a package: core.remove each supervised component (they will
+    ## not come back on the next boot), delete the local clone and drop the
+    ## install record. Interactive clients are not supervised; stop any live
+    ## terminal process manually. Each service removal asks for approval.
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
     if rec == nil:

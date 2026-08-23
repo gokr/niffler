@@ -206,7 +206,9 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   `niffler.json` manifest + the `niffler-component` topic. The shipped
   `plugins` component installs them (`plugin_search`/`install`/`update`/
   `remove`) — clone into `var/plugins/<pkg>@<ref>/`, always build from
-  source via `builder.build`, then `core.spawn`.
+  source via `builder.build`, then `core.spawn` service components. Manifest
+  entries with `"interactive": true` are built into `var/bin` but not spawned;
+  the user starts those terminal clients manually.
   Sample package: `gokr/niffler-weather`. Install records: store kind
   `plugin`. Never loop over a possibly-missing JSON key in component code —
   `{}` returns nil and iterating nil SIGSEGVs (json.nim items iterator).
