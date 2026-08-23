@@ -16,8 +16,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   disposable — killing one loses only that conversation's in-flight turn.
   Core tools (spawn/kill/remove/catalog) go back over the bus to
   `svc.core.call`; a new `catalog {op: snapshot}` lets late joiners seed
-  their view (reg.publish is fire-once). The tty REPL still runs turns in
-  the system process; turns never nest.
+  their view (reg.publish is fire-once). The tty is no longer a chat REPL —
+  turns never nest.
+- **tty: admin shell** — the stdin/stdout REPL is now an admin status
+  shell (`core/tty.nim`), not a conversation UI: `help`, `status`,
+  `catalog`, `tools`, `sessions`, `exit`, with arrow-key history and tab
+  completion. The LLM chat lives in the web UI and the `niffler-tui`
+  plugin; scripting goes through the `cli` component.
 - **UI: components panel** — the sidebar now lists the live bus
   components and their tools (name, version, pid, registration time,
   language/source where known), fed by `ev.catalog.updated`.

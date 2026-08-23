@@ -109,7 +109,7 @@ automatically by nimble on the first build (`make build`).
 | `make up` | build, ensure bus + core, open the desktop UI |
 | `make down` | stop UI, core and the bus core spawned |
 | `make status` | show what is running where |
-| `make run` | terminal harness (interactive) |
+| `make run` | the harness with the tty admin shell (status commands) |
 | `make test` | the bus-contract test suite (8 tests, each spawns its own bus) — `make test-<comp>` runs one: test-bash, test-store, test-builder, test-console, test-plugins, test-core, test-cli, test-smoke |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |

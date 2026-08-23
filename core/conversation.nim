@@ -1,18 +1,18 @@
 ## Conversation loop — the only "product logic" in the harness.
 ##
-## Three drivers:
-## - stdin (interactive mode): runConversation, in the system process
+## Two drivers:
 ## - session runners (core/session.nim): one process per conversation,
 ##   serving svc.session.<sessionId>.call, emitting ev.session.* events
 ## - svc.core.call "session" (service mode): the system ensures a runner
 ##   per sessionId and forwards — clients keep one stable address
 ##
+## The interactive admin shell (status commands for the harness itself)
+## lives in core/tty.nim — the tty is not a conversation UI.
+##
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
 import std/[json, os, sequtils, strutils, tables, times]
-when defined(posix):
-  import std/posix
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -406,47 +406,6 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
                                  "args": args, "error": e.msg})
-
-proc runConversation*(ct: CoreTools, pump: proc() = nil) =
-  ## Interactive stdin loop (headless demo mode). While waiting for input,
-  ## the loop keeps serving svc.core.call (via `pump`) so UIs stay responsive.
-  var messages = @[%*{"role": "system", "content": systemPrompt(ct.root)}]
-  var p = newPersister(ct)
-  echo ""
-  echo "Niffler — ready. Type a message (exit to quit)."
-  while true:
-    stdout.write("> ")
-    stdout.flushFile()
-    var line = ""
-    when defined(posix):
-      # poll stdin with a short timeout; pump the bus while we wait
-      while true:
-        if pump != nil: pump()
-        var fds = [Tpollfd(fd: 0, events: POLLIN, revents: 0)]
-        let r = poll(addr fds[0], 1, 25)
-        if r > 0 and (fds[0].revents and POLLIN) != 0:
-          break
-        if r < 0:
-          return
-      line = stdin.readLine()
-    else:
-      line = stdin.readLine()
-    if line.len == 0 or line in ["exit", "quit"]: break
-    if pump != nil: pump()
-    let userMsg = %*{"role": "user", "content": line}
-    messages.add(userMsg)
-    p.persistMsg(userMsg)
-    proc onEvent(kind: string, data: JsonNode) {.closure.} =
-      case kind
-      of "assistant":
-        echo ""
-        echo data{"content"}.getStr("")
-      of "toolcall":
-        echo ""
-        echo "  ↳ " & data{"tool"}.getStr("") & " " & $data{"args"}
-      else:
-        discard
-    discard runTurn(ct, p, messages, onEvent)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")

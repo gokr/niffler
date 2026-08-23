@@ -2,7 +2,8 @@
 ##
 ## Boot sequence (docs/REBOOT.md): spawn NATS (if no NIF_NATS_URL) → open catalog →
 ## resolve manifest to binaries → spawn children → converge on the required
-## set → conversation loop. Core speaks exactly one protocol.
+## set → serve svc.core.call (tty stdin becomes the admin shell, core/tty.nim).
+## Core speaks exactly one protocol.
 
 import std/[json, net, os, osproc, sequtils, streams, strutils, tables, terminal, times]
 import yaml/tojson
@@ -15,6 +16,7 @@ import catalog
 import conversation
 import dispatch
 import supervisor
+import tty
 
 var gStop = false
 
@@ -204,8 +206,9 @@ proc main() =
     except CatchableError as e:
       echo "core: WARNING cannot restore components from store: " & e.msg
 
-  # --- 5. conversation loop -------------------------------------------------
-  # interactive (tty): stdin loop. service mode: serve svc.core.call for UIs.
+  # --- 5. service surface ----------------------------------------------------
+  # tty stdin: the admin shell (status commands — core/tty.nim). Otherwise:
+  # serve svc.core.call for UIs (session ensure+forward to runners, spawn/catalog).
   var coreSub: ptr natsSubscription
   let cs = natsConnection_QueueSubscribeSync(addr coreSub, nc.conn,
                                              "svc.core.call".cstring,
@@ -221,7 +224,9 @@ proc main() =
 
   if isatty(stdin):
     try:
-      runConversation(ct, proc() = pumpCoreCalls(ct, coreSub))
+      runAdminShell(ct,
+        proc() = (pumpCoreCalls(ct, coreSub); cat.pump(); sup.pump(cat)),
+        proc(): bool = gStop)
     except EOFError:
       discard
     except CatchableError as e:

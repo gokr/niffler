@@ -26,8 +26,11 @@ anything structural.
   `core/session.nim`) per conversation and forwards `session` tool calls to
   `svc.session.<id>.call` (clients keep calling `svc.core.call`). Runners are
   internal children (restart `never`), ephemeral, and resume from the store;
-  killing one loses only the in-flight turn. The tty REPL still runs turns
-  in the system process — turns never nest.
+  killing one loses only the in-flight turn. Turns never nest. The tty REPL
+  (`core/tty.nim`) is an **admin shell**, not a conversation UI: status
+  commands only (help/status/catalog/tools/sessions) — the LLM chat lives in
+  the web UI and the niffler-tui plugin; scripting goes through the `cli`
+  component.
 - Nim SDK has **no callbacks and no threads**: handlers poll
   `natsSubscription_NextMsg` on the main thread, serialized, with normal GC.
   The `{.gcsafe.}` pragmas dance from the old codebase is not needed and must not

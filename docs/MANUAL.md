@@ -47,8 +47,13 @@ child (restart policy `never`); it announces itself as component
 events as the classic in-core loop. Sessions are ephemeral: history lives
 in the store, so a fresh runner resumes the conversation on the next call.
 Killing a runner kills only that conversation — the process is the unit of
-isolation. (The tty REPL still runs turns inside the system process;
-turns never nest either way.)
+isolation. Turns never nest either way.
+
+The stdin/stdout tty (`make run`) is an **admin shell**, not a conversation
+UI: it only inspects the harness itself — `help`, `status`, `catalog`,
+`tools`, `sessions`, `exit` — with arrow-key history and tab completion
+(see `core/tty.nim`). The LLM chat lives in the web UI and the `niffler-tui`
+plugin; scripting goes through the `cli` component.
 
 ## Environment variables
 
@@ -126,7 +131,8 @@ or a stuck-tool call:
 ```
 
 **The cli component** (`./var/bin/cli`) drives the same bus from a
-terminal or a script, CI-friendly (exit 0 on success):
+script or pipeline — non-interactive, CI-friendly (exit 0 on success);
+it is the scripting face, the tty admin shell is the interactive one:
 
 ```bash
 ./var/bin/cli catalog                        # components + their tools
@@ -314,7 +320,7 @@ runs `plugin_search` against GitHub and the TypeScript builder build
 
 ```bash
 make up          # build (incremental), ensure bus + core, open the UI
-make run         # terminal harness
+make run         # the harness with the tty admin shell (status commands)
 make test        # the bus-contract suite (8 tests, each spawns its own bus)
 make status      # what is running where
 make down        # stop UI, core, and the bus core spawned
