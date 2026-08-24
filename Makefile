@@ -1,12 +1,13 @@
-# Niffler — build and run without knowing Go, Nim or Wails.
+# Niffler — build without knowing Go, Nim or Wails.
 #
-#   make up     single command: build only what changed, ensure a bus + core
-#               are running, then open the desktop UI
-#   make down   stop the UI, core and the bus core spawned
+#   make all    build core + components + desktop UI (default)
 #   make setup  install all prerequisites for this platform (Ubuntu/macOS)
 #   make doctor check prerequisites and report what is missing
 #
-# Every binary target tracks its sources, so `make up` / `make all` are no-ops
+# Starting/stopping is not make's job: launch niffler-ui (any UI autostarts
+# core, the last UI stops it) or ./var/bin/niffler in a terminal (admin shell).
+#
+# Every binary target tracks its sources, so `make all` is a no-op
 # when nothing changed. Nim keeps its own incremental cache (nimcache/) on top.
 #
 # Full install instructions per platform: README.md.
@@ -48,7 +49,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components components-inner ui ui-install ui-uninstall run up down status \
+.PHONY: help all build components components-inner ui ui-install ui-uninstall run \
         test test-bash test-store test-builder test-console test-plugins \
         test-models test-observe test-logfile test-core test-cli test-hashline \
         test-autostart test-smoke smoke dev clean gotest \
@@ -61,10 +62,7 @@ help:
 	@echo 'make ui        build the Wails desktop UI'
 	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
-	@echo 'make run       run the harness in the terminal'
-	@echo 'make up        ensure bus + core, then open the UI (one command)'
-	@echo 'make down      stop UI, core and the spawned bus'
-	@echo 'make status    show what is running'
+	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make test      end-to-end smoke test (spawns its own bus)'
 	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
 	@echo 'make setup     install prerequisites for this platform'
@@ -143,7 +141,7 @@ $(UI_BIN): $(UI_INPUTS)
 		echo "Install: make install-wails"; \
 		exit 1; fi
 	$(BUILD_WRAP) bash -c 'cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
-		-ldflags "-X main.buildCommit=$(UI_COMMIT)"'
+		-ldflags "-X main.buildCommit=$(UI_COMMIT) -X main.nifRoot=$(ROOT)"'
 
 # Desktop integration (Linux): the appicon the window shows comes from the
 # embedded icon in main.go, but the launcher/taskbar icon needs a desktop
@@ -226,20 +224,12 @@ gotest:
 	cd components/models && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 
-up: all
-	./scripts/niffler.sh up
-
-down:
-	./scripts/niffler.sh down
-
-status:
-	./scripts/niffler.sh status
-
 # recover: back to factory shape. The repo is the snapshot; var/ is
 # disposable build output. Core's --recover rebuilds binaries from source
 # and wipes store component records (conversations survive).
 recover: build
-	@./scripts/niffler.sh down 2>/dev/null || true
+	@pkill -f "niffler-ui" 2>/dev/null; \
+	 pkill -f "$(ROOT)/var/bin/niffler$$" 2>/dev/null; sleep 1; true
 	./var/bin/niffler --recover
 
 dev:
@@ -252,7 +242,7 @@ clean:
 # prerequisites
 
 setup: install-go install-nim install-nats install-node install-wails install-ui-deps
-	@echo "setup done — verify with 'make doctor', then 'make up'"
+	@echo "setup done — verify with 'make doctor', then 'make'"
 
 define check_tool
 	@if command -v $(1) >/dev/null 2>&1; then \
@@ -281,7 +271,7 @@ doctor:
 	fi)
 	@echo "  ts components: node + npm (above) — typescript comes from npm per build;"
 	@echo "                  npm registry access needed for 'builder.build {lang: \"ts\"}'"
-	@echo "Then: make up"
+	@echo "Then: make — and launch niffler-ui or ./var/bin/niffler"
 
 install-go:
 	@if command -v go >/dev/null 2>&1; then echo "go: already installed"; \

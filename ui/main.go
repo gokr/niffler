@@ -66,6 +66,13 @@ var _ = context.Background
 // in the About dialog. "unknown" when built without the Makefile.
 var buildCommit = "unknown"
 
+// nifRoot is the harness root, baked at build time (make ui passes
+// -X main.nifRoot=$(ROOT)). It lets an icon-launched binary — where the
+// exe-path heuristic cannot find the repo — load .env, resolve
+// var/nats-url and autostart the harness (EnsureHarness). Empty when built
+// without the Makefile; the exe-path fallback in uiRoot() covers in-tree runs.
+var nifRoot = ""
+
 // buildMenu assembles the application menu: About and Quit. Both callbacks
 // read app.ctx (set in startup) so they work once the window is live.
 func buildMenu(app *Bridge) *menu.Menu {

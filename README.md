@@ -42,13 +42,15 @@ bus, approvals, recovery, troubleshooting). Observation and logs:
 ## Quickstart
 
 ```bash
-make up
+make                    # build everything, once
+ui/build/bin/niffler-ui # or click the installed desktop icon
 ```
 
-One command: builds core + components + the desktop UI, starts a bus and core
-if none is running, and opens the Wails UI. Stop everything with `make down`.
-
-Only the terminal harness? `make run`. Just build? `make` (or `make all`).
+Build once, then launch the UI — any UI (the desktop app, an interactive
+plugin like `niffler-tui`) autostarts core if it isn't running, and the
+**last UI to close stops the harness it started**. Prefer the terminal?
+`./var/bin/niffler` runs the admin shell; a manually started core stays up
+until you stop it.
 
 ## Prerequisites
 
@@ -110,9 +112,8 @@ automatically by nimble on the first build (`make build`).
 
 | Command | What it does |
 |---|---|
-| `make up` | build, ensure bus + core, open the desktop UI |
-| `make down` | stop UI, core and the bus core spawned |
-| `make status` | show what is running where |
+| `niffler-ui` | the desktop UI — autostarts core if needed; the last UI stops an autostarted core |
+| `./var/bin/niffler` | the harness in a terminal: admin shell, never self-terminates |
 | `make run` | the harness with the tty admin shell (status commands) |
 | `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
@@ -129,10 +130,13 @@ live development harness. Opt-ins: `NIF_TEST_INSTALL=1` installs
 pipeline itself is covered hermetically via a local `file://` git repo.
 Details in [docs/MANUAL.md](docs/MANUAL.md#testing).
 
-**Bus autostart.** With no `NIF_NATS_URL`, core reuses a bus on the default port
-(127.0.0.1:4222) if one is live, otherwise it spawns nats-server on a random
-loopback port and writes `var/nats-url`. The UI bridge reads that file, so
-`make up` just works. Set `NIF_NATS_URL` to attach to any bus, even a remote one.
+**Harness autostart.** Any UI's first act is the SDK's `ensureHarness`:
+probe for a live core (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222),
+else spawn `var/bin/niffler` itself (`NIF_AUTOSTART=1`). Interactive
+frontends register `"client": true`; an autostarted core exits when the
+last one departs. Core itself reuses a bus on the default port when one is
+live, else spawns nats-server on a random loopback port and writes
+`var/nats-url`. Set `NIF_NATS_URL` to attach to any bus, even a remote one.
 
 **Approvals.** Tools that change the machine or the harness (`bash`,
 `builder.build`, `core.spawn`/`kill`/`remove`) carry `x-harness.approval:
@@ -282,6 +286,10 @@ to CI any plugin repo — Niffler testing itself.
       builds from source via the builder (or `file://` local repos for
       hermetic installs), spawn/update/remove, store records;
       live-tested end-to-end with `gokr/niffler-weather`
+- [x] **UI-owned lifecycle** — any interactive client autostarts core via
+      the SDK's `ensureHarness`; an autostarted core exits when the last
+      interactive client departs, a manually started one never does. No
+      launcher scripts — the desktop icon is the whole system
 - [x] **models component** — models.dev baseline with an embedded offline seed,
       validated atomic cache, strict model resolution, searchable capabilities/
       limits/pricing, and deterministic `x-models-source` plugin patches with

@@ -57,9 +57,8 @@ The Makefile is the front door (it wraps the nimble tasks below):
 make all              # build core + all components + desktop UI
 make build            # core + components only (var/bin, no UI)
 make run              # build, then ./var/bin/niffler (interactive harness)
-make up               # single command: ensure bus + core, then open the UI
-make down             # stop what `make up` started (UI, core, spawned bus)
-make status
+./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
+niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_models, t_observe,
                       # t_logfile, t_core, t_cli, t_hashline, t_autostart — each
@@ -87,9 +86,14 @@ nimble smoke          # legacy: the original end-to-end script (bash + store).
   `make test` after bus/SDK changes.
 - Binaries land in `var/bin/`; `var/` is gitignored runtime state (build cache,
   `barrel-db` store file, `nats-url` of the last spawned bus).
-- `scripts/niffler.sh` is the up/down/status logic behind `make up/down/status`:
-  core reuses a bus on 127.0.0.1:4222 if one is live, else spawns nats-server and
-  writes `var/nats-url`; the UI bridge reads that file.
+- Lifecycle has no launcher script: any UI's first act is the SDK's
+  `ensureHarness` — probe (env → `var/nats-url` → 127.0.0.1:4222) for a live
+  core, else spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`.
+  Interactive frontends register `client: true`; an autostarted core exits
+  when the last one departs (idle 10s) or none arrives (boot grace 60s).
+  Manually started cores never self-terminate. `niffler-ui` gets the repo
+  root baked via `make ui` ldflags (`main.nifRoot`); to debug a failed
+  autostart, run `./var/bin/niffler` by hand and watch boot.
 
 ### UI (Wails v2 + Svelte 5, `ui/`)
 

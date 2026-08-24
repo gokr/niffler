@@ -20,8 +20,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
 | `var/nats-monitor-url` | HTTP monitoring endpoint when core spawned the bus; absent for reused/remote buses |
 | `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports ([OBSERVE.md](OBSERVE.md)) |
-| `var/nats-url`, `var/core.log` | written by `scripts/niffler.sh` when `make up` starts core |
-| `var/.niffler.up` | state file of `scripts/niffler.sh` (core pid, whether core spawned the bus) |
+| `var/nats-pid` | pid of the bus core spawned (crash cleanup only — a live core stops its own bus on exit) |
 | `var/build/` | source files of agent-built components (builder's scratch dir) |
 | `nimcache/`, `ui/build/`, `ui/frontend/node_modules/`, `ui/frontend/dist/` | build artifacts; `make clean` removes them |
 
@@ -71,7 +70,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` on a random loopback port and writes `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 — only when `NIF_NATS_URL` is unset (an explicit URL always wins) | unset |
-| `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs | unset |
+| `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
 | `NIF_ENSURE_ATTACH` | `0` makes `ensureHarness` skip attaching and always spawn a core (tests) | `1` |
@@ -192,7 +191,7 @@ gated on a human before they execute:
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
   name and arguments; answer `y`/`n`.
-- **Web UI** (`make up`): a modal dialog appears with the same details;
+- **Web UI**: a modal dialog appears with the same details;
   Approve/Deny answers go back over the bus (`ev.approval.request` /
   `ev.approval.reply`).
 - **Neither** (service mode with no UI attached): the call is **denied**
@@ -314,10 +313,10 @@ make recover        # stops anything running, then ./var/bin/niffler --recover
 For damage to *sources* (someone edited `components/`, `core/` or `sdk/`):
 
 ```bash
-make down
+# stop the harness first (close the UI, or Ctrl-C ./var/bin/niffler)
 git restore components/ core/ sdk/      # or: git checkout -- .
 make build
-make up
+./var/bin/niffler                       # or just reopen the UI
 ```
 
 ## The store
@@ -345,7 +344,7 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
                  # test-plugins, test-models, test-observe, test-logfile,
-                 # test-core, test-cli, test-smoke
+                 # test-core, test-cli, test-autostart, test-smoke
 ```
 
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
@@ -365,16 +364,38 @@ Observe/logfile tests use temporary output directories and never delete the
 developer's `var/logs` or `var/captures`. External network opt-ins can still
 share provider rate limits even though their local state is isolated.
 
+## Starting and stopping
+
+There is no launcher script — the binaries own the lifecycle:
+
+- **Desktop icon / `niffler-ui`** — the common case. The bridge's first act
+  is the SDK's `ensureHarness`: probe `NIF_NATS_URL` → `var/nats-url` →
+  127.0.0.1:4222 for a live core; if none answers, spawn `var/bin/niffler`
+  detached with `NIF_AUTOSTART=1`. The repo root is baked in at `make ui`
+  time (ldflags), so the installed icon works as well as the in-tree binary.
+- **Interactive plugins** (e.g. `niffler-tui`) — same `ensureHarness` call,
+  so starting one from a terminal also starts the harness when needed.
+- **Terminal admin shell** — `./var/bin/niffler` directly. A manually
+  started core never self-terminates; stop it with Ctrl-C / SIGTERM.
+
+Interactive frontends register `"client": true` (the SDK's `interactive()`
+/ `Component.Client` marker). An **autostarted** core counts them: when the
+last one departs it shuts down after `NIF_AUTOSTART_IDLE_S` (default 10s —
+a restarting UI re-registers inside that window), taking its components and
+spawned bus with it; if none ever arrives it gives up after
+`NIF_AUTOSTART_BOOT_S` (default 60s). Closing a UI that attached to a
+*manually* started core changes nothing — the core stays up.
+`NIF_ENSURE_ATTACH=0` makes `ensureHarness` spawn unconditionally (tests).
+
 ## Common tasks
 
 ```bash
-make up          # build (incremental), ensure bus + core, open the UI
-make run         # the harness with the tty admin shell (status commands)
-make test        # the bus-contract suite (each test spawns its own bus)
-make status      # what is running where
-make down        # stop UI, core, and the bus core spawned
-make doctor      # check prerequisites
-make clean       # remove all build artifacts (var/, nimcache/, UI build)
+./var/bin/niffler   # the harness in a terminal (admin shell)
+niffler-ui          # the desktop UI — autostarts core; last UI stops it
+make build          # rebuild what changed
+make test           # the bus-contract suite (each test owns a private bus)
+make doctor         # check prerequisites
+make clean          # remove all build artifacts (var/, nimcache/, UI build)
 ```
 
 - **Headless service mode** (no tty, for UIs/automation):
@@ -393,11 +414,11 @@ make clean       # remove all build artifacts (var/, nimcache/, UI build)
 | Symptom | Cause / fix |
 |---|---|
 | UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (ui/README.md) |
-| UI banner: bus unreachable | no core running, or `var/nats-url` stale — `make up` / `make status` |
+| UI banner: bus unreachable | core autostart still in progress or failed — start `./var/bin/niffler` in a terminal to see boot errors |
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
 | llm error HTTP 401/403 | `NIF_OPENAI_API_KEY` missing or wrong — check `.env` and shell env |
 | "approval denied" in headless mode | expected: no human reachable. Attach the UI, use `make run`, or set `NIF_AUTO_APPROVE=1` knowingly |
 | two stores fight over `var/barrel-db` | single-writer rule — only one core per root; experiment in a temp `NIF_ROOT` copy |
-| orphaned `nats-server` after `make down` | happens when components were killed directly — `pkill -f nats-server` |
+| orphaned `nats-server` | only possible when its core was SIGKILLed (the exit defer was skipped) — kill the pid in `var/nats-pid`, else `pkill -f nats-server` |
 | component crashes on boot, restarts in a backoff loop | `core.remove` it via the UI/terminal, or `make recover` |
 | agent-modified sources | `git restore components/ core/ sdk/` then `make build` (see Recovery) |

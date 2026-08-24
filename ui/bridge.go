@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,8 +22,10 @@ type Bridge struct {
 
 // NewBridge creates the bridge; Connect happens on startup (with retry).
 func NewBridge() *Bridge {
+	comp := sdk.New("ui", "0.1.0")
+	comp.Client = true // interactive frontend: keeps an autostarted core alive
 	b := &Bridge{
-		comp:   sdk.New("ui", "0.1.0"),
+		comp:   comp,
 		stopCh: make(chan struct{}),
 	}
 
@@ -38,7 +39,18 @@ func NewBridge() *Bridge {
 	return b
 }
 
-// uiRoot returns the Niffler root: <root>/ui/build/bin/niffler-ui → 4 levels up.
+// harnessRoot is where .env, var/nats-url and var/bin/niffler live: the
+// build-time baked root (icon launch) or the exe-path heuristic (in-tree).
+func harnessRoot() string {
+	if nifRoot != "" {
+		return nifRoot
+	}
+	return uiRoot()
+}
+
+// uiRoot returns the Niffler root from the exe path:
+// <root>/ui/build/bin/niffler-ui → 4 levels up. Only valid when running the
+// in-tree binary.
 func uiRoot() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -47,29 +59,24 @@ func uiRoot() string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(exe))))
 }
 
-// resolveNatsUrl: NIF_NATS_URL env → var/nats-url discovery file (written by
-// core) → well-known default.
+// resolveNatsUrl: NIF_NATS_URL env → <root>/var/nats-url discovery file
+// (written by core) → well-known default.
 func resolveNatsUrl() string {
-	if u := os.Getenv("NIF_NATS_URL"); u != "" {
-		return u
-	}
-	for _, p := range []string{
-		filepath.Join(uiRoot(), "var", "nats-url"),
-		"var/nats-url",
-	} {
-		if b, err := os.ReadFile(p); err == nil {
-			if u := strings.TrimSpace(string(b)); u != "" {
-				return u
-			}
-		}
-	}
-	return "nats://127.0.0.1:4222"
+	return sdk.ResolveNatsUrl(harnessRoot())
 }
 
 func (b *Bridge) startup(ctx context.Context) {
 	b.ctx = ctx
 	// .env from the harness root and cwd (existing env always wins)
-	sdk.LoadDotEnv(filepath.Join(uiRoot(), ".env"), ".env")
+	sdk.LoadDotEnv(filepath.Join(harnessRoot(), ".env"), ".env")
+	// One command, everything up: attach to the running harness, or start
+	// core ourselves (UI-owned: it exits when the last UI departs).
+	url, err := sdk.EnsureHarness(harnessRoot())
+	if err != nil {
+		slog.Warn("ensure harness failed (retrying via banner)", "err", err)
+	} else {
+		slog.Info("harness", "url", url)
+	}
 	go b.connectLoop()
 }
 

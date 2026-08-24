@@ -8,6 +8,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **UI-owned harness lifecycle** — `scripts/niffler.sh` (and `make
+  up/down/status`) are gone; the binaries own start/stop. Any interactive
+  client (the desktop UI, interactive plugins) calls the SDK's
+  `ensureHarness`: probe `NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222
+  for a live core, else spawn `var/bin/niffler` detached with
+  `NIF_AUTOSTART=1`. Interactive frontends register `"client": true`; an
+  autostarted core exits when the last one departs
+  (`NIF_AUTOSTART_IDLE_S`, default 10s) or when none arrives within boot
+  grace (`NIF_AUTOSTART_BOOT_S`, default 60s). A manually started
+  `./var/bin/niffler` (terminal admin shell) never self-terminates.
+  `niffler-ui`'s repo root is baked via ldflags at `make ui` time, so the
+  installed desktop icon is the whole system; `make recover` stops any
+  running harness inline. Covered by `tests/t_autostart.nim`.
 - **models component** — a Go component serving the models.dev provider/
   model catalog over the bus (docs/MODELS.md): embedded offline seed,
   validated atomic cache with last-known-good fallback, strict model
