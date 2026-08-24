@@ -2,15 +2,15 @@
 
 Everything you need to operate, configure and recover a Niffler harness.
 Design rationale: [REBOOT.md](REBOOT.md) · wire protocol: [WIRE.md](WIRE.md) ·
-architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · observation/logging:
-[OBSERVE.md](OBSERVE.md).
+architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
+[MODELS.md](MODELS.md) · observation/logging: [OBSERVE.md](OBSERVE.md).
 
 ## Layout of a running system
 
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli`, `console` (Nim), `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli`, `console` (Nim), `models` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -33,6 +33,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · observation/logging
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming OpenAI-compatible chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
+| `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers ([MODELS.md](MODELS.md)) |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
@@ -73,7 +74,15 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |
 | `NIF_OPENAI_BASE_URL` | OpenAI-compatible endpoint | `https://api.openai.com/v1` |
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
-| `NIF_OPENAI_CONTEXT` | context window (tokens) the llm reports to core's context guard | `llm`'s small built-in table (DeepSeek: 1M), else `128000` |
+| `NIF_OPENAI_PROVIDER` | models catalog provider id for the default LLM connection; common endpoints are inferred when unset | inferred |
+| `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard | `models` catalog, then `llm` fallback |
+| `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
+| `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |
+| `NIF_MODELS_OVERRIDE` | local JSON Merge Patch applied after every plugin source | unset |
+| `NIF_MODELS_OFFLINE` | `1` disables remote catalog refresh | unset |
+| `NIF_MODELS_CACHE_DIR` | catalog and source-patch cache | `$NIF_ROOT/var/models` |
+| `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |
+| `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
@@ -127,6 +136,7 @@ ev.session.toolcall    {sessionId, tool, args, result|error}
 ev.session.done        {sessionId, reply} | {sessionId, error}
 ev.session.context     {sessionId, promptTokens, context, warning?|trimmed?}
 ev.catalog.updated     full tool list after any registration change
+ev.models.updated      effective provider/model/source counts after refresh
 ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
 ev.approval.request    core → UI: {id, tool, args} — human gate (see below)
@@ -193,10 +203,10 @@ and acts *trivially* — no summaries, no token math beyond what the model
 reports:
 
 - The window size (`context`) is informational, reported by `llm` on
-  every chat call: `NIF_OPENAI_CONTEXT` overrides it, else a small
-  built-in table covers the default model family (DeepSeek: 1M), else a
-  conservative 128K. There is no model database and nothing is fetched
-  at runtime — the only window that matters is your configured model's.
+  every chat call: per-provider `context` and `NIF_OPENAI_CONTEXT` override
+  it, then `llm` asks the `models` component's effective catalog. A small
+  built-in table and conservative 128K remain as fallback if `models` is
+  removed. See [MODELS.md](MODELS.md).
 
 - After every chat call the model's own `usage.prompt_tokens` and the
   window size (`context`, informational from `llm`) are recorded
@@ -272,6 +282,10 @@ topic `niffler-component` are discoverable without any registry:
   [`gokr/niffler-weather`](https://github.com/gokr/niffler-weather) sample
   dogfoods: it boots a harness and installs the package through
   `plugin_install`, so every tag proves the package installs cleanly.
+- A package can extend or correct model metadata by registering a hidden tool
+  with `x-models-source: {version: 1, priority: ...}`. The `models` component
+  discovers it automatically and applies its JSON Merge Patch while that
+  component is present. See [MODELS.md](MODELS.md#source-plugins).
 
 ## Recovery — `--recover`
 
@@ -326,7 +340,7 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
-                 # test-plugins, test-observe, test-logfile,
+                 # test-plugins, test-models, test-observe, test-logfile,
                  # test-core, test-cli, test-smoke
 ```
 

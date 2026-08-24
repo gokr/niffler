@@ -50,8 +50,8 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run up down status \
         test test-bash test-store test-builder test-console test-plugins \
-        test-observe test-logfile test-core test-cli test-hashline \
-        test-smoke smoke dev clean \
+        test-models test-observe test-logfile test-core test-cli test-hashline \
+        test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
 
@@ -117,6 +117,9 @@ var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm-openai && go build -o ../../var/bin/llm-openai .'
 
+var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/models && go build -o ../../var/bin/models .'
+
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
@@ -125,7 +128,7 @@ components:
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/builder var/bin/plugins var/bin/observe var/bin/logfile var/bin/console \
-	var/bin/cli var/bin/llm-openai var/bin/llm
+	var/bin/cli var/bin/llm-openai var/bin/models var/bin/llm
 
 build: components
 
@@ -187,7 +190,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # test targets may run concurrently with each other and a live harness.
 # Individual: make test-bash, test-store,
 # test-builder, test-console, test-plugins, test-core, test-cli,
-# test-observe, test-logfile, test-hashline, test-smoke.
+# test-observe, test-logfile, test-models, test-hashline, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -195,7 +198,7 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/$*.nim
 
-test: build $(TEST_BINS)
+test: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
 		env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./$$t || exit 1; \
@@ -209,11 +212,18 @@ test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core
 test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
 test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile
+test-models:  build var/bin/test_t_models  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_models
 test-cli:     build var/bin/test_t_cli     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli
 test-hashline: build var/bin/test_t_hashline ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hashline
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 
 smoke: test-smoke  # legacy alias
+
+# Go unit tests (models, llm, sdk) — no shared runtime state, part of `make test`.
+gotest:
+	cd sdk/go && go test ./... && go vet ./...
+	cd components/models && go test ./... && go vet ./...
+	cd components/llm && go test ./... && go vet ./...
 
 up: all
 	./scripts/niffler.sh up

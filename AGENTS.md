@@ -17,8 +17,7 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `hashline-edit`, `observe`, `logfile`, `llm` are peers. Adding a
-  capability = write source → `builder.build`
+  `plugins`, `hashline-edit`, `observe`, `logfile`, `models`, `llm` are peers. Adding a capability = write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
@@ -62,10 +61,12 @@ make up               # single command: ensure bus + core, then open the UI
 make down             # stop what `make up` started (UI, core, spawned bus)
 make status
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_observe,
+                      # t_builder, t_console, t_plugins, t_models, t_observe,
                       # t_logfile, t_core, t_cli, t_hashline — each
                       # owns a private NATS server + temporary NIF_ROOT, so
                       # component targets can overlap a live harness
+make gotest           # Go unit tests + vet: sdk/go, components/models, llm
+                      # (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)

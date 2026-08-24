@@ -21,10 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 	sdk "niffler.dev/sdk"
@@ -35,7 +37,7 @@ import (
 //
 // The default provider comes from NIF_OPENAI_* (base url, key, model).
 // Named providers come from NIF_LLM_PROVIDERS: a JSON object mapping a
-// nickname to {baseUrl, apiKey, model, context}, e.g. OpenRouter, a local
+// nickname to {baseUrl, apiKey, model, context, catalog}, e.g. OpenRouter, a local
 // vLLM or a second DeepSeek workspace. A chat call picks one with the
 // `provider` arg; `model` still overrides the provider's default.
 
@@ -44,6 +46,7 @@ type provider struct {
 	APIKey  string `json:"apiKey"`
 	Model   string `json:"model"`
 	Context int    `json:"context"`
+	Catalog string `json:"catalog"`
 }
 
 const defaultProvider = "default"
@@ -56,9 +59,10 @@ var knownContext = map[string]int{
 	"deepseek-reasoner": 1000000,
 }
 
-// contextWindow returns the context size for a model: per-provider context
-// override → NIF_OPENAI_CONTEXT env override → built-in table → default.
-func contextWindow(p provider, model string) int {
+// contextWindow returns the context size for a model: explicit overrides,
+// the models component's effective catalog, the local fallback, then default.
+// ctx bounds the catalog lookup (and is canceled when the caller aborts).
+func contextWindow(ctx context.Context, c *sdk.Component, p provider, providerName, model string) int {
 	if p.Context > 0 {
 		return p.Context
 	}
@@ -67,10 +71,54 @@ func contextWindow(p provider, model string) int {
 			return n
 		}
 	}
+	catalogProvider := p.Catalog
+	if catalogProvider == "" {
+		catalogProvider = inferCatalogProvider(providerName, p.BaseURL, model)
+	}
+	if catalogProvider != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
+		raw, err := c.RequestContext(lookupCtx, "models", "models_get", map[string]any{
+			"provider": catalogProvider, "model": model,
+		})
+		if err == nil {
+			var descriptor struct {
+				Model struct {
+					Limit struct {
+						Context int `json:"context"`
+					} `json:"limit"`
+				} `json:"model"`
+			}
+			if json.Unmarshal(raw, &descriptor) == nil && descriptor.Model.Limit.Context > 0 {
+				return descriptor.Model.Limit.Context
+			}
+		}
+	}
 	if c, ok := knownContext[strings.ToLower(model)]; ok {
 		return c
 	}
 	return defaultContext
+}
+
+func inferCatalogProvider(providerName, baseURL, model string) string {
+	if parsed, err := url.Parse(baseURL); err == nil {
+		host := strings.ToLower(parsed.Hostname())
+		switch {
+		case host == "api.deepseek.com" || strings.HasSuffix(host, ".deepseek.com"):
+			return "deepseek"
+		case host == "openrouter.ai" || strings.HasSuffix(host, ".openrouter.ai"):
+			return "openrouter"
+		case host == "api.openai.com" || strings.HasSuffix(host, ".openai.com"):
+			return "openai"
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(model), "deepseek-") {
+		return "deepseek"
+	}
+	if providerName != defaultProvider {
+		return providerName
+	}
+	return ""
 }
 
 func loadProviders() (map[string]provider, error) {
@@ -87,6 +135,7 @@ func loadProviders() (map[string]provider, error) {
 			BaseURL: base,
 			APIKey:  os.Getenv("NIF_OPENAI_API_KEY"),
 			Model:   model,
+			Catalog: os.Getenv("NIF_OPENAI_PROVIDER"),
 		},
 	}
 	if v := os.Getenv("NIF_LLM_PROVIDERS"); v != "" {
@@ -158,13 +207,32 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	cfg.BaseURL = p.BaseURL
 	client := openai.NewClientWithConfig(cfg)
 
-	if args.Stream {
-		return chatStream(c, client, model, args, p)
+	// The cancellation side-channel is subscribed before the context-window
+	// lookup: a cancel published during that window must still abort the
+	// stream (NATS events are not durable).
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	var unsub func()
+	if args.Stream && args.SessionID != "" {
+		var err error
+		unsub, err = c.Subscribe("llm.cancel."+args.SessionID, func(subject string, payload json.RawMessage) {
+			streamCancel()
+		})
+		if err != nil {
+			return nil, err
+		}
+		defer unsub()
 	}
-	return chatOnce(client, model, args, p)
+
+	contextSize := contextWindow(streamCtx, c, p, key, model)
+
+	if args.Stream {
+		return chatStream(streamCtx, c, client, model, args, contextSize)
+	}
+	return chatOnce(client, model, args, contextSize)
 }
 
-func chatOnce(client *openai.Client, model string, args chatArgs, p provider) (any, error) {
+func chatOnce(client *openai.Client, model string, args chatArgs, contextSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model:    model,
 		Messages: args.Messages,
@@ -177,28 +245,15 @@ func chatOnce(client *openai.Client, model string, args chatArgs, p provider) (a
 		return nil, errors.New("no choices in llm response")
 	}
 	msg := resp.Choices[0].Message
-	return resultJSON(resp.Model, contextWindow(p, model), msg.Content,
+	return resultJSON(resp.Model, contextSize, msg.Content,
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
 
-func chatStream(c *sdk.Component, client *openai.Client, model string, args chatArgs, p provider) (any, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model string, args chatArgs, contextSize int) (any, error) {
+	// chatHandler owns the llm.cancel.<sessionId> side-channel subscription;
+	// this derivation just bounds this call to that shared context.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	// Cancellation side-channel: llm.cancel.<sessionId>. The SDK's regular
-	// event handlers are serialized behind the component mutex, so the
-	// streaming handler subscribes on its own goroutine (sdk.Subscribe).
-	var unsub func()
-	if args.SessionID != "" {
-		var err error
-		unsub, err = c.Subscribe("llm.cancel."+args.SessionID, func(subject string, payload json.RawMessage) {
-			cancel()
-		})
-		if err != nil {
-			return nil, err
-		}
-		defer unsub()
-	}
 
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:         model,
@@ -269,7 +324,7 @@ func chatStream(c *sdk.Component, client *openai.Client, model string, args chat
 			calls[idx].Function.Arguments += tc.Function.Arguments
 		}
 	}
-	return resultJSON(usedModel, contextWindow(p, model), content.String(),
+	return resultJSON(usedModel, contextSize, content.String(),
 		reasoning.String(), calls, usage, usageSeen)
 }
 
@@ -326,7 +381,7 @@ func main() {
 			"stream": map[string]any{"type": "boolean",
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
 		},
-		"required": []string{"messages"},
+		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},
 	}, chatHandler)
 	if err := comp.Run(); err != nil {

@@ -30,6 +30,7 @@ task all-internal, "Unlocked internal build — invoke through `all` (or the Mak
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."
+  exec "cd components/models && go build -o ../../var/bin/models ."
   exec "cd components/llm && go build -o ../../var/bin/llm ."
 
 task all, "Build core and all shipped components (whole generation under the shared build lock)":

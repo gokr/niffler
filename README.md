@@ -17,6 +17,7 @@ core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
                      ├── observe + logfile (Nim SDK)
+                     ├── models (Go SDK)     ← pluggable model catalog
                      ├── hashline-edit (Nim SDK)
                      ├── llm (Go SDK)
                      └── your tool (any language with an SDK port)
@@ -27,9 +28,9 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 adapter — is a separate process component with its own language's SDK.
 
 The shipped set proves the multi-language point: `bash`, `builder`,
-`store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli` and
-`console` are written
-against the Nim SDK, while the LLM adapter `llm` is deliberately in Go —
+`store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli` and `console` are written
+against the Nim SDK, while the model catalog `models` and LLM adapter `llm`
+are deliberately in Go —
 and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
 any of the three languages mid-conversation.
 
@@ -113,7 +114,7 @@ automatically by nimble on the first build (`make build`).
 | `make down` | stop UI, core and the bus core spawned |
 | `make status` | show what is running where |
 | `make run` | the harness with the tty admin shell (status commands) |
-| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-observe` and `test-logfile` |
+| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
@@ -156,7 +157,7 @@ sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          bash, builder, store, plugins, hashline-edit, cli,
-                     console, observe, logfile (Nim), llm (Go)
+                     console (Nim), models + llm (Go)
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -281,6 +282,10 @@ to CI any plugin repo — Niffler testing itself.
       builds from source via the builder (or `file://` local repos for
       hermetic installs), spawn/update/remove, store records;
       live-tested end-to-end with `gokr/niffler-weather`
+- [x] **models component** — models.dev baseline with an embedded offline seed,
+      validated atomic cache, strict model resolution, searchable capabilities/
+      limits/pricing, and deterministic `x-models-source` plugin patches with
+      last-known-good fallback; `llm` consumes its context metadata
 - [x] **observe component** — one exact raw-bus tap, bounded live ring and
       listen/trace probes, request/reply correlation, safe capture exports,
       and core-discovered nats-server monitoring
@@ -297,7 +302,7 @@ to CI any plugin repo — Niffler testing itself.
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
       concurrent session requests are stashed, never nested
 - [x] **bus-contract test suite** — `make test`: one script per non-LLM
-      component (bash, store, builder, console, plugins, observe, logfile, core, cli), each
+      component (including models, observe, logfile, hashline-edit), each
       booting the real binaries over its own NATS; hermetic plugin installs
       via `file://`; network opt-ins behind `NIF_TEST_INSTALL`/`NIF_TEST_NETWORK`
 - [x] **streaming** — `llm` adapter streams `ev.llm.token` deltas (content

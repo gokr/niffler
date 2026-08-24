@@ -33,6 +33,13 @@ components:
     required: false
     restart: on-failure
 
+  - name: models
+    build: {lang: go, src: components/models}
+    binary: var/bin/models
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: llm
     build: {lang: go, src: components/llm}
     binary: var/bin/llm

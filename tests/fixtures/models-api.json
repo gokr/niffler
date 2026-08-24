@@ -1,0 +1,49 @@
+{
+  "deepseek": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "env": ["DEEPSEEK_API_KEY"],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://api.deepseek.com",
+    "models": {
+      "deepseek-chat": {
+        "id": "deepseek-chat",
+        "name": "DeepSeek Chat",
+        "family": "deepseek",
+        "reasoning": false,
+        "tool_call": true,
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "limit": {"context": 100000, "output": 8192},
+        "cost": {"input": 0.1, "output": 0.2}
+      },
+      "deepseek-reasoner": {
+        "id": "deepseek-reasoner",
+        "name": "DeepSeek Reasoner",
+        "family": "deepseek-thinking",
+        "reasoning": true,
+        "tool_call": true,
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "limit": {"context": 200000, "output": 16384},
+        "cost": {"input": 0.2, "output": 0.4}
+      }
+    }
+  },
+  "gateway": {
+    "id": "gateway",
+    "name": "Test Gateway",
+    "env": [],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://gateway.invalid/v1",
+    "models": {
+      "deepseek-chat": {
+        "id": "deepseek-chat",
+        "name": "Gateway DeepSeek Chat",
+        "reasoning": false,
+        "tool_call": true,
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "limit": {"context": 64000, "output": 4096},
+        "cost": {"input": 0, "output": 0}
+      }
+    }
+  }
+}

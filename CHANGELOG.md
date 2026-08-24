@@ -8,6 +8,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **models component** — a Go component serving the models.dev provider/
+  model catalog over the bus (docs/MODELS.md): embedded offline seed,
+  validated atomic cache with last-known-good fallback, strict model
+  resolution, searchable capabilities/limits/pricing, and deterministic
+  `x-models-source` plugin patches (RFC 7396 JSON Merge Patch) discovered
+  automatically from other registered components; refreshes publish
+  `ev.models.updated`. `llm` resolves each model's context window through
+  the catalog (per-provider override → `NIF_OPENAI_CONTEXT` → catalog →
+  built-in fallback), so core's context guard uses real provider metadata.
 - **isolated concurrent tests** — every bus-contract test owns a
   NATS-assigned loopback port and writable temporary `NIF_ROOT`; core tests
   snapshot only their required binaries, agent-built Nim components use a

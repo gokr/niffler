@@ -42,6 +42,7 @@ svc.<component>.call   # queue-grouped request/reply (one replica handles each c
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content} — one turn; emits ev.session.*
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
+                       # models.updated reports effective model-catalog refreshes
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
 
