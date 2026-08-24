@@ -120,9 +120,9 @@
         <span class="block truncate">{s.value.title || short(s.id)}</span>
         <span class="flex items-center justify-between text-[11px] text-ink-400">
           {when(s.value.createdAt)}
-          <span class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <span class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
-              class="rounded px-1 hover:bg-ink-600 hover:text-ink-200"
+              class="min-w-7 h-7 flex items-center justify-center rounded-md px-2 text-[13px] leading-none hover:bg-ink-600 hover:text-ink-200"
               title="Rename"
               onclick={(e) => {
                 e.stopPropagation();
@@ -132,7 +132,7 @@
               ✎
             </button>
             <button
-              class="rounded px-1 hover:bg-ink-600"
+              class="min-w-7 h-7 flex items-center justify-center rounded-md px-2 text-[13px] leading-none hover:bg-ink-600"
               class:text-danger={confirmId === s.id}
               class:text-ink-400={confirmId !== s.id}
               title={confirmId === s.id ? "Click again to delete" : "Delete session"}
