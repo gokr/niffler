@@ -2,14 +2,15 @@
 
 Everything you need to operate, configure and recover a Niffler harness.
 Design rationale: [REBOOT.md](REBOOT.md) · wire protocol: [WIRE.md](WIRE.md) ·
-architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
+architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · observation/logging:
+[OBSERVE.md](OBSERVE.md).
 
 ## Layout of a running system
 
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `cli`, `console` (Nim), `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli`, `console` (Nim), `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -17,6 +18,8 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
 | `var/barrel-db` | the store's embedded KV file — **single-writer**: exactly one `store` process may open it |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
+| `var/nats-monitor-url` | HTTP monitoring endpoint when core spawned the bus; absent for reused/remote buses |
+| `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports ([OBSERVE.md](OBSERVE.md)) |
 | `var/nats-url`, `var/core.log` | written by `scripts/niffler.sh` when `make up` starts core |
 | `var/.niffler.up` | state file of `scripts/niffler.sh` (core pid, whether core spawned the bus) |
 | `var/build/` | source files of agent-built components (builder's scratch dir) |
@@ -34,6 +37,8 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md).
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
+| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring ([OBSERVE.md](OBSERVE.md)) |
+| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search ([OBSERVE.md](OBSERVE.md)) |
 
 ### Session runners
 
@@ -64,10 +69,27 @@ env always wins — see below) and inherit core's environment. The full set:
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` on a random loopback port and writes `var/nats-url` | auto |
+| `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 | unset |
 | `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |
 | `NIF_OPENAI_BASE_URL` | OpenAI-compatible endpoint | `https://api.openai.com/v1` |
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
 | `NIF_OPENAI_CONTEXT` | context window (tokens) the llm reports to core's context guard | `llm`'s small built-in table (DeepSeek: 1M), else `128000` |
+| `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
+| `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
+| `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
+| `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message | `65536` |
+| `NIF_OBSERVE_MAX_PROBES` | active + stopped probes retained at once | `32` |
+| `NIF_OBSERVE_PROBE_BYTES` | retained bytes per probe | `2097152` |
+| `NIF_OBSERVE_CAPTURE_DIR` | confined directory for `observe_dump` | `$NIF_ROOT/var/captures` |
+| `NIF_OBSERVE_CAPTURE_BYTES` | aggregate generated-capture quota; oldest files are pruned | `67108864` |
+| `NIF_OBSERVE_MONITOR_URL` | explicit nats-server HTTP endpoint for an external/reused bus | core discovery file |
+| `NIF_LOGFILE_DIR` | JSONL output directory | `$NIF_ROOT/var/logs` |
+| `NIF_LOGFILE_SUBJECTS` | comma-separated NATS patterns to persist | `ev.log.>` |
+| `NIF_LOGFILE_MAX_BYTES` | active bytes per JSONL file before rotation | `10485760` |
+| `NIF_LOGFILE_KEEP` | retained rotated generations (`0` disables) | `5` |
+| `NIF_LOGFILE_MAX_FILES` | component-specific files before fallback to `bus.jsonl` | `64` |
+| `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search` | `16777216` |
+| `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
 
 Every Niffler variable carries the `NIF_` prefix, so the harness never
@@ -150,7 +172,8 @@ install from local git repos (hermetic tests, mirrors).
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
 `bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
-`plugin_install`, `plugin_update`, `plugin_remove` — are
+`plugin_install`, `plugin_update`, `plugin_remove`, `observe_send`,
+`observe_request`, `observe_dump` — are
 gated on a human before they execute:
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
@@ -303,7 +326,8 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
-                 # test-plugins, test-core, test-cli, test-smoke
+                 # test-plugins, test-observe, test-logfile, test-core,
+                 # test-cli, test-smoke
 ```
 
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
@@ -315,13 +339,15 @@ require **no other harness running** against this repo's `var/barrel-db`
 runs `plugin_search` against GitHub and the TypeScript builder build
 (npm registry). The install pipeline itself is covered hermetically by
 `t_plugins` via a local `file://` git repo.
+Observe/logfile tests use temporary output directories and never delete the
+developer's `var/logs` or `var/captures`.
 
 ## Common tasks
 
 ```bash
 make up          # build (incremental), ensure bus + core, open the UI
 make run         # the harness with the tty admin shell (status commands)
-make test        # the bus-contract suite (8 tests, each spawns its own bus)
+make test        # the bus-contract suite (each test spawns its own bus)
 make status      # what is running where
 make down        # stop UI, core, and the bus core spawned
 make doctor      # check prerequisites

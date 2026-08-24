@@ -23,6 +23,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `catalog`, `tools`, `sessions`, `exit`, with arrow-key history and tab
   completion. The LLM chat lives in the web UI and the `niffler-tui`
   plugin; scripting goes through the `cli` component.
+- **observe component** — bounded live inspection of the raw NATS bus:
+  subject discovery, token-correct listen probes, request/reply traces,
+  recent structured logs, safe capture exports, and server monitoring.
+  Arbitrary event publishing and service requests are approval-gated.
+- **logfile component + SDK logging** — all SDKs publish thresholded
+  `ev.log.<component>` events; logfile persists them as rotating JSONL with
+  bounded newest-first search, lossless whole-bus JSON capture, retention,
+  and write-health reporting. Raw SDK taps now dispatch exactly once per
+  NATS subscription.
 - **UI: components panel** — the sidebar now lists the live bus
   components and their tools (name, version, pid, registration time,
   language/source where known), fed by `ev.catalog.updated`.

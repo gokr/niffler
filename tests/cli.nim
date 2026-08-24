@@ -103,7 +103,7 @@ proc main() =
     let st = natsConnection_Request(addr msg, nc.conn,
                                     "svc.core.call".cstring,
                                     data.cstring, data.len.cint,
-                                    3000 * 1_000_000)
+                                    3000)
     if st == NATS_OK:
       let r = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)

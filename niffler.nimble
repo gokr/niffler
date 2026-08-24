@@ -25,6 +25,8 @@ task all, "Build core and all shipped components":
   exec "nim c --hints:off --path:sdk -o:var/bin/hashline-edit components/hashline-edit/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/builder components/builder/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/plugins components/plugins/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/observe components/observe/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/logfile components/logfile/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."

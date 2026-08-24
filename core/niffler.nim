@@ -5,7 +5,8 @@
 ## set → serve svc.core.call (tty stdin becomes the admin shell, core/tty.nim).
 ## Core speaks exactly one protocol.
 
-import std/[json, net, os, osproc, sequtils, streams, strutils, tables, terminal, times]
+import std/[json, os, osproc, sequtils, streams, strutils, tables, tempfiles,
+            terminal, times]
 import yaml/tojson
 import natswrapper
 when defined(posix):
@@ -32,19 +33,34 @@ proc openNatsLib() =
       raise newException(IOError, "nats_Open: " & getErrorString(st))
     natsLib = true
 
-proc pickNatsPort(): int =
-  ## Prefer the well-known port (the UI's default); fall back to any free port.
-  var s = newSocket()
-  try:
-    s.bindAddr(Port(4222))
-    s.close()
-    return 4222
-  except CatchableError:
-    discard
-  var s2 = newSocket()
-  s2.bindAddr(Port(0))
-  result = int(s2.getLocalAddr()[1])
-  s2.close()
+proc spawnNats(): tuple[process: Process, url, monitorUrl: string] =
+  ## NATS owns port allocation, so concurrent harnesses cannot win the same
+  ## bind-close-start race. The ports file is needed only during startup.
+  let portsDir = createTempDir("niffler-nats-", "")
+  result.process = startProcess("nats-server",
+    args = ["-a", "127.0.0.1", "-p", "-1", "-m", "-1",
+            "--ports_file_dir", portsDir],
+    options = {poUsePath})
+  for i in 0 ..< 200:
+    for path in walkFiles(portsDir / "*.ports"):
+      try:
+        let ports = parseFile(path)
+        if ports{"nats"} != nil and ports{"nats"}.len > 0:
+          result.url = ports{"nats"}[0].getStr("")
+        if ports{"monitoring"} != nil and ports{"monitoring"}.len > 0:
+          result.monitorUrl = ports{"monitoring"}[0].getStr("")
+      except CatchableError:
+        discard
+    if result.url.len > 0 and result.monitorUrl.len > 0:
+      break
+    if result.process.peekExitCode() != -1:
+      break
+    sleep(20)
+  removeDir(portsDir)
+  if result.url.len == 0 or result.monitorUrl.len == 0:
+    if result.process.running(): result.process.terminate()
+    result.process.close()
+    raise newException(IOError, "spawned nats-server did not publish its ports")
 
 proc connectWithRetry(url: string, tries = 40): NatsConnection =
   var lastErr = ""
@@ -104,29 +120,48 @@ proc main() =
   # --- 1. NATS: env/.env → try the default port → spawn if needed ---------
   var natsUrl = getEnv("NIF_NATS_URL")
   var serverProc: Process = nil
+  var monitorUrl = ""
   if natsUrl.len == 0:
     # default: prefer a bus already running on 4222; only spawn when absent
     let defaultUrl = "nats://127.0.0.1:4222"
-    try:
-      var probe = connect(defaultUrl)
-      probe.close()
-      natsUrl = defaultUrl
-      echo "core: using bus at " & natsUrl
-    except CatchableError:
-      let port = pickNatsPort()
-      natsUrl = "nats://127.0.0.1:" & $port
-      echo "core: spawning nats-server on port " & $port
-      serverProc = startProcess("nats-server", args = ["-p", $port],
-                                options = {poUsePath})
+    var spawnBus = getEnv("NIF_NATS_SPAWN") == "1"
+    if not spawnBus:
+      try:
+        var probe = connect(defaultUrl)
+        probe.close()
+        natsUrl = defaultUrl
+        echo "core: using bus at " & natsUrl
+      except CatchableError:
+        spawnBus = true
+    if spawnBus:
+      let spawned = spawnNats()
+      serverProc = spawned.process
+      natsUrl = spawned.url
+      monitorUrl = spawned.monitorUrl
+      echo "core: spawned nats-server at " & natsUrl &
+           " (monitoring " & monitorUrl & ")"
   os.putEnv("NIF_NATS_URL", natsUrl)  # children inherit the bus address
-  # discovery file for UIs: the bridge reads var/nats-url when NIF_NATS_URL unset
+  var nc: NatsConnection
+  try:
+    nc = connectWithRetry(natsUrl)
+  except CatchableError:
+    if serverProc != nil:
+      serverProc.terminate()
+      serverProc.close()
+    raise
+  echo "core: connected to " & natsUrl
+  # Publish discovery only after the bus is reachable; failed starts must not
+  # leave a plausible but stale monitor endpoint behind.
   try:
     createDir(root / "var")
     writeFile(root / "var" / "nats-url", natsUrl & "\n")
+    let monitorPath = root / "var" / "nats-monitor-url"
+    if monitorUrl.len > 0:
+      writeFile(monitorPath, monitorUrl & "\n")
+    else:
+      removeFile(monitorPath)
   except CatchableError:
     discard
-  let nc = connectWithRetry(natsUrl)
-  echo "core: connected to " & natsUrl
 
   # recover: the repo is the snapshot — rebuild var/bin from source first
   if recovering:

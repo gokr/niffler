@@ -100,6 +100,8 @@ The mechanisms that *are* components, and the capability they carry:
 | `bash` | execution | general-purpose machine access |
 | `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
 | `hashline-edit` | editing | hash-anchored read/replace/undo for files the model has seen |
+| `observe` | live introspection | bounded raw-bus ring, targeted probes/traces, and server monitoring |
+| `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |
 
 The pattern: state, access, build, and exec are all replaceable peers. If a
 mechanism can be rebuilt by the agent at runtime, it must be one.

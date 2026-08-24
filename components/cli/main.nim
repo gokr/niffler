@@ -52,7 +52,7 @@ proc seedCatalog(nc: NatsConnection) =
   let data = callEnvelope("catalog", %*{"op": "components"}).encode()
   var msg: ptr natsMsg
   let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call".cstring,
-                                  data.cstring, data.len.cint, 5_000 * 1_000_000)
+                                  data.cstring, data.len.cint, 5_000)
   if st != NATS_OK: return
   let r = decode($natsMsg_GetData(msg))
   natsMsg_Destroy(msg)
@@ -113,7 +113,7 @@ proc callTool(nc: NatsConnection, tool: string, args: JsonNode,
   var msg: ptr natsMsg
   let st = natsConnection_Request(addr msg, nc.conn,
     ("svc." & comp & ".call").cstring, data.cstring, data.len.cint,
-    timeoutMs.int64 * 1_000_000)
+    timeoutMs.int64)
   if st == NATS_TIMEOUT:
     raise newException(IOError,
       "call " & tool & " timed out after " & $timeoutMs & "ms")

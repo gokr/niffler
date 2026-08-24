@@ -92,6 +92,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
   of "catalog":
+    # A late-joining client seeds from this snapshot. Drain registrations that
+    # arrived before its request so the snapshot cannot lag the live bus.
+    ct.cat.pump()
     if args{"op"}.getStr("") == "list":
       return %*{"tools": ct.cat.allTools()}
     if args{"op"}.getStr("") == "components":

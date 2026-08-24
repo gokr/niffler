@@ -76,7 +76,7 @@ proc main() =
   let data = callEnv.encode()
   var reply: ptr natsMsg
   let r = natsConnection_Request(addr reply, nc.conn, "svc.bash.call".cstring,
-                                 data.cstring, data.len.cint, 15000 * 1_000_000)
+                                 data.cstring, data.len.cint, 15000)
   if r != NATS_OK:
     echo "FAIL: request: " & getErrorString(r)
     quit(1)
@@ -123,7 +123,7 @@ proc main() =
                                        "value": %*{"hello": "world"}})
     let data2 = putEnv.encode()
     let r2 = natsConnection_Request(addr msg, nc.conn, "svc.store.call".cstring,
-                                    data2.cstring, data2.len.cint, 5000 * 1_000_000)
+                                    data2.cstring, data2.len.cint, 5000)
     if r2 == NATS_OK:
       let resp2 = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
@@ -143,7 +143,7 @@ proc main() =
     let env = callEnvelope(tool, args)
     let data = env.encode()
     let r = natsConnection_Request(addr msg, nc.conn, "svc.store.call".cstring,
-                                   data.cstring, data.len.cint, 5000 * 1_000_000)
+                                   data.cstring, data.len.cint, 5000)
     if r != NATS_OK:
       echo "FAIL: store " & tool & ": " & getErrorString(r)
       quit(1)

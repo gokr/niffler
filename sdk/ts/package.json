@@ -5,6 +5,12 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node test/logging.test.js",
+    "prepare": "npm run build"
+  },
   "dependencies": {
     "nats": "^2.29.0"
   },

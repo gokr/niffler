@@ -16,6 +16,7 @@ starts it via `core.spawn` — mid-conversation. Design rationale:
 core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
+                     ├── observe + logfile (Nim SDK)
                      ├── hashline-edit (Nim SDK)
                      ├── llm (Go SDK)
                      └── your tool (any language with an SDK port)
@@ -26,13 +27,15 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 adapter — is a separate process component with its own language's SDK.
 
 The shipped set proves the multi-language point: `bash`, `builder`,
-`store`, `plugins`, `hashline-edit`, `cli` and `console` are written
+`store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli` and
+`console` are written
 against the Nim SDK, while the LLM adapter `llm` is deliberately in Go —
 and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
 any of the three languages mid-conversation.
 
 Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
-bus, approvals, recovery, troubleshooting). Changelog:
+bus, approvals, recovery, troubleshooting). Observation and logs:
+[docs/OBSERVE.md](docs/OBSERVE.md). Changelog:
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Quickstart
@@ -110,7 +113,7 @@ automatically by nimble on the first build (`make build`).
 | `make down` | stop UI, core and the bus core spawned |
 | `make status` | show what is running where |
 | `make run` | the harness with the tty admin shell (status commands) |
-| `make test` | the bus-contract test suite (8 tests, each spawns its own bus) — `make test-<comp>` runs one: test-bash, test-store, test-builder, test-console, test-plugins, test-core, test-cli, test-smoke |
+| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-observe` and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
@@ -152,7 +155,7 @@ sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          bash, builder, store, plugins, hashline-edit, cli,
-                     console (Nim), llm (Go)
+                     console, observe, logfile (Nim), llm (Go)
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -277,6 +280,12 @@ to CI any plugin repo — Niffler testing itself.
       builds from source via the builder (or `file://` local repos for
       hermetic installs), spawn/update/remove, store records;
       live-tested end-to-end with `gokr/niffler-weather`
+- [x] **observe component** — one exact raw-bus tap, bounded live ring and
+      listen/trace probes, request/reply correlation, safe capture exports,
+      and core-discovered nats-server monitoring
+- [x] **logfile component** — structured `ev.log.*` events across all SDKs,
+      rotating JSONL persistence, bounded newest-first search, raw whole-bus
+      capture, and explicit sink-health reporting
 - [x] **console component** — passive bus viewer: subscribes to everything
       and renders the wire traffic readably (run it in a second terminal)
 - [x] **cli component** — drive the harness from a terminal or a script
@@ -287,7 +296,7 @@ to CI any plugin repo — Niffler testing itself.
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
       concurrent session requests are stashed, never nested
 - [x] **bus-contract test suite** — `make test`: one script per non-LLM
-      component (bash, store, builder, console, plugins, core, cli), each
+      component (bash, store, builder, console, plugins, observe, logfile, core, cli), each
       booting the real binaries over its own NATS; hermetic plugin installs
       via `file://`; network opt-ins behind `NIF_TEST_INSTALL`/`NIF_TEST_NETWORK`
 - [x] **streaming** — `llm` adapter streams `ev.llm.token` deltas (content

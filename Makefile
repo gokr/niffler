@@ -26,7 +26,7 @@ SUDO    := $(if $(filter 0,$(shell id -u)),,sudo)
 # a change in the SDK rebuilds everything that imports it
 SDK_NIM  := $(wildcard sdk/*.nim sdk/niffler/*.nim)
 CORE_NIM := $(wildcard core/*.nim)
-SDK_GO   := $(wildcard sdk/go/*.go)
+SDK_GO   := $(filter-out %_test.go,$(wildcard sdk/go/*.go)) sdk/go/go.mod sdk/go/go.sum
 NIM_CONF := config.nims niffler.nimble
 
 # UI sources, excluding generated/installed trees (wailsjs, dist, build, deps)
@@ -43,7 +43,9 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components ui ui-install ui-uninstall run up down status \
-        test smoke dev clean \
+        test test-bash test-store test-builder test-console test-plugins \
+        test-observe test-logfile test-core test-cli test-hashline test-smoke \
+        smoke dev clean \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
 
@@ -94,6 +96,12 @@ var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
 
+var/bin/observe: components/observe/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/observe/main.nim
+
+var/bin/logfile: components/logfile/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	nim c --hints:off --path:sdk -o:$@ components/logfile/main.nim
+
 var/bin/console: components/console/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	nim c --hints:off --path:sdk -o:$@ components/console/main.nim
 
@@ -107,7 +115,8 @@ var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum 
 	cd components/llm && go build -o ../../var/bin/llm .
 
 components: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
-	var/bin/builder var/bin/plugins var/bin/console var/bin/cli var/bin/llm-openai var/bin/llm
+	var/bin/builder var/bin/plugins var/bin/observe var/bin/logfile var/bin/console \
+	var/bin/cli var/bin/llm-openai var/bin/llm
 
 build: components
 
@@ -167,7 +176,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # sequentially (each boots its own NATS; none may run while a harness is
 # using this repo's var/barrel-db). Individual: make test-bash, test-store,
 # test-builder, test-console, test-plugins, test-core, test-cli,
-# test-hashline, test-smoke.
+# test-observe, test-logfile, test-hashline, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -187,6 +196,8 @@ test-builder: build var/bin/test_t_builder ; NIF_ROOT=$(ROOT) ./var/bin/test_t_b
 test-console: build var/bin/test_t_console ; NIF_ROOT=$(ROOT) ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; NIF_ROOT=$(ROOT) ./var/bin/test_t_plugins
 test-core:    build var/bin/test_t_core    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_core
+test-observe: build var/bin/test_t_observe ; NIF_ROOT=$(ROOT) ./var/bin/test_t_observe
+test-logfile: build var/bin/test_t_logfile ; NIF_ROOT=$(ROOT) ./var/bin/test_t_logfile
 test-cli:     build var/bin/test_t_cli     ; NIF_ROOT=$(ROOT) ./var/bin/test_t_cli
 test-hashline: build var/bin/test_t_hashline ; NIF_ROOT=$(ROOT) ./var/bin/test_t_hashline
 test-smoke:   build var/bin/test_smoke     ; NIF_ROOT=$(ROOT) ./var/bin/test_smoke

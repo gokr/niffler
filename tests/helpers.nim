@@ -82,7 +82,7 @@ proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
   let st = natsConnection_Request(addr msg, nc.conn,
                                   ("svc." & comp & ".call").cstring,
                                   data.cstring, data.len.cint,
-                                  timeoutMs.int64 * 1_000_000)
+                                  timeoutMs.int64)
   if st == NATS_TIMEOUT:
     return %*{"error": "timeout"}
   if not checkStatus(st):

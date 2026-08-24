@@ -47,6 +47,22 @@ components:
     required: false
     restart: on-failure
 
+  # Observation (docs/OBSERVE.md): observe = live ring + probes + send/
+  # trace tools; logfile = durable JSONL sink for ev.log.* events.
+  - name: observe
+    build: {lang: nim, src: components/observe/main.nim}
+    binary: var/bin/observe
+    autostart: true
+    required: false
+    restart: on-failure
+
+  - name: logfile
+    build: {lang: nim, src: components/logfile/main.nim}
+    binary: var/bin/logfile
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Minimal example adapter (same tool contract, no streaming). Swap it
   # back in place of `llm` to test: comment out llm, uncomment llm-openai.
   # - name: llm-openai
