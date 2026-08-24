@@ -119,10 +119,11 @@ automatically by nimble on the first build (`make build`).
 | `make clean` | remove all build artifacts |
 
 **Testing.** `make test` runs the whole suite: one script per non-LLM
-component, each booting the real binaries and driving them over the bus
-(the envelope is the artifact — the same harness tests Nim and Go
-components). Core-based tests need no other harness running (store
-single-writer). Opt-ins: `NIF_TEST_INSTALL=1` installs
+component, each booting a private NATS server and driving a snapshot of the
+real binaries over the bus (the envelope is the artifact — the same harness
+tests Nim and Go components). Writable state lives under a unique temporary
+`NIF_ROOT`, so component targets may run concurrently with each other and a
+live development harness. Opt-ins: `NIF_TEST_INSTALL=1` installs
 `gokr/niffler-weather` for real and validates its tools; the install
 pipeline itself is covered hermetically via a local `file://` git repo.
 Details in [docs/MANUAL.md](docs/MANUAL.md#testing).

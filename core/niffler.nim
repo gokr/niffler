@@ -108,6 +108,21 @@ proc rebuildShipped(root: string): bool =
       echo "core: recover — cannot run " & tool & ": " & e.msg
   return false
 
+proc stopSpawnedBus(serverProc: var Process) =
+  ## Terminate the bus this core spawned, escalating to SIGKILL, then reap.
+  if serverProc == nil:
+    return
+  if serverProc.running():
+    serverProc.terminate()
+    let deadline = epochTime() + 2.0
+    while serverProc.running() and epochTime() < deadline:
+      sleep(50)
+    if serverProc.running():
+      serverProc.kill()
+      sleep(50)
+  serverProc.close()
+  serverProc = nil
+
 proc main() =
   let recovering = paramCount() >= 1 and paramStr(1) == "--recover"
   if recovering:
@@ -117,9 +132,18 @@ proc main() =
   loadDotEnv(".env", root / ".env")
   openNatsLib()
 
+  # Signal handlers go up before the bus spawn so a SIGTERM during startup
+  # can never leave the spawned nats-server orphaned.
+  when defined(posix):
+    discard signal(SIGTERM, onSig)
+    discard signal(SIGINT, onSig)
+
   # --- 1. NATS: env/.env → try the default port → spawn if needed ---------
   var natsUrl = getEnv("NIF_NATS_URL")
   var serverProc: Process = nil
+  defer:
+    stopSpawnedBus(serverProc)
+    removeFile(root / "var" / "nats-pid")
   var monitorUrl = ""
   if natsUrl.len == 0:
     # default: prefer a bus already running on 4222; only spawn when absent
@@ -145,13 +169,12 @@ proc main() =
   try:
     nc = connectWithRetry(natsUrl)
   except CatchableError:
-    if serverProc != nil:
-      serverProc.terminate()
-      serverProc.close()
+    stopSpawnedBus(serverProc)
     raise
   echo "core: connected to " & natsUrl
   # Publish discovery only after the bus is reachable; failed starts must not
-  # leave a plausible but stale monitor endpoint behind.
+  # leave a plausible but stale monitor endpoint behind. The spawned-bus PID
+  # lets scripts/niffler.sh stop exactly this server later.
   try:
     createDir(root / "var")
     writeFile(root / "var" / "nats-url", natsUrl & "\n")
@@ -160,6 +183,10 @@ proc main() =
       writeFile(monitorPath, monitorUrl & "\n")
     else:
       removeFile(monitorPath)
+    if serverProc != nil:
+      writeFile(root / "var" / "nats-pid", $serverProc.processID & "\n")
+    else:
+      removeFile(root / "var" / "nats-pid")
   except CatchableError:
     discard
 
@@ -190,6 +217,7 @@ proc main() =
   echo "core: waiting for " & required.join(", ") & " ..."
   let deadline = epochTime() + 30
   while epochTime() < deadline:
+    if gStop: break
     cat.pump()
     sup.pump(cat)
     var allIn = true
@@ -253,10 +281,6 @@ proc main() =
   ct.coreSub = coreSub
   echo "core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)"
 
-  when defined(posix):
-    discard signal(SIGTERM, onSig)
-    discard signal(SIGINT, onSig)
-
   if isatty(stdin):
     try:
       runAdminShell(ct,
@@ -279,9 +303,7 @@ proc main() =
   echo "core: shutting down"
   sup.drain()
   cat.nc.close()
-  if serverProc != nil:
-    serverProc.terminate()
-    serverProc.close()
+  stopSpawnedBus(serverProc)
   echo "core: bye"
 
 when isMainModule:

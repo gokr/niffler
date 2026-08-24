@@ -1,6 +1,6 @@
 ## observe tests - raw tap fidelity, bounded probes, tracing, safety, monitoring.
 
-import std/[base64, json, net, os, osproc, streams, strtabs, strutils, times]
+import std/[base64, json, os, osproc, streams, strtabs, strutils, times]
 import natswrapper
 import envelope
 import helpers
@@ -25,26 +25,13 @@ proc waitUntil(predicate: proc(): bool, timeoutMs = 5000): bool =
   predicate()
 
 proc startObserveNats(): tuple[prc: Process, url, monitorUrl: string] =
-  proc freePort(avoid = 0): int =
-    while true:
-      var socket = newSocket()
-      socket.bindAddr(Port(0), "127.0.0.1")
-      result = int(socket.getLocalAddr()[1])
-      socket.close()
-      if result != avoid: return
-  let natsPort = freePort()
-  let monitorPort = freePort(natsPort)
-  result.url = "nats://127.0.0.1:" & $natsPort
-  result.monitorUrl = "http://127.0.0.1:" & $monitorPort
-  result.prc = startProcess("nats-server",
-    args = ["-a", "127.0.0.1", "-p", $natsPort, "-m", $monitorPort],
-    options = {poUsePath})
+  startNatsMonitoring()
 
 proc compileTarget(root, tmp: string): string =
   let source = tmp / "probe_target.nim"
   result = tmp / "probe-target"
   writeFile(source, """
-import std/strutils
+import std/[os, strutils]
 import niffler/sdk
 let comp = newComponent("probe-target", "0.1.0")
 comp.tool:
@@ -60,6 +47,11 @@ comp.tool:
   proc probe_large(): JsonNode =
     ## Return a deliberately oversized result for SDK reply hardening.
     %*{"value": "x".repeat(1_100_000)}
+comp.tool:
+  proc probe_delay(delayMs: int): JsonNode =
+    ## Return after a controlled delay for monotonic trace tests.
+    sleep(delayMs)
+    %*{"delayMs": delayMs}
 comp.run()
 """.strip() & "\n")
   let compiler = startProcess("nim", args = @["c", "--hints:off",
@@ -148,11 +140,9 @@ proc main() =
   let targetBin = compileTarget(root, tmp)
 
   let (server, url, monitorUrl) = startObserveNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
-  defer:
-    nc.close()
-    if server.running(): server.terminate()
-    server.close()
+  defer: nc.close()
 
   var regSub: ptr natsSubscription
   let regStatus = natsConnection_SubscribeSync(addr regSub, nc.conn,
@@ -194,6 +184,23 @@ proc main() =
     response{"value"}.getStr("") == "ready")
   check("probe target registers", targetUp)
   if not registrationSeen or not targetUp: report("OBSERVE TEST")
+
+  let nonCallId = "non-call-envelope"
+  let nonCallData = Envelope(v: 1, id: nonCallId, kind: ekEvent,
+                             payload: %*{}).encode()
+  var nonCallMsg: ptr natsMsg
+  let nonCallStatus = natsConnection_Request(addr nonCallMsg, nc.conn,
+    "svc.probe-target.call", nonCallData.cstring, nonCallData.len.cint, 1000)
+  var nonCallReply: Envelope
+  if checkStatus(nonCallStatus):
+    nonCallReply = envelope.decode($natsMsg_GetData(nonCallMsg))
+    natsMsg_Destroy(nonCallMsg)
+  check("Nim SDK rejects non-call requests immediately",
+        checkStatus(nonCallStatus) and nonCallReply.id == nonCallId and
+        nonCallReply.kind == ekError and
+        nonCallReply.error{"code"}.getStr("") == "bad-envelope",
+        if checkStatus(nonCallStatus): nonCallReply.encode()
+        else: getErrorString(nonCallStatus))
 
   let sendSchema = schemaFor(observeRegistration, "observe_send")
   let requestSchema = schemaFor(observeRegistration, "observe_request")
@@ -311,12 +318,29 @@ proc main() =
   check("trace can be frozen before later diagnostics",
         traceStopped{"stopped"}.getBool(false), $traceStopped)
 
+  let diagnosticTrace = call(nc, "observe", "observe_trace",
+    %*{"component": "probe-target", "toolRegex": "^probe_delay$"})
+  let diagnosticTraceId = diagnosticTrace{"probeId"}.getStr("")
   let requested = call(nc, "observe", "observe_request",
-    %*{"subject": "svc.probe-target.call", "tool": "probe_echo",
-       "args": %*{"value": "requested"}, "timeoutMs": 1000}, 3000)
+    %*{"subject": "svc.probe-target.call", "tool": "probe_delay",
+       "args": %*{"delayMs": 250}, "timeoutMs": 1000}, 3000)
   check("observe_request validates and returns a target result",
         requested{"ok"}.getBool(false) and
-         requested{"value"}{"value"}.getStr("") == "requested", $requested)
+         requested{"value"}{"delayMs"}.getInt(0) == 250, $requested)
+  var diagnosticEvents = newJObject()
+  var tracedElapsedMs = -1.0
+  let diagnosticTraceReady = waitUntil(proc(): bool =
+    diagnosticEvents = call(nc, "observe", "observe_events",
+      %*{"probeId": diagnosticTraceId})
+    if diagnosticEvents{"count"}.getInt(0) != 2: return false
+    for item in diagnosticEvents{"items"}:
+      let envelope = item{"envelope"}
+      if envelope{"direction"}.getStr("") == "reply":
+        tracedElapsedMs = envelope{"elapsedMs"}.getFloat(-1.0)
+    tracedElapsedMs >= 0)
+  check("observe_request keeps taps moving and trace latency is monotonic",
+        diagnosticTraceReady and tracedElapsedMs >= 200 and tracedElapsedMs < 1500,
+        $diagnosticEvents)
 
   let oversizedTrace = call(nc, "observe", "observe_trace",
                              %*{"component": "probe-target"})
@@ -437,13 +461,12 @@ proc main() =
 
   # Invalid bounds fail at startup instead of creating a broken empty ring.
   let (invalidServer, invalidUrl) = startNats()
+  defer: stopServer(invalidServer)
   let invalid = startComponent(observeBin, invalidUrl, root = tmp,
     extra = [("NIF_OBSERVE_RING", "0")])
   let invalidCode = invalid.waitForExit(3000)
   if invalidCode == -1: invalid.terminate()
   invalid.close()
-  if invalidServer.running(): invalidServer.terminate()
-  invalidServer.close()
   check("invalid observe configuration exits non-zero",
         invalidCode != -1 and invalidCode != 0, $invalidCode)
 

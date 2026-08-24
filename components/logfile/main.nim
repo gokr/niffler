@@ -59,6 +59,7 @@ var writeErrors = 0
 var lastError = ""
 var lastErrorAt = 0.0
 var componentFiles = initTable[string, bool]()
+var patterns: seq[string] = @[]
 
 proc validComponentName(name: string): bool =
   if name.len == 0 or name.len > 64:
@@ -82,6 +83,21 @@ proc validSubjectPattern(value: string): bool =
        (token.contains('*') or token.contains('>')):
       return false
   true
+
+proc matchesPattern(pattern, subject: string): bool =
+  let patternTokens = pattern.split('.')
+  let subjectTokens = subject.split('.')
+  var i = 0
+  while i < patternTokens.len:
+    let token = patternTokens[i]
+    if token == ">":
+      return i < subjectTokens.len
+    if i >= subjectTokens.len:
+      return false
+    if token != "*" and token != subjectTokens[i]:
+      return false
+    inc i
+  i == subjectTokens.len
 
 proc pathFor(subject: string): string =
   if subject.startsWith("ev.log."):
@@ -179,6 +195,12 @@ proc onAny(c: Component, subject: string, data: string) =
     lastErrorAt = epochTime()
     stderr.writeLine("logfile: write failed: " & e.msg)
 
+proc onConfigured(c: Component, subject: string, data: string) =
+  for pattern in patterns:
+    if matchesPattern(pattern, subject):
+      onAny(c, subject, data)
+      return
+
 createDir(logDir)
 pruneRotations()
 for kind, path in walkDir(logDir):
@@ -190,7 +212,6 @@ for kind, path in walkDir(logDir):
     componentFiles[name] = true
 
 let comp = newComponent("logfile", "0.1.0")
-var patterns: seq[string] = @[]
 let configuredSubjects = getEnv("NIF_LOGFILE_SUBJECTS")
 if configuredSubjects.len == 0:
   patterns.add("ev.log.>")
@@ -211,8 +232,10 @@ if patterns.len == 0:
   raise newException(ValueError, "NIF_LOGFILE_SUBJECTS contains no subjects")
 if ">" in patterns:
   patterns = @[">"]
-for pattern in patterns:
-  discard comp.tap(pattern, onAny)
+if patterns.len == 1:
+  discard comp.tap(patterns[0], onAny)
+else:
+  discard comp.tap(">", onConfigured)
 
 proc isLogFile(path: string): bool =
   if path.endsWith(".jsonl"):
@@ -240,25 +263,34 @@ proc logPayload(entry: JsonNode): JsonNode =
 type SearchItem = tuple[at: float, order: int, node: JsonNode]
 
 proc readTail(path: string, maxRead: int): tuple[data: string, bytes: int,
-                                                   truncated: bool] =
+                                                    truncated: bool] =
   let size = getFileSize(path)
   if size <= 0 or maxRead <= 0:
     return
-  let wanted = min(size, maxRead.int64).int
+  result.truncated = size > maxRead.int64
+  var bodyBudget = maxRead
+  if result.truncated and bodyBudget > 1:
+    dec bodyBudget # reserve one physical read for the boundary look-behind
+  let wanted = min(size, bodyBudget.int64).int
   var file = open(path, fmRead)
   defer: file.close()
   var startsAtBoundary = true
-  if size > wanted.int64:
+  if result.truncated:
     let offset = size - wanted.int64
-    setFilePos(file, offset - 1)
-    var previous: char
-    discard file.readBuffer(addr previous, 1)
-    startsAtBoundary = previous == '\n'
+    if maxRead > 1:
+      setFilePos(file, offset - 1)
+      var previous: char
+      let previousBytes = file.readBuffer(addr previous, 1)
+      result.bytes += previousBytes
+      startsAtBoundary = previousBytes == 1 and previous == '\n'
+    else:
+      startsAtBoundary = false
     setFilePos(file, offset)
-    result.truncated = true
-  result.data = newString(wanted)
-  result.bytes = file.readBuffer(addr result.data[0], wanted)
-  result.data.setLen(result.bytes)
+  if wanted > 0:
+    result.data = newString(wanted)
+    let dataBytes = file.readBuffer(addr result.data[0], wanted)
+    result.bytes += dataBytes
+    result.data.setLen(dataBytes)
   if result.truncated and not startsAtBoundary:
     let newline = result.data.find('\n')
     if newline < 0:

@@ -21,7 +21,7 @@
 ## - Teardown = exit; the OS is the disposer. On SIGTERM/SIGINT/ev.sys.drain
 ##   we announce reg.depart, finish the current message, then quit.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, monotimes, os, strutils, tables, times]
 import std/macros
 import natswrapper
 import ../envelope
@@ -154,6 +154,8 @@ proc publishEnvelope*(c: Component, subject: string, env: Envelope) =
   ## Publish any pre-built envelope to any subject (fire-and-forget).
   c.nc.publish(subject, env.encode())
 
+proc pumpTaps(c: Component, maxMessages: int): int
+
 proc requestEnvelope*(c: Component, subject: string, env: Envelope,
                       timeoutMs: int = 5000): Envelope =
   ## Request/reply with a pre-built envelope on an arbitrary subject;
@@ -180,12 +182,23 @@ proc requestEnvelope*(c: Component, subject: string, env: Envelope,
     raise newException(IOError,
       "request " & subject & " flush: " & getErrorString(flushStatus))
 
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs.int64)
   var msg: ptr natsMsg
-  let st = natsSubscription_NextMsg(addr msg, subscription, timeoutMs.int64)
-  if st == NATS_TIMEOUT:
-    raise newException(IOError, "request " & subject & " timed out after " & $timeoutMs & "ms")
-  if not checkStatus(st):
-    raise newException(IOError, "request " & subject & ": " & getErrorString(st))
+  while true:
+    # A handler may issue this request while the component's normal pump is
+    # paused. Keep raw observation taps current without nesting calls/events.
+    discard c.pumpTaps(100)
+    let st = natsSubscription_NextMsg(addr msg, subscription, 0)
+    if st == NATS_OK:
+      break
+    if st != NATS_TIMEOUT:
+      raise newException(IOError,
+        "request " & subject & ": " & getErrorString(st))
+    if getMonoTime() >= deadline:
+      raise newException(IOError,
+        "request " & subject & " timed out after " & $timeoutMs & "ms")
+    sleep(1)
+  discard c.pumpTaps(100)
   defer: natsMsg_Destroy(msg)
   result = decode(messageData(msg))
   if result.id != env.id:
@@ -256,7 +269,14 @@ proc handleMsg(c: Component, binding: SubscriptionBinding,
     except CatchableError as e:
       stderr.writeLine(c.name & ": invalid call envelope: " & e.msg)
       return
-    if env.kind != ekCall or reply.len == 0:
+    if reply.len == 0:
+      return
+    if env.kind != ekCall:
+      try:
+        c.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
+          "expected call envelope").encode())
+      except CatchableError as e:
+        stderr.writeLine(c.name & ": reply publish failed: " & e.msg)
       return
     # tool call: find handler, answer on the reply subject
     for t in c.tools:
@@ -276,6 +296,20 @@ proc handleMsg(c: Component, binding: SubscriptionBinding,
         "component " & c.name & " has no tool '" & env.tool & "'").encode())
     except CatchableError as e:
       stderr.writeLine(c.name & ": reply publish failed: " & e.msg)
+
+proc pumpTaps(c: Component, maxMessages: int): int =
+  for binding in c.bindings:
+    if binding.kind != skTap:
+      continue
+    while result < maxMessages:
+      var msg: ptr natsMsg
+      let st = natsSubscription_NextMsg(addr msg, binding.sub, 0)
+      if st != NATS_OK:
+        break
+      inc result
+      c.handleMsg(binding, msg)
+    if result >= maxMessages:
+      break
 
 proc drainHandler(c: Component, subject: string, payload: JsonNode) =
   gShutdown = true

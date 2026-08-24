@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,6 +64,6 @@ var idCounter int64
 
 // NewID returns a cheap unique bus id (time + pid + counter).
 func NewID() string {
-	idCounter++
-	return fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), os.Getpid(), idCounter)
+	sequence := atomic.AddInt64(&idCounter, 1)
+	return fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), os.Getpid(), sequence)
 }

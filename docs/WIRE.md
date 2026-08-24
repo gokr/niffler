@@ -25,6 +25,9 @@ Rules:
 - Missing fields are omitted, never null. Unknown fields ignored (forward compat).
 - Errors: `code` is a stable machine string (`timeout`, `no-tool`, `boom`),
   `message` is human text.
+- A request carrying malformed JSON or a non-`call` envelope receives a
+  `bad-envelope` error when it has a reply subject. Decodable inputs preserve
+  their envelope id in that reply.
 - Streaming: a caller may send `call` frames, each carrying a chunk, and a
   final `result` frame with `done: true` (custom field). `ev.*` streams
   (LLM tokens) are chunked events on a dedicated subject instead.

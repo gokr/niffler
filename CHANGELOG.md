@@ -8,6 +8,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **isolated concurrent tests** — every bus-contract test owns a
+  NATS-assigned loopback port and writable temporary `NIF_ROOT`; core tests
+  snapshot only their required binaries, agent-built Nim components use a
+  local cache, and a cross-process lock (`scripts/with-build-lock.sh`)
+  serializes repository build writers while letting test runs overlap. One
+  lock is held around a whole build generation (`make build`), `make clean`
+  takes it too, the builder writes binaries via temp+rename, core tracks its
+  spawned bus by PID file, and `make test` runs the Go unit tests. Separate
+  agents can now run component targets alongside each other and a live harness.
 - **Session runners — one conversation = one process** — the system
   harness spawns a `var/bin/session <id>` runner per conversation
   (present in the catalog as `session-<id>`, 0 tools), serving

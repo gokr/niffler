@@ -15,6 +15,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="$ROOT/var/.niffler.up"
 NATS_URL_FILE="$ROOT/var/nats-url"
+NATS_PID_FILE="$ROOT/var/nats-pid"
 CORE_BIN="$ROOT/var/bin/niffler"
 UI_BIN="$ROOT/ui/build/bin/niffler-ui"
 
@@ -38,10 +39,14 @@ start_core() {
   local pre_nats=0
   if port_live; then pre_nats=1; fi
   echo "core: starting (bus: $([ "$pre_nats" = 1 ] && echo "reusing nats://127.0.0.1:4222" || echo "spawning nats-server"))"
+  # A stale discovery file would make the wait loop below succeed instantly
+  # on the previous (dead) random port — require fresh output.
+  rm -f "$NATS_URL_FILE" "$NATS_PID_FILE"
   nohup "$CORE_BIN" </dev/null >"$ROOT/var/core.log" 2>&1 &
   local pid=$!
   for _ in $(seq 1 100); do
     [ -s "$NATS_URL_FILE" ] && break
+    if ! kill -0 "$pid" 2>/dev/null; then break; fi
     sleep 0.1
   done
   if ! kill -0 "$pid" 2>/dev/null; then
@@ -80,6 +85,10 @@ cmd_down() {
     if [ -n "$core_pid" ] && kill -0 "$core_pid" 2>/dev/null; then
       echo "core: stopping (pid $core_pid)"
       kill "$core_pid"
+      for _ in $(seq 1 100); do
+        kill -0 "$core_pid" 2>/dev/null || break
+        sleep 0.1
+      done
     fi
     rm -f "$STATE"
   else
@@ -87,11 +96,21 @@ cmd_down() {
   fi
   pkill -f "niffler-ui" 2>/dev/null && echo "ui: stopping" || true
   if [ "${pre_nats:-1}" = 0 ]; then
-    local port
-    port="$(nats_port_from "$(cat "$NATS_URL_FILE" 2>/dev/null || true)")"
-    if [ -n "$port" ]; then
-      pkill -f "nats-server.*-p $port" 2>/dev/null && echo "bus: stopping (port $port)" || true
+    local nats_pid=""
+    if [ -f "$NATS_PID_FILE" ]; then
+      nats_pid="$(cat "$NATS_PID_FILE" 2>/dev/null || true)"
     fi
+    if [ -n "$nats_pid" ] && kill -0 "$nats_pid" 2>/dev/null; then
+      kill "$nats_pid" && echo "bus: stopping (pid $nats_pid)" || true
+    else
+      # legacy cores picked the port themselves; match the recorded URL
+      local port
+      port="$(nats_port_from "$(cat "$NATS_URL_FILE" 2>/dev/null || true)")"
+      if [ -n "$port" ]; then
+        pkill -f "nats-server.*-p $port" 2>/dev/null && echo "bus: stopping (port $port)" || true
+      fi
+    fi
+    rm -f "$NATS_PID_FILE" "$NATS_URL_FILE"
   fi
   echo "down"
 }

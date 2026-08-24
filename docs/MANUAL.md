@@ -69,7 +69,7 @@ env always wins — see below) and inherit core's environment. The full set:
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
 | `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` on a random loopback port and writes `var/nats-url` | auto |
-| `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 | unset |
+| `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 — only when `NIF_NATS_URL` is unset (an explicit URL always wins) | unset |
 | `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |
 | `NIF_OPENAI_BASE_URL` | OpenAI-compatible endpoint | `https://api.openai.com/v1` |
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
@@ -326,21 +326,26 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
-                 # test-plugins, test-observe, test-logfile, test-core,
-                 # test-cli, test-smoke
+                 # test-plugins, test-observe, test-logfile,
+                 # test-core, test-cli, test-smoke
 ```
 
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
 the envelope is the artifact, so one harness tests every SDK) and drives
-them over the bus. Core-based tests (`t_core`, `t_plugins`, `t_cli`)
-require **no other harness running** against this repo's `var/barrel-db`
-(store single-writer). Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
+them over a private NATS server whose loopback ports are allocated by NATS.
+Core-based tests snapshot their required binaries into a unique temporary
+`NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
+therefore isolated. Individual `make test-*` targets may run concurrently
+with each other and a live development harness. Repository build writes are
+serialized, while agent-built test components use sandbox-local Nim caches.
+Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
 `cli install gokr/niffler-weather` + tool validation; `NIF_TEST_NETWORK=1`
 runs `plugin_search` against GitHub and the TypeScript builder build
 (npm registry). The install pipeline itself is covered hermetically by
 `t_plugins` via a local `file://` git repo.
 Observe/logfile tests use temporary output directories and never delete the
-developer's `var/logs` or `var/captures`.
+developer's `var/logs` or `var/captures`. External network opt-ins can still
+share provider rate limits even though their local state is isolated.
 
 ## Common tasks
 

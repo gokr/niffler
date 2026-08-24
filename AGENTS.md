@@ -62,10 +62,10 @@ make up               # single command: ensure bus + core, then open the UI
 make down             # stop what `make up` started (UI, core, spawned bus)
 make status
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_observe, t_logfile,
-                      # t_core, t_cli — each
-                      # boots its own NATS; core-based tests need no other
-                      # harness running (store single-writer)
+                      # t_builder, t_console, t_plugins, t_observe,
+                      # t_logfile, t_core, t_cli, t_hashline — each
+                      # owns a private NATS server + temporary NIF_ROOT, so
+                      # component targets can overlap a live harness
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
@@ -219,7 +219,11 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   `{}` returns nil and iterating nil SIGSEGVs (json.nim items iterator).
 - Verification = `make build && make test` (bus-contract suite, see
   docs/MANUAL.md#testing), plus a live harness run for
-  conversation-loop changes.
+  conversation-loop changes. Repository build writes are serialized by
+  `scripts/with-build-lock.sh` (flock on `.niffler-build.lock`; exclusive
+  for builds/clean, shared for test runs); `make build` holds one lock
+  across the whole generation. Remove build artifacts with `make clean`,
+  never a bare `rm -rf var`.
 - **Trust a green test run — don't re-run to see "more" output.** `make`
   targets print each check as `OK: …` and end with `<NAME> TEST PASSED`,
   and the exit code reflects the whole suite. If that line prints and the

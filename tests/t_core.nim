@@ -13,25 +13,33 @@ import helpers
 
 proc main() =
 
-  let root = getEnv("NIF_ROOT", getAppDir().parentDir())
-  let coreBin = root / "var" / "bin" / "niffler"
-  let cliBin = root / "var" / "bin" / "cli"
-  if not fileExists(coreBin) or not fileExists(cliBin):
+  let repoRoot = getEnv("NIF_REPO_ROOT",
+                        getEnv("NIF_ROOT", getAppDir().parentDir()))
+  if not fileExists(repoRoot / "var" / "bin" / "niffler") or
+     not fileExists(repoRoot / "var" / "bin" / "cli"):
     fail("missing binaries — run `make build` first")
     quit(1)
+  let sandbox = newCoreSandbox("core", ["store", "bash", "builder", "plugins"])
+  let root = sandbox.root
+  let coreBin = sandbox.sandboxBin("niffler")
+  let cliBin = sandbox.sandboxBin("cli")
+  defer: removeDir(root)
 
   # --- core on bus 1: lifecycle --------------------------------------------
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
-  let coreProc = startComponent(coreBin, url, extra = [("NIF_AUTO_APPROVE", "1")])
+  defer: nc.close()
+  var coreProc = startComponent(coreBin, url, root = root,
+                                extra = [("NIF_AUTO_APPROVE", "1")])
   defer:
-    if coreProc.running():
+    if coreProc != nil and coreProc.running():
       coreProc.terminate()
       sleep(1500)
       if coreProc.running():
         coreProc.kill()
         sleep(200)
-    coreProc.close()
+    if coreProc != nil: coreProc.close()
 
   var coreUp = false
   for i in 0 ..< 100:
@@ -43,12 +51,13 @@ proc main() =
   check("core up", coreUp)
 
   # catalog: shipped components registered, core tools exposed
-  let cat = runCli(cliBin, url, @["catalog"])
+  let cat = runCli(cliBin, url, @["catalog"], root = root)
   check("catalog lists store/bash/builder/plugins",
         cat.output.contains("store") and cat.output.contains("bash") and
         cat.output.contains("builder") and cat.output.contains("plugins"),
         cat.output)
-  let coreCat = runCli(cliBin, url, @["call", "catalog", """{"op":"list"}"""])
+  let coreCat = runCli(cliBin, url, @["call", "catalog", """{"op":"list"}"""],
+                       root = root)
   check("core catalog tool lists spawn/kill/remove",
         coreCat.output.contains("\"spawn\"") and
         coreCat.output.contains("\"remove\""), coreCat.output)
@@ -83,19 +92,21 @@ proc main() =
   check("builder builds lifec", built{"ok"}.getBool(false), $built)
 
   let spawned = call(nc, "core", "spawn",
-                     %*{"name": "lifec",
-                        "binary": root / "var" / "bin" / "lifec"}, 60_000)
+                      %*{"name": "lifec",
+                         "binary": built{"binary"}.getStr("")}, 60_000)
   check("core.spawn ok", spawned{"ok"}.getBool(false), $spawned)
 
-  let reg = runCli(cliBin, url, @["wait", "lifec", "15"])
+  let reg = runCli(cliBin, url, @["wait", "lifec", "15"], root = root)
   check("lifec registers", reg.code == 0, reg.output)
-  let ping = runCli(cliBin, url, @["call", "lifec_ping", "{}"], 30_000)
+  let ping = runCli(cliBin, url, @["call", "lifec_ping", "{}"], 30_000,
+                    root = root)
   check("lifec_ping callable", ping.code == 0 and
         ping.output.contains("\"alive\":true"), ping.output)
 
   let killed = call(nc, "core", "kill", %*{"name": "lifec"}, 60_000)
   check("core.kill ok", killed{"ok"}.getBool(false), $killed)
-  let afterKill = runCli(cliBin, url, @["call", "lifec_ping", "{}"], 5_000)
+  let afterKill = runCli(cliBin, url, @["call", "lifec_ping", "{}"], 5_000,
+                         root = root)
   check("tool gone after kill", afterKill.code != 0, afterKill.output)
 
   # kill leaves the record; remove deletes it
@@ -131,16 +142,18 @@ proc main() =
                     %*{"lang": "nim", "name": "rogue", "source": rogue}, 300_000)
   check("builder builds rogue", built2{"ok"}.getBool(false), $built2)
   discard call(nc, "core", "spawn",
-               %*{"name": "rogue", "binary": root / "var" / "bin" / "rogue"}, 60_000)
-  let rogueReg = runCli(cliBin, url, @["wait", "rogue", "15"])
+               %*{"name": "rogue", "binary": built2{"binary"}.getStr("")}, 60_000)
+  let rogueReg = runCli(cliBin, url, @["wait", "rogue", "15"], root = root)
   check("rogue spawns", rogueReg.code == 0, rogueReg.output)
 
   # the colliding tool stays owned by the original provider; the unique one works
   let stillBash = runCli(cliBin, url,
-                         @["call", "bash", """{"command":"echo still-real","timeoutMs":5000}"""], 15_000)
+                         @["call", "bash", """{"command":"echo still-real","timeoutMs":5000}"""],
+                         15_000, root = root)
   check("bash tool still owned by bash", stillBash.code == 0 and
         stillBash.output.contains("still-real"), stillBash.output)
-  let rogueTool = runCli(cliBin, url, @["call", "rogue_tool", "{}"], 15_000)
+  let rogueTool = runCli(cliBin, url, @["call", "rogue_tool", "{}"], 15_000,
+                         root = root)
   check("rogue unique tool callable", rogueTool.code == 0, rogueTool.output)
   discard call(nc, "core", "remove", %*{"name": "rogue"}, 60_000)
 
@@ -153,10 +166,13 @@ proc main() =
       coreProc.kill()
       sleep(200)
   coreProc.close()
+  coreProc = nil
 
   let (server2, url2) = startNats()
+  defer: stopServer(server2)
   var nc2 = waitConnect(url2)
-  let core2 = startComponent(coreBin, url2)  # no auto-approve
+  defer: nc2.close()
+  let core2 = startComponent(coreBin, url2, root = root)  # no auto-approve
   defer:
     if core2.running():
       core2.terminate()
@@ -181,12 +197,6 @@ proc main() =
   check("approval-gated spawn denied without human",
         denied{"error"}.getStr("").contains("approval"), $denied)
 
-  nc2.close()
-  server2.terminate()
-  server2.close()
-  nc.close()
-  server.terminate()
-  server.close()
   report("CORE TEST")
 
 main()

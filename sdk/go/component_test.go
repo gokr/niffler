@@ -2,14 +2,59 @@ package sdk
 
 import (
 	"encoding/json"
-	"fmt"
-	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 )
+
+// startTestNATS lets NATS allocate its own loopback port (no
+// bind-close-start race) and returns the published client URL.
+func startTestNATS(t *testing.T) string {
+	t.Helper()
+	serverBin, err := exec.LookPath("nats-server")
+	if err != nil {
+		t.Skip("nats-server is not installed")
+	}
+	portsDir, err := os.MkdirTemp("", "niffler-sdk-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := exec.Command(serverBin, "-a", "127.0.0.1", "-p", "-1",
+		"--ports_file_dir", portsDir)
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = server.Process.Kill()
+		_ = server.Wait()
+		_ = os.RemoveAll(portsDir)
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, globErr := filepath.Glob(filepath.Join(portsDir, "*.ports"))
+		if globErr == nil {
+			for _, path := range entries {
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					continue
+				}
+				var ports struct {
+					Nats []string `json:"nats"`
+				}
+				if json.Unmarshal(data, &ports) == nil && len(ports.Nats) > 0 {
+					return ports.Nats[0]
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("nats-server did not publish a client port")
+	return ""
+}
 
 func TestShouldLog(t *testing.T) {
 	tests := []struct {
@@ -55,27 +100,9 @@ func TestSignalShutdownIsIdempotent(t *testing.T) {
 }
 
 func TestCloseWaitsForActiveHandler(t *testing.T) {
-	serverBin, err := exec.LookPath("nats-server")
-	if err != nil {
-		t.Skip("nats-server is not installed")
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
-	server := exec.Command(serverBin, "-a", "127.0.0.1", "-p", fmt.Sprint(port))
-	if err := server.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = server.Process.Kill()
-		_ = server.Wait()
-	})
-
-	url := fmt.Sprintf("nats://127.0.0.1:%d", port)
+	url := startTestNATS(t)
 	var client *nats.Conn
+	var err error
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		client, err = nats.Connect(url, nats.Timeout(100*time.Millisecond))

@@ -15,11 +15,15 @@ proc main() =
   if not fileExists(bin):
     fail(bin & " missing — run `make build` first")
     quit(1)
+  let tmp = tempRoot("bash")
+  defer: removeDir(tmp)
 
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
+  defer: nc.close()
 
-  let bashProc = startComponent(bin, url)
+  let bashProc = startComponent(bin, url, root = tmp)
   defer:
     if bashProc.running():
       bashProc.terminate()
@@ -63,9 +67,6 @@ proc main() =
   sleep(700)
   check("bash drains and exits", not bashProc.running())
 
-  server.terminate()
-  server.close()
-  nc.close()
   report("BASH TEST")
 
 main()

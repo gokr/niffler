@@ -21,7 +21,9 @@ proc main() =
   defer: removeDir(tmp)
 
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
+  defer: nc.close()
 
   var storeProc = startComponent(bin, url, root = tmp)
   defer:
@@ -33,7 +35,15 @@ proc main() =
   check("store registers", waitRegistered(nc, "store"))
   if failures > 0:
     echo "store never came up — aborting"
-    quit(1)
+    report("STORE TEST")
+
+  var secondStore = startComponent(bin, url, root = tmp)
+  let secondCode = secondStore.waitForExit(3000)
+  if secondCode == -1:
+    secondStore.terminate()
+    sleep(200)
+  secondStore.close()
+  check("store rejects a second writer", secondCode != -1 and secondCode != 0)
 
   # put/get round trip
   let p1 = call(nc, "store", "put",
@@ -91,9 +101,6 @@ proc main() =
 
   drain(nc)
   sleep(500)
-  server.terminate()
-  server.close()
-  nc.close()
   report("STORE TEST")
 
 main()

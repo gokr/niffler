@@ -32,14 +32,15 @@ const
   MaxCaptureFiles = 256
   KnownEvents = ["reg.publish", "reg.depart", "ev.sys.drain",
     "ev.catalog.updated", "ev.llm.token", "ev.session.>",
-    "ev.approval.request", "ev.approval.reply", "ev.log.>", "llm.cancel.>"]
+    "ev.approval.request", "ev.approval.reply", "ev.log.>",
+    "ev.models.updated", "llm.cancel.>"]
 
 type
   ProbeKind = enum
     pkListen, pkTrace
 
   PendingTrace = object
-    at: float
+    observedAt: MonoTime
 
   Probe = ref object
     id: string
@@ -202,10 +203,11 @@ proc appendProbe(pr: Probe, entry: JsonNode): bool =
     pr.entries.delete(0)
   true
 
-proc prunePending(pr: Probe, now: float) =
+proc prunePending(pr: Probe, now: MonoTime) =
   var expired: seq[string] = @[]
   for id, pending in pr.pending:
-    if now - pending.at > MaxPendingSeconds:
+    if (now - pending.observedAt).inMilliseconds.float / 1000.0 >
+       MaxPendingSeconds:
       expired.add(id)
   for id in expired:
     pr.pending.del(id)
@@ -217,7 +219,8 @@ proc traceSubjectMatches(component, subject: string): bool =
   (tokens.len == 4 and tokens[0] == "svc" and tokens[1] == component and
    tokens[3] == "call")
 
-proc captureFor(pr: Probe, at: float, subject: string, message: JsonNode) =
+proc captureFor(pr: Probe, at: float, observedAt: MonoTime, subject: string,
+                message: JsonNode) =
   if pr.stopped:
     return
   case pr.kind
@@ -229,7 +232,7 @@ proc captureFor(pr: Probe, at: float, subject: string, message: JsonNode) =
     discard pr.appendProbe(%*{"at": at, "subject": subject,
                               "envelope": message})
   of pkTrace:
-    pr.prunePending(at)
+    pr.prunePending(observedAt)
     if message == nil or message.kind != JObject:
       return
     let kind = message{"kind"}.getStr("")
@@ -245,21 +248,24 @@ proc captureFor(pr: Probe, at: float, subject: string, message: JsonNode) =
       let entry = %*{"at": at, "subject": subject, "envelope": envelope}
       let retained = pr.appendProbe(entry)
       if retained and id.len > 0:
-        pr.pending[id] = PendingTrace(at: at)
+        pr.pending[id] = PendingTrace(observedAt: observedAt)
         if pr.pending.len > pr.cap:
           var oldestId = ""
-          var oldestAt = at
+          var oldestAge = -1'i64
           for pendingId, pending in pr.pending:
-            if pending.at <= oldestAt:
-              oldestAt = pending.at
+            let age = (observedAt - pending.observedAt).inNanoseconds
+            if age >= oldestAge:
+              oldestAge = age
               oldestId = pendingId
           if oldestId.len > 0: pr.pending.del(oldestId)
     elif kind in ["result", "error"] and subject.startsWith("_INBOX.") and
          id.len > 0 and pr.pending.hasKey(id):
       let pending = pr.pending[id]
       var envelope = %*{"direction": "reply", "kind": kind, "id": id,
-                        "component": pr.traceComp,
-                        "elapsedMs": (at - pending.at) * 1000}
+                         "component": pr.traceComp,
+                         "elapsedMs":
+                           (observedAt - pending.observedAt).inNanoseconds.float /
+                           1_000_000.0}
       if kind == "result":
         let args = message{"args"}
         if args != nil: envelope["result"] = args
@@ -271,11 +277,12 @@ proc captureFor(pr: Probe, at: float, subject: string, message: JsonNode) =
       pr.pending.del(id)
 
 proc onBus(c: Component, subject: string, data: string) =
+  let observedAt = getMonoTime()
   let at = epochTime()
   let message = wireMessage(data)
   addRing(at, subject, data, message)
   for pr in probes.values:
-    pr.captureFor(at, subject, message)
+    pr.captureFor(at, observedAt, subject, message)
 
   if subject in ["reg.publish", "reg.depart"] and message.kind == JObject:
     let name = message{"name"}.getStr("")
@@ -486,7 +493,7 @@ comp.tool:
     var items = newJArray()
     var responseBytes = 0
     var truncated = false
-    let now = epochTime()
+    let now = getMonoTime()
     for id, pr in probes:
       pr.prunePending(now)
       let item = %*{"probeId": id, "kind": $pr.kind, "label": pr.label,

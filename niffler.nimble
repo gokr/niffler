@@ -17,7 +17,7 @@ requires "https://github.com/gokr/bitbarrel"
 
 # Tasks
 
-task all, "Build core and all shipped components":
+task all-internal, "Unlocked internal build — invoke through `all` (or the Makefile)":
   exec "nim c --hints:off -o:var/bin/niffler core/niffler.nim"
   exec "nim c --hints:off -o:var/bin/session core/session.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/store components/store/main.nim"
@@ -32,9 +32,12 @@ task all, "Build core and all shipped components":
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."
   exec "cd components/llm && go build -o ../../var/bin/llm ."
 
+task all, "Build core and all shipped components (whole generation under the shared build lock)":
+  exec "bash scripts/with-build-lock.sh nimble all-internal"
+
 task run, "Build and run the harness":
   exec "nimble all"
   exec "./var/bin/niffler"
 
 task smoke, "SDK smoke test (needs a NATS server; core spawns one if NATS_URL unset)":
-  exec "nim c --hints:off --path:sdk -r tests/smoke.nim"
+  exec "bash scripts/with-build-lock.sh nim c --hints:off --path:sdk -r tests/smoke.nim"

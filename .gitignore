@@ -2,6 +2,10 @@
 var/
 nimcache/
 
+# cross-process build/test lock (scripts/with-build-lock.sh)
+/.niffler-build.lock
+/.niffler-build.lock.d/
+
 # TypeScript SDK build artifacts
 sdk/ts/dist/
 sdk/ts/node_modules/

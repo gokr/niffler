@@ -309,6 +309,9 @@ func (c *Component) Connect() error {
 	if err := c.announce("reg.publish"); err != nil {
 		return err
 	}
+	if err := c.nc.Flush(); err != nil {
+		return fmt.Errorf("flush subscriptions: %w", err)
+	}
 	slog.Info("online", "component", c.Name, "version", c.Version, "url", url,
 		"tools", len(c.tools))
 	return nil

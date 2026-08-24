@@ -17,16 +17,40 @@
 ##   message      id=<convId>:<n>   {conversationId, role, content, ...}
 
 import std/[json, os, strutils]
+when defined(posix):
+  import std/posix
+  proc flock(fd: cint, operation: cint): cint {.importc: "flock", header: "<sys/file.h>".}
+  # POSIX values (identical on Linux and macOS): 2 = LOCK_EX, 4 = LOCK_NB
+  const FLOCK_EX_NB = 2 or 4
 import bitbarrel/barrel
 import niffler/sdk
 
 let comp = newComponent("store", "0.1.0")
 
 var db: Barrel
+var lockFd: cint = -1
+
+proc acquireLock(path: string) =
+  ## Single-writer enforcement: exactly one store process may serve a
+  ## barrel file. flock is released by the kernel when the process dies,
+  ## so a crash never wedges the store — but a second live store refuses
+  ## to start instead of silently sharing the bus: two stores in the
+  ## "store" queue group would each answer svc.store.call from its own
+  ## in-memory index, making lists alternate between two inconsistent
+  ## views (the classic flapping session sidebar).
+  when defined(posix):
+    let lockPath = path & ".lock"
+    lockFd = posix.open(lockPath.cstring, O_CREAT or O_RDWR, 0o644)
+    if lockFd < 0 or flock(lockFd, FLOCK_EX_NB) != 0:
+      stderr.writeLine("store: another store is already serving " & path &
+        " — stop the other harness (`make down`) or kill the stale store " &
+        "process, then start again")
+      quit(1)
 
 proc openDb() =
   # barrel is bitcask-style: the path is a data file, created if missing
   let path = getEnv("NIF_ROOT", ".") / "var" / "barrel-db"
+  acquireLock(path)
   var config = defaultBarrelConfig()
   config.mode = bmCritBit  # ordered prefix scans
   db = openBarrel(path, config)

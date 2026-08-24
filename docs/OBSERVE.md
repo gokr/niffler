@@ -74,7 +74,8 @@ var/logs/bash.jsonl.1
 whole-bus `>`, goes to a single `bus.jsonl`; dynamic inbox subjects therefore do
 not create unbounded file descriptors or filenames. The number of component log
 files is capped, and excess/spoofed component subjects also fall back to
-`bus.jsonl`.
+`bus.jsonl`. Multiple configured patterns are treated as one locally filtered
+union, so overlapping patterns persist each matching publication exactly once.
 
 Every line records sink time and original wire data:
 
@@ -108,22 +109,29 @@ are rejected.
 
 ## SDK APIs
 
-All three SDKs expose the same two additions:
+All three SDKs expose the same observation/logging and raw-envelope APIs:
 
 ```nim
 type TapHandler* = proc(c: Component, subject: string, data: string)
 proc tap*(c: Component, pattern: string, handler: TapHandler): Component
 proc log*(c: Component, level, msg: string, ctx: JsonNode = nil)
+proc publishEnvelope*(c: Component, subject: string, env: Envelope)
+proc requestEnvelope*(c: Component, subject: string, env: Envelope,
+                      timeoutMs: int = 5000): Envelope
 ```
 
 ```go
 func (c *Component) Tap(pattern string, h TapHandler) *Component
 func (c *Component) Log(level, msg string, ctx any) error
+func (c *Component) PublishEnvelope(subject string, env Envelope) error
+func (c *Component) RequestEnvelope(subject string, env Envelope, timeout time.Duration) (Envelope, error)
 ```
 
 ```ts
 comp.tap(pattern, handler)
 comp.log(level, msg, ctx?)
+comp.publishEnvelope(subject, envelope)
+await comp.requestEnvelope(subject, envelope, timeoutMs?)
 ```
 
 Each SDK lets NATS perform subject matching and dispatches only the handler bound
@@ -134,6 +142,12 @@ existing mutex and TypeScript its promise chain.
 Go waits for drained subscription callbacks (up to its bounded shutdown grace),
 and TypeScript waits for queued handlers without deadlocking a handler that
 explicitly closes its own component.
+
+Nim's arbitrary-envelope request helper continues pumping only raw tap
+subscriptions while it waits. Tool and event handlers remain non-nested, while
+an observer can timestamp the target request and reply during an
+`observe_request`. Trace durations and expiry use a monotonic clock; displayed
+`at` values remain wall-clock epoch seconds.
 
 Structured logs publish an event on the exact subject `ev.log.<component>` with
 `{component, level, msg, ctx?, at}`. Levels are `debug`, `info`, `warn`, and
@@ -154,7 +168,8 @@ var/nats-monitor-url
 The monitor discovery file is written only after the client connection succeeds.
 A reused or remote bus has no discoverable HTTP endpoint; configure
 `NIF_OBSERVE_MONITOR_URL` explicitly. `NIF_NATS_SPAWN=1` forces an isolated
-core-owned bus (primarily useful for tests and diagnostics).
+core-owned bus (primarily useful for tests and diagnostics) — only when
+`NIF_NATS_URL` is unset; an explicit URL always wins.
 
 `observe_monitor` reads `/subsz` and `/connz` with a fresh HTTP client for each
 request. It reports whether subscription detail was truncated; `mostSubscribed`
@@ -180,7 +195,7 @@ means subscriber density, not message throughput.
 | `NIF_LOGFILE_SCAN_BYTES` | `16777216` | maximum bytes examined by one search |
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | `10000` | maximum candidate JSONL paths enumerated per query |
 | `NIF_LOG_LEVEL` | `info` | SDK publication threshold |
-| `NIF_NATS_SPAWN` | unset | `1` forces core to spawn an isolated bus instead of reusing 4222 |
+| `NIF_NATS_SPAWN` | unset | `1` forces core to spawn an isolated bus instead of reusing 4222 (only when `NIF_NATS_URL` is unset) |
 
 All bounds are validated at startup; invalid configuration exits non-zero rather
 than silently substituting a default.
@@ -188,12 +203,13 @@ than silently substituting a default.
 ## Verification
 
 `tests/t_observe.nim` covers exact-once taps, wildcard boundaries, registration
-capture, cap/byte eviction, trace correlation, timeout behavior, embedded-NUL
-and invalid-UTF-8 raw data, response bounds, approval metadata, quota-pruned safe
+capture, cap/byte eviction, monotonic trace correlation during diagnostic
+requests, malformed-call replies, timeout behavior, embedded-NUL and
+invalid-UTF-8 raw data, response bounds, approval metadata, quota-pruned safe
 dumps, monitor discovery, and invalid configuration.
 
 `tests/t_logfile.nim` covers SDK log filtering, newest-first queries, time/regex
-filters, encoded response and actual disk-read bounds, closed-file rotation,
-zero retention, embedded-NUL whole-bus preservation, bounded path listings,
-sink health, and invalid configuration. Both tests use isolated temporary output
-directories and are part of `make test`.
+filters, encoded response and actual disk-read bounds, exact-once overlapping
+subject patterns, closed-file rotation, zero retention, embedded-NUL whole-bus
+preservation, bounded path listings, sink health, and invalid configuration.
+Both tests use isolated temporary output directories and are part of `make test`.

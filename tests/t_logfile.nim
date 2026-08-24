@@ -56,11 +56,9 @@ comp.run()
   if compileCode != 0: report("LOGFILE TEST")
 
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
-  defer:
-    nc.close()
-    if server.running(): server.terminate()
-    server.close()
+  defer: nc.close()
 
   let logDir = tmp / "logs"
   var logfile = startComponent(logfileBin, url, root = tmp,
@@ -223,6 +221,39 @@ comp.run()
   stopProcess(logfile)
   logfile = nil
 
+  # Overlapping configured patterns form one exact-once union rather than one
+  # independently delivered subscription per pattern.
+  let overlapDir = tmp / "overlap"
+  logfile = startComponent(logfileBin, url, root = tmp,
+    extra = [("NIF_LOGFILE_DIR", overlapDir),
+             ("NIF_LOGFILE_SUBJECTS", "ev.>,ev.log.>"),
+             ("NIF_LOGFILE_MAX_BYTES", "100000")])
+  check("overlap logfile starts", waitUntil(proc(): bool =
+    call(nc, "logfile", "logfile_paths", newJObject(), 500){"dir"}.getStr("") ==
+      overlapDir))
+  let overlapEvent = Envelope(v: 1, id: "overlap-once", kind: ekEvent,
+    payload: %*{"component": "overlap", "level": "info",
+                "msg": "overlap-once", "at": epochTime()})
+  nc.publish("ev.log.overlap", overlapEvent.encode())
+  nc.publish("raw.overlap", "overlap-unrelated")
+  var overlapSearch = newJObject()
+  let overlapWritten = waitUntil(proc(): bool =
+    overlapSearch = call(nc, "logfile", "logfile_search",
+      %*{"regex": "^overlap-once$"}, 1000)
+    overlapSearch{"count"}.getInt(0) >= 1)
+  sleep(250)
+  overlapSearch = call(nc, "logfile", "logfile_search",
+    %*{"regex": "^overlap-once$"}, 1000)
+  let unrelatedSearch = call(nc, "logfile", "logfile_search",
+    %*{"regex": "overlap-unrelated"}, 1000)
+  check("overlapping subject patterns persist one matching record",
+        overlapWritten and overlapSearch{"count"}.getInt(0) == 1,
+        $overlapSearch)
+  check("multi-pattern union filters unrelated subjects",
+        unrelatedSearch{"count"}.getInt(-1) == 0, $unrelatedSearch)
+  stopProcess(logfile)
+  logfile = nil
+
   # keep=0 explicitly discards the previous active generation on rotation.
   let zeroDir = tmp / "zero-retention"
   logfile = startComponent(logfileBin, url, root = tmp,
@@ -292,7 +323,7 @@ comp.run()
             oldLine & "\n" & boundaryLine & "\n")
   logfile = startComponent(logfileBin, url, root = tmp,
     extra = [("NIF_LOGFILE_DIR", boundaryDir),
-             ("NIF_LOGFILE_SCAN_BYTES", $(boundaryLine.len + 1))])
+             ("NIF_LOGFILE_SCAN_BYTES", $(boundaryLine.len + 2))])
   check("boundary logfile starts", waitUntil(proc(): bool =
     call(nc, "logfile", "logfile_paths", newJObject(), 1000){"dir"}.getStr("") == boundaryDir))
   let boundarySearch = call(nc, "logfile", "logfile_search",

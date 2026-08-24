@@ -23,11 +23,14 @@ proc main() =
   # the builder compiles with --path:<root>/sdk and picks up config.nims
   # from its cwd (pkgs2 resolution) — mirror those from the real root
   createSymlink(root / "sdk", tmp / "sdk")
-  copyFile(root / "config.nims", tmp / "config.nims")
+  writeFile(tmp / "config.nims", readFile(root / "config.nims") &
+    "\nswitch(\"nimcache\", thisDir() / \"var\" / \"nimcache\")\n")
   copyFile(root / "niffler.nimble", tmp / "niffler.nimble")
 
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
+  defer: nc.close()
 
   let builderProc = startComponent(bin, url, root = tmp)
   defer:
@@ -54,6 +57,19 @@ proc main() =
   check("builder nim build ok", r1{"ok"}.getBool(false), $r1)
   let tcompBin = tmp / "var" / "bin" / "tcomp"
   check("builder nim binary exists", fileExists(tcompBin), $r1)
+
+  let hyphenated = call(nc, "builder", "build",
+                        %*{"lang": "nim", "name": "hyphen-comp",
+                           "source": nimSrc}, 300_000)
+  check("builder supports hyphenated Nim component names",
+        hyphenated{"ok"}.getBool(false) and
+        fileExists(tmp / "var" / "bin" / "hyphen-comp"), $hyphenated)
+
+  let invalidName = call(nc, "builder", "build",
+                         %*{"lang": "nim", "name": "../escape",
+                            "source": nimSrc})
+  check("builder rejects unsafe component names",
+        not invalidName{"ok"}.getBool(false), $invalidName)
 
   # compile errors come back as ok:false with a useful tail
   let r2 = call(nc, "builder", "build",
@@ -119,9 +135,6 @@ proc main() =
 
   drain(nc)
   sleep(500)
-  server.terminate()
-  server.close()
-  nc.close()
   report("BUILDER TEST")
 
 main()

@@ -18,7 +18,9 @@ proc main() =
     quit(1)
 
   let (server, url) = startNats()
+  defer: stopServer(server)
   var nc = waitConnect(url)
+  defer: nc.close()
 
   # start console with its stdout redirected to a file (pipe streams don't
   # support peek/position — poll the file instead)
@@ -28,10 +30,10 @@ proc main() =
   var env = newStringTable(modeCaseSensitive)
   for (k, v) in envPairs():
     env[k] = v
-  env["NIF_ROOT"] = root
+  env["NIF_ROOT"] = tmp
   env["NIF_NATS_URL"] = url
   let consoleProc = startProcess("bash",
-      args = ["-c", quoteShell(bin) & " > " & quoteShell(outPath) & " 2>&1"],
+      args = ["-c", "exec " & quoteShell(bin) & " > " & quoteShell(outPath) & " 2>&1"],
       env = env, options = {poUsePath})
   defer:
     if consoleProc.running():
@@ -76,9 +78,6 @@ proc main() =
   consoleProc.terminate()
   sleep(200)
 
-  server.terminate()
-  server.close()
-  nc.close()
   report("CONSOLE TEST")
 
 main()

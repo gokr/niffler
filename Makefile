@@ -35,6 +35,12 @@ UI_INPUTS := $(shell find ui \( -path ui/build -o -path ui/frontend/node_modules
              -o -name package.json.md5 \) -prune -o -type f -print)
 
 UI_BIN := ui/build/bin/niffler-ui
+BUILD_LOCK := bash scripts/with-build-lock.sh
+TEST_LOCK  := bash scripts/with-build-lock.sh -s
+# Per-file recipes lock themselves unless a held lock is already active
+# (the `components` aggregate holds one exclusive lock around the whole
+# build generation and exports this marker to the inner sub-make).
+BUILD_WRAP = $(if $(NIF_LOCK_HELD),,$(BUILD_LOCK))
 
 # Commit hash shown in the About dialog (injected via -ldflags; the SPA no
 # longer embeds it — the header chip moved into the native About dialog).
@@ -42,10 +48,10 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components ui ui-install ui-uninstall run up down status \
+.PHONY: help all build components components-inner ui ui-install ui-uninstall run up down status \
         test test-bash test-store test-builder test-console test-plugins \
-        test-observe test-logfile test-core test-cli test-hashline test-smoke \
-        smoke dev clean \
+        test-observe test-logfile test-core test-cli test-hashline \
+        test-smoke smoke dev clean \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
 
@@ -76,45 +82,48 @@ var/bin:
 	@mkdir -p var/bin
 
 var/bin/niffler: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off -o:$@ core/niffler.nim
+	$(BUILD_WRAP) nim c --hints:off -o:$@ core/niffler.nim
 
 var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off -o:$@ core/session.nim
+	$(BUILD_WRAP) nim c --hints:off -o:$@ core/session.nim
 
 var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/store/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/store/main.nim
 
 var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/bash/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/bash/main.nim
 
 var/bin/hashline-edit: components/hashline-edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/hashline-edit/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/hashline-edit/main.nim
 
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
 
 var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
 
 var/bin/observe: components/observe/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/observe/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/observe/main.nim
 
 var/bin/logfile: components/logfile/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/logfile/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/logfile/main.nim
 
 var/bin/console: components/console/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/console/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/console/main.nim
 
 var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ components/cli/main.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/cli/main.nim
 
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
-	cd components/llm-openai && go build -o ../../var/bin/llm-openai .
+	$(BUILD_WRAP) bash -c 'cd components/llm-openai && go build -o ../../var/bin/llm-openai .'
 
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
-	cd components/llm && go build -o ../../var/bin/llm .
+	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
-components: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
+components:
+	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
+
+components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/builder var/bin/plugins var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/llm
 
@@ -130,7 +139,7 @@ $(UI_BIN): $(UI_INPUTS)
 		echo "wails CLI not found (looked at $(WAILS))."; \
 		echo "Install: make install-wails"; \
 		exit 1; fi
-	cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
+	$(BUILD_WRAP) cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
 		-ldflags "-X main.buildCommit=$(UI_COMMIT)"
 
 # Desktop integration (Linux): the appicon the window shows comes from the
@@ -150,6 +159,7 @@ ui-install: ui
 	cp ui/appicon-48.png $(ICON_DIR)/48x48/apps/niffler.png
 	cp ui/appicon-256.png $(ICON_DIR)/256x256/apps/niffler.png
 	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
+	-gtk-update-icon-cache -f $(ICON_DIR) 2>/dev/null || true
 	@echo "Launcher 'Niffler' installed (executable: $(BIN_DIR)/niffler-ui)."
 	@echo "You may need to log out and back in for the icon to appear."
 
@@ -169,12 +179,13 @@ run: build
 	./var/bin/niffler
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ tests/smoke.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/smoke.nim
 
 # ---------------------------------------------------------------------------
 # tests: one binary per tests/*.nim; `make test` runs the whole suite
-# sequentially (each boots its own NATS; none may run while a harness is
-# using this repo's var/barrel-db). Individual: make test-bash, test-store,
+# sequentially. Runtime state and NATS are isolated per test, so individual
+# test targets may run concurrently with each other and a live harness.
+# Individual: make test-bash, test-store,
 # test-builder, test-console, test-plugins, test-core, test-cli,
 # test-observe, test-logfile, test-hashline, test-smoke.
 
@@ -182,25 +193,25 @@ TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	nim c --hints:off --path:sdk -o:$@ tests/$*.nim
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/$*.nim
 
 test: build $(TEST_BINS)
-	@for t in $(TEST_BINS); do \
+	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
-		NIF_ROOT=$(ROOT) ./$$t || exit 1; \
-	done
+		env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./$$t || exit 1; \
+	done'
 
-test-bash:    build var/bin/test_t_bash    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_bash
-test-store:   build var/bin/test_t_store   ; NIF_ROOT=$(ROOT) ./var/bin/test_t_store
-test-builder: build var/bin/test_t_builder ; NIF_ROOT=$(ROOT) ./var/bin/test_t_builder
-test-console: build var/bin/test_t_console ; NIF_ROOT=$(ROOT) ./var/bin/test_t_console
-test-plugins: build var/bin/test_t_plugins ; NIF_ROOT=$(ROOT) ./var/bin/test_t_plugins
-test-core:    build var/bin/test_t_core    ; NIF_ROOT=$(ROOT) ./var/bin/test_t_core
-test-observe: build var/bin/test_t_observe ; NIF_ROOT=$(ROOT) ./var/bin/test_t_observe
-test-logfile: build var/bin/test_t_logfile ; NIF_ROOT=$(ROOT) ./var/bin/test_t_logfile
-test-cli:     build var/bin/test_t_cli     ; NIF_ROOT=$(ROOT) ./var/bin/test_t_cli
-test-hashline: build var/bin/test_t_hashline ; NIF_ROOT=$(ROOT) ./var/bin/test_t_hashline
-test-smoke:   build var/bin/test_smoke     ; NIF_ROOT=$(ROOT) ./var/bin/test_smoke
+test-bash:    build var/bin/test_t_bash    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_bash
+test-store:   build var/bin/test_t_store   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_store
+test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_builder
+test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
+test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
+test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core
+test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
+test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile
+test-cli:     build var/bin/test_t_cli     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli
+test-hashline: build var/bin/test_t_hashline ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hashline
+test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 
 smoke: test-smoke  # legacy alias
 
@@ -224,7 +235,7 @@ dev:
 	cd ui/frontend && npm run dev
 
 clean:
-	rm -rf var nimcache ui/build ui/frontend/node_modules ui/frontend/dist
+	$(BUILD_LOCK) rm -rf var nimcache ui/build ui/frontend/node_modules ui/frontend/dist
 
 # ---------------------------------------------------------------------------
 # prerequisites

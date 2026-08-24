@@ -65,13 +65,10 @@ proc main() =
   defer: removeDir(tmp)
 
   let (server, url) = startNats()
-  defer:
-    if server.running():
-      server.terminate()
-      sleep(200)
-    server.close()
+  defer: stopServer(server)
 
   var nc = waitConnect(url)
+  defer: nc.close()
   var comp = startComponent(bin, url, root = tmp,
                             extra = [("XDG_CONFIG_HOME", tmp / "config"),
                                      ("HOME", tmp)])
@@ -83,7 +80,7 @@ proc main() =
   check("hashline-edit registers", waitRegistered(nc, "hashline-edit"))
   if failures > 0:
     echo "hashline-edit never came up — aborting"
-    quit(1)
+    report("t_hashline")
 
   proc restartComponent() =
     if comp.running():
@@ -621,6 +618,5 @@ proc main() =
         readFile(tmp / "persist.txt") == "aaa\nBBB\nccc\n")
 
   report("t_hashline")
-  quit(0)
 
 main()

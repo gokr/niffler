@@ -3,58 +3,43 @@
 ## Spawns a NATS server, starts the bash component, waits for its
 ## registration, calls svc.bash.call with a call envelope, checks the reply.
 
-import std/[json, net, os, osproc, strtabs, strutils]
+import std/[json, os, osproc, strutils]
 import natswrapper
 import envelope
-import niffler/sdk
+import helpers
 
 proc main() =
   # init the NATS library (SDK does this in newComponent)
   let initSt = nats_Open(-1)
   if not checkStatus(initSt):
     echo "FAIL: nats_Open: " & getErrorString(initSt)
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
 
-  # spawn NATS on a free port
-  var s = newSocket()
-  s.bindAddr(Port(0))
-  let port = int(s.getLocalAddr()[1])
-  s.close()
-  let natsUrl = "nats://127.0.0.1:" & $port
-  let server = startProcess("nats-server", args = ["-p", $port],
-                            options = {poUsePath})
-
-  var nc: NatsConnection
-  var connected = false
-  for i in 0 ..< 40:
-    try:
-      nc = connect(natsUrl)
-      connected = true
-      break
-    except CatchableError:
-      sleep(100)
-  if not connected:
-    echo "FAIL: cannot connect to " & natsUrl
-    quit(1)
+  let (server, natsUrl) = startNats()
+  defer: stopServer(server)
+  var nc = waitConnect(natsUrl)
+  defer: nc.close()
 
   # start the bash component
-  let root = getEnv("NIF_ROOT", getAppDir().parentDir())
+  let root = getEnv("NIF_REPO_ROOT",
+                    getEnv("NIF_ROOT", getAppDir().parentDir()))
   let bashBin = root / "var" / "bin" / "bash"
   if not fileExists(bashBin):
     echo "FAIL: " & bashBin & " missing — run `nimble build` first"
-    quit(1)
-  var env = newStringTable(modeCaseSensitive)
-  env["NIF_ROOT"] = root
-  env["NIF_NATS_URL"] = natsUrl
-  let bashProc = startProcess(bashBin, workingDir = root, env = env,
-                              options = {poUsePath})
+    raise newException(AssertionDefect, "smoke test failed")
+  let runtimeRoot = tempRoot("smoke")
+  defer: removeDir(runtimeRoot)
+  var bashProc = startComponent(bashBin, natsUrl, root = runtimeRoot)
+  defer:
+    if bashProc != nil and bashProc.running(): bashProc.terminate()
+    if bashProc != nil: bashProc.close()
 
   # wait for registration on reg.publish
   var sub: ptr natsSubscription
   let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
   if not checkStatus(st):
     echo "FAIL: subscribe: " & getErrorString(st)
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   var registered = false
   for i in 0 ..< 100:
     var msg: ptr natsMsg
@@ -68,7 +53,7 @@ proc main() =
         break
   if not registered:
     echo "FAIL: bash never registered"
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   natsSubscription_Destroy(sub)
 
   # call svc.bash.call with a call envelope
@@ -79,18 +64,18 @@ proc main() =
                                  data.cstring, data.len.cint, 15000)
   if r != NATS_OK:
     echo "FAIL: request: " & getErrorString(r)
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   let resp = decode($natsMsg_GetData(reply))
   natsMsg_Destroy(reply)
   if resp.kind != ekResult:
     echo "FAIL: expected result, got " & $resp.kind & ": " & $resp
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   let exitCode = resp.args{"exit_code"}.getInt(-1)
   let output = resp.args{"output"}.getStr("")
   # last command in the chain is `echo done`, so exit code is 0
   if exitCode != 0 or not output.contains("hello-from-bash") or not output.contains("No such file") or not output.contains("done"):
     echo "FAIL: unexpected result: " & $resp.args
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: bash tool result: exit_code=" & $exitCode & " output=" & output.replace("\n", " | ")
 
   # graceful shutdown of the component
@@ -102,18 +87,18 @@ proc main() =
     bashProc.terminate()
     sleep(200)
   bashProc.close()
+  bashProc = nil
   echo if stillRunning: "WARN: bash ignored drain (killed)" else: "OK: bash drained and exited"
 
   # --- store round trip (barrel-backed document store) -----------------
   let storeBin = root / "var" / "bin" / "store"
   if not fileExists(storeBin):
     echo "FAIL: " & storeBin & " missing — run `nimble all` first"
-    quit(1)
-  var storeEnv = newStringTable(modeCaseSensitive)
-  storeEnv["NIF_ROOT"] = root
-  storeEnv["NIF_NATS_URL"] = natsUrl
-  let storeProc = startProcess(storeBin, workingDir = root, env = storeEnv,
-                               options = {poUsePath})
+    raise newException(AssertionDefect, "smoke test failed")
+  var storeProc = startComponent(storeBin, natsUrl, root = runtimeRoot)
+  defer:
+    if storeProc != nil and storeProc.running(): storeProc.terminate()
+    if storeProc != nil: storeProc.close()
   var storeUp = false
   for i in 0 ..< 100:
     sleep(100)
@@ -131,12 +116,12 @@ proc main() =
         storeUp = true
         if not resp2.args{"ok"}.getBool(false):
           echo "FAIL: store put: " & $resp2.args
-          quit(1)
+          raise newException(AssertionDefect, "smoke test failed")
         echo "OK: store put rev=" & $resp2.args{"rev"}.getInt(-1)
         break
   if not storeUp:
     echo "FAIL: store never came up"
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
 
   proc storeCall(tool: string, args: JsonNode): JsonNode =
     var msg: ptr natsMsg
@@ -146,20 +131,20 @@ proc main() =
                                    data.cstring, data.len.cint, 5000)
     if r != NATS_OK:
       echo "FAIL: store " & tool & ": " & getErrorString(r)
-      quit(1)
+      raise newException(AssertionDefect, "smoke test failed")
     result = decode($natsMsg_GetData(msg)).args
     natsMsg_Destroy(msg)
 
   let got = storeCall("get", %*{"kind": "test", "id": "doc1"})
   if not got{"ok"}.getBool(false) or got{"value"}{"hello"}.getStr("") != "world":
     echo "FAIL: store get: " & $got
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: store get " & $got{"value"}
 
   let listed = storeCall("list", %*{"kind": "test"})
   if not listed{"ok"}.getBool(false) or listed{"items"}.len != 1:
     echo "FAIL: store list: " & $listed
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: store list found " & $listed{"items"}.len & " doc"
 
   let updated = storeCall("put", %*{"kind": "test", "id": "doc1",
@@ -167,7 +152,7 @@ proc main() =
                                     "expectRev": got{"rev"}.getInt(0)})
   if not updated{"ok"}.getBool(false):
     echo "FAIL: store put expectRev: " & $updated
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: store put expectRev -> rev " & $updated{"rev"}.getInt(-1)
 
   let conflict = storeCall("put", %*{"kind": "test", "id": "doc1",
@@ -175,23 +160,24 @@ proc main() =
                                       "expectRev": 99})
   if conflict{"ok"}.getBool(false) or conflict{"code"}.getStr("") != "rev-conflict":
     echo "FAIL: store expectRev conflict: " & $conflict
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: store rev conflict detected"
 
   discard storeCall("del", %*{"kind": "test", "id": "doc1"})
   let gone = storeCall("get", %*{"kind": "test", "id": "doc1"})
   if gone{"ok"}.getBool(false) or gone{"code"}.getStr("") != "not-found":
     echo "FAIL: store del: " & $gone
-    quit(1)
+    raise newException(AssertionDefect, "smoke test failed")
   echo "OK: store del -> not-found"
 
   nc.publish("ev.sys.drain", drainEnv.encode())
   sleep(500)
+  if storeProc.running():
+    storeProc.terminate()
+    sleep(200)
   storeProc.close()
+  storeProc = nil
 
-  server.terminate()
-  server.close()
-  nc.close()
   echo "SMOKE TEST PASSED"
 
 main()
