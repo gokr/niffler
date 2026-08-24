@@ -21,7 +21,7 @@
 ## - Teardown = exit; the OS is the disposer. On SIGTERM/SIGINT/ev.sys.drain
 ##   we announce reg.depart, finish the current message, then quit.
 
-import std/[json, monotimes, os, strutils, tables, times]
+import std/[json, monotimes, os, osproc, strutils, strtabs, tables, times]
 import std/macros
 import natswrapper
 import ../envelope
@@ -54,6 +54,7 @@ type
   Component* = ref object
     name*: string
     version*: string
+    client*: bool  ## interactive frontend (reg.publish carries "client": true)
     tools*: seq[Tool]
     eventHandlers*: seq[tuple[pattern: string, handler: EventHandler]]
     taps*: seq[tuple[pattern: string, handler: TapHandler]]
@@ -239,9 +240,126 @@ proc regPayload(c: Component): JsonNode =
     toolsJson.add(%*{"name": t.name, "schema": t.schema})
   result = %*{"name": c.name, "version": c.version,
               "pid": getCurrentProcessId(), "tools": toolsJson}
+  if c.client:
+    result["client"] = %true
 
 proc announce(c: Component, subject: string) =
   c.nc.publish(subject, $c.regPayload())
+
+# ---------------------------------------------------------------------------
+# Harness discovery + ensure — for interactive clients (UIs, terminal
+# frontends) that should "just work": attach to the running harness, or
+# start one. A core spawned this way runs UI-owned (NIF_AUTOSTART=1): it
+# exits when the last interactive client (interactive() marker) departs.
+
+proc interactive*(c: Component): Component =
+  ## Mark this component as an interactive frontend: registrations carry
+  ## "client": true and an autostarted core stays alive while at least one
+  ## interactive client is registered (and exits when the last one departs).
+  c.client = true
+  return c
+
+proc resolveNatsUrl*(root = ""): string =
+  ## Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
+  ## the well-known local default.
+  result = getEnv("NIF_NATS_URL")
+  if result.len > 0: return
+  let r = if root.len > 0: root else: getEnv("NIF_ROOT", ".")
+  let disc = r / "var" / "nats-url"
+  if fileExists(disc):
+    let u = readFile(disc).strip()
+    if u.len > 0: return u
+  return "nats://127.0.0.1:4222"
+
+proc coreAnswers*(url: string, timeoutMs = 500): bool =
+  ## Is a live core answering svc.core.call on this bus?
+  ensureLib()
+  try:
+    var nc = natswrapper.connect(url)
+    defer: nc.close()
+    let data = callEnvelope("catalog", %*{"op": "list"}).encode()
+    var msg: ptr natsMsg
+    let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call".cstring,
+                                    data.cstring, data.len.cint, timeoutMs.int64)
+    if st != NATS_OK: return false
+    defer: natsMsg_Destroy(msg)
+    return decode(messageData(msg)).kind == ekResult
+  except CatchableError:
+    return false
+
+var lastSpawnedCore: Process  # daemon child; reaped on the next ensure
+
+proc reapSpawnedCore() =
+  if lastSpawnedCore != nil and lastSpawnedCore.peekExitCode() != -1:
+    discard lastSpawnedCore.waitForExit(100)
+    lastSpawnedCore.close()
+  lastSpawnedCore = nil
+
+proc candidateUrls(r: string): seq[string] =
+  ## Discovery file first (core's actual bus), then the well-known port.
+  let disc = r / "var" / "nats-url"
+  if fileExists(disc):
+    let u = readFile(disc).strip()
+    if u.len > 0:
+      result.add(u)
+  result.add("nats://127.0.0.1:4222")
+
+proc ensureHarness*(root = ""): string =
+  ## Attach to the running harness, or start one for this root. Probe order:
+  ## NIF_NATS_URL (explicit always wins — nothing is spawned), core's
+  ## discovery file, the well-known port. If no core answers anywhere, spawn
+  ## <root>/var/bin/niffler detached with NIF_AUTOSTART=1; that core exits
+  ## when the last interactive client departs. Returns the bus URL (also
+  ## exported as NIF_NATS_URL so run()/Connect picks it up).
+  let explicit = getEnv("NIF_NATS_URL")
+  if explicit.len > 0:
+    return explicit
+  let r = if root.len > 0: root else: getEnv("NIF_ROOT")
+  if r.len == 0:
+    raise newException(ValueError,
+      "ensureHarness: no harness root (pass it or set NIF_ROOT)")
+  reapSpawnedCore()
+  # Probe for ~10s (NIF_ENSURE_ATTACH=0 skips attach entirely — tests):
+  # covers an already-running core, a stale discovery file, and a sibling UI
+  # that is spawning core right now.
+  if getEnv("NIF_ENSURE_ATTACH", "1") != "0":
+    let probeUntil = epochTime() + 10.0
+    while true:
+      for url in candidateUrls(r):
+        if coreAnswers(url):
+          os.putEnv("NIF_NATS_URL", url)
+          return url
+      if epochTime() >= probeUntil:
+        break
+      sleep(200)
+  let coreBin = r / "var" / "bin" / "niffler"
+  if not fileExists(coreBin):
+    raise newException(IOError, "no harness running and core binary missing: " &
+      coreBin & " — run `make build`")
+  var env = newStringTable(modeCaseSensitive)
+  for (k, v) in envPairs():
+    env[k] = v
+  env["NIF_ROOT"] = r
+  env["NIF_AUTOSTART"] = "1"
+  lastSpawnedCore = startProcess(coreBin, workingDir = r, env = env,
+                                 options = {poUsePath, poDaemon})
+  # Trust only OUR core now: another harness may be live on the well-known
+  # port — attaching to it would orphan the child we just spawned.
+  let spawnUntil = epochTime() + 20.0
+  while epochTime() < spawnUntil:
+    let code = lastSpawnedCore.peekExitCode()
+    if code != -1:
+      raise newException(IOError,
+        "spawned core exited immediately (code " & $code & ")")
+    let disc = r / "var" / "nats-url"
+    if fileExists(disc):
+      let u = readFile(disc).strip()
+      if u.len > 0 and coreAnswers(u):
+        os.putEnv("NIF_NATS_URL", u)
+        return u
+    sleep(200)
+  raise newException(IOError,
+    "spawned core did not answer within 20s — check " & r)
 
 proc handleMsg(c: Component, binding: SubscriptionBinding,
                msg: ptr natsMsg) =

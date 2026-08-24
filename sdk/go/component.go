@@ -55,6 +55,11 @@ type tapBinding struct {
 type Component struct {
 	Name    string
 	Version string
+	// Client marks this component as an interactive frontend (UI): its
+	// registration carries "client": true and an autostarted core (see
+	// EnsureHarness) stays alive while at least one interactive client is
+	// registered, exiting when the last one departs.
+	Client bool
 
 	nc           *nats.Conn
 	tools        []Tool
@@ -381,6 +386,9 @@ func (c *Component) announce(subject string) error {
 	}
 	payload := map[string]any{
 		"name": c.Name, "version": c.Version, "pid": os.Getpid(), "tools": tools,
+	}
+	if c.Client {
+		payload["client"] = true
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

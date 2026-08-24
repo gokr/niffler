@@ -62,7 +62,7 @@ make down             # stop what `make up` started (UI, core, spawned bus)
 make status
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_models, t_observe,
-                      # t_logfile, t_core, t_cli, t_hashline — each
+                      # t_logfile, t_core, t_cli, t_hashline, t_autostart — each
                       # owns a private NATS server + temporary NIF_ROOT, so
                       # component targets can overlap a live harness
 make gotest           # Go unit tests + vet: sdk/go, components/models, llm

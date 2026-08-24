@@ -28,6 +28,10 @@ Rules:
 - A request carrying malformed JSON or a non-`call` envelope receives a
   `bad-envelope` error when it has a reply subject. Decodable inputs preserve
   their envelope id in that reply.
+- Interactive frontends (UIs) register with `"client": true` in reg.publish.
+  A core spawned with `NIF_AUTOSTART=1` (the SDK's `ensureHarness`) exits
+  when the last interactive client departs; a manually started core never
+  self-terminates.
 - Streaming: a caller may send `call` frames, each carrying a chunk, and a
   final `result` frame with `done: true` (custom field). `ev.*` streams
   (LLM tokens) are chunked events on a dedicated subject instead.
@@ -36,8 +40,8 @@ Rules:
 
 ```
 reg.publish            # component announces itself on connect
-                       #   {name, version, pid, tools: [ {name, schema} ]}
-reg.depart             # same shape, graceful shutdown
+                       #   {name, version, pid, tools: [ {name, schema} ], client?}
+reg.depart             # same shape (name suffices), graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content} — one turn; emits ev.session.*

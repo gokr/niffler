@@ -19,6 +19,7 @@ type
     name*: string
     version*: string
     pid*: int
+    client*: bool       ## interactive frontend (UI) — keeps an autostarted core alive
     tools*: seq[ToolReg]
     registeredAt*: float  ## epochTime of reg.publish (uptime for UIs)
 
@@ -148,6 +149,7 @@ proc handle(cat: Catalog, subject, data: string) =
     var reg = ComponentReg(name: name,
                            version: node{"version"}.getStr(""),
                            pid: node{"pid"}.getInt(0),
+                           client: node{"client"}.getBool(false),
                            registeredAt: epochTime())
     for t in node{"tools"}:
       let tname = t{"name"}.getStr("")
@@ -179,6 +181,12 @@ proc applyReg*(cat: Catalog, node: JsonNode) =
   ## had arrived on reg.publish — used by session runners to seed their
   ## catalog from the system's snapshot taken at startup.
   handle(cat, "reg.publish", $node)
+
+proc clientCount*(cat: Catalog): int =
+  ## Registered interactive frontends (reg.publish with "client": true).
+  ## An autostarted core exits when this returns to zero.
+  for comp in cat.components.values:
+    if comp.client: inc result
 
 proc dropComponent*(cat: Catalog, name: string) =
   ## Called by the supervisor when a child process dies (crash — no reg.depart).

@@ -174,7 +174,8 @@ proc main() =
   echo "core: connected to " & natsUrl
   # Publish discovery only after the bus is reachable; failed starts must not
   # leave a plausible but stale monitor endpoint behind. The spawned-bus PID
-  # lets scripts/niffler.sh stop exactly this server later.
+  # lets an operator (or a later cleanup) stop exactly this server if core
+  # dies without running its own teardown.
   try:
     createDir(root / "var")
     writeFile(root / "var" / "nats-url", natsUrl & "\n")
@@ -272,6 +273,13 @@ proc main() =
   # --- 5. service surface ----------------------------------------------------
   # tty stdin: the admin shell (status commands — core/tty.nim). Otherwise:
   # serve svc.core.call for UIs (session ensure+forward to runners, spawn/catalog).
+  # NIF_AUTOSTART=1 (set by an SDK's ensureHarness when a UI had to spawn us):
+  # this core is UI-owned service — it exits when the last interactive client
+  # (reg.publish client:true) departs, or if none ever arrives. A manually
+  # started core (no marker) never self-terminates on client churn.
+  let autostart = getEnv("NIF_AUTOSTART") == "1"
+  let idleAfter = parseFloat(getEnv("NIF_AUTOSTART_IDLE_S", "10"))
+  let bootGrace = parseFloat(getEnv("NIF_AUTOSTART_BOOT_S", "60"))
   var coreSub: ptr natsSubscription
   let cs = natsConnection_QueueSubscribeSync(addr coreSub, nc.conn,
                                              "svc.core.call".cstring,
@@ -281,7 +289,7 @@ proc main() =
   ct.coreSub = coreSub
   echo "core: serving svc.core.call (session ensures+forwards to runners, spawn/catalog)"
 
-  if isatty(stdin):
+  if isatty(stdin) and not autostart:
     try:
       runAdminShell(ct,
         proc() = (pumpCoreCalls(ct, coreSub); cat.pump(); sup.pump(cat)),
@@ -292,10 +300,30 @@ proc main() =
       echo "core: " & e.msg
   else:
     echo "core: service mode (no tty) — serving svc.core.call"
+    if autostart:
+      echo "core: autostarted by a UI — exits when the last interactive client departs"
+    var sawClients = false
+    var lastClientLeft = 0.0
+    let bootedAt = epochTime()
     while not gStop:
       pumpCoreCalls(ct, coreSub)
       cat.pump()
       sup.pump(cat)
+      if autostart:
+        let clients = cat.clientCount()
+        if clients > 0:
+          sawClients = true
+          lastClientLeft = 0.0
+        elif sawClients:
+          # debounce: a restarting UI re-registers within the idle window
+          if lastClientLeft == 0.0:
+            lastClientLeft = epochTime()
+          elif epochTime() - lastClientLeft >= idleAfter:
+            echo "core: last interactive client departed — autostarted harness shutting down"
+            break
+        elif epochTime() - bootedAt >= bootGrace:
+          echo "core: no interactive client arrived within boot grace — shutting down"
+          break
       sleep(20)
 
   # --- 6. teardown ----------------------------------------------------------

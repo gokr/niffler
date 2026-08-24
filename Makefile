@@ -51,7 +51,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run up down status \
         test test-bash test-store test-builder test-console test-plugins \
         test-models test-observe test-logfile test-core test-cli test-hashline \
-        test-smoke smoke dev clean gotest \
+        test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
 
@@ -142,8 +142,8 @@ $(UI_BIN): $(UI_INPUTS)
 		echo "wails CLI not found (looked at $(WAILS))."; \
 		echo "Install: make install-wails"; \
 		exit 1; fi
-	$(BUILD_WRAP) cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
-		-ldflags "-X main.buildCommit=$(UI_COMMIT)"
+	$(BUILD_WRAP) bash -c 'cd ui && "$(WAILS)" build $(UI_TAGS) -nopackage \
+		-ldflags "-X main.buildCommit=$(UI_COMMIT)"'
 
 # Desktop integration (Linux): the appicon the window shows comes from the
 # embedded icon in main.go, but the launcher/taskbar icon needs a desktop
@@ -216,6 +216,7 @@ test-models:  build var/bin/test_t_models  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-cli:     build var/bin/test_t_cli     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli
 test-hashline: build var/bin/test_t_hashline ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hashline
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
+test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_autostart
 
 smoke: test-smoke  # legacy alias
 
