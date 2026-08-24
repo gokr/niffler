@@ -12,6 +12,7 @@ bin           = @[]
 
 requires "nim >= 2.2.10"
 requires "yaml"
+requires "htmlparser"
 requires "https://github.com/gokr/natswrapper"
 requires "https://github.com/gokr/bitbarrel"
 
@@ -23,14 +24,18 @@ task all-internal, "Unlocked internal build — invoke through `all` (or the Mak
   exec "nim c --hints:off --path:sdk -o:var/bin/store components/store/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/bash components/bash/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/hashline-edit components/hashline-edit/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/grep components/grep/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/write components/write/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/builder components/builder/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/plugins components/plugins/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/skills components/skills/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/observe components/observe/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/logfile components/logfile/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."
   exec "cd components/models && go build -o ../../var/bin/models ."
+  exec "cd components/provider && go build -o ../../var/bin/provider ."
   exec "cd components/llm && go build -o ../../var/bin/llm ."
 
 task all, "Build core and all shipped components (whole generation under the shared build lock)":

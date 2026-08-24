@@ -5,6 +5,12 @@
 // override and a provider nickname table. The tiny `llm-openai` component
 // stays as the minimal example implementation.
 //
+// Provider resolution: an explicit `provider` arg picks a named provider
+// from NIF_LLM_PROVIDERS; the default resolves through the provider
+// component's active provider (live-updates on provider_switch), falling
+// back to NIF_OPENAI_* when the component is absent or has no active
+// provider.
+//
 // Protocol (evolved from llm-openai, same result shape):
 //   chat {messages, tools?, model?, provider?, sessionId?, stream?}
 //   → result {content, reasoning?, tool_calls?, model, context, usage?}
@@ -159,6 +165,74 @@ func providerNames(ps map[string]provider) string {
 	return strings.Join(names, ", ")
 }
 
+// resolveProvider picks the connection for a chat call. An explicit
+// `provider` arg resolves through the NIF_LLM_PROVIDERS table; the default
+// resolves through the provider component's active provider when one is
+// active, else the NIF_OPENAI_* environment default.
+func resolveProvider(c *sdk.Component, name string) (provider, string, error) {
+	if name != "" {
+		return envProvider(name)
+	}
+	if p, nickname, ok := activeStoredProvider(c); ok {
+		return p, nickname, nil
+	}
+	return envProvider(defaultProvider)
+}
+
+// envProvider looks up a named provider in the environment tables.
+func envProvider(name string) (provider, string, error) {
+	providers, err := loadProviders()
+	if err != nil {
+		return provider{}, "", err
+	}
+	p, ok := providers[name]
+	if !ok {
+		return provider{}, "", fmt.Errorf("unknown provider %q (have: %s)", name, providerNames(providers))
+	}
+	if p.APIKey == "" {
+		return provider{}, "", fmt.Errorf("provider %q: no API key (set NIF_OPENAI_API_KEY or NIF_LLM_PROVIDERS apiKey)", name)
+	}
+	return p, name, nil
+}
+
+// activeStoredProvider asks the provider component for its active provider.
+// Returns ok=false when the component is absent, has no active provider, or
+// the lookup fails — the caller falls back to the environment. Because the
+// answer is re-read per chat call, provider_switch live-updates the backend
+// with no further coordination.
+func activeStoredProvider(c *sdk.Component) (provider, string, bool) {
+	if c == nil {
+		return provider{}, "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	raw, err := c.RequestContext(ctx, "provider", "provider_active", map[string]any{})
+	if err != nil {
+		return provider{}, "", false
+	}
+	var resp struct {
+		Ok       bool `json:"ok"`
+		Provider *struct {
+			Nickname string `json:"nickname"`
+			APIKey   string `json:"apiKey"`
+			BaseURL  string `json:"baseUrl"`
+			Model    string `json:"model"`
+			Catalog  string `json:"catalog"`
+			Context  int    `json:"context"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Ok || resp.Provider == nil || resp.Provider.APIKey == "" {
+		return provider{}, "", false
+	}
+	return provider{
+		BaseURL: resp.Provider.BaseURL,
+		APIKey:  resp.Provider.APIKey,
+		Model:   resp.Provider.Model,
+		Catalog: resp.Provider.Catalog,
+		Context: resp.Provider.Context,
+	}, resp.Provider.Nickname, true
+}
+
 // ---------------------------------------------------------------------------
 // chat tool
 
@@ -180,20 +254,9 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("messages required")
 	}
 
-	providers, err := loadProviders()
+	p, providerName, err := resolveProvider(c, args.Provider)
 	if err != nil {
 		return nil, err
-	}
-	key := args.Provider
-	if key == "" {
-		key = defaultProvider
-	}
-	p, ok := providers[key]
-	if !ok {
-		return nil, fmt.Errorf("unknown provider %q (have: %s)", key, providerNames(providers))
-	}
-	if p.APIKey == "" {
-		return nil, fmt.Errorf("provider %q: no API key (set NIF_OPENAI_API_KEY or NIF_LLM_PROVIDERS apiKey)", key)
 	}
 	model := args.Model
 	if model == "" {
@@ -224,7 +287,7 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		defer unsub()
 	}
 
-	contextSize := contextWindow(streamCtx, c, p, key, model)
+	contextSize := contextWindow(streamCtx, c, p, providerName, model)
 
 	if args.Stream {
 		return chatStream(streamCtx, c, client, model, args, contextSize)
@@ -375,7 +438,7 @@ func main() {
 			"model": map[string]any{"type": "string",
 				"description": "Override the provider's default model"},
 			"provider": map[string]any{"type": "string",
-				"description": "Provider nickname from NIF_LLM_PROVIDERS (default: default)"},
+				"description": "Provider nickname from NIF_LLM_PROVIDERS (default: the provider component's active provider, else NIF_OPENAI_*)"},
 			"sessionId": map[string]any{"type": "string",
 				"description": "Session handle for ev.llm.token routing and llm.cancel.<sessionId> cancellation"},
 			"stream": map[string]any{"type": "boolean",

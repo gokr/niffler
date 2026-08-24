@@ -18,6 +18,7 @@ core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
                      ├── observe + logfile (Nim SDK)
                      ├── models (Go SDK)     ← pluggable model catalog
+                     ├── provider (Go SDK)   ← store-backed LLM provider registry
                      ├── hashline-edit (Nim SDK)
                      ├── llm (Go SDK)
                      └── your tool (any language with an SDK port)
@@ -29,8 +30,8 @@ adapter — is a separate process component with its own language's SDK.
 
 The shipped set proves the multi-language point: `bash`, `builder`,
 `store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli` and `console` are written
-against the Nim SDK, while the model catalog `models` and LLM adapter `llm`
-are deliberately in Go —
+against the Nim SDK, while the model catalog `models`, the LLM adapter `llm`
+and the provider registry `provider` are deliberately in Go —
 and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
 any of the three languages mid-conversation.
 
@@ -295,6 +296,11 @@ to CI any plugin repo — Niffler testing itself.
       validated atomic cache, strict model resolution, searchable capabilities/
       limits/pricing, and deterministic `x-models-source` plugin patches with
       last-known-good fallback; `llm` consumes its context metadata
+- [x] **provider component** — store-backed LLM provider registry
+      (add/list/switch/active/remove/export/import, keys never leaked on
+      list), `ev.provider.switch` notifications, and live backend switching:
+      `llm` resolves its default provider from the active stored one and
+      falls back to `NIF_OPENAI_*` / `NIF_LLM_PROVIDERS` when absent
 - [x] **observe component** — one exact raw-bus tap, bounded live ring and
       listen/trace probes, request/reply correlation, safe capture exports,
       and core-discovered nats-server monitoring

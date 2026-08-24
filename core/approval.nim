@@ -87,6 +87,11 @@ proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   ## Returns true when the call may proceed.
   if getEnv("NIF_AUTO_APPROVE") == "1":
     return true
-  if a.tty:
+  # Route to the UI whenever an interactive client (web UI) is driving the
+  # session, even if core's own stdin happens to be a tty (core spawned from
+  # a terminal while the user interacts through the UI). Fall back to the
+  # tty prompt only when core is on a terminal AND no UI is attached
+  # (classic terminal-harness usage).
+  if a.cat.clientCount() == 0 and a.tty:
     return askTty(tool, args)
   return askUi(a, tool, args)

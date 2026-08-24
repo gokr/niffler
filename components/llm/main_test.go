@@ -27,3 +27,91 @@ func TestInferCatalogProviderPrefersEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func withEnv(t *testing.T, set, unset map[string]string) {
+	t.Helper()
+	for k := range set {
+		t.Setenv(k, set[k])
+	}
+	for k := range unset {
+		t.Setenv(k, unset[k])
+	}
+}
+
+func TestLoadProvidersParsesEnvTable(t *testing.T) {
+	withEnv(t,
+		map[string]string{
+			"NIF_OPENAI_BASE_URL": "https://api.deepseek.com",
+			"NIF_OPENAI_MODEL":    "deepseek-chat",
+			"NIF_OPENAI_API_KEY":  "sk-env",
+			"NIF_LLM_PROVIDERS": `{"openrouter": {"baseUrl": "https://openrouter.ai/api/v1",
+				"apiKey": "sk-or", "model": "deepseek/deepseek-chat", "catalog": "openrouter"}}`,
+		},
+		nil)
+
+	ps, err := loadProviders()
+	if err != nil {
+		t.Fatalf("loadProviders: %v", err)
+	}
+	def, ok := ps[defaultProvider]
+	if !ok {
+		t.Fatalf("default provider missing")
+	}
+	if def.BaseURL != "https://api.deepseek.com" || def.APIKey != "sk-env" || def.Model != "deepseek-chat" {
+		t.Fatalf("default provider wrong: %+v", def)
+	}
+	or, ok := ps["openrouter"]
+	if !ok {
+		t.Fatalf("openrouter provider missing")
+	}
+	if or.BaseURL != "https://openrouter.ai/api/v1" || or.APIKey != "sk-or" || or.Catalog != "openrouter" {
+		t.Fatalf("openrouter provider wrong: %+v", or)
+	}
+}
+
+func TestLoadProvidersRejectsBadEnvTable(t *testing.T) {
+	withEnv(t, map[string]string{"NIF_LLM_PROVIDERS": "{not json"}, nil)
+	if _, err := loadProviders(); err == nil {
+		t.Fatalf("expected parse error for bad NIF_LLM_PROVIDERS")
+	}
+}
+
+func TestEnvProviderResolution(t *testing.T) {
+	withEnv(t,
+		map[string]string{
+			"NIF_OPENAI_BASE_URL": "https://api.deepseek.com",
+			"NIF_OPENAI_API_KEY":  "sk-env",
+		},
+		map[string]string{"NIF_LLM_PROVIDERS": ""})
+
+	// explicit unknown name errors with the known list
+	if _, _, err := envProvider("nope"); err == nil {
+		t.Fatalf("expected error for unknown provider")
+	}
+	// default resolves from NIF_OPENAI_*
+	p, name, err := envProvider(defaultProvider)
+	if err != nil {
+		t.Fatalf("envProvider(default): %v", err)
+	}
+	if name != defaultProvider || p.APIKey != "sk-env" {
+		t.Fatalf("got %+v (%q)", p, name)
+	}
+	// missing key is an error
+	withEnv(t, map[string]string{"NIF_OPENAI_API_KEY": ""}, nil)
+	if _, _, err := envProvider(defaultProvider); err == nil {
+		t.Fatalf("expected error when no API key")
+	}
+}
+
+func TestResolveProviderFallsBackToEnvWithoutStore(t *testing.T) {
+	// No provider component on the bus (nil component never reaches NATS):
+	// the default must fall back to the environment, not hang or fail.
+	withEnv(t, map[string]string{"NIF_OPENAI_API_KEY": "sk-env"}, nil)
+	p, name, err := resolveProvider(nil, "")
+	if err != nil {
+		t.Fatalf("resolveProvider(nil): %v", err)
+	}
+	if name != defaultProvider || p.APIKey != "sk-env" {
+		t.Fatalf("got %+v (%q)", p, name)
+	}
+}

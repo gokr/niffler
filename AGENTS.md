@@ -17,7 +17,8 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `hashline-edit`, `observe`, `logfile`, `models`, `llm` are peers. Adding a capability = write source → `builder.build`
+  `plugins`, `hashline-edit`, `observe`, `logfile`, `models`, `provider`, `llm`
+  are peers. Adding a capability = write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.

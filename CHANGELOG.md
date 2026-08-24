@@ -30,6 +30,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ev.models.updated`. `llm` resolves each model's context window through
   the catalog (per-provider override → `NIF_OPENAI_CONTEXT` → catalog →
   built-in fallback), so core's context guard uses real provider metadata.
+- **provider component** — a Go component turning the LLM backend
+  configuration into store records (kind `provider`, docs/MANUAL.md
+  "Provider registry"): `provider_add`/`list`/`switch`/`active`/`remove`/
+  `export`/`import`, with the first added provider becoming active, keys
+  never leaked by `provider_list`, active-fallback on removal, and
+  `ev.provider.switch {nickname, previous, at}` notifications on every
+  switch. `llm` now resolves its default backend from the active stored
+  provider on each chat call — `provider_switch` live-updates the LLM
+  backend with no restart — falling back to `NIF_OPENAI_*` and
+  `NIF_LLM_PROVIDERS` when the component is absent or nothing is active.
+  Secret-handling tools (`add`/`import`/`export`) are approval-gated.
 - **isolated concurrent tests** — every bus-contract test owns a
   NATS-assigned loopback port and writable temporary `NIF_ROOT`; core tests
   snapshot only their required binaries, agent-built Nim components use a
@@ -113,7 +124,8 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actually saw; persistent per-file anchor store; stale-range
   protection.
 - **Bus-contract test suite** — `tests/helpers.nim` + one `t_*.nim` per
-  non-LLM component (bash, store, builder, console, plugins, core, cli),
+-  non-LLM component (bash, store, builder, console, plugins, models,
+  observe, logfile, hashline-edit, core, cli, autostart),
   each booting the real binaries over its own throwaway NATS and driving
   them with envelopes (the envelope is the artifact — one harness tests
   Nim and Go components alike). `make test` runs the suite;
@@ -165,6 +177,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Bus discovery prefers the canonical port** — when core spawns its own
+  `nats-server` it now tries `127.0.0.1:4222` first (the port local clients
+  default to) and falls back to a random loopback port only when 4222 is
+  taken — a failed bind makes nats-server exit immediately, which retries
+  with `-p -1`. `cli`/`console` resolve the bus as `NIF_NATS_URL` →
+  `var/nats-url` → 4222, with a clear connect error instead of a silent hang.
 - **Session turns run in per-session runner processes** — the session
   service moved out of the system process into `var/bin/session <id>`
   (see Added); the system harness only ensures a runner per conversation
@@ -187,6 +205,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Approval prompts go to the driving UI** — when an interactive client
+  (web UI) is attached, approval requests route to its dialog even if
+  core's own stdin happens to be a tty (core spawned from a terminal while
+  the user interacts through the UI). The terminal y/N prompt is used only
+  when core is on a terminal AND no UI is attached.
 - **Core↔component re-entry deadlock** — a component calling back into
   core during a session turn (`plugin_install` → `core.spawn`) used to
   deadlock: core waited for the install's reply while the install waited

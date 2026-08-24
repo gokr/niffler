@@ -33,9 +33,23 @@ components:
     required: false
     restart: on-failure
 
+  - name: skills
+    build: {lang: nim, src: components/skills/main.nim}
+    binary: var/bin/skills
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: models
     build: {lang: go, src: components/models}
     binary: var/bin/models
+    autostart: true
+    required: false
+    restart: on-failure
+
+  - name: provider
+    build: {lang: go, src: components/provider}
+    binary: var/bin/provider
     autostart: true
     required: false
     restart: on-failure
@@ -50,6 +64,20 @@ components:
   - name: hashline-edit
     build: {lang: nim, src: components/hashline-edit/main.nim}
     binary: var/bin/hashline-edit
+    autostart: true
+    required: false
+    restart: on-failure
+
+  - name: grep
+    build: {lang: nim, src: components/grep/main.nim}
+    binary: var/bin/grep
+    autostart: true
+    required: false
+    restart: on-failure
+
+  - name: write
+    build: {lang: nim, src: components/write/main.nim}
+    binary: var/bin/write
     autostart: true
     required: false
     restart: on-failure

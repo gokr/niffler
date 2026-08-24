@@ -46,7 +46,7 @@
     writes, compiles and spawns its own tools while you talk to it.
   </p>
   <div class="hero-cta">
-    <a class="btn btn-primary" href="#quickstart">make up</a>
+    <a class="btn btn-primary" href="#quickstart">make && niffler-ui</a>
     <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github →</a>
   </div>
   <div class="badges">
@@ -62,11 +62,11 @@
       <span class="term-title">gokr@dev: ~/niffler</span>
     </div>
     <div class="term-body">
-      <p><span class="p">$</span> make up</p>
-      <p class="dim">build core + components + desktop UI · ensure bus + core · open UI</p>
+      <p><span class="p">$</span> make && ui/build/bin/niffler-ui</p>
+      <p class="dim">build core + components + desktop UI · the UI autostarts the harness</p>
       <p class="dim">→ spawning nats-server on 127.0.0.1:4222</p>
       <p class="dim">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: bash v0.1.0, builder v0.1.0, store v0.1.0, plugins v0.1.0, hashline-edit v0.1.0, llm v0.1.0</p>
+      <p class="dim">→ catalog: bash v0.1.0, builder v0.1.0, store v0.1.0, plugins v0.1.0, models v0.1.0, provider v0.1.0, hashline-edit v0.1.0, observe v0.1.0, logfile v0.1.0, llm v0.1.0</p>
       <p><span class="p">$</span> <span class="typed"></span><span class="cursor">▌</span></p>
     </div>
   </div>
@@ -128,6 +128,10 @@
       <div class="box">store<br><span class="box-lang">nim sdk</span></div>
       <div class="box">plugins<br><span class="box-lang">nim sdk</span></div>
       <div class="box">hashline-edit<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">observe<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">logfile<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">models<br><span class="box-lang">go sdk</span></div>
+      <div class="box">provider<br><span class="box-lang">go sdk</span></div>
       <div class="box">llm<br><span class="box-lang">go sdk</span></div>
       <div class="box box-your">your tool<br><span class="box-lang">any language</span></div>
     </div>
@@ -181,10 +185,11 @@
       <div class="term-body">
         <p><span class="p">$</span> git clone git@github.com:gokr/niffler.git && cd niffler</p>
         <p><span class="p">$</span> make setup        <span class="dim"># prerequisites (Ubuntu / macOS)</span></p>
-        <p><span class="p">$</span> make up           <span class="dim"># build, bus, core, desktop UI</span></p>
-        <p><span class="p">$</span> make test         <span class="dim"># bus-contract suite — 8 tests, one per component</span></p>
+        <p><span class="p">$</span> make              <span class="dim"># build core + components + desktop UI, once</span></p>
+        <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim"># or click the desktop icon — autostarts the harness</span></p>
+        <p><span class="p">$</span> make test         <span class="dim"># bus-contract suite — 12 contract tests + smoke + go tests</span></p>
         <p class="dim">│</p>
-        <p class="dim">└─ make down / status / recover · see docs/MANUAL.md</p>
+        <p class="dim">└─ make run / recover / dev · see docs/MANUAL.md</p>
       </div>
     </div>
     <div class="qs-side">
@@ -216,6 +221,10 @@
         <tr><td>store</td><td>nim</td><td>document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
         <tr><td>plugins</td><td>nim</td><td>component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
         <tr><td>hashline-edit</td><td>nim</td><td>hash-anchored file editing: <code>read</code>/<code>replace</code>/<code>undo_last_replace</code> on stable line anchors</td></tr>
+        <tr><td>observe</td><td>nim</td><td>live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
+        <tr><td>logfile</td><td>nim</td><td>durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
+        <tr><td>models</td><td>go</td><td>models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
+        <tr><td>provider</td><td>go</td><td>store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
         <tr><td>llm</td><td>go</td><td>streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
         <tr><td>cli</td><td>nim</td><td>drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
         <tr><td>console</td><td>nim</td><td>bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
@@ -275,7 +284,12 @@
       <li><span class="check">✓</span> console + cli — follow and drive the bus from a terminal</li>
       <li><span class="check">✓</span> streaming — live <code>ev.session.token</code> deltas in the UI</li>
       <li><span class="check">✓</span> UI: components panel, tool-run view, light/dark theme, About dialog</li>
-      <li><span class="check">✓</span> bus-contract test suite — <code>make test</code></li>
+      <li><span class="check">✓</span> bus-contract test suite — <code>make test</code>, isolated per-test NATS + temp root</li>
+      <li><span class="check">✓</span> tty admin shell — help/status/catalog/tools/sessions, no chat in the REPL</li>
+      <li><span class="check">✓</span> observe + logfile — live bus introspection, durable rotating JSONL logs</li>
+      <li><span class="check">✓</span> models — models.dev catalog over the bus, catalog-driven context windows</li>
+      <li><span class="check">✓</span> provider — store-backed LLM provider registry, live switching</li>
+      <li><span class="check">✓</span> UI-owned harness lifecycle — the desktop icon is the whole system: build once, any UI autostarts core, the last UI stops it</li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> Level 1 UI dynamism (x-ui schema hints)</li>

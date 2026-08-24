@@ -33,6 +33,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming OpenAI-compatible chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers ([MODELS.md](MODELS.md)) |
+| `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
@@ -79,6 +80,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
 | `NIF_OPENAI_PROVIDER` | models catalog provider id for the default LLM connection; common endpoints are inferred when unset | inferred |
 | `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard | `models` catalog, then `llm` fallback |
+| `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog}}` the `chat` tool's `provider` arg resolves; the provider registry (`provider` component) supersedes the default when active | `{}` |
 | `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
 | `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |
 | `NIF_MODELS_OVERRIDE` | local JSON Merge Patch applied after every plugin source | unset |
@@ -140,6 +142,7 @@ ev.session.done        {sessionId, reply} | {sessionId, error}
 ev.session.context     {sessionId, promptTokens, context, warning?|trimmed?}
 ev.catalog.updated     full tool list after any registration change
 ev.models.updated      effective provider/model/source counts after refresh
+ev.provider.switch     provider component → bus: {nickname, previous, at}
 ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
 ev.approval.request    core → UI: {id, tool, args} — human gate (see below)
@@ -289,6 +292,37 @@ topic `niffler-component` are discoverable without any registry:
   with `x-models-source: {version: 1, priority: ...}`. The `models` component
   discovers it automatically and applies its JSON Merge Patch while that
   component is present. See [MODELS.md](MODELS.md#source-plugins).
+
+## Provider registry (`provider`)
+
+Configured LLM backends are store records, not a config file. The
+`provider` component keeps them under kind `provider` (id = nickname, plus
+the `active` marker doc) and exposes them to the agent and to `llm`:
+
+| Tool | What it does |
+|---|---|
+| `provider_add {nickname, apiKey, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add or update a provider; the first one becomes active automatically |
+| `provider_list` | all providers (redacted — no keys), which one is active |
+| `provider_active` | the active provider's full config, API key included (for programmatic use) |
+| `provider_switch {nickname}` | make another provider active; live-updates the LLM backend |
+| `provider_remove {nickname}` | delete a provider; if it was active, another one takes over |
+| `provider_export` / `provider_import` | JSON backup/migration round-trip, keys included; import merges and can restore the active marker |
+
+- `provider_add`/`provider_import`/`provider_export` carry
+  `x-harness.approval: "always"` — they move API keys in and out of the
+  store.
+- `llm` resolves its default backend from the active stored provider on
+  every chat call, so `provider_switch` takes effect immediately. When the
+  `provider` component is absent or nothing is active, `llm` falls back to
+  `NIF_OPENAI_*` and the `NIF_LLM_PROVIDERS` table as before.
+- A stored provider's explicit `context` (tokens) wins over the models
+  catalog; its `catalog` id names the models.dev provider for the context
+  lookup, and `plugin` may name a component that hooks provider-specific
+  tools. On every switch the component publishes
+  `ev.provider.switch {nickname, previous, at}` so such plugins can enable
+  or hide their tools.
+- The `active` marker is a plain store doc — remove or overwrite it with
+  `store` tools if you need manual surgery.
 
 ## Recovery — `--recover`
 

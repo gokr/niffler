@@ -51,7 +51,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run \
         test test-bash test-store test-builder test-console test-plugins \
-        test-models test-observe test-logfile test-core test-cli test-hashline \
+        test-models test-provider test-observe test-logfile test-core test-cli test-hashline \
         test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
@@ -118,6 +118,9 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/models && go build -o ../../var/bin/models .'
 
+var/bin/provider: components/provider/main.go components/provider/go.mod components/provider/go.sum $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/provider && go build -o ../../var/bin/provider .'
+
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
@@ -126,7 +129,7 @@ components:
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/builder var/bin/plugins var/bin/observe var/bin/logfile var/bin/console \
-	var/bin/cli var/bin/llm-openai var/bin/models var/bin/llm
+	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm
 
 build: components
 
@@ -211,6 +214,7 @@ test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
 test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile
 test-models:  build var/bin/test_t_models  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_models
+test-provider: build var/bin/test_t_provider ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_provider
 test-cli:     build var/bin/test_t_cli     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli
 test-hashline: build var/bin/test_t_hashline ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_hashline
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
@@ -218,10 +222,11 @@ test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT
 
 smoke: test-smoke  # legacy alias
 
-# Go unit tests (models, llm, sdk) — no shared runtime state, part of `make test`.
+# Go unit tests (models, provider, llm, sdk) — no shared runtime state, part of `make test`.
 gotest:
 	cd sdk/go && go test ./... && go vet ./...
 	cd components/models && go test ./... && go vet ./...
+	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 
 # recover: back to factory shape. The repo is the snapshot; var/ is
