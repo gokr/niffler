@@ -16,6 +16,7 @@ starts it via `core.spawn` — mid-conversation. Design rationale:
 core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
+                     ├── skills (Nim SDK)    ← Agent Skills (SKILL.md)
                      ├── observe + logfile (Nim SDK)
                      ├── models (Go SDK)     ← pluggable model catalog
                      ├── provider (Go SDK)   ← store-backed LLM provider registry
@@ -29,7 +30,8 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 adapter — is a separate process component with its own language's SDK.
 
 The shipped set proves the multi-language point: `bash`, `builder`,
-`store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli` and `console` are written
+`store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`,
+`logfile`, `cli` and `console` are written
 against the Nim SDK, while the model catalog `models`, the LLM adapter `llm`
 and the provider registry `provider` are deliberately in Go —
 and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
@@ -309,6 +311,11 @@ to CI any plugin repo — Niffler testing itself.
       capture, and explicit sink-health reporting
 - [x] **console component** — passive bus viewer: subscribes to everything
       and renders the wire traffic readably (run it in a second terminal)
+- [x] **skills component** — Agent Skills (SKILL.md): discovery across the
+      standard agent dirs, online skills.sh search (the `npx skills find`
+      backend), progressive-disclosure load, on-demand resources, git-based
+      install into `~/.niffler/skills` / project `.opencode/skills` (no Node
+      needed), removal confined to Niffler-managed dirs
 - [x] **cli component** — drive the harness from a terminal or a script
       (`catalog` / `wait` / `call` / `install`), exit 0 on success; the
       preferred way to CI a plugin repo (niffler-weather's workflow uses it)

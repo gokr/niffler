@@ -17,7 +17,8 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `hashline-edit`, `observe`, `logfile`, `models`, `provider`, `llm`
+  `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`,
+  `models`, `provider`, `llm`
   are peers. Adding a capability = write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
@@ -61,10 +62,11 @@ make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
 niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_models, t_observe,
-                      # t_logfile, t_core, t_cli, t_hashline, t_autostart — each
-                      # owns a private NATS server + temporary NIF_ROOT, so
-                      # component targets can overlap a live harness
+                      # t_builder, t_console, t_plugins, t_skills, t_models,
+                      # t_observe, t_logfile, t_core, t_cli, t_hashline,
+                      # t_grep, t_write, t_autostart — each owns a private
+                      # NATS server + temporary NIF_ROOT, so component
+                      # targets can overlap a live harness
 make gotest           # Go unit tests + vet: sdk/go, components/models, llm
                       # (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe

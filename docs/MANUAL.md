@@ -10,7 +10,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `hashline-edit`, `observe`, `logfile`, `cli`, `console` (Nim), `models` and `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -35,7 +35,10 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers ([MODELS.md](MODELS.md)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
+| `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
+| `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
+| `write` | Nim | optional | atomic whole-file write: create/overwrite/truncate with permission preservation (approval-gated) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring ([OBSERVE.md](OBSERVE.md)) |
@@ -188,7 +191,8 @@ install from local git repos (hermetic tests, mirrors).
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
 `bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
-`plugin_install`, `plugin_update`, `plugin_remove`, `observe_send`,
+`plugin_install`, `plugin_update`, `plugin_remove`, `skill_install`,
+`skill_remove`, `observe_send`,
 `observe_request`, `observe_dump` — are
 gated on a human before they execute:
 
@@ -293,6 +297,50 @@ topic `niffler-component` are discoverable without any registry:
   discovers it automatically and applies its JSON Merge Patch while that
   component is present. See [MODELS.md](MODELS.md#source-plugins).
 
+## Skills
+
+The `skills` component gives the agent reusable workflow guidance — the open
+[Agent Skills](https://agentskills.io) format (SKILL.md files with YAML
+frontmatter), the same convention Claude Code, opencode and Cursor use. It is
+read/load only over the bus: no tool adds skills to the prompt, loading is
+progressive disclosure through the tool result.
+
+Discovery covers the standard agent directories (first match per skill name
+wins — project beats home beats config):
+
+| Source | Directories |
+|---|---|
+| project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
+| home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
+| config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
+
+| Tool | What it does |
+|---|---|
+| `skill_list {query?, source?}` | available skills (name, description, version, tags, source, dir); filter by substring or source |
+| `skill_search {query, owner?}` | online search of the skills.sh registry (the `npx skills find` backend): name, repo source, install count; the `source`+`name` pair feeds `skill_install` directly |
+| `skill_load {name}` | full SKILL.md instructions + resource list into the conversation (the load mechanism) |
+| `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files |
+| `skill_resource {name, path}` | read one resource on demand |
+| `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
+| `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
+
+- `skill_search` is a read-only HTTP call to `https://skills.sh/api/search`
+  (unauthenticated); it is not gated on approval. Install is: search →
+  `skill_install {repo, skill}` → approval dialog → done.
+
+- Skills installed with `npx skills add <owner>/<repo>` (the skills.sh
+  ecosystem CLI) land in the standard dirs above and are discovered without
+  reinstall; `skill_install` exists so Niffler works without Node, via plain
+  git. It copies only SKILL.md trees — no code runs — and accepts
+  `owner/name`, github.com URLs and `file://` local repos (hermetic tests).
+- Repos holding several skills (e.g. `vercel-labs/agent-skills`) require the
+  `skill` parameter; `skill_install` lists the candidates when it is missing.
+- `skill_remove` refuses anything outside `~/.niffler/skills` and
+  `$NIF_ROOT/.opencode/skills` — skills other agents installed into shared
+  dirs are removed with their own tooling.
+- Install and remove carry `x-harness.approval: "always"` (they write outside
+  `var/`).
+
 ## Provider registry (`provider`)
 
 Configured LLM backends are store records, not a config file. The
@@ -377,8 +425,8 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
-                 # test-plugins, test-models, test-observe, test-logfile,
-                 # test-core, test-cli, test-autostart, test-smoke
+                 # test-plugins, test-skills, test-models, test-observe,
+                 # test-logfile, test-core, test-cli, test-autostart, test-smoke
 ```
 
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
@@ -391,7 +439,8 @@ with each other and a live development harness. Repository build writes are
 serialized, while agent-built test components use sandbox-local Nim caches.
 Network opt-ins: `NIF_TEST_INSTALL=1` runs the real
 `cli install gokr/niffler-weather` + tool validation; `NIF_TEST_NETWORK=1`
-runs `plugin_search` against GitHub and the TypeScript builder build
+runs `plugin_search` against GitHub, `skill_search` against skills.sh, and
+the TypeScript builder build
 (npm registry). The install pipeline itself is covered hermetically by
 `t_plugins` via a local `file://` git repo.
 Observe/logfile tests use temporary output directories and never delete the

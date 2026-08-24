@@ -41,6 +41,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   backend with no restart — falling back to `NIF_OPENAI_*` and
   `NIF_LLM_PROVIDERS` when the component is absent or nothing is active.
   Secret-handling tools (`add`/`import`/`export`) are approval-gated.
+- **grep + write components** — ripgrep-backed code search (`grep`:
+  `path:line:match` results with .gitignore/hidden/binary handling,
+  globs, context, case folding, exact truncation markers; `files`: sorted
+  repo listing) with the pattern passed as argv, so no shell quoting is
+  needed, plus an approval-gated atomic whole-file `write` (temp file +
+  rename, permission preservation, symlink-following, parent-dir
+  creation, content cap under the NATS payload limit). Both ship as
+  autostart components with bus-contract tests.
 - **isolated concurrent tests** — every bus-contract test owns a
   NATS-assigned loopback port and writable temporary `NIF_ROOT`; core tests
   snapshot only their required binaries, agent-built Nim components use a
@@ -124,7 +132,7 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actually saw; persistent per-file anchor store; stale-range
   protection.
 - **Bus-contract test suite** — `tests/helpers.nim` + one `t_*.nim` per
--  non-LLM component (bash, store, builder, console, plugins, models,
+  non-LLM component (bash, store, builder, console, plugins, models,
   observe, logfile, hashline-edit, core, cli, autostart),
   each booting the real binaries over its own throwaway NATS and driving
   them with envelopes (the envelope is the artifact — one harness tests
