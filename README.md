@@ -303,6 +303,10 @@ to CI any plugin repo — Niffler testing itself.
       list), `ev.provider.switch` notifications, and live backend switching:
       `llm` resolves its default provider from the active stored one and
       falls back to `NIF_OPENAI_*` / `NIF_LLM_PROVIDERS` when absent
+- [x] **grep + write components** — ripgrep-backed code search
+      (`grep`: path:line:match results with .gitignore/hidden/binary handling;
+      `files`: sorted repo listing) and approval-gated atomic whole-file
+      writes (temp file + rename, permission preservation)
 - [x] **observe component** — one exact raw-bus tap, bounded live ring and
       listen/trace probes, request/reply correlation, safe capture exports,
       and core-discovered nats-server monitoring

@@ -50,7 +50,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run \
-        test test-bash test-store test-builder test-console test-plugins \
+        test test-bash test-store test-builder test-console test-plugins test-skills \
         test-models test-provider test-observe test-logfile test-core test-cli test-hashline \
         test-grep test-write \
         test-autostart test-smoke smoke dev clean gotest \

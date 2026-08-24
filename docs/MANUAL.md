@@ -10,7 +10,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models` and `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -192,7 +192,7 @@ install from local git repos (hermetic tests, mirrors).
 Tools whose schema carries `x-harness.approval: "always"` — currently
 `bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
 `plugin_install`, `plugin_update`, `plugin_remove`, `skill_install`,
-`skill_remove`, `observe_send`,
+`skill_remove`, `write`, `observe_send`,
 `observe_request`, `observe_dump` — are
 gated on a human before they execute:
 

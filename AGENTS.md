@@ -63,7 +63,8 @@ make run              # build, then ./var/bin/niffler (interactive harness)
 niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_models,
-                      # t_observe, t_logfile, t_core, t_cli, t_hashline,
+                      # t_provider, t_observe, t_logfile, t_core, t_cli,
+                      # t_hashline,
                       # t_grep, t_write, t_autostart — each owns a private
                       # NATS server + temporary NIF_ROOT, so component
                       # targets can overlap a live harness
