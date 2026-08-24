@@ -116,8 +116,9 @@ The SPA is a NATS client, not a Wails client: it only talks to
   pointed at DeepSeek). Components load it via `sdk/dotenv.nim`; existing shell
   env wins. Never commit it. Full env var reference: docs/MANUAL.md.
 - `NIF_NATS_URL` set → attach to that bus (can be remote); unset → core spawns
-  `nats-server` (must be on PATH) on a random loopback port and writes it to
-  `var/nats-url`.
+  `nats-server` (must be on PATH) on 4222 when free (else a random loopback
+  port) and writes it to `var/nats-url`; standalone clients (`cli`,
+  `console`) follow that file when `NIF_NATS_URL` is unset.
 - The `store` component is single-writer: exactly one process owns
   `var/barrel-db`. Never run two stores against the same file.
 - `llm` is Go (`sdk/go`); the builder gives agent-written Go components a

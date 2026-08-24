@@ -7,8 +7,8 @@
 ##
 ## Run it in a separate terminal while the harness runs:
 ##   NIF_NATS_URL=nats://127.0.0.1:4222 ./var/bin/console
-## (or just ./var/bin/console — it defaults to the local bus, same as
-## every component.)
+## (or just ./var/bin/console — it follows the harness's var/nats-url
+## discovery file, then defaults to the local bus, same as every component.)
 
 import std/[json, os, strutils, times]
 import natswrapper
@@ -54,8 +54,23 @@ proc render(subject: string, data: string) =
       echo ts() & " " & styled("event ", 35) & subject & "  " &
            chop(payload, 500)
 
+proc resolveBusUrl(): string =
+  ## NIF_NATS_URL wins; otherwise follow the harness's discovery file so a
+  ## randomly-port bus still answers, defaulting to the canonical 4222.
+  if getEnv("NIF_NATS_URL").len > 0:
+    return getEnv("NIF_NATS_URL")
+  let discovery = getEnv("NIF_ROOT", ".") / "var" / "nats-url"
+  try:
+    if fileExists(discovery):
+      let found = readFile(discovery).strip()
+      if found.len > 0:
+        return found
+  except CatchableError:
+    discard
+  "nats://127.0.0.1:4222"
+
 loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
-let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
+let url = resolveBusUrl()
 var nc = connect(url)
 
 # announce so the catalog (and core's log) sees us, like the ui component

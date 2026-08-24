@@ -68,7 +68,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
-| `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` on a random loopback port and writes `var/nats-url` | auto |
+| `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` there (or on a random loopback port when 4222 is taken) and writes `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 — only when `NIF_NATS_URL` is unset (an explicit URL always wins) | unset |
 | `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |

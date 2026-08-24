@@ -11,7 +11,8 @@
 ##   ./var/bin/cli install <repo>[@<ref>]         # plugin_install + verify
 ##
 ## Every command exits 0 on success, non-zero on failure — CI-friendly.
-## The bus defaults to nats://127.0.0.1:4222, override with NIF_NATS_URL.
+## The bus comes from NIF_NATS_URL, then the harness's var/nats-url
+## discovery file, then nats://127.0.0.1:4222.
 
 import std/[json, os, parseopt, strutils, tables, times]
 import natswrapper
@@ -20,6 +21,21 @@ import dotenv
 
 var components = initTable[string, seq[string]]()  ## component -> tools
 var toolIndex = initTable[string, string]()        ## tool -> component
+
+proc resolveBusUrl(): string =
+  ## NIF_NATS_URL wins; otherwise follow the harness's discovery file so a
+  ## randomly-port bus still answers, defaulting to the canonical 4222.
+  if getEnv("NIF_NATS_URL").len > 0:
+    return getEnv("NIF_NATS_URL")
+  let discovery = getEnv("NIF_ROOT", ".") / "var" / "nats-url"
+  try:
+    if fileExists(discovery):
+      let found = readFile(discovery).strip()
+      if found.len > 0:
+        return found
+  except CatchableError:
+    discard
+  "nats://127.0.0.1:4222"
 
 proc handleReg(subject, data: string) =
   var node: JsonNode
@@ -240,8 +256,13 @@ proc main() =
     quit(2)
 
   loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
-  let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
-  var nc = connect(url)
+  let url = resolveBusUrl()
+  var nc: NatsConnection
+  try:
+    nc = connect(url)
+  except CatchableError:
+    echo "cli: cannot connect to " & url & " — is the harness running?"
+    quit(1)
   var sub: ptr natsSubscription
   let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.>".cstring)
   if not checkStatus(st):

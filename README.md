@@ -135,8 +135,9 @@ probe for a live core (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222),
 else spawn `var/bin/niffler` itself (`NIF_AUTOSTART=1`). Interactive
 frontends register `"client": true`; an autostarted core exits when the
 last one departs. Core itself reuses a bus on the default port when one is
-live, else spawns nats-server on a random loopback port and writes
-`var/nats-url`. Set `NIF_NATS_URL` to attach to any bus, even a remote one.
+live, else spawns nats-server there (falling back to a random loopback port
+when 4222 is taken) and writes `var/nats-url`. Set `NIF_NATS_URL` to attach
+to any bus, even a remote one.
 
 **Approvals.** Tools that change the machine or the harness (`bash`,
 `builder.build`, `core.spawn`/`kill`/`remove`) carry `x-harness.approval:

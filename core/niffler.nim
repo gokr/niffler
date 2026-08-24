@@ -35,32 +35,48 @@ proc openNatsLib() =
 
 proc spawnNats(): tuple[process: Process, url, monitorUrl: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
-  ## bind-close-start race. The ports file is needed only during startup.
+  ## bind-close-start race: try the canonical 4222 first (local clients
+  ## default there), and fall back to any free port when it is taken — a
+  ## failed bind makes nats-server exit, which retries with -1. The ports
+  ## file is needed only during startup.
   let portsDir = createTempDir("niffler-nats-", "")
-  result.process = startProcess("nats-server",
-    args = ["-a", "127.0.0.1", "-p", "-1", "-m", "-1",
-            "--ports_file_dir", portsDir],
-    options = {poUsePath})
-  for i in 0 ..< 200:
-    for path in walkFiles(portsDir / "*.ports"):
-      try:
-        let ports = parseFile(path)
-        if ports{"nats"} != nil and ports{"nats"}.len > 0:
-          result.url = ports{"nats"}[0].getStr("")
-        if ports{"monitoring"} != nil and ports{"monitoring"}.len > 0:
-          result.monitorUrl = ports{"monitoring"}[0].getStr("")
-      except CatchableError:
-        discard
-    if result.url.len > 0 and result.monitorUrl.len > 0:
-      break
-    if result.process.peekExitCode() != -1:
-      break
-    sleep(20)
-  removeDir(portsDir)
-  if result.url.len == 0 or result.monitorUrl.len == 0:
-    if result.process.running(): result.process.terminate()
-    result.process.close()
+  try:
+    for port in ["4222", "-1"]:
+      result.process = startProcess("nats-server",
+        args = ["-a", "127.0.0.1", "-p", port, "-m", "-1",
+                "--ports_file_dir", portsDir],
+        options = {poUsePath})
+      var bound = false
+      for i in 0 ..< 200:
+        for path in walkFiles(portsDir / "*.ports"):
+          try:
+            let ports = parseFile(path)
+            if ports{"nats"} != nil and ports{"nats"}.len > 0:
+              result.url = ports{"nats"}[0].getStr("")
+            if ports{"monitoring"} != nil and ports{"monitoring"}.len > 0:
+              result.monitorUrl = ports{"monitoring"}[0].getStr("")
+          except CatchableError:
+            discard
+        if result.url.len > 0 and result.monitorUrl.len > 0:
+          bound = true
+          break
+        if result.process.peekExitCode() != -1:
+          break
+        sleep(20)
+      if bound:
+        return
+      if result.process.running():
+        result.process.terminate()
+        sleep(200)
+        if result.process.running():
+          result.process.kill()
+      result.process.close()
+      result.process = nil
+      result.url = ""
+      result.monitorUrl = ""
     raise newException(IOError, "spawned nats-server did not publish its ports")
+  finally:
+    removeDir(portsDir)
 
 proc connectWithRetry(url: string, tries = 40): NatsConnection =
   var lastErr = ""
