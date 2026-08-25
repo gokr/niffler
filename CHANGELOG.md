@@ -49,6 +49,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rename, permission preservation, symlink-following, parent-dir
   creation, content cap under the NATS payload limit). Both ship as
   autostart components with bus-contract tests.
+- **fetch component** — bounded HTTP(S) retrieval over the bus with custom
+  methods, headers and request bodies; redirects, timeout and response-size
+  limits; and oversized post-processing results spilled under `var/fetch`.
+  HTML extraction prefers an installed Trafilatura CLI, passing it the
+  already-downloaded response with a 30-second bound, then falls back to a
+  pure-Nim `htmlparser` walk when Trafilatura is absent, fails, times out or
+  returns no content. `NIF_TRAFILATURA` overrides detection or disables it.
 - **isolated concurrent tests** — every bus-contract test owns a
   NATS-assigned loopback port and writable temporary `NIF_ROOT`; core tests
   snapshot only their required binaries, agent-built Nim components use a
@@ -132,8 +139,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actually saw; persistent per-file anchor store; stale-range
   protection.
 - **Bus-contract test suite** — `tests/helpers.nim` + one `t_*.nim` per
-  non-LLM component (bash, store, builder, console, plugins, models,
-  observe, logfile, hashline-edit, core, cli, autostart),
+  non-LLM component (bash, store, builder, console, plugins, skills, fetch,
+  models, provider, observe, logfile, hashline-edit, grep, write, core, cli,
+  autostart),
   each booting the real binaries over its own throwaway NATS and driving
   them with envelopes (the envelope is the artifact — one harness tests
   Nim and Go components alike). `make test` runs the suite;

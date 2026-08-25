@@ -10,7 +10,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
@@ -36,6 +36,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
+| `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
 | `write` | Nim | optional | atomic whole-file write: create/overwrite/truncate with permission preservation (approval-gated) |
@@ -91,6 +92,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_MODELS_CACHE_DIR` | catalog and source-patch cache | `$NIF_ROOT/var/models` |
 | `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
+| `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
+| `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
@@ -372,6 +375,31 @@ the `active` marker doc) and exposes them to the agent and to `llm`:
 - The `active` marker is a plain store doc — remove or overwrite it with
   `store` tools if you need manual surgery.
 
+## Fetch
+
+The `fetch` component is the web access tool (a port of the old niffler
+`fetch` tool). One tool:
+
+| Tool | What it does |
+|---|---|
+| `fetch {url, method?, headers?, body?, timeout?, maxSize?, convertToText?}` | GET/POST/PUT/DELETE/HEAD/OPTIONS/PATCH an http(s) URL; HTML → clean text via Trafilatura or a pure-Nim fallback; follows redirects; enforces caps |
+
+- `convertToText` (default true) extracts readable text from HTML — JSON
+  payloads are always returned verbatim.
+- If `trafilatura` is on `PATH`, fetch gives it the already-downloaded HTML
+  for higher-quality main-content extraction (bounded to 30 seconds). Missing,
+  failed, timed-out, or empty extraction falls back to the built-in
+  `htmlparser` walk. Set `NIF_TRAFILATURA` to an executable path/name to
+  override detection, or `off` to disable it.
+- Responses are capped at `maxSize` (default 10 MiB, max 50 MiB); content
+  over 200 KB after processing is written to a file under `$NIF_FETCH_DIR`
+  (default `$NIF_ROOT/var/fetch`) and the tool result points at it, so the
+  agent reads large pages with its own file tools instead of blowing the
+  conversation.
+- Errors (non-2xx, timeouts, oversized responses, invalid URLs/methods)
+  come back as `ok: false` with the status and a body snippet.
+- Read-only network access — no approval gate (like `plugin_search`).
+
 ## Recovery — `--recover`
 
 The repo is the snapshot; `var/` is disposable build output. If the agent
@@ -425,8 +453,9 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)
 make test-bash   # ... or just one: test-store, test-builder, test-console,
-                 # test-plugins, test-skills, test-models, test-observe,
-                 # test-logfile, test-core, test-cli, test-autostart, test-smoke
+                 # test-plugins, test-skills, test-fetch, test-models,
+                 # test-observe, test-logfile, test-core, test-cli,
+                 # test-autostart, test-smoke
 ```
 
 Each test boots the real component binaries (Nim, Go *and* TypeScript —

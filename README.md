@@ -17,6 +17,7 @@ core (Nim) ── NATS ──┬── bash (Nim SDK)
                      ├── builder (Nim SDK)
                      ├── plugins (Nim SDK)   ← component ecosystem
                      ├── skills (Nim SDK)    ← Agent Skills (SKILL.md)
+                     ├── fetch (Nim SDK)     ← web content retrieval
                      ├── observe + logfile (Nim SDK)
                      ├── models (Go SDK)     ← pluggable model catalog
                      ├── provider (Go SDK)   ← store-backed LLM provider registry
@@ -30,8 +31,8 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 adapter — is a separate process component with its own language's SDK.
 
 The shipped set proves the multi-language point: `bash`, `builder`,
-`store`, `plugins`, `skills`, `hashline-edit`, `grep`, `write`, `observe`,
-`logfile`, `cli` and `console` are written
+`store`, `plugins`, `skills`, `fetch`, `hashline-edit`, `grep`, `write`,
+`observe`, `logfile`, `cli` and `console` are written
 against the Nim SDK, while the model catalog `models`, the LLM adapter `llm`
 and the provider registry `provider` are deliberately in Go —
 and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
@@ -320,6 +321,10 @@ to CI any plugin repo — Niffler testing itself.
       backend), progressive-disclosure load, on-demand resources, git-based
       install into `~/.niffler/skills` / project `.opencode/skills` (no Node
       needed), removal confined to Niffler-managed dirs
+- [x] **fetch component** — the old niffler `fetch` tool as a bus service:
+      http/https with methods/headers/body, Trafilatura-first HTML→text
+      extraction with a pure-Nim fallback, redirects, timeout and size caps,
+      oversized content spilled to `var/fetch` files
 - [x] **cli component** — drive the harness from a terminal or a script
       (`catalog` / `wait` / `call` / `install`), exit 0 on success; the
       preferred way to CI a plugin repo (niffler-weather's workflow uses it)
