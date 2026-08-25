@@ -250,6 +250,6 @@ proc newCoreSandbox*(tag: string,
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
   writeFile(result.root / "manifest.yaml", manifest)
-  for name in ["niffler", "cli"]:
+  for name in ["niffler", "session", "cli"]:
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))

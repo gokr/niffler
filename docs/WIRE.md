@@ -88,11 +88,16 @@ ev.approval.reply      # UI → core: {id, ok}           (id-matched)
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
-`kill`, `remove`. `catalog` ops: `list` (LLM-facing tools, hidden ones
-filtered), `components` (component→tools view for bus clients that
-missed the registrations — the cli seeds its catalog from it) and
+`kill`, `remove`. `catalog` ops: `list` (the name-sorted *direct*
+projection — tools without `x-harness.onDemand`/`x-harness.hidden`),
+`components` (component→tools view over the full catalog for bus clients
+that missed the registrations — the cli seeds its catalog from it) and
 `snapshot` (full registration payloads incl. schemas — session runners
 seed their catalog from it at startup, then follow `reg.>` live).
+The LLM-facing core tools also include `discover` (hint/schema lookup
+over the non-hidden catalog) and `invoke` (generic gateway into any live
+non-hidden tool, preserving its approval/timeout policy) — see
+[DISCOVER.md](DISCOVER.md).
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
@@ -114,8 +119,10 @@ ends — turns never nest.
    check → spawn children (no ordering; ordering emerges from the bus).
 2. Component connects, publishes `reg.publish` with its tool schemas.
 3. Core converges when the required set (llm, bash, builder) has registered;
-   every new registration is announced as `ev.catalog.updated` with the full
-   tool list (the LLM tools parameter is rebuilt per request anyway).
+   every new registration is announced as `ev.catalog.updated` with the
+   direct projection (same shape as `catalog {op: list}`). Each conversation
+   freezes its direct toolset at first turn — late registrations reach an
+   existing conversation through `discover` + `invoke`, not schema churn.
 4. Teardown = exit; the OS is the disposer. Core drains children in reverse
    registration order: `ev.sys.drain` → grace period → SIGTERM → SIGKILL.
 

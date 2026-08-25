@@ -333,6 +333,8 @@ comp.tool:
     except CatchableError as e:
       return %*{"ok": false, "error": "GitHub search failed: " & e.msg}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc plugin_installed(): JsonNode =
     ## List the third-party component packages installed on this harness
@@ -346,6 +348,8 @@ comp.tool:
       for item in items:
         pkgs.add(item{"value"})
     return %*{"ok": true, "packages": pkgs}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.tool:
   proc plugin_install(repo: string, version: string = ""): JsonNode =
@@ -372,7 +376,8 @@ comp.tool:
     r["note"] = %"service components restart on harness boot; interactive components must be started manually"
     return r
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 600000}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "timeoutMs": 600000, "onDemand": true}
 
 comp.tool:
   proc plugin_update(package: string): JsonNode =
@@ -405,7 +410,8 @@ comp.tool:
     return %*{"ok": true, "updated": true, "from": rec{"ref"}.getStr(""),
               "to": latest, "removed": removed, "install": r}
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 600000}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "timeoutMs": 600000, "onDemand": true}
 
 comp.tool:
   proc plugin_remove(package: string): JsonNode =
@@ -428,6 +434,7 @@ comp.tool:
                 "warning": "record not deleted (store down?): " & e.msg}
     return %*{"ok": true, "package": package, "removed": removed}
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "timeoutMs": 300000, "onDemand": true}
 
 comp.run()

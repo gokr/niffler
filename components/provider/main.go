@@ -194,7 +194,7 @@ func main() {
 			"active":   map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
 		},
 		"required":  []string{"nickname", "apiKey"},
-		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000},
+		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Nickname string `json:"nickname"`
@@ -271,7 +271,8 @@ func main() {
 		"properties": map[string]any{
 			"nickname": map[string]any{"type": "string"},
 		},
-		"required": []string{"nickname"},
+		"required":  []string{"nickname"},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Nickname string `json:"nickname"`
@@ -310,6 +311,7 @@ func main() {
 		"type":        "object",
 		"description": "List all configured providers and which one is active. API keys are redacted.",
 		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		items, err := sc.list(kindProvider, "")
 		if err != nil {
@@ -366,7 +368,8 @@ func main() {
 		"properties": map[string]any{
 			"nickname": map[string]any{"type": "string"},
 		},
-		"required": []string{"nickname"},
+		"required":  []string{"nickname"},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Nickname string `json:"nickname"`
@@ -395,6 +398,7 @@ func main() {
 		"type":        "object",
 		"description": "Return the currently active provider config (API key included for programmatic use).",
 		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"hidden": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		active, _, err := sc.get(kindProvider, activeID)
 		if err != nil {
@@ -439,7 +443,7 @@ func main() {
 		"type":        "object",
 		"description": "Export all configured providers as JSON (including API keys). Use to back up or migrate.",
 		"properties":  map[string]any{},
-		"x-harness":   map[string]any{"approval": "always", "timeoutMs": 30000},
+		"x-harness":   map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		items, err := sc.list(kindProvider, "")
 		if err != nil {
@@ -474,7 +478,7 @@ func main() {
 			"json": map[string]any{"type": "string", "description": "The exported JSON document"},
 		},
 		"required":  []string{"json"},
-		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000},
+		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			JSON string `json:"json"`

@@ -23,6 +23,19 @@
   // for that (session, tool) pair are answered ok without showing a dialog.
   let autoApproved = $state<Record<string, string[]>>({});
 
+  onMount(() => {
+    if (!isWails()) {
+      connected = false;
+      return;
+    }
+    online().then((value) => (connected = value)).catch(() => (connected = false));
+    busUrl().then((value) => (url = value)).catch(() => {});
+    return onStatus((value, nextUrl) => {
+      connected = value;
+      url = nextUrl;
+    });
+  });
+
   function isAutoApproved(sid: string, tool: string): boolean {
     return (autoApproved[sid] ?? []).includes(tool);
   }
@@ -121,7 +134,7 @@
         + New session
       </button>
     </div>
-    <Components />
+    <Components {sessionId} />
   </aside>
 
   <main class="flex-1 flex flex-col min-w-0">

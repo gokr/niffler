@@ -242,6 +242,8 @@ comp.tool:
       res.add(%*{"kind": r.kind, "name": r.name, "path": r.relPath})
     %*{"ok": true, "skill": name, "resources": res, "count": res.len}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc skill_resource(name: string, path: string): JsonNode =
     ## Read one resource file of a skill (references/scripts/assets).
@@ -271,6 +273,8 @@ comp.tool:
                 "content": readFile(full)}
     except CatchableError as e:
       return %*{"ok": false, "error": "failed to read resource: " & e.msg}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 # --------------------------------------------------------------------------
 # online search (skills.sh registry — the same API `npx skills find` uses)
@@ -314,6 +318,8 @@ comp.tool:
                 "hint": "install with skill_install {repo: \"<source>\", skill: \"<name>\"}"}
     except CatchableError as e:
       return %*{"ok": false, "error": "skills.sh search failed: " & e.msg}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 # --------------------------------------------------------------------------
 # install / remove (managed dirs only)
@@ -475,7 +481,8 @@ comp.tool:
        "description": chosen.get.description}
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always",
-                                        "timeoutMs": 600000}
+                                         "timeoutMs": 600000,
+                                         "onDemand": true}
 
 comp.tool:
   proc skill_remove(name: string): JsonNode =
@@ -499,6 +506,7 @@ comp.tool:
       return %*{"ok": false, "error": "failed to remove: " & e.msg}
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always",
-                                        "timeoutMs": 300000}
+                                         "timeoutMs": 300000,
+                                         "onDemand": true}
 
 comp.run()

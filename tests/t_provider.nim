@@ -191,14 +191,27 @@ proc main() =
         llmErr.len > 0 and llmErr.contains("refused") and
         not llmErr.contains("API key"), llmErr)
 
-  # --- the LLM can see the provider tools (visible, not hidden)
+  # --- provider administration is discoverable without bloating every prompt
   let catalog = call(nc, "core", "catalog", %*{"op": "list"})
   var providerTools = 0
   for tool in catalog{"tools"}:
     let name = tool{"name"}.getStr("")
     if name.startsWith("provider_"): inc providerTools
-  check("provider tools are registered and visible in the catalog",
-        providerTools == 7, $catalog)
+  check("provider tools are omitted from the direct LLM projection",
+        providerTools == 0, $catalog)
+  let discovered = call(nc, "core", "discover", %*{"component": "provider"})
+  check("provider administration tools are advertised on demand",
+        discovered{"component"}{"onDemand"}.len == 6 and
+        not ($discovered).contains("provider_active"), $discovered)
+  let snapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
+  var providerSnapshot: JsonNode
+  for item in snapshot{"components"}:
+    if item{"name"}.getStr("") == "provider":
+      providerSnapshot = item
+  check("full catalog keeps all provider tools and hides credential access",
+        providerSnapshot != nil and providerSnapshot{"tools"}.len == 7 and
+        ($providerSnapshot).contains("provider_active") and
+        ($providerSnapshot).contains("\"hidden\":true"), $providerSnapshot)
 
   report("PROVIDER TEST")
 

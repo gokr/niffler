@@ -368,6 +368,8 @@ comp.tool:
        "droppedSubjectNames": droppedSubjects,
        "responseBytes": responseBytes}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_send(subject: string, payload: JsonNode = nil): JsonNode =
     ## Publish one event envelope. Use this only to exercise an event-driven
@@ -383,7 +385,8 @@ comp.tool:
     comp.emit(subject, if payload == nil: newJObject() else: payload)
     %*{"ok": true, "subject": subject}
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always"}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "onDemand": true}
 
 comp.tool:
   proc observe_request(subject: string, tool: string,
@@ -420,7 +423,7 @@ comp.tool:
     %*{"ok": true, "value": reply.args, "elapsedMs": elapsedMs}
 
 comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 35_000}
+  %*{"approval": "always", "timeoutMs": 35_000, "onDemand": true}
 
 proc newProbe(kind: ProbeKind, subject, label: string, cap: int): Probe =
   if probes.len >= maxProbes:
@@ -460,6 +463,8 @@ comp.tool:
     %*{"probeId": pr.id, "subject": subject, "listening": true,
        "cap": pr.cap}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_trace(component: string, toolRegex: string = "",
                      cap: int = 500): JsonNode =
@@ -486,6 +491,8 @@ comp.tool:
     %*{"probeId": pr.id, "subject": pr.subject, "listening": true,
        "cap": pr.cap}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_probes(): JsonNode =
     ## List active and stopped probes with their bounds and pending trace
@@ -509,6 +516,8 @@ comp.tool:
        "max": maxProbes, "truncated": truncated,
        "responseBytes": responseBytes}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_stop(probeId: string): JsonNode =
     ## Stop recording into a probe while keeping its entries queryable.
@@ -522,6 +531,8 @@ comp.tool:
     pr.pending.clear()
     %*{"stopped": true, "probeId": probeId, "captured": pr.entries.len}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_remove(probeId: string): JsonNode =
     ## Delete a probe and release its captured memory.
@@ -531,6 +542,8 @@ comp.tool:
     let captured = probes[probeId].entries.len
     probes.del(probeId)
     %*{"removed": true, "probeId": probeId, "captured": captured}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.tool:
   proc observe_events(probeId: string = "", limit: int = 100,
@@ -609,6 +622,8 @@ comp.tool:
     %*{"items": items, "count": items.len, "source": sourceName,
        "truncated": truncated, "responseBytes": responseBytes}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc observe_logs(level: string = "", component: string = "",
                     regex: string = "", since: float = 0.0,
@@ -670,6 +685,8 @@ comp.tool:
         responseBytes += itemBytes
     %*{"items": items, "count": items.len, "truncated": truncated,
        "responseBytes": responseBytes}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 proc prepareCapture(path: string, requiredBytes: int) =
   if requiredBytes > captureByteCap:
@@ -733,7 +750,8 @@ comp.tool:
     %*{"path": path, "lines": pr.entries.len, "bytes": requiredBytes,
        "captureByteCap": captureByteCap}
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always"}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "onDemand": true}
 
 comp.tool:
   proc observe_monitor(): JsonNode =
@@ -791,5 +809,7 @@ comp.tool:
                   subscriptionCount.getInt(0) > list.len}
     except CatchableError as e:
       return %*{"error": "monitor " & url & ": " & e.msg}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.run()

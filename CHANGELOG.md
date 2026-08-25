@@ -8,6 +8,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Progressive tool discovery** (docs/DISCOVER.md) — the catalog stays
+  complete, but each conversation freezes a small immutable *direct*
+  toolset into its LLM prompt (13 shipped tools: core `discover`/`invoke`,
+  bash, store get/list, grep/files, write, hashline read/replace/
+  undo_last_replace, skill_list/skill_load). Everything else is on demand
+  (`x-harness.onDemand`) or hidden (`x-harness.hidden`): `discover`
+  returns deterministic hints and full schemas as ordinary tool results
+  (append-only, so provider prompt caches stay valid), and `invoke` calls
+  any live non-hidden tool through the normal approval/timeout path —
+  including components registered after the conversation started.
+  `catalog {op: list}` and `ev.catalog.updated` are now the direct
+  projection; `{op: snapshot}`/`{op: components}` remain complete.
+  Exposure state persists per conversation (`<sessionId>:tools` store
+  document) and drives the UI Live Components panel (direct/seen/demand/
+  internal). Covered by `tests/t_discover.nim`.
 - **UI-owned harness lifecycle** — `scripts/niffler.sh` (and `make
   up/down/status`) are gone; the binaries own start/stop. Any interactive
   client (the desktop UI, interactive plugins) calls the SDK's

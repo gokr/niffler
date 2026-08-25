@@ -2,10 +2,10 @@
 ##
 ## Populated by reg.publish / reg.depart on the bus. Presence = connection;
 ## hard crashes are cleaned up by the supervisor matching pid → component.
-## Every change is announced as ev.catalog.updated so the LLM tools
-## parameter and any UI stay fresh.
+## Every change is announced as ev.catalog.updated so discovery and UIs stay
+## fresh; each conversation keeps its own immutable direct-tool snapshot.
 
-import std/[json, os, tables, times]
+import std/[algorithm, json, os, strutils, tables, times]
 import natswrapper
 import ../sdk/envelope
 
@@ -33,19 +33,21 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   result = Catalog(nc: nc,
                    components: initTable[string, ComponentReg](),
                    toolIndex: initTable[string, string]())
-  # core's own tools are handled locally in dispatch; announce them so the
-  # LLM sees the full self-extension loop (spawn, catalog)
-  var coreReg = ComponentReg(name: "core", version: "0.1.0", pid: getCurrentProcessId())
+  # Core's tools are handled locally in dispatch. discover/invoke stay direct;
+  # lifecycle controls remain in the full catalog as on-demand capabilities.
+  var coreReg = ComponentReg(name: "core", version: "0.1.0",
+                             pid: getCurrentProcessId(),
+                             registeredAt: epochTime())
   coreReg.tools.add(ToolReg(name: "spawn", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Start a compiled component binary; it registers itself and its tools appear in your toolset. To stop it again: core.kill (restored on next boot) or core.remove (forgotten permanently)",
+      "description": "Start a compiled component binary; it registers itself and becomes available through discover/invoke. To stop it again: core.kill (restored on next boot) or core.remove (forgotten permanently)",
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
         "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"}
       },
       "required": ["name", "binary"],
-      "x-harness": {"approval": "always"}
+      "x-harness": {"approval": "always", "onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "kill", component: "core",
     schema: %*{
@@ -53,7 +55,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "description": "Stop a running component (drain + terminate). It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
-      "x-harness": {"approval": "always"}
+      "x-harness": {"approval": "always", "onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "remove", component: "core",
     schema: %*{
@@ -61,20 +63,43 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "description": "Stop a component and delete its persisted record — it will not be restored on the next boot",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
-      "x-harness": {"approval": "always"}
+      "x-harness": {"approval": "always", "onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "catalog", component: "core",
     schema: %*{
       "type": "object",
       "description": "Inspect the component catalog (list = LLM toolset)",
       "properties": {"op": {"type": "string", "enum": ["list"]}},
-      "required": ["op"]
+      "required": ["op"],
+      "x-harness": {"onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "status", component: "core",
     schema: %*{
       "type": "object",
       "description": "Report the live set of components the supervisor is running and their health. Source of truth is the supervisor (process state), cross-referenced with the catalog. Corresponds to the UI's Live components view.",
-      "properties": {}
+      "properties": {},
+      "x-harness": {"onDemand": true}
+    }))
+  coreReg.tools.add(ToolReg(name: "discover", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke.",
+      "properties": {
+        "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
+        "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
+        "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
+                  "description": "Exact tool names whose full schemas to return"}
+      }
+    }))
+  coreReg.tools.add(ToolReg(name: "invoke", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Call a non-hidden tool after discover returns its schema. Put the target tool's arguments unchanged under arguments. The target's normal approval and timeout policy still applies.",
+      "properties": {
+        "tool": {"type": "string", "description": "Exact tool name returned by discover"},
+        "arguments": {"type": "object", "description": "Arguments matching the discovered target schema"}
+      },
+      "required": ["tool", "arguments"]
     }))
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
@@ -111,14 +136,117 @@ proc normalizeToolSchema*(schema: JsonNode): JsonNode =
   if result{"properties"} == nil or result{"properties"}.kind != JObject:
     result["properties"] = %*{}
 
-proc allTools*(cat: Catalog): JsonNode =
-  ## All non-hidden tools as [{name, schema}] — what the LLM gets to see.
-  result = newJArray()
+proc isHidden*(schema: JsonNode): bool =
+  schema != nil and schema{"x-harness"}{"hidden"}.getBool(false)
+
+proc isOnDemand*(schema: JsonNode): bool =
+  schema != nil and schema{"x-harness"}{"onDemand"}.getBool(false)
+
+proc sortedTools(cat: Catalog): seq[ToolReg] =
   for comp in cat.components.values:
-    for t in comp.tools:
-      if t.schema{"x-harness"}{"hidden"}.getBool(false):
-        continue
-      result.add(%*{"name": t.name, "schema": normalizeToolSchema(t.schema)})
+    for tool in comp.tools:
+      result.add(tool)
+  result.sort(proc(a, b: ToolReg): int = cmp(a.name, b.name))
+
+proc sortedComponentNames*(cat: Catalog): seq[string] =
+  for name in cat.components.keys:
+    result.add(name)
+  result.sort()
+
+proc promptTools*(cat: Catalog): JsonNode =
+  ## Direct, non-hidden tools as stable [{name, schema}] for LLM requests.
+  result = newJArray()
+  for tool in cat.sortedTools():
+    if tool.schema.isHidden() or tool.schema.isOnDemand():
+      continue
+    result.add(%*{"name": tool.name,
+                  "schema": normalizeToolSchema(tool.schema)})
+
+proc shortDescription(schema: JsonNode): string =
+  result = schema{"description"}.getStr("").splitWhitespace().join(" ")
+  if result.len > 200:
+    result = result[0 ..< 197] & "..."
+
+proc toolHint(tool: ToolReg): JsonNode =
+  %*{"name": tool.name, "description": shortDescription(tool.schema)}
+
+proc componentSummary(reg: ComponentReg, query: string): JsonNode =
+  let componentMatches = query.len == 0 or
+    reg.name.toLowerAscii().contains(query)
+  var direct = newJArray()
+  var onDemand = newJArray()
+  var tools: seq[ToolReg] = @[]
+  for tool in reg.tools:
+    tools.add(tool)
+  tools.sort(proc(a, b: ToolReg): int = cmp(a.name, b.name))
+  for tool in tools:
+    if tool.schema.isHidden():
+      continue
+    let toolMatches = componentMatches or
+      tool.name.toLowerAscii().contains(query) or
+      tool.schema{"description"}.getStr("").toLowerAscii().contains(query)
+    if not toolMatches:
+      continue
+    if tool.schema.isOnDemand():
+      onDemand.add(toolHint(tool))
+    else:
+      direct.add(toolHint(tool))
+  if direct.len == 0 and onDemand.len == 0:
+    return nil
+  return %*{"name": reg.name, "version": reg.version,
+            "direct": direct, "onDemand": onDemand}
+
+proc discover*(cat: Catalog, args: JsonNode): JsonNode =
+  ## Return deterministic component hints or selected non-hidden schemas.
+  let component = args{"component"}.getStr("").strip()
+  let requested = args{"tools"}
+  if component.len == 0:
+    if requested != nil and requested.kind != JNull:
+      return %*{"error": "discover tools needs component"}
+    let query = args{"query"}.getStr("").strip().toLowerAscii()
+    var components = newJArray()
+    for name in cat.sortedComponentNames():
+      let summary = componentSummary(cat.components[name], query)
+      if summary != nil:
+        components.add(summary)
+    return %*{"components": components, "count": components.len}
+
+  if not cat.components.hasKey(component):
+    return %*{"error": "no discoverable component '" & component & "'"}
+  let summary = componentSummary(cat.components[component], "")
+  if summary == nil:
+    return %*{"error": "no discoverable component '" & component & "'"}
+  if requested == nil or requested.kind == JNull or
+      (requested.kind == JArray and requested.len == 0):
+    return %*{"component": summary}
+  if requested.kind != JArray:
+    return %*{"error": "discover tools must be an array"}
+  if requested.len > 16:
+    return %*{"error": "discover returns at most 16 tool schemas"}
+
+  var names: seq[string] = @[]
+  for node in requested:
+    if node.kind != JString or node.getStr("").len == 0:
+      return %*{"error": "discover tool names must be non-empty strings"}
+    let name = node.getStr("")
+    if name notin names:
+      names.add(name)
+  names.sort()
+
+  var schemas = newJArray()
+  let reg = cat.components[component]
+  for name in names:
+    var found = false
+    for tool in reg.tools:
+      if tool.name == name and not tool.schema.isHidden():
+        schemas.add(%*{"name": tool.name,
+                       "schema": normalizeToolSchema(tool.schema)})
+        found = true
+        break
+    if not found:
+      return %*{"error": "one or more requested tools are not discoverable in component '" &
+                           component & "'"}
+  return %*{"component": component, "tools": schemas}
 
 proc toolSchema*(cat: Catalog, tool: string): JsonNode =
   let comp = cat.toolIndex.getOrDefault(tool)
@@ -127,7 +255,8 @@ proc toolSchema*(cat: Catalog, tool: string): JsonNode =
     if t.name == tool: return t.schema
 
 proc announce(cat: Catalog) =
-  let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: cat.allTools())
+  let env = Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: cat.promptTools())
   cat.nc.publish("ev.catalog.updated", env.encode())
 
 proc handle(cat: Catalog, subject, data: string) =

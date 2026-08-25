@@ -87,7 +87,7 @@ proc registerTool*(c: Component, name: string, schemaJson: string,
 proc toolSchema*(props: JsonNode, required: seq[string] = @[],
                  description = ""): JsonNode =
   ## Convenience: OpenAI tool-calling schema from a properties object.
-  ## Extend the result with x-harness (approval, timeoutMs, hidden) as needed.
+  ## Extend with x-harness (approval, timeoutMs, hidden, onDemand) as needed.
   result = %*{"type": "object", "properties": props}
   if required.len > 0: result["required"] = %required
   if description.len > 0: result["description"] = %description

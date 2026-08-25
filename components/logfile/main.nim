@@ -456,6 +456,8 @@ comp.tool:
        "maxDirectoryEntries": maxDirectoryEntries,
        "responseBytes": responseBytes}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.tool:
   proc logfile_paths(): JsonNode =
     ## Report the configured directory, retained JSONL files, and sink health.
@@ -500,5 +502,7 @@ comp.tool:
        "directoryTruncated": directoryTruncated,
        "maxDirectoryEntries": maxDirectoryEntries,
        "responseBytes": responseBytes}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.run()
