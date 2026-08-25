@@ -29,6 +29,7 @@ task all-internal, "Unlocked internal build — invoke through `all` (or the Mak
   exec "nim c --hints:off --path:sdk -o:var/bin/builder components/builder/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/plugins components/plugins/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/skills components/skills/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/fetch components/fetch/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/observe components/observe/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/logfile components/logfile/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"

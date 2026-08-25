@@ -50,7 +50,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run \
-        test test-bash test-store test-builder test-console test-plugins test-skills \
+        test test-bash test-store test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-core test-cli test-hashline \
         test-grep test-write \
         test-autostart test-smoke smoke dev clean gotest \
@@ -198,7 +198,8 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # sequentially. Runtime state and NATS are isolated per test, so individual
 # test targets may run concurrently with each other and a live harness.
 # Individual: make test-bash, test-store,
-# test-builder, test-console, test-plugins, test-skills, test-core, test-cli,
+# test-builder, test-console, test-plugins, test-skills, test-fetch,
+# test-core, test-cli,
 # test-observe, test-logfile, test-models, test-hashline, test-grep,
 # test-write, test-smoke.
 
@@ -220,6 +221,7 @@ test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
 test-skills:  build var/bin/test_t_skills  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_skills
+test-fetch:   build var/bin/test_t_fetch   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fetch
 test-core:    build var/bin/test_t_core    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_core
 test-observe: build var/bin/test_t_observe ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_observe
 test-logfile: build var/bin/test_t_logfile ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_logfile

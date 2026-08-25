@@ -40,6 +40,13 @@ components:
     required: false
     restart: on-failure
 
+  - name: fetch
+    build: {lang: nim, src: components/fetch/main.nim}
+    binary: var/bin/fetch
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: models
     build: {lang: go, src: components/models}
     binary: var/bin/models
