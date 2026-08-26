@@ -1,8 +1,9 @@
 ## Niffler core — entry point.
 ##
 ## Boot sequence (docs/REBOOT.md): spawn NATS (if no NIF_NATS_URL) → open catalog →
-## resolve manifest to binaries → spawn children → converge on the required
-## set → serve svc.core.call (tty stdin becomes the admin shell, core/tty.nim).
+## resolve manifest + boot profile to binaries → spawn children → converge on
+## the required set → serve svc.core.call (tty stdin becomes the admin shell,
+## core/tty.nim).
 ## Core speaks exactly one protocol.
 
 import std/[json, os, osproc, sequtils, streams, strutils, tables, tempfiles,
@@ -19,7 +20,14 @@ import dispatch
 import supervisor
 import tty
 
+const minimalComponents = ["store", "bash", "llm"]
+
 var gStop = false
+
+type CoreOptions = object
+  recovering: bool
+  minimal: bool
+  help: bool
 
 proc onSig(sig: cint) {.noconv.} =
   gStop = true
@@ -139,10 +147,42 @@ proc stopSpawnedBus(serverProc: var Process) =
   serverProc.close()
   serverProc = nil
 
+proc usage(): string =
+  ## Command-line help for the system harness.
+  """Usage: niffler [--minimal] [--recover]
+
+  --minimal  start only store, bash and llm; do not restore spawned components
+  --recover  rebuild shipped binaries and wipe spawned-component records
+  -h, --help show this help
+"""
+
+proc parseOptions(args: seq[string]): CoreOptions =
+  ## Parse independent startup modes; --minimal and --recover may be combined.
+  for arg in args:
+    case arg
+    of "--minimal": result.minimal = true
+    of "--recover": result.recovering = true
+    of "-h", "--help": result.help = true
+    else: raise newException(ValueError, "unknown option: " & arg)
+
 proc main() =
-  let recovering = paramCount() >= 1 and paramStr(1) == "--recover"
+  var options: CoreOptions
+  try:
+    options = parseOptions(commandLineParams())
+  except ValueError as e:
+    stderr.writeLine("niffler: " & e.msg)
+    stderr.writeLine("Try 'niffler --help'.")
+    quit(2)
+  if options.help:
+    stdout.write(usage())
+    return
+
+  let recovering = options.recovering
+  let minimalMode = options.minimal
   if recovering:
     echo "core: RECOVER mode — rebuild shipped binaries, wipe spawned-component records"
+  if minimalMode:
+    echo "core: MINIMAL mode — starting store, bash and llm only"
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", root / ".env")
@@ -220,12 +260,14 @@ proc main() =
   var required: seq[string] = @[]
   for c in manifest{"components"}:
     let name = c{"name"}.getStr("")
+    if minimalMode and name notin minimalComponents:
+      continue
     let binary = root / c{"binary"}.getStr("")
     if not fileExists(binary):
       echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binary & ")"
       continue
     discard sup.addChild(name, binary, parsePolicy(c{"restart"}.getStr("on-failure")))
-    if c{"required"}.getBool(false):
+    if minimalMode or c{"required"}.getBool(false):
       required.add(name)
   for c in sup.children:
     sup.startChild(c)
@@ -248,7 +290,7 @@ proc main() =
 
   # --- 4b. restore spawned components from the store ---------------------
   # Persistence of shape: components added via core.spawn come back on boot.
-  # Recover mode wipes those records first — back to the manifest set.
+  # Recover mode wipes those records first — back to the selected boot profile.
   var approval = newApproval(nc, cat, isatty(stdin))
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
                      root: root, runner: false,
@@ -265,26 +307,29 @@ proc main() =
             discard ct.dispatchToolCall("del", %*{"kind": "component", "id": id})
       except CatchableError as e:
         echo "core: WARNING recover wipe failed: " & e.msg
-    try:
-      let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
-      for item in resp{"items"}:
-        let name = item{"id"}.getStr("")
-        let binary = item{"value"}{"binary"}.getStr("")
-        if name.len == 0 or binary.len == 0: continue
-        var alreadyManifest = false
-        for c in sup.children:
-          if c.name == name: alreadyManifest = true
-        if alreadyManifest: continue  # shipped manifest definition wins
-        if fileExists(binary):
-          echo "core: restoring " & name & " from store (" & binary & ")"
-          discard sup.addChild(name, binary,
-            parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
-          sup.startChild(sup.children[^1])
-        else:
-          echo "core: WARNING stored component " & name &
-               " has missing binary: " & binary
-    except CatchableError as e:
-      echo "core: WARNING cannot restore components from store: " & e.msg
+    if minimalMode:
+      echo "core: minimal mode — persisted spawned components stay stopped"
+    else:
+      try:
+        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
+        for item in resp{"items"}:
+          let name = item{"id"}.getStr("")
+          let binary = item{"value"}{"binary"}.getStr("")
+          if name.len == 0 or binary.len == 0: continue
+          var alreadyManifest = false
+          for c in sup.children:
+            if c.name == name: alreadyManifest = true
+          if alreadyManifest: continue  # shipped manifest definition wins
+          if fileExists(binary):
+            echo "core: restoring " & name & " from store (" & binary & ")"
+            discard sup.addChild(name, binary,
+              parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
+            sup.startChild(sup.children[^1])
+          else:
+            echo "core: WARNING stored component " & name &
+                 " has missing binary: " & binary
+      except CatchableError as e:
+        echo "core: WARNING cannot restore components from store: " & e.msg
 
   # --- 5. service surface ----------------------------------------------------
   # tty stdin: the admin shell (status commands — core/tty.nim). Otherwise:

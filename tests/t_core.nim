@@ -4,11 +4,11 @@
 ## core tools), the self-extension lifecycle (builder.build → core.spawn
 ## → tool live → kill → remove → record gone), duplicate-tool rejection,
 ## and — on a second bus without NIF_AUTO_APPROVE — that approval-gated
-## tools are denied when no human/UI is reachable.
+## tools are denied when no human/UI is reachable. A third isolated root
+## verifies --minimal starts only store/bash/llm and skips persisted children.
 
 import std/[json, os, osproc, strutils]
 import natswrapper
-import envelope
 import helpers
 
 proc main() =
@@ -196,6 +196,77 @@ proc main() =
                     %*{"name": "lifec", "binary": "/tmp/x"}, 60_000)
   check("approval-gated spawn denied without human",
         denied{"error"}.getStr("").contains("approval"), $denied)
+
+  # --- minimal boot profile -------------------------------------------------
+  # Seed a persisted component record first: --minimal must neither start it
+  # nor delete it, while also filtering non-minimal manifest components.
+  let minimalSandbox = newCoreSandbox(
+    "minimal", ["store", "bash", "builder", "plugins", "llm"])
+  defer: removeDir(minimalSandbox.root)
+  let (server3, url3) = startNats()
+  defer: stopServer(server3)
+  var nc3 = waitConnect(url3)
+  defer: nc3.close()
+
+  var seedStore = startComponent(minimalSandbox.sandboxBin("store"), url3,
+                                 root = minimalSandbox.root)
+  defer:
+    if seedStore != nil:
+      stopProcess(seedStore, 1500)
+  var seeded = false
+  for i in 0 ..< 100:
+    let r = call(nc3, "store", "put", %*{
+      "kind": "component",
+      "id": "plugins",
+      "value": {
+        "name": "plugins",
+        "binary": minimalSandbox.sandboxBin("plugins"),
+        "policy": "on-failure"
+      }
+    }, 3_000)
+    if r{"ok"}.getBool(false):
+      seeded = true
+      break
+    sleep(100)
+  check("seed persisted component for minimal mode", seeded)
+  stopProcess(seedStore, 1500)
+  seedStore = nil
+
+  let minimalCore = startComponent(minimalSandbox.sandboxBin("niffler"), url3,
+    root = minimalSandbox.root, args = ["--minimal"])
+  defer: stopProcess(minimalCore, 1500)
+  var minimalUp = false
+  for i in 0 ..< 100:
+    let r = call(nc3, "core", "catalog", %*{"op": "list"}, 3_000)
+    if r{"error"} == nil and r{"tools"} != nil:
+      minimalUp = true
+      break
+    sleep(200)
+  check("minimal core up", minimalUp)
+
+  let minimalStatus = call(nc3, "core", "status", newJObject(), 10_000)
+  var childCount = 0
+  var sawStore = false
+  var sawBash = false
+  var sawLlm = false
+  var sawUnexpected = false
+  if minimalStatus{"components"} != nil:
+    for c in minimalStatus{"components"}:
+      inc childCount
+      case c{"name"}.getStr("")
+      of "store": sawStore = true
+      of "bash": sawBash = true
+      of "llm": sawLlm = true
+      else: sawUnexpected = true
+  check("--minimal supervises exactly store, bash and llm",
+        minimalStatus{"error"} == nil and childCount == 3 and
+        sawStore and sawBash and sawLlm and not sawUnexpected,
+        $minimalStatus)
+
+  let persisted = call(nc3, "store", "get",
+                       %*{"kind": "component", "id": "plugins"})
+  check("--minimal leaves skipped component records intact",
+        persisted{"ok"}.getBool(false), $persisted)
 
   report("CORE TEST")
 
