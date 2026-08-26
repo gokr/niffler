@@ -67,10 +67,10 @@ comp.tool:
     ## covers: write the component source yourself (Nim: import niffler/sdk
     ## with the comp.tool: pattern; Go: import sdk "niffler.dev/sdk";
     ## TypeScript: import sdk from "niffler-sdk" with the comp.tool(...)
-    ## pattern), then call core.spawn with the returned binary — the
-    ## component registers itself and its tools appear in your toolset on
-    ## the next request. Call the info tool first to see the SDK locations
-    ## and the exact code pattern. Returns ok, the binary path and a log
+    ## pattern), then invoke core.spawn with the returned binary — the
+    ## component registers itself and becomes available through discover.
+    ## Call the info tool first to see the SDK locations and the exact code
+    ## pattern. Returns ok, the binary path and a log
     ## tail (compile errors are truncated to 2000 chars).
     ## - lang: Language of the component: nim, go or ts
     ## - name: Lowercase-hyphen component name (also the binary name)
@@ -192,7 +192,8 @@ comp.tool:
       return %*{"ok": false, "error": "unsupported lang '" & lang &
                 "' (supported: nim, go, ts)"}
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
+comp.tools[^1].schema["x-harness"] =
+  %*{"approval": "always", "timeoutMs": 300000, "onDemand": true}
 
 comp.tool:
   proc info(): JsonNode =
@@ -200,6 +201,8 @@ comp.tool:
     let root = getEnv("NIF_ROOT", ".")
     return %*{"langs": ["nim", "go", "ts"], "sdk": root / "sdk",
               "sdkGo": root / "sdk" / "go", "sdkTs": root / "sdk" / "ts",
-              "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then core.spawn {name, binary}"}
+              "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then discover and invoke core.spawn {name, binary}"}
+
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.run()

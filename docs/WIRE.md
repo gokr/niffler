@@ -14,7 +14,9 @@ upgrades are per-seam via NATS headers, never a global format.
   "tool": "bash",          // tool name (call/result/error)
   "args": {"cmd": "ls"},   // tool arguments (call only)
   "payload": {...},        // event payload (event only)
-  "error": {"code": "...", "message": "..."}  // error only
+  "error": {"code": "...", "message": "..."},  // error only
+  "caller": "tui"          // component name of the call originator (call only;
+                            // self-declared routing hint, not an auth claim)
 }
 ```
 
@@ -91,17 +93,35 @@ to `llm.cancel.<sessionId>` to abort an in-flight streaming call.
 Approval subjects (human gate for `x-harness.approval: "always"` tools):
 
 ```
-ev.approval.request    # core → UI: {id, tool, args}   (terminal harness prompts instead)
-ev.approval.reply      # UI → core: {id, ok}           (id-matched)
+svc.approval.<name>.request  # directed request to the interactive component
+                             #   that drove the current turn: {id, tool, args,
+                             #   sessionId, caller}. Core derives <name> from
+                             #   the call envelope's caller field — component
+                             #   names are never hardcoded.
+ev.approval.request    # broadcast fallback: {id, tool, args, sessionId,
+                       #   caller?, fallback: true} — used for direct
+                       #   (non-session) calls, or when the driver did not
+                       #   ack a directed request within ~1.5s
+                       #   (terminal harness prompts instead)
+ev.approval.reply      # UI → core: {id, ack: true} when a directed request
+                       #   is taken (modal shown), then {id, ok} — the
+                       #   decision. Broadcast/direct requests need no ack.
+ev.approval.resolved   # core → UIs: {id, ok} gate verdict; clients dismiss
+                       #   stale modals for id
 ```
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
-`kill`, `remove`. `catalog` ops: `list` (LLM-facing tools, hidden ones
-filtered), `components` (component→tools view for bus clients that
-missed the registrations — the cli seeds its catalog from it) and
+`kill`, `remove`. `catalog` ops: `list` (the name-sorted *direct*
+projection — tools without `x-harness.onDemand`/`x-harness.hidden`),
+`components` (component→tools view over the full catalog for bus clients
+that missed the registrations — the cli seeds its catalog from it) and
 `snapshot` (full registration payloads incl. schemas — session runners
 seed their catalog from it at startup, then follow `reg.>` live).
+The LLM-facing core tools also include `discover` (hint/schema lookup
+over the non-hidden catalog) and `invoke` (generic gateway into any live
+non-hidden tool, preserving its approval/timeout policy) — see
+[DISCOVER.md](DISCOVER.md).
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
@@ -127,8 +147,10 @@ ends — turns never nest.
 3. Core converges when the selected profile's required set has registered
    (normally the manifest's required entries; `store`, `bash`, and `llm` in
    minimal mode). Every new registration is announced as
-   `ev.catalog.updated` with the full tool list (the LLM tools parameter is
-   rebuilt per request anyway).
+   `ev.catalog.updated` with the direct projection (same shape as
+   `catalog {op: list}`). Each conversation freezes its direct toolset at
+   first turn — late registrations reach an existing conversation through
+   `discover` + `invoke`, not schema churn.
 4. Teardown = exit; the OS is the disposer. Core drains children in reverse
    registration order: `ev.sys.drain` → grace period → SIGTERM → SIGKILL.
 
@@ -142,9 +164,17 @@ Core publishes it on user cancel. ~10 lines in the SDK.
 
 Dispatch honors `x-harness.approval` on the tool schema (docs/REBOOT.md,
 "policy rides the schema"): a tool marked `"always"` is held until a human
-answers. Terminal harness: y/N prompt on stdin. Service mode: core
-publishes `ev.approval.request` and waits id-matched on `ev.approval.reply`
-(timeout → deny). No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+answers. Terminal harness: y/N prompt on stdin. Service mode: the request
+is routed to the interactive component that drove the current turn — its
+private subject `svc.approval.<name>.request` (name from the envelope's
+self-declared `caller`, never hardcoded). The driver acks on
+`ev.approval.reply` (a human is being asked) and answers `{id, ok}`.
+When the driver does not ack within ~1.5s (crashed, or not interactive)
+the request is rebroadcast on `ev.approval.request` with `fallback: true`
+so any attached interactive client can step in; direct (non-session) calls
+broadcast immediately. The gate verdict is published on
+`ev.approval.resolved` so other clients dismiss stale modals. Timeout →
+denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
 
 ## Conventions
 

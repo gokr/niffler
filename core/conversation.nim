@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[json, os, sequtils, strutils, tables, times]
+import std/[algorithm, json, os, sequtils, strutils, tables, times]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -21,11 +21,13 @@ import supervisor
 
 const systemPromptFmt = """
 You are Niffler, a minimal self-extending agent harness.
-Use your tools to get things done — read each tool's description before
-calling it, and call the catalog tool to list everything available. Prefer
-an existing tool (bash usually suffices) over building a new one.
-When the live catalog includes the `build` tool, you can add capabilities at
-runtime:
+Use your direct tools to get things done and read each description before
+calling it. When the direct set does not cover a task, use discover to find
+live components and request only the schemas you need, then call those tools
+through invoke. Discovery results stay in this conversation's history; its
+direct toolset stays fixed so the provider can reuse the prompt prefix.
+Prefer an existing tool (bash usually suffices) over building a new one.
+You can add capabilities at runtime:
 1. write a component source file — Nim: `import niffler/sdk` and use the
    typed tool pattern:
 
@@ -76,16 +78,17 @@ runtime:
      return { greeting: "Hello, " + (args?.name ?? "world") };
    });
    comp.run();
-2. call builder.build {lang, name, source} to compile it (builder.info
-   explains the pattern)
-3. call core.spawn {name, binary} to start it
-4. the new tool appears in your toolset on the next request
+2. discover the builder build schema and invoke it with {lang, name, source}
+   (builder.info explains the pattern)
+3. discover the core spawn schema and invoke it with {name, binary}
+4. discover the new component and invoke its tools; the fixed direct toolset
+   does not change mid-conversation
 The live catalog is authoritative. In a custom or `--minimal` profile,
 `build` may be absent: do not invent or call an absent tool. Use the tools
-that remain, or use bash to write/compile a component and then core.spawn its
-binary when self-extension is necessary.
-To stop a tool again: core.kill {name} (temporary; restored on normal boot) or
-core.remove {name} (forgotten permanently).
+that remain, or use bash to write/compile a component and then discover and
+invoke core spawn when self-extension is necessary.
+To stop a tool again, discover and invoke core kill (temporary; restored on
+normal boot) or remove (forgotten permanently).
 Conversations and messages persist automatically via the store.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
@@ -127,10 +130,17 @@ type
     ctxWarned*: bool     ## warned once per session until the next trim
     failing: bool
 
+  ToolExposure* = object
+    direct*: JsonNode
+    discovered*: JsonNode
+    initializedAt*: float
+    rev*: int
+
   Session* = object
     messages*: seq[JsonNode]
     persister*: Persister
     modelOverride*: string
+    exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
@@ -250,6 +260,95 @@ proc persistConversationRuntime(p: Persister, modelOverride, provider,
     "promptTokens": p.promptTokens
   }
   p.ct.updateConversationHeader(p.convId, fields)
+
+proc directToolSnapshot(ct: CoreTools): JsonNode =
+  result = newJArray()
+  for tool in ct.cat.promptTools():
+    let name = tool{"name"}.getStr("")
+    result.add(%*{"component": ct.cat.toolIndex.getOrDefault(name),
+                  "name": name, "schema": tool{"schema"}})
+
+proc exposureValue(exposure: ToolExposure): JsonNode =
+  %*{"version": 1, "direct": exposure.direct,
+     "discovered": exposure.discovered,
+     "initializedAt": exposure.initializedAt,
+     "updatedAt": epochTime()}
+
+proc saveToolExposure(ct: CoreTools, sessionId: string,
+                      exposure: var ToolExposure) =
+  try:
+    let saved = ct.dispatchToolCall("put", %*{
+      "kind": "session", "id": sessionId & ":tools",
+      "value": exposureValue(exposure), "expectRev": exposure.rev})
+    if saved{"ok"}.getBool(false):
+      exposure.rev = saved{"rev"}.getInt(exposure.rev)
+  except CatchableError:
+    discard
+
+proc loadToolExposure*(ct: CoreTools, sessionId: string): ToolExposure =
+  ## Load the immutable direct tool snapshot and durable discovery summary.
+  try:
+    let stored = ct.dispatchToolCall("get", %*{
+      "kind": "session", "id": sessionId & ":tools"})
+    let value = stored{"value"}
+    if stored{"ok"}.getBool(false) and value != nil and
+        value{"version"}.getInt(0) == 1 and
+        value{"direct"} != nil and value{"direct"}.kind == JArray:
+      result.direct = value{"direct"}
+      result.discovered = value{"discovered"}
+      if result.discovered == nil or result.discovered.kind != JArray:
+        result.discovered = newJArray()
+      result.initializedAt = value{"initializedAt"}.getFloat(epochTime())
+      result.rev = stored{"rev"}.getInt(0)
+      return
+  except CatchableError:
+    discard
+
+  result = ToolExposure(direct: directToolSnapshot(ct),
+                        discovered: newJArray(),
+                        initializedAt: epochTime())
+  saveToolExposure(ct, sessionId, result)
+
+proc promptTools(exposure: ToolExposure): JsonNode =
+  result = newJArray()
+  for tool in exposure.direct:
+    result.add(%*{"name": tool{"name"}, "schema": tool{"schema"}})
+
+proc recordDiscovery(ct: CoreTools, sessionId: string,
+                     exposure: var ToolExposure, response: JsonNode) =
+  let component = response{"component"}.getStr("")
+  let tools = response{"tools"}
+  if component.len == 0 or tools == nil or tools.kind != JArray:
+    return
+  var changed = false
+  for tool in tools:
+    let name = tool{"name"}.getStr("")
+    if name.len == 0:
+      continue
+    var known = false
+    for item in exposure.discovered:
+      if item{"component"}.getStr("") == component and
+          item{"name"}.getStr("") == name:
+        known = true
+        break
+    if not known:
+      exposure.discovered.add(%*{"component": component, "name": name})
+      changed = true
+  if not changed:
+    return
+
+  var refs: seq[JsonNode] = @[]
+  for item in exposure.discovered:
+    refs.add(item)
+  refs.sort(proc(a, b: JsonNode): int =
+    let byComponent = cmp(a{"component"}.getStr(""),
+                          b{"component"}.getStr(""))
+    if byComponent != 0: byComponent
+    else: cmp(a{"name"}.getStr(""), b{"name"}.getStr("")))
+  exposure.discovered = newJArray()
+  for item in refs:
+    exposure.discovered.add(item)
+  saveToolExposure(ct, sessionId, exposure)
 
 # ---------------------------------------------------------------------------
 # Context window — trivial warning + trim
@@ -377,7 +476,8 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   }
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
-              modelOverride = "",
+              modelOverride: string,
+              exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -421,9 +521,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   while rounds < 20:
     rounds += 1
     checkContext(p, messages, onEvent)
-    # rebuild the tool list from the live catalog (self-extension!)
+    # A conversation's direct schemas are immutable. New live capabilities
+    # enter append-only history through discover and are called via invoke.
     let llmArgs = %*{"messages": messages,
-                     "tools": ct.cat.allTools().formatToolsForLlm(),
+                     "tools": exposure.promptTools().formatToolsForLlm(),
                      "sessionId": sessionId,
                      "stream": true}
     if selectedModel.len > 0:
@@ -517,6 +618,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         ct.cat.pump()
         if ct.sup != nil:
           ct.sup.pump(ct.cat)
+        if name == "discover":
+          recordDiscovery(ct, sessionId, exposure, toolResult)
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": $toolResult}
         messages.add(toolMsg)
@@ -538,10 +641,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 # ---------------------------------------------------------------------------
 
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
-                         sessions: var Table[string, Session]): JsonNode =
+                         sessions: var Table[string, Session],
+                         caller = ""): JsonNode =
   ## session {sessionId, content?, model?}: run one turn or persist a model
   ## selection, emitting ev.session.* events. Session state is rebuilt from
-  ## the store on first use (resume).
+  ## the store on first use (resume). caller is the self-declared component
+  ## name from the call envelope — the interactive component driving this
+  ## session; approvals raised by the turn are routed to it.
   let sessionId = args{"sessionId"}.getStr("")
   let content = args{"content"}.getStr("")
   let hasModel = args.kind == JObject and args.hasKey("model")
@@ -566,6 +672,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       entry.messages.add(m)
     entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
                                 promptTokens: pt, contextUsed: used, ctxSize: cs)
+    entry.exposure = loadToolExposure(ct, sessionId)
 
   # Presence of the key means "set/clear the override"; omission preserves
   # the conversation's previous selection.
@@ -603,8 +710,15 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   entry.messages.add(userMsg)
   entry.persister.persistMsg(userMsg)
 
+  # Tag approvals raised during this turn with the driving component so they
+  # are routed to its private approval subject. Cleared when the turn ends.
+  if ct.approval != nil:
+    ct.approval.caller = caller
+  defer:
+    if ct.approval != nil: ct.approval.caller = ""
+
   let reply = runTurn(ct, entry.persister, entry.messages,
-                      entry.modelOverride, onEvent)
+                      entry.modelOverride, entry.exposure, onEvent)
   sessions[sessionId] = entry
   return %*{"ok": true, "sessionId": sessionId, "reply": reply,
             "modelOverride": entry.modelOverride}
@@ -656,17 +770,18 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
       "session runner for " & sessionId & " did not come up")
   sessionSubject(sessionId)
 
-proc callSession*(ct: CoreTools, args: JsonNode): JsonNode =
+proc callSession*(ct: CoreTools, args: JsonNode, caller = ""): JsonNode =
   ## Service-mode path for the "session" tool: ensure the runner for this
   ## sessionId, forward the turn, return its result. Core tools and other
   ## svc.core.call traffic stay responsive during the wait
   ## (dispatchSubjectCall pumps them); concurrent session calls are stashed
   ## (pumpCoreWhileBusy) — turns never nest, but they must not be lost.
+  ## caller is forwarded so the runner can route approvals to the driver.
   let sessionId = args{"sessionId"}.getStr("")
   if sessionId.len == 0:
     return %*{"error": "session needs sessionId"}
   let subject = ensureRunner(ct, sessionId)
-  dispatchSubjectCall(ct, subject, "session", args, 1800_000)
+  dispatchSubjectCall(ct, subject, "session", args, 1800_000, caller)
 
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
   ## Serve pending svc.core.call messages (session/spawn/catalog).
@@ -674,7 +789,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
   for pend in ct.pending.items:
     var resp: Envelope
     try:
-      let r = callSession(ct, pend.env.args)
+      let r = callSession(ct, pend.env.args, pend.env.caller)
       if r{"error"} != nil:
         raise newException(ValueError, r{"error"}.getStr("session error"))
       resp = resultEnvelope(pend.env.id, r)
@@ -696,14 +811,17 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     try:
       case env.tool
       of "session":
-        let r = callSession(ct, env.args)
+        let r = callSession(ct, env.args, env.caller)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog", "kill", "remove", "status":
+      of "spawn", "catalog", "kill", "remove", "status", "discover":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))
+        resp = resultEnvelope(env.id, r)
+      of "invoke":
+        let r = ct.dispatchToolCall(env.tool, env.args)
         resp = resultEnvelope(env.id, r)
       else:
         resp = errorEnvelope(env.id, "no-tool",

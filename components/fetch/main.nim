@@ -268,4 +268,6 @@ comp.tool:
     except CatchableError as e:
       return %*{"ok": false, "error": "fetch failed: " & e.msg}
 
+comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+
 comp.run()

@@ -97,6 +97,7 @@ func main() {
 			"query":      map[string]any{"type": "string", "description": "Case-insensitive provider id/name filter"},
 			"configured": map[string]any{"type": "boolean", "description": "Only configured (true) or unconfigured (false) providers"},
 		},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Query      string `json:"query"`
@@ -122,6 +123,7 @@ func main() {
 			"configured": map[string]any{"type": "boolean", "description": "Filter by whether a provider credential environment variable is set"},
 			"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum returned models (default 50)"},
 		},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args listModelsArgs
 		if err := decodeArgs(raw, &args); err != nil {
@@ -138,7 +140,8 @@ func main() {
 			"provider": map[string]any{"type": "string", "description": "Exact provider id"},
 			"model":    map[string]any{"type": "string", "description": "Exact provider-specific model id"},
 		},
-		"required": []string{"provider", "model"},
+		"required":  []string{"provider", "model"},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Provider string `json:"provider"`
@@ -164,7 +167,8 @@ func main() {
 			"reference": map[string]any{"type": "string", "description": "provider/model or a globally unique bare model id"},
 			"provider":  map[string]any{"type": "string", "description": "Optional provider when reference is a model id"},
 		},
-		"required": []string{"reference"},
+		"required":  []string{"reference"},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Reference string `json:"reference"`
@@ -182,6 +186,7 @@ func main() {
 		"properties": map[string]any{
 			"force": map[string]any{"type": "boolean", "description": "Bypass the models.dev cache freshness check"},
 		},
+		"x-harness": map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
 			Force bool `json:"force"`
@@ -200,6 +205,7 @@ func main() {
 		"type":        "object",
 		"description": "Show catalog provenance and health: models.dev baseline, registered plugin patches, stale fallbacks, and the optional local override. Use this to diagnose questionable model metadata.",
 		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"onDemand": true},
 	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
 		return catalog.report(), nil
 	})

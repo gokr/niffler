@@ -58,6 +58,7 @@
       for (const item of resp.items ?? []) {
         await send("store", "del", { kind: "message", id: item.id });
       }
+      await send("store", "del", { kind: "session", id: s.id + ":tools" });
       await send("store", "del", { kind: "conversation", id: s.id });
     } catch {
       /* store unreachable — drop the row anyway */

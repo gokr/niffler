@@ -1,6 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { send } from "../nats";
+  import { on, onStatus, send } from "../nats";
+
+  interface HarnessMetadata {
+    hidden?: boolean;
+    onDemand?: boolean;
+  }
+
+  interface ToolSchema {
+    description?: string;
+    "x-harness"?: HarnessMetadata;
+    [key: string]: unknown;
+  }
+
+  interface StatusTool {
+    name: string;
+    schema: ToolSchema;
+  }
 
   interface StatusComp {
     name: string;
@@ -12,15 +28,34 @@
     restarts?: number;
     pid?: number;
     registeredAt?: number;
-    tools?: { name: string }[];
+    tools?: StatusTool[];
     lang?: string;
     src?: string;
     size?: number;
     mtime?: number;
   }
 
-  let components = $state<Record<string, StatusComp>>({});
+  interface ToolRef {
+    component: string;
+    name: string;
+    schema?: ToolSchema;
+  }
+
+  interface ToolExposure {
+    version: number;
+    direct: ToolRef[];
+    discovered: ToolRef[];
+  }
+
+  type ExposureState = "direct" | "discovered" | "on-demand" | "hidden" | "unknown";
+
+  let { sessionId }: { sessionId: string | null } = $props();
+
+  let components = $state.raw<Record<string, StatusComp>>({});
+  let exposure = $state.raw<ToolExposure | null>(null);
+  let exposureSession = $state<string | null>(null);
   let openName = $state<string | null>(null);
+  let exposureRequest = 0;
 
   // Collapse state is sticky: localStorage so the panel stays the way you
   // left it. Default collapsed (the panel should not eat sidebar space).
@@ -37,7 +72,21 @@
   // live set (authoritative process state) cross-referenced with the catalog
   // and manifest. We just poll it — no local event store to drift or miss
   // registrations, and crashes vanish on the next poll.
-  async function sync() {
+  const componentEntries = $derived.by(() =>
+    Object.entries(components).sort(([a], [b]) => a.localeCompare(b))
+  );
+
+  const directKeys = $derived.by(() => {
+    if (exposureSession !== sessionId) return [];
+    return (exposure?.direct ?? []).map((tool) => toolKey(tool.component, tool.name));
+  });
+
+  const discoveredKeys = $derived.by(() => {
+    if (exposureSession !== sessionId) return [];
+    return (exposure?.discovered ?? []).map((tool) => toolKey(tool.component, tool.name));
+  });
+
+  async function syncStatus() {
     try {
       const resp = await send("core", "status", {});
       const next: Record<string, StatusComp> = {};
@@ -48,6 +97,50 @@
     } catch {
       // core unreachable — keep whatever we have
     }
+  }
+
+  async function syncExposure(id: string | null, reset = false) {
+    const request = ++exposureRequest;
+    if (reset) {
+      exposure = null;
+      exposureSession = id;
+    }
+    if (!id) return;
+    try {
+      const resp = await send("store", "get", { kind: "session", id: id + ":tools" });
+      if (request !== exposureRequest || sessionId !== id) return;
+      const value = resp.value;
+      exposure = value?.version === 1 && Array.isArray(value.direct)
+        ? { version: 1, direct: value.direct, discovered: value.discovered ?? [] }
+        : null;
+      exposureSession = id;
+    } catch {
+      if (request === exposureRequest && sessionId === id && reset) exposure = null;
+    }
+  }
+
+  function toolKey(component: string, tool: string): string {
+    return component + "\u0000" + tool;
+  }
+
+  function toolState(component: string, tool: StatusTool): ExposureState {
+    if (tool.schema?.["x-harness"]?.hidden) return "hidden";
+    if (!sessionId || !exposure || exposureSession !== sessionId) return "unknown";
+    const key = toolKey(component, tool.name);
+    if (directKeys.includes(key)) return "direct";
+    if (discoveredKeys.includes(key)) return "discovered";
+    return "on-demand";
+  }
+
+  function stateLabel(state: ExposureState): string {
+    if (state === "discovered") return "seen";
+    if (state === "on-demand") return "demand";
+    if (state === "hidden") return "internal";
+    return state;
+  }
+
+  function sortedTools(component: StatusComp): StatusTool[] {
+    return [...(component.tools ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   }
 
 
@@ -88,15 +181,37 @@
     // Source of truth lives in core: `core.status` reports the supervisor's
     // live set (authoritative process state), so we just poll it — no local
     // event store to drift, and dead components vanish on the next poll.
-    sync();
+    syncStatus();
     // Refresh the component list every 5s; the 30s tick only bumps the
     // clock so uptime/modified labels stay fresh in between.
-    const poll = setInterval(sync, 5000);
+    const poll = setInterval(() => {
+      syncStatus();
+      syncExposure(sessionId);
+    }, 5000);
     const t = setInterval(() => tick++, 30000);
+    const offCatalog = on("ev.catalog.updated", syncStatus);
+    const offSession = on("ev.session.", (event) => {
+      const payload = event.payload ?? {};
+      if (payload.sessionId !== sessionId) return;
+      const kind = event.subject.slice("ev.session.".length);
+      if (kind === "toolcall" || kind === "done") syncExposure(sessionId);
+    });
+    const offStatus = onStatus((online) => {
+      if (!online) return;
+      syncStatus();
+      syncExposure(sessionId);
+    });
     return () => {
       clearInterval(poll);
       clearInterval(t);
+      offCatalog();
+      offSession();
+      offStatus();
     };
+  });
+
+  $effect(() => {
+    syncExposure(sessionId, true);
   });
 
   function toggleCollapsed(e: Event) {
@@ -115,10 +230,22 @@
     </span>
   </summary>
   <div class="flex flex-col gap-1">
-    {#if Object.keys(components).length === 0}
+    {#if sessionId && exposure}
+      <div class="mb-1 flex flex-wrap gap-x-2 gap-y-0.5 px-2 text-[9px] uppercase tracking-wide">
+        <span class="text-accent">direct</span>
+        <span class="text-ok">seen</span>
+        <span class="text-warn">demand</span>
+        <span class="text-ink-400">internal</span>
+      </div>
+    {:else}
+      <p class="mb-1 px-2 text-[10px] text-ink-400">
+        {sessionId ? "tool exposure initializes with the first turn" : "start or select a session to see tool exposure"}
+      </p>
+    {/if}
+    {#if componentEntries.length === 0}
       <p class="text-[11px] text-ink-400">none seen yet</p>
     {:else}
-      {#each Object.entries(components) as [name, c]}
+      {#each componentEntries as [name, c] (name)}
         <div>
           <button
             class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-ink-800"
@@ -140,8 +267,15 @@
               {#if (c.tools ?? []).length}
                 <div class="text-[10px] uppercase tracking-wide text-ink-400">tools</div>
                 <div class="mt-1 flex flex-wrap gap-1">
-                  {#each c.tools ?? [] as t}
-                    <span class="tool-chip">{t.name}</span>
+                  {#each sortedTools(c) as t (t.name)}
+                    {@const state = toolState(name, t)}
+                    <span
+                      class="tool-chip exposure-chip"
+                      data-exposure={state}
+                      title={(t.schema?.description ?? t.name) + " · " + stateLabel(state)}
+                    >
+                      {t.name}<span class="exposure-label">{stateLabel(state)}</span>
+                    </span>
                   {/each}
                 </div>
               {/if}

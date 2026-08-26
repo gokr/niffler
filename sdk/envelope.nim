@@ -20,6 +20,8 @@ type
     args*: JsonNode     ## call/result only
     payload*: JsonNode  ## event only
     error*: JsonNode    ## error only: {"code": "...", "message": "..."}
+    caller*: string     ## component name of the call originator (call only;
+                        ## self-declared routing hint, not an auth claim)
 
 var idCounter = 0
 
@@ -41,6 +43,7 @@ proc toJson*(e: Envelope): JsonNode =
   if e.args != nil: result["args"] = e.args
   if e.payload != nil: result["payload"] = e.payload
   if e.error != nil: result["error"] = e.error
+  if e.caller.len > 0: result["caller"] = %e.caller
 
 proc fromJson*(node: JsonNode): Envelope =
   result.v = node{"v"}.getInt(1)
@@ -50,6 +53,7 @@ proc fromJson*(node: JsonNode): Envelope =
   result.args = node{"args"}
   result.payload = node{"payload"}
   result.error = node{"error"}
+  result.caller = node{"caller"}.getStr("")
 
 proc encode*(e: Envelope): string = $e.toJson()
 
@@ -68,5 +72,6 @@ proc errorEnvelope*(id, code, message: string): Envelope =
 proc resultEnvelope*(id: string, value: JsonNode): Envelope =
   Envelope(v: 1, id: id, kind: ekResult, args: value)
 
-proc callEnvelope*(tool: string, args: JsonNode): Envelope =
-  Envelope(v: 1, id: newId(), kind: ekCall, tool: tool, args: args)
+proc callEnvelope*(tool: string, args: JsonNode, caller = ""): Envelope =
+  Envelope(v: 1, id: newId(), kind: ekCall, tool: tool, args: args,
+           caller: caller)

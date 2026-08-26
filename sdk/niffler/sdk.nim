@@ -87,7 +87,7 @@ proc registerTool*(c: Component, name: string, schemaJson: string,
 proc toolSchema*(props: JsonNode, required: seq[string] = @[],
                  description = ""): JsonNode =
   ## Convenience: OpenAI tool-calling schema from a properties object.
-  ## Extend the result with x-harness (approval, timeoutMs, hidden) as needed.
+  ## Extend with x-harness (approval, timeoutMs, hidden, onDemand) as needed.
   result = %*{"type": "object", "properties": props}
   if required.len > 0: result["required"] = %required
   if description.len > 0: result["description"] = %description
@@ -117,7 +117,7 @@ proc request*(c: Component, componentName, toolName: string, args: JsonNode,
               timeoutMs: int = 5000): JsonNode =
   ## Call a tool on another component (request/reply over the bus).
   ## Returns the result value; raises on timeout or error envelope.
-  let env = callEnvelope(toolName, args)
+  let env = callEnvelope(toolName, args, c.name)
   let data = env.encode()
   var msg: ptr natsMsg
   let subject = "svc." & componentName & ".call"

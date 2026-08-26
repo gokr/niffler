@@ -1,11 +1,11 @@
 ## Dispatch — route a tool call to its component over the bus.
 ##
-## Core's own tools (spawn, catalog) are handled locally; everything else
+## Core's own tools (spawn, catalog, discover) are handled locally; everything else
 ## goes to svc.<component>.call as a request/reply call envelope.
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[json, os, osproc, strutils, tables, times]
+import std/[algorithm, json, os, osproc, strutils, tables, times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
@@ -41,6 +41,19 @@ type
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode
 
+proc invokeTool(ct: CoreTools, args: JsonNode,
+                defaultTimeoutMs: int): JsonNode =
+  let target = args{"tool"}.getStr("")
+  let arguments = args{"arguments"}
+  if target.len == 0 or arguments == nil or arguments.kind != JObject:
+    raise newException(ValueError,
+      "invoke needs tool and an arguments object")
+  let schema = ct.cat.toolSchema(target)
+  if target == "invoke" or schema == nil or schema.isHidden():
+    raise newException(ValueError,
+      "tool is not available through invoke")
+  return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
+
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   # the self-extension tools change the harness itself — human gate first
   if tool in ["spawn", "kill", "remove"] and ct.approval != nil:
@@ -49,8 +62,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   case tool
   of "spawn":
     ## Register and start a built component binary; it announces itself on
-    ## connect and the LLM sees its tools on the next request. Persisted
-    ## via the store component so it survives restarts (persistence of shape).
+    ## connect and becomes available through discover/invoke. Persisted via
+    ## the store component so it survives restarts (persistence of shape).
     let name = args{"name"}.getStr("")
     let binary = args{"binary"}.getStr("")
     if name.len == 0 or binary.len == 0:
@@ -96,12 +109,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     # arrived before its request so the snapshot cannot lag the live bus.
     ct.cat.pump()
     if args{"op"}.getStr("") == "list":
-      return %*{"tools": ct.cat.allTools()}
+      return %*{"tools": ct.cat.promptTools()}
     if args{"op"}.getStr("") == "components":
       ## component→tools view for bus clients that missed the registrations
       ## (cli seeds its catalog from this)
       var comps = newJObject()
-      for name, reg in ct.cat.components:
+      for name in ct.cat.sortedComponentNames():
+        let reg = ct.cat.components[name]
         var tools = newJArray()
         for t in reg.tools:
           tools.add(%t.name)
@@ -128,7 +142,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       except CatchableError:
         discard
       var comps = newJArray()
-      for name, reg in ct.cat.components:
+      for name in ct.cat.sortedComponentNames():
+        let reg = ct.cat.components[name]
         if name == "core": continue  # seeded locally by every newCatalog
         var tools = newJArray()
         for t in reg.tools:
@@ -152,11 +167,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         comps.add(entry)
       return %*{"components": comps}
     return %*{"error": "catalog op must be 'list', 'components' or 'snapshot'"}
+  of "discover":
+    ct.cat.pump()
+    return ct.cat.discover(args)
   of "status":
-    ## Live components: the supervisor is the source of truth for what is
-    ## running (process state). Cross-reference the catalog for tools/schemas
-    ## and the manifest for build metadata. Same shape as the UI's snapshot
-    ## so the frontend can switch to pure pull without re-mapping.
+    ## Live components: supervised process state plus every current catalog
+    ## registration (core and external clients included), cross-referenced
+    ## with tool schemas and manifest build metadata.
     if ct.sup == nil:
       return %*{"error": "no supervisor here (session runner?)"}
     let now = epochTime()
@@ -172,36 +189,52 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             if cn.len > 0: langTable[cn] = c
     except CatchableError:
       discard
+    var childTable = initTable[string, Child]()
+    var names: seq[string] = @[]
+    for child in ct.sup.children:
+      childTable[child.name] = child
+      names.add(child.name)
+    for name in ct.cat.components.keys:
+      if name notin names:
+        names.add(name)
+    names.sort()
+
     var comps = newJArray()
-    for c in ct.sup.children:
-      # authoritative liveness straight from the process object
-      let running = c.process != nil and c.process.running()
-      # the catalog entry, if the component has registered yet (crashed-but-
-      # not-yet-departed, or not-yet-registered, may be absent)
-      let reg = ct.cat.components.getOrDefault(c.name)
+    for name in names:
+      let child = childTable.getOrDefault(name)
+      let reg = ct.cat.components.getOrDefault(name)
+      let supervised = child != nil
+      let running = if name == "core": true
+                    elif supervised: child.process != nil and child.process.running()
+                    else: reg.pid > 0
       var tools = newJArray()
       for t in reg.tools:
         tools.add(%*{"name": t.name, "schema": t.schema})
       var entry = %*{
-        "name": c.name,
+        "name": name,
         "version": reg.version,
-        "binary": c.binary,
         "running": running,
-        "wanted": c.wanted,
-        "policy": $c.policy,
-        "restarts": c.restarts,
+        "wanted": if supervised: child.wanted else: true,
+        "policy": if supervised: $child.policy
+                  elif name == "core": "core" else: "external",
+        "restarts": if supervised: child.restarts else: 0,
         "pid": reg.pid,
         "registeredAt": reg.registeredAt,
         "tools": tools}
-      let m = langTable.getOrDefault(c.name)
+      var binary = ""
+      if supervised:
+        binary = child.binary
+        entry["binary"] = %binary
+      let m = langTable.getOrDefault(name)
       if m != nil:
         entry["lang"] = %m{"build"}{"lang"}.getStr("")
         entry["src"] = %m{"build"}{"src"}.getStr("")
-      try:
-        entry["size"] = %getFileSize(c.binary)
-        entry["mtime"] = %getLastModificationTime(c.binary).toUnixFloat()
-      except CatchableError:
-        discard
+      if binary.len > 0:
+        try:
+          entry["size"] = %getFileSize(binary)
+          entry["mtime"] = %getLastModificationTime(binary).toUnixFloat()
+        except CatchableError:
+          discard
       comps.add(entry)
     return %*{"components": comps, "at": now}
   else:
@@ -230,7 +263,10 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
       continue
     var resp: Envelope
     try:
-      let r = ct.handleCoreTool(env.tool, env.args)
+      let r = if env.tool == "invoke":
+                ct.dispatchToolCall(env.tool, env.args)
+              else:
+                ct.handleCoreTool(env.tool, env.args)
       if r{"error"} != nil:
         raise newException(ValueError, r{"error"}.getStr("core tool error"))
       resp = resultEnvelope(env.id, r)
@@ -259,12 +295,12 @@ proc pumpTokenStream*(ct: CoreTools) =
                         p{"content"}.getStr(""),
                         p{"reasoning"}.getStr(""))
 proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
-                          args: JsonNode, timeoutMs: int): JsonNode =
+                          args: JsonNode, timeoutMs: int, caller = ""): JsonNode =
   ## Request/reply to an explicit subject (svc.<comp>.call or a scoped
   ## session subject). While waiting for the reply, keep the service surface
   # alive: core's own tools (so a component calling back into core mid-turn
   # cannot deadlock), the catalog, the supervisor, the live token stream.
-  let env = callEnvelope(tool, args)
+  let env = callEnvelope(tool, args, caller)
   let data = env.encode()
   let inbox = "_INBOX." & newId()
   var sub: ptr natsSubscription
@@ -301,9 +337,13 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000): JsonNode =
+  if tool == "invoke":
+    return invokeTool(ct, args, defaultTimeoutMs)
+
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
-  if tool in ["spawn", "catalog", "kill", "remove", "status"] and not ct.runner:
+  if tool in ["spawn", "catalog", "kill", "remove", "status", "discover"] and
+      not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
       raise newException(ValueError, r{"error"}.getStr("core tool error"))

@@ -191,7 +191,9 @@ ev.session.token       {sessionId, content, reasoning}        (live token deltas
 ev.session.toolcall    {sessionId, tool, args, result|error}
 ev.session.done        {sessionId, reply} | {sessionId, error}
 ev.session.context     {sessionId, promptTokens, usedTokens, context, warning?|trimmed?}
-ev.catalog.updated     full tool list after any registration change
+ev.catalog.updated     direct (prompt-facing) tool projection after any
+                       registration change; `catalog {op: snapshot}` still
+                       returns everything incl. hidden/on-demand schemas
 ev.models.updated      effective provider/model/source counts after refresh
 ev.provider.switch     provider component → bus: {nickname, previous, source, at}
 ev.provider.changed    redacted provider registry invalidation event
@@ -303,8 +305,9 @@ The agent adds capabilities at runtime, mid-conversation:
 1. writes a component source (Nim: `import niffler/sdk`, typed tool
    pattern; Go: `import sdk "niffler.dev/sdk"` — see the system prompt)
 2. `builder.build {lang, name, source}` compiles it into `var/bin/`
-3. `core.spawn {name, binary}` starts it; it registers itself; its tools
-   appear in the LLM's toolset on the next request
+3. `core.spawn {name, binary}` starts it; it registers itself; new
+   conversations expose its tools directly (when not on demand), existing
+   ones reach them via `discover` + `invoke` (docs/DISCOVER.md)
 4. `core.kill {name}` stops it temporarily (restored on next boot);
    `core.remove {name}` stops it and deletes its persisted record
 

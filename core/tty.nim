@@ -151,8 +151,8 @@ proc showStatus(ct: CoreTools) =
     echo fmt("children:     {ct.sup.children.len} supervised ({liveRunners} session runners)")
   else:
     echo "children:     n/a"
-  echo fmt("tools:        {ct.cat.allTools().len} non-hidden")
-  echo fmt("core tools:   spawn, catalog, kill, remove (see `catalog`)")
+  echo fmt("direct tools: {ct.cat.promptTools().len} in new conversations")
+  echo "core tools:   discover, invoke (catalog/lifecycle tools are on demand)"
 
 proc showCatalog(ct: CoreTools) =
   echo ""

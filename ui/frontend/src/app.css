@@ -124,6 +124,27 @@ body,
 .tool-chip.running {
   @apply border-accent-dim/50 text-accent;
 }
+.exposure-chip {
+  @apply inline-flex items-center gap-1;
+}
+.exposure-label {
+  @apply text-[8px] uppercase tracking-wide opacity-75;
+}
+.exposure-chip[data-exposure="direct"] {
+  @apply border-accent-dim/50 text-accent;
+}
+.exposure-chip[data-exposure="discovered"] {
+  @apply border-ok/50 text-ok;
+}
+.exposure-chip[data-exposure="on-demand"] {
+  @apply border-warn/50 text-warn;
+}
+.exposure-chip[data-exposure="hidden"] {
+  @apply border-ink-600/70 text-ink-400 opacity-70;
+}
+.exposure-chip[data-exposure="unknown"] {
+  @apply border-ink-600 text-ink-300;
+}
 .tool-run-item {
   @apply border-b border-ink-600/60 last:border-b-0;
 }

@@ -58,9 +58,16 @@ proc main() =
         cat.output)
   let coreCat = runCli(cliBin, url, @["call", "catalog", """{"op":"list"}"""],
                        root = root)
-  check("core catalog tool lists spawn/kill/remove",
-        coreCat.output.contains("\"spawn\"") and
-        coreCat.output.contains("\"remove\""), coreCat.output)
+  check("direct core catalog lists discover/invoke, not lifecycle schemas",
+        coreCat.output.contains("\"discover\"") and
+        coreCat.output.contains("\"invoke\"") and
+        not coreCat.output.contains("\"spawn\""), coreCat.output)
+  let coreDiscovery = runCli(cliBin, url,
+    @["call", "discover", """{"component":"core"}"""], root = root)
+  check("core lifecycle tools are advertised on demand",
+        coreDiscovery.output.contains("\"spawn\"") and
+        coreDiscovery.output.contains("\"kill\"") and
+        coreDiscovery.output.contains("\"remove\""), coreDiscovery.output)
 
   # core.status: authoritative live set from the supervisor
   let st = call(nc, "core", "status", newJObject(), 10_000)
@@ -257,9 +264,10 @@ proc main() =
       of "store": sawStore = true
       of "bash": sawBash = true
       of "llm": sawLlm = true
+      of "core": discard  # core lists itself since progressive discovery
       else: sawUnexpected = true
   check("--minimal supervises exactly store, bash and llm",
-        minimalStatus{"error"} == nil and childCount == 3 and
+        minimalStatus{"error"} == nil and childCount == 4 and
         sawStore and sawBash and sawLlm and not sawUnexpected,
         $minimalStatus)
 

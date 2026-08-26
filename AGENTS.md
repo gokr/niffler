@@ -43,7 +43,9 @@ anything structural.
   underscores. Tool names are globally unique — core rejects duplicates at
   registration.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
-  e.g. `chat`), `x-harness.approval` (**enforced**: terminal y/N prompt, UI
+  e.g. `chat`), `x-harness.onDemand` (kept out of a conversation's frozen
+  direct toolset; reachable via `discover` + `invoke` — docs/DISCOVER.md),
+  `x-harness.approval` (**enforced**: terminal y/N prompt, UI
   dialog, or deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),
   `x-harness.timeoutMs` (see `components/builder/main.nim`).
 - Tool doc comments are the LLM's only window into a tool: all prose lines of

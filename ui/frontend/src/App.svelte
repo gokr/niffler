@@ -121,8 +121,32 @@
   const headerUsed = $derived(headerStatus?.usedTokens ?? 0);
   const ctxPct = $derived(contextPct(headerUsed, headerContext));
 
+  // The UI's own bus identity (see ui/bridge.go: sdk.New("ui", ...)).
+  // Directed approval requests arrive on this component's private subject;
+  // core derives the subject from the call envelope's caller field and
+  // never hardcodes component names.
+  const UI_NAME = "ui";
+
+  onMount(() =>
+    on(`svc.approval.${UI_NAME}.request`, (ev) => {
+      const p = ev.payload ?? {};
+      if (!p.id || !p.tool) return;
+      const sid = p.sessionId ?? "";
+      if (isAutoApproved(sid, p.tool)) {
+        // Decision alone resolves the gate; no ack needed.
+        emit("ev.approval.reply", { id: p.id, ok: true });
+        return;
+      }
+      // Ack so the runner knows a human is being asked; then show the modal.
+      emit("ev.approval.reply", { id: p.id, ack: true });
+      approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
+    })
+  );
+
   onMount(() =>
     on("ev.approval.request", (ev) => {
+      // Broadcast requests (direct calls, or fallbacks whose driver is
+      // gone): any interactive client may answer, first reply wins.
       const p = ev.payload ?? {};
       if (p.id && p.tool) {
         const sid = p.sessionId ?? "";
@@ -132,6 +156,15 @@
           approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
         }
       }
+    })
+  );
+
+  onMount(() =>
+    on("ev.approval.resolved", (ev) => {
+      // The gate reached a verdict (possibly via another client): drop the
+      // matching modal instead of leaving a stale prompt open.
+      const p = ev.payload ?? {};
+      if (p.id) approvals = approvals.filter((r) => r.id !== p.id);
     })
   );
 
@@ -245,7 +278,7 @@
         + New session
       </button>
     </div>
-    <Components />
+    <Components {sessionId} />
   </aside>
 
   <main class="flex-1 flex flex-col min-w-0">

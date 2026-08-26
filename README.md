@@ -399,6 +399,12 @@ to CI any plugin repo — Niffler testing itself.
 - [x] **TypeScript SDK** — sdk/ts (npm package, mirror of the Go SDK);
       the builder compiles `lang: "ts"` components via tsc into a node
       wrapper binary; verified live (builder → spawn → call from Node.js)
+- [x] **progressive tool discovery** — one complete global catalog, but each
+      conversation freezes a small immutable direct toolset (13 shipped);
+      `discover` returns hints/full schemas into the append-only history and
+      `invoke` calls any live non-hidden tool through the normal approval/
+      timeout path (docs/DISCOVER.md); UI Live Components panel colors
+      direct/seen/demand/internal per active session (`tests/t_discover.nim`)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
 

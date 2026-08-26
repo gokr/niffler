@@ -3,7 +3,7 @@
 ## Spawned by the system harness (core/niffler.nim: ensureRunner) with the
 ## session id as argv. Serves svc.session.<sessionId>.call: runs turn per
 ## request via conversation.nim (resume from the store on first use),
-## emitting ev.session.* events. Core tools (spawn/kill/remove/catalog) go
+## emitting ev.session.* events. Core tools (including discover) go
 ## back over the bus to svc.core.call — one implementation, in the system.
 ##
 ## The process is the unit of isolation: kill the runner, every other
@@ -96,7 +96,7 @@ proc main() =
         if env.args{"sessionId"}.getStr("") != sessionId:
           raise newException(ValueError,
             "runner serves only session " & sessionId)
-        let r = handleSessionCall(ct, env.args, sessions)
+        let r = handleSessionCall(ct, env.args, sessions, env.caller)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)

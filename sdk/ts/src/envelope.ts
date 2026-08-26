@@ -18,6 +18,9 @@ export interface Envelope {
   args?: unknown;
   payload?: unknown;
   error?: ErrorInfo;
+  /** Component name of the call originator (call only; self-declared
+   *  routing hint, not an auth claim). */
+  caller?: string;
 }
 
 let idCounter = 0;
@@ -47,6 +50,7 @@ export function toJson(e: Envelope): Record<string, unknown> {
   if (e.args !== undefined) out.args = e.args;
   if (e.payload !== undefined) out.payload = e.payload;
   if (e.error !== undefined) out.error = e.error;
+  if (e.caller) out.caller = e.caller;
   return out;
 }
 
@@ -59,6 +63,7 @@ export function fromJson(node: Record<string, unknown>): Envelope {
     args: node.args,
     payload: node.payload,
     error: node.error as ErrorInfo | undefined,
+    caller: (node.caller as string) ?? "",
   };
 }
 

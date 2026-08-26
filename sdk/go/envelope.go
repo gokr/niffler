@@ -38,6 +38,9 @@ type Envelope struct {
 	Args    json.RawMessage `json:"args,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Error   *ErrorInfo      `json:"error,omitempty"`
+	// Caller is the component name of the call originator (call only;
+	// self-declared routing hint, not an auth claim).
+	Caller string `json:"caller,omitempty"`
 }
 
 // Marshal renders the envelope as JSON.

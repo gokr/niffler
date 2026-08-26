@@ -223,7 +223,7 @@ func (c *Component) RequestContext(ctx context.Context, component, tool string, 
 	if err != nil {
 		return nil, err
 	}
-	e := Envelope{V: 1, ID: NewID(), Kind: KindCall, Tool: tool, Args: raw}
+	e := Envelope{V: 1, ID: NewID(), Kind: KindCall, Tool: tool, Args: raw, Caller: c.Name}
 	data, err := e.Marshal()
 	if err != nil {
 		return nil, err

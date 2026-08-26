@@ -178,7 +178,14 @@ export class Component {
     args: unknown,
     timeoutMs: number = 5000
   ): Promise<unknown> {
-    const env = { v: 1, id: newId(), kind: "call" as EnvelopeKind, tool, args };
+    const env: Envelope = {
+      v: 1,
+      id: newId(),
+      kind: "call",
+      tool,
+      args,
+      caller: this.name,
+    };
     const subject = "svc." + component + ".call";
     const msg = await this.nc!.request(subject, sc.encode(encode(env)), {
       timeout: timeoutMs,
