@@ -2,9 +2,14 @@
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
-  import { online, onStatus, isWails, busUrl, on, emit } from "./nats";
+  import { send, online, onStatus, isWails, busUrl, on, emit } from "./nats";
   import Components from "./views/Components.svelte";
   import { initTheme, toggleTheme } from "./lib/theme";
+  import ProviderControl from "./components/ProviderControl.svelte";
+  import ProviderManager from "./components/ProviderManager.svelte";
+  import ModelPicker from "./components/ModelPicker.svelte";
+  import type { ProviderSummary, ResolvedConfig, SessionStatus } from "./lib/providers";
+  import { fmtContext, contextPct } from "./lib/providers";
 
   interface ApprovalReq {
     id: string;
@@ -19,9 +24,15 @@
   let refreshKey = $state(0);
   let approvals = $state<ApprovalReq[]>([]);
   let theme = $state<"light" | "dark">(initTheme());
-  // Tools the user chose to auto-approve, keyed by session: future requests
-  // for that (session, tool) pair are answered ok without showing a dialog.
   let autoApproved = $state<Record<string, string[]>>({});
+
+  // Provider/model state
+  let providers = $state<ProviderSummary[]>([]);
+  let effective = $state<ResolvedConfig | null>(null);
+  let sessionModels = $state<Record<string, string>>({});
+  let sessionStatus = $state<Record<string, SessionStatus>>({});
+  let managerOpen = $state(false);
+  let modelPickerOpen = $state(false);
 
   function isAutoApproved(sid: string, tool: string): boolean {
     return (autoApproved[sid] ?? []).includes(tool);
@@ -33,10 +44,83 @@
     if (!list.includes(tool)) autoApproved[sid] = [...list, tool];
   }
 
-  // Approval gate: core publishes ev.approval.request for tools with
-  // x-harness.approval; our answer goes back on ev.approval.reply.
-  // Requests for an auto-approved (session, tool) pair are answered
-  // silently — no dialog.
+  async function loadProviders() {
+    try {
+      const resp = await send("provider", "provider_list", {});
+      providers = (resp.providers ?? []) as ProviderSummary[];
+    } catch {
+      providers = [];
+    }
+  }
+
+  async function loadEffective(model?: string) {
+    try {
+      const args: Record<string, unknown> = {};
+      if (model) args.model = model;
+      const resp = await send("llm", "llm_resolve", args, 10000);
+      effective = resp as ResolvedConfig;
+    } catch {
+      effective = null;
+    }
+  }
+
+  async function loadSessionModel(sid: string) {
+    try {
+      const resp = await send("store", "get", { kind: "conversation", id: sid });
+      const v = resp.value ?? {};
+      sessionModels[sid] = v.modelOverride ?? "";
+    } catch {
+      // store unreachable
+    }
+  }
+
+  async function switchProvider(nickname: string) {
+    try {
+      if (nickname === "__env__") {
+        await send("provider", "provider_use_environment", {}, 30000);
+      } else {
+        await send("provider", "provider_switch", { nickname }, 30000);
+      }
+    } catch {
+      // approval denied or error — keep current state
+    }
+    await loadProviders();
+    await loadEffective(sessionModels[sessionId ?? ""] || undefined);
+  }
+
+  async function pickModel(model: string) {
+    const sid = sessionId;
+    if (!sid) return;
+    sessionModels[sid] = model;
+    try {
+      await send("core", "session", { sessionId: sid, model }, 30000);
+    } catch {
+      // approval denied or llm unavailable
+    }
+    await loadEffective(model || undefined);
+  }
+
+  // What the header shows for "model": session override if set, else effective.
+  const headerModel = $derived.by(() => {
+    const sid = sessionId;
+    if (sid && sessionModels[sid]) return sessionModels[sid];
+    return effective?.model ?? "";
+  });
+
+  const headerCatalog = $derived(effective?.catalog ?? "");
+
+  const headerStatus = $derived.by(() => {
+    const sid = sessionId;
+    if (sid && sessionStatus[sid]) return sessionStatus[sid];
+    return null;
+  });
+
+  const headerContext = $derived(
+    headerStatus?.context ?? effective?.context ?? 0
+  );
+  const headerUsed = $derived(headerStatus?.usedTokens ?? 0);
+  const ctxPct = $derived(contextPct(headerUsed, headerContext));
+
   onMount(() =>
     on("ev.approval.request", (ev) => {
       const p = ev.payload ?? {};
@@ -51,9 +135,6 @@
     })
   );
 
-  // Keyboard: Enter approves, Escape denies — but only while the dialog is
-  // up (the overlay blocks the chat input anyway). preventDefault stops a
-  // focused button (e.g. Deny after tabbing) from double-firing.
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       if (approvals.length === 0) return;
@@ -67,6 +148,49 @@
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // Provider/model event subscriptions
+  onMount(() => on("ev.provider.changed", () => {
+    loadProviders();
+    loadEffective(sessionModels[sessionId ?? ""] || undefined);
+  }));
+
+  onMount(() => on("ev.models.updated", () => {
+    loadEffective(sessionModels[sessionId ?? ""] || undefined);
+  }));
+
+  onMount(() => on("ev.session.status", (ev) => {
+    const p = ev.payload ?? {};
+    if (p.sessionId) {
+      sessionStatus = { ...sessionStatus, [p.sessionId]: p };
+    }
+  }));
+
+  // Initial load + connection state
+  onMount(() =>
+    onStatus((online, u) => {
+      connected = online;
+      url = u;
+      if (online) {
+        loadProviders();
+        loadEffective();
+      }
+    })
+  );
+
+  // Load session model when session changes
+  let prevSession: string | null = null;
+  $effect(() => {
+    if (sessionId !== prevSession) {
+      prevSession = sessionId;
+      if (sessionId) {
+        loadSessionModel(sessionId);
+        loadEffective(sessionModels[sessionId] || undefined);
+      } else {
+        loadEffective();
+      }
+    }
   });
 
   function prettyArgs(args: any): string {
@@ -128,16 +252,43 @@
     <header class="flex items-center gap-2 px-4 py-2 border-b border-ink-700 text-[13px] text-ink-400">
       <span>{sessionId ? "session " + short(sessionId) : "new session"}</span>
       {#if url}
-        <span class="font-mono text-ink-600">{url}</span>
+        <span class="font-mono text-ink-600 hidden sm:inline">{url}</span>
       {/if}
-      <button
-        class="ml-auto rounded-md border border-ink-600 px-2 py-1 text-[13px] hover:bg-ink-700"
-        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-        aria-label="Toggle theme"
-        onclick={() => (theme = toggleTheme())}
-      >
-        {theme === "dark" ? "☀" : "☾"}
-      </button>
+
+      <div class="ml-auto flex items-center gap-1.5">
+        <ProviderControl {providers} {effective} onSwitch={switchProvider} onManage={() => (managerOpen = true)} />
+
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 max-w-[160px] truncate"
+          title={headerModel ? `Model: ${headerModel}` : "Select model"}
+          onclick={() => (modelPickerOpen = true)}
+          disabled={!sessionId}
+        >
+          <span class="text-ink-400">model:</span>
+          <span class="text-ink-200 ml-1">{headerModel || "—"}</span>
+        </button>
+
+        {#if headerContext > 0}
+          <span
+            class="font-mono text-[11px] px-1.5 py-0.5 rounded"
+            class:text-ink-400={ctxPct < 75}
+            class:text-warn={ctxPct >= 75 && ctxPct < 90}
+            class:text-danger={ctxPct >= 90}
+            title={`${headerUsed.toLocaleString()} / ${headerContext.toLocaleString()} tokens`}
+          >
+            {fmtContext(headerUsed)} / {fmtContext(headerContext)}
+          </span>
+        {/if}
+
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[13px] hover:bg-ink-700"
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          aria-label="Toggle theme"
+          onclick={() => (theme = toggleTheme())}
+        >
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
+      </div>
     </header>
     {#if !isWails()}
       <div class="mx-6 mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger">
@@ -154,6 +305,9 @@
     <Chat bind:sessionId={sessionId} />
   </main>
 </div>
+
+<ProviderManager bind:open={managerOpen} {providers} onSaved={() => { loadProviders(); loadEffective(sessionModels[sessionId ?? ""] || undefined); }} />
+<ModelPicker bind:open={modelPickerOpen} catalog={headerCatalog} currentModel={headerModel} onSelect={pickModel} />
 
 {#if approvals.length > 0}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
