@@ -67,14 +67,22 @@ proc main() =
     "name": "testinteractive",
     "version": "1.0.0",
     "components": [
-      {"name": "itui", "lang": "nim", "main": "itui/main.nim", "interactive": true}
+      {"name": "itui", "lang": "go", "main": "itui/main.go",
+       "sources": ["itui/version.go"], "interactive": true}
     ]
   }
   """)
-  writeFile(interactiveRepo / "itui" / "main.nim", """
-    import niffler/sdk
-    let comp = newComponent("itui", "0.1.0")
-    comp.run()
+  writeFile(interactiveRepo / "itui" / "main.go", """
+    package main
+    import sdk "niffler.dev/sdk"
+    func main() {
+      comp := sdk.New("itui", componentVersion())
+      if err := comp.Run(); err != nil { panic(err) }
+    }
+    """.dedent())
+  writeFile(interactiveRepo / "itui" / "version.go", """
+    package main
+    func componentVersion() string { return "0.1.0" }
     """.dedent())
   defer: removeDir(pkgDir)
 

@@ -1,8 +1,9 @@
 ## builder component — building is itself a tool call.
 ##
-## build(lang, name, source) → compiled binary under var/bin. Nim sources
-## get the SDK path automatically (--path:<root>/sdk); Go sources get a
-## go.mod with a replace to the local SDK if they don't have one.
+## build(lang, name, source, files?) → compiled binary under var/bin. Nim
+## sources get the SDK path automatically (--path:<root>/sdk); Go sources get
+## a go.mod with a replace to the local SDK and may include additional
+## same-package .go files.
 ## The agent's next step is core.spawn {name, binary}.
 
 import std/[json, os, osproc, streams, strutils, times]
@@ -45,10 +46,22 @@ proc tail(s: string, n: int): string =
   if s.len <= n: return s
   return "…" & s[^n .. ^1]
 
+proc validGoSourceName(name: string): bool =
+  ## Additional builder files are deliberately flat: no path traversal,
+  ## nested modules, tests, generated binaries or go.mod replacement.
+  if name.len == 0 or name.len > 128 or name == "main.go" or
+     not name.endsWith(".go") or name.endsWith("_test.go"):
+    return false
+  for ch in name:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.'}:
+      return false
+  true
+
 let comp = newComponent("builder", "0.1.0")
 
 comp.tool:
-  proc build(lang: string, name: string, source: string): JsonNode =
+  proc build(lang: string, name: string, source: string,
+             files: JsonNode = nil): JsonNode =
     ## Compile a new component from source into a binary under var/bin.
     ## Use this when the harness lacks a capability that no existing tool
     ## covers: write the component source yourself (Nim: import niffler/sdk
@@ -61,7 +74,8 @@ comp.tool:
     ## tail (compile errors are truncated to 2000 chars).
     ## - lang: Language of the component: nim, go or ts
     ## - name: Lowercase-hyphen component name (also the binary name)
-    ## - source: Full source code of the component
+    ## - source: Full entrypoint source code of the component
+    ## - files: Optional object of additional same-package Go filenames to source strings
     let root = getEnv("NIF_ROOT", ".")
     let srcDir = root / "var" / "build"
     let binDir = root / "var" / "bin"
@@ -88,8 +102,29 @@ comp.tool:
                 "binary": binary, "log": tail(output, 500)}
     of "go":
       let dir = srcDir / name
+      if dirExists(dir): removeDir(dir)
       createDir(dir)
       writeFile(dir / "main.go", source)
+      if files != nil:
+        if files.kind != JObject:
+          return %*{"ok": false, "lang": lang,
+                    "error": "files must be an object of .go filename to source"}
+        if files.len > 64:
+          return %*{"ok": false, "lang": lang,
+                    "error": "files may contain at most 64 Go sources"}
+        var extraBytes = 0
+        for filename, fileSource in files:
+          if not validGoSourceName(filename):
+            return %*{"ok": false, "lang": lang,
+                      "error": "invalid additional Go source filename: " & filename}
+          if fileSource.kind != JString:
+            return %*{"ok": false, "lang": lang,
+                      "error": "Go source " & filename & " must be a string"}
+          inc extraBytes, fileSource.getStr().len
+          if extraBytes > 2_000_000:
+            return %*{"ok": false, "lang": lang,
+                      "error": "additional Go sources exceed 2 MB"}
+          writeFile(dir / filename, fileSource.getStr())
       if not fileExists(dir / "go.mod"):
         writeFile(dir / "go.mod",
           "module " & name & "\n\ngo 1.24\n\n" &

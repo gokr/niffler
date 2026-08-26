@@ -3,7 +3,7 @@
 ## Third-party components are distributed as plain git repos: one repo = one
 ## package = N components, described by a niffler.json manifest at the root
 ## ({"name", "version", "components":
-##   [{"name", "lang", "main", "env"?, "interactive"?}]}).
+##   [{"name", "lang", "main", "sources"?, "env"?, "interactive"?}]}).
 ## Discovery is GitHub topic search (topic:niffler-component) — no registry.
 ##
 ## Install: shallow clone into var/plugins/<repo>@<ref>/, then build every
@@ -21,7 +21,7 @@
 ## code: install/update/remove carry x-harness.approval, and core's own
 ## spawn/remove gate fires per component on top.
 
-import std/[httpclient, json, os, osproc, streams, strutils, times, uri]
+import std/[httpclient, json, os, osproc, sequtils, streams, strutils, times, uri]
 import niffler/sdk
 
 let comp = newComponent("plugins", "0.1.0")
@@ -148,9 +148,14 @@ proc dropRecord(pkg: string) =
 # install / update / remove internals
 
 type
-  ManifestComp = tuple[name, lang, main: string, env: seq[string],
+  ManifestComp = tuple[name, lang, main: string, sources, env: seq[string],
                        interactive: bool]
   Manifest = tuple[name, version: string, comps: seq[ManifestComp]]
+
+proc validManifestSourcePath(path: string): bool =
+  if path.len == 0 or path.isAbsolute(): return false
+  let parts = path.replace('\\', '/').split('/')
+  not parts.anyIt(it.len == 0 or it == "." or it == "..")
 
 proc readManifest(dir: string): Manifest =
   let path = dir / "niffler.json"
@@ -170,7 +175,28 @@ proc readManifest(dir: string): Manifest =
     mc.name = e{"name"}.getStr("")
     mc.lang = e{"lang"}.getStr("").toLowerAscii()
     mc.main = e{"main"}.getStr("")
+    if not validManifestSourcePath(mc.main):
+      raise newException(ValueError,
+        "niffler.json: invalid component main path '" & mc.main & "'")
     mc.interactive = e{"interactive"}.getBool(false)
+    mc.sources = @[]
+    let sourcesArr = e{"sources"}
+    if sourcesArr != nil:
+      if mc.lang != "go" or sourcesArr.kind != JArray:
+        raise newException(ValueError,
+          "niffler.json: sources must be an array on a Go component")
+      let mainDir = mc.main.splitFile().dir
+      for sourceNode in sourcesArr:
+        let source = sourceNode.getStr("")
+        if not validManifestSourcePath(source) or
+           source.splitFile().dir != mainDir or
+           not source.endsWith(".go") or source.endsWith("_test.go"):
+          raise newException(ValueError,
+            "niffler.json: invalid same-package Go source '" & source & "'")
+        if source == mc.main or source in mc.sources:
+          raise newException(ValueError,
+            "niffler.json: duplicate Go source '" & source & "'")
+        mc.sources.add(source)
     mc.env = @[]
     let envArr = e{"env"}
     if envArr != nil:
@@ -182,9 +208,13 @@ proc readManifest(dir: string): Manifest =
     if mc.lang notin ["nim", "go"]:
       raise newException(ValueError,
         "niffler.json: unsupported lang '" & mc.lang & "' for " & mc.name)
-    if not fileExists(dir / mc.main):
+    if not fileExists(dir / mc.main) or symlinkExists(dir / mc.main):
       raise newException(ValueError,
-        "niffler.json: " & mc.main & " not found for component " & mc.name)
+        "niffler.json: " & mc.main & " not found or is a symlink for component " & mc.name)
+    for source in mc.sources:
+      if not fileExists(dir / source) or symlinkExists(dir / source):
+        raise newException(ValueError,
+          "niffler.json: " & source & " not found or is a symlink for component " & mc.name)
     result.comps.add(mc)
   if result.comps.len == 0:
     raise newException(ValueError, "niffler.json lists no components")
@@ -204,8 +234,14 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
   createDir(binDir)
   let binary = binDir / mc.name
   try:
-    let r = comp.request("builder", "build", %*{"lang": mc.lang,
-        "name": mc.name, "source": readFile(dest / mc.main)}, 320_000)
+    var buildArgs = %*{"lang": mc.lang, "name": mc.name,
+                       "source": readFile(dest / mc.main)}
+    if mc.sources.len > 0:
+      var files = newJObject()
+      for source in mc.sources:
+        files[source.extractFilename()] = %readFile(dest / source)
+      buildArgs["files"] = files
+    let r = comp.request("builder", "build", buildArgs, 320_000)
     if r{"ok"}.getBool(false):
       let absBinary = absolutePath(binary)
       if mc.interactive:

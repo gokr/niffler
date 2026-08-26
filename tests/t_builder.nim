@@ -89,7 +89,7 @@ proc main() =
   )
 
   func main() {
-      c := niffler.New("tcompgo", "0.1.0")
+      c := niffler.New("tcompgo", componentVersion())
       c.Tool("tpinggo", map[string]any{
           "type":        "object",
           "description": "Ping the Go test component",
@@ -102,10 +102,19 @@ proc main() =
       }
   }
   """.dedent()
-  let r3 = call(nc, "builder", "build",
-                %*{"lang": "go", "name": "tcompgo", "source": goSrc}, 300_000)
-  check("builder go build ok", r3{"ok"}.getBool(false), $r3)
+  let r3 = call(nc, "builder", "build", %*{
+    "lang": "go", "name": "tcompgo", "source": goSrc,
+    "files": {"version.go": "package main\nfunc componentVersion() string { return \"0.1.0\" }\n"}
+  }, 300_000)
+  check("builder multi-file go build ok", r3{"ok"}.getBool(false), $r3)
   check("builder go binary exists", fileExists(tmp / "var" / "bin" / "tcompgo"), $r3)
+
+  let unsafeGoFile = call(nc, "builder", "build", %*{
+    "lang": "go", "name": "unsafe-go-file", "source": "package main\nfunc main() {}\n",
+    "files": {"../escape.go": "package main\n"}
+  })
+  check("builder rejects unsafe additional Go source paths",
+        not unsafeGoFile{"ok"}.getBool(false), $unsafeGoFile)
 
   # unsupported language is rejected
   let r4 = call(nc, "builder", "build",
