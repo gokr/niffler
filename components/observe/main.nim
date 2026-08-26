@@ -32,7 +32,8 @@ const
   MaxCaptureFiles = 256
   KnownEvents = ["reg.publish", "reg.depart", "ev.sys.drain",
     "ev.catalog.updated", "ev.llm.token", "ev.session.>",
-    "ev.approval.request", "ev.approval.reply", "ev.log.>",
+    "ev.approval.request", "ev.approval.reply", "ev.approval.resolved",
+    "svc.approval.>.request", "ev.log.>",
     "ev.models.updated", "llm.cancel.>"]
 
 type
