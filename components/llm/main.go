@@ -65,23 +65,33 @@ var knownContext = map[string]int{
 	"deepseek-reasoner": 1000000,
 }
 
-// contextWindow returns the context size for a model: explicit overrides,
-// the models component's effective catalog, the local fallback, then default.
-// ctx bounds the catalog lookup (and is canceled when the caller aborts).
-func contextWindow(ctx context.Context, c *sdk.Component, p provider, providerName, model string) int {
-	if p.Context > 0 {
-		return p.Context
-	}
-	if v := os.Getenv("NIF_OPENAI_CONTEXT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
+type resolvedConfig struct {
+	Provider       provider
+	ProviderName   string
+	ProviderSource string
+	Model          string
+	Catalog        string
+	Context        int
+	ContextSource  string
+}
+
+// resolveContextWindow returns the effective context size and its provenance:
+// explicit provider override, environment override, models catalog, local
+// built-in knowledge, then the conservative fallback.
+func resolveContextWindow(ctx context.Context, c *sdk.Component, p provider, providerName, model string) (int, string, string) {
 	catalogProvider := p.Catalog
 	if catalogProvider == "" {
 		catalogProvider = inferCatalogProvider(providerName, p.BaseURL, model)
 	}
-	if catalogProvider != "" {
+	if p.Context > 0 {
+		return p.Context, catalogProvider, "provider"
+	}
+	if v := os.Getenv("NIF_OPENAI_CONTEXT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n, catalogProvider, "environment"
+		}
+	}
+	if c != nil && catalogProvider != "" {
 		lookupCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 		defer cancel()
 		raw, err := c.RequestContext(lookupCtx, "models", "models_get", map[string]any{
@@ -96,14 +106,34 @@ func contextWindow(ctx context.Context, c *sdk.Component, p provider, providerNa
 				} `json:"model"`
 			}
 			if json.Unmarshal(raw, &descriptor) == nil && descriptor.Model.Limit.Context > 0 {
-				return descriptor.Model.Limit.Context
+				return descriptor.Model.Limit.Context, catalogProvider, "catalog"
 			}
 		}
 	}
-	if c, ok := knownContext[strings.ToLower(model)]; ok {
-		return c
+	if size, ok := knownContext[strings.ToLower(model)]; ok {
+		return size, catalogProvider, "builtin"
 	}
-	return defaultContext
+	return defaultContext, catalogProvider, "fallback"
+}
+
+func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverride, modelOverride string) (resolvedConfig, error) {
+	p, providerName, providerSource, err := resolveProvider(c, providerOverride)
+	if err != nil {
+		return resolvedConfig{}, err
+	}
+	model := strings.TrimSpace(modelOverride)
+	if model == "" {
+		model = p.Model
+	}
+	if model == "" {
+		model = "deepseek-chat"
+	}
+	contextSize, catalogProvider, contextSource := resolveContextWindow(ctx, c, p, providerName, model)
+	return resolvedConfig{
+		Provider: p, ProviderName: providerName, ProviderSource: providerSource,
+		Model: model, Catalog: catalogProvider, Context: contextSize,
+		ContextSource: contextSource,
+	}, nil
 }
 
 func inferCatalogProvider(providerName, baseURL, model string) string {
@@ -166,17 +196,22 @@ func providerNames(ps map[string]provider) string {
 }
 
 // resolveProvider picks the connection for a chat call. An explicit
-// `provider` arg resolves through the NIF_LLM_PROVIDERS table; the default
-// resolves through the provider component's active provider when one is
-// active, else the NIF_OPENAI_* environment default.
-func resolveProvider(c *sdk.Component, name string) (provider, string, error) {
+// `provider` arg first resolves a stored nickname, then NIF_LLM_PROVIDERS;
+// the default resolves through the provider component's active provider when
+// one is active, else the NIF_OPENAI_* environment default.
+func resolveProvider(c *sdk.Component, name string) (provider, string, string, error) {
 	if name != "" {
-		return envProvider(name)
+		if p, nickname, source, ok := namedStoredProvider(c, name); ok {
+			return p, nickname, source, nil
+		}
+		p, nickname, err := envProvider(name)
+		return p, nickname, "environment", err
 	}
-	if p, nickname, ok := activeStoredProvider(c); ok {
-		return p, nickname, nil
+	if p, nickname, source, ok := activeStoredProvider(c); ok {
+		return p, nickname, source, nil
 	}
-	return envProvider(defaultProvider)
+	p, nickname, err := envProvider(defaultProvider)
+	return p, nickname, "environment", err
 }
 
 // envProvider looks up a named provider in the environment tables.
@@ -195,34 +230,39 @@ func envProvider(name string) (provider, string, error) {
 	return p, name, nil
 }
 
-// activeStoredProvider asks the provider component for its active provider.
-// Returns ok=false when the component is absent, has no active provider, or
-// the lookup fails — the caller falls back to the environment. Because the
-// answer is re-read per chat call, provider_switch live-updates the backend
-// with no further coordination.
-func activeStoredProvider(c *sdk.Component) (provider, string, bool) {
+type registryResponse struct {
+	Ok       bool   `json:"ok"`
+	Source   string `json:"source"`
+	Provider *struct {
+		Nickname string `json:"nickname"`
+		APIKey   string `json:"apiKey"`
+		BaseURL  string `json:"baseUrl"`
+		Model    string `json:"model"`
+		Catalog  string `json:"catalog"`
+		Context  int    `json:"context"`
+	} `json:"provider"`
+}
+
+func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (provider, string, string, bool) {
 	if c == nil {
-		return provider{}, "", false
+		return provider{}, "", "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	raw, err := c.RequestContext(ctx, "provider", "provider_active", map[string]any{})
+	raw, err := c.RequestContext(ctx, "provider", tool, args)
 	if err != nil {
-		return provider{}, "", false
+		return provider{}, "", "", false
 	}
-	var resp struct {
-		Ok       bool `json:"ok"`
-		Provider *struct {
-			Nickname string `json:"nickname"`
-			APIKey   string `json:"apiKey"`
-			BaseURL  string `json:"baseUrl"`
-			Model    string `json:"model"`
-			Catalog  string `json:"catalog"`
-			Context  int    `json:"context"`
-		} `json:"provider"`
-	}
+	var resp registryResponse
 	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Ok || resp.Provider == nil || resp.Provider.APIKey == "" {
-		return provider{}, "", false
+		return provider{}, "", "", false
+	}
+	source := resp.Source
+	if source == "" {
+		source = "store"
+		if resp.Provider.Nickname == defaultProvider {
+			source = "environment"
+		}
 	}
 	return provider{
 		BaseURL: resp.Provider.BaseURL,
@@ -230,7 +270,20 @@ func activeStoredProvider(c *sdk.Component) (provider, string, bool) {
 		Model:   resp.Provider.Model,
 		Catalog: resp.Provider.Catalog,
 		Context: resp.Provider.Context,
-	}, resp.Provider.Nickname, true
+	}, resp.Provider.Nickname, source, true
+}
+
+// activeStoredProvider asks the provider component for its active provider.
+// Returns ok=false when the component is absent, has no active provider, or
+// the lookup fails — the caller falls back to the environment. Because the
+// answer is re-read per chat call, provider_switch live-updates the backend
+// with no further coordination.
+func activeStoredProvider(c *sdk.Component) (provider, string, string, bool) {
+	return requestStoredProvider(c, "provider_active", map[string]any{})
+}
+
+func namedStoredProvider(c *sdk.Component, name string) (provider, string, string, bool) {
+	return requestStoredProvider(c, "provider_get", map[string]any{"nickname": name})
 }
 
 // ---------------------------------------------------------------------------
@@ -254,24 +307,8 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("messages required")
 	}
 
-	p, providerName, err := resolveProvider(c, args.Provider)
-	if err != nil {
-		return nil, err
-	}
-	model := args.Model
-	if model == "" {
-		model = p.Model
-	}
-	if model == "" {
-		model = "deepseek-chat"
-	}
-
-	cfg := openai.DefaultConfig(p.APIKey)
-	cfg.BaseURL = p.BaseURL
-	client := openai.NewClientWithConfig(cfg)
-
-	// The cancellation side-channel is subscribed before the context-window
-	// lookup: a cancel published during that window must still abort the
+	// The cancellation side-channel is subscribed before provider/model/context
+	// resolution: a cancel published during that window must still abort the
 	// stream (NATS events are not durable).
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
@@ -287,15 +324,21 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		defer unsub()
 	}
 
-	contextSize := contextWindow(streamCtx, c, p, providerName, model)
+	resolved, err := resolveRuntimeConfig(streamCtx, c, args.Provider, args.Model)
+	if err != nil {
+		return nil, err
+	}
+	cfg := openai.DefaultConfig(resolved.Provider.APIKey)
+	cfg.BaseURL = resolved.Provider.BaseURL
+	client := openai.NewClientWithConfig(cfg)
 
 	if args.Stream {
-		return chatStream(streamCtx, c, client, model, args, contextSize)
+		return chatStream(streamCtx, c, client, resolved.Model, resolved.ProviderName, args, resolved.Context)
 	}
-	return chatOnce(client, model, args, contextSize)
+	return chatOnce(client, resolved.Model, resolved.ProviderName, args, resolved.Context)
 }
 
-func chatOnce(client *openai.Client, model string, args chatArgs, contextSize int) (any, error) {
+func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model:    model,
 		Messages: args.Messages,
@@ -308,11 +351,15 @@ func chatOnce(client *openai.Client, model string, args chatArgs, contextSize in
 		return nil, errors.New("no choices in llm response")
 	}
 	msg := resp.Choices[0].Message
-	return resultJSON(resp.Model, contextSize, msg.Content,
+	usedModel := resp.Model
+	if usedModel == "" {
+		usedModel = model
+	}
+	return resultJSON(providerName, usedModel, contextSize, msg.Content,
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
 
-func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model string, args chatArgs, contextSize int) (any, error) {
+func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model, providerName string, args chatArgs, contextSize int) (any, error) {
 	// chatHandler owns the llm.cancel.<sessionId> side-channel subscription;
 	// this derivation just bounds this call to that shared context.
 	ctx, cancel := context.WithCancel(ctx)
@@ -387,15 +434,21 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 			calls[idx].Function.Arguments += tc.Function.Arguments
 		}
 	}
-	return resultJSON(usedModel, contextSize, content.String(),
+	if usedModel == "" {
+		usedModel = model
+	}
+	return resultJSON(providerName, usedModel, contextSize, content.String(),
 		reasoning.String(), calls, usage, usageSeen)
 }
 
 // resultJSON builds the wire result — the same shape llm-openai returns,
 // so core's conversation loop consumes it unchanged — plus `reasoning`.
-func resultJSON(model string, ctx int, content, reasoning string,
+func resultJSON(providerName, model string, ctx int, content, reasoning string,
 	calls []openai.ToolCall, usage openai.Usage, usageSeen bool) (any, error) {
 	r := map[string]any{"content": content, "reasoning": reasoning}
+	if providerName != "" {
+		r["provider"] = providerName
+	}
 	if model != "" {
 		r["model"] = model
 		r["context"] = ctx
@@ -426,8 +479,42 @@ func resultJSON(model string, ctx int, content, reasoning string,
 	return r, nil
 }
 
+func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
+	var args struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("bad resolve args: %w", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resolved, err := resolveRuntimeConfig(ctx, c, args.Provider, args.Model)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":       true,
+		"provider": resolved.ProviderName, "providerSource": resolved.ProviderSource,
+		"model": resolved.Model, "catalog": resolved.Catalog,
+		"context": resolved.Context, "contextSource": resolved.ContextSource,
+		"hasKey": resolved.Provider.APIKey != "",
+	}, nil
+}
+
 func main() {
-	comp := sdk.New("llm", "0.2.0")
+	comp := sdk.New("llm", "0.3.0")
+	comp.Tool("llm_resolve", map[string]any{
+		"type":        "object",
+		"description": "Resolve the effective provider, model and context window without exposing credentials or making an inference request.",
+		"properties": map[string]any{
+			"provider": map[string]any{"type": "string", "description": "Optional stored or NIF_LLM_PROVIDERS nickname"},
+			"model":    map[string]any{"type": "string", "description": "Optional model override"},
+		},
+		"x-harness": map[string]any{"hidden": true, "timeoutMs": 10000},
+	}, resolveHandler)
 	comp.Tool("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{

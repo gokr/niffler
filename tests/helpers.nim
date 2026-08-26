@@ -155,7 +155,8 @@ proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
 # processes
 
 proc startComponent*(bin: string, url: string, root = "",
-                     extra: openArray[(string, string)] = []): Process =
+                     extra: openArray[(string, string)] = [],
+                     args: openArray[string] = []): Process =
   ## Start a component (or core) with the standard NIF_* env. The
   ## environment REPLACES the inherited one (osproc), so seed it from the
   ## current env first — components spawn subprocesses (bash, nim, go,
@@ -175,7 +176,7 @@ proc startComponent*(bin: string, url: string, root = "",
   env["XDG_CACHE_HOME"] = root2 / "var" / "xdg-cache"
   for (k, v) in extra:
     env[k] = v
-  result = startProcess(bin, workingDir = root2, env = env,
+  result = startProcess(bin, workingDir = root2, args = @args, env = env,
                         options = {poUsePath})
 
 proc runCli*(cliBin, url: string, args: openArray[string],
@@ -250,6 +251,6 @@ proc newCoreSandbox*(tag: string,
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
   writeFile(result.root / "manifest.yaml", manifest)
-  for name in ["niffler", "cli"]:
+  for name in ["niffler", "session", "cli"]:
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))

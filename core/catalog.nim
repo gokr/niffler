@@ -79,12 +79,13 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Run one conversation turn in a session (used by UIs)",
+      "description": "Run one conversation turn or update its model selection (used by UIs)",
       "properties": {
         "sessionId": {"type": "string"},
-        "content": {"type": "string"}
+        "content": {"type": "string"},
+        "model": {"type": "string", "description": "Conversation model override; empty clears it"}
       },
-      "required": ["sessionId", "content"],
+      "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
   result.components["core"] = coreReg

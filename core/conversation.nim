@@ -24,7 +24,8 @@ You are Niffler, a minimal self-extending agent harness.
 Use your tools to get things done — read each tool's description before
 calling it, and call the catalog tool to list everything available. Prefer
 an existing tool (bash usually suffices) over building a new one.
-You can add capabilities at runtime:
+When the live catalog includes the `build` tool, you can add capabilities at
+runtime:
 1. write a component source file — Nim: `import niffler/sdk` and use the
    typed tool pattern:
 
@@ -79,13 +80,18 @@ You can add capabilities at runtime:
    explains the pattern)
 3. call core.spawn {name, binary} to start it
 4. the new tool appears in your toolset on the next request
-To stop a tool again: core.kill {name} (temporary; restored on boot) or
+The live catalog is authoritative. In a custom or `--minimal` profile,
+`build` may be absent: do not invent or call an absent tool. Use the tools
+that remain, or use bash to write/compile a component and then core.spawn its
+binary when self-extension is necessary.
+To stop a tool again: core.kill {name} (temporary; restored on normal boot) or
 core.remove {name} (forgotten permanently).
 Conversations and messages persist automatically via the store.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
 sources: components/ (manifest.yaml lists the boot set), SDKs: sdk/ +
-sdk/go + sdk/ts (builder.info has exact paths), design docs: docs/, build
+sdk/go + sdk/ts (when available, builder.info has exact paths), design docs:
+docs/, build
 front door: Makefile (make build / make test / make help). var/ is
 disposable runtime state (binaries, barrel-db, agent builds) — gitignored;
 the repo is the snapshot and `--recover` rebuilds it.
@@ -115,14 +121,16 @@ type
     ct: CoreTools
     convId*: string
     seqNo*: int
-    promptTokens*: int   ## model-reported tokens of the last chat request
-    ctxSize*: int        ## model context window (informational from llm)
+    promptTokens*: int   ## model-reported prompt tokens of the last chat request
+    contextUsed*: int    ## best post-response occupancy (total tokens when available)
+    ctxSize*: int        ## effective model context window
     ctxWarned*: bool     ## warned once per session until the next trim
     failing: bool
 
   Session* = object
     messages*: seq[JsonNode]
     persister*: Persister
+    modelOverride*: string
 
 proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
@@ -131,7 +139,8 @@ proc newPersister*(ct: CoreTools): Persister =
     discard ct.dispatchToolCall("put", %*{
       "kind": "conversation", "id": result.convId,
       "value": %*{"createdAt": epochTime(),
-                  "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
+                  "model": getEnv("NIF_OPENAI_MODEL", ""),
+                  "modelOverride": "", "title": ""}})
   except CatchableError:
     discard
 
@@ -154,10 +163,11 @@ proc persistMsg*(p: var Persister, value: JsonNode) =
       echo "core: WARNING persistence down (messages not saved): " & e.msg
 
 proc loadStoredMessages*(ct: CoreTools, convId: string,
-                         promptTokens: var int, ctxSize: var int): seq[JsonNode] =
+                         promptTokens: var int, contextUsed: var int,
+                         ctxSize: var int): seq[JsonNode] =
   ## Rebuild a conversation's message list from the store (resume).
-  ## promptTokens/ctxSize are filled from the last assistant message's
-  ## persisted usage so the context check survives restarts.
+  ## Token/context fields are filled from the last assistant message's
+  ## persisted usage so the context meter and guard survive restarts.
   result = @[]
   try:
     let resp = ct.dispatchToolCall("list", %*{
@@ -174,6 +184,12 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
       if v{"role"}.getStr("") == "assistant":
         if v{"usage"}{"prompt_tokens"} != nil:
           promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
+        let total = v{"usage"}{"total_tokens"}.getInt(0)
+        let completion = v{"usage"}{"completion_tokens"}.getInt(0)
+        if total > 0:
+          contextUsed = total
+        elif promptTokens > 0:
+          contextUsed = promptTokens + completion
         if v{"context"} != nil:
           ctxSize = v{"context"}.getInt(0)
   except CatchableError:
@@ -191,9 +207,49 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
     discard ct.dispatchToolCall("put", %*{
       "kind": "conversation", "id": convId,
       "value": %*{"createdAt": epochTime(),
-                  "model": getEnv("NIF_OPENAI_MODEL", ""), "title": ""}})
+                  "model": getEnv("NIF_OPENAI_MODEL", ""),
+                  "modelOverride": "", "title": ""}})
   except CatchableError:
     discard
+
+proc loadConversationHeader(ct: CoreTools, convId: string): JsonNode =
+  ## Return a mutable conversation header, or an empty header when store is
+  ## unavailable. Callers preserve unrelated fields such as the UI title.
+  result = newJObject()
+  try:
+    let resp = ct.dispatchToolCall("get", %*{"kind": "conversation", "id": convId})
+    if resp{"ok"}.getBool(false) and resp{"value"}.kind == JObject:
+      result = resp{"value"}
+  except CatchableError:
+    discard
+
+proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
+  ## Merge runtime/session metadata into the header without clobbering title
+  ## or creation time. Persistence remains best-effort like message storage.
+  try:
+    var value = loadConversationHeader(ct, convId)
+    if value{"createdAt"} == nil:
+      value["createdAt"] = %epochTime()
+    if value{"title"} == nil:
+      value["title"] = %""
+    for key, fieldValue in fields:
+      value[key] = fieldValue
+    discard ct.dispatchToolCall("put", %*{
+      "kind": "conversation", "id": convId, "value": value})
+  except CatchableError as e:
+    echo "core: WARNING conversation metadata persistence failed: " & e.msg
+
+proc persistConversationRuntime(p: Persister, modelOverride, provider,
+                                model: string) =
+  var fields = %*{
+    "modelOverride": modelOverride,
+    "provider": provider,
+    "model": model,
+    "context": p.ctxSize,
+    "contextUsed": p.contextUsed,
+    "promptTokens": p.promptTokens
+  }
+  p.ct.updateConversationHeader(p.convId, fields)
 
 # ---------------------------------------------------------------------------
 # Context window — trivial warning + trim
@@ -240,7 +296,10 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
   ## usage (persisted with assistant messages, restored on resume); before
   ## the first response a chars/4 estimate stands in.
   if p.ctxSize <= 0: return
-  let used = if p.promptTokens > 0: p.promptTokens else: estimateTokens(messages)
+  let used =
+    if p.contextUsed > 0: p.contextUsed
+    elif p.promptTokens > 0: p.promptTokens
+    else: estimateTokens(messages)
   let pct = int(used.float * 100.0 / p.ctxSize.float)
   if used.float >= p.ctxSize.float * ctxTrimRatio:
     let dropped = trimContext(messages)
@@ -251,15 +310,17 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
       p.ctxWarned = false
       echo "core: context at " & $pct & "% — trimmed " & $dropped & " messages"
       if onEvent != nil:
-        onEvent("context", %*{"sessionId": p.convId, "promptTokens": used,
-                              "context": p.ctxSize, "trimmed": dropped})
+        onEvent("context", %*{"sessionId": p.convId, "promptTokens": p.promptTokens,
+                              "usedTokens": used, "context": p.ctxSize,
+                              "trimmed": dropped})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
     echo "core: WARNING context at " & $pct & "% — will trim at " &
          $(int(ctxTrimRatio * 100)) & "%"
     if onEvent != nil:
-      onEvent("context", %*{"sessionId": p.convId, "promptTokens": used,
-                            "context": p.ctxSize, "warning": true})
+      onEvent("context", %*{"sessionId": p.convId, "promptTokens": p.promptTokens,
+                            "usedTokens": used, "context": p.ctxSize,
+                            "warning": true})
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -291,7 +352,32 @@ proc stopTokenStream*(ct: CoreTools) =
   ct.tokenStream.session = ""
   ct.tokenStream.cb = nil
 
+proc resolveTurnConfig(ct: CoreTools, p: var Persister,
+                       modelOverride: string): JsonNode =
+  ## Resolve the backend once for a turn or an interactive model selection.
+  var resolveArgs = newJObject()
+  if modelOverride.len > 0:
+    resolveArgs["model"] = %modelOverride
+  let resolved = ct.dispatchToolCall("llm_resolve", resolveArgs, 10_000)
+  let selectedModel = resolved{"model"}.getStr(modelOverride)
+  let resolvedContext = resolved{"context"}.getInt(0)
+  if resolvedContext > 0 and resolvedContext != p.ctxSize:
+    p.ctxSize = resolvedContext
+    p.ctxWarned = false
+  result = %*{
+    "sessionId": p.convId,
+    "provider": resolved{"provider"}.getStr(""),
+    "providerSource": resolved{"providerSource"}.getStr(""),
+    "model": selectedModel,
+    "catalog": resolved{"catalog"}.getStr(""),
+    "context": p.ctxSize,
+    "contextSource": resolved{"contextSource"}.getStr(""),
+    "promptTokens": p.promptTokens,
+    "usedTokens": p.contextUsed
+  }
+
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
+              modelOverride = "",
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -299,6 +385,21 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   ## result|error}), ("token", {sessionId, content, reasoning} live deltas),
   ## ("done", {sessionId, reply}) as they happen.
   let sessionId = p.convId
+
+  # Resolve once before the turn so the context guard sees the selected
+  # model's effective window before inference. The resolved model is then
+  # pinned across every tool round in this turn.
+  var selectedModel = modelOverride
+  var resolvedProvider = ""
+  try:
+    let status = resolveTurnConfig(ct, p, modelOverride)
+    resolvedProvider = status{"provider"}.getStr("")
+    selectedModel = status{"model"}.getStr(selectedModel)
+    if onEvent != nil:
+      onEvent("status", status)
+  except CatchableError:
+    discard  # older/replaced llm components can still serve chat
+
   # Tag approvals raised during this turn with the active session so the UI
   # can offer/apply per-conversation auto-approve. Cleared when the turn ends
   # so a direct (non-session) harness call reads as session "".
@@ -325,6 +426,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                      "tools": ct.cat.allTools().formatToolsForLlm(),
                      "sessionId": sessionId,
                      "stream": true}
+    if selectedModel.len > 0:
+      llmArgs["model"] = %selectedModel
+    if resolvedProvider.len > 0:
+      llmArgs["provider"] = %resolvedProvider
     var resp: JsonNode
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
@@ -339,8 +444,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     let content = resp{"content"}.getStr("")
     let reasoning = resp{"reasoning"}.getStr("")
-    # Model + token usage surfaced by the llm component (informational).
-    let usedModel = resp{"model"}.getStr("")
+    # Provider/model + token usage surfaced by the llm component.
+    let usedProvider = resp{"provider"}.getStr(resolvedProvider)
+    let usedModel = resp{"model"}.getStr(selectedModel)
     let ctxSize = resp{"context"}.getInt(0)
     let usage = resp{"usage"}
     var usageObj = newJObject()
@@ -351,11 +457,30 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+    let totalTokens = usageObj{"total_tokens"}.getInt(0)
+    let completionTokens = usageObj{"completion_tokens"}.getInt(0)
+    if totalTokens > 0:
+      p.contextUsed = totalTokens
+    elif p.promptTokens > 0:
+      p.contextUsed = p.promptTokens + completionTokens
     if ctxSize > 0:
       p.ctxSize = ctxSize
+    p.persistConversationRuntime(modelOverride, usedProvider, usedModel)
+    if onEvent != nil:
+      var statusEv = %*{
+        "sessionId": sessionId,
+        "provider": usedProvider,
+        "model": usedModel,
+        "context": p.ctxSize,
+        "promptTokens": p.promptTokens,
+        "usedTokens": p.contextUsed
+      }
+      if usageObj.len > 0: statusEv["usage"] = usageObj
+      onEvent("status", statusEv)
     if content.len > 0:
       let assistantMsg = %*{"role": "assistant", "content": content}
       if reasoning.len > 0: assistantMsg["reasoning"] = %reasoning
+      if usedProvider.len > 0: assistantMsg["provider"] = %usedProvider
       if usedModel.len > 0: assistantMsg["model"] = %usedModel
       if ctxSize > 0: assistantMsg["context"] = %ctxSize
       if usageObj.len > 0: assistantMsg["usage"] = usageObj
@@ -364,6 +489,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       if onEvent != nil:
         var ev = %*{"sessionId": sessionId, "content": content}
         if reasoning.len > 0: ev["reasoning"] = %reasoning
+        if usedProvider.len > 0: ev["provider"] = %usedProvider
         if usedModel.len > 0: ev["model"] = %usedModel
         if ctxSize > 0: ev["context"] = %ctxSize
         if usageObj.len > 0: ev["usage"] = usageObj
@@ -412,42 +538,76 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 # ---------------------------------------------------------------------------
 
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
-                        sessions: var Table[string, Session]): JsonNode =
-  ## session {sessionId, content}: run one turn, emitting ev.session.* events.
-  ## Session state is rebuilt from the store on first use (resume).
+                         sessions: var Table[string, Session]): JsonNode =
+  ## session {sessionId, content?, model?}: run one turn or persist a model
+  ## selection, emitting ev.session.* events. Session state is rebuilt from
+  ## the store on first use (resume).
   let sessionId = args{"sessionId"}.getStr("")
   let content = args{"content"}.getStr("")
-  if sessionId.len == 0 or content.len == 0:
-    return %*{"error": "session needs sessionId and content"}
+  let hasModel = args.kind == JObject and args.hasKey("model")
+  if sessionId.len == 0 or (content.len == 0 and not hasModel):
+    return %*{"error": "session needs sessionId and content or model"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
   else:
     entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.root)}]
+    # The runner normally creates this at startup; keep the call idempotent
+    # for direct/unit paths and load the persisted model selection from it.
+    ensureConversationHeader(ct, sessionId)
+    let header = loadConversationHeader(ct, sessionId)
+    entry.modelOverride = header{"modelOverride"}.getStr("")
     var pt = 0
+    var used = 0
     var cs = 0
-    let stored = loadStoredMessages(ct, sessionId, pt, cs)
-    if stored.len == 0:
-      # brand new session: make sure the conversation header exists (it is
-      # normally pre-created at runner spawn; keep this as a safe fallback).
-      ensureConversationHeader(ct, sessionId)
+    let stored = loadStoredMessages(ct, sessionId, pt, used, cs)
     for m in stored:
       entry.messages.add(m)
     entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
-                                promptTokens: pt, ctxSize: cs)
+                                promptTokens: pt, contextUsed: used, ctxSize: cs)
 
-  let userMsg = %*{"role": "user", "content": content}
-  entry.messages.add(userMsg)
-  entry.persister.persistMsg(userMsg)
+  # Presence of the key means "set/clear the override"; omission preserves
+  # the conversation's previous selection.
+  if args.kind == JObject and args.hasKey("model"):
+    entry.modelOverride = args{"model"}.getStr("").strip()
+    ct.updateConversationHeader(sessionId,
+      %*{"modelOverride": entry.modelOverride})
 
   proc onEvent(kind: string, data: JsonNode) {.closure.} =
     let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: data)
     ct.nc.publish("ev.session." & kind, env.encode())
 
-  let reply = runTurn(ct, entry.persister, entry.messages, onEvent)
+  if content.len == 0:
+    var status = %*{
+      "sessionId": sessionId,
+      "model": entry.modelOverride,
+      "context": entry.persister.ctxSize,
+      "promptTokens": entry.persister.promptTokens,
+      "usedTokens": entry.persister.contextUsed
+    }
+    try:
+      status = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      entry.persister.persistConversationRuntime(
+        entry.modelOverride, status{"provider"}.getStr(""),
+        status{"model"}.getStr(entry.modelOverride))
+    except CatchableError as e:
+      status["warning"] = %e.msg
+    onEvent("status", status)
+    sessions[sessionId] = entry
+    status["ok"] = %true
+    status["modelOverride"] = %entry.modelOverride
+    return status
+
+  let userMsg = %*{"role": "user", "content": content}
+  entry.messages.add(userMsg)
+  entry.persister.persistMsg(userMsg)
+
+  let reply = runTurn(ct, entry.persister, entry.messages,
+                      entry.modelOverride, onEvent)
   sessions[sessionId] = entry
-  return %*{"ok": true, "sessionId": sessionId, "reply": reply}
+  return %*{"ok": true, "sessionId": sessionId, "reply": reply,
+            "modelOverride": entry.modelOverride}
 
 # ---------------------------------------------------------------------------
 # Session runners — one process per conversation (system side: ensure/forward)
@@ -504,7 +664,7 @@ proc callSession*(ct: CoreTools, args: JsonNode): JsonNode =
   ## (pumpCoreWhileBusy) — turns never nest, but they must not be lost.
   let sessionId = args{"sessionId"}.getStr("")
   if sessionId.len == 0:
-    return %*{"error": "session needs sessionId and content"}
+    return %*{"error": "session needs sessionId"}
   let subject = ensureRunner(ct, sessionId)
   dispatchSubjectCall(ct, subject, "session", args, 1800_000)
 

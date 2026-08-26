@@ -45,6 +45,50 @@ type Provider struct {
 	Plugin   string `json:"plugin"`  // component that hooks provider-specific tools (optional)
 }
 
+// providerSummary is the only provider shape intended for interactive clients.
+// It deliberately contains no credential value.
+type providerSummary struct {
+	Nickname string `json:"nickname"`
+	BaseURL  string `json:"baseUrl"`
+	Model    string `json:"model"`
+	Catalog  string `json:"catalog"`
+	Context  int    `json:"context"`
+	Plugin   string `json:"plugin"`
+	Active   bool   `json:"active"`
+	HasKey   bool   `json:"hasKey"`
+}
+
+func summarizeProvider(p Provider, active bool) providerSummary {
+	return providerSummary{
+		Nickname: p.Nickname,
+		BaseURL:  p.BaseURL,
+		Model:    p.Model,
+		Catalog:  p.Catalog,
+		Context:  p.Context,
+		Plugin:   p.Plugin,
+		Active:   active,
+		HasKey:   p.APIKey != "",
+	}
+}
+
+func environmentProvider() Provider {
+	baseURL := os.Getenv("NIF_OPENAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	model := os.Getenv("NIF_OPENAI_MODEL")
+	if model == "" {
+		model = defaultModel
+	}
+	return Provider{
+		Nickname: "default",
+		APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
+		BaseURL:  baseURL,
+		Model:    model,
+		Catalog:  os.Getenv("NIF_OPENAI_PROVIDER"),
+	}
+}
+
 func (p Provider) withDefaults() Provider {
 	if p.BaseURL == "" {
 		switch p.Nickname {
@@ -176,7 +220,7 @@ func decodeArgs(raw json.RawMessage, target any) error {
 }
 
 func main() {
-	comp := sdk.New("provider", "0.1.0")
+	comp := sdk.New("provider", "0.2.0")
 	sc := &storeClient{c: comp}
 
 	// ---------------------------------------------------------------- add
@@ -219,6 +263,9 @@ func main() {
 		if strings.TrimSpace(args.APIKey) == "" {
 			return nil, errors.New("apiKey required")
 		}
+		if args.Context < 0 {
+			return nil, errors.New("context must be non-negative")
+		}
 		p := Provider{
 			Nickname: args.Nickname,
 			APIKey:   args.APIKey,
@@ -235,7 +282,8 @@ func main() {
 			return nil, err
 		}
 		expectRev := 0
-		if revPtr != nil {
+		existed := revPtr != nil
+		if existed {
 			expectRev = *revPtr
 		}
 		newRev, err := sc.put(kindProvider, args.Nickname, p, expectRev)
@@ -260,8 +308,97 @@ func main() {
 				return nil, err
 			}
 		}
+		isActive := activate || wasActive
+		op := "add"
+		if existed {
+			op = "update"
+		}
+		emitProviderChanged(comp, sc, op, args.Nickname)
 
-		return map[string]any{"ok": true, "rev": newRev, "provider": p, "active": activate}, nil
+		return map[string]any{
+			"ok": true, "rev": newRev,
+			"provider": summarizeProvider(p, isActive), "active": isActive,
+		}, nil
+	})
+
+	// ------------------------------------------------------------ update
+	comp.Tool("provider_update", map[string]any{
+		"type":        "object",
+		"description": "Update non-secret provider settings while preserving its stored API key. A non-empty apiKey rotates the credential.",
+		"properties": map[string]any{
+			"nickname": map[string]any{"type": "string"},
+			"apiKey":   map[string]any{"type": "string", "description": "Optional replacement credential; omitted preserves the current key"},
+			"baseUrl":  map[string]any{"type": "string"},
+			"model":    map[string]any{"type": "string"},
+			"catalog":  map[string]any{"type": "string"},
+			"context":  map[string]any{"type": "integer", "minimum": 0},
+			"plugin":   map[string]any{"type": "string"},
+		},
+		"required":  []string{"nickname"},
+		"x-harness": map[string]any{"hidden": true, "approval": "always", "timeoutMs": 30000},
+	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
+		var args struct {
+			Nickname string  `json:"nickname"`
+			APIKey   *string `json:"apiKey"`
+			BaseURL  *string `json:"baseUrl"`
+			Model    *string `json:"model"`
+			Catalog  *string `json:"catalog"`
+			Context  *int    `json:"context"`
+			Plugin   *string `json:"plugin"`
+		}
+		if err := decodeArgs(raw, &args); err != nil {
+			return nil, err
+		}
+		args.Nickname = strings.TrimSpace(args.Nickname)
+		if args.Nickname == "" || args.Nickname == activeID {
+			return nil, errors.New("valid nickname required")
+		}
+		rawProvider, rev, err := sc.get(kindProvider, args.Nickname)
+		if err != nil {
+			return nil, err
+		}
+		if rawProvider == nil || rev == nil {
+			return nil, fmt.Errorf("provider %q not found", args.Nickname)
+		}
+		var p Provider
+		if err := json.Unmarshal(rawProvider, &p); err != nil {
+			return nil, fmt.Errorf("corrupt provider %q: %w", args.Nickname, err)
+		}
+		if args.APIKey != nil {
+			if strings.TrimSpace(*args.APIKey) == "" {
+				return nil, errors.New("apiKey cannot be empty")
+			}
+			p.APIKey = *args.APIKey
+		}
+		if args.BaseURL != nil {
+			p.BaseURL = strings.TrimSpace(*args.BaseURL)
+		}
+		if args.Model != nil {
+			p.Model = strings.TrimSpace(*args.Model)
+		}
+		if args.Catalog != nil {
+			p.Catalog = strings.TrimSpace(*args.Catalog)
+		}
+		if args.Context != nil {
+			if *args.Context < 0 {
+				return nil, errors.New("context must be non-negative")
+			}
+			p.Context = *args.Context
+		}
+		if args.Plugin != nil {
+			p.Plugin = strings.TrimSpace(*args.Plugin)
+		}
+		p = p.withDefaults()
+		newRev, err := sc.put(kindProvider, args.Nickname, p, *rev)
+		if err != nil {
+			return nil, err
+		}
+		active := providerActiveIs(sc, args.Nickname)
+		emitProviderChanged(comp, sc, "update", args.Nickname)
+		return map[string]any{
+			"ok": true, "rev": newRev,
+			"provider": summarizeProvider(p, active), "active": active,
+		}, nil
 	})
 
 	// ------------------------------------------------------------- remove
@@ -302,6 +439,7 @@ func main() {
 				return nil, err
 			}
 		}
+		emitProviderChanged(comp, sc, "remove", args.Nickname)
 		return map[string]any{"ok": true, "removed": args.Nickname}, nil
 	})
 
@@ -315,27 +453,8 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		active, _, _ := sc.get(kindProvider, activeID)
-		var activeName string
-		if active != nil {
-			if raw, _, err2 := sc.get(kindProvider, activeID); err2 == nil && raw != nil {
-				var a activeDoc
-				if json.Unmarshal(raw, &a) == nil {
-					activeName = a.Nickname
-				}
-			}
-		}
-		type out struct {
-			Nickname string `json:"nickname"`
-			BaseURL  string `json:"baseUrl"`
-			Model    string `json:"model"`
-			Catalog  string `json:"catalog"`
-			Context  int    `json:"context"`
-			Plugin   string `json:"plugin"`
-			Active   bool   `json:"active"`
-			HasKey   bool   `json:"hasKey"`
-		}
-		providers := []out{}
+		activeName := activeProviderName(sc)
+		providers := []providerSummary{}
 		for _, it := range items {
 			if it.ID == activeID {
 				continue // the active marker doc is not a provider
@@ -344,19 +463,51 @@ func main() {
 			if err := json.Unmarshal(it.Value, &p); err != nil {
 				continue
 			}
-			providers = append(providers, out{
-				Nickname: p.Nickname,
-				BaseURL:  p.BaseURL,
-				Model:    p.Model,
-				Catalog:  p.Catalog,
-				Context:  p.Context,
-				Plugin:   p.Plugin,
-				Active:   p.Nickname == activeName,
-				HasKey:   p.APIKey != "",
-			})
+			providers = append(providers, summarizeProvider(p, p.Nickname == activeName))
 		}
 		sort.Slice(providers, func(i, j int) bool { return providers[i].Nickname < providers[j].Nickname })
 		return map[string]any{"providers": providers, "active": activeName, "count": len(providers)}, nil
+	})
+
+	// ------------------------------------------------------------- status
+	comp.Tool("provider_status", map[string]any{
+		"type":        "object",
+		"description": "Return the effective active provider without exposing its API key.",
+		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"hidden": true},
+	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
+		p, source, ok, err := effectiveProvider(sc)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{
+			"ok": ok, "source": source,
+			"provider": summarizeProvider(p, source == "store"),
+		}
+		if !ok {
+			result["error"] = "no active provider configured"
+		}
+		return result, nil
+	})
+
+	// ---------------------------------------------------- use environment
+	comp.Tool("provider_use_environment", map[string]any{
+		"type":        "object",
+		"description": "Clear the stored active marker so the LLM uses NIF_OPENAI_* again.",
+		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"hidden": true, "approval": "always", "timeoutMs": 30000},
+	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
+		if err := activateEnvironment(comp, sc); err != nil {
+			return nil, err
+		}
+		p, source, ok, err := effectiveProvider(sc)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"ok": ok, "source": source,
+			"provider": summarizeProvider(p, false),
+		}, nil
 	})
 
 	// ------------------------------------------------------------- switch
@@ -395,43 +546,53 @@ func main() {
 		"type":        "object",
 		"description": "Return the currently active provider config (API key included for programmatic use).",
 		"properties":  map[string]any{},
+		"x-harness":   map[string]any{"hidden": true},
+	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
+		p, source, ok, err := effectiveProvider(sc)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return map[string]any{
+				"ok": false, "source": source,
+				"error": "no active provider configured",
+			}, nil
+		}
+		return map[string]any{"ok": true, "source": source, "provider": p}, nil
+	})
+
+	// --------------------------------------------------------------- get
+	comp.Tool("provider_get", map[string]any{
+		"type":        "object",
+		"description": "Return one stored provider config by nickname, including its API key, for internal routing.",
+		"properties": map[string]any{
+			"nickname": map[string]any{"type": "string"},
+		},
+		"required":  []string{"nickname"},
+		"x-harness": map[string]any{"hidden": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
-		active, _, err := sc.get(kindProvider, activeID)
+		var args struct {
+			Nickname string `json:"nickname"`
+		}
+		if err := decodeArgs(raw, &args); err != nil {
+			return nil, err
+		}
+		args.Nickname = strings.TrimSpace(args.Nickname)
+		if args.Nickname == "" || args.Nickname == activeID {
+			return nil, errors.New("valid nickname required")
+		}
+		rawProvider, _, err := sc.get(kindProvider, args.Nickname)
 		if err != nil {
 			return nil, err
 		}
-		if active == nil {
-			// Fall back to env (standalone without stored providers).
-			p := Provider{
-				Nickname: "default",
-				APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
-				BaseURL:  os.Getenv("NIF_OPENAI_BASE_URL"),
-				Model:    os.Getenv("NIF_OPENAI_MODEL"),
-				Catalog:  os.Getenv("NIF_OPENAI_PROVIDER"),
-			}.withDefaults()
-			if p.APIKey == "" {
-				return map[string]any{"ok": false, "error": "no active provider configured"}, nil
-			}
-			return map[string]any{"ok": true, "provider": p}, nil
-		}
-		var a activeDoc
-		if err := json.Unmarshal(active, &a); err != nil {
-			return nil, fmt.Errorf("corrupt active doc: %w", err)
-		}
-		pVal, _, err := sc.get(kindProvider, a.Nickname)
-		if err != nil {
-			return nil, err
-		}
-		if pVal == nil {
-			// Active points to a deleted provider; clear it.
-			_, _ = sc.del(kindProvider, activeID)
-			return map[string]any{"ok": false, "error": "active provider removed"}, nil
+		if rawProvider == nil {
+			return nil, fmt.Errorf("provider %q not found", args.Nickname)
 		}
 		var p Provider
-		if err := json.Unmarshal(pVal, &p); err != nil {
-			return nil, fmt.Errorf("corrupt provider doc: %w", err)
+		if err := json.Unmarshal(rawProvider, &p); err != nil {
+			return nil, fmt.Errorf("corrupt provider %q: %w", args.Nickname, err)
 		}
-		return map[string]any{"ok": true, "provider": p}, nil
+		return map[string]any{"ok": true, "source": "store", "provider": p.withDefaults()}, nil
 	})
 
 	// ------------------------------------------------------------- export
@@ -523,6 +684,7 @@ func main() {
 				}
 			}
 		}
+		emitProviderChanged(comp, sc, "import", p.Active)
 		return map[string]any{"ok": true, "imported": imported, "count": len(imported)}, nil
 	})
 
@@ -534,39 +696,109 @@ func main() {
 
 // ---- helpers ----
 
+func activeProviderName(sc *storeClient) string {
+	raw, _, err := sc.get(kindProvider, activeID)
+	if err != nil || raw == nil {
+		return ""
+	}
+	var active activeDoc
+	if json.Unmarshal(raw, &active) != nil {
+		return ""
+	}
+	return strings.TrimSpace(active.Nickname)
+}
+
 func providerActiveExists(sc *storeClient) bool {
-	_, rev, err := sc.get(kindProvider, activeID)
-	return err == nil && rev != nil
+	name := activeProviderName(sc)
+	if name == "" {
+		return false
+	}
+	raw, _, err := sc.get(kindProvider, name)
+	return err == nil && raw != nil
 }
 
 func providerActiveIs(sc *storeClient, nickname string) bool {
-	raw, _, err := sc.get(kindProvider, activeID)
-	if err != nil || raw == nil {
-		return false
+	return activeProviderName(sc) == nickname
+}
+
+// effectiveProvider resolves the stored active provider, then the environment
+// fallback. It is shared by provider_active (internal/full secret) and
+// provider_status (interactive/redacted) so both report identical routing.
+func effectiveProvider(sc *storeClient) (Provider, string, bool, error) {
+	activeRaw, _, err := sc.get(kindProvider, activeID)
+	if err != nil {
+		return Provider{}, "", false, err
 	}
-	var a activeDoc
-	if json.Unmarshal(raw, &a) != nil {
-		return false
+	if activeRaw != nil {
+		var active activeDoc
+		if err := json.Unmarshal(activeRaw, &active); err != nil {
+			return Provider{}, "", false, fmt.Errorf("corrupt active doc: %w", err)
+		}
+		if active.Nickname != "" {
+			providerRaw, _, err := sc.get(kindProvider, active.Nickname)
+			if err != nil {
+				return Provider{}, "", false, err
+			}
+			if providerRaw != nil {
+				var p Provider
+				if err := json.Unmarshal(providerRaw, &p); err != nil {
+					return Provider{}, "", false, fmt.Errorf("corrupt provider doc: %w", err)
+				}
+				return p.withDefaults(), "store", p.APIKey != "", nil
+			}
+		}
+		// Empty/stale markers must not prevent the next added provider from
+		// becoming active.
+		_, _ = sc.del(kindProvider, activeID)
 	}
-	return a.Nickname == nickname
+	p := environmentProvider()
+	return p, "environment", p.APIKey != "", nil
+}
+
+func emitProviderChanged(comp *sdk.Component, sc *storeClient, op, nickname string) {
+	active := ""
+	source := "environment"
+	if p, resolvedSource, ok, err := effectiveProvider(sc); err == nil {
+		source = resolvedSource
+		if ok {
+			active = p.Nickname
+		}
+	}
+	_ = comp.Emit("ev.provider.changed", map[string]any{
+		"op": op, "nickname": nickname, "active": active,
+		"source": source, "at": time.Now(),
+	})
 }
 
 func activateProvider(comp *sdk.Component, sc *storeClient, nickname string) error {
-	previous := ""
-	if raw, _, err := sc.get(kindProvider, activeID); err == nil && raw != nil {
-		var a activeDoc
-		if json.Unmarshal(raw, &a) == nil {
-			previous = a.Nickname
-		}
-	}
+	previous := activeProviderName(sc)
 	doc := activeDoc{Nickname: nickname, UpdatedAt: time.Now()}
 	if _, err := sc.put(kindProvider, activeID, doc, 0); err != nil {
 		return err
 	}
 	// Notify plugins so they can enable their provider-specific tools.
 	_ = comp.Emit("ev.provider.switch", map[string]any{
-		"nickname": nickname, "previous": previous, "at": time.Now(),
+		"nickname": nickname, "previous": previous, "source": "store", "at": time.Now(),
 	})
+	emitProviderChanged(comp, sc, "switch", nickname)
+	return nil
+}
+
+func activateEnvironment(comp *sdk.Component, sc *storeClient) error {
+	previous := activeProviderName(sc)
+	if previous != "" {
+		if ok, err := sc.del(kindProvider, activeID); err != nil || !ok {
+			if err != nil {
+				return err
+			}
+			return errors.New("clear active provider failed")
+		}
+	}
+	_ = comp.Emit("ev.provider.switch", map[string]any{
+		"nickname": "default", "previous": previous,
+		"source": "environment", "at": time.Now(),
+	})
+	emitProviderChanged(comp, sc, "switch", "default")
 	return nil
 }
 
@@ -582,8 +814,7 @@ func activateNext(comp *sdk.Component, sc *storeClient, removed string) error {
 		}
 	}
 	if len(names) == 0 {
-		_, _ = sc.put(kindProvider, activeID, activeDoc{}, 0) // clear
-		return nil
+		return activateEnvironment(comp, sc)
 	}
 	sort.Strings(names)
 	return activateProvider(comp, sc, names[0])
