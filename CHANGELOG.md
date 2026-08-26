@@ -8,6 +8,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Minimal boot profile** — `./var/bin/niffler --minimal` starts only the
+  `store`, `bash`, and `llm` manifest services, using `NIF_OPENAI_*` directly
+  without the `provider` or `models` components. Core/NATS and on-demand
+  session runners still operate normally. Persisted agent-added components
+  stay stopped without their records being deleted, and a later normal boot
+  restores them. `--minimal` composes with `--recover`; covered by the core
+  bus-contract test.
 - **UI-owned harness lifecycle** — `scripts/niffler.sh` (and `make
   up/down/status`) are gone; the binaries own start/stop. Any interactive
   client (the desktop UI, interactive plugins) calls the SDK's
@@ -41,6 +48,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   backend with no restart — falling back to `NIF_OPENAI_*` and
   `NIF_LLM_PROVIDERS` when the component is absent or nothing is active.
   Secret-handling tools (`add`/`import`/`export`) are approval-gated.
+- **Interactive provider/model/context control** — provider adds now return
+  redacted summaries; hidden `provider_status`, `provider_active`,
+  `provider_get`, and secret-preserving `provider_update` support safe
+  clients, with `ev.provider.changed` invalidations. Hidden `llm_resolve`
+  reports the effective provider/model/context and provenance without
+  credentials, resolves stored nicknames for explicit provider pinning,
+  and chat results identify the provider that answered. Session calls
+  accept and persist a conversation model override (including model-only
+  configuration calls with no inference), resolve its context before the
+  guard, pin both provider and model across tool rounds, and publish
+  `ev.session.status`; conversation headers retain provider/model/context
+  and total-token occupancy for resumed context meters.
+- **Multi-file Go plugins** — component manifest entries can list additional
+  same-package `.go` `sources`; plugin installation validates confined,
+  non-symlink paths and the builder compiles the files together. This keeps
+  substantial interactive components modular without bypassing the normal
+  source-build/install path.
 - **grep + write components** — ripgrep-backed code search (`grep`:
   `path:line:match` results with .gitignore/hidden/binary handling,
   globs, context, case folding, exact truncation markers; `files`: sorted
@@ -89,6 +113,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bounded newest-first search, lossless whole-bus JSON capture, retention,
   and write-health reporting. Raw SDK taps now dispatch exactly once per
   NATS subscription.
+- **UI: provider/model controls** — the desktop header now shows the
+  active provider, conversation model, and live context occupancy. A
+  provider switcher popover (stored providers + environment fallback),
+  a searchable model picker backed by `models_list`, a provider
+  management drawer (add/edit/remove with credential-safe forms), and
+  a context meter (`used / window`, color-graded at 75/90%) compose the
+  header. State is owned by `App.svelte` and refreshed by
+  `ev.provider.changed`, `ev.models.updated`, and `ev.session.status`.
 - **UI: components panel** — the sidebar now lists the live bus
   components and their tools (name, version, pid, registration time,
   language/source where known), fed by `ev.catalog.updated`.
@@ -221,6 +253,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Complete Makefile component build** — `make build` now includes the shipped
+  `skills` and `fetch` binaries, matching `niffler.nimble`, the manifest, and
+  their bus-contract test targets.
 - **Approval prompts go to the driving UI** — when an interactive client
   (web UI) is attached, approval requests route to its dialog even if
   core's own stdin happens to be a tty (core spawned from a terminal while

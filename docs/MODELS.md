@@ -62,9 +62,12 @@ authorization headers, private keys, cookies) never reach a caller, at
 provider or model level.
 
 `llm` asks `models_get` for the selected model's context window. Explicit
-`context` configuration and `NIF_OPENAI_CONTEXT` still win, and the existing
-small fallback remains available if `models` is removed. Provider endpoints
-are classified by hostname, not URL substring.
+provider `context` and `NIF_OPENAI_CONTEXT` still win, and the existing small
+fallback remains available if `models` is removed. Provider endpoints are
+classified by hostname, not URL substring. Interactive clients should call the
+hidden, credential-free `llm_resolve {model?}` rather than duplicating this
+precedence: it reports the effective global provider, optional conversation
+model override, catalog, context, and each value's provenance.
 
 ## Source plugins
 

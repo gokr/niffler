@@ -44,9 +44,13 @@ reg.publish            # component announces itself on connect
 reg.depart             # same shape (name suffices), graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
-                       #   tool "session" {sessionId, content} — one turn; emits ev.session.*
+                       #   tool "session" {sessionId, content?, model?}; content runs a turn
+                       #   model-only calls persist/resolve selection without inference;
+                       #   model present + empty clears the conversation override
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
                        # models.updated reports effective model-catalog refreshes
+                       # provider.switch selects the global backend; provider.changed
+                       # invalidates redacted provider/runtime views
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
 
@@ -62,13 +66,18 @@ Session subjects (core emits during `svc.core.call` session turns — UIs
 subscribe `ev.session.>` and render live):
 
 ```
-ev.session.assistant   # {sessionId, content, model?, context?, usage?}   model text
-                       #   (complete content of each LLM round)
+ev.session.assistant   # {sessionId, content, provider?, model?, context?, usage?}
+                       #   complete model text + actual backend metadata per LLM round
+ev.session.status      # {sessionId, provider?, providerSource?, model?, catalog?,
+                       #   context?, contextSource?, promptTokens?, usedTokens?}
+                       #   resolved turn config and live context occupancy.
+                       #   Also emitted by model-only session calls (no inference)
 ev.session.token       # {sessionId, content, reasoning}   live token deltas
                        #   (streamed while the model generates)
 ev.session.toolcall    # {sessionId, tool, args, result | error}
-ev.session.context     # {sessionId, promptTokens, context, warning?|trimmed?}
-                       #   context-window pressure (75% warn, 90% trim)
+ev.session.context     # {sessionId, promptTokens, usedTokens, context,
+                       #   warning?|trimmed?}; context-window pressure
+                       #   (75% warn, 90% trim)
 ev.session.done        # {sessionId, reply} or {sessionId, error}
 ```
 
@@ -110,12 +119,16 @@ ends — turns never nest.
 
 ## Lifecycle
 
-1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → build cache
-   check → spawn children (no ordering; ordering emerges from the bus).
+1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → select
+   the boot profile → spawn children (no ordering; ordering emerges from the
+   bus). Normal mode uses the manifest; `--minimal` filters it to `store`,
+   `bash`, and `llm` and skips restoration of persisted spawned components.
 2. Component connects, publishes `reg.publish` with its tool schemas.
-3. Core converges when the required set (llm, bash, builder) has registered;
-   every new registration is announced as `ev.catalog.updated` with the full
-   tool list (the LLM tools parameter is rebuilt per request anyway).
+3. Core converges when the selected profile's required set has registered
+   (normally the manifest's required entries; `store`, `bash`, and `llm` in
+   minimal mode). Every new registration is announced as
+   `ev.catalog.updated` with the full tool list (the LLM tools parameter is
+   rebuilt per request anyway).
 4. Teardown = exit; the OS is the disposer. Core drains children in reverse
    registration order: `ev.sys.drain` → grace period → SIGTERM → SIGKILL.
 

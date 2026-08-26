@@ -13,7 +13,7 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `hashline-edit`, `grep`, `write`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual + design docs |
-| `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, with what restart policy |
+| `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, and with what restart policy; `--minimal` filters it to `store`, `bash`, and `llm` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
 | `var/barrel-db` | the store's embedded KV file — **single-writer**: exactly one `store` process may open it |
@@ -44,6 +44,50 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring ([OBSERVE.md](OBSERVE.md)) |
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search ([OBSERVE.md](OBSERVE.md)) |
+
+### Minimal boot profile (`--minimal`)
+
+The normal manifest is the full, self-extending harness. For the smallest
+useful persistent runtime, start:
+
+```bash
+./var/bin/niffler --minimal
+```
+
+This filters the manifest boot set to exactly three service components:
+
+- `store` — conversation/message persistence and component records
+- `bash` — one general-purpose machine tool
+- `llm` — OpenAI-compatible model access and streaming
+
+Core and NATS still run, and the first conversation starts its normal ephemeral
+`var/bin/session <id>` runner. `builder`, `plugins`, `skills`, `fetch`,
+`models`, `provider`, the dedicated file tools, and observation/logging do not
+start. Persisted components created through `core.spawn` are deliberately not
+restored, but their store records are not deleted; a later normal boot restores
+them. Minimal mode is only a boot profile, not a policy boundary — a caller can
+still use `core.spawn` during the run.
+
+Because neither `provider` nor `models` is present, normal conversation turns
+resolve the backend directly from `NIF_OPENAI_API_KEY`,
+`NIF_OPENAI_BASE_URL`, and `NIF_OPENAI_MODEL`. Set `NIF_OPENAI_CONTEXT` when
+an exact context window matters; otherwise `llm` uses its small built-in model
+table and then a 128K fallback.
+
+```bash
+NIF_OPENAI_API_KEY=sk-... \
+NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1 \
+NIF_OPENAI_MODEL=deepseek-chat \
+NIF_OPENAI_CONTEXT=1000000 \
+./var/bin/niffler --minimal
+```
+
+The desktop UI's automatic launch uses the normal profile. To use the UI with
+the minimal profile, start the command above first and then launch
+`niffler-ui`; it attaches to the existing core. `--minimal --recover` is also
+valid: recovery rebuilds and wipes spawned-component records first, then boots
+the three-component profile. This is a runtime choice only; `make build` still
+builds the full shipped set.
 
 ### Session runners
 
@@ -141,14 +185,16 @@ Core speaks exactly one protocol: JSON envelopes over NATS (details in
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
 reg.depart             graceful shutdown announcement
 svc.<component>.call   queue-grouped tool call request/reply
-ev.session.assistant   {sessionId, content, model?, usage?}   (complete model text)
+ev.session.assistant   {sessionId, content, provider?, model?, context?, usage?}
+ev.session.status      {sessionId, provider?, model?, context?, usedTokens?}
 ev.session.token       {sessionId, content, reasoning}        (live token deltas)
 ev.session.toolcall    {sessionId, tool, args, result|error}
 ev.session.done        {sessionId, reply} | {sessionId, error}
-ev.session.context     {sessionId, promptTokens, context, warning?|trimmed?}
+ev.session.context     {sessionId, promptTokens, usedTokens, context, warning?|trimmed?}
 ev.catalog.updated     full tool list after any registration change
 ev.models.updated      effective provider/model/source counts after refresh
-ev.provider.switch     provider component → bus: {nickname, previous, at}
+ev.provider.switch     provider component → bus: {nickname, previous, source, at}
+ev.provider.changed    redacted provider registry invalidation event
 ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
 ev.approval.request    core → UI: {id, tool, args} — human gate (see below)
@@ -195,7 +241,8 @@ install from local git repos (hermetic tests, mirrors).
 Tools whose schema carries `x-harness.approval: "always"` — currently
 `bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
 `plugin_install`, `plugin_update`, `plugin_remove`, `skill_install`,
-`skill_remove`, `write`, `observe_send`,
+`skill_remove`, `provider_add`, `provider_update`, `provider_export`,
+`provider_import`, `provider_use_environment`, `write`, `observe_send`,
 `observe_request`, `observe_dump` — are
 gated on a human before they execute:
 
@@ -215,16 +262,26 @@ Core watches how much of the model's context window a conversation uses
 and acts *trivially* — no summaries, no token math beyond what the model
 reports:
 
-- The window size (`context`) is informational, reported by `llm` on
-  every chat call: per-provider `context` and `NIF_OPENAI_CONTEXT` override
-  it, then `llm` asks the `models` component's effective catalog. A small
-  built-in table and conservative 128K remain as fallback if `models` is
-  removed. See [MODELS.md](MODELS.md).
+- The effective window is resolved by hidden `llm_resolve {model?}` before
+  each turn, so a newly selected model's limit reaches the context guard
+  before inference. Per-provider `context` and `NIF_OPENAI_CONTEXT` override
+  the models catalog; a small built-in table and conservative 128K remain as
+  fallback if `models` is removed. The result includes secret-free provider,
+  model, catalog and context provenance for interactive clients. See
+  [MODELS.md](MODELS.md).
 
-- After every chat call the model's own `usage.prompt_tokens` and the
-  window size (`context`, informational from `llm`) are recorded
-  and persisted with the assistant message, so the accounting survives
-  restarts and session resume.
+- `session {sessionId, content?, model?}` accepts a conversation-scoped model
+  override. A model-only call persists and resolves the selection without
+  inference; presence with an empty value clears it. Core stores the choice in
+  the conversation header and pins the resolved model across all tool rounds
+  in a turn.
+- After every chat call core records prompt tokens and uses
+  `usage.total_tokens` (or prompt + completion fallback) as the best current
+  occupancy. Provider, model, context, occupancy and the override are also
+  mirrored into the conversation header, so meters survive restarts without
+  loading the entire transcript.
+- Core emits `ev.session.status` with the resolved provider/model/context and
+  current `usedTokens`; clients render `usedTokens / context` directly.
 - At **75%** of the window, core warns once (terminal log; the UI shows a
   note) — `ev.session.context {warning: true}`.
 - At **90%**, core trims: whole turns are dropped from the front of the
@@ -252,7 +309,8 @@ The agent adds capabilities at runtime, mid-conversation:
    `core.remove {name}` stops it and deletes its persisted record
 
 **Persistence of shape**: spawned components are recorded in the store
-(kind `component`) and restored on boot. `core` itself, the bus, the
+(kind `component`) and restored on normal boot. `--minimal` leaves those
+records untouched but does not restore them. `core` itself, the bus, the
 catalog and the supervisor are not removable — that asymmetry is the
 architecture (ARCHITECTURE.md).
 
@@ -280,7 +338,10 @@ topic `niffler-component` are discoverable without any registry:
 - Components always build from source via the `builder` — the same path
   agent-written components take. Running Niffler already provides the
   toolchain (Nim/Go, nats.c, libclang), so no extra requirements; every
-  platform compiles with its own toolchain.
+  platform compiles with its own toolchain. A Go entry may declare
+  `"sources": ["component/helper.go", ...]`; these must be non-symlink,
+  same-package `.go` files beside `main`, and the builder compiles them as one
+  package.
 - A component manifest entry with `"interactive": true` is built into
   `var/bin` but is not passed to `core.spawn`. It is a terminal client (for
   example a TUI) that the user starts manually, so it is not supervised or
@@ -352,26 +413,36 @@ the `active` marker doc) and exposes them to the agent and to `llm`:
 
 | Tool | What it does |
 |---|---|
-| `provider_add {nickname, apiKey, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add or update a provider; the first one becomes active automatically |
-| `provider_list` | all providers (redacted — no keys), which one is active |
-| `provider_active` | the active provider's full config, API key included (for programmatic use) |
-| `provider_switch {nickname}` | make another provider active; live-updates the LLM backend |
-| `provider_remove {nickname}` | delete a provider; if it was active, another one takes over |
+| `provider_add {nickname, apiKey, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add a provider; the first one becomes active automatically; response is redacted |
+| `provider_update {nickname, apiKey?, baseUrl?, model?, catalog?, context?, plugin?}` | hidden client API for partial updates; omitted API key is preserved |
+| `provider_list` | all stored providers (redacted — no keys), which one is active |
+| `provider_status` | hidden, redacted effective provider including environment fallback and `hasKey` |
+| `provider_active` | hidden internal read of the effective provider's full config, API key included |
+| `provider_get {nickname}` | hidden internal full-config read used to pin an explicit stored provider across a turn |
+| `provider_switch {nickname}` | make another stored provider active; live-updates the LLM backend |
+| `provider_use_environment` | hidden client API that clears the stored marker and returns to `NIF_OPENAI_*` |
+| `provider_remove {nickname}` | delete a provider; if it was active, another one takes over or environment fallback resumes |
 | `provider_export` / `provider_import` | JSON backup/migration round-trip, keys included; import merges and can restore the active marker |
 
-- `provider_add`/`provider_import`/`provider_export` carry
-  `x-harness.approval: "always"` — they move API keys in and out of the
-  store.
+- `provider_add`/`provider_update`/`provider_import`/`provider_export` carry
+  `x-harness.approval: "always"` — they move credentials or mutate connection
+  settings. Interactive clients call the hidden update/status tools directly
+  after an explicit user action and must never render/log credential payloads.
 - `llm` resolves its default backend from the active stored provider on
   every chat call, so `provider_switch` takes effect immediately. When the
   `provider` component is absent or nothing is active, `llm` falls back to
-  `NIF_OPENAI_*` and the `NIF_LLM_PROVIDERS` table as before.
+  `NIF_OPENAI_*` and the `NIF_LLM_PROVIDERS` table as before. An explicit
+  `provider` arg to `chat` or `llm_resolve` resolves a stored nickname first,
+  then `NIF_LLM_PROVIDERS`, so a session can pin a non-active stored provider
+  across its turn without switching the global default.
 - A stored provider's explicit `context` (tokens) wins over the models
   catalog; its `catalog` id names the models.dev provider for the context
   lookup, and `plugin` may name a component that hooks provider-specific
   tools. On every switch the component publishes
-  `ev.provider.switch {nickname, previous, at}` so such plugins can enable
-  or hide their tools.
+  `ev.provider.switch {nickname, previous, source, at}` so such plugins can
+  enable or hide their tools. Every registry mutation also publishes the
+  secret-free `ev.provider.changed {op, nickname, active, source, at}` for
+  interactive clients to invalidate their provider/model views.
 - The `active` marker is a plain store doc — remove or overwrite it with
   `store` tools if you need manual surgery.
 
@@ -415,10 +486,11 @@ make recover        # stops anything running, then ./var/bin/niffler --recover
 
 1. **Rebuilds the shipped binaries from source** (`make build`, falling
    back to `nimble all`) — fixes overwritten/corrupted `var/bin/*`.
-2. **Wipes the store's component records** — spawned components are not
-   restored; the harness comes back to the manifest set.
-3. Boots normally (interactive). **Conversations and messages survive** —
-   only the component shape is reset.
+2. **Wipes the store's component records** — no persisted extra component
+   shape remains to restore.
+3. Boots the requested profile (normally the full interactive harness;
+   `--recover --minimal` selects the minimal profile). **Conversations and
+   messages survive** — only the component shape is reset.
 
 For damage to *sources* (someone edited `components/`, `core/` or `sdk/`):
 
@@ -487,8 +559,9 @@ There is no launcher script — the binaries own the lifecycle:
   time (ldflags), so the installed icon works as well as the in-tree binary.
 - **Interactive plugins** (e.g. `niffler-tui`) — same `ensureHarness` call,
   so starting one from a terminal also starts the harness when needed.
-- **Terminal admin shell** — `./var/bin/niffler` directly. A manually
-  started core never self-terminates; stop it with Ctrl-C / SIGTERM.
+- **Terminal admin shell** — `./var/bin/niffler` directly, or
+  `./var/bin/niffler --minimal` for the three-component boot profile. A
+  manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
 
 Interactive frontends register `"client": true` (the SDK's `interactive()`
 / `Component.Client` marker). An **autostarted** core counts them: when the
@@ -502,8 +575,9 @@ spawned bus with it; if none ever arrives it gives up after
 ## Common tasks
 
 ```bash
-./var/bin/niffler   # the harness in a terminal (admin shell)
-niffler-ui          # the desktop UI — autostarts core; last UI stops it
+./var/bin/niffler             # full harness in a terminal (admin shell)
+./var/bin/niffler --minimal   # store + bash + llm only at boot
+niffler-ui                    # desktop UI; autostarts the full profile
 make build          # rebuild what changed
 make test           # the bus-contract suite (each test owns a private bus)
 make doctor         # check prerequisites

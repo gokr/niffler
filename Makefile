@@ -107,6 +107,12 @@ var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
 
+var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/skills/main.nim
+
+var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fetch/main.nim
+
 var/bin/observe: components/observe/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/observe/main.nim
 
@@ -136,7 +142,8 @@ components:
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var/bin/hashline-edit \
 	var/bin/grep var/bin/write \
-	var/bin/builder var/bin/plugins var/bin/observe var/bin/logfile var/bin/console \
+	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
+	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm
 
 build: components

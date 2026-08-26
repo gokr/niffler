@@ -60,6 +60,7 @@ make all              # build core + all components + desktop UI
 make build            # core + components only (var/bin, no UI)
 make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
+./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
 niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
@@ -136,6 +137,10 @@ The SPA is a NATS client, not a Wails client: it only talks to
   `file:` dependency in the generated package.json. Handlers may be async;
   the SDK serializes them through a promise chain (the Nim single-thread
   model).
+- `--minimal` is a boot profile, not a lockdown: it starts only `store`,
+  `bash`, and `llm`, does not restore persisted spawned components (records
+  remain), and uses `NIF_OPENAI_*` without `models`/`provider`. Session runners
+  still start on demand; a normal boot restores the full shape.
 - Harness in service mode (for the UI, no tty):
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null`
 - Session turns run in **session runner processes** (`var/bin/session <id>`),

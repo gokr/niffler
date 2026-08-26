@@ -1,42 +1,49 @@
 # Niffler
 
 This is Niffler (reborn), a minimalistic, self-extending agent harness similar in philosophy
-to [Pi](https://pi.dev) or the new [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Niffler takes a completely different approach to
+to [Pi](https://pi.dev) or the new [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+Niffler takes a completely different approach to
 software composition though and relies on a Unix-style "components run as processes"
 and use NATS as the communication plane. This allows components to be written in different
-languages, be strictly isolated from each other and even run remotely.
+languages, be strictly isolated from each other, rewritten and restarted during runtime and even run remotely.
 
-Niffler is meant to be cloned out and run using its own git repo as "home".
+Niffler is meant to be cloned out and run using its own git repo as "home" so that it can extend itself.
 
-The agent adds capabilities at runtime — writes source, compiles it with the `builder` component,
+The agent can add capabilities at runtime — writes source, compiles it with the `builder` component,
 starts it via `core.spawn` — mid-conversation. Design rationale:
 [docs/REBOOT.md](docs/REBOOT.md). Wire protocol: [docs/WIRE.md](docs/WIRE.md).
 
 ```
-core (Nim) ── NATS ──┬── bash (Nim SDK)
-                     ├── builder (Nim SDK)
-                     ├── plugins (Nim SDK)   ← component ecosystem
-                     ├── skills (Nim SDK)    ← Agent Skills (SKILL.md)
-                     ├── fetch (Nim SDK)     ← web content retrieval
-                     ├── observe + logfile (Nim SDK)
-                     ├── models (Go SDK)     ← pluggable model catalog
-                     ├── provider (Go SDK)   ← store-backed LLM provider registry
-                     ├── hashline-edit (Nim SDK)
-                     ├── llm (Go SDK)
+core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
+                     ├── bash (Nim SDK)            ← shell execution
+                     ├── builder (Nim SDK)         ← component compilation
+                     ├── plugins (Nim SDK)         ← component ecosystem
+                     ├── skills (Nim SDK)          ← Agent Skills (SKILL.md)
+                     ├── fetch (Nim SDK)           ← web content retrieval
+                     ├── models (Go SDK)           ← pluggable model catalog
+                     ├── provider (Go SDK)         ← stored LLM provider registry
+                     ├── llm (Go SDK)              ← streaming LLM adapter
+                     ├── hashline-edit (Nim SDK)   ← anchored file edits
+                     ├── grep (Nim SDK)            ← code search + file listing
+                     ├── write (Nim SDK)           ← atomic whole-file writes
+                     ├── observe (Nim SDK)         ← live bus inspection
+                     ├── logfile (Nim SDK)         ← rotating JSONL logs
+                     ├── cli (Nim SDK)             ← on-demand script client
+                     ├── console (Nim SDK)         ← on-demand bus viewer
                      └── your tool (any language with an SDK port)
 ```
 
 Core speaks exactly one protocol (JSON envelopes over NATS, see
-[docs/WIRE.md](docs/WIRE.md)); everything else — bash, the builder, the LLM
-adapter — is a separate process component with its own language's SDK.
+[docs/WIRE.md](docs/WIRE.md)); every listed capability is a separate process
+component with its own language's SDK, not code compiled into core.
 
-The shipped set proves the multi-language point: `bash`, `builder`,
-`store`, `plugins`, `skills`, `fetch`, `hashline-edit`, `grep`, `write`,
-`observe`, `logfile`, `cli` and `console` are written
-against the Nim SDK, while the model catalog `models`, the LLM adapter `llm`
-and the provider registry `provider` are deliberately in Go —
-and a TypeScript SDK ships too (sdk/ts), so the agent adds components in
-any of the three languages mid-conversation.
+On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
+`plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `hashline-edit`,
+`grep`, `write`, `observe` and `logfile`. The Nim SDK powers all of those except
+Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
+clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
+as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
+add Node.js components mid-conversation.
 
 Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
 bus, approvals, recovery, troubleshooting). Observation and logs:
@@ -51,10 +58,12 @@ ui/build/bin/niffler-ui # or click the installed desktop icon
 ```
 
 Build once, then launch the UI — any UI (the desktop app, an interactive
-plugin like `niffler-tui`) autostarts core if it isn't running, and the
-**last UI to close stops the harness it started**. Prefer the terminal?
-`./var/bin/niffler` runs the admin shell; a manually started core stays up
-until you stop it.
+terminal plugin like `niffler-tui`) autostarts core if it isn't running, and the
+**last UI to close stops the harness it started**.
+
+Using multiple UIs in parallel? Start core manually with
+`./var/bin/niffler`; its admin shell stays up until you stop it. Then launch
+as many UIs as needed.
 
 ## Prerequisites
 
@@ -118,11 +127,48 @@ automatically by nimble on the first build (`make build`).
 |---|---|
 | `niffler-ui` | the desktop UI — autostarts core if needed; the last UI stops an autostarted core |
 | `./var/bin/niffler` | the harness in a terminal: admin shell, never self-terminates |
+| `./var/bin/niffler --minimal` | minimal boot profile: only `store`, `bash`, and `llm` services |
 | `make run` | the harness with the tty admin shell (status commands) |
-| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-models`, `test-observe`, and `test-logfile` |
+| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-write`, `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
+
+### Minimal boot profile
+
+`./var/bin/niffler --minimal` starts the smallest useful persistent agent
+profile:
+
+| Component | Why it remains |
+|---|---|
+| `store` | conversation/message persistence and component records |
+| `bash` | one general-purpose machine tool |
+| `llm` | OpenAI-compatible model access and streaming |
+
+Core and the NATS bus still run, and the system starts one ephemeral `session`
+runner when a conversation is first used; those are control-plane processes,
+not manifest services. The other shipped services — including `builder`,
+`models`, `provider`, file tools, plugins/skills, and observation/logging — stay
+stopped. Persisted agent-added components are not restored in this mode, but
+their records are left untouched and return on the next normal boot. This is a
+boot profile, not a lockdown: `core.spawn` can still start a component later.
+
+With no `provider` or `models` service, `llm` uses the environment/`.env`
+directly:
+
+```bash
+NIF_OPENAI_API_KEY=sk-... \
+NIF_OPENAI_BASE_URL=https://api.deepseek.com/v1 \
+NIF_OPENAI_MODEL=deepseek-chat \
+NIF_OPENAI_CONTEXT=1000000 \
+./var/bin/niffler --minimal
+```
+
+`NIF_OPENAI_CONTEXT` is optional; without it, `llm` uses its small built-in
+model table and then a conservative 128K fallback. The desktop UI always
+autostarts the normal profile, so start `--minimal` manually first and then
+launch the UI; it will attach to the already-running core. `--minimal` can be
+combined with `--recover`.
 
 **Testing.** `make test` runs the whole suite: one script per non-LLM
 component, each booting a private NATS server and driving a snapshot of the
@@ -143,12 +189,12 @@ live, else spawns nats-server there (falling back to a random loopback port
 when 4222 is taken) and writes `var/nats-url`. Set `NIF_NATS_URL` to attach
 to any bus, even a remote one.
 
-**Approvals.** Tools that change the machine or the harness (`bash`,
-`builder.build`, `core.spawn`/`kill`/`remove`) carry `x-harness.approval:
-"always"` and are gated on a human: a y/N prompt in the terminal harness, a
-dialog in the web UI. Headless (no UI attached) calls are denied — never
-silently approved. `NIF_AUTO_APPROVE=1` bypasses the gate (see
-[docs/MANUAL.md](docs/MANUAL.md)).
+**Approvals.** Tools that change the machine or the harness — including
+`bash`, `builder.build`, `write`, mutating `hashline-edit` tools, and
+`core.spawn`/`kill`/`remove` — carry `x-harness.approval: "always"` and are
+gated on a human: a y/N prompt in the terminal harness, a dialog in the web
+UI. Headless (no UI attached) calls are denied — never silently approved.
+`NIF_AUTO_APPROVE=1` bypasses the gate (see [docs/MANUAL.md](docs/MANUAL.md)).
 
 **Secrets.** `.env` (gitignored) holds `NIF_OPENAI_API_KEY` and
 `NIF_OPENAI_BASE_URL` (DeepSeek by default); an existing shell env always
@@ -165,8 +211,9 @@ sdk/niffler/         Nim component SDK (~250 lines)
 sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
-components/          bash, builder, store, plugins, hashline-edit, cli,
-                     console (Nim), models + llm (Go)
+components/          Nim: store, bash, builder, plugins, skills, fetch,
+                     hashline-edit, grep, write, observe, logfile, cli,
+                     console; Go: models, provider, llm + llm-openai example
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -184,7 +231,8 @@ variant with FTS/vector later is a drop-in with the same tools).
 Barrel's pubsub is deliberately **not** used — NATS is the one and only
 bus. Kind keys: `component`, `conversation`, `message`, `plugin` (the
 plugins component's install records). Core persists spawned components
-(restored on boot) and conversation messages.
+(restored on normal boot; `--minimal` deliberately leaves them stopped) and
+conversation messages.
 
 **Recovery.** The repo is the snapshot; `var/` is disposable build output.
 If a component is damaged — overwritten binary, broken self-added
@@ -246,8 +294,10 @@ component") or via `plugin_search`; `plugin_install {repo}` clones the
 repo into `var/plugins/<pkg>@<ref>/`, compiles each component from source
 via the `builder` (the same path agent-written components take — no extra
 toolchain, every platform builds with its own), then `core.spawn`s every
-service component (human-approved). Components marked `"interactive": true`
-are built into `var/bin` but not spawned; the user starts them in a terminal.
+service component (human-approved). Go components can list additional
+same-package files in a manifest `"sources"` array. Components marked
+`"interactive": true` are built into `var/bin` but not spawned; the user
+starts them in a terminal.
 `plugin_update` / `plugin_remove` manage installed packages; installs survive
 restarts via the store's `plugin` records.
 
@@ -286,6 +336,9 @@ to CI any plugin repo — Niffler testing itself.
       human is reachable; verified end-to-end (service + tty probes)
 - [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
       binaries from source, wipe spawned-component records, keep conversations
+- [x] **minimal boot profile** — `--minimal` starts only `store`, `bash` and
+      `llm`, uses `NIF_OPENAI_*` directly, and leaves persisted extra
+      components stopped without deleting their records
 - [x] **plugins component** — ecosystem discovery + install as a bus
       service: GitHub topic search, `niffler.json` package manifest, always
       builds from source via the builder (or `file://` local repos for
