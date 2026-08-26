@@ -199,8 +199,13 @@ ev.provider.switch     provider component → bus: {nickname, previous, source, 
 ev.provider.changed    redacted provider registry invalidation event
 ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
-ev.approval.request    core → UI: {id, tool, args} — human gate (see below)
-ev.approval.reply      UI → core: {id, ok}
+svc.approval.<name>.request # directed approval to the component driving the
+                           # turn (derived from the call envelope's `caller`);
+                           # driver acks {id, ack: true}, then answers {id, ok}
+ev.approval.request    core → UI: {id, tool, args, caller?, fallback?} —
+                       # human gate, broadcast (see Approvals below)
+ev.approval.reply      UI → core: {id, ack?} | {id, ok}
+ev.approval.resolved   core → UIs: {id, ok} — gate verdict; dismiss stale modals
 ev.cancel.<call-id>    cancellation signal (components may subscribe)
 ```
 
@@ -249,12 +254,22 @@ Tools whose schema carries `x-harness.approval: "always"` — currently
 gated on a human before they execute:
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
-  name and arguments; answer `y`/`n`.
-- **Web UI**: a modal dialog appears with the same details;
-  Approve/Deny answers go back over the bus (`ev.approval.request` /
-  `ev.approval.reply`).
+  name and arguments; answer `y`/`n` (falls back to the tty prompt only
+  when core is on a terminal and no UI is attached).
+- **Web UI / interactive component**: a request is routed to the specific
+  component that is driving the session — core derives it from the call
+  envelope's self-declared `caller` and publishes to that component's
+  private subject `svc.approval.<name>.request`. The driver acks it
+  (`{id, ack: true}`) to confirm a human is being asked, shows a modal with
+  the tool name and arguments, and answers `{id, ok}`.
+- **Driver gone / not interactive**: if the driver does not ack within a
+  short window, the request is rebroadcast on `ev.approval.request` with
+  `fallback: true` so any interactive client can step in. Direct
+  (non-session) calls broadcast immediately.
 - **Neither** (service mode with no UI attached): the call is **denied**
   with a clear error — never silently approved.
+- When a verdict lands, core publishes `ev.approval.resolved {id, ok}` so
+  every client dismisses any stale modal.
 - Unanswered UI requests time out after 5 minutes and are denied.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 

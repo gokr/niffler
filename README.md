@@ -193,8 +193,12 @@ to any bus, even a remote one.
 `bash`, `builder.build`, `write`, mutating `hashline-edit` tools, and
 `core.spawn`/`kill`/`remove` — carry `x-harness.approval: "always"` and are
 gated on a human: a y/N prompt in the terminal harness, a dialog in the web
-UI. Headless (no UI attached) calls are denied — never silently approved.
-`NIF_AUTO_APPROVE=1` bypasses the gate (see [docs/MANUAL.md](docs/MANUAL.md)).
+UI. In a session the request is routed to the specific interactive component
+driving the conversation (its private `svc.approval.<name>.request` subject,
+derived from the call's self-declared `caller`), with a broadcast fallback
+if that client is gone. Headless (no UI attached) calls are denied — never
+silently approved. `NIF_AUTO_APPROVE=1` bypasses the gate (see
+[docs/MANUAL.md](docs/MANUAL.md)).
 
 **Secrets.** `.env` (gitignored) holds `NIF_OPENAI_API_KEY` and
 `NIF_OPENAI_BASE_URL` (DeepSeek by default); an existing shell env always
@@ -332,8 +336,9 @@ to CI any plugin repo — Niffler testing itself.
       sessions from the store, live tool cards, markdown, conversation
       resume, model/token/context display; builds + verified end-to-end
 - [x] **approvals** — x-harness.approval interceptor in dispatch: terminal
-      prompt (tty) or UI dialog (ev.approval.request/reply); deny when no
-      human is reachable; verified end-to-end (service + tty probes)
+      prompt (tty) or caller-directed UI approval with ack, broadcast fallback,
+      and `ev.approval.resolved` cleanup; deny when no human is reachable;
+      verified end-to-end (service + tty probes)
 - [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
       binaries from source, wipe spawned-component records, keep conversations
 - [x] **minimal boot profile** — `--minimal` starts only `store`, `bash` and
@@ -405,6 +410,11 @@ to CI any plugin repo — Niffler testing itself.
       `invoke` calls any live non-hidden tool through the normal approval/
       timeout path (docs/DISCOVER.md); UI Live Components panel colors
       direct/seen/demand/internal per active session (`tests/t_discover.nim`)
+- [x] **directed approval routing** — approval requests route to the
+      component driving the turn via its private `svc.approval.<caller>.request`
+      (ack-gated, broadcast fallback when the driver is gone, `ev.approval.resolved`
+      clears stale modals); call envelopes carry a self-declared `caller` across
+      all four SDKs; web UI acks + answers on the private subject
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
 

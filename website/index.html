@@ -286,7 +286,7 @@
       <li><span class="check">✓</span> persistence of shape across restarts</li>
       <li><span class="check">✓</span> session service + Wails SPA shell</li>
       <li><span class="check">✓</span> session runners — one conversation = one process</li>
-      <li><span class="check">✓</span> approvals (terminal y/N, UI dialog, headless deny, session-tagged)</li>
+      <li><span class="check">✓</span> approvals — terminal y/N, directed UI requests with ack + broadcast fallback, headless deny, resolved-event cleanup</li>
       <li><span class="check">✓</span> recover mode — <code>make recover</code></li>
       <li><span class="check">✓</span> plugins — component ecosystem (discover, install, update, remove)</li>
       <li><span class="check">✓</span> skills — progressive discovery and loading of Agent Skills</li>
@@ -302,6 +302,9 @@
       <li><span class="check">✓</span> models — models.dev catalog over the bus, catalog-driven context windows</li>
       <li><span class="check">✓</span> provider — store-backed LLM provider registry, live switching</li>
       <li><span class="check">✓</span> UI-owned harness lifecycle — the desktop icon is the whole system: build once, any UI autostarts core, the last UI stops it</li>
+      <li><span class="check">✓</span> minimal boot profile — <code>--minimal</code> starts only store, bash, and llm while preserving skipped records</li>
+      <li><span class="check">✓</span> provider/model controls — stored providers, model selection, context meters, and live session status</li>
+      <li><span class="check">✓</span> progressive tool discovery — immutable per-session direct tools, discover/invoke gateways, and Live Components exposure state</li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> Level 1 UI dynamism (x-ui schema hints)</li>

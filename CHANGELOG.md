@@ -30,6 +30,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Exposure state persists per conversation (`<sessionId>:tools` store
   document) and drives the UI Live Components panel (direct/seen/demand/
   internal). Covered by `tests/t_discover.nim`.
+- **Directed approval routing** — approval requests now route to the
+  component that is driving the turn instead of a global broadcast: call
+  envelopes carry a self-declared `caller` (all four SDKs), and when a
+  session turn raises an approval the request goes to that component's
+  private subject `svc.approval.<caller>.request`. The driver acks it
+  (`{id, ack: true}` — a human is being asked) and later answers
+  `{id, ok}`; a missing ack within ~1.5s rebroadcasts on
+  `ev.approval.request {fallback: true}` to any interactive client, and
+  direct (non-session) calls broadcast immediately. Core publishes
+  `ev.approval.resolved {id, ok}` when a verdict lands so every client
+  dismisses stale modals. The web UI acks + answers on its private
+  subject, and `observe`'s known-event list covers the new subjects; a Go
+  SDK test pins the envelope `caller` round-trip (legacy caller-less
+  envelopes still parse with an empty caller).
+- **Developer source-counting helper** — `scripts/cloc-niffler.sh` runs `cloc`
+  over the maintained Nim, Go, TypeScript, Svelte, and web sources while
+  excluding generated/build/runtime paths.
 - **UI-owned harness lifecycle** — `scripts/niffler.sh` (and `make
   up/down/status`) are gone; the binaries own start/stop. Any interactive
   client (the desktop UI, interactive plugins) calls the SDK's
@@ -208,9 +225,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   std/httpclient against https endpoints. Prerequisite: `libssl-dev`
   (Ubuntu), Xcode CLT (macOS) — added to `make setup`.
 - **Approval gate** — tools carrying `x-harness.approval: "always"`
-  (`bash`, `builder.build`, `core.spawn`/`kill`/`remove`) now require a
-  human before executing: a y/N prompt in the terminal harness, a dialog in
-  the web UI (`ev.approval.request` / `ev.approval.reply` over the bus).
+  (`bash`, `builder.build`, `core.spawn`/`kill`/`remove`) require a human
+  before executing: a y/N prompt in the terminal harness, or a caller-directed
+  web UI approval (`svc.approval.<name>.request`, with
+  `ev.approval.request` broadcast fallback and `ev.approval.resolved` cleanup).
   Calls with no human reachable are denied, never silently approved;
   unanswered UI requests time out after 5 minutes. `NIF_AUTO_APPROVE=1`
   bypasses the gate for headless automation.

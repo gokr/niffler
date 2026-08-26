@@ -83,6 +83,13 @@ chain over NATS would be slower and less trustworthy (docs/REBOOT.md, open
 threads). Unlike 1–4 this is a *choice*, not a structural necessity — it could
 become a component the day the harness outgrows one interceptor.
 
+The interceptor routes interactively (`core/approval.nim`): the component
+driving a session (the envelope's self-declared `caller`) gets the request on
+its private `svc.approval.<name>.request` subject, acks it to show a human is
+being asked, and answers `{id, ok}`; a missing ack rebroadcasts to any
+interactive client, direct calls broadcast immediately, and `ev.approval.resolved`
+lets every client dismiss stale modals.
+
 Dispatch also owns the mid-turn re-entry path: tool calls are sent as
 poll-loop requests on a private inbox, and every idle slot serves core's
 own `svc.core.call` surface (spawn/kill/remove/catalog) plus the live
