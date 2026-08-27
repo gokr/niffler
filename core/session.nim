@@ -45,6 +45,15 @@ proc main() =
                      approval: approval, coreSub: nil, runner: true,
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream))
+  # Persisted per-conversation auto-approve (see niffler.nim): the gate
+  # consults the store so a decision made in any client is honored here too.
+  approval.checkAuto = proc(session, tool: string): bool =
+    try:
+      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
+        "id": session & ":" & tool})
+      return resp{"ok"}.getBool(false)
+    except CatchableError:
+      return false
 
   # Seed the catalog with everything registered before we connected
   # (reg.publish is fire-once; late joiners ask the system for a snapshot),

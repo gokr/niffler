@@ -33,6 +33,10 @@ type
                            ## around a turn; "" = direct harness call)
     caller*: string        ## component name driving the current turn (set
                            ## around a turn; "" = unknown, direct call)
+    checkAuto*: proc(session, tool: string): bool
+      ## Persisted per-conversation auto-approve lookup (set by the harness
+      ## after CoreTools exists; queries the store). When it returns true the
+      ## gate grants without asking any client — no dialog flashes anywhere.
 
 
 const ackTimeoutSecs = 1.5  ## how long the driver has to ack a directed request
@@ -145,6 +149,11 @@ proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
 proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   ## Returns true when the call may proceed.
   if getEnv("NIF_AUTO_APPROVE") == "1":
+    return true
+  # Persisted per-conversation auto-approve (set by a client's "auto
+  # approve" action): grant without asking any client, so no dialog is
+  # shown at all — not even a flash.
+  if a.checkAuto != nil and a.session.len > 0 and a.checkAuto(a.session, tool):
     return true
   # Fall back to the tty prompt only when core is on a terminal AND no
   # interactive client is attached (classic terminal-harness usage). The

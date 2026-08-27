@@ -296,6 +296,16 @@ proc main() =
                      root: root, runner: false,
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream))
+  # Persisted per-conversation auto-approve: the gate consults the store so
+  # a decision made in any client (TUI, web UI) is honored everywhere and no
+  # dialog is shown at all for auto-approved tools.
+  approval.checkAuto = proc(session, tool: string): bool =
+    try:
+      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
+        "id": session & ":" & tool})
+      return resp{"ok"}.getBool(false)
+    except CatchableError:
+      return false
   if cat.components.hasKey("store"):
     if recovering:
       echo "core: recover — wiping stored component records (spawned components will not be restored)"

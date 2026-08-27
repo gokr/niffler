@@ -38,12 +38,6 @@
     return (autoApproved[sid] ?? []).includes(tool);
   }
 
-  function rememberAutoApprove(sid: string, tool: string) {
-    if (!sid) return;
-    const list = autoApproved[sid] ?? [];
-    if (!list.includes(tool)) autoApproved[sid] = [...list, tool];
-  }
-
   async function loadProviders() {
     try {
       const resp = await send("provider", "provider_list", {});
@@ -237,6 +231,20 @@
     if (auto) rememberAutoApprove(req.sessionId, req.tool);
     emit("ev.approval.reply", { id: req.id, ok });
     approvals = approvals.slice(1);
+  }
+
+  function rememberAutoApprove(sid: string, tool: string) {
+    if (!sid) return;
+    const list = autoApproved[sid] ?? [];
+    if (!list.includes(tool)) autoApproved[sid] = [...list, tool];
+    // Persist so the core's gate honors it for every client (no dialog at
+    // all, not even a flash). Best effort: the in-memory list still covers
+    // this session if the store is unreachable.
+    send("store", "put", {
+      kind: "approval",
+      id: sid + ":" + tool,
+      value: { tool, sessionId: sid },
+    }, 5000).catch(() => {});
   }
 
   function selectSession(id: string) {
