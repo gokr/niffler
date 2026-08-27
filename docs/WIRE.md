@@ -49,6 +49,9 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?}; content runs a turn
                        #   model-only calls persist/resolve selection without inference;
                        #   model present + empty clears the conversation override
+svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
+                       #   running turn as a user message ("Steer: ..."); folded in
+                       #   before the next LLM round or before done (no reply)
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
                        # models.updated reports effective model-catalog refreshes
                        # provider.switch selects the global backend; provider.changed
@@ -77,6 +80,7 @@ ev.session.status      # {sessionId, provider?, providerSource?, model?, catalog
 ev.session.token       # {sessionId, content, reasoning}   live token deltas
                        #   (streamed while the model generates)
 ev.session.toolcall    # {sessionId, tool, args, result | error}
+ev.session.steer       # {sessionId, content} a steer message was folded in
 ev.session.context     # {sessionId, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)

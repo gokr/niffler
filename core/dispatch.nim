@@ -29,12 +29,21 @@ type
     # A ref so mutations survive CoreTools' by-value copies (constructed once
     # in niffler.nim or session.nim, shared everywhere).
     tokenStream*: TokenStream
-
+    steerStream*: SteerStream          ## steering queue (see SteerStream below)
   TokenStream* = ref object
     sub*: ptr natsSubscription
     session*: string                ## "" = not streaming a turn
     cb*: proc(sid, content, reasoning: string) {.closure.}
 
+  # Steering channel: a sync subscription on svc.session.<id>.steer that
+  # pumpSteer drains during dispatch's idle slot, appending each injected
+  # user message to queue for runTurn to consume between LLM rounds (Pi-style
+  # steering: you can type while the agent works and it is folded into the
+  # running turn instead of starting a new one). A ref, like tokenStream, so
+  # mutations survive CoreTools' by-value copies.
+  SteerStream* = ref object
+    sub*: ptr natsSubscription
+    queue*: seq[string]      # injected user messages (drained by runTurn)
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
 
@@ -294,6 +303,26 @@ proc pumpTokenStream*(ct: CoreTools) =
       ct.tokenStream.cb(p{"sessionId"}.getStr(""),
                         p{"content"}.getStr(""),
                         p{"reasoning"}.getStr(""))
+
+proc pumpSteer*(ct: CoreTools) =
+  ## Drain svc.session.<id>.steer messages and enqueue each injected user
+  ## message for runTurn to fold into the running turn. Steer is fire-and-forget
+  ## from the client, so there is no reply; the queue is drained by runTurn at
+  ## the top of every LLM round and again before it would emit "done" (giving a
+  ## queued steer the chance to keep the agent working — the Pi pattern).
+  if ct.steerStream == nil or ct.steerStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.steerStream.sub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekEvent or env.payload == nil: continue
+    let content = env.payload{"content"}.getStr("")
+    if content.len > 0:
+      ct.steerStream.queue.add(content)
 proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                           args: JsonNode, timeoutMs: int, caller = ""): JsonNode =
   ## Request/reply to an explicit subject (svc.<comp>.call or a scoped
@@ -331,6 +360,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
+    pumpSteer(ct)
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")

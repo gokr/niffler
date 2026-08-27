@@ -295,7 +295,8 @@ proc main() =
   var ct = CoreTools(nc: nc, cat: cat, sup: sup, approval: approval,
                      root: root, runner: false,
                      pending: PendingCalls(items: @[]),
-                     tokenStream: new(TokenStream))
+                     tokenStream: new(TokenStream),
+                     steerStream: new(SteerStream))
   # Persisted per-conversation auto-approve: the gate consults the store so
   # a decision made in any client (TUI, web UI) is honored everywhere and no
   # dialog is shown at all for auto-approved tools.

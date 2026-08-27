@@ -44,7 +44,8 @@ proc main() =
   var ct = CoreTools(nc: nc, cat: cat, sup: nil, root: root,
                      approval: approval, coreSub: nil, runner: true,
                      pending: PendingCalls(items: @[]),
-                     tokenStream: new(TokenStream))
+                     tokenStream: new(TokenStream),
+                     steerStream: new(SteerStream))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
   # consults the store so a decision made in any client is honored here too.
   approval.checkAuto = proc(session, tool: string): bool =
@@ -74,6 +75,16 @@ proc main() =
     stderr.writeLine("session: subscribe " & subject & ": " & getErrorString(st))
     quit(1)
 
+  # Steering channel: sync subscribe to svc.session.<id>.steer. pumpSteer drains
+  # it from dispatch's idle slot while a turn is running, so a client can inject
+  # a message into the live turn (Pi-style steering) without a new session call.
+  let steerSubjectStr = steerSubject(sessionId)
+  var steerSub: ptr natsSubscription
+  let sst = natsConnection_SubscribeSync(addr steerSub, nc.conn, steerSubjectStr.cstring)
+  if not checkStatus(sst):
+    stderr.writeLine("session: subscribe " & steerSubjectStr & ": " & getErrorString(sst))
+    quit(1)
+  ct.steerStream.sub = steerSub
   # Readiness signal for the system's ensureRunner: presence in the catalog.
   let reg = %*{"name": name, "version": "0.1.0", "pid": getCurrentProcessId(),
                "tools": newJArray()}

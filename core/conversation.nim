@@ -475,6 +475,22 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
     "usedTokens": p.contextUsed
   }
 
+proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
+             onEvent: proc(kind: string, data: JsonNode) {.closure.}): int =
+  ## Pop any steering messages queued by pumpSteer (client typed mid-turn) and
+  ## append each as a user message into the running conversation. Returns how
+  ## many were folded in; runTurn uses >0 to keep the turn alive on early stop.
+  if ct.steerStream == nil: return 0
+  let sessionId = p.convId
+  for steered in ct.steerStream.queue:
+    let steerMsg = %*{"role": "user", "content": "Steer: " & steered}
+    messages.add(steerMsg)
+    p.persistMsg(steerMsg)
+    if onEvent != nil:
+      onEvent("steer", %*{"sessionId": sessionId, "content": steered})
+    result += 1
+  ct.steerStream.queue.setLen(0)
+
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
@@ -521,6 +537,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   while rounds < 20:
     rounds += 1
     checkContext(p, messages, onEvent)
+    # Fold any steering messages the client injected mid-turn into the running
+    # conversation before the next LLM call (Pi-style steering).
+    discard drainSteer(ct, p, messages, onEvent)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
     let llmArgs = %*{"messages": messages,
@@ -598,6 +617,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     let toolCalls = resp{"tool_calls"}
     if toolCalls == nil or toolCalls.kind != JArray or toolCalls.len == 0:
+      # No tool calls: the model wants to stop. But if the client injected a
+      # steering message while this response was in flight, fold it in and keep
+      # going rather than ending the turn early (Pi's continuation-on-nudge).
+      if drainSteer(ct, p, messages, onEvent) > 0:
+        continue
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "reply": content})
       return content
@@ -738,6 +762,10 @@ proc runnerName*(sessionId: string): string =
 
 proc sessionSubject*(sessionId: string): string =
   "svc.session." & sanitizeSessionId(sessionId) & ".call"
+
+func steerSubject*(sessionId: string): string =
+  ## Fire-and-forget channel a client publishes to in order to inject a message
+  "svc.session." & sanitizeSessionId(sessionId) & ".steer"
 
 proc ensureRunner*(ct: CoreTools, sessionId: string): string =
   ## Return the scoped call subject for `sessionId`, spawning its session
