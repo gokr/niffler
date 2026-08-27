@@ -53,6 +53,9 @@ type provider struct {
 	Model   string `json:"model"`
 	Context int    `json:"context"`
 	Catalog string `json:"catalog"`
+	// StripPrefix models a gateway that routes on the canonical id and
+	// rejects vendor-prefixed ids ("alibaba/glm-5.2"); send "glm-5.2".
+	StripPrefix bool `json:"stripPrefix"`
 }
 
 const defaultProvider = "default"
@@ -81,6 +84,7 @@ type resolvedConfig struct {
 	ContextSource  string
 	Output         int
 	OutputSource   string
+	StripPrefix    bool
 }
 
 // resolveContextWindow returns the effective context size and its provenance:
@@ -169,6 +173,7 @@ func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverrid
 		Provider: p, ProviderName: providerName, ProviderSource: providerSource,
 		Model: model, Catalog: catalogProvider, Context: contextSize,
 		ContextSource: contextSource, Output: outputSize, OutputSource: outputSource,
+		StripPrefix: p.StripPrefix,
 	}, nil
 }
 
@@ -276,6 +281,7 @@ type registryResponse struct {
 		Model    string `json:"model"`
 		Catalog  string `json:"catalog"`
 		Context  int    `json:"context"`
+		StripPrefix bool `json:"stripPrefix"`
 	} `json:"provider"`
 }
 
@@ -301,11 +307,12 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 		}
 	}
 	return provider{
-		BaseURL: resp.Provider.BaseURL,
-		APIKey:  resp.Provider.APIKey,
-		Model:   resp.Provider.Model,
-		Catalog: resp.Provider.Catalog,
-		Context: resp.Provider.Context,
+		BaseURL:     resp.Provider.BaseURL,
+		APIKey:      resp.Provider.APIKey,
+		Model:       resp.Provider.Model,
+		Catalog:     resp.Provider.Catalog,
+		Context:     resp.Provider.Context,
+		StripPrefix: resp.Provider.StripPrefix,
 	}, resp.Provider.Nickname, source, true
 }
 
@@ -364,14 +371,30 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Gateways that route on the canonical id (devpass, LLMgateway) reject
+	// vendor-prefixed ids like "alibaba/glm-5.2"; the provider's
+	// stripPrefix option sends the bare model id instead.
+	model := resolved.Model
+	if resolved.StripPrefix {
+		model = stripModelPrefix(model)
+	}
 	cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 	cfg.BaseURL = resolved.Provider.BaseURL
 	client := openai.NewClientWithConfig(cfg)
 
 	if args.Stream {
-		return chatStream(streamCtx, c, client, resolved.Model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+		return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
 	}
-	return chatOnce(client, resolved.Model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+	return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+}
+
+// stripModelPrefix returns the model id after the last "/" — the canonical
+// id for gateways that route on it (devpass: "alibaba/glm-5.2" → "glm-5.2").
+func stripModelPrefix(model string) string {
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		return model[i+1:]
+	}
+	return model
 }
 
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {

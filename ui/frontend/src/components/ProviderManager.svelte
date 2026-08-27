@@ -20,6 +20,7 @@
     model: string;
     catalog: string;
     context: string;
+    stripPrefix: boolean;
     isEdit: boolean;
   }
 
@@ -36,7 +37,7 @@
   };
 
   function startAdd() {
-    editing = { nickname: "", apiKey: "", baseUrl: "", model: "", catalog: "", context: "", isEdit: false };
+    editing = { nickname: "", apiKey: "", baseUrl: "", model: "", catalog: "", context: "", stripPrefix: false, isEdit: false };
     error = "";
   }
 
@@ -48,6 +49,7 @@
       model: p.model,
       catalog: p.catalog,
       context: p.context > 0 ? String(p.context) : "",
+      stripPrefix: !!p.stripPrefix,
       isEdit: true,
     };
     error = "";
@@ -74,6 +76,7 @@
       };
       const ctx = parseInt(editing.context, 10);
       if (!isNaN(ctx) && ctx > 0) args.context = ctx;
+      args.stripPrefix = editing.stripPrefix;
       if (editing.isEdit) {
         if (editing.apiKey.trim()) args.apiKey = editing.apiKey.trim();
         await send("provider", "provider_update", args, 30000);
@@ -192,6 +195,11 @@
                   placeholder="auto"
                 />
               </div>
+              <label class="flex items-center gap-2 text-[12px] text-ink-300">
+                <input type="checkbox" class="accent-accent" bind:checked={editing.stripPrefix} />
+                Strip vendor/ prefix from model ids
+                <span class="text-ink-500" title="For gateways that route on the canonical id (e.g. devpass): send glm-5.2 instead of alibaba/glm-5.2">(?)</span>
+              </label>
             </div>
             {#if error}
               <div class="text-[12px] text-danger">{error}</div>

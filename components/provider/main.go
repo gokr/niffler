@@ -43,6 +43,11 @@ type Provider struct {
 	Catalog  string `json:"catalog"` // models.dev provider id for context lookup
 	Context  int    `json:"context"` // explicit context window override (0 = auto)
 	Plugin   string `json:"plugin"`  // component that hooks provider-specific tools (optional)
+	// StripPrefix models a gateway (LLMgateway, devpass) that routes on the
+	// canonical id and rejects vendor-prefixed ids like "alibaba/glm-5.2".
+	// When set, the llm component sends the model id without the "vendor/"
+	// prefix (e.g. "glm-5.2").
+	StripPrefix bool `json:"stripPrefix"`
 }
 
 // providerSummary is the only provider shape intended for interactive clients.
@@ -56,18 +61,22 @@ type providerSummary struct {
 	Plugin   string `json:"plugin"`
 	Active   bool   `json:"active"`
 	HasKey   bool   `json:"hasKey"`
+	// StripPrefix mirrors Provider; surfaced so interactive clients can show
+	// and toggle it without an admin round-trip.
+	StripPrefix bool `json:"stripPrefix"`
 }
 
 func summarizeProvider(p Provider, active bool) providerSummary {
 	return providerSummary{
-		Nickname: p.Nickname,
-		BaseURL:  p.BaseURL,
-		Model:    p.Model,
-		Catalog:  p.Catalog,
-		Context:  p.Context,
-		Plugin:   p.Plugin,
-		Active:   active,
-		HasKey:   p.APIKey != "",
+		Nickname:    p.Nickname,
+		BaseURL:     p.BaseURL,
+		Model:       p.Model,
+		Catalog:     p.Catalog,
+		Context:     p.Context,
+		Plugin:      p.Plugin,
+		Active:      active,
+		HasKey:      p.APIKey != "",
+		StripPrefix: p.StripPrefix,
 	}
 }
 
@@ -228,27 +237,29 @@ func main() {
 		"type":        "object",
 		"description": "Add or update a configured LLM provider in the store. Requires an API key. Optionally set active.",
 		"properties": map[string]any{
-			"nickname": map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
-			"apiKey":   map[string]any{"type": "string", "description": "API key / secret"},
-			"baseUrl":  map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname for deepseek/openai)"},
-			"model":    map[string]any{"type": "string", "description": "Default model id"},
-			"catalog":  map[string]any{"type": "string", "description": "models.dev provider id for context lookup (optional)"},
-			"context":  map[string]any{"type": "integer", "description": "Explicit context window in tokens (0 = auto)"},
-			"plugin":   map[string]any{"type": "string", "description": "Component name of an optional provider plugin (e.g. provider-deepseek)"},
-			"active":   map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
+			"nickname":    map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
+			"apiKey":      map[string]any{"type": "string", "description": "API key / secret"},
+			"baseUrl":     map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname for deepseek/openai)"},
+			"model":       map[string]any{"type": "string", "description": "Default model id"},
+			"catalog":     map[string]any{"type": "string", "description": "models.dev provider id for context lookup (optional)"},
+			"context":     map[string]any{"type": "integer", "description": "Explicit context window in tokens (0 = auto)"},
+			"plugin":      map[string]any{"type": "string", "description": "Component name of an optional provider plugin (e.g. provider-deepseek)"},
+			"stripPrefix": map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending (gateways that route on the canonical id, e.g. devpass)"},
+			"active":      map[string]any{"type": "boolean", "description": "Make this the active provider now (default true if none active)"},
 		},
 		"required":  []string{"nickname", "apiKey"},
 		"x-harness": map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
-			Nickname string `json:"nickname"`
-			APIKey   string `json:"apiKey"`
-			BaseURL  string `json:"baseUrl"`
-			Model    string `json:"model"`
-			Catalog  string `json:"catalog"`
-			Context  int    `json:"context"`
-			Plugin   string `json:"plugin"`
-			Active   *bool  `json:"active"`
+			Nickname    string `json:"nickname"`
+			APIKey      string `json:"apiKey"`
+			BaseURL     string `json:"baseUrl"`
+			Model       string `json:"model"`
+			Catalog     string `json:"catalog"`
+			Context     int    `json:"context"`
+			Plugin      string `json:"plugin"`
+			StripPrefix bool   `json:"stripPrefix"`
+			Active      *bool  `json:"active"`
 		}
 		if err := decodeArgs(raw, &args); err != nil {
 			return nil, err
@@ -267,13 +278,14 @@ func main() {
 			return nil, errors.New("context must be non-negative")
 		}
 		p := Provider{
-			Nickname: args.Nickname,
-			APIKey:   args.APIKey,
-			BaseURL:  args.BaseURL,
-			Model:    args.Model,
-			Catalog:  args.Catalog,
-			Context:  args.Context,
-			Plugin:   args.Plugin,
+			Nickname:    args.Nickname,
+			APIKey:      args.APIKey,
+			BaseURL:     args.BaseURL,
+			Model:       args.Model,
+			Catalog:     args.Catalog,
+			Context:     args.Context,
+			Plugin:      args.Plugin,
+			StripPrefix: args.StripPrefix,
 		}.withDefaults()
 
 		// existing rev for upsert
@@ -326,25 +338,27 @@ func main() {
 		"type":        "object",
 		"description": "Update non-secret provider settings while preserving its stored API key. A non-empty apiKey rotates the credential.",
 		"properties": map[string]any{
-			"nickname": map[string]any{"type": "string"},
-			"apiKey":   map[string]any{"type": "string", "description": "Optional replacement credential; omitted preserves the current key"},
-			"baseUrl":  map[string]any{"type": "string"},
-			"model":    map[string]any{"type": "string"},
-			"catalog":  map[string]any{"type": "string"},
-			"context":  map[string]any{"type": "integer", "minimum": 0},
-			"plugin":   map[string]any{"type": "string"},
+			"nickname":    map[string]any{"type": "string"},
+			"apiKey":      map[string]any{"type": "string", "description": "Optional replacement credential; omitted preserves the current key"},
+			"baseUrl":     map[string]any{"type": "string"},
+			"model":       map[string]any{"type": "string"},
+			"catalog":     map[string]any{"type": "string"},
+			"context":     map[string]any{"type": "integer", "minimum": 0},
+			"plugin":      map[string]any{"type": "string"},
+			"stripPrefix": map[string]any{"type": "boolean", "description": "Strip the vendor/ prefix from model ids before sending"},
 		},
 		"required":  []string{"nickname"},
 		"x-harness": map[string]any{"hidden": true, "approval": "always", "timeoutMs": 30000},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		var args struct {
-			Nickname string  `json:"nickname"`
-			APIKey   *string `json:"apiKey"`
-			BaseURL  *string `json:"baseUrl"`
-			Model    *string `json:"model"`
-			Catalog  *string `json:"catalog"`
-			Context  *int    `json:"context"`
-			Plugin   *string `json:"plugin"`
+			Nickname    string  `json:"nickname"`
+			APIKey      *string `json:"apiKey"`
+			BaseURL     *string `json:"baseUrl"`
+			Model       *string `json:"model"`
+			Catalog     *string `json:"catalog"`
+			Context     *int    `json:"context"`
+			Plugin      *string `json:"plugin"`
+			StripPrefix *bool   `json:"stripPrefix"`
 		}
 		if err := decodeArgs(raw, &args); err != nil {
 			return nil, err
@@ -387,6 +401,9 @@ func main() {
 		}
 		if args.Plugin != nil {
 			p.Plugin = strings.TrimSpace(*args.Plugin)
+		}
+		if args.StripPrefix != nil {
+			p.StripPrefix = *args.StripPrefix
 		}
 		p = p.withDefaults()
 		newRev, err := sc.put(kindProvider, args.Nickname, p, *rev)

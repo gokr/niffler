@@ -7,6 +7,7 @@ export interface ProviderSummary {
   plugin: string;
   active: boolean;
   hasKey: boolean;
+  stripPrefix?: boolean;
 }
 
 export interface ResolvedConfig {

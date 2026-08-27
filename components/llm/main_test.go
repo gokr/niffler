@@ -185,3 +185,17 @@ func TestResultJSONIncludesProvider(t *testing.T) {
 		t.Fatalf("result = %#v", got)
 	}
 }
+
+func TestStripModelPrefix(t *testing.T) {
+	cases := map[string]string{
+		"alibaba/glm-5.2": "glm-5.2",
+		"glm-5.2":         "glm-5.2",
+		"deepseek/deepseek-chat": "deepseek-chat",
+		"":                "",
+	}
+	for in, want := range cases {
+		if got := stripModelPrefix(in); got != want {
+			t.Fatalf("stripModelPrefix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
