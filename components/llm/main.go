@@ -59,6 +59,12 @@ const defaultProvider = "default"
 
 const defaultContext = 128000 // conservative fallback for unknown models
 
+// defaultOutput is the max output tokens requested when the catalog does not
+// say. Generous on purpose: without an explicit max the provider applies its
+// own server-side cap (often 4K–16K), which truncates long answers mid-stream
+// and makes the TUI appear to "stop" until nudged with continue.
+const defaultOutput = 32768
+
 // knownContext: model id (lowercase) -> context window (tokens).
 var knownContext = map[string]int{
 	"deepseek-chat":     1000000,
@@ -73,6 +79,8 @@ type resolvedConfig struct {
 	Catalog        string
 	Context        int
 	ContextSource  string
+	Output         int
+	OutputSource   string
 }
 
 // resolveContextWindow returns the effective context size and its provenance:
@@ -116,6 +124,33 @@ func resolveContextWindow(ctx context.Context, c *sdk.Component, p provider, pro
 	return defaultContext, catalogProvider, "fallback"
 }
 
+// resolveOutputWindow returns the model's max output tokens and its
+// provenance. The catalog's limit.output is authoritative when present;
+// otherwise a generous default so the provider's server-side cap (which
+// would otherwise truncate answers mid-stream) is not hit.
+func resolveOutputWindow(ctx context.Context, c *sdk.Component, catalogProvider, model string) (int, string) {
+	if c != nil && catalogProvider != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
+		raw, err := c.RequestContext(lookupCtx, "models", "models_get", map[string]any{
+			"provider": catalogProvider, "model": model,
+		})
+		if err == nil {
+			var descriptor struct {
+				Model struct {
+					Limit struct {
+						Output int `json:"output"`
+					} `json:"limit"`
+				} `json:"model"`
+			}
+			if json.Unmarshal(raw, &descriptor) == nil && descriptor.Model.Limit.Output > 0 {
+				return descriptor.Model.Limit.Output, "catalog"
+			}
+		}
+	}
+	return defaultOutput, "fallback"
+}
+
 func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverride, modelOverride string) (resolvedConfig, error) {
 	p, providerName, providerSource, err := resolveProvider(c, providerOverride)
 	if err != nil {
@@ -129,10 +164,11 @@ func resolveRuntimeConfig(ctx context.Context, c *sdk.Component, providerOverrid
 		model = "deepseek-chat"
 	}
 	contextSize, catalogProvider, contextSource := resolveContextWindow(ctx, c, p, providerName, model)
+	outputSize, outputSource := resolveOutputWindow(ctx, c, catalogProvider, model)
 	return resolvedConfig{
 		Provider: p, ProviderName: providerName, ProviderSource: providerSource,
 		Model: model, Catalog: catalogProvider, Context: contextSize,
-		ContextSource: contextSource,
+		ContextSource: contextSource, Output: outputSize, OutputSource: outputSource,
 	}, nil
 }
 
@@ -333,16 +369,17 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	client := openai.NewClientWithConfig(cfg)
 
 	if args.Stream {
-		return chatStream(streamCtx, c, client, resolved.Model, resolved.ProviderName, args, resolved.Context)
+		return chatStream(streamCtx, c, client, resolved.Model, resolved.ProviderName, args, resolved.Context, resolved.Output)
 	}
-	return chatOnce(client, resolved.Model, resolved.ProviderName, args, resolved.Context)
+	return chatOnce(client, resolved.Model, resolved.ProviderName, args, resolved.Context, resolved.Output)
 }
 
-func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize int) (any, error) {
+func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model:    model,
-		Messages: args.Messages,
-		Tools:    args.Tools,
+		Model:                model,
+		Messages:             args.Messages,
+		Tools:                args.Tools,
+		MaxCompletionTokens:  outputSize,
 	})
 	if err != nil {
 		return nil, err
@@ -359,17 +396,18 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
 
-func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model, providerName string, args chatArgs, contextSize int) (any, error) {
+func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	// chatHandler owns the llm.cancel.<sessionId> side-channel subscription;
 	// this derivation just bounds this call to that shared context.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Model:         model,
-		Messages:      args.Messages,
-		Tools:         args.Tools,
-		StreamOptions: &openai.StreamOptions{IncludeUsage: true},
+		Model:               model,
+		Messages:            args.Messages,
+		Tools:               args.Tools,
+		MaxCompletionTokens: outputSize,
+		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
 	})
 	if err != nil {
 		return nil, err
@@ -500,6 +538,7 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		"provider": resolved.ProviderName, "providerSource": resolved.ProviderSource,
 		"model": resolved.Model, "catalog": resolved.Catalog,
 		"context": resolved.Context, "contextSource": resolved.ContextSource,
+		"output": resolved.Output, "outputSource": resolved.OutputSource,
 		"hasKey": resolved.Provider.APIKey != "",
 	}, nil
 }

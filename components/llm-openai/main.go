@@ -85,6 +85,10 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if len(args.Tools) > 0 {
 		body["tools"] = args.Tools
 	}
+	// Ask for a generous output budget explicitly. Without it the provider
+	// applies its own server-side cap (often 4K–16K), truncating long
+	// answers mid-stream so the TUI appears to stop until nudged.
+	body["max_tokens"] = 32768
 	reqBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
