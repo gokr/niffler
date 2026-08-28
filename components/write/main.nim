@@ -67,12 +67,12 @@ comp.tool:
     ## so a crash never leaves a partial file; existing permissions are
     ## preserved and parent directories are created automatically. Use
     ## this for NEW files (new components, configs, scripts, generated
-    ## artifacts) and wholesale rewrites of small files. For surgical
-    ## edits of files you have read with hashline-edit, prefer its replace
-    ## tool: anchored on the lines you actually saw, and undoable. Empty
-    ## content truncates the file. Content is capped (default 900KB — the
-    ## bus itself cannot carry more); for larger files use bash (heredoc
-    ## or base64). Approval is required for every write.
+    ## artifacts) and wholesale rewrites of small files. For surgical edits
+    ## of an existing file prefer the edit tool: exact text match against
+    ## content you have read (no anchors to copy), and undoable with
+    ## undo_last_edit. Empty content truncates the file. Content is capped
+    ## (default 900KB — the bus itself cannot carry more); for larger files
+    ## use bash (heredoc or base64). Approval is required for every write.
     ## - path: File to write, relative to the harness root or absolute
     ## - content: The full new file content ("" truncates the file)
     if content.len > maxBytes():

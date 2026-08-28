@@ -11,7 +11,10 @@
 ## single-level undo history.
 ##
 ## Tools: read (anchored lines, pageable), replace (one edit per call, anchored
-## by remove_from/remove_to + replacement_lines), undo_last_replace.
+## by remove_from/remove_to + replacement_lines), undo_last_replace. Replace
+## and undo are x-harness.onDemand: exact-text editing (the edit component)
+## is the default; the anchored replace remains reachable via discover +
+## invoke for deleting or moving large blocks without retyping them.
 ##
 ## Deviations from the pi original, forced by the harness:
 ## - Images are rejected like other binaries (Niffler cannot attach them).
@@ -2387,7 +2390,8 @@ discard comp.tool("replace", desc(
   }, @["remove_from", "remove_to", "replacement_lines"]),
   hReplace)
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
+comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000,
+                                         "onDemand": true}
 
 discard comp.tool("undo_last_replace", desc(
   "Undo the last replace on a file, reverting it to its previous state " &
@@ -2402,6 +2406,7 @@ discard comp.tool("undo_last_replace", desc(
   }, @["path"]),
   hUndoLastReplace)
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 120000}
+comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 120000,
+                                         "onDemand": true}
 
 comp.run()
