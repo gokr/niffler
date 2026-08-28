@@ -119,6 +119,61 @@ proc main() =
   check("edit refuses empty files", r9.hasKey("error") and
         r9{"error"}.getStr("").contains("[E_EMPTY]"), $r9)
 
+  # fallback cascade: indentation drift (full-trim tier)
+  writeFile(tmp / "ind.txt", "proc go() =\n    echo 1\n    echo 2\n")
+  let r10 = call(nc, "edit", "edit",
+                 %*{"path": "ind.txt",
+                    "edits": [{"old_string": "echo 1\necho 2",
+                               "new_string": "echo 3\necho 4"}]})
+  check("edit rescues indentation drift",
+        readFile(tmp / "ind.txt") == "proc go() =\necho 3\necho 4\n", $r10)
+
+  # fallback cascade: unicode punctuation folded to ASCII
+  writeFile(tmp / "uni.txt", "title = \u{201C}hello\u{201D}\n")
+  let r11 = call(nc, "edit", "edit",
+                 %*{"path": "uni.txt",
+                    "edits": [{"old_string": "title = \"hello\"",
+                               "new_string": "title = \"goodbye\""}]})
+  check("edit rescues unicode punctuation",
+        readFile(tmp / "uni.txt") == "title = \"goodbye\"\n", $r11)
+
+  # fallback cascade: double-escaped old_string
+  writeFile(tmp / "esc.txt", "alpha\nbeta\n")
+  let r12 = call(nc, "edit", "edit",
+                 %*{"path": "esc.txt",
+                    "edits": [{"old_string": "alpha\\nbeta",
+                               "new_string": "one\ntwo"}]})
+  check("edit rescues double-escaped text",
+        readFile(tmp / "esc.txt") == "one\ntwo\n", $r12)
+
+  # fallback cascade: block anchors forgive a drifted middle line
+  writeFile(tmp / "blk.txt", "func f() {\n  a := 1\n  b := 2\n  c := 3\n}\n")
+  let r13 = call(nc, "edit", "edit",
+                 %*{"path": "blk.txt",
+                    "edits": [{"old_string": "func f() {\n  a := 1\n  b := XX\n  c := 3\n}",
+                               "new_string": "func f() {\n  a := 1\n  b := 2\n  c := 30\n}"}]})
+  check("edit block-anchor rescues middle drift",
+        readFile(tmp / "blk.txt") == "func f() {\n  a := 1\n  b := 2\n  c := 30\n}\n",
+        $r13)
+
+  # replace_all: every occurrence, no uniqueness requirement
+  writeFile(tmp / "ra.txt", "dup\ndup\nunique\n")
+  let r14 = call(nc, "edit", "edit",
+                 %*{"path": "ra.txt",
+                    "edits": [{"old_string": "dup", "new_string": "new",
+                               "replace_all": true}]})
+  check("edit replace_all replaces every occurrence",
+        readFile(tmp / "ra.txt") == "new\nnew\nunique\n", $r14)
+
+  # lenient input: filePath alias, old_str/new_str aliases, edits as a
+  # JSON string (pi's prepareArguments + hashline's normalizeFilePath)
+  writeFile(tmp / "len.txt", "value = 1\n")
+  let r15 = call(nc, "edit", "edit",
+                 %*{"filePath": "len.txt",
+                    "edits": "[{\"old_str\": \"value = 1\", \"new_str\": \"value = 2\"}]"})
+  check("edit accepts lenient input shapes",
+        readFile(tmp / "len.txt") == "value = 2\n", $r15)
+
   # undo reverts the last edit, then the history is consumed
   writeFile(tmp / "u.txt", "one\ntwo\n")
   discard call(nc, "edit", "edit",
