@@ -1,5 +1,7 @@
 # Niffler
 
+[简体中文](README.zh.md)
+
 This is Niffler (reborn), a minimalistic, self-extending agent harness similar in philosophy
 to [Pi](https://pi.dev) or the new [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 Niffler takes a completely different approach to
