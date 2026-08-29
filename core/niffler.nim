@@ -297,6 +297,12 @@ proc main() =
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream))
+  # Delegated child-runner preparation: the closure captures the master
+  # CoreTools by reference, so ensureRunner's supervisor mutations (spawn a
+  # session runner) land on the live state. Serves the "session_prepare"
+  # core tool (see dispatch.nim handleCoreTool).
+  ct.prepareSession = proc(sessionId: string): JsonNode =
+    %*{"subject": ensureRunner(ct, sessionId)}
   # Persisted per-conversation auto-approve: the gate consults the store so
   # a decision made in any client (TUI, web UI) is honored everywhere and no
   # dialog is shown at all for auto-approved tools.

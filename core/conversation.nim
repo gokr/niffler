@@ -523,6 +523,17 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.approval.session = sessionId
   defer:
     if ct.approval != nil: ct.approval.session = ""
+  # Live lease for session-context tools (fabric, agent): dispatchToolCall
+  # injects {session, lease} into their args and pumpNested validates nested
+  # calls against it. A ref on CoreTools so the set survives by-value copies.
+  # Cleared when the turn ends — a stale lease is worthless.
+  if ct.nested != nil:
+    ct.nested.session = sessionId
+    ct.nested.lease = ""
+  defer:
+    if ct.nested != nil:
+      ct.nested.session = ""
+      ct.nested.lease = ""
   # Live LLM token stream: subscribe before the first chat call so no
   # delta is missed, and forward every frame to the caller as a "token"
   # event (the UI renders them as streaming text/thinking). The frames
@@ -767,6 +778,12 @@ func steerSubject*(sessionId: string): string =
   ## Fire-and-forget channel a client publishes to in order to inject a message
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
 
+func toolSubject*(sessionId: string): string =
+  ## Nested-call proxy for session-context tools (fabric, agent): generated
+  ## programs route every tool call here; the runner's pump validates the
+  ## live lease and re-enters the one dispatch gate (see dispatch.nim).
+  "svc.session." & sanitizeSessionId(sessionId) & ".tool"
+
 proc ensureRunner*(ct: CoreTools, sessionId: string): string =
   ## Return the scoped call subject for `sessionId`, spawning its session
   ## runner (a supervised child, policy never) if it is not alive. The
@@ -843,7 +860,8 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog", "kill", "remove", "status", "discover":
+      of "spawn", "catalog", "kill", "remove", "status", "discover",
+          "session_prepare":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

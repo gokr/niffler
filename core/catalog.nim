@@ -113,6 +113,14 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
+  coreReg.tools.add(ToolReg(name: "session_prepare", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Ensure a conversation's session runner is alive and return its direct call subject, without running a turn. Used by components that drive subagent sessions mid-turn (core's session tool would stash them until the running turn ends).",
+      "properties": {"sessionId": {"type": "string"}},
+      "required": ["sessionId"],
+      "x-harness": {"hidden": true}
+    }))
   result.components["core"] = coreReg
   for t in coreReg.tools:
     result.toolIndex[t.name] = "core"
