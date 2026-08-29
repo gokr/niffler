@@ -24,7 +24,9 @@ core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
                      ├── provider (Go SDK)         ← stored LLM provider registry
                      ├── llm (Go SDK)              ← streaming LLM adapter
                      ├── hashline-edit (Nim SDK)   ← anchored file edits
+                     ├── edit (Nim SDK)           ← exact-text edits + undo
                      ├── grep (Nim SDK)            ← code search + file listing
+                     ├── git (Nim SDK)             ← read-only repo inspection
                      ├── write (Nim SDK)           ← atomic whole-file writes
                      ├── observe (Nim SDK)         ← live bus inspection
                      ├── logfile (Nim SDK)         ← rotating JSONL logs
@@ -39,7 +41,7 @@ component with its own language's SDK, not code compiled into core.
 
 On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
 `plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `hashline-edit`,
-`grep`, `write`, `observe` and `logfile`. The Nim SDK powers all of those except
+`edit`, `grep`, `git`, `write`, `observe` and `logfile`. The Nim SDK powers all of those except
 Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
 clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
 as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
@@ -129,7 +131,7 @@ automatically by nimble on the first build (`make build`).
 | `./var/bin/niffler` | the harness in a terminal: admin shell, never self-terminates |
 | `./var/bin/niffler --minimal` | minimal boot profile: only `store`, `bash`, and `llm` services |
 | `make run` | the harness with the tty admin shell (status commands) |
-| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-write`, `test-models`, `test-observe`, and `test-logfile` |
+| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-git`, `test-write`, `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
@@ -216,8 +218,9 @@ sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          Nim: store, bash, builder, plugins, skills, fetch,
-                     hashline-edit, grep, write, observe, logfile, cli,
-                     console; Go: models, provider, llm + llm-openai example
+                     hashline-edit, edit, grep, git, write, observe,
+                     logfile, cli, console; Go: models, provider, llm
+                     + llm-openai example
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -401,6 +404,16 @@ to CI any plugin repo — Niffler testing itself.
       complete content
 - [x] **hashline-edit** — hash-anchored `read`/`replace`/`undo_last_replace`
       (Nim port of pi-hashline-edit-pro), anchors stable across edits
+- [x] **edit component** — exact-text editing as the primary editor:
+      old_string uniqueness enforced (ambiguous matches refused with counts),
+      several non-overlapping edits per call, whitespace-tolerant fallback,
+      LF normalization, atomic writes, approval-gated, single-level per-file
+      `undo_last_edit` persisted across restarts; hashline replace/undo moved
+      onDemand (large-block moves stay discover + invoke)
+- [x] **git component** — read-only repo inspection (`git_status`/`git_diff`/
+      `git_log`/`git_show`/`git_blame`): approval-free, fixed argv (no shell),
+      path-scoped to the harness root with argument validation, capped output
+      with narrowing hints, clean not-a-repo handling; mutations stay in bash
 - [x] **TypeScript SDK** — sdk/ts (npm package, mirror of the Go SDK);
       the builder compiles `lang: "ts"` components via tsc into a node
       wrapper binary; verified live (builder → spawn → call from Node.js)

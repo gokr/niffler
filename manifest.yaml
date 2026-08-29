@@ -89,6 +89,15 @@ components:
     required: false
     restart: on-failure
 
+  # Read-only git inspection (status/diff/log/show/blame): approval-free,
+  # fixed argv, path-scoped to the harness root. Mutations stay in bash.
+  - name: git
+    build: {lang: nim, src: components/git/main.nim}
+    binary: var/bin/git
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: write
     build: {lang: nim, src: components/write/main.nim}
     binary: var/bin/write
