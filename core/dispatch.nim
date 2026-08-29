@@ -30,6 +30,14 @@ type
     # in niffler.nim or session.nim, shared everywhere).
     tokenStream*: TokenStream
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
+    nested*: NestedState               ## nested-call proxy (session runners only)
+    prepareSession*: proc(sessionId: string): JsonNode {.closure.}
+      ## Delegated child-runner preparation (set by the system harness after
+      ## CoreTools exists): ensure a conversation header + session runner and
+      ## return {subject}. Serves the "session_prepare" core tool so a
+      ## component (agent) can drive a subagent mid-turn — core's session
+      ## tool would stash the request while a turn runs (pumpCoreWhileBusy:
+      ## "turns must never nest") and deadlock the caller.
   TokenStream* = ref object
     sub*: ptr natsSubscription
     session*: string                ## "" = not streaming a turn
@@ -44,6 +52,15 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+  # Nested-call proxy state (svc.session.<id>.tool): session-context tools
+  # (fabric, agent) receive {session, lease} in args; the runner's pump
+  # validates nested calls against the live lease before re-entering the one
+  # dispatch gate. A ref, like tokenStream, so runTurn's set survives
+  # CoreTools' by-value copies. Nil in the system core (turns run in runners).
+  NestedState* = ref object
+    sub*: ptr natsSubscription
+    session*: string         ## active conversation ("" = no live turn)
+    lease*: string           ## current lease; "" = no session-context call in flight
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
 
@@ -119,6 +136,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
+  of "session_prepare":
+    ## Delegated child-runner preparation for components (agent): returns the
+    ## runner's direct subject WITHOUT running a turn — the session tool would
+    ## be stashed mid-turn (pumpCoreWhileBusy) and deadlock the caller.
+    if ct.prepareSession == nil:
+      return %*{"error": "session_prepare is not available in this context"}
+    return ct.prepareSession(args{"sessionId"}.getStr(""))
   of "catalog":
     # A late-joining client seeds from this snapshot. Drain registrations that
     # arrived before its request so the snapshot cannot lag the live bus.
@@ -331,6 +355,77 @@ proc pumpSteer*(ct: CoreTools) =
     let content = env.payload{"content"}.getStr("")
     if content.len > 0:
       ct.steerStream.queue.add(content)
+
+proc validateRequired(schema, args: JsonNode): string =
+  ## Minimal admission validation for nested calls: every required field of
+  ## the tool schema must be present and non-null. Full JSON Schema
+  ## validation is a documented gap; this catches the common "generated
+  ## program guessed the argument shape" case with an actionable error.
+  if schema == nil: return ""
+  for field in schema{"required"}:
+    let name = field.getStr("")
+    if name.len == 0: continue
+    let v = args{name}
+    if v == nil or v.kind == JNull:
+      return "'" & name & "' is required for this tool"
+
+proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
+  ## Admission + dispatch for one nested tool call from a session-context
+  ## program (arrives on svc.session.<id>.tool, pumped from the idle slot).
+  ## Every check here fails closed: no live turn, no matching lease, hidden
+  ## or internal target, or a missing required argument — all denied before
+  ## dispatchToolCall re-enters the single gate (approval, timeout).
+  if env.kind != ekCall:
+    return errorEnvelope(env.id, "no-call", "expected a call envelope")
+  # lease: the in-flight session-context tool owns the proxy; a request
+  # without the live lease (stale, guessed, or no turn running) is denied.
+  if ct.nested == nil or ct.nested.session.len == 0 or ct.nested.lease.len == 0:
+    return errorEnvelope(env.id, "no-session",
+      "nested calls are only valid while a session-context tool is running")
+  let lease = env.args{"__session"}{"lease"}.getStr("")
+  if lease.len == 0 or lease != ct.nested.lease:
+    return errorEnvelope(env.id, "bad-lease", "stale or unknown nested-call lease")
+  let tool = env.tool
+  # internal and recursive surfaces are never reachable from a program:
+  # chat/session are core wiring, invoke would bypass admission, and
+  # fabric-in-fabric would recurse through the proxy.
+  if tool in ["fabric", "agent", "chat", "session", "invoke", "session_prepare"]:
+    return errorEnvelope(env.id, "denied",
+      "tool '" & tool & "' is not reachable through nested calls")
+  let comp = ct.cat.toolIndex.getOrDefault(tool)
+  if comp.len == 0:
+    return errorEnvelope(env.id, "no-tool",
+      "no component provides tool '" & tool & "' — is it registered?")
+  let schema = ct.cat.toolSchema(tool)
+  if schema != nil and schema.isHidden():
+    return errorEnvelope(env.id, "denied",
+      "tool '" & tool & "' is hidden and not reachable through nested calls")
+  let missing = validateRequired(schema, env.args)
+  if missing.len > 0:
+    return errorEnvelope(env.id, "bad-args", missing)
+  try:
+    result = resultEnvelope(env.id, ct.dispatchToolCall(tool, env.args))
+  except CatchableError as e:
+    result = errorEnvelope(env.id, "boom", e.msg)
+
+proc pumpNested*(ct: CoreTools) =
+  ## Drain svc.session.<id>.tool — nested calls from a running session-context
+  ## program — and answer each through the normal dispatch gate. Called from
+  ## dispatchSubjectCall's idle slot, like pumpSteer: the runner is blocked
+  ## waiting for the fabric/agent reply and keeps its service surfaces alive.
+  if ct.nested == nil or ct.nested.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.nested.sub, 1)
+    if st != NATS_OK: break  # timeout or error: nothing (more) to do now
+    let data = $natsMsg_GetData(msg)
+    let hasReply = $natsMsg_GetReply(msg)
+    natsMsg_Destroy(msg)
+    if hasReply.len == 0: continue
+    let env = decode(data)
+    let resp = handleNestedCall(ct, env)
+    ct.nc.publish(hasReply, resp.encode())
+
 proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                           args: JsonNode, timeoutMs: int, caller = ""): JsonNode =
   ## Request/reply to an explicit subject (svc.<comp>.call or a scoped
@@ -369,6 +464,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpNested(ct)
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")
@@ -402,5 +498,32 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   var timeoutMs = defaultTimeoutMs
   if schema != nil:
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+
+  # Session-context tools (fabric, agent): inject the calling session plus a
+  # lease for the nested-call proxy. The lease is regenerated on every
+  # session-context dispatch, so it expires with the next flagged call or the
+  # turn end — nested requests without the live lease are denied (pumpNested).
+  if schema != nil and schema{"x-harness"}{"sessionContext"}.getBool(false):
+    if ct.nested == nil or ct.nested.session.len == 0:
+      raise newException(ValueError,
+        "tool '" & tool & "' needs a live session (no conversation turn is running)")
+    ct.nested.lease = newId()
+    args["__session"] = %*{"session": ct.nested.session, "lease": ct.nested.lease}
+    # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
+    # with a parent record in the store — may not call spawn-class tools. The
+    # check MUST live here, not in the component's handler: the handler blocks
+    # its component's pump for the child's whole turn, so a request from that
+    # child would queue behind it and circular-wait forever.
+    if schema{"x-harness"}{"noSpawn"}.getBool(false):
+      var hasParent = false
+      try:
+        let meta = dispatchSubjectCall(ct, "svc.store.call", "get",
+          %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
+        hasParent = meta{"value"}{"parent"}.getStr("").len > 0
+      except CatchableError:
+        discard  # store unreachable: the component's own guard still applies
+      if hasParent:
+        raise newException(ValueError,
+          "subagents cannot spawn subagents (depth limit)")
 
   dispatchSubjectCall(ct, "svc." & comp & ".call", tool, args, timeoutMs)
