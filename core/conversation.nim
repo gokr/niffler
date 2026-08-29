@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times]
+import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -713,6 +713,22 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 # Session service — core as a component for UIs (svc.core.call, tool "session")
 # ---------------------------------------------------------------------------
 
+proc shortTitle(s: string, max = 48): string =
+  ## Rune-safe trim to `max` characters with an ellipsis when cut — used for
+  ## conversation titles (session lists render them in a fixed-width column).
+  let runes = s.toRunes()
+  if runes.len <= max: return s
+  $runes[0 ..< max] & "…"
+
+proc deriveTitle(content: string): string =
+  ## Auto-title for a fresh conversation: the first non-blank line of the
+  ## first user message (a session {title} rename always wins over it).
+  for line in content.splitLines():
+    let s = line.strip()
+    if s.len > 0:
+      return shortTitle(s)
+  ""
+
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
@@ -725,8 +741,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let content = args{"content"}.getStr("")
   let hasModel = args.kind == JObject and args.hasKey("model")
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
-  if sessionId.len == 0 or (content.len == 0 and not hasModel and not hasThinking):
-    return %*{"error": "session needs sessionId and content, model or thinking"}
+  let hasTitle = args.kind == JObject and args.hasKey("title")
+  if sessionId.len == 0 or
+      (content.len == 0 and not hasModel and not hasThinking and not hasTitle):
+    return %*{"error": "session needs sessionId and content, model, thinking or title"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
@@ -761,6 +779,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       return %*{"error": "thinking must be low, medium or high (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
+  if hasTitle:
+    var title = args{"title"}.getStr("").strip()
+    if title.len > 0:
+      ct.updateConversationHeader(sessionId, %*{"title": shortTitle(title)})
 
   proc onEvent(kind: string, data: JsonNode) {.closure.} =
     let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: data)
@@ -795,6 +817,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let userMsg = %*{"role": "user", "content": content}
   entry.messages.add(userMsg)
   entry.persister.persistMsg(userMsg)
+  if entry.persister.seqNo == 1 and not hasTitle:
+    # first message of a fresh conversation: title it from the message so
+    # session lists are descriptive instead of conv-<epoch>. An explicit
+    # title on the same call wins; a later rename always overwrites.
+    let auto = deriveTitle(content)
+    if auto.len > 0:
+      ct.updateConversationHeader(sessionId, %*{"title": auto})
 
   # Tag approvals raised during this turn with the driving component so they
   # are routed to its private approval subject. Cleared when the turn ends.
