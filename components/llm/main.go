@@ -275,13 +275,13 @@ type registryResponse struct {
 	Ok       bool   `json:"ok"`
 	Source   string `json:"source"`
 	Provider *struct {
-		Nickname string `json:"nickname"`
-		APIKey   string `json:"apiKey"`
-		BaseURL  string `json:"baseUrl"`
-		Model    string `json:"model"`
-		Catalog  string `json:"catalog"`
-		Context  int    `json:"context"`
-		StripPrefix bool `json:"stripPrefix"`
+		Nickname    string `json:"nickname"`
+		APIKey      string `json:"apiKey"`
+		BaseURL     string `json:"baseUrl"`
+		Model       string `json:"model"`
+		Catalog     string `json:"catalog"`
+		Context     int    `json:"context"`
+		StripPrefix bool   `json:"stripPrefix"`
 	} `json:"provider"`
 }
 
@@ -333,12 +333,12 @@ func namedStoredProvider(c *sdk.Component, name string) (provider, string, strin
 // chat tool
 
 type chatArgs struct {
-	Messages       []openai.ChatCompletionMessage `json:"messages"`
-	Tools          []openai.Tool                  `json:"tools"`
-	Model          string                         `json:"model"`
-	Provider       string                         `json:"provider"`
-	SessionID      string                         `json:"sessionId"`
-	Stream         bool                           `json:"stream"`
+	Messages  []openai.ChatCompletionMessage `json:"messages"`
+	Tools     []openai.Tool                  `json:"tools"`
+	Model     string                         `json:"model"`
+	Provider  string                         `json:"provider"`
+	SessionID string                         `json:"sessionId"`
+	Stream    bool                           `json:"stream"`
 	// ReasoningEffort forwards a per-turn thinking-effort selection
 	// ("low"|"medium"|"high"); empty = provider default. Only sent to the
 	// API when set — providers that do not support reasoning_effort
@@ -689,6 +689,8 @@ func main() {
 				"description": "Session handle for ev.llm.token routing and llm.cancel.<sessionId> cancellation"},
 			"stream": map[string]any{"type": "boolean",
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
+			"reasoning_effort": map[string]any{"type": "string",
+				"description": "Backend reasoning effort (low/medium/high); omitted when empty = provider default"},
 		},
 		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},
