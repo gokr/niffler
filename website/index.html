@@ -16,13 +16,19 @@
 <header class="nav">
   <a class="nav-brand" href="#top"><span class="caret">$</span> niffler</a>
   <nav class="nav-links">
-    <a href="#why">why</a>
-    <a href="#architecture">architecture</a>
-    <a href="#quickstart">quickstart</a>
-    <a href="#components">components</a>
-    <a href="#wire">wire</a>
-    <a href="#status">status</a>
-    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener">git clone</a>
+    <a href="#why" data-i18n="nav.why">why</a>
+    <a href="#architecture" data-i18n="nav.architecture">architecture</a>
+    <a href="#quickstart" data-i18n="nav.quickstart">quickstart</a>
+    <a href="#components" data-i18n="nav.components">components</a>
+    <a href="#wire" data-i18n="nav.wire">wire</a>
+    <a href="#status" data-i18n="nav.status">status</a>
+    <a href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener">discord</a>
+    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="nav.gitclone">git clone</a>
+    <span class="locales" role="group" aria-label="Language">
+      <button type="button" data-locale-btn="en">EN</button>
+      <button type="button" data-locale-btn="zh">中文</button>
+      <button type="button" data-locale-btn="zh-TW">繁中</button>
+    </span>
   </nav>
 </header>
 
@@ -39,15 +45,16 @@
 |_  |   |  |  |_|      |_|      |_|   |_____|  |_| \_\
 </pre>
   </div>
-  <h1>A harness that builds<br><span class="accent">itself out</span> — mid-conversation.</h1>
-  <p class="hero-sub">
+  <h1 data-i18n-html="hero.h1">A harness that builds<br><span class="accent">itself out</span> — mid-conversation.</h1>
+  <p class="hero-sub" data-i18n-html="hero.sub">
     Niffler is a minimal, self-extending agent harness. Components are
     <strong>processes</strong>, the bus is <strong>NATS</strong>, and the agent
     writes, compiles and spawns its own tools while you talk to it.
   </p>
   <div class="hero-cta">
-    <a class="btn btn-primary" href="#quickstart">make && niffler-ui</a>
-    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github →</a>
+    <a class="btn btn-primary" href="#quickstart" data-i18n="hero.ctaMake">make && niffler-ui</a>
+    <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="hero.ctaGithub">github →</a>
+    <a class="btn" href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener" data-i18n="hero.ctaDiscord">discord →</a>
   </div>
   <div class="badges">
     <span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span><span class="badge">wails</span><span class="badge">svelte 5</span>
@@ -63,34 +70,34 @@
     </div>
     <div class="term-body">
       <p><span class="p">$</span> make && ui/build/bin/niffler-ui</p>
-      <p class="dim">build core + components + desktop UI · the UI autostarts the harness</p>
-      <p class="dim">→ spawning nats-server on 127.0.0.1:4222</p>
-      <p class="dim">→ core listening on svc.core.call</p>
+      <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
+      <p class="dim" data-i18n="term.l1">→ spawning nats-server on 127.0.0.1:4222</p>
+      <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
       <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, hashline-edit, grep, write, observe, logfile</p>
-      <p><span class="p">$</span> <span class="typed"></span><span class="cursor">▌</span></p>
+      <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
     </div>
   </div>
 </section>
 
 <!-- ============ WHY ============ -->
 <section class="section" id="why">
-  <h2 class="sec-title"><span class="comment">#</span> why</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="why.title">why</span></h2>
   <div class="cards">
     <article class="card">
-      <h3><span class="num">01</span> processes, not plugins</h3>
-      <p>No dlopen, no ABI borders, no image rot. A component is a process —
+      <h3 data-i18n-html="why.1h"><span class="num">01</span> processes, not plugins</h3>
+      <p data-i18n-html="why.1p">No dlopen, no ABI borders, no image rot. A component is a process —
       teardown is <code>exit()</code>, and the OS is the perfect disposer.
       A crash never takes the harness down.</p>
     </article>
     <article class="card">
-      <h3><span class="num">02</span> one protocol</h3>
-      <p>Core speaks exactly one wire format: JSON envelopes over NATS.
+      <h3 data-i18n-html="why.2h"><span class="num">02</span> one protocol</h3>
+      <p data-i18n-html="why.2p">Core speaks exactly one wire format: JSON envelopes over NATS.
       The codec is ~200 lines and pure <code>std/json</code> — SDKs in Nim,
       Go, TypeScript, or whatever you port next.</p>
     </article>
     <article class="card">
-      <h3><span class="num">03</span> self-extension</h3>
-      <p>The agent writes source → calls <code>builder.build</code> → calls
+      <h3 data-i18n-html="why.3h"><span class="num">03</span> self-extension</h3>
+      <p data-i18n-html="why.3p">The agent writes source → calls <code>builder.build</code> → calls
       <code>core.spawn</code> → the tool is live. Adding a capability is a
       tool call, and the LLM does it to itself mid-conversation. Community
       packages install the same way: <code>plugin_install</code> clones,
@@ -98,8 +105,8 @@
       the published code.</p>
     </article>
     <article class="card">
-      <h3><span class="num">04</span> persistence of shape</h3>
-      <p>Capabilities survive restarts: spawned components are recorded in the
+      <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
+      <p data-i18n-html="why.4p">Capabilities survive restarts: spawned components are recorded in the
       store and restored on boot. The repo is the snapshot, <code>var/</code>
       is disposable.</p>
     </article>
@@ -108,14 +115,14 @@
 
 <!-- ============ ARCHITECTURE ============ -->
 <section class="section" id="architecture">
-  <h2 class="sec-title"><span class="comment">#</span> architecture</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="arch.title">architecture</span></h2>
   <div class="arch">
     <div class="arch-core box">
       <span class="box-tag">core (nim)</span>
-      conversation loop · supervisor<br>
-      catalog · dispatch
+      <span data-i18n-html="arch.core">conversation loop · supervisor<br>
+      catalog · dispatch</span>
     </div>
-    <p class="arch-note">one conversation = one process: the system spawns a
+    <p class="arch-note" data-i18n-html="arch.note1">one conversation = one process: the system spawns a
       <code>var/bin/session &lt;id&gt;</code> runner per conversation — kill a
       runner, every other session keeps going.</p>
     <div class="arch-bus">
@@ -137,15 +144,15 @@
       <div class="box">models<br><span class="box-lang">go sdk</span></div>
       <div class="box">provider<br><span class="box-lang">go sdk</span></div>
       <div class="box">llm<br><span class="box-lang">go sdk</span></div>
-      <div class="box box-your">your tool<br><span class="box-lang">any language</span></div>
+      <div class="box box-your"><span data-i18n="arch.yourtool">your tool</span><br><span class="box-lang" data-i18n="arch.anylang">any language</span></div>
     </div>
-    <p class="arch-note">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
+    <p class="arch-note" data-i18n-html="arch.note2">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
   </div>
 </section>
 
 <!-- ============ LOOP ============ -->
 <section class="section" id="loop">
-  <h2 class="sec-title"><span class="comment">#</span> the self-extension loop</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="loop.title">the self-extension loop</span></h2>
   <div class="loop">
     <div class="step">
       <span class="step-cmd">write</span>
@@ -179,7 +186,7 @@
 
 <!-- ============ QUICKSTART ============ -->
 <section class="section" id="quickstart">
-  <h2 class="sec-title"><span class="comment">#</span> quickstart</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="qs.title">quickstart</span></h2>
   <div class="qs">
     <div class="term term-sm">
       <div class="term-bar">
@@ -187,58 +194,58 @@
         <span class="term-title">terminal</span>
       </div>
       <div class="term-body">
-        <p><span class="p">$</span> git clone git@github.com:gokr/niffler.git && cd niffler</p>
-        <p><span class="p">$</span> make setup        <span class="dim"># prerequisites (Ubuntu / macOS)</span></p>
-        <p><span class="p">$</span> make              <span class="dim"># build core + components + desktop UI, once</span></p>
-        <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim"># or click the desktop icon — autostarts the harness</span></p>
-        <p><span class="p">$</span> make test         <span class="dim"># bus-contract suite — 17 contract tests + smoke + go tests</span></p>
+        <p><span class="p">$</span> <span data-i18n="qs.clone">git clone git@github.com:gokr/niffler.git && cd niffler</span></p>
+        <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
+        <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
+        <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># or click the desktop icon — autostarts the harness</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 17 contract tests + smoke + go tests</span></p>
         <p class="dim">│</p>
-        <p class="dim">└─ make run / recover / dev · see docs/MANUAL.md</p>
+        <p class="dim" data-i18n="qs.see">└─ make run / recover / dev · see docs/MANUAL.md</p>
       </div>
     </div>
     <div class="qs-side">
-      <h3>requirements</h3>
+      <h3 data-i18n="qs.requirements">requirements</h3>
       <ul class="reqs">
-        <li><span class="check">✓</span> nim 2.x</li>
-        <li><span class="check">✓</span> go</li>
-        <li><span class="check">✓</span> nats-server</li>
-        <li><span class="check">✓</span> node / npm</li>
-        <li><span class="check">✓</span> wails cli <span class="dim">(UI only)</span></li>
-        <li><span class="check">✓</span> trafilatura <span class="dim">(optional, richer HTML extraction)</span></li>
+        <li><span class="check">✓</span> <span data-i18n="qs.req.nim">nim 2.x</span></li>
+        <li><span class="check">✓</span> <span data-i18n="qs.req.go">go</span></li>
+        <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server</span></li>
+        <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
+        <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(UI only)</span></span></li>
+        <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
-      <p class="dim small">all Nim deps come from nimble — yaml, htmlparser, natswrapper, bitbarrel — installed automatically on first build.</p>
+      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, natswrapper, bitbarrel — installed automatically on first build.</p>
     </div>
   </div>
 </section>
 
 <!-- ============ COMPONENTS ============ -->
 <section class="section" id="components">
-  <h2 class="sec-title"><span class="comment">#</span> shipped components</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="comp.title">shipped components</span></h2>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>component</th><th>language</th><th>purpose</th></tr>
+        <tr><th data-i18n="comp.th.component">component</th><th data-i18n="comp.th.language">language</th><th data-i18n="comp.th.purpose">purpose</th></tr>
       </thead>
       <tbody>
-        <tr><td>core</td><td>nim</td><td>conversation loop, supervisor, catalog, dispatch</td></tr>
-        <tr><td>bash</td><td>nim</td><td>shell access as a tool — approval-gated</td></tr>
-        <tr><td>builder</td><td>nim</td><td>compiles agent-written source → binary</td></tr>
-        <tr><td>store</td><td>nim</td><td>document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
-        <tr><td>plugins</td><td>nim</td><td>component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
-        <tr><td>skills</td><td>nim</td><td>Agent Skills discovery, progressive-disclosure loading, resources, and managed install/remove</td></tr>
-        <tr><td>fetch</td><td>nim</td><td>bounded HTTP(S) retrieval with methods/headers/body, Trafilatura-first HTML extraction, pure-Nim fallback, and large-result file spill</td></tr>
-        <tr><td>hashline-edit</td><td>nim</td><td>hash-anchored file editing: <code>read</code>/<code>replace</code>/<code>undo_last_replace</code> on stable line anchors</td></tr>
-        <tr><td>grep</td><td>nim</td><td>ripgrep-backed content search and sorted repository file listing, with exact truncation markers</td></tr>
-        <tr><td>write</td><td>nim</td><td>approval-gated atomic whole-file writes with permission preservation and parent creation</td></tr>
-        <tr><td>observe</td><td>nim</td><td>live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
-        <tr><td>logfile</td><td>nim</td><td>durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
-        <tr><td>models</td><td>go</td><td>models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
-        <tr><td>provider</td><td>go</td><td>store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
-        <tr><td>llm</td><td>go</td><td>streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
-        <tr><td>cli</td><td>nim</td><td>drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
-        <tr><td>console</td><td>nim</td><td>bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
-        <tr><td>ui</td><td>go + svelte 5</td><td>Wails SPA — a NATS client, not a Wails client</td></tr>
-        <tr class="row-your"><td>your tool</td><td>any</td><td>port the SDK — the envelope is the artifact (~200 lines)</td></tr>
+        <tr><td>core</td><td>nim</td><td data-i18n="comp.core.p">conversation loop, supervisor, catalog, dispatch</td></tr>
+        <tr><td>bash</td><td>nim</td><td data-i18n="comp.bash.p">shell access as a tool — approval-gated</td></tr>
+        <tr><td>builder</td><td>nim</td><td data-i18n="comp.builder.p">compiles agent-written source → binary</td></tr>
+        <tr><td>store</td><td>nim</td><td data-i18n="comp.store.p">document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
+        <tr><td>plugins</td><td>nim</td><td data-i18n-html="comp.plugins.p">component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
+        <tr><td>skills</td><td>nim</td><td data-i18n="comp.skills.p">Agent Skills discovery, progressive-disclosure loading, resources, and managed install/remove</td></tr>
+        <tr><td>fetch</td><td>nim</td><td data-i18n="comp.fetch.p">bounded HTTP(S) retrieval with methods/headers/body, Trafilatura-first HTML extraction, pure-Nim fallback, and large-result file spill</td></tr>
+        <tr><td>hashline-edit</td><td>nim</td><td data-i18n-html="comp.hashline.p">hash-anchored file editing: <code>read</code>/<code>replace</code>/<code>undo_last_replace</code> on stable line anchors</td></tr>
+        <tr><td>grep</td><td>nim</td><td data-i18n="comp.grep.p">ripgrep-backed content search and sorted repository file listing, with exact truncation markers</td></tr>
+        <tr><td>write</td><td>nim</td><td data-i18n="comp.write.p">approval-gated atomic whole-file writes with permission preservation and parent creation</td></tr>
+        <tr><td>observe</td><td>nim</td><td data-i18n="comp.observe.p">live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
+        <tr><td>logfile</td><td>nim</td><td data-i18n-html="comp.logfile.p">durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
+        <tr><td>models</td><td>go</td><td data-i18n-html="comp.models.p">models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
+        <tr><td>provider</td><td>go</td><td data-i18n="comp.provider.p">store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
+        <tr><td>llm</td><td>go</td><td data-i18n-html="comp.llm.p">streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
+        <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
+        <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
+        <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">Wails SPA — a NATS client, not a Wails client</td></tr>
+        <tr class="row-your"><td data-i18n="comp.your.name">your tool</td><td data-i18n="comp.your.lang">any</td><td data-i18n="comp.your.p">port the SDK — the envelope is the artifact (~200 lines)</td></tr>
       </tbody>
     </table>
   </div>
@@ -246,7 +253,7 @@
 
 <!-- ============ WIRE ============ -->
 <section class="section" id="wire">
-  <h2 class="sec-title"><span class="comment">#</span> one wire to rule them</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="wire.title">one wire to rule them</span></h2>
   <div class="wire">
     <div class="term term-sm">
       <div class="term-bar">
@@ -267,49 +274,50 @@
       </div>
     </div>
     <div class="wire-notes">
-      <p>core → <code>svc.core.call</code>, components → <code>svc.&lt;name&gt;.call</code>,<br>
+      <p data-i18n-html="wire.note1">core → <code>svc.core.call</code>, components → <code>svc.&lt;name&gt;.call</code>,<br>
       events on <code>ev.*</code>. that's the whole bus contract.</p>
-      <p class="dim">spec: <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> · rationale: <a href="https://github.com/gokr/niffler/blob/main/docs/REBOOT.md" target="_blank" rel="noopener">docs/REBOOT.md</a></p>
+      <p class="dim" data-i18n-html="wire.note2">spec: <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> · rationale: <a href="https://github.com/gokr/niffler/blob/main/docs/REBOOT.md" target="_blank" rel="noopener">docs/REBOOT.md</a></p>
     </div>
   </div>
 </section>
 
 <!-- ============ STATUS ============ -->
 <section class="section" id="status">
-  <h2 class="sec-title"><span class="comment">#</span> status</h2>
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="status.title">status</span></h2>
   <div class="status">
     <ul class="done">
-      <li><span class="check">✓</span> wire spec, envelope, Nim + Go + TypeScript SDKs</li>
-      <li><span class="check">✓</span> supervisor, catalog, dispatch</li>
-      <li><span class="check">✓</span> bash + builder + store + llm (streaming adapter)</li>
-      <li><span class="check">✓</span> agent adds itself a tool end-to-end (live, with DeepSeek)</li>
-      <li><span class="check">✓</span> persistence of shape across restarts</li>
-      <li><span class="check">✓</span> session service + Wails SPA shell</li>
-      <li><span class="check">✓</span> session runners — one conversation = one process</li>
-      <li><span class="check">✓</span> approvals — terminal y/N, directed UI requests with ack + broadcast fallback, headless deny, resolved-event cleanup</li>
-      <li><span class="check">✓</span> recover mode — <code>make recover</code></li>
-      <li><span class="check">✓</span> plugins — component ecosystem (discover, install, update, remove)</li>
-      <li><span class="check">✓</span> skills — progressive discovery and loading of Agent Skills</li>
-      <li><span class="check">✓</span> fetch — bounded web retrieval with Trafilatura-first text extraction</li>
-      <li><span class="check">✓</span> hashline-edit — hash-anchored file editing</li>
-      <li><span class="check">✓</span> grep + write — repository search and atomic whole-file edits</li>
-      <li><span class="check">✓</span> console + cli — follow and drive the bus from a terminal</li>
-      <li><span class="check">✓</span> streaming — live <code>ev.session.token</code> deltas in the UI</li>
-      <li><span class="check">✓</span> UI: components panel, tool-run view, light/dark theme, About dialog</li>
-      <li><span class="check">✓</span> bus-contract test suite — <code>make test</code>, isolated per-test NATS + temp root</li>
-      <li><span class="check">✓</span> tty admin shell — help/status/catalog/tools/sessions, no chat in the REPL</li>
-      <li><span class="check">✓</span> observe + logfile — live bus introspection, durable rotating JSONL logs</li>
-      <li><span class="check">✓</span> models — models.dev catalog over the bus, catalog-driven context windows</li>
-      <li><span class="check">✓</span> provider — store-backed LLM provider registry, live switching</li>
-      <li><span class="check">✓</span> UI-owned harness lifecycle — the desktop icon is the whole system: build once, any UI autostarts core, the last UI stops it</li>
-      <li><span class="check">✓</span> minimal boot profile — <code>--minimal</code> starts only store, bash, and llm while preserving skipped records</li>
-      <li><span class="check">✓</span> provider/model controls — stored providers, model selection, context meters, and live session status</li>
-      <li><span class="check">✓</span> progressive tool discovery — immutable per-session direct tools, discover/invoke gateways, and Live Components exposure state</li>
+      <li><span class="check">✓</span> <span data-i18n="status.l1">wire spec, envelope, Nim + Go + TypeScript SDKs</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l2">supervisor, catalog, dispatch</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l3">bash + builder + store + llm (streaming adapter)</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l4">agent adds itself a tool end-to-end (live, with DeepSeek)</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l5">persistence of shape across restarts</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l6">session service + Wails SPA shell</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l7">session runners — one conversation = one process</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l8">approvals — terminal y/N, directed UI requests with ack + broadcast fallback, headless deny, resolved-event cleanup</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l9">recover mode — <code>make recover</code></span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l10">plugins — component ecosystem (discover, install, update, remove)</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l11">skills — progressive discovery and loading of Agent Skills</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l12">fetch — bounded web retrieval with Trafilatura-first text extraction</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l13">hashline-edit — hash-anchored file editing</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l14">grep + write — repository search and atomic whole-file edits</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l15">console + cli — follow and drive the bus from a terminal</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l16">streaming — live <code>ev.session.token</code> deltas in the UI</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l17">UI: components panel, tool-run view, light/dark theme, About dialog</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l18">bus-contract test suite — <code>make test</code>, isolated per-test NATS + temp root</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l19">tty admin shell — help/status/catalog/tools/sessions, no chat in the REPL</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l20">observe + logfile — live bus introspection, durable rotating JSONL logs</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l21">models — models.dev catalog over the bus, catalog-driven context windows</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l22">provider — store-backed LLM provider registry, live switching</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l23">UI-owned harness lifecycle — the desktop icon is the whole system: build once, any UI autostarts core, the last UI stops it</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l24">minimal boot profile — <code>--minimal</code> starts only store, bash, and llm while preserving skipped records</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l25">provider/model controls — stored providers, model selection, context meters, and live session status</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l26">progressive tool discovery — immutable per-session direct tools, discover/invoke gateways, and Live Components exposure state</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.i18n">UI + TUI localization — en/zh/zh-TW locales, CJK-safe truncation and editing</span></li>
     </ul>
     <ul class="todo">
-      <li><span class="todo-x">✗</span> Level 1 UI dynamism (x-ui schema hints)</li>
-      <li><span class="todo-x">✗</span> cancellation in the terminal harness + UI</li>
-      <li><span class="todo-x">✗</span> store-tidb with FTS + vector memory</li>
+      <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>
+      <li><span class="todo-x">✗</span> <span data-i18n="status.t2">cancellation in the terminal harness + UI</span></li>
+      <li><span class="todo-x">✗</span> <span data-i18n="status.t3">store-tidb with FTS + vector memory</span></li>
     </ul>
   </div>
 </section>
@@ -322,9 +330,10 @@
 ║ niffler — a self-extending agent harness ║
  ══════════════════════════════════════════ 
   </pre>
-  <p class="dim">niffler — a self-extending agent harness · <a href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github.com/gokr/niffler</a></p>
+  <p class="dim" data-i18n-html="footer.text">niffler — a self-extending agent harness · <a href="https://github.com/gokr/niffler" target="_blank" rel="noopener">github.com/gokr/niffler</a> · <a href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener">discord.gg/ThJFEAJUAk</a></p>
 </footer>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

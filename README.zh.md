@@ -1,6 +1,7 @@
 # Niffler
 
-[English](README.md) · 简体中文
+[English](README.md) · 简体中文 · [繁體中文](README.zh-TW.md) ·
+[Discord](https://discord.gg/ThJFEAJUAk)
 
 Niffler（重生版）是一个极简、可自我扩展的 agent harness，理念上与
 [Pi](https://pi.dev) 或新的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)

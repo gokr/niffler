@@ -3,14 +3,24 @@
 (function () {
   "use strict";
 
-  var cmd = "niffler — waiting for input…";
   var el = document.querySelector(".typed");
   if (!el) return;
 
+  // The typed command is localized (i18n.js exposes the active catalog);
+  // the fallback is the English text baked into the HTML data attribute.
+  var fallback = "niffler — waiting for input…";
   var i = 0;
+  function cmd() {
+    if (el.dataset.i18n && window.NIFFLER_I18N) {
+      return window.NIFFLER_I18N.text(el.dataset.i18n, fallback);
+    }
+    return fallback;
+  }
   function type() {
-    if (i <= cmd.length) {
-      el.textContent = cmd.slice(0, i++);
+    // Re-resolve each cycle so a mid-session locale switch takes effect.
+    var text = cmd();
+    if (i <= text.length) {
+      el.textContent = text.slice(0, i++);
       setTimeout(type, 45);
     } else {
       setTimeout(function () {

@@ -34,6 +34,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* CJK fallbacks so zh/zh-TW copy renders consistently across platforms */
+:lang(zh-CN), :lang(zh-TW) {
+  font-family: var(--mono), "PingFang SC", "PingFang TC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Noto Sans TC", "Microsoft YaHei", "Microsoft JhengHei", sans-serif;
+}
+
 a { color: var(--amber); text-decoration: none; border-bottom: 1px dashed var(--amber-dim); }
 a:hover { color: #ffd47e; border-bottom-style: solid; }
 
@@ -90,6 +96,30 @@ pre { font-family: var(--mono); }
 .nav-links a:hover { color: var(--amber); }
 .nav-links .btn { color: var(--amber); border: 1px solid var(--border-2); border-radius: 6px; padding: 6px 12px; }
 .nav-links .btn:hover { border-color: var(--amber); }
+
+/* locale switcher (EN / 中文 / 繁中) */
+.locales {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 2px;
+}
+.locales button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.locales button:hover { color: var(--amber); }
+.locales button.active {
+  color: var(--amber);
+  background: var(--bg-2, rgba(255, 255, 255, 0.06));
+}
 
 /* ── buttons ──────────────────────────────────────────────────────────── */
 
