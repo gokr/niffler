@@ -776,7 +776,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "usedTokens": entry.persister.contextUsed
     }
     try:
-      status = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      # overlay the resolved config onto the literal — do NOT reassign, or
+      # session-local fields (sessionId, thinkingEffort, token counters) are lost
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      for key, fieldValue in resolved:
+        status[key] = fieldValue
       entry.persister.persistConversationRuntime(
         entry.modelOverride, status{"provider"}.getStr(""),
         status{"model"}.getStr(entry.modelOverride))

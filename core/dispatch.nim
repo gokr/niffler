@@ -80,10 +80,11 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
     # the tool namespace is flat, bare names are canonical
     name = name.split('.')[^1]
   let schema = ct.cat.toolSchema(name)
+  # deliberately name-free: the error must be identical for unknown and
+  # hidden tools, or invoke becomes an existence oracle (tests/t_discover.nim)
   if name == "invoke" or schema == nil or schema.isHidden():
     raise newException(ValueError,
-      "no discoverable non-hidden tool '" & target &
-      "' — use the exact name discover returned")
+      "tool is not available through invoke — discover lists the exact names")
   return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
