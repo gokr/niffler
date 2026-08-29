@@ -15,6 +15,11 @@
 ##   component    id=<name>         {name, binary, policy, addedAt}
 ##   conversation id=conv-<ts>      {createdAt, model, title}
 ##   message      id=<convId>:<n>   {conversationId, role, content, ...}
+##   approval     id=<convId>:<tool> per-conversation auto-approve memory
+##   slash        id=slash          {updatedAt, commands: [{name, description,
+##                                  component, tool, params}]} — core's
+##                                  checkpoint of the merged slash-command
+##                                  table (docs/WIRE.md); UIs read it first
 
 import std/[json, os, strutils]
 when defined(posix):

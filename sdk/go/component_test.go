@@ -176,3 +176,86 @@ func TestCloseWaitsForActiveHandler(t *testing.T) {
 		t.Fatalf("Close invoked by a handler self-waited: %v", elapsed)
 	}
 }
+
+// TestSlashRegistrationPublishesSpec verifies that Slash() defaults the
+// target tool to the command name and that reg.publish carries the full
+// declarative spec (docs/WIRE.md) so core can validate and checkpoint it.
+func TestSlashRegistrationPublishesSpec(t *testing.T) {
+	url := startTestNATS(t)
+
+	sub, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	received := make(chan map[string]any, 1)
+	if _, err := sub.Subscribe("reg.publish", func(m *nats.Msg) {
+		var payload map[string]any
+		if err := json.Unmarshal(m.Data, &payload); err == nil {
+			received <- payload
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New("deploy-test", "0.1.0").
+		Tool("deploy_run", map[string]any{
+			"type": "object", "properties": map[string]any{},
+		}, func(c *Component, args json.RawMessage) (any, error) {
+			return map[string]bool{"ok": true}, nil
+		}).
+		Slash(SlashCommand{
+			Name:        "Deploy", // core lowercases
+			Description: "deploy the current branch",
+			Params: []SlashParam{
+				{Name: "env", Kind: "enum", Description: "target environment",
+					Source: &SlashSource{Tool: "deploy.envs", Args: map[string]any{}}},
+				{Name: "force", Kind: "bool", Default: false},
+			},
+		})
+	t.Setenv("NIF_NATS_URL", url)
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var payload map[string]any
+	select {
+	case payload = <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reg.publish was not observed")
+	}
+	slash, ok := payload["slash"].([]any)
+	if !ok || len(slash) != 1 {
+		t.Fatalf("slash section missing or wrong: %v", payload["slash"])
+	}
+	cmd, ok := slash[0].(map[string]any)
+	if !ok {
+		t.Fatalf("slash entry is not an object: %v", slash[0])
+	}
+	if cmd["name"] != "Deploy" {
+		t.Fatalf("slash name = %v, want Deploy", cmd["name"])
+	}
+	if cmd["tool"] != "Deploy" {
+		t.Fatalf("slash tool = %v, want Deploy (defaulted to name)", cmd["tool"])
+	}
+	if cmd["description"] != "deploy the current branch" {
+		t.Fatalf("slash description = %v", cmd["description"])
+	}
+	params, ok := cmd["params"].([]any)
+	if !ok || len(params) != 2 {
+		t.Fatalf("slash params = %v", cmd["params"])
+	}
+	env, ok := params[0].(map[string]any)
+	if !ok || env["kind"] != "enum" {
+		t.Fatalf("first param = %v, want env/enum", params[0])
+	}
+	src, ok := env["source"].(map[string]any)
+	if !ok || src["tool"] != "deploy.envs" {
+		t.Fatalf("first param source = %v", env["source"])
+	}
+	force, ok := params[1].(map[string]any)
+	if !ok || force["kind"] != "bool" || force["default"] != false {
+		t.Fatalf("second param = %v, want force/bool/false", params[1])
+	}
+}

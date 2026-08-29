@@ -56,6 +56,7 @@ type
     version*: string
     client*: bool  ## interactive frontend (reg.publish carries "client": true)
     tools*: seq[Tool]
+    slashCommands*: seq[JsonNode]  ## declared slash command specs (docs/WIRE.md)
     eventHandlers*: seq[tuple[pattern: string, handler: EventHandler]]
     taps*: seq[tuple[pattern: string, handler: TapHandler]]
     nc*: NatsConnection
@@ -94,6 +95,18 @@ proc toolSchema*(props: JsonNode, required: seq[string] = @[],
 
 proc on*(c: Component, pattern: string, handler: EventHandler): Component =
   c.eventHandlers.add((pattern: pattern, handler: handler))
+  return c
+
+proc slashCommand*(c: Component, name, description: string,
+                   params: JsonNode = nil, tool = ""): Component =
+  ## Declare a slash command interactive UIs expose to users (docs/WIRE.md).
+  ## params is an array of {name, kind?, source?, description?, default?}
+  ## (kind: string|bool|int|enum); tool defaults to name and must be a tool
+  ## registered by this same component. Chainable like tool/on/tap.
+  var cmd = %*{"name": name, "description": description}
+  if tool.len > 0: cmd["tool"] = %tool
+  if params != nil: cmd["params"] = params
+  c.slashCommands.add(cmd)
   return c
 
 proc tap*(c: Component, pattern: string, handler: TapHandler): Component =
@@ -240,6 +253,8 @@ proc regPayload(c: Component): JsonNode =
     toolsJson.add(%*{"name": t.name, "schema": t.schema})
   result = %*{"name": c.name, "version": c.version,
               "pid": getCurrentProcessId(), "tools": toolsJson}
+  if c.slashCommands.len > 0:
+    result["slash"] = %c.slashCommands
   if c.client:
     result["client"] = %true
 

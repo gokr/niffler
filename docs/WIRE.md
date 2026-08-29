@@ -42,7 +42,8 @@ Rules:
 
 ```
 reg.publish            # component announces itself on connect
-                       #   {name, version, pid, tools: [ {name, schema} ], client?}
+                       #   {name, version, pid, tools: [ {name, schema} ], client?,
+                       #    slash?: [SlashCommand]}
 reg.depart             # same shape (name suffices), graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
@@ -58,6 +59,47 @@ ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, lo
                        # invalidates redacted provider/runtime views
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
+
+## Slash commands (declarative UI surface)
+
+Components declare how interactive UIs (TUIs, web) expose them as slash
+commands. The spec is pure data — a UI renders it with its own widgets and
+never executes component-supplied code:
+
+```json
+SlashCommand = {
+  "name": "deploy",          // command word; globally unique like tool names
+  "description": "...",      // one line for /help and completion
+  "tool": "deploy_run",      // optional; target tool (defaults to name) —
+                             //   must be a tool this same component registered
+  "params": [                // command-line surface, positional order
+    {"name": "env", "kind": "enum",     // kind: string|bool|int|enum (default string)
+     "source": {"tool": "deploy.envs", "args": {}},  // value candidates for
+                             //   completion; the UI calls this tool lazily on Tab
+     "description": "target environment"},
+    {"name": "force", "kind": "bool", "default": false}
+  ]
+}
+```
+
+Invocation contract for UIs: parse the command line against `params`
+(positional values in order; `name=value` named; bool flags bare or
+`=on|off`), then issue a regular `svc.<component>.call` to `tool` with the
+resulting arguments object — result/error rendering is the UI's business.
+
+Core validates at registration (bad entries are rejected with a warning and
+skipped): command names are `[a-z0-9_-]` and unique across the catalog, the
+target tool must be registered by the same component, at most 32 commands
+per component and 16 params per command. `source.tool` may live in another
+component and is not resolved at registration time.
+
+Checkpoint: on every catalog change core persists the merged table
+*first* (store kind `slash`, id `slash`: `{updatedAt, commands: [{name,
+description, component, tool, params}]}`), then publishes `ev.catalog.updated`.
+UIs read the store first for the last-known table and follow
+`ev.catalog.updated` live; the live catalog (`catalog` op `snapshot`, which
+now carries each component's `slash` array) remains authoritative. Built-in
+UI commands (e.g. `/help`) shadow registered ones with the same name.
 
 Session runners: one conversation = one process. The system harness
 (`svc.core.call`, tool `session`) ensures a runner for the session id
