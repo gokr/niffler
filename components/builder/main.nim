@@ -43,8 +43,14 @@ proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
   p.close()
 
 proc tail(s: string, n: int): string =
+  ## Last n bytes of s, snapped forward to a UTF-8 boundary so a multi-byte
+  ## character (CJK in compiler output, etc.) is never split into invalid
+  ## UTF-8 — a broken rune here would poison the JSON envelope downstream.
   if s.len <= n: return s
-  return "…" & s[^n .. ^1]
+  var start = s.len - n
+  while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
+    inc start  # skip a continuation byte: start at the rune's first byte
+  return "…" & s[start .. ^1]
 
 proc validGoSourceName(name: string): bool =
   ## Additional builder files are deliberately flat: no path traversal,
@@ -161,9 +167,14 @@ comp.tool:
         "    \"outDir\": \"dist\",\n    \"strict\": true,\n" &
         "    \"esModuleInterop\": true,\n    \"skipLibCheck\": true\n  },\n" &
         "  \"include\": [\"main.ts\"]\n}\n")
+      # NIF_NPM_REGISTRY (e.g. https://registry.npmmirror.com) overrides
+      # the default registry for ts component installs — GitHub-hostile
+      # networks usually reach npm mirrors fine.
+      let registry = getEnv("NIF_NPM_REGISTRY")
+      let registryFlag = if registry.len > 0: " --registry " & quoteShell(registry) else: ""
       let (io, ic) = runCmd(
         "cd " & quoteShell(dir) &
-        " && npm install --no-audit --no-fund --loglevel=error",
+        " && npm install" & registryFlag & " --no-audit --no-fund --loglevel=error",
         300000)
       if ic != 0:
         return %*{"ok": false, "lang": lang, "error": tail(io, 2000)}

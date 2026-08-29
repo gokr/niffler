@@ -2,6 +2,7 @@
   import { send } from "../nats";
   import type { CatalogModel } from "../lib/providers";
   import { fmtContext } from "../lib/providers";
+  import { t } from "../lib/i18n.svelte";
 
   let {
     open = $bindable(false),
@@ -76,7 +77,7 @@
         <input
           bind:this={searchEl}
           class="flex-1 rounded-md bg-ink-800 border border-ink-600 px-3 py-1.5 text-[13px] text-ink-200 outline-none focus:border-accent-dim"
-          placeholder="Search models…"
+          placeholder={t("model.search")}
           bind:value={query}
           oninput={() => search()}
         />
@@ -90,16 +91,16 @@
             onclick={clearOverride}
           >
             <span class="text-[12px] text-ink-400">✓</span>
-            <span class="text-[13px] text-ink-400">Use provider default</span>
-            <span class="ml-auto text-[10px] text-ink-600">(clears override)</span>
+            <span class="text-[13px] text-ink-400">{t("model.useDefault")}</span>
+            <span class="ml-auto text-[10px] text-ink-600">{t("model.clearsOverride")}</span>
           </button>
         {/if}
 
         {#if loading}
-          <div class="px-4 py-6 text-center text-[13px] text-ink-400">Searching…</div>
+          <div class="px-4 py-6 text-center text-[13px] text-ink-400">{t("model.searching")}</div>
         {:else if models.length === 0}
           <div class="px-4 py-6 text-center text-[13px] text-ink-400">
-            No models found{catalog ? ` for "${catalog}"` : ""}
+            {catalog ? t("model.noneFoundFor", { catalog }) : t("model.noneFound")}
           </div>
         {:else}
           {#each models as m (m.reference)}
@@ -112,10 +113,10 @@
                 <div class="flex items-center gap-1.5">
                   <span class="text-[13px] text-ink-200 truncate">{m.name || m.id}</span>
                   {#if m.reasoning}
-                    <span class="rounded bg-accent-dim/15 px-1 text-[9px] text-accent">reason</span>
+                    <span class="rounded bg-accent-dim/15 px-1 text-[9px] text-accent">{t("model.reason")}</span>
                   {/if}
                   {#if m.tool_call !== false}
-                    <span class="rounded bg-ink-700 px-1 text-[9px] text-ink-400">tools</span>
+                    <span class="rounded bg-ink-700 px-1 text-[9px] text-ink-400">{t("model.tools")}</span>
                   {/if}
                 </div>
                 <div class="text-[10px] text-ink-400 font-mono truncate">{m.id}</div>
@@ -127,7 +128,7 @@
           {/each}
           {#if total > models.length}
             <div class="px-4 py-2 text-[11px] text-ink-400 text-center border-t border-ink-700/50">
-              Showing {models.length} of {total} — narrow your search
+              {t("model.showing", { n: String(models.length), total: String(total) })}
             </div>
           {/if}
         {/if}
@@ -138,14 +139,14 @@
           <div class="flex gap-2">
             <input
               class="flex-1 rounded-md bg-ink-800 border border-ink-600 px-2.5 py-1.5 text-[13px] text-ink-200 outline-none focus:border-accent-dim font-mono"
-              placeholder="custom model id"
+              placeholder={t("model.customId")}
               bind:value={customId}
               onkeydown={(e) => { if (e.key === "Enter" && customId.trim()) pick(customId.trim()); }}
             />
             <button
               class="rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-ink-950 hover:opacity-90"
               onclick={() => { if (customId.trim()) pick(customId.trim()); }}
-            >Set</button>
+            >{t("model.set")}</button>
           </div>
         {:else}
           <button

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { on, onStatus, send } from "../nats";
+  import { t } from "../lib/i18n.svelte";
 
   interface HarnessMetadata {
     hidden?: boolean;
@@ -133,9 +134,9 @@
   }
 
   function stateLabel(state: ExposureState): string {
-    if (state === "discovered") return "seen";
-    if (state === "on-demand") return "demand";
-    if (state === "hidden") return "internal";
+    if (state === "discovered") return t("components.seen");
+    if (state === "on-demand") return t("components.demand");
+    if (state === "hidden") return t("components.internal");
     return state;
   }
 
@@ -232,18 +233,18 @@
   <div class="flex flex-col gap-1">
     {#if sessionId && exposure}
       <div class="mb-1 flex flex-wrap gap-x-2 gap-y-0.5 px-2 text-[9px] uppercase tracking-wide">
-        <span class="text-accent">direct</span>
-        <span class="text-ok">seen</span>
-        <span class="text-warn">demand</span>
-        <span class="text-ink-400">internal</span>
+        <span class="text-accent">{t("components.direct")}</span>
+        <span class="text-ok">{t("components.seen")}</span>
+        <span class="text-warn">{t("components.demand")}</span>
+        <span class="text-ink-400">{t("components.internal")}</span>
       </div>
     {:else}
       <p class="mb-1 px-2 text-[10px] text-ink-400">
-        {sessionId ? "tool exposure initializes with the first turn" : "start or select a session to see tool exposure"}
+        {sessionId ? t("components.exposureInit") : t("components.noSession")}
       </p>
     {/if}
     {#if componentEntries.length === 0}
-      <p class="text-[11px] text-ink-400">none seen yet</p>
+      <p class="text-[11px] text-ink-400">{t("components.noneSeen")}</p>
     {:else}
       {#each componentEntries as [name, c] (name)}
         <div>
@@ -265,7 +266,7 @@
           {#if openName === name}
             <div class="mx-2 mb-1.5 rounded-md border border-ink-600 bg-ink-800/50 px-2.5 py-2 text-[11px]">
               {#if (c.tools ?? []).length}
-                <div class="text-[10px] uppercase tracking-wide text-ink-400">tools</div>
+                <div class="text-[10px] uppercase tracking-wide text-ink-400">{t("components.tools")}</div>
                 <div class="mt-1 flex flex-wrap gap-1">
                   {#each sortedTools(c) as t (t.name)}
                     {@const state = toolState(name, t)}

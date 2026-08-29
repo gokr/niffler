@@ -60,7 +60,8 @@ body,
   margin: 0;
   background: var(--color-ink-950);
   color: var(--color-ink-200);
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Noto Sans TC", "Microsoft YaHei", sans-serif;
 }
 
 ::selection {

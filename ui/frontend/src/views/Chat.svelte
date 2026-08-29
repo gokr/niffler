@@ -3,6 +3,7 @@
   import { send, on } from "../nats";
   import { renderMarkdown } from "$lib/markdown";
   import ToolRun from "./ToolRun.svelte";
+  import { t } from "$lib/i18n.svelte";
 
   interface Usage {
     prompt_tokens?: number;
@@ -359,7 +360,7 @@
     <textarea
       class="flex-1 resize-none rounded-lg bg-ink-800 border border-ink-600 px-3 py-2 text-[14px] text-ink-200 outline-none focus:border-accent-dim"
       rows="2"
-      placeholder="Ask Niffler to do something…"
+      placeholder={t("chat.placeholder")}
       bind:value={input}
       onkeydown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) {

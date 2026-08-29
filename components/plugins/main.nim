@@ -56,8 +56,14 @@ proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
   p.close()
 
 proc tail(s: string, n: int): string =
+  ## Last n bytes of s, snapped forward to a UTF-8 boundary so a multi-byte
+  ## character (CJK in compiler output, etc.) is never split into invalid
+  ## UTF-8 — a broken rune here would poison the JSON envelope downstream.
   if s.len <= n: return s
-  return "…" & s[^n .. ^1]
+  var start = s.len - n
+  while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
+    inc start  # skip a continuation byte: start at the rune's first byte
+  return "…" & s[start .. ^1]
 
 # --------------------------------------------------------------------------
 # repo/ref plumbing
@@ -287,7 +293,14 @@ proc doInstall(repo, refArg: string): JsonNode =
                 " — use plugin_update, or plugin_remove first"}
     removeDir(dest)
   createDir(dest.parentDir())
-  let url = if local: repo else: "https://github.com/" & repo & ".git"
+  # NIF_GIT_MIRROR rewrites the clone host (e.g. a CNB/Gitee mirror) for
+  # networks where github.com cloning is throttled; API/search stay on
+  # GitHub, which is usually still reachable.
+  let mirror = getEnv("NIF_GIT_MIRROR").strip(chars = {'/', ' '})
+  let url =
+    if local: repo
+    elif mirror.len > 0: mirror & "/" & repo & ".git"
+    else: "https://github.com/" & repo & ".git"
   let (cout, ccode) = if refTag.len > 0:
     runCmd("git clone --depth 1 --branch " & refTag & " " & url & " " & dest)
   else:

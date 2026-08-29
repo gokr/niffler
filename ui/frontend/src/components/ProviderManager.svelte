@@ -2,6 +2,7 @@
   import { send } from "../nats";
   import type { ProviderSummary } from "../lib/providers";
   import { hostname } from "../lib/providers";
+  import { t } from "../lib/i18n.svelte";
 
   let {
     open = $bindable(false),
@@ -115,7 +116,7 @@
     <button class="absolute inset-0 bg-black/50" onclick={close} aria-label="Close"></button>
     <div class="relative w-full max-w-md bg-ink-950 border-l border-ink-700 flex flex-col h-full">
       <div class="flex items-center justify-between px-4 py-3 border-b border-ink-700">
-        <span class="text-[14px] font-semibold text-ink-200">Providers</span>
+        <span class="text-[14px] font-semibold text-ink-200">{t("pm.title")}</span>
         <button class="text-ink-400 hover:text-ink-200 text-lg" onclick={close}>×</button>
       </div>
 
@@ -123,7 +124,7 @@
         {#if editing}
           <div class="space-y-3">
             <div class="text-[13px] font-medium text-ink-200">
-              {editing.isEdit ? "Edit" : "Add"} provider
+              {editing.isEdit ? t("pm.editProvider") : t("pm.addProvider")}
             </div>
             {#if !editing.isEdit}
               <div class="flex flex-wrap gap-1.5">
@@ -210,7 +211,7 @@
                 onclick={save}
                 disabled={saving || (!editing.isEdit && (!editing.nickname.trim() || !editing.apiKey.trim()))}
               >
-                {saving ? "Saving…" : "Save"}
+                {saving ? t("pm.saving") : t("pm.save")}
               </button>
               <button
                 class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
@@ -229,10 +230,10 @@
                     <div class="flex items-center gap-1.5">
                       <span class="text-[13px] font-medium text-ink-200">{p.nickname}</span>
                       {#if p.active}
-                        <span class="rounded-full bg-accent-dim/20 px-1.5 py-0.5 text-[10px] text-accent">active</span>
+                        <span class="rounded-full bg-accent-dim/20 px-1.5 py-0.5 text-[10px] text-accent">{t("pm.active")}</span>
                       {/if}
                       {#if !p.hasKey}
-                        <span class="rounded-full bg-warn/20 px-1.5 py-0.5 text-[10px] text-warn">no key</span>
+                        <span class="rounded-full bg-warn/20 px-1.5 py-0.5 text-[10px] text-warn">{t("pm.noKey")}</span>
                       {/if}
                     </div>
                     <div class="mt-0.5 text-[11px] text-ink-400 truncate font-mono">
@@ -244,17 +245,17 @@
                     <button
                       class="rounded-md border border-ink-600 px-2 py-1 text-[11px] text-ink-300 hover:bg-ink-800"
                       onclick={() => startEdit(p)}
-                    >Edit</button>
+                    >{t("pm.edit")}</button>
                     {#if confirmRemove === p.nickname}
                       <button
                         class="rounded-md border border-danger/50 px-2 py-1 text-[11px] text-danger hover:bg-danger/10"
                         onclick={() => remove(p.nickname)}
-                      >Sure?</button>
+                      >{t("pm.sure")}</button>
                     {:else}
                       <button
                         class="rounded-md border border-ink-600 px-2 py-1 text-[11px] text-ink-400 hover:bg-ink-800"
                         onclick={() => { confirmRemove = p.nickname; setTimeout(() => { if (confirmRemove === p.nickname) confirmRemove = null; }, 2500); }}
-                      >Remove</button>
+                      >{t("pm.remove")}</button>
                     {/if}
                   </div>
                 </div>

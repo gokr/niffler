@@ -166,7 +166,13 @@ proc promptTools*(cat: Catalog): JsonNode =
 proc shortDescription(schema: JsonNode): string =
   result = schema{"description"}.getStr("").splitWhitespace().join(" ")
   if result.len > 200:
-    result = result[0 ..< 197] & "..."
+    # Snap the cut to a UTF-8 boundary: descriptions can contain CJK text
+    # (e.g. a localized tool doc comment), and a split rune would make the
+    # hint JSON invalid.
+    var cut = 197
+    while cut > 0 and (result[cut].uint8 and 0xC0) == 0x80:
+      dec cut
+    result = result[0 ..< cut] & "..."
 
 proc toolHint(tool: ToolReg): JsonNode =
   %*{"name": tool.name, "description": shortDescription(tool.schema)}

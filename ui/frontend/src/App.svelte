@@ -5,6 +5,7 @@
   import { send, online, onStatus, isWails, busUrl, on, emit } from "./nats";
   import Components from "./views/Components.svelte";
   import { initTheme, toggleTheme } from "./lib/theme";
+  import { t, cycleLocale, locale } from "./lib/i18n.svelte";
   import ProviderControl from "./components/ProviderControl.svelte";
   import ProviderManager from "./components/ProviderManager.svelte";
   import ModelPicker from "./components/ModelPicker.svelte";
@@ -274,7 +275,7 @@
         class:bg-accent={connected === true}
         class:bg-danger={connected === false}
         class:bg-ink-600={connected === null}
-        title={connected === null ? "connecting…" : (connected ? "bus connected" : "bus unreachable") + (url ? " · " + url : "")}
+        title={connected === null ? t("app.connecting") : (connected ? t("app.busConnected") : t("app.busUnreachable")) + (url ? " · " + url : "")}
       ></span>
     </div>
     <Sessions {selectSession} {sessionId} {refreshKey} onDelete={handleDelete} />
@@ -283,7 +284,7 @@
         class="w-full rounded-md bg-accent-dim/15 text-accent px-3 py-2 text-sm font-medium hover:bg-accent-dim/25"
         onclick={newSession}
       >
-        + New session
+        {t("app.newSession")}
       </button>
     </div>
     <Components {sessionId} />
@@ -291,7 +292,7 @@
 
   <main class="flex-1 flex flex-col min-w-0">
     <header class="flex items-center gap-2 px-4 py-2 border-b border-ink-700 text-[13px] text-ink-400">
-      <span>{sessionId ? "session " + short(sessionId) : "new session"}</span>
+      <span>{sessionId ? t("app.session", { id: short(sessionId) }) : t("app.newSessionLabel")}</span>
       {#if url}
         <span class="font-mono text-ink-600 hidden sm:inline">{url}</span>
       {/if}
@@ -301,11 +302,11 @@
 
         <button
           class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 max-w-[160px] truncate"
-          title={headerModel ? `Model: ${headerModel}` : "Select model"}
+          title={headerModel ? t("app.model") + " " + headerModel : t("app.selectModel")}
           onclick={() => (modelPickerOpen = true)}
           disabled={!sessionId}
         >
-          <span class="text-ink-400">model:</span>
+          <span class="text-ink-400">{t("app.model")}</span>
           <span class="text-ink-200 ml-1">{headerModel || "—"}</span>
         </button>
 
@@ -315,7 +316,7 @@
             class:text-ink-400={ctxPct < 75}
             class:text-warn={ctxPct >= 75 && ctxPct < 90}
             class:text-danger={ctxPct >= 90}
-            title={`${headerUsed.toLocaleString()} / ${headerContext.toLocaleString()} tokens`}
+            title={t("app.tokens", { used: headerUsed.toLocaleString(), context: headerContext.toLocaleString() })}
           >
             {fmtContext(headerUsed)} / {fmtContext(headerContext)}
           </span>
@@ -323,23 +324,29 @@
 
         <button
           class="rounded-md border border-ink-600 px-2 py-1 text-[13px] hover:bg-ink-700"
-          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          aria-label="Toggle theme"
+          title={theme === "dark" ? t("app.switchLight") : t("app.switchDark")}
+          aria-label={theme === "dark" ? t("app.switchLight") : t("app.switchDark")}
           onclick={() => (theme = toggleTheme())}
         >
           {theme === "dark" ? "☀" : "☾"}
+        </button>
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-700"
+          title={t("app.switchLanguage")}
+          aria-label={t("app.switchLanguage")}
+          onclick={cycleLocale}
+        >
+          {locale() === "en" ? "EN" : locale() === "zh" ? "中文" : "繁中"}
         </button>
       </div>
     </header>
     {#if !isWails()}
       <div class="mx-6 mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger">
-        Running in a browser — the bus bridge only exists inside the desktop
-        shell. Launch it with <code class="font-mono">./ui/build/bin/niffler-ui</code>
+        {t("app.browserNotice")} <code class="font-mono">./ui/build/bin/niffler-ui</code>
       </div>
     {:else if connected === false}
       <div class="mx-6 mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger">
-        bus unreachable at <code class="font-mono">{url || "nats://127.0.0.1:4222"}</code>
-        — start the harness and keep its terminal open:
+        {t("app.unreachableNotice", { url: url || "nats://127.0.0.1:4222" })}
         <code class="font-mono">NATS_URL={url || "nats://127.0.0.1:4222"} ./var/bin/niffler</code>
       </div>
     {/if}
@@ -353,46 +360,45 @@
 {#if approvals.length > 0}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
     <div class="w-[520px] max-w-[92vw] rounded-xl border border-ink-600 bg-ink-900 p-5 shadow-2xl">
-      <div class="text-[15px] font-semibold text-ink-200">Approval required</div>
+      <div class="text-[15px] font-semibold text-ink-200">{t("app.approvalRequired")}</div>
       <div class="mt-1 text-[13px] text-ink-400">
-        A tool call with <code class="font-mono text-ink-300">x-harness.approval</code> is
-        waiting for your ok:
+        {t("app.approvalWaiting")}
       </div>
       <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
         <div class="font-mono text-[13px] text-accent">{approvals[0].tool}</div>
         <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
       </div>
       {#if approvals.length > 1}
-        <div class="mt-2 text-[12px] text-ink-400">+ {approvals.length - 1} more waiting</div>
+        <div class="mt-2 text-[12px] text-ink-400">{t("app.moreWaiting", { n: String(approvals.length - 1) })}</div>
       {/if}
       {#if (autoApproved[approvals[0].sessionId] ?? []).length > 0}
         <div class="mt-2 text-[12px] text-ink-400">
-          auto-approving this session: <span class="font-mono">{autoApproved[approvals[0].sessionId].join(", ")}</span>
+          {t("app.autoApproving")} <span class="font-mono">{autoApproved[approvals[0].sessionId].join(", ")}</span>
         </div>
       {/if}
       <div class="mt-4 flex items-center justify-between gap-2">
-        <span class="text-[11px] text-ink-400">Enter approve · Esc deny</span>
+        <span class="text-[11px] text-ink-400">{t("app.enterEsc")}</span>
         <div class="flex gap-2">
           <button
             class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
             onclick={() => answerApproval(false)}
           >
-            Deny
+            {t("app.deny")}
           </button>
           {#if approvals[0].sessionId}
             <button
               class="rounded-lg border border-accent-dim/50 px-4 py-1.5 text-[13px] text-accent hover:bg-accent-dim/10"
-              title="Approve and don't ask again for this tool for the rest of this session"
+              title={t("app.autoApproveTitle")}
               onclick={() => answerApproval(true, true)}
             >
-              Auto approve
+              {t("app.autoApprove")}
             </button>
           {/if}
           <button
             class="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-semibold text-ink-950 hover:opacity-90"
             onclick={() => answerApproval(true)}
           >
-            Approve
+            {t("app.approve")}
           </button>
         </div>
       </div>

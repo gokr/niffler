@@ -99,11 +99,21 @@ when defined(posix):
       echo "\n" & matches.join("  ")
       draw(ed)
 
+  proc dropLastRune(s: string): string =
+    ## Delete the last character, not the last byte: a CJK rune occupies
+    ## 3 bytes, so a byte-wise backspace would leave broken UTF-8 on the
+    ## line. Walk back over continuation bytes (10xxxxxx) to the rune's
+    ## first byte.
+    var i = s.len - 1
+    while i > 0 and (s[i].uint8 and 0xC0) == 0x80:
+      dec i
+    result = s[0 ..< i]
+
   proc handleKey(ed: Editor, key: string) =
     case key
     of "backspace":
       if ed.line.len > 0:
-        ed.line = ed.line[0 ..< ^1]
+        ed.line = dropLastRune(ed.line)
     of "up":
       if ed.hist.len > 0:
         if ed.histIdx == -1:

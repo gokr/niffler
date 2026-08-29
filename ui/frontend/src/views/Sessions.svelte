@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { send } from "../nats";
+  import { t } from "../lib/i18n.svelte";
 
   interface SessionInfo {
     id: string;
@@ -95,8 +96,8 @@
 <nav class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
   {#if sessionId === null}
     <div class="session-item active opacity-70 cursor-default">
-      New session
-      <span class="block text-[11px] text-ink-400">not started yet</span>
+      {t("sessions.newSession")}
+      <span class="block text-[11px] text-ink-400">{t("sessions.notStarted")}</span>
     </div>
   {/if}
   {#each sessions as s (s.id)}
@@ -124,7 +125,7 @@
           <span class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
               class="min-w-7 h-7 flex items-center justify-center rounded-md px-2 text-[13px] leading-none hover:bg-ink-600 hover:text-ink-200"
-              title="Rename"
+              title={t("sessions.rename")}
               onclick={(e) => {
                 e.stopPropagation();
                 startEdit(s);
@@ -136,14 +137,14 @@
               class="min-w-7 h-7 flex items-center justify-center rounded-md px-2 text-[13px] leading-none hover:bg-ink-600"
               class:text-danger={confirmId === s.id}
               class:text-ink-400={confirmId !== s.id}
-              title={confirmId === s.id ? "Click again to delete" : "Delete session"}
+              title={confirmId === s.id ? t("sessions.confirmDelete") : t("sessions.delete")}
               onclick={(e) => {
                 e.stopPropagation();
                 if (confirmId === s.id) removeSession(s);
                 else askDelete(s);
               }}
             >
-              {confirmId === s.id ? "sure?" : "×"}
+              {confirmId === s.id ? t("sessions.sure") : "×"}
             </button>
           </span>
         </span>

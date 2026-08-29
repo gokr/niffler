@@ -108,8 +108,14 @@ proc loadManifest(root: string): JsonNode =
   result = nodes[0]
 
 proc tail(s: string, n: int): string =
+  ## Last n bytes of s, snapped forward to a UTF-8 boundary so a multi-byte
+  ## character (CJK in compiler output, etc.) is never split into invalid
+  ## UTF-8 — a broken rune here would poison the JSON envelope downstream.
   if s.len <= n: return s
-  return "…" & s[^n .. ^1]
+  var start = s.len - n
+  while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
+    inc start  # skip a continuation byte: start at the rune's first byte
+  return "…" & s[start .. ^1]
 
 proc rebuildShipped(root: string): bool =
   ## Recover mode: rebuild the shipped binaries from source. The git repo
