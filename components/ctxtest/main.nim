@@ -73,6 +73,9 @@ comp.tool:
           "let a = callTool(\"agent_run\", jobj(jpair(\"task\", jesc(\"echo agent-ok and report\"))))\n" &
           "finish(jobj(jpair(\"agent\", jesc(a))))\n"
         return toolCall("t4", "fabric", %*{"code": prog})
+      of 4:
+        # program library: run the stored program by name
+        return toolCall("t5", "fabric", %*{"name": "fab-lib-test"})
       else:
         return %*{"content": "fabric-turn-done"}
     if stage == 0:

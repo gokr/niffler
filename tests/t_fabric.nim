@@ -114,6 +114,17 @@ proc main() =
     agentProc.close()
   check("agent registered", waitComponent(nc, "agent"))
 
+  # save a program into the model-curated library before the turn: the
+  # fabric tool fetches and runs it by name
+  let libProg = "import fabricguest\n" &
+    "finish(jobj(jpair(\"lib\", jesc(\"stored-ok\"))))\n"
+  let put = call(nc, "store", "put",
+                 %*{"kind": "fabricprog", "id": "fab-lib-test",
+                    "value": %*{"code": libProg,
+                                "description": "t_fabric library fixture"}},
+                 10_000)
+  check("library program stored", put{"ok"}.getBool(false), $put)
+
   let sessionId = "fab-test"
   let turn = call(nc, "core", "session",
                   %*{"sessionId": sessionId, "content": "go"}, 300_000)
@@ -150,6 +161,10 @@ proc main() =
   # hybrid: fabric program -> agent_run -> subagent session -> reply
   check("hybrid fabric->agent_run returned the subagent reply",
         transcript.contains("subagent-done"), transcript)
+
+  # program library: the named run executed the stored source
+  check("stored program ran by name",
+        transcript.contains("stored-ok"), transcript)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""

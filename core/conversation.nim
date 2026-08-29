@@ -90,6 +90,11 @@ invoke core spawn when self-extension is necessary.
 To stop a tool again, discover and invoke core kill (temporary; restored on
 normal boot) or remove (forgotten permanently).
 Conversations and messages persist automatically via the store.
+For routing multi-step work: mechanical, known-shape tasks (fan-out,
+search-then-distill, batch edits, polling) belong in a program — discover
+and use the `fabric` tool. Exploratory subtasks that need fresh context and
+per-step judgment belong in `agent_run` subagents. Single-step requests
+stay direct.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
 sources: components/ (manifest.yaml lists the boot set), SDKs: sdk/ +
