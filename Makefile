@@ -143,6 +143,9 @@ var/bin/provider: components/provider/main.go components/provider/go.mod compone
 var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
+var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
+
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
@@ -150,7 +153,8 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var
 	var/bin/edit var/bin/grep var/bin/git var/bin/write \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
-	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm
+	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
+	var/bin/agent
 
 build: components
 

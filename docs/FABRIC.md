@@ -136,11 +136,18 @@ handlers on one thread; background jobs need worker processes + durable state
 - **`agent_run {task, model?, timeoutMs?}`**: prepare child runner via the
   Phase-0 core op → call the child runner's subject directly with the framed
   task → subscribe `ev.session.>` filtered by id → return on `done` with
-  `{reply, sessionId}`. No core stash, no deadlock.
+  `{reply, sessionId}`. No core stash, no deadlock. *(As shipped: the child
+  session call is a plain request/reply whose result carries the final reply —
+  the event subscription is only needed for the later spawn/wait phase.)*
 - **`agent_steer {sessionId, message}`**: fire-and-forget publish to
   `svc.session.<id>.steer` (safe synchronously; drainSteer consumes it).
-- **Depth guard**: before spawning from session `S`, `get` `sessionmeta`;
-  if `S` has a `parent`, deny. Writes `sessionmeta {parent}` for children.
+- **Depth guard at dispatch time** (`x-harness.noSpawn: true` on agent_run):
+  core's `dispatchToolCall` denies the call when the calling session has a
+  `sessionmeta {parent}` record in the store. The check MUST live in
+  dispatch, not in the component's handler — the handler blocks its
+  component's pump for the child's whole turn, so a subagent's spawn request
+  would queue behind it and circular-wait forever (found by t_agent; the
+  handler keeps its own `hasParent` check as backstop).
 - **Task framing**: fixed preamble ("You are a subagent. Work autonomously,
   report a concise result."). Subagent gets the full normal toolset and loop.
 - Approvals inside the subagent route to the driving client

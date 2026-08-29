@@ -45,9 +45,22 @@ proc newSupervisor*(root: string, nc: NatsConnection): Supervisor =
 proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
+  # Child output goes to var/logs/<name>.log: without a redirect, osproc
+  # gives the child an undrained pipe — a chatty child blocks on write and
+  # freezes silently mid-boot (this actually happened with session runners).
   putEnv("NIF_ROOT", sup.root)
-  c.process = startProcess(c.binary, workingDir = sup.root, args = args,
-                           options = {poUsePath})
+  let logDir = sup.root / "var" / "logs"
+  try:
+    createDir(logDir)
+  except CatchableError:
+    discard
+  let logPath = logDir / (c.name & ".log")
+  var cmd = "exec " & quoteShell(c.binary)
+  for a in args:
+    cmd.add(" " & quoteShell(a))
+  cmd.add(" >> " & quoteShell(logPath) & " 2>&1")
+  c.process = startProcess("/bin/sh", workingDir = sup.root,
+                           args = ["-c", cmd], options = {poUsePath})
   echo "supervisor: started " & c.name & " (" & c.binary & ")"
   c.restarts = 0
 

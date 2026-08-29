@@ -9,7 +9,7 @@
 ##   bogus lease, and one targeting a hidden core tool. The evidence comes
 ##   back in the tool result so the test can assert on all three.
 
-import std/[json, tables]
+import std/[json, strutils, tables]
 import natswrapper
 import niffler/sdk
 
@@ -18,18 +18,35 @@ let comp = newComponent("ctxtest", "0.1.0")
 var chatStage = initTable[string, int]()
   ## sessionId -> chat calls served (single-threaded SDK poll loop)
 
+proc toolCall(id, name: string, args: JsonNode): JsonNode =
+  ## One assistant tool-call turn for the stub LLM.
+  %*{"content": "",
+     "tool_calls": %*[{"id": id, "type": "function",
+                       "function": {"name": name,
+                                    "arguments": $args}}]}
+
 comp.tool:
   proc chat(messages: JsonNode = nil, tools: JsonNode = nil,
             sessionId: string = "", stream: bool = false): JsonNode =
-    ## Stub LLM surface for the session runner.
+    ## Stub LLM surface for the session runner. Scripted per session kind:
+    ## - agent-* sessions (real subagent children): depth-guard attempt,
+    ##   then bash work, then final reply.
+    ## - "agt-parent": agent_run tool call, then final reply.
+    ## - anything else (t_nested): ctxecho probe, then final reply.
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
+    if sessionId.startsWith("agent-"):
+      case stage
+      of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
+      of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
+      else: return %*{"content": "subagent-done"}
+    if sessionId == "agt-parent":
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent"})
+      return %*{"content": "agent-turn-done"}
     if stage == 0:
-      return %*{"content": "",
-                "tool_calls": %*[{
-                  "id": "t1", "type": "function",
-                  "function": {"name": "ctxecho",
-                               "arguments": "{\"msg\":\"hi\"}"}}]}
+      return toolCall("t1", "ctxecho", %*{"msg": "hi"})
     return %*{"content": "nested-turn-done"}
 comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
 

@@ -501,5 +501,21 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
         "tool '" & tool & "' needs a live session (no conversation turn is running)")
     ct.nested.lease = newId()
     args["__session"] = %*{"session": ct.nested.session, "lease": ct.nested.lease}
+    # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
+    # with a parent record in the store — may not call spawn-class tools. The
+    # check MUST live here, not in the component's handler: the handler blocks
+    # its component's pump for the child's whole turn, so a request from that
+    # child would queue behind it and circular-wait forever.
+    if schema{"x-harness"}{"noSpawn"}.getBool(false):
+      var hasParent = false
+      try:
+        let meta = dispatchSubjectCall(ct, "svc.store.call", "get",
+          %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
+        hasParent = meta{"value"}{"parent"}.getStr("").len > 0
+      except CatchableError:
+        discard  # store unreachable: the component's own guard still applies
+      if hasParent:
+        raise newException(ValueError,
+          "subagents cannot spawn subagents (depth limit)")
 
   dispatchSubjectCall(ct, "svc." & comp & ".call", tool, args, timeoutMs)
