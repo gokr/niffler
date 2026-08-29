@@ -146,6 +146,17 @@ var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum 
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
 
+# fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
+# on the search path, resolved via the real toolchain (choosenim shims are
+# binaries, so readlink lies — getCurrentCompilerExe does not).
+COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
+
+var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
+
+var/bin/fabric: components/fabric/fabric.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fabric/fabric.nim
+
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
@@ -154,7 +165,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash var
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
-	var/bin/agent
+	var/bin/agent var/bin/fabric var/bin/fabric-exec
 
 build: components
 

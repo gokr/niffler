@@ -45,6 +45,29 @@ comp.tool:
         return toolCall("t1", "agent_run",
                         %*{"task": "echo agent-ok via a subagent"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "fab-test":
+      case stage
+      of 0:
+        # happy path: guest calls bash through the bridge, finishes with one value
+        let prog = "import fabricguest\n" &
+          "let r = callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo fabric-ok\"))))\n" &
+          "logg(\"ran bash\")\n" &
+          "finish(jobj(jpair(\"bashResult\", jesc(r))))\n"
+        return toolCall("t1", "fabric", %*{"code": prog})
+      of 1:
+        # compile-error path: real Nim diagnostics come back
+        let bad = "import fabricguest\nfinish(jobj(jpair(\"x\" jnum(1))))\n"
+        return toolCall("t2", "fabric", %*{"code": bad})
+      of 2:
+        # budget path: an infinite call loop must die at maxCalls
+        let loop = "import fabricguest\n" &
+          "var i = 0\n" &
+          "while true:\n" &
+          "  inc i\n" &
+          "  discard callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo x\"))))\n"
+        return toolCall("t3", "fabric", %*{"code": loop, "maxCalls": 5})
+      else:
+        return %*{"content": "fabric-turn-done"}
     if stage == 0:
       return toolCall("t1", "ctxecho", %*{"msg": "hi"})
     return %*{"content": "nested-turn-done"}
