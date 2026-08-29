@@ -21,6 +21,7 @@ type
     description*: string
     source*: JsonNode    ## nil or {tool, args} — completion candidates source
     default*: JsonNode   ## optional default value
+    values*: seq[string] ## optional inline completion candidates (enums)
 
   SlashCommand* = object
     name*: string        ## command word; unique across the catalog
@@ -295,6 +296,7 @@ proc slashTable*(cat: Catalog): JsonNode =
         if p.description.len > 0: pn["description"] = %p.description
         if p.source != nil: pn["source"] = p.source
         if p.default != nil: pn["default"] = p.default
+        if p.values.len > 0: pn["values"] = %p.values
         params.add(pn)
       node["params"] = %params
     cmds.add(node)
@@ -313,6 +315,7 @@ proc slashList*(reg: ComponentReg): JsonNode =
         if p.description.len > 0: pn["description"] = %p.description
         if p.source != nil: pn["source"] = p.source
         if p.default != nil: pn["default"] = p.default
+        if p.values.len > 0: pn["values"] = %p.values
         params.add(pn)
       node["params"] = %params
     cmds.add(node)
@@ -399,6 +402,9 @@ proc handle(cat: Catalog, subject, data: string) =
           if param.name.len == 0: continue
           if param.kind notin ["string", "bool", "int", "enum"]:
             param.kind = "string"
+          if p{"values"} != nil and p{"values"}.kind == JArray:
+            for v in p{"values"}:
+              if v.kind == JString: param.values.add(v.getStr(""))
           cmd.params.add(param)
       reg.slash.add(cmd)
       cat.slashIndex[sname] = name

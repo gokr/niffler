@@ -51,13 +51,16 @@ type SlashSource struct {
 
 // SlashParam is one command-line parameter of a slash command.
 // Kind: string | bool | int | enum (default string). Default is the
-// optional default value used when the user omits the parameter.
+// optional default value used when the user omits the parameter. Values
+// lists inline completion candidates (small enums); Source fetches them
+// from a tool when the user hits Tab.
 type SlashParam struct {
 	Name        string       `json:"name"`
 	Kind        string       `json:"kind,omitempty"`
 	Description string       `json:"description,omitempty"`
 	Source      *SlashSource `json:"source,omitempty"`
 	Default     any          `json:"default,omitempty"`
+	Values      []string     `json:"values,omitempty"`
 }
 
 // SlashCommand declares how interactive UIs (TUIs, web) expose this

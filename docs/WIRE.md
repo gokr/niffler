@@ -76,8 +76,11 @@ SlashCommand = {
     {"name": "env", "kind": "enum",     // kind: string|bool|int|enum (default string)
      "source": {"tool": "deploy.envs", "args": {}},  // value candidates for
                              //   completion; the UI calls this tool lazily on Tab
+                             //   (resolved server-side via core.invoke)
      "description": "target environment"},
-    {"name": "force", "kind": "bool", "default": false}
+    {"name": "force", "kind": "bool", "default": false},
+    {"name": "mode", "kind": "enum", "values": ["fast", "safe"]}  // inline
+                             //   candidates for small enums (no roundtrip)
   ]
 }
 ```
