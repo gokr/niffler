@@ -159,6 +159,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%*{"name": t.name, "schema": t.schema})
         var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
                        "tools": tools, "registeredAt": reg.registeredAt}
+        if reg.slash.len > 0:
+          entry["slash"] = slashList(reg)
         let m = langTable.getOrDefault(name)
         if m != nil:
           if m{"build"}{"lang"}.getStr("").len > 0:

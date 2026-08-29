@@ -333,12 +333,17 @@ func namedStoredProvider(c *sdk.Component, name string) (provider, string, strin
 // chat tool
 
 type chatArgs struct {
-	Messages  []openai.ChatCompletionMessage `json:"messages"`
-	Tools     []openai.Tool                  `json:"tools"`
-	Model     string                         `json:"model"`
-	Provider  string                         `json:"provider"`
-	SessionID string                         `json:"sessionId"`
-	Stream    bool                           `json:"stream"`
+	Messages       []openai.ChatCompletionMessage `json:"messages"`
+	Tools          []openai.Tool                  `json:"tools"`
+	Model          string                         `json:"model"`
+	Provider       string                         `json:"provider"`
+	SessionID      string                         `json:"sessionId"`
+	Stream         bool                           `json:"stream"`
+	// ReasoningEffort forwards a per-turn thinking-effort selection
+	// ("low"|"medium"|"high"); empty = provider default. Only sent to the
+	// API when set — providers that do not support reasoning_effort
+	// (deepseek-reasoner, most open gateways) never see the field.
+	ReasoningEffort string `json:"reasoning_effort"`
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -489,10 +494,11 @@ func sanitizeMessages(msgs []openai.ChatCompletionMessage) {
 
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model:                model,
-		Messages:             args.Messages,
-		Tools:                args.Tools,
-		MaxCompletionTokens:  outputSize,
+		Model:               model,
+		Messages:            args.Messages,
+		Tools:               args.Tools,
+		MaxCompletionTokens: outputSize,
+		ReasoningEffort:     args.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, err
@@ -520,6 +526,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		Messages:            args.Messages,
 		Tools:               args.Tools,
 		MaxCompletionTokens: outputSize,
+		ReasoningEffort:     args.ReasoningEffort,
 		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
 	})
 	if err != nil {
