@@ -190,6 +190,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%*{"name": t.name, "schema": t.schema})
         var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
                        "tools": tools, "registeredAt": reg.registeredAt}
+        # The interactive-client flag must survive snapshot reseeding: a child
+        # session runner (subagent) routes its fallback approvals through
+        # clientCount() — a dropped flag makes every approval there deny.
+        if reg.client:
+          entry["client"] = %true
         if reg.slash.len > 0:
           entry["slash"] = slashList(reg)
         let m = langTable.getOrDefault(name)
