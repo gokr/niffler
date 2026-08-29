@@ -1,3 +1,7 @@
+<!-- Historical: the external review that shaped the fabric design. Its
+     findings are resolved in the shipped implementation — see
+     docs/FABRIC.md for what actually shipped. -->
+
 Assessment
 The core idea is sound: one model-generated program can internalize deterministic intra-turn control flow and keep intermediate tool results out of model context. It does not replace the completions protocol entirely, however. The model still emits the outer fabric call through completions, and semantic replanning still requires another completion or a subagent.
 I would not consider the current plan implementation-ready. The overall seam is right, but several security and control-flow assumptions do not hold in the current codebase.

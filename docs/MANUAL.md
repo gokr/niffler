@@ -497,7 +497,8 @@ The `fetch` component is the web access tool (a port of the old niffler
 The `fabric` component adds programmable tool calling: the model writes a
 Nim program that drives Niffler tools itself, and only the program's
 `finish()` value enters the conversation. The `agent` component turns
-sessions into subagents. Design, threat model, and phases: `docs/FABRIC.md`.
+sessions into subagents. Design, threat model, and shipped-scope notes:
+`docs/FABRIC.md`.
 
 | Tool | What it does |
 |---|---|
@@ -510,8 +511,9 @@ sessions into subagents. Design, threat model, and phases: `docs/FABRIC.md`.
   crosses the session nested-call proxy (`svc.session.<id>.tool`), re-entering
   the single dispatch gate (approval, required-args validation, timeout).
   The executor child holds no NATS connection and no credentials.
-- **Guards**: proxy rejects hidden tools, `chat`/`session`/`invoke`, nested
-  fabric; a per-turn lease expires stale requests; `maxCalls` budgets calls;
+- **Guards**: proxy rejects hidden tools and internal/recursive surfaces
+  (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare`); a
+  per-turn lease expires stale requests; `maxCalls` budgets calls;
   `x-harness.noSpawn` denies subagent spawns from subagents at dispatch time.
 - **Context economy**: intermediate results never enter the conversation;
   oversized `finish()` values spill to `var/fabric-artifacts/<run>.json`
