@@ -49,7 +49,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components components-inner ui ui-install ui-uninstall run \
+.PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
         test test-bash test-store test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-core test-discover test-cli test-hashline \
         test-grep test-git test-write test-edit \
@@ -64,6 +64,7 @@ help:
 	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
 	@echo 'make run       run the harness in the terminal (admin shell)'
+	@echo 'make down      stop any running harness, components and nats-server'
 	@echo 'make test      end-to-end smoke test (spawns its own bus)'
 	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
 	@echo 'make setup     install prerequisites for this platform'
@@ -202,6 +203,19 @@ ui-uninstall:
 
 run: build
 	./var/bin/niffler
+
+# down: stop every harness/component of this repo plus the bus. Needed when
+# a stray detached core (e.g. one autostarted by a UI whose terminal is gone)
+# keeps var/barrel-db.lock and a fresh harness's store refuses to start.
+# Bracketed patterns avoid pkill matching this recipe's own shell; killing
+# all nats-server instances is intentional: orphaned buses outlive their
+# harness (see AGENTS.md) and cannot be matched by path.
+down:
+	@pkill -f "var/bin/[n]iffler" 2>/dev/null; \
+	 pkill -f "niffler/var/[b]in" 2>/dev/null; \
+	 pkill -f "niffler-[u]i" 2>/dev/null; \
+	 pkill -x nats-server 2>/dev/null; \
+	 sleep 1; echo "down: harnesses, components and nats-server stopped"
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/smoke.nim

@@ -76,6 +76,11 @@ make gotest           # Go unit tests + vet: sdk/go, components/models, llm
                       # (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
+make down             # stop stray harnesses/components + nats-server (e.g. a
+                      # detached core holding var/barrel-db.lock so a fresh
+                      # store refuses to start; also check var/logs/<name>.log
+                      # — the supervisor writes child output there and shows
+                      # its tail when a child dies)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
 make dev              # Svelte dev server in a browser (bridge stubbed)
