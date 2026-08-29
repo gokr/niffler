@@ -628,17 +628,30 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     let tcMsg = %*{"role": "assistant", "content": nil, "tool_calls": toolCalls}
     messages.add(tcMsg)
-    p.persistMsg(tcMsg)
     for tc in toolCalls:
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
+      let rawArgs = tc{"function"}{"arguments"}.getStr("{}")
       var args = newJObject()
+      var parseFailed = false
       try:
-        args = parseJson(tc{"function"}{"arguments"}.getStr("{}"))
+        args = parseJson(rawArgs)
       except CatchableError:
-        discard
+        # A truncated or garbled stream can leave tool-call arguments that
+        # are not valid JSON. Neutralize the call in the persisted history
+        # (strict backends re-validate assistant tool_calls on every
+        # request and would 400 the whole turn) and tell the model what
+        # happened instead of dispatching an empty args object.
+        parseFailed = true
+        tc{"function"}["arguments"] = %"{}"
       try:
-        let toolResult = ct.dispatchToolCall(name, args)
+        let toolResult =
+          if parseFailed:
+            %*{"ok": false,
+               "error": "tool call arguments were not valid JSON (truncated or garbled stream): " &
+                        rawArgs[0 ..< min(rawArgs.len, 200)]}
+          else:
+            ct.dispatchToolCall(name, args)
         ct.cat.pump()
         if ct.sup != nil:
           ct.sup.pump(ct.cat)
@@ -659,6 +672,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
                                  "args": args, "error": e.msg})
+    p.persistMsg(tcMsg)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")

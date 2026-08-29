@@ -349,6 +349,11 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if len(args.Messages) == 0 {
 		return nil, fmt.Errorf("messages required")
 	}
+	// Core replays stored history verbatim; a session poisoned by an
+	// earlier truncated tool-call stream would make strict backends 400 the
+	// whole request ("Assistant tool call function.arguments must be valid
+	// JSON"). Repair before sending — this is what unsticks such sessions.
+	sanitizeMessages(args.Messages)
 
 	// The cancellation side-channel is subscribed before provider/model/context
 	// resolution: a cancel published during that window must still abort the
@@ -395,6 +400,91 @@ func stripModelPrefix(model string) string {
 		return model[i+1:]
 	}
 	return model
+}
+
+// repairToolArgs returns raw when it is valid JSON, otherwise the best
+// repair: complete any unterminated string/containers (truncated streams
+// are the common failure), falling back to "{}" when the content cannot
+// be salvaged. Repaired history keeps strict backends happy without ever
+// executing anything — this runs on text, not on tool dispatch.
+func repairToolArgs(raw string) string {
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "{}"
+	}
+	var out strings.Builder
+	out.WriteString(trimmed)
+	var stack []byte // open containers, outermost last
+	inString := false
+	escaped := false
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, ch)
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			} else {
+				return "{}" // mismatched closer: unrecoverable
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			} else {
+				return "{}"
+			}
+		}
+	}
+	if inString {
+		out.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			out.WriteByte('}')
+		} else {
+			out.WriteByte(']')
+		}
+	}
+	repaired := out.String()
+	if !json.Valid([]byte(repaired)) {
+		return "{}"
+	}
+	return repaired
+}
+
+// sanitizeMessages repairs tool-call arguments in assistant messages so a
+// strict backend never rejects replayed history. Only assistant tool_calls
+// are touched; everything else round-trips unchanged.
+func sanitizeMessages(msgs []openai.ChatCompletionMessage) {
+	for i := range msgs {
+		if msgs[i].Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		for j := range msgs[i].ToolCalls {
+			msgs[i].ToolCalls[j].Function.Arguments =
+				repairToolArgs(msgs[i].ToolCalls[j].Function.Arguments)
+		}
+	}
 }
 
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {

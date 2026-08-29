@@ -199,3 +199,58 @@ func TestStripModelPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestRepairToolArgs(t *testing.T) {
+	truncated := `{"command": "cd /home/gokr && echo \"=== worktrees ===\"`
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"valid passes through", `{"tool":"info","arguments":{}}`, `{"tool":"info","arguments":{}}`},
+		{"truncated string value completes", truncated, truncated + `"}`},
+		{"truncated object completes", `{"a": 1`, `{"a": 1}`},
+		{"truncated array completes", `[1, 2`, `[1, 2]`},
+		{"truncated bare string completes", `"abc`, `"abc"`},
+		{"empty falls back", "", `{}`},
+		{"garbage falls back", `garbage`, `{}`},
+		{"trailing garbage falls back", `{"a": 1} junk`, `{}`},
+		{"mismatched closer falls back", `{"a": 1]`, `{}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := repairToolArgs(c.in)
+			if !json.Valid([]byte(got)) {
+				t.Fatalf("repairToolArgs(%q) = %q, not valid JSON", c.in, got)
+			}
+			if got != c.want {
+				t.Fatalf("repairToolArgs(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
+	bad := `{"command": "cd /home/gokr && echo \"=== worktrees ===\"`
+	msgs := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "hi"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			{ID: "c1", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "bash", Arguments: bad}},
+			{ID: "c2", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "invoke", Arguments: `{"tool":"info"}`}},
+		}},
+		{Role: openai.ChatMessageRoleTool, Content: "{}"},
+	}
+	sanitizeMessages(msgs)
+	if got := msgs[1].ToolCalls[0].Function.Arguments; !json.Valid([]byte(got)) {
+		t.Fatalf("first tool call still invalid after sanitize: %q", got)
+	}
+	if got := msgs[1].ToolCalls[0].Function.Arguments; got != bad+`"}` {
+		t.Fatalf("repaired arguments = %q", got)
+	}
+	if got := msgs[1].ToolCalls[1].Function.Arguments; got != `{"tool":"info"}` {
+		t.Fatalf("valid arguments were altered: %q", got)
+	}
+	if msgs[0].Content != "hi" || msgs[2].Content != "{}" {
+		t.Fatal("non-assistant messages were altered")
+	}
+}
