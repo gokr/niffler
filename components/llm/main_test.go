@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -253,4 +256,74 @@ func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	if msgs[0].Content != "hi" || msgs[2].Content != "{}" {
 		t.Fatal("non-assistant messages were altered")
 	}
+}
+
+// TestChatStreamCapturesZaiReasoningField covers the regression where
+// zai/glm-family gateways stream thinking as "reasoning" — a field the
+// go-openai library drops — so every thinking block silently vanished.
+// The stream loop reads RecvRaw and keeps both field names.
+func TestChatStreamCapturesZaiReasoningField(t *testing.T) {
+	tests := []struct {
+		name      string
+		fieldName string // "reasoning" (zai) or "reasoning_content" (deepseek)
+	}{
+		{name: "zai reasoning", fieldName: "reasoning"},
+		{name: "deepseek reasoning_content", fieldName: "reasoning_content"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newSSEChatServer(t, []string{
+				`{"model":"m1","choices":[{"delta":{"` + test.fieldName + `":"The user"}}]}`,
+				`{"model":"m1","choices":[{"delta":{"` + test.fieldName + `":" asked"}}]}`,
+				`{"choices":[{"delta":{"content":"Sure!"}}]}`,
+			})
+			defer server.Close()
+
+			cfg := openai.DefaultConfig("test-key")
+			cfg.BaseURL = server.URL
+			client := openai.NewClientWithConfig(cfg)
+
+			result, err := chatStream(t.Context(), nil, client, "m1", "test",
+				chatArgs{}, 128000, 4096)
+			if err != nil {
+				t.Fatalf("chatStream: %v", err)
+			}
+			got, ok := result.(map[string]any)
+			if !ok {
+				t.Fatalf("result = %#v, want map", result)
+			}
+			if got["reasoning"] != "The user asked" {
+				t.Fatalf("reasoning = %q, want %q", got["reasoning"], "The user asked")
+			}
+			if got["content"] != "Sure!" {
+				t.Fatalf("content = %q, want %q", got["content"], "Sure!")
+			}
+		})
+	}
+}
+
+// newSSEChatServer serves an OpenAI-compatible SSE chat stream with the
+// given JSON chunk payloads, terminated by [DONE].
+func newSSEChatServer(t *testing.T, chunks []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range chunks {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunk); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
 }

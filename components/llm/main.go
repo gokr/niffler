@@ -515,6 +515,38 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
 
+// llmChunk mirrors go-openai's ChatCompletionStreamResponse, but keeps the
+// gateway's `reasoning` delta field: zai/glm-family models stream thinking
+// as "reasoning" while deepseek-reasoner uses "reasoning_content" — the
+// library only knows the latter, which silently dropped all thinking for
+// zai models. The stream loop below therefore reads RecvRaw and unmarshals
+// into these local types instead of stream.Recv().
+type llmChunk struct {
+	Model   string        `json:"model"`
+	Usage   *openai.Usage `json:"usage"`
+	Choices []llmChoice   `json:"choices"`
+}
+
+type llmChoice struct {
+	Delta llmDelta `json:"delta"`
+}
+
+type llmDelta struct {
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content"`
+	Reasoning        string            `json:"reasoning"`
+	ToolCalls        []openai.ToolCall `json:"tool_calls"`
+}
+
+// reasoning returns the delta's thinking text under whichever field name
+// the provider uses.
+func (d llmDelta) reasoning() string {
+	if d.Reasoning != "" {
+		return d.Reasoning
+	}
+	return d.ReasoningContent
+}
+
 func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	// chatHandler owns the llm.cancel.<sessionId> side-channel subscription;
 	// this derivation just bounds this call to that shared context.
@@ -541,12 +573,18 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	var usageSeen bool
 
 	for {
-		resp, err := stream.Recv()
+		// RecvRaw + local unmarshal: the library's delta type drops the
+		// "reasoning" field zai/glm-family gateways stream (see llmChunk).
+		raw, err := stream.RecvRaw()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return nil, err
+		}
+		var resp llmChunk
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("bad stream chunk: %w", err)
 		}
 		if resp.Model != "" {
 			usedModel = resp.Model
@@ -562,15 +600,15 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		if delta.Content != "" {
 			content.WriteString(delta.Content)
 		}
-		if delta.ReasoningContent != "" {
-			reasoning.WriteString(delta.ReasoningContent)
+		if delta.reasoning() != "" {
+			reasoning.WriteString(delta.reasoning())
 		}
 		// one token frame per chunk with anything to show
-		if args.SessionID != "" && (delta.Content != "" || delta.ReasoningContent != "") {
+		if args.SessionID != "" && (delta.Content != "" || delta.reasoning() != "") {
 			_ = c.Emit("ev.llm.token", map[string]any{
 				"sessionId": args.SessionID,
 				"content":   delta.Content,
-				"reasoning": delta.ReasoningContent,
+				"reasoning": delta.reasoning(),
 			})
 		}
 		// streamed tool calls: id/name arrive in the first delta of a call,
