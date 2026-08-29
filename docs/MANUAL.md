@@ -37,7 +37,9 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `hashline-edit` | Nim | optional | hash-anchored file editing: `read`/`replace`/`undo_last_replace` on anchors that stay valid across edits |
+| `hashline-edit` | Nim | optional | hash-anchored file editing: pageable `read` plus onDemand `replace`/`undo_last_replace` for deleting/moving large blocks verbatim |
+| `edit` | Nim | optional | exact-text surgical editing: `edit` (unique `old_string`, guarded fallback cascade, `replace_all`) + `undo_last_edit` (approval-gated) |
+| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
 | `write` | Nim | optional | atomic whole-file write: create/overwrite/truncate with permission preservation (approval-gated) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
