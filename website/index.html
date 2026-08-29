@@ -73,7 +73,7 @@
       <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
       <p class="dim" data-i18n="term.l1">→ spawning nats-server on 127.0.0.1:4222</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, hashline-edit, grep, write, observe, logfile</p>
+      <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, fabric, agent, hashline-edit, grep, write, observe, logfile</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
     </div>
   </div>
@@ -102,7 +102,8 @@
       tool call, and the LLM does it to itself mid-conversation. Community
       packages install the same way: <code>plugin_install</code> clones,
       compiles from source and spawns — approval-gated, always built from
-      the published code.</p>
+      the published code. <code>fabric</code> goes further: the LLM programs
+      whole control flows in an embedded Nim VM.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
@@ -141,9 +142,11 @@
       <div class="box">write<br><span class="box-lang">nim sdk</span></div>
       <div class="box">observe<br><span class="box-lang">nim sdk</span></div>
       <div class="box">logfile<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">models<br><span class="box-lang">go sdk</span></div>
-      <div class="box">provider<br><span class="box-lang">go sdk</span></div>
-      <div class="box">llm<br><span class="box-lang">go sdk</span></div>
+        <div class="box">models<br><span class="box-lang">go sdk</span></div>
+        <div class="box">provider<br><span class="box-lang">go sdk</span></div>
+        <div class="box">llm<br><span class="box-lang">go sdk</span></div>
+        <div class="box">fabric<br><span class="box-lang">nim sdk</span></div>
+        <div class="box">agent<br><span class="box-lang">nim sdk</span></div>
       <div class="box box-your"><span data-i18n="arch.yourtool">your tool</span><br><span class="box-lang" data-i18n="arch.anylang">any language</span></div>
     </div>
     <p class="arch-note" data-i18n-html="arch.note2">every box is a small binary using its language's component SDK —<br>peers, isolated, individually killable.</p>
@@ -198,7 +201,7 @@
         <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
         <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
         <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># or click the desktop icon — autostarts the harness</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 17 contract tests + smoke + go tests</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 21 contract tests + smoke + go tests</span></p>
         <p class="dim">│</p>
         <p class="dim" data-i18n="qs.see">└─ make run / recover / dev · see docs/MANUAL.md</p>
       </div>
@@ -242,6 +245,8 @@
         <tr><td>models</td><td>go</td><td data-i18n-html="comp.models.p">models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
         <tr><td>provider</td><td>go</td><td data-i18n="comp.provider.p">store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
         <tr><td>llm</td><td>go</td><td data-i18n-html="comp.llm.p">streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
+        <tr><td>fabric</td><td>nim</td><td data-i18n-html="comp.fabric.p">programmable tool calling — the LLM writes a Nim program that owns the intra-turn control flow, run in an embedded VM that can call bus tools (<code>callTool</code>); only the result enters the conversation</td></tr>
+        <tr><td>agent</td><td>nim</td><td data-i18n-html="comp.agent.p">subagent sessions — turn any conversation into a delegated child runner with fresh context; the summary returns to the caller</td></tr>
         <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
         <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
         <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">Wails SPA — a NATS client, not a Wails client</td></tr>
@@ -312,11 +317,15 @@
       <li><span class="check">✓</span> <span data-i18n-html="status.l24">minimal boot profile — <code>--minimal</code> starts only store, bash, and llm while preserving skipped records</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l25">provider/model controls — stored providers, model selection, context meters, and live session status</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l26">progressive tool discovery — immutable per-session direct tools, discover/invoke gateways, and Live Components exposure state</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l27">fabric — programmable tool calling: LLM-written Nim programs in a VM-embedding executor, calling bus tools from inside the guest</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l28">subagent sessions — delegated child runners with fresh context, summaries returned to the caller</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l29">slash commands — declarative <code>niffler.json</code> registry for UIs, checkpointed in the store</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l30">thinking effort — per-conversation <code>reasoning_effort</code> (ctrl+g), streamed reasoning rendering in the TUI</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l31">cancellation — per-call LLM cancel and the TUI's two-stage stop (ESC, ESC)</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.i18n">UI + TUI localization — en/zh/zh-TW locales, CJK-safe truncation and editing</span></li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>
-      <li><span class="todo-x">✗</span> <span data-i18n="status.t2">cancellation in the terminal harness + UI</span></li>
       <li><span class="todo-x">✗</span> <span data-i18n="status.t3">store-tidb with FTS + vector memory</span></li>
     </ul>
   </div>
