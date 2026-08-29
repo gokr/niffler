@@ -79,11 +79,21 @@ discard comp.tool("ctxecho", ctxSchema,
     let hidden = nestedCall(subject, "session",
                             %*{"sessionId": sess, "content": "nope"},
                             lease, 10_000)
+    # 4. name-based rejection: chat and invoke are internal surfaces
+    let chatDeny = nestedCall(subject, "chat", %*{"sessionId": sess}, lease, 10_000)
+    let invokeDeny = nestedCall(subject, "invoke",
+                            %*{"tool": "bash", "arguments": {}}, lease, 10_000)
+    # 5. required-args validation: bash without "command" -> bad-args
+    let badArgs = nestedCall(subject, "bash", %*{"timeoutMs": 5}, lease, 10_000)
     return %*{
       "goodKind": $good.kind,
       "goodOutput": good.args{"output"}.getStr(""),
       "badCode": bad.error{"code"}.getStr(""),
       "hiddenCode": hidden.error{"code"}.getStr(""),
+      "chatCode": chatDeny.error{"code"}.getStr(""),
+      "invokeCode": invokeDeny.error{"code"}.getStr(""),
+      "badArgsCode": badArgs.error{"code"}.getStr(""),
+      "badArgsMsg": badArgs.error{"message"}.getStr(""),
     })
 
 comp.run()

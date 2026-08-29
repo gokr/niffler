@@ -114,6 +114,13 @@ proc main() =
         transcript.contains("bad-lease"), transcript)
   check("hidden tool denied at proxy",
         transcript.contains("denied"), transcript)
+  check("chat rejected by name at proxy",
+        transcript.contains("chatCode\\\":\\\"denied"), transcript)
+  check("invoke rejected by name at proxy",
+        transcript.contains("invokeCode\\\":\\\"denied"), transcript)
+  check("missing required arg rejected at proxy",
+        transcript.contains("badArgsCode\\\":\\\"bad-args") and
+        transcript.contains("command"), transcript)
 
   # --- fail closed: sessionContext tool without a live turn ----------------
   # Direct call (no dispatch, no injection): the proxy sees no live lease.

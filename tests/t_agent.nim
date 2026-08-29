@@ -134,6 +134,12 @@ proc main() =
   check("child ran bash", childTranscript.contains("agent-ok"),
         childTranscript)
 
+  # --- lineage: the child session carries its parent in the store ----------
+  let meta = call(nc, "store", "get",
+                  %*{"kind": "sessionmeta", "id": childId}, 10_000)
+  check("child sessionmeta records parent",
+        meta{"value"}{"parent"}.getStr("") == parentId, $meta)
+
   # --- agent_steer: fire-and-forget publish ---------------------------------
   let steer = call(nc, "agent", "agent_steer",
                    %*{"session_id": childId, "message": "keep going"}, 10_000)
