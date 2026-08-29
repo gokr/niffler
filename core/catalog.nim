@@ -125,11 +125,13 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Run one conversation turn or update its model selection (used by UIs)",
+      "description": "Run one conversation turn or update its selection (used by UIs)",
       "properties": {
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
-        "model": {"type": "string", "description": "Conversation model override; empty clears it"}
+        "model": {"type": "string", "description": "Conversation model override; empty clears it"},
+        "thinking": {"type": "string", "enum": ["low", "medium", "high"],
+                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

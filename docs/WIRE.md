@@ -47,9 +47,13 @@ reg.publish            # component announces itself on connect
 reg.depart             # same shape (name suffices), graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
-                       #   tool "session" {sessionId, content?, model?}; content runs a turn
-                       #   model-only calls persist/resolve selection without inference;
-                       #   model present + empty clears the conversation override
+                       #   tool "session" {sessionId, content?, model?, thinking?};
+                       #   content runs a turn; model-only calls persist/resolve
+                       #   selection without inference; model present + empty clears
+                       #   the conversation override. thinking (low|medium|high,
+                       #   empty clears) persists a per-conversation thinking-effort
+                       #   selection forwarded to the LLM as reasoning_effort
+                       #   (provider-dependent; providers without support never see it)
 svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)

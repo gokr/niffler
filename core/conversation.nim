@@ -140,6 +140,7 @@ type
     messages*: seq[JsonNode]
     persister*: Persister
     modelOverride*: string
+    thinkingEffort*: string  ## "" (provider default) | low | medium | high
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -494,7 +495,8 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
-              onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
+              onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+              thinkingEffort = ""): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
   ## ("assistant", {sessionId, content}), ("toolcall", {sessionId, tool, args,
@@ -550,6 +552,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       llmArgs["model"] = %selectedModel
     if resolvedProvider.len > 0:
       llmArgs["provider"] = %resolvedProvider
+    if thinkingEffort.len > 0:
+      llmArgs["reasoning_effort"] = %thinkingEffort
     var resp: JsonNode
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
@@ -593,7 +597,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "model": usedModel,
         "context": p.ctxSize,
         "promptTokens": p.promptTokens,
-        "usedTokens": p.contextUsed
+        "usedTokens": p.contextUsed,
+        "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
       onEvent("status", statusEv)
@@ -675,8 +680,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let sessionId = args{"sessionId"}.getStr("")
   let content = args{"content"}.getStr("")
   let hasModel = args.kind == JObject and args.hasKey("model")
-  if sessionId.len == 0 or (content.len == 0 and not hasModel):
-    return %*{"error": "session needs sessionId and content or model"}
+  let hasThinking = args.kind == JObject and args.hasKey("thinking")
+  if sessionId.len == 0 or (content.len == 0 and not hasModel and not hasThinking):
+    return %*{"error": "session needs sessionId and content, model or thinking"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
@@ -688,6 +694,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     ensureConversationHeader(ct, sessionId)
     let header = loadConversationHeader(ct, sessionId)
     entry.modelOverride = header{"modelOverride"}.getStr("")
+    entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
     var pt = 0
     var used = 0
     var cs = 0
@@ -704,6 +711,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.modelOverride = args{"model"}.getStr("").strip()
     ct.updateConversationHeader(sessionId,
       %*{"modelOverride": entry.modelOverride})
+  if args.kind == JObject and args.hasKey("thinking"):
+    entry.thinkingEffort = args{"thinking"}.getStr("").strip()
+    if entry.thinkingEffort notin ["", "low", "medium", "high"]:
+      return %*{"error": "thinking must be low, medium or high (empty clears)"}
+    ct.updateConversationHeader(sessionId,
+      %*{"thinkingEffort": entry.thinkingEffort})
 
   proc onEvent(kind: string, data: JsonNode) {.closure.} =
     let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: data)
@@ -713,6 +726,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var status = %*{
       "sessionId": sessionId,
       "model": entry.modelOverride,
+      "thinkingEffort": entry.thinkingEffort,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed
@@ -742,10 +756,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if ct.approval != nil: ct.approval.caller = ""
 
   let reply = runTurn(ct, entry.persister, entry.messages,
-                      entry.modelOverride, entry.exposure, onEvent)
+                      entry.modelOverride, entry.exposure, onEvent,
+                      entry.thinkingEffort)
   sessions[sessionId] = entry
   return %*{"ok": true, "sessionId": sessionId, "reply": reply,
-            "modelOverride": entry.modelOverride}
+            "modelOverride": entry.modelOverride,
+            "thinkingEffort": entry.thinkingEffort}
 
 # ---------------------------------------------------------------------------
 # Session runners — one process per conversation (system side: ensure/forward)
