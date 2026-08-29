@@ -73,7 +73,7 @@
       <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
       <p class="dim" data-i18n="term.l1">→ spawning nats-server on 127.0.0.1:4222</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, hashline-edit, grep, write, observe, logfile</p>
+      <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, edit, grep, git, observe, logfile</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
     </div>
   </div>
@@ -87,7 +87,7 @@
       <h3 data-i18n-html="why.1h"><span class="num">01</span> processes, not plugins</h3>
       <p data-i18n-html="why.1p">No dlopen, no ABI borders, no image rot. A component is a process —
       teardown is <code>exit()</code>, and the OS is the perfect disposer.
-      A crash never takes the harness down.</p>
+      A component crash does not take core or its peers down.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="why.2h"><span class="num">02</span> one protocol</h3>
@@ -107,8 +107,9 @@
     <article class="card">
       <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
       <p data-i18n-html="why.4p">Capabilities survive restarts: spawned components are recorded in the
-      store and restored on boot. The repo is the snapshot, <code>var/</code>
-      is disposable.</p>
+      store and restored on boot. The repo holds the reproducible source;
+      <code>var/bin/</code> can be rebuilt, while <code>var/barrel-db</code>
+      holds persistent state.</p>
     </article>
   </div>
 </section>
@@ -136,9 +137,9 @@
       <div class="box">plugins<br><span class="box-lang">nim sdk</span></div>
       <div class="box">skills<br><span class="box-lang">nim sdk</span></div>
       <div class="box">fetch<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">hashline-edit<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">edit<br><span class="box-lang">nim sdk</span></div>
       <div class="box">grep<br><span class="box-lang">nim sdk</span></div>
-      <div class="box">write<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">git<br><span class="box-lang">nim sdk</span></div>
       <div class="box">observe<br><span class="box-lang">nim sdk</span></div>
       <div class="box">logfile<br><span class="box-lang">nim sdk</span></div>
       <div class="box">models<br><span class="box-lang">go sdk</span></div>
@@ -234,9 +235,9 @@
         <tr><td>plugins</td><td>nim</td><td data-i18n-html="comp.plugins.p">component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
         <tr><td>skills</td><td>nim</td><td data-i18n="comp.skills.p">Agent Skills discovery, progressive-disclosure loading, resources, and managed install/remove</td></tr>
         <tr><td>fetch</td><td>nim</td><td data-i18n="comp.fetch.p">bounded HTTP(S) retrieval with methods/headers/body, Trafilatura-first HTML extraction, pure-Nim fallback, and large-result file spill</td></tr>
-        <tr><td>hashline-edit</td><td>nim</td><td data-i18n-html="comp.hashline.p">hash-anchored file editing: <code>read</code>/<code>replace</code>/<code>undo_last_replace</code> on stable line anchors</td></tr>
+        <tr><td>edit</td><td>nim</td><td data-i18n-html="comp.edit.p">file tools: <code>read</code>/<code>edit</code>/<code>write</code>/<code>undo_last_edit</code> — approval-gated mutations</td></tr>
         <tr><td>grep</td><td>nim</td><td data-i18n="comp.grep.p">ripgrep-backed content search and sorted repository file listing, with exact truncation markers</td></tr>
-        <tr><td>write</td><td>nim</td><td data-i18n="comp.write.p">approval-gated atomic whole-file writes with permission preservation and parent creation</td></tr>
+        <tr><td>git</td><td>nim</td><td data-i18n-html="comp.git.p">read-only repository inspection: <code>status</code>/<code>diff</code>/<code>log</code>/<code>show</code>/<code>blame</code></td></tr>
         <tr><td>observe</td><td>nim</td><td data-i18n="comp.observe.p">live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
         <tr><td>logfile</td><td>nim</td><td data-i18n-html="comp.logfile.p">durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
         <tr><td>models</td><td>go</td><td data-i18n-html="comp.models.p">models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
@@ -244,7 +245,7 @@
         <tr><td>llm</td><td>go</td><td data-i18n-html="comp.llm.p">streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
         <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
         <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
-        <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">Wails SPA — a NATS client, not a Wails client</td></tr>
+        <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">Wails-hosted SPA — architecturally a NATS client; Wails only hosts the UI</td></tr>
         <tr class="row-your"><td data-i18n="comp.your.name">your tool</td><td data-i18n="comp.your.lang">any</td><td data-i18n="comp.your.p">port the SDK — the envelope is the artifact (~200 lines)</td></tr>
       </tbody>
     </table>
@@ -298,8 +299,8 @@
       <li><span class="check">✓</span> <span data-i18n="status.l10">plugins — component ecosystem (discover, install, update, remove)</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l11">skills — progressive discovery and loading of Agent Skills</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l12">fetch — bounded web retrieval with Trafilatura-first text extraction</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l13">hashline-edit — hash-anchored file editing</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l14">grep + write — repository search and atomic whole-file edits</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l13">edit — read/edit/write/undo file tools</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l14">grep + git — repository search and read-only Git inspection</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l15">console + cli — follow and drive the bus from a terminal</span></li>
       <li><span class="check">✓</span> <span data-i18n-html="status.l16">streaming — live <code>ev.session.token</code> deltas in the UI</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l17">UI: components panel, tool-run view, light/dark theme, About dialog</span></li>

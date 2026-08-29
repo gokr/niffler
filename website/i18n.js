@@ -1,6 +1,7 @@
 /* niffler website — en/zh/zh-TW chrome localization.
- * English lives in the HTML (no catalog needed); zh and zh-TW translate
- * every data-i18n / data-i18n-html element. The choice persists to
+ * English lives in the HTML; its original DOM values are captured once so
+ * switching back from zh or zh-TW can restore them without a page reload.
+ * The choice persists to
  * localStorage and falls back to navigator.language
  * (zh-Hant/TW/HK -> Traditional, other zh -> Simplified). */
 
@@ -9,6 +10,9 @@
 
   var CATALOGS = {
     zh: {
+      "meta.title": "Niffler — 可自我扩展的 agent harness",
+      "meta.description": "Niffler 是一个极简、可自我扩展的 agent harness。组件以独立进程运行并通过 NATS 总线通信；agent 可以在对话过程中编写、编译并启动自己的工具。",
+      "locale.label": "语言",
       "nav.why": "为什么",
       "nav.architecture": "架构",
       "nav.quickstart": "快速开始",
@@ -16,8 +20,8 @@
       "nav.wire": "协议",
       "nav.status": "状态",
       "nav.gitclone": "git clone",
-      "hero.h1": "一个在对话中途<br><span class=\"accent\">把自己扩建出来</span>的 harness。",
-      "hero.sub": "Niffler 是一个极简、可自我扩展的 agent harness。组件是<strong>进程</strong>，总线是<strong>NATS</strong>，agent 在你和它对话时编写、编译并启动自己的工具。",
+      "hero.h1": "一个能在对话中途<br><span class=\"accent\">扩展自身能力</span>的 harness。",
+      "hero.sub": "Niffler 是一个极简、可自我扩展的 agent harness。每个组件都是<strong>独立进程</strong>，并通过 <strong>NATS 总线</strong>通信；agent 可以在对话过程中自行编写、编译并启动新工具。",
       "hero.ctaMake": "make && niffler-ui",
       "hero.ctaGithub": "github →",
       "hero.ctaDiscord": "discord →",
@@ -27,97 +31,100 @@
       "term.typed": "niffler — 等待输入…",
       "why.title": "为什么",
       "why.1h": "<span class=\"num\">01</span> 进程，而非插件",
-      "why.1p": "没有 dlopen、没有 ABI 边界、没有镜像腐烂。组件就是一个进程——拆除只需 <code>exit()</code>，操作系统就是完美的清理者。崩溃永远不会拖垮 harness。",
+      "why.1p": "无需 <code>dlopen</code>，也不受 ABI 兼容和进程内状态残留困扰。每个组件都是独立进程；停止组件只需结束进程，操作系统会回收相关资源。单个组件崩溃不会直接带崩 core 或其他组件。",
       "why.2h": "<span class=\"num\">02</span> 一种协议",
-      "why.2p": "Core 只讲一种线上格式：NATS 之上的 JSON envelope。编解码器约 200 行、纯 <code>std/json</code>——SDK 用 Nim、Go、TypeScript，或你接下来移植的任何语言。",
+      "why.2p": "Core 只使用一种通信格式：通过 NATS 传输的 JSON envelope。编解码器约 200 行，仅依赖 <code>std/json</code>。目前提供 Nim、Go 和 TypeScript SDK，也可以移植到其他语言。",
       "why.3h": "<span class=\"num\">03</span> 自我扩展",
-      "why.3p": "agent 写源码 → 调用 <code>builder.build</code> → 调用 <code>core.spawn</code> → 工具上线。添加能力就是一次工具调用，而且 LLM 在对话中途对自己完成它。社区包以同样的方式安装：<code>plugin_install</code> clone、从源码编译并启动——经审批门控，始终从发布的代码构建。",
-      "why.4h": "<span class=\"num\">04</span> 形态持久化",
-      "why.4p": "能力跨重启存续：已启动的组件记录在 store 里，开机时恢复。仓库即快照，<code>var/</code> 是一次性的。",
+      "why.3p": "agent 写源码 → 调用 <code>builder.build</code> → 调用 <code>core.spawn</code> → 新工具立即可用。新增能力本身就是一次工具调用，LLM 可以在对话过程中自行完成整套流程。社区组件也以相同方式安装：<code>plugin_install</code> 会克隆源码、编译并启动；执行前需人工批准，并始终从发布的源码构建。",
+      "why.4h": "<span class=\"num\">04</span> 能力形态持久化",
+      "why.4p": "能力可以跨重启保留：已启动的组件记录在 store 中，并在下次启动时自动恢复。仓库保存可复现的源码；<code>var/bin/</code> 可以重新构建，<code>var/barrel-db</code> 则保存持久化状态。",
       "arch.title": "架构",
       "arch.core": "对话循环 · supervisor<br>catalog · dispatch",
-      "arch.note1": "一个对话 = 一个进程：系统为每个对话启动一个 <code>var/bin/session &lt;id&gt;</code> runner——杀掉一个 runner，其他会话照常运行。",
+      "arch.note1": "一个对话 = 一个进程：系统为每个对话启动一个 <code>var/bin/session &lt;id&gt;</code> runner。终止某个 runner 不会影响其他会话。",
       "arch.yourtool": "你的工具",
       "arch.anylang": "任意语言",
-      "arch.note2": "每个方框都是一个用自己语言的组件 SDK 编写的小二进制——<br>对等、隔离、可单独杀掉。",
+      "arch.note2": "每个方框都是一个通过对应语言组件 SDK 构建的小型可执行程序——<br>彼此对等、相互隔离，可以独立停止。",
       "loop.title": "自我扩展循环",
       "qs.title": "快速开始",
       "qs.clone": "git clone git@github.com:gokr/niffler.git && cd niffler",
-      "qs.setup": "# 环境依赖（Ubuntu / macOS）",
-      "qs.make": "# 构建 core + 组件 + 桌面 UI，只需一次",
+      "qs.setup": "# 安装环境依赖（Ubuntu / macOS）",
+      "qs.make": "# 首次构建 core、组件和桌面 UI",
       "qs.run": "# 或点击桌面图标——自动启动 harness",
-      "qs.test": "# 总线契约套件——17 个契约测试 + smoke + go 测试",
+      "qs.test": "# 总线契约测试——17 项契约测试 + 冒烟测试 + Go 测试",
       "qs.see": "└─ make run / recover / dev · 见 docs/MANUAL.md",
-      "qs.requirements": "环境需求",
-      "qs.req.nim": "nim 2.x",
-      "qs.req.go": "go",
+      "qs.requirements": "环境要求",
+      "qs.req.nim": "Nim 2.x",
+      "qs.req.go": "Go",
       "qs.req.nats": "nats-server",
-      "qs.req.node": "node / npm",
-      "qs.req.wails": "wails cli <span class=\"dim\">（仅 UI）</span>",
-      "qs.req.trafilatura": "trafilatura <span class=\"dim\">（可选，更丰富的 HTML 提取）</span>",
+      "qs.req.node": "Node.js / npm",
+      "qs.req.wails": "Wails CLI <span class=\"dim\">（仅 UI）</span>",
+      "qs.req.trafilatura": "Trafilatura <span class=\"dim\">（可选，提供更完整的 HTML 正文提取）</span>",
       "qs.note": "所有 Nim 依赖都来自 nimble——yaml、htmlparser、natswrapper、bitbarrel——首次构建时自动安装。",
       "comp.title": "自带组件",
       "comp.th.component": "组件",
       "comp.th.language": "语言",
       "comp.th.purpose": "用途",
-      "comp.core.p": "对话循环、supervisor、catalog、dispatch",
-      "comp.bash.p": "作为工具的 shell 访问——审批门控",
-      "comp.builder.p": "把 agent 写的源码编译成二进制",
-      "comp.store.p": "总线上的文档存储（bitbarrel 支撑，基于 rev 的并发）",
-      "comp.plugins.p": "组件生态：topic 搜索、<code>niffler.json</code> 包、安装/更新/移除——始终从源码构建",
-      "comp.skills.p": "Agent Skills 发现、渐进披露加载、资源，以及受管理的安装/移除",
-      "comp.fetch.p": "有界 HTTP(S) 抓取，支持方法/头/体，Trafilatura 优先的 HTML 提取，纯 Nim 回退，超大结果落盘",
-      "comp.hashline.p": "哈希锚定文件编辑：在稳定行锚点上做 <code>read</code>/<code>replace</code>/<code>undo_last_replace</code>",
-      "comp.grep.p": "ripgrep 支撑的内容搜索与排序仓库文件列表，带精确截断标记",
-      "comp.write.p": "审批门控的原子整文件写入，保留权限并创建父目录",
-      "comp.observe.p": "总线实时检查——主题发现、监听探针、请求/响应追踪、监控",
-      "comp.logfile.p": "<code>ev.log.*</code> 的持久 JSONL 汇聚——轮转日志、有界搜索、保留策略",
-      "comp.models.p": "总线上的 models.dev 提供商/模型目录——离线种子、缓存刷新、<code>x-models-source</code> 插件补丁",
-      "comp.provider.p": "store 支撑的 LLM 提供商注册表——add/list/switch/active/remove/export/import，live 后端切换",
-      "comp.llm.p": "流式 OpenAI 兼容适配器（默认 DeepSeek）——实时 <code>ev.llm.token</code> 增量、推理 token、按调用取消",
-      "comp.cli.p": "从脚本驱动 harness：<code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code>——插件仓库的 CI 正门",
-      "comp.console.p": "总线查看器——在 stdout 渲染每个 envelope（在第二个终端里跟随）",
-      "comp.ui.p": "Wails SPA——一个 NATS 客户端，而不是 Wails 客户端",
-      "comp.your.p": "移植 SDK——envelope 即产物（约 200 行）",
+      "comp.core.p": "对话循环、进程管理（supervisor）、组件目录（catalog）和调用分发（dispatch）",
+      "comp.bash.p": "以工具形式提供 shell 访问；执行前需人工批准",
+      "comp.builder.p": "将 agent 编写的源码编译为可执行程序",
+      "comp.store.p": "基于 BitBarrel 的总线文档存储，使用版本号（rev）进行并发控制",
+      "comp.plugins.p": "组件生态：按 topic 搜索，通过 <code>niffler.json</code> 描述包，支持安装/更新/移除；始终从源码构建",
+      "comp.skills.p": "Agent Skills 的发现、渐进式加载、资源访问，以及受管的安装/移除",
+      "comp.fetch.p": "带超时和大小限制的 HTTP(S) 内容获取，支持 method/header/body；优先使用 Trafilatura 提取 HTML，并提供纯 Nim 备用方案和超大结果落盘",
+      "comp.edit.p": "文件工具：<code>read</code>/<code>edit</code>/<code>write</code>/<code>undo_last_edit</code>；修改操作需人工批准",
+      "comp.grep.p": "基于 ripgrep 的内容搜索和有序仓库文件列表，提供明确的截断标记",
+      "comp.git.p": "只读 Git 仓库检查：<code>status</code>/<code>diff</code>/<code>log</code>/<code>show</code>/<code>blame</code>",
+      "comp.observe.p": "实时查看总线——subject 发现、监听、请求/响应追踪和监控",
+      "comp.logfile.p": "将 <code>ev.log.*</code> 持久化到 JSONL——支持日志轮转、范围受限的搜索和保留策略",
+      "comp.models.p": "通过总线提供 models.dev 的 provider/model 目录——内置离线数据、缓存刷新和 <code>x-models-source</code> 插件补丁",
+      "comp.provider.p": "基于 store 的 LLM provider 注册表——add/list/switch/active/remove/export/import，支持运行时切换后端",
+      "comp.llm.p": "流式 OpenAI 兼容 adapter（默认 DeepSeek）——实时 <code>ev.llm.token</code> token 流、推理 token，以及单次调用取消",
+      "comp.cli.p": "通过脚本驱动 harness：<code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code>——插件仓库的标准 CI 入口",
+      "comp.console.p": "总线查看器——将每个 envelope 输出到 stdout，可在第二个终端中实时查看",
+      "comp.ui.p": "由 Wails 承载的 SPA——架构上是 NATS client，Wails 仅负责承载 UI",
+      "comp.your.p": "移植 SDK；envelope 是跨语言契约（约 200 行）",
       "comp.your.name": "你的工具",
       "comp.your.lang": "任意",
       "wire.title": "一种协议，统领一切",
       "wire.note1": "core → <code>svc.core.call</code>，组件 → <code>svc.&lt;name&gt;.call</code>，<br>事件走 <code>ev.*</code>。这就是全部总线契约。",
       "wire.note2": "规范：<a href=\"https://github.com/gokr/niffler/blob/main/docs/WIRE.md\" target=\"_blank\" rel=\"noopener\">docs/WIRE.md</a> · 理由：<a href=\"https://github.com/gokr/niffler/blob/main/docs/REBOOT.md\" target=\"_blank\" rel=\"noopener\">docs/REBOOT.md</a>",
       "status.title": "状态",
-      "status.i18n": "UI + TUI 界面本地化——en/zh/zh-TW 语言环境、CJK 安全截断",
+      "status.i18n": "UI + TUI 界面本地化——en/zh/zh-TW 语言环境、CJK 安全的截断与编辑",
       "status.l1": "wire 规范、envelope、Nim + Go + TypeScript SDK",
       "status.l2": "supervisor、catalog、dispatch",
       "status.l3": "bash + builder + store + llm（流式适配器）",
-      "status.l4": "agent 端到端给自己加工具（用 DeepSeek 实测）",
-      "status.l5": "跨重启的形态持久化",
+      "status.l4": "agent 端到端为自己添加工具（已使用 DeepSeek 实测）",
+      "status.l5": "能力形态跨重启持久化",
       "status.l6": "session 服务 + Wails SPA 外壳",
       "status.l7": "session runner——一个对话 = 一个进程",
-      "status.l8": "审批——终端 y/N、带 ack 的定向 UI 请求 + 广播回退、无头拒绝、resolved 事件清理",
+      "status.l8": "审批——终端 y/N、带 ack 的定向 UI 请求和广播回退；无界面运行时默认拒绝，并通过 resolved 事件清理状态",
       "status.l9": "恢复模式——<code>make recover</code>",
       "status.l10": "插件——组件生态（发现、安装、更新、移除）",
       "status.l11": "skills——Agent Skills 的渐进发现与加载",
-      "status.l12": "fetch——有界网页抓取，Trafilatura 优先的文本提取",
-      "status.l13": "hashline-edit——哈希锚定文件编辑",
-      "status.l14": "grep + write——仓库搜索与原子整文件编辑",
-      "status.l15": "console + cli——从终端跟随并驱动总线",
+      "status.l12": "fetch——带超时和大小限制的网页内容获取，优先使用 Trafilatura 提取正文",
+      "status.l13": "edit——read/edit/write/undo 文件工具",
+      "status.l14": "grep + git——仓库搜索和只读 Git 检查",
+      "status.l15": "console + cli——在终端中观察并驱动总线",
       "status.l16": "流式输出——UI 里实时 <code>ev.session.token</code> 增量",
       "status.l17": "UI：组件面板、工具运行视图、明暗主题、About 对话框",
       "status.l18": "总线契约测试套件——<code>make test</code>，每个测试隔离 NATS + 临时根目录",
       "status.l19": "tty 管理 shell——help/status/catalog/tools/sessions，REPL 里没有聊天",
-      "status.l20": "observe + logfile——总线实时检查、持久轮转 JSONL 日志",
+      "status.l20": "observe + logfile——实时观测总线、持久化轮转 JSONL 日志",
       "status.l21": "models——总线上的 models.dev 目录、目录驱动的上下文窗口",
-      "status.l22": "provider——store 支撑的 LLM 提供商注册表、live 切换",
-      "status.l23": "UI 自持生命周期——桌面图标即整个系统：构建一次，任何 UI 自动启动 core，最后一个 UI 停掉它",
+      "status.l22": "provider——基于 store 的 LLM provider 注册表、运行时切换",
+      "status.l23": "由 UI 管理 harness 生命周期——桌面图标即整个系统：构建一次，任何 UI 都会自动启动 core，最后一个 UI 退出时停止 core",
       "status.l24": "最小启动配置——<code>--minimal</code> 只启动 store、bash 和 llm，同时保留被跳过的记录",
-      "status.l25": "提供商/模型控制——已存提供商、模型选择、上下文仪表、live 会话状态",
-      "status.l26": "渐进式工具发现——每会话不可变直接工具集、discover/invoke 网关、Live Components 暴露状态",
+      "status.l25": "provider/model 控制——已保存的 provider、模型选择、上下文用量指示器和实时 session 状态",
+      "status.l26": "渐进式工具发现——每个 session 的直接工具集保持不变，通过 discover/invoke 访问其他工具，并显示 Live Components 可见性状态",
       "status.t1": "Level 1 UI 动态化（x-ui schema 提示）",
       "status.t2": "终端 harness + UI 的取消",
       "status.t3": "带 FTS + 向量记忆的 store-tidb",
-      "footer.text": "niffler — 一个自我扩展的 agent harness · <a href=\"https://github.com/gokr/niffler\" target=\"_blank\" rel=\"noopener\">github.com/gokr/niffler</a> · <a href=\"https://discord.gg/ThJFEAJUAk\" target=\"_blank\" rel=\"noopener\">discord.gg/ThJFEAJUAk</a>"
+      "footer.text": "niffler — 可自我扩展的 agent harness · <a href=\"https://github.com/gokr/niffler\" target=\"_blank\" rel=\"noopener\">github.com/gokr/niffler</a> · <a href=\"https://discord.gg/ThJFEAJUAk\" target=\"_blank\" rel=\"noopener\">discord.gg/ThJFEAJUAk</a>"
     },
     "zh-TW": {
+      "meta.title": "Niffler — 可自我擴展的 agent harness",
+      "meta.description": "Niffler 是一個極簡、可自我擴展的 agent harness。組件以獨立行程執行並透過 NATS 訊息匯流排通訊；agent 可以在對話過程中撰寫、編譯並啟動自己的工具。",
+      "locale.label": "語言",
       "nav.why": "為什麼",
       "nav.architecture": "架構",
       "nav.quickstart": "快速開始",
@@ -125,8 +132,8 @@
       "nav.wire": "協定",
       "nav.status": "狀態",
       "nav.gitclone": "git clone",
-      "hero.h1": "一個在對話中途<br><span class=\"accent\">把自己擴建出來</span>的 harness。",
-      "hero.sub": "Niffler 是一個極簡、可自我擴展的 agent harness。組件是<strong>行程</strong>，匯流排是<strong>NATS</strong>，agent 在你和它對話時撰寫、編譯並啟動自己的工具。",
+      "hero.h1": "一個能在對話途中<br><span class=\"accent\">擴展自身能力</span>的 harness。",
+      "hero.sub": "Niffler 是一個極簡、可自我擴展的 agent harness。每個組件都是<strong>獨立行程</strong>，並透過 <strong>NATS 訊息匯流排</strong>通訊；agent 可以在對話過程中自行撰寫、編譯並啟動新工具。",
       "hero.ctaMake": "make && niffler-ui",
       "hero.ctaGithub": "github →",
       "hero.ctaDiscord": "discord →",
@@ -136,99 +143,123 @@
       "term.typed": "niffler — 等待輸入…",
       "why.title": "為什麼",
       "why.1h": "<span class=\"num\">01</span> 行程，而非外掛",
-      "why.1p": "沒有 dlopen、沒有 ABI 邊界、沒有映像腐爛。組件就是一個行程——拆除只需 <code>exit()</code>，作業系統就是完美的清理者。當機永遠不會拖垮 harness。",
+      "why.1p": "不需要 <code>dlopen</code>，也不受 ABI 相容性與行程內狀態殘留困擾。每個組件都是獨立行程；停止組件只需結束行程，作業系統會回收相關資源。單一組件當機不會直接拖垮 core 或其他組件。",
       "why.2h": "<span class=\"num\">02</span> 一種協定",
-      "why.2p": "Core 只講一種線上格式：NATS 之上的 JSON envelope。編解碼器約 200 行、純 <code>std/json</code>——SDK 用 Nim、Go、TypeScript，或你接下來移植的任何語言。",
+      "why.2p": "Core 只使用一種通訊格式：透過 NATS 傳輸的 JSON envelope。編解碼器約 200 行，僅依賴 <code>std/json</code>。目前提供 Nim、Go 與 TypeScript SDK，也可以移植到其他語言。",
       "why.3h": "<span class=\"num\">03</span> 自我擴展",
-      "why.3p": "agent 寫原始碼 → 呼叫 <code>builder.build</code> → 呼叫 <code>core.spawn</code> → 工具上線。新增能力就是一次工具呼叫，而且 LLM 在對話中途對自己完成它。社群套件以同樣的方式安裝：<code>plugin_install</code> clone、從原始碼編譯並啟動——經核准門控，始終從發布的程式碼建置。",
-      "why.4h": "<span class=\"num\">04</span> 形態持久化",
-      "why.4p": "能力跨重啟存續：已啟動的組件記錄在 store 裡，開機時復原。倉庫即快照，<code>var/</code> 是一次性的。",
+      "why.3p": "agent 寫原始碼 → 呼叫 <code>builder.build</code> → 呼叫 <code>core.spawn</code> → 新工具立即可用。新增能力本身就是一次工具呼叫，LLM 可以在對話過程中自行完成整套流程。社群組件也以相同方式安裝：<code>plugin_install</code> 會複製原始碼、編譯並啟動；執行前需經人工確認，且一律從發布的原始碼建置。",
+      "why.4h": "<span class=\"num\">04</span> 能力形態持久化",
+      "why.4p": "能力可以跨重啟保留：已啟動的組件記錄在 store 中，並在下次啟動時自動復原。倉庫保存可重現的原始碼；<code>var/bin/</code> 可以重新建置，<code>var/barrel-db</code> 則保存持久化狀態。",
       "arch.title": "架構",
       "arch.core": "對話迴圈 · supervisor<br>catalog · dispatch",
-      "arch.note1": "一個對話 = 一個程序：系統為每個對話啟動一個 <code>var/bin/session &lt;id&gt;</code> runner——殺掉一個 runner，其他對話照常執行。",
+      "arch.note1": "一個對話 = 一個行程：系統為每個對話啟動一個 <code>var/bin/session &lt;id&gt;</code> runner。終止某個 runner 不會影響其他對話。",
       "arch.yourtool": "你的工具",
       "arch.anylang": "任意語言",
-      "arch.note2": "每個方框都是一個用自己語言的組件 SDK 撰寫的小二進位檔——<br>對等、隔離、可單獨殺掉。",
+      "arch.note2": "每個方框都是一個透過對應語言組件 SDK 建置的小型執行檔——<br>彼此對等、相互隔離，可以獨立停止。",
       "loop.title": "自我擴展迴圈",
       "qs.title": "快速開始",
       "qs.clone": "git clone git@github.com:gokr/niffler.git && cd niffler",
-      "qs.setup": "# 環境依賴（Ubuntu / macOS）",
-      "qs.make": "# 建置 core + 組件 + 桌面 UI，只需一次",
+      "qs.setup": "# 安裝環境依賴（Ubuntu / macOS）",
+      "qs.make": "# 首次建置 core、組件與桌面 UI",
       "qs.run": "# 或點擊桌面圖示——自動啟動 harness",
-      "qs.test": "# 匯流排契約套件——17 個契約測試 + smoke + go 測試",
+      "qs.test": "# 匯流排契約測試——17 項契約測試 + 冒煙測試 + Go 測試",
       "qs.see": "└─ make run / recover / dev · 見 docs/MANUAL.md",
       "qs.requirements": "環境需求",
-      "qs.req.nim": "nim 2.x",
-      "qs.req.go": "go",
+      "qs.req.nim": "Nim 2.x",
+      "qs.req.go": "Go",
       "qs.req.nats": "nats-server",
-      "qs.req.node": "node / npm",
-      "qs.req.wails": "wails cli <span class=\"dim\">（僅 UI）</span>",
-      "qs.req.trafilatura": "trafilatura <span class=\"dim\">（可選，更豐富的 HTML 擷取）</span>",
+      "qs.req.node": "Node.js / npm",
+      "qs.req.wails": "Wails CLI <span class=\"dim\">（僅 UI）</span>",
+      "qs.req.trafilatura": "Trafilatura <span class=\"dim\">（選用，提供更完整的 HTML 內容擷取）</span>",
       "qs.note": "所有 Nim 依賴都來自 nimble——yaml、htmlparser、natswrapper、bitbarrel——首次建置時自動安裝。",
       "comp.title": "內建組件",
       "comp.th.component": "組件",
       "comp.th.language": "語言",
       "comp.th.purpose": "用途",
-      "comp.core.p": "對話迴圈、supervisor、catalog、dispatch",
-      "comp.bash.p": "作為工具的 shell 存取——核准門控",
-      "comp.builder.p": "把 agent 寫的原始碼編譯成二進位檔",
-      "comp.store.p": "匯流排上的文件儲存（bitbarrel 支撐，基於 rev 的並行）",
-      "comp.plugins.p": "組件生態：topic 搜尋、<code>niffler.json</code> 套件、安裝/更新/移除——始終從原始碼建置",
-      "comp.skills.p": "Agent Skills 發現、漸進揭露載入、資源，以及受管理的安裝/移除",
-      "comp.fetch.p": "有界 HTTP(S) 擷取，支援方法/標頭/內文，Trafilatura 優先的 HTML 擷取，純 Nim 回退，超大結果落盤",
-      "comp.hashline.p": "雜湊錨定檔案編輯：在穩定行錨點上做 <code>read</code>/<code>replace</code>/<code>undo_last_replace</code>",
-      "comp.grep.p": "ripgrep 支撐的內容搜尋與排序倉庫檔案列表，帶精確截斷標記",
-      "comp.write.p": "核准門控的原子整檔寫入，保留權限並建立父目錄",
-      "comp.observe.p": "匯流排即時檢查——主題發現、監聽探針、請求/回應追蹤、監控",
-      "comp.logfile.p": "<code>ev.log.*</code> 的持久 JSONL 匯聚——輪替日誌、有界搜尋、保留策略",
-      "comp.models.p": "匯流排上的 models.dev 供應商/模型目錄——離線種子、快取重新整理、<code>x-models-source</code> 外掛修補",
-      "comp.provider.p": "store 支撐的 LLM 供應商登錄檔——add/list/switch/active/remove/export/import，live 後端切換",
-      "comp.llm.p": "串流 OpenAI 相容配接器（預設 DeepSeek）——即時 <code>ev.llm.token</code> 增量、推理 token、按呼叫取消",
-      "comp.cli.p": "從腳本驅動 harness：<code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code>——外掛倉庫的 CI 正門",
-      "comp.console.p": "匯流排檢視器——在 stdout 渲染每個 envelope（在第二個終端機裡跟隨）",
-      "comp.ui.p": "Wails SPA——一個 NATS 客戶端，而不是 Wails 客戶端",
-      "comp.your.p": "移植 SDK——envelope 即產物（約 200 行）",
+      "comp.core.p": "對話迴圈、行程管理（supervisor）、組件目錄（catalog）與呼叫分派（dispatch）",
+      "comp.bash.p": "以工具形式提供 shell 存取；執行前需經人工確認",
+      "comp.builder.p": "將 agent 撰寫的原始碼編譯為執行檔",
+      "comp.store.p": "以 BitBarrel 為基礎的匯流排文件儲存，使用版本號（rev）進行並行控制",
+      "comp.plugins.p": "組件生態：依 topic 搜尋，透過 <code>niffler.json</code> 描述套件，支援安裝/更新/移除；一律從原始碼建置",
+      "comp.skills.p": "Agent Skills 的探索、漸進式載入、資源存取，以及受管理的安裝/移除",
+      "comp.fetch.p": "具有逾時與大小限制的 HTTP(S) 內容擷取，支援 method/header/body；優先使用 Trafilatura 擷取 HTML，並提供純 Nim 備援方案與大型結果寫入檔案",
+      "comp.edit.p": "檔案工具：<code>read</code>/<code>edit</code>/<code>write</code>/<code>undo_last_edit</code>；修改操作需經人工確認",
+      "comp.grep.p": "以 ripgrep 為基礎的內容搜尋與排序後的倉庫檔案清單，提供明確的截斷標記",
+      "comp.git.p": "唯讀 Git 倉庫檢查：<code>status</code>/<code>diff</code>/<code>log</code>/<code>show</code>/<code>blame</code>",
+      "comp.observe.p": "即時檢視匯流排——subject 探索、監聽、請求/回應追蹤與監控",
+      "comp.logfile.p": "將 <code>ev.log.*</code> 持久化為 JSONL——支援日誌輪替、範圍受限的搜尋與保留策略",
+      "comp.models.p": "透過匯流排提供 models.dev 的 provider/model 目錄——內建離線資料、快取更新與 <code>x-models-source</code> 外掛修補",
+      "comp.provider.p": "以 store 為基礎的 LLM provider 登錄檔——add/list/switch/active/remove/export/import，支援執行期間切換後端",
+      "comp.llm.p": "串流 OpenAI 相容 adapter（預設 DeepSeek）——即時 <code>ev.llm.token</code> token 串流、推理 token，以及單次呼叫取消",
+      "comp.cli.p": "透過腳本驅動 harness：<code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code>——外掛倉庫的標準 CI 入口",
+      "comp.console.p": "匯流排檢視器——將每個 envelope 輸出到 stdout，可在第二個終端機中即時查看",
+      "comp.ui.p": "由 Wails 承載的 SPA——架構上是 NATS client，Wails 僅負責承載 UI",
+      "comp.your.p": "移植 SDK；envelope 是跨語言契約（約 200 行）",
       "comp.your.name": "你的工具",
       "comp.your.lang": "任意",
       "wire.title": "一種協定，統領一切",
       "wire.note1": "core → <code>svc.core.call</code>，組件 → <code>svc.&lt;name&gt;.call</code>，<br>事件走 <code>ev.*</code>。這就是全部匯流排契約。",
       "wire.note2": "規範：<a href=\"https://github.com/gokr/niffler/blob/main/docs/WIRE.md\" target=\"_blank\" rel=\"noopener\">docs/WIRE.md</a> · 理由：<a href=\"https://github.com/gokr/niffler/blob/main/docs/REBOOT.md\" target=\"_blank\" rel=\"noopener\">docs/REBOOT.md</a>",
       "status.title": "狀態",
-      "status.i18n": "UI + TUI 介面在地化——en/zh/zh-TW 語言環境、CJK 安全截斷",
+      "status.i18n": "UI + TUI 介面在地化——en/zh/zh-TW 語言環境、CJK 安全的截斷與編輯",
       "status.l1": "wire 規範、envelope、Nim + Go + TypeScript SDK",
       "status.l2": "supervisor、catalog、dispatch",
       "status.l3": "bash + builder + store + llm（串流配接器）",
-      "status.l4": "agent 端到端給自己加工具（用 DeepSeek 實測）",
-      "status.l5": "跨重啟的形態持久化",
+      "status.l4": "agent 端到端為自己新增工具（已使用 DeepSeek 實測）",
+      "status.l5": "能力形態跨重啟持久化",
       "status.l6": "session 服務 + Wails SPA 外殼",
-      "status.l7": "session runner——一個對話 = 一個程序",
-      "status.l8": "核准——終端機 y/N、帶 ack 的定向 UI 請求 + 廣播回退、無頭拒絕、resolved 事件清理",
+      "status.l7": "session runner——一個對話 = 一個行程",
+      "status.l8": "核准——終端機 y/N、帶 ack 的定向 UI 請求與廣播回退；無介面執行時預設拒絕，並透過 resolved 事件清理狀態",
       "status.l9": "復原模式——<code>make recover</code>",
       "status.l10": "外掛——組件生態（發現、安裝、更新、移除）",
       "status.l11": "skills——Agent Skills 的漸進發現與載入",
-      "status.l12": "fetch——有界網頁擷取，Trafilatura 優先的文字擷取",
-      "status.l13": "hashline-edit——雜湊錨定檔案編輯",
-      "status.l14": "grep + write——倉庫搜尋與原子整檔編輯",
-      "status.l15": "console + cli——從終端機跟隨並驅動匯流排",
+      "status.l12": "fetch——具有逾時與大小限制的網頁內容擷取，優先使用 Trafilatura 擷取正文",
+      "status.l13": "edit——read/edit/write/undo 檔案工具",
+      "status.l14": "grep + git——倉庫搜尋與唯讀 Git 檢查",
+      "status.l15": "console + cli——在終端機中觀察並驅動匯流排",
       "status.l16": "串流輸出——UI 裡即時 <code>ev.session.token</code> 增量",
       "status.l17": "UI：組件面板、工具執行檢視、明暗主題、About 對話框",
       "status.l18": "匯流排契約測試套件——<code>make test</code>，每個測試隔離 NATS + 暫存根目錄",
       "status.l19": "tty 管理 shell——help/status/catalog/tools/sessions，REPL 裡沒有聊天",
-      "status.l20": "observe + logfile——匯流排即時檢查、持久輪替 JSONL 日誌",
+      "status.l20": "observe + logfile——即時觀測匯流排、持久化輪替 JSONL 日誌",
       "status.l21": "models——匯流排上的 models.dev 目錄、目錄驅動的上下文視窗",
-      "status.l22": "provider——store 支撐的 LLM 供應商登錄檔、live 切換",
-      "status.l23": "UI 自持生命週期——桌面圖示即整個系統：建置一次，任何 UI 自動啟動 core，最後一個 UI 停掉它",
+      "status.l22": "provider——以 store 為基礎的 LLM provider 登錄檔、執行期間切換",
+      "status.l23": "由 UI 管理 harness 生命週期——桌面圖示即整個系統：建置一次，任何 UI 都會自動啟動 core，最後一個 UI 結束時停止 core",
       "status.l24": "最小啟動設定——<code>--minimal</code> 只啟動 store、bash 和 llm，同時保留被跳過的記錄",
-      "status.l25": "供應商/模型控制——已存供應商、模型選擇、上下文儀表、live 對話狀態",
-      "status.l26": "漸進式工具發現——每對話不可變直接工具集、discover/invoke 閘道、Live Components 暴露狀態",
+      "status.l25": "provider/model 控制——已儲存的 provider、模型選擇、上下文用量指示器與即時 session 狀態",
+      "status.l26": "漸進式工具探索——每個 session 的直接工具集保持不變，透過 discover/invoke 存取其他工具，並顯示 Live Components 可見性狀態",
       "status.t1": "Level 1 UI 動態化（x-ui schema 提示）",
       "status.t2": "終端機 harness + UI 的取消",
       "status.t3": "帶 FTS + 向量記憶的 store-tidb",
-      "footer.text": "niffler — 一個自我擴展的 agent harness · <a href=\"https://github.com/gokr/niffler\" target=\"_blank\" rel=\"noopener\">github.com/gokr/niffler</a> · <a href=\"https://discord.gg/ThJFEAJUAk\" target=\"_blank\" rel=\"noopener\">discord.gg/ThJFEAJUAk</a>"
+      "footer.text": "niffler — 可自我擴展的 agent harness · <a href=\"https://github.com/gokr/niffler\" target=\"_blank\" rel=\"noopener\">github.com/gokr/niffler</a> · <a href=\"https://discord.gg/ThJFEAJUAk\" target=\"_blank\" rel=\"noopener\">discord.gg/ThJFEAJUAk</a>"
     }
   };
 
   var STORAGE_KEY = "niffler-lang";
+  var defaults;
+
+  function captureDefaults() {
+    if (defaults) return;
+    var description = document.querySelector('meta[name="description"]');
+    var localeGroup = document.querySelector(".locales");
+    defaults = {
+      title: document.title,
+      description: description ? description.content : "",
+      localeLabel: localeGroup ? localeGroup.getAttribute("aria-label") : "Language",
+      text: [],
+      html: [],
+      titles: []
+    };
+    document.querySelectorAll("[data-i18n]").forEach(function (el) {
+      defaults.text.push({ el: el, value: el.textContent });
+    });
+    document.querySelectorAll("[data-i18n-html]").forEach(function (el) {
+      defaults.html.push({ el: el, value: el.innerHTML });
+    });
+    document.querySelectorAll("[data-i18n-title]").forEach(function (el) {
+      defaults.titles.push({ el: el, value: el.title });
+    });
+  }
 
   function detect() {
     try {
@@ -244,10 +275,18 @@
   }
 
   function apply(locale) {
+    captureDefaults();
     var cat = CATALOGS[locale];
     if (!cat) {
-      // English lives in the HTML: nothing to do.
+      defaults.text.forEach(function (entry) { entry.el.textContent = entry.value; });
+      defaults.html.forEach(function (entry) { entry.el.innerHTML = entry.value; });
+      defaults.titles.forEach(function (entry) { entry.el.title = entry.value; });
       document.documentElement.lang = "en";
+      document.title = defaults.title;
+      var englishDescription = document.querySelector('meta[name="description"]');
+      if (englishDescription) englishDescription.content = defaults.description;
+      var englishLocaleGroup = document.querySelector(".locales");
+      if (englishLocaleGroup) englishLocaleGroup.setAttribute("aria-label", defaults.localeLabel);
       return;
     }
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "zh-TW";
@@ -263,6 +302,11 @@
       var v = cat[el.getAttribute("data-i18n-title")];
       if (v !== undefined) el.title = v;
     });
+    document.title = cat["meta.title"] || defaults.title;
+    var description = document.querySelector('meta[name="description"]');
+    if (description) description.content = cat["meta.description"] || defaults.description;
+    var localeGroup = document.querySelector(".locales");
+    if (localeGroup) localeGroup.setAttribute("aria-label", cat["locale.label"] || defaults.localeLabel);
   }
 
   function activate(locale) {
