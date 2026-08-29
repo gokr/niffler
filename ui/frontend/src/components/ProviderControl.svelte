@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ProviderSummary, ResolvedConfig } from "../lib/providers";
   import { hostname } from "../lib/providers";
+  import { t } from "../lib/i18n.svelte";
 
   let {
     providers,
@@ -42,7 +43,7 @@
     bind:this={btnEl}
     class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 flex items-center gap-1.5"
     onclick={toggle}
-    title={effective ? `Provider: ${effective.provider} (${effective.providerSource})` : "Provider"}
+    title={effective ? t("pc.providerDetail", { provider: effective.provider, source: effective.providerSource }) : t("pc.provider")}
   >
     {#if effective}
       <span class="text-ink-400">Global:</span>
