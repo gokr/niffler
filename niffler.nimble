@@ -18,7 +18,7 @@ requires "https://github.com/gokr/bitbarrel"
 
 # Tasks
 
-task all-internal, "Unlocked internal build — invoke through all (or the Makefile)":
+task all_internal, "Unlocked internal build — invoke through all (or the Makefile)":
   exec "nim c --hints:off -o:var/bin/niffler core/niffler.nim"
   exec "nim c --hints:off -o:var/bin/session core/session.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/store components/store/main.nim"
@@ -40,7 +40,7 @@ task all-internal, "Unlocked internal build — invoke through all (or the Makef
   exec "cd components/llm && go build -o ../../var/bin/llm ."
 
 task all, "Build core and all shipped components (whole generation under the shared build lock)":
-  exec "bash scripts/with-build-lock.sh nimble all-internal"
+  exec "bash scripts/with-build-lock.sh nimble all_internal"
 
 task run, "Build and run the harness":
   exec "nimble all"
