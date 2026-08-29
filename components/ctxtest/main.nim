@@ -66,6 +66,13 @@ comp.tool:
           "  inc i\n" &
           "  discard callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo x\"))))\n"
         return toolCall("t3", "fabric", %*{"code": loop, "maxCalls": 5})
+      of 3:
+        # hybrid: the program delegates a judgment task to a subagent; the
+        # subagent's own spawn attempt is denied at dispatch (noSpawn)
+        let prog = "import fabricguest\n" &
+          "let a = callTool(\"agent_run\", jobj(jpair(\"task\", jesc(\"echo agent-ok and report\"))))\n" &
+          "finish(jobj(jpair(\"agent\", jesc(a))))\n"
+        return toolCall("t4", "fabric", %*{"code": prog})
       else:
         return %*{"content": "fabric-turn-done"}
     if stage == 0:

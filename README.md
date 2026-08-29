@@ -428,6 +428,19 @@ to CI any plugin repo — Niffler testing itself.
       (ack-gated, broadcast fallback when the driver is gone, `ev.approval.resolved`
       clears stale modals); call envelopes carry a self-declared `caller` across
       all four SDKs; web UI acks + answers on the private subject
+- [x] **fabric + subagents** (docs/FABRIC.md) — programmable tool calling:
+      the `fabric` tool runs an LLM-written Nim program in a VM-embedding
+      executor child (fresh process per program, no NATS/credentials, RLIMIT
+      + kill timeout); the guest's tool calls cross a framed stdio bridge to
+      the parent and re-enter the single dispatch gate via the session
+      nested-call proxy (`svc.session.<id>.tool`, live lease, hidden-tool and
+      depth guards); compile errors return as real Nim diagnostics; only the
+      program's `finish()` value enters the conversation (oversized results
+      spilled to 0600 artifacts); the `agent` tool turns sessions into
+      subagents (delegated child runners, synchronous run + steer, dispatch-
+      time depth guard); guests stay stdlib-free (import-free j* JSON
+      helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
+      (`tests/t_nested.nim`, `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
 

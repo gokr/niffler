@@ -35,6 +35,8 @@ proc main() =
                           sandbox.sandboxBin("fabric"))
   copyFileWithPermissions(repoRoot / "var" / "bin" / "fabric-exec",
                           sandbox.sandboxBin("fabric-exec"))
+  copyFileWithPermissions(repoRoot / "var" / "bin" / "agent",
+                          sandbox.sandboxBin("agent"))
     # NOTE: fabric-exec bakes the worktree's fabricguest path at compile
     # time — the test runs from the same worktree, so it resolves
 
@@ -102,6 +104,15 @@ proc main() =
       if fabProc.running(): fabProc.kill()
     fabProc.close()
   check("fabric registered", waitComponent(nc, "fabric"))
+  let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
+                                 logFile = "/tmp/opencode/agent-fab.log")
+  defer:
+    if agentProc.running():
+      agentProc.terminate()
+      sleep(800)
+      if agentProc.running(): agentProc.kill()
+    agentProc.close()
+  check("agent registered", waitComponent(nc, "agent"))
 
   let sessionId = "fab-test"
   let turn = call(nc, "core", "session",
@@ -135,6 +146,30 @@ proc main() =
         transcript.contains("Error"), transcript)
   check("maxCalls budget enforced",
         transcript.contains("maxCalls budget exceeded"), transcript)
+
+  # hybrid: fabric program -> agent_run -> subagent session -> reply
+  check("hybrid fabric->agent_run returned the subagent reply",
+        transcript.contains("subagent-done"), transcript)
+
+  # the subagent really ran: fetch its transcript via the returned sessionId
+  var childT = ""
+  let marker = transcript.find("sessionId\\\":\\\"agent-")
+    # the fabric result is embedded as an escaped JSON string
+  if marker >= 0:
+    let start = marker + "sessionId\\\":\\\"".len
+    var stop = start
+    while stop < transcript.len and
+          (transcript[stop] in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}):
+      inc stop
+    let cid = transcript[start ..< stop]
+    for i in 1 .. 12:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": cid & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      childT.add(m{"value"}{"content"}.getStr(""))
+  check("hybrid subagent ran bash in its own session",
+        childT.contains("agent-ok"), childT)
 
   report("fabric")
 
