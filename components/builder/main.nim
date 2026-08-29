@@ -63,11 +63,22 @@ proc validGoSourceName(name: string): bool =
       return false
   true
 
+proc validDefine(name: string): bool =
+  ## Compile defines are whitelisted to Nim-identifier characters so they can
+  ## never inject shell or arbitrary compiler flags: "ssl" -> -d:ssl, never
+  ## "ssl --run:something". See validComponentName for the same approach.
+  if name.len == 0 or name.len > 64:
+    return false
+  for ch in name:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '_', '.'}:
+      return false
+  true
+
 let comp = newComponent("builder", "0.1.0")
 
 comp.tool:
   proc build(lang: string, name: string, source: string,
-             files: JsonNode = nil): JsonNode =
+             files: JsonNode = nil, defines: JsonNode = nil): JsonNode =
     ## Compile a new component from source into a binary under var/bin.
     ## Use this when the harness lacks a capability that no existing tool
     ## covers: write the component source yourself (Nim: import niffler/sdk
@@ -78,10 +89,17 @@ comp.tool:
     ## Call the info tool first to see the SDK locations and the exact code
     ## pattern. Returns ok, the binary path and a log
     ## tail (compile errors are truncated to 2000 chars).
+    ## Tool names are globally unique across the whole catalog (core rejects
+    ## duplicates at registration), so prefix every tool with the component
+    ## name — stocks_quote, not quote. Only shipped core components may claim
+    ## bare semantic names (read, edit, bash, ...).
     ## - lang: Language of the component: nim, go or ts
     ## - name: Lowercase-hyphen component name (also the binary name)
     ## - source: Full entrypoint source code of the component
     ## - files: Optional object of additional same-package Go filenames to source strings
+    ## - defines: Optional array of Nim compile defines, e.g. ["ssl"] for
+    ##   HTTPS-capable httpclient — appended as -d:NAME (validated; Nim
+    ##   identifier characters only)
     let root = getEnv("NIF_ROOT", ".")
     let srcDir = root / "var" / "build"
     let binDir = root / "var" / "bin"
@@ -97,8 +115,17 @@ comp.tool:
       writeFile(srcPath, source)
       let binary = binDir / name
       let tmpBinary = binDir / (name & ".tmp-" & $getCurrentProcessId())
+      var dflags = ""
+      if defines != nil and defines.kind == JArray:
+        for d in defines:
+          let dn = d.getStr("")
+          if not validDefine(dn):
+            return %*{"ok": false, "lang": lang,
+                      "error": "invalid define: " & dn.tail(64)}
+          dflags.add(" -d:" & dn)
       let (output, code) = runCmd(
-        "nim c --hints:off -d:release --path:" & quoteShell(root / "sdk") &
+        "nim c --hints:off -d:release" & dflags & " --path:" &
+        quoteShell(root / "sdk") &
         " -o:" & quoteShell(tmpBinary) & " " & quoteShell(srcPath))
       if code != 0:
         removeFile(tmpBinary)
@@ -212,6 +239,7 @@ comp.tool:
     let root = getEnv("NIF_ROOT", ".")
     return %*{"langs": ["nim", "go", "ts"], "sdk": root / "sdk",
               "sdkGo": root / "sdk" / "go", "sdkTs": root / "sdk" / "ts",
+              "naming": "tool names are globally unique — prefix plugin tools with the component name (stocks_quote); bare semantic names are reserved for shipped core components",
               "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then discover and invoke core.spawn {name, binary}"}
 
 comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}

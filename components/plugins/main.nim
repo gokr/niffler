@@ -155,7 +155,7 @@ proc dropRecord(pkg: string) =
 
 type
   ManifestComp = tuple[name, lang, main: string, sources, env: seq[string],
-                       interactive: bool]
+                       defines: seq[string], interactive: bool]
   Manifest = tuple[name, version: string, comps: seq[ManifestComp]]
 
 proc validManifestSourcePath(path: string): bool =
@@ -208,6 +208,14 @@ proc readManifest(dir: string): Manifest =
     if envArr != nil:
       for en in envArr:
         mc.env.add(en.getStr(""))
+    mc.defines = @[]
+    let definesArr = e{"defines"}
+    if definesArr != nil:
+      if definesArr.kind != JArray:
+        raise newException(ValueError,
+          "niffler.json: defines must be an array on " & mc.name)
+      for dn in definesArr:
+        mc.defines.add(dn.getStr(""))
     if mc.name.len == 0 or mc.main.len == 0:
       raise newException(ValueError,
         "niffler.json component entry needs name and main")
@@ -242,6 +250,8 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
   try:
     var buildArgs = %*{"lang": mc.lang, "name": mc.name,
                        "source": readFile(dest / mc.main)}
+    if mc.defines.len > 0:
+      buildArgs["defines"] = %mc.defines
     if mc.sources.len > 0:
       var files = newJObject()
       for source in mc.sources:
