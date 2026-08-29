@@ -83,7 +83,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke.",
+      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke. When a task needs a capability your direct tools lack (weather, third-party APIs, file formats, ...), check the plugins component first: it exposes plugin_search/plugin_installed/plugin_install/plugin_update/plugin_remove for the niffler-component package ecosystem, and the skills component exposes skill_list/skill_load/skill_search/skill_install for Agent Skills.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},

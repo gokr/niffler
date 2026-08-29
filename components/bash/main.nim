@@ -68,6 +68,11 @@ comp.tool:
     ## flags, capped output. For CHANGING files prefer the edit and write
     ## tools. Use bash only for what the dedicated tools cannot serve
     ## (piping, ranges, binary inspection, whole-file generation).
+    ## Before hand-rolling a network/API integration with curl, check the
+    ## ecosystem first: invoke plugin_search on the plugins component
+    ## (third-party packages) and skill_list (Agent Skills) — an existing
+    ## package may already cover the task, and installing it gives real
+    ## typed tools instead of ad-hoc shell parsing.
     ## - command: The shell command line to run (bash -c)
     ## - timeoutMs: Kill the command after this many ms (default 30000)
     inc callCounter
