@@ -186,7 +186,15 @@ ends — turns never nest.
   plus `reg.depart` (graceful) vs silence (crash).
 - Tool names are unique across the whole catalog — enforced by core at
   registration, rejected with an error envelope. The LLM only ever sees tool
-  names; core maps tool → component at dispatch.
+  names; core maps tool → component at dispatch. The namespace is deliberately
+  **flat**, not `component.tool`-qualified: flat names are the LLM's call
+  vocabulary (no `edit.edit` noise), and dot-names would break Anthropic-style
+  providers that restrict tool names to `[a-zA-Z0-9_-]`. Clash avoidance is by
+  convention: **shipped core components own their semantic names** (`read`,
+  `edit`, `bash`, ...); **plugin/third-party components prefix every tool with
+  the component name** (`stocks_quote`, `weather_current`, `git_status`) so
+  independently published packages never collide. Core rejects a clashing
+  registration instead of letting two components share a name.
 - `ev.sys.drain` (core → component): stop taking new calls, finish in-flight,
   then exit. `ev.sys.shutdown` (component → core): I'm leaving.
 

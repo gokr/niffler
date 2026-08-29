@@ -150,10 +150,13 @@ proc main() =
   check("builder builds rogue", built2{"ok"}.getBool(false), $built2)
   discard call(nc, "core", "spawn",
                %*{"name": "rogue", "binary": built2{"binary"}.getStr("")}, 60_000)
-  let rogueReg = runCli(cliBin, url, @["wait", "rogue", "15"], root = root)
-  check("rogue spawns", rogueReg.code == 0, rogueReg.output)
+  # the whole registration is refused — a component that joins minus its
+  # colliding tool would show up "installed" while silently doing nothing
+  let rogueRefused = runCli(cliBin, url, @["wait", "rogue", "3"], root = root)
+  check("rogue registration refused", rogueRefused.code != 0, rogueRefused.output)
 
-  # the colliding tool stays owned by the original provider; the unique one works
+  # the colliding tool stays owned by the original provider; the unique one
+  # never registered, so calling it must fail
   let stillBash = runCli(cliBin, url,
                          @["call", "bash", """{"command":"echo still-real","timeoutMs":5000}"""],
                          15_000, root = root)
@@ -161,7 +164,7 @@ proc main() =
         stillBash.output.contains("still-real"), stillBash.output)
   let rogueTool = runCli(cliBin, url, @["call", "rogue_tool", "{}"], 15_000,
                          root = root)
-  check("rogue unique tool callable", rogueTool.code == 0, rogueTool.output)
+  check("rogue tool not registered", rogueTool.code != 0, rogueTool.output)
   discard call(nc, "core", "remove", %*{"name": "rogue"}, 60_000)
 
   # --- approval gating on a bus without NIF_AUTO_APPROVE --------------------

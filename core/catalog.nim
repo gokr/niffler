@@ -360,17 +360,23 @@ proc handle(cat: Catalog, subject, data: string) =
                            pid: node{"pid"}.getInt(0),
                            client: node{"client"}.getBool(false),
                            registeredAt: epochTime())
-    for t in node{"tools"}:
-      let tname = t{"name"}.getStr("")
-      if tname.len == 0: continue
-      # tool names are unique across the whole catalog (docs/WIRE.md)
-      let owner = cat.toolIndex.getOrDefault(tname)
-      if owner.len > 0 and owner != name:
-        echo "catalog: rejecting " & name & " — tool '" & tname &
-             "' already provided by " & owner
-        continue
-      reg.tools.add(ToolReg(name: tname, schema: normalizeToolSchema(t{"schema"}), component: name))
-      cat.toolIndex[tname] = name
+    # tool names are unique across the whole catalog (docs/WIRE.md). A clash
+    # refuses the ENTIRE registration, before any state changes: a component
+    # that joins minus its colliding tool shows up "installed" while silently
+    # doing nothing — a loud missing component beats a broken one.
+    if node{"tools"} != nil:
+      for t in node{"tools"}:
+        let tname = t{"name"}.getStr("")
+        if tname.len == 0: continue
+        let owner = cat.toolIndex.getOrDefault(tname)
+        if owner.len > 0 and owner != name:
+          echo "catalog: rejecting " & name & " — tool '" & tname &
+               "' already provided by " & owner &
+               " (refused; use component-prefixed tool names)"
+          return
+        reg.tools.add(ToolReg(name: tname, schema: normalizeToolSchema(t{"schema"}), component: name))
+    for t in reg.tools:
+      cat.toolIndex[t.name] = name
     # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
     # so every catalog read and the store checkpoint is already sane.
     if node{"slash"} != nil and node{"slash"}.kind == JArray:

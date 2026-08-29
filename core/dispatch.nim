@@ -57,10 +57,16 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
   if target.len == 0 or arguments == nil or arguments.kind != JObject:
     raise newException(ValueError,
       "invoke needs tool and an arguments object")
-  let schema = ct.cat.toolSchema(target)
-  if target == "invoke" or schema == nil or schema.isHidden():
+  var name = target
+  if ct.cat.toolSchema(name) == nil and name.contains('.'):
+    # tolerate "component.tool" spellings (the LLM writes them naturally);
+    # the tool namespace is flat, bare names are canonical
+    name = name.split('.')[^1]
+  let schema = ct.cat.toolSchema(name)
+  if name == "invoke" or schema == nil or schema.isHidden():
     raise newException(ValueError,
-      "tool is not available through invoke")
+      "no discoverable non-hidden tool '" & target &
+      "' — use the exact name discover returned")
   return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =

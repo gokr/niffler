@@ -863,7 +863,11 @@ proc callSession*(ct: CoreTools, args: JsonNode, caller = ""): JsonNode =
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
   ## Serve pending svc.core.call messages (session/spawn/catalog).
   ## Session requests stashed while a forward was busy are drained first.
-  for pend in ct.pending.items:
+  ## Pop one at a time: callSession can pump and append to pending while
+  ## we work, so a plain `for` over items would trip the seq-mutation assert.
+  while ct.pending.items.len > 0:
+    let pend = ct.pending.items[0]
+    ct.pending.items.delete(0)
     var resp: Envelope
     try:
       let r = callSession(ct, pend.env.args, pend.env.caller)
