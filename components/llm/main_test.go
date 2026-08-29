@@ -188,10 +188,10 @@ func TestResultJSONIncludesProvider(t *testing.T) {
 
 func TestStripModelPrefix(t *testing.T) {
 	cases := map[string]string{
-		"alibaba/glm-5.2": "glm-5.2",
-		"glm-5.2":         "glm-5.2",
+		"alibaba/glm-5.2":        "glm-5.2",
+		"glm-5.2":                "glm-5.2",
 		"deepseek/deepseek-chat": "deepseek-chat",
-		"":                "",
+		"":                       "",
 	}
 	for in, want := range cases {
 		if got := stripModelPrefix(in); got != want {
