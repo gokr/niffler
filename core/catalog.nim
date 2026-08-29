@@ -365,49 +365,50 @@ proc handle(cat: Catalog, subject, data: string) =
       cat.toolIndex[tname] = name
     # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
     # so every catalog read and the store checkpoint is already sane.
-    for s in node{"slash"}:
-      if reg.slash.len >= 32:
-        echo "catalog: rejecting " & name & " — too many slash commands"
-        break
-      let sname = s{"name"}.getStr("").toLowerAscii().strip()
-      if sname.len == 0 or sname.len > 32 or
-         not sname.allCharsInSet({'a'..'z', '0'..'9', '-', '_'}):
-        echo "catalog: rejecting " & name & " — invalid slash command name"
-        continue
-      let sowner = cat.slashIndex.getOrDefault(sname)
-      if sowner.len > 0 and sowner != name:
-        echo "catalog: rejecting " & name & " — slash '" & sname &
-             "' already provided by " & sowner
-        continue
-      var cmd = SlashCommand(name: sname,
-                             description: s{"description"}.getStr(""),
-                             tool: s{"tool"}.getStr(""),
-                             component: name)
-      if cmd.tool.len == 0: cmd.tool = sname
-      var targetOK = false
-      for t in reg.tools:
-        if t.name == cmd.tool: targetOK = true
-      if not targetOK:
-        echo "catalog: rejecting " & name & " — slash '" & sname &
-             "' targets unknown tool '" & cmd.tool & "'"
-        continue
-      if s{"params"} != nil and s{"params"}.kind == JArray:
-        for p in s{"params"}:
-          if cmd.params.len >= 16: break
-          var param = SlashParam(name: p{"name"}.getStr(""),
-                                 kind: p{"kind"}.getStr("string"),
-                                 description: p{"description"}.getStr(""),
-                                 source: p{"source"},
-                                 default: p{"default"})
-          if param.name.len == 0: continue
-          if param.kind notin ["string", "bool", "int", "enum"]:
-            param.kind = "string"
-          if p{"values"} != nil and p{"values"}.kind == JArray:
-            for v in p{"values"}:
-              if v.kind == JString: param.values.add(v.getStr(""))
-          cmd.params.add(param)
-      reg.slash.add(cmd)
-      cat.slashIndex[sname] = name
+    if node{"slash"} != nil and node{"slash"}.kind == JArray:
+      for s in node{"slash"}:
+        if reg.slash.len >= 32:
+          echo "catalog: rejecting " & name & " — too many slash commands"
+          break
+        let sname = s{"name"}.getStr("").toLowerAscii().strip()
+        if sname.len == 0 or sname.len > 32 or
+           not sname.allCharsInSet({'a'..'z', '0'..'9', '-', '_'}):
+          echo "catalog: rejecting " & name & " — invalid slash command name"
+          continue
+        let sowner = cat.slashIndex.getOrDefault(sname)
+        if sowner.len > 0 and sowner != name:
+          echo "catalog: rejecting " & name & " — slash '" & sname &
+               "' already provided by " & sowner
+          continue
+        var cmd = SlashCommand(name: sname,
+                               description: s{"description"}.getStr(""),
+                               tool: s{"tool"}.getStr(""),
+                               component: name)
+        if cmd.tool.len == 0: cmd.tool = sname
+        var targetOK = false
+        for t in reg.tools:
+          if t.name == cmd.tool: targetOK = true
+        if not targetOK:
+          echo "catalog: rejecting " & name & " — slash '" & sname &
+               "' targets unknown tool '" & cmd.tool & "'"
+          continue
+        if s{"params"} != nil and s{"params"}.kind == JArray:
+          for p in s{"params"}:
+            if cmd.params.len >= 16: break
+            var param = SlashParam(name: p{"name"}.getStr(""),
+                                   kind: p{"kind"}.getStr("string"),
+                                   description: p{"description"}.getStr(""),
+                                   source: p{"source"},
+                                   default: p{"default"})
+            if param.name.len == 0: continue
+            if param.kind notin ["string", "bool", "int", "enum"]:
+              param.kind = "string"
+            if p{"values"} != nil and p{"values"}.kind == JArray:
+              for v in p{"values"}:
+                if v.kind == JString: param.values.add(v.getStr(""))
+            cmd.params.add(param)
+        reg.slash.add(cmd)
+        cat.slashIndex[sname] = name
     cat.components[name] = reg
     echo "catalog: " & name & " v" & reg.version & " registered (" &
          $reg.tools.len & " tools, " & $reg.slash.len & " slash commands)"

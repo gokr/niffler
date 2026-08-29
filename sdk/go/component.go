@@ -43,10 +43,13 @@ type Tool struct {
 
 // SlashSource describes where a slash-command parameter gets its value
 // candidates: the UI calls this tool lazily when the user hits Tab on the
-// argument and offers its result values for completion.
+// argument and offers its result values for completion. Field selects the
+// value inside each result item when the tool returns objects
+// (e.g. "nickname" for provider_list); empty means "id".
 type SlashSource struct {
-	Tool string         `json:"tool"`
-	Args map[string]any `json:"args,omitempty"`
+	Tool  string         `json:"tool"`
+	Args  map[string]any `json:"args,omitempty"`
+	Field string         `json:"field,omitempty"`
 }
 
 // SlashParam is one command-line parameter of a slash command.
