@@ -17,8 +17,8 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `skills`, `fetch`, `hashline-edit`, `edit`, `grep`, `git`,
-  `write`, `observe`, `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
+  `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
+  `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
   write source → `builder.build`
   → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
   (also deletes the persisted record). The agent does this to itself,
@@ -39,7 +39,7 @@ anything structural.
   be copied here.
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
-- Naming: components lowercase-hyphens (`hashline-edit`), tools lowercase
+- Naming: components lowercase-hyphens (`logfile`), tools lowercase
   underscores. Tool names are globally unique — core rejects duplicates at
   registration.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
@@ -68,10 +68,9 @@ niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
                       # t_models, t_provider, t_observe, t_logfile, t_core,
-                      # t_cli, t_hashline,
-                      # t_grep, t_write, t_autostart — each owns a private
-                      # NATS server + temporary NIF_ROOT, so component
-                      # targets can overlap a live harness
+                      # t_cli, t_grep, t_git, t_edit, t_autostart — each owns
+                      # a private NATS server + temporary NIF_ROOT, so
+                      # component targets can overlap a live harness
 make gotest           # Go unit tests + vet: sdk/go, components/models, llm
                       # (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe

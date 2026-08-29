@@ -68,23 +68,18 @@ components:
     required: true
     restart: on-failure
 
-  - name: hashline-edit
-    build: {lang: nim, src: components/hashline-edit/main.nim}
-    binary: var/bin/hashline-edit
-    autostart: true
-    required: false
-    restart: on-failure
-
-  - name: edit
-    build: {lang: nim, src: components/edit/main.nim}
-    binary: var/bin/edit
-    autostart: true
-    required: false
-    restart: on-failure
-
   - name: grep
     build: {lang: nim, src: components/grep/main.nim}
     binary: var/bin/grep
+    autostart: true
+    required: false
+    restart: on-failure
+
+  # File tools: read (plain, pageable) / edit (exact old_string match with
+  # a guarded fallback cascade) / write (atomic whole-file) / undo_last_edit.
+  - name: edit
+    build: {lang: nim, src: components/edit/main.nim}
+    binary: var/bin/edit
     autostart: true
     required: false
     restart: on-failure
@@ -94,13 +89,6 @@ components:
   - name: git
     build: {lang: nim, src: components/git/main.nim}
     binary: var/bin/git
-    autostart: true
-    required: false
-    restart: on-failure
-
-  - name: write
-    build: {lang: nim, src: components/write/main.nim}
-    binary: var/bin/write
     autostart: true
     required: false
     restart: on-failure

@@ -60,15 +60,14 @@ comp.tool:
     ## 124. Output over 200KB is capped (head + tail kept) with a marker
     ## showing exactly how many bytes were cut — narrow the command
     ## (grep/head/tail/wc) rather than assume you saw everything.
-    ## For READING text file content prefer the hashline-edit read tool
+    ## For READING text file content prefer the edit component's read tool
     ## over `cat`: it is pageable and caps huge lines (bash cat shows
     ## everything at once). For GIT inspection (status, diffs, history,
     ## attribution) prefer the read-only git tools git_status/git_diff/
     ## git_log/git_show/git_blame over git here: approval-free, fixed
-    ## flags, capped output. For CHANGING files prefer the edit tool:
-    ## exact text replacement on content you have read. Use bash only for
-    ## what the dedicated tools cannot serve (piping, ranges, binary
-    ## inspection, whole-file generation).
+    ## flags, capped output. For CHANGING files prefer the edit and write
+    ## tools. Use bash only for what the dedicated tools cannot serve
+    ## (piping, ranges, binary inspection, whole-file generation).
     ## - command: The shell command line to run (bash -c)
     ## - timeoutMs: Kill the command after this many ms (default 30000)
     inc callCounter

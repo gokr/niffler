@@ -110,8 +110,7 @@ The mechanisms that *are* components, and the capability they carry:
 | `builder` | compilation | agent-written Nim/Go → binary |
 | `bash` | execution | general-purpose machine access |
 | `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
-| `hashline-edit` | editing | hash-anchored `read` (direct) + anchored `replace`/`undo_last_replace` (onDemand) for large block moves |
-| `edit` | editing | exact old_string/new_string replacement: uniqueness enforced, guarded fallback cascade, `replace_all`, per-file undo |
+| `edit` | file tools | `read` (plain, pageable) / `edit` (exact old_string/new_string, uniqueness enforced, guarded fallback cascade, `replace_all`) / `write` (atomic whole-file) / `undo_last_edit`; anchored block moves live in the niffler-hashline plugin |
 | `git` | repo inspection | read-only `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv; mutations stay in bash |
 | `observe` | live introspection | bounded raw-bus ring, targeted probes/traces, and server monitoring |
 | `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |

@@ -174,6 +174,58 @@ proc main() =
   check("edit accepts lenient input shapes",
         readFile(tmp / "len.txt") == "value = 2\n", $r15)
 
+  # read: verbatim content, no anchors, pagination, empty/binary refusal
+  writeFile(tmp / "r.txt", "one\ntwo\nthree\n")
+  let rr1 = call(nc, "edit", "read", %*{"path": "r.txt"})
+  check("read returns verbatim content",
+        rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
+  let rr2 = call(nc, "edit", "read",
+                 %*{"path": "r.txt", "offset": 2, "limit": 1})
+  check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)
+  let rr3 = call(nc, "edit", "read", %*{"path": "r.txt", "offset": 9})
+  check("read reports offset beyond EOF",
+        rr3.getStr("").contains("beyond end of file"), $rr3)
+  writeFile(tmp / "b.dat", "ok\x00bytes")
+  let rr4 = call(nc, "edit", "read", %*{"path": "b.dat"})
+  check("read refuses binaries", rr4.hasKey("error") and
+        rr4{"error"}.getStr("").contains("[E_NOT_TEXT]"), $rr4)
+
+  # write: create with parent dirs, overwrite flag, truncate, permissions,
+  # symlink follow-through
+  let rw1 = call(nc, "edit", "write",
+                 %*{"path": "dir/sub/new.txt", "content": "hello\nworld\n"})
+  check("write creates new file",
+        rw1{"bytes_written"}.getInt(-1) == 12 and
+        rw1{"overwrote"}.getBool(true) == false, $rw1)
+  check("write created parent dirs",
+        readFile(tmp / "dir" / "sub" / "new.txt") == "hello\nworld\n")
+  let rw2 = call(nc, "edit", "write",
+                 %*{"path": "dir/sub/new.txt", "content": "replaced"})
+  check("write overwrites", rw2{"overwrote"}.getBool(false) == true and
+        readFile(tmp / "dir" / "sub" / "new.txt") == "replaced", $rw2)
+  let rw3 = call(nc, "edit", "write",
+                 %*{"path": "dir/sub/new.txt", "content": ""})
+  check("write truncates on empty content",
+        rw3{"bytes_written"}.getInt(-1) == 0 and
+        readFile(tmp / "dir" / "sub" / "new.txt") == "", $rw3)
+  let rr5 = call(nc, "edit", "read", %*{"path": "dir/sub/new.txt"})
+  check("read reports empty files", rr5.getStr("").contains("is empty"), $rr5)
+  let modePath = tmp / "mode.txt"
+  writeFile(modePath, "first")
+  setFilePermissions(modePath, {fpUserRead, fpUserWrite})
+  discard call(nc, "edit", "write",
+               %*{"path": "mode.txt", "content": "second"})
+  check("write preserves permissions",
+        getFilePermissions(modePath) == {fpUserRead, fpUserWrite})
+  writeFile(tmp / "target.txt", "old")
+  createSymlink("target.txt", tmp / "link.txt")
+  let rw4 = call(nc, "edit", "write",
+                 %*{"path": "link.txt", "content": "new"})
+  check("write follows symlink",
+        rw4{"path"}.getStr("").contains("target.txt") and
+        readFile(tmp / "target.txt") == "new" and
+        symlinkExists(tmp / "link.txt"), $rw4)
+
   # undo reverts the last edit, then the history is consumed
   writeFile(tmp / "u.txt", "one\ntwo\n")
   discard call(nc, "edit", "edit",

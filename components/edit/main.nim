@@ -1,20 +1,25 @@
-## edit component — exact text-replacement editing for existing files.
+## edit component — the file-tools component: read, exact-text edit, write.
 ##
-## The primary surgical edit tool: each edit matches an old_string that must
-## occur exactly once (ambiguous matches are refused with the occurrence
-## count — fuzziness never rescues ambiguity), so edits land on text the
-## model actually reproduced rather than on copied anchors. When the exact
-## text is not found, a guarded fallback cascade rescues common transcription
-## slips: per-line trailing whitespace, indentation drift, unicode punctuation
-## (smart quotes/dashes), double-escaped text, and finally block anchors with
-## a Levenshtein similarity check on the middle lines. Only the matched
-## original bytes are replaced, and a match whose span is wildly larger than
-## old_string is refused. Several edits per call are matched against the same
-## original content and may not overlap. Every edit is approval-gated and
-## revertible with undo_last_edit (single-level per file, persisted across
-## restarts, refused when the file changed after the edit). Creating files
-## belongs to write; deleting or moving large blocks without retyping them
-## stays with hashline-edit's anchored replace (onDemand — discover + invoke).
+## The primary way the model touches files:
+## - read: pageable plain-text reading (no line numbers — content copies
+##   verbatim into edit's old_string).
+## - edit: each edit matches an old_string that must occur exactly once
+##   (ambiguous matches are refused with the occurrence count — fuzziness
+##   never rescues ambiguity), so edits land on text the model actually
+##   reproduced rather than on copied anchors. When the exact text is not
+##   found, a guarded fallback cascade rescues common transcription slips:
+##   per-line trailing whitespace, indentation drift, unicode punctuation
+##   (smart quotes/dashes), double-escaped text, and finally block anchors
+##   with a Levenshtein similarity check on the middle lines. Only the
+##   matched original bytes are replaced, and a match whose span is wildly
+##   larger than old_string is refused. Several edits per call are matched
+##   against the same original content and may not overlap.
+## - write: atomic whole-file create/overwrite/truncate.
+## Every mutation is approval-gated and revertible with undo_last_edit
+## (single-level per file, persisted across restarts, refused when the file
+## changed after the edit). For deleting or moving large blocks without
+## retyping them, install the niffler-hashline plugin and discover its
+## anchored replace.
 
 import std/[algorithm, json, os, posix, sequtils, strutils, tables]
 import niffler/sdk
@@ -31,6 +36,9 @@ const
   SNIFF_BYTES = 8192
   MAX_DIFF_LINES = 200
   FUZZY_SIMILARITY = 0.65   # block-anchor middle-line similarity threshold
+  MAX_READ_LINES = 2000     # default read cap per call
+  MAX_READ_BYTES = 256 * 1024
+  MAX_READ_LINE_BYTES = 200 * 1024
 
 # ---------------------------------------------------------------------------
 # line helpers + normalization
@@ -689,11 +697,144 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
               "last_changed_line": d.lastLine}
 
 # ---------------------------------------------------------------------------
+# read handler
+
+proc readPathArg(args: JsonNode, label: string): string =
+  for key in ["path", "filePath", "file_path"]:
+    let n = args{key}
+    if n != nil and n.kind == JString and n.getStr().len > 0:
+      return n.getStr()
+  raise newException(ValueError,
+    "[E_BAD_SHAPE] " & label & " requires a non-empty \"path\" string.")
+
+proc hRead(c: Component, args: JsonNode): JsonNode =
+  if args == nil or args.kind != JObject:
+    raise newException(ValueError, "[E_BAD_SHAPE] Read request must be an object.")
+  let path = readPathArg(args, "Read request")
+  let offN = args{"offset"}
+  let limN = args{"limit"}
+  if offN != nil and offN.kind != JNull and
+      (offN.kind != JInt or offN.getInt() < 1):
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] \"offset\" must be a positive integer (1-indexed line).")
+  if limN != nil and limN.kind != JNull and
+      (limN.kind != JInt or limN.getInt() < 1):
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] \"limit\" must be a positive integer.")
+  let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
+  let limit = if limN != nil and limN.kind == JInt: limN.getInt() else: MAX_READ_LINES
+
+  let target = followSymlink(toCwd(path, getEnv("NIF_ROOT", ".")))
+  if dirExists(target):
+    raise newException(ValueError,
+      "[E_NOT_TEXT] " & path & " is a directory — list it with bash or grep files")
+  if not fileExists(target):
+    raise newException(ValueError,
+      "[E_NOT_FOUND] File not found: " & path)
+  if getFileSize(target) > MAX_BYTES:
+    raise newException(ValueError,
+      "[E_FILE_TOO_LARGE] " & path & " exceeds the 100MB read limit; use bash")
+  let raw = readFile(target)
+  if raw.len == 0:
+    return %("[] " & path & " is empty (0 lines). Use write to create content.")
+  let sampleLen = min(SNIFF_BYTES, raw.len)
+  let sample = raw[0 ..< sampleLen]
+  if '\0' in sample:
+    raise newException(ValueError,
+      "[E_NOT_TEXT] " & path & " looks binary (NUL bytes) — inspect with bash")
+  let bomEnc = utfBom(sample)
+  if bomEnc.len > 0:
+    raise newException(ValueError,
+      "[E_NOT_TEXT] " & path & " is " & bomEnc & " encoded — convert it with bash first")
+  let (_, body) = stripBom(raw)
+  let lines = splitLf(toLf(body))
+  let total = lines.len
+  if offset > total:
+    return %("Offset " & $offset & " is beyond end of file (" & $total &
+      " lines). Use offset=1 to read from the start.")
+  let endIdx = min(offset - 1 + limit, total)
+  var selected = lines[offset - 1 ..< endIdx]
+  for i, line in selected:
+    if line.len > MAX_READ_LINE_BYTES:
+      selected[i] = "[line " & $(offset + i) & " exceeds " &
+        $MAX_READ_LINE_BYTES & " bytes; content not shown. Use bash: sed -n '" &
+        $(offset + i) & "p' <path> | head -c " & $MAX_READ_LINE_BYTES & "]"
+  var text = selected.join("\n")
+  if toLf(body).endsWith("\n") and selected.len > 0: text.add("\n")
+  var shownCount = selected.len
+  if text.len > MAX_READ_BYTES:
+    var cut = MAX_READ_BYTES
+    while cut > 0 and (uint8(text[cut - 1]) and 0xC0) == 0x80: dec cut
+    text = text[0 ..< cut]
+    shownCount = text.split('\n').len
+    text.add("\n... [truncated at " & $MAX_READ_BYTES &
+      " bytes — page with offset/limit]")
+  let lastLine = offset + shownCount - 1
+  if not text.endsWith("\n"): text.add("\n")
+  if lastLine < total:
+    text.add("\n[Showing lines " & $offset & "-" & $lastLine & " of " &
+      $total & ". Use offset=" & $(lastLine + 1) & " to continue.]")
+  elif offset > 1:
+    text.add("\n[Showing lines " & $offset & "-" & $lastLine & " of " &
+      $total & ".]")
+  result = %text
+
+# ---------------------------------------------------------------------------
+# write handler
+
+proc maxWriteBytes(): int =
+  ## Content cap. Default sits just under NATS's 1MB payload limit so an
+  ## oversized write gets a clear error from us instead of a bus-level
+  ## rejection. NIF_WRITE_MAX_BYTES overrides (tests use a small value).
+  result = parseInt(getEnv("NIF_WRITE_MAX_BYTES", "900000"))
+  if result <= 0: result = 900000
+
+proc hWrite(c: Component, args: JsonNode): JsonNode =
+  if args == nil or args.kind != JObject:
+    raise newException(ValueError, "[E_BAD_SHAPE] Write request must be an object.")
+  let path = readPathArg(args, "Write request")
+  let contentN = args{"content"}
+  if contentN == nil or contentN.kind != JString:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] Write request requires a \"content\" string (empty truncates the file).")
+  let content = contentN.getStr()
+  if content.len > maxWriteBytes():
+    raise newException(ValueError,
+      "content is " & $content.len & " bytes, over the write cap of " &
+      $maxWriteBytes() & " — use bash for large files")
+  let target = followSymlink(toCwd(path, getEnv("NIF_ROOT", ".")))
+  if dirExists(target):
+    raise newException(ValueError,
+      target & " is a directory — write needs a file path")
+  let overwrote = fileExists(target)
+  writeAtomic(target, content)
+  result = %*{"path": target, "bytes_written": content.len,
+              "overwrote": overwrote}
+
+# ---------------------------------------------------------------------------
 # component
 
-let comp = newComponent("edit", "0.2.0")
+let comp = newComponent("edit", "0.3.0")
 
 loadStore()
+
+discard comp.tool("read", toolSchema(%*{
+  "path": {"type": "string",
+           "description": "File to read, relative to the harness root or absolute"},
+  "offset": {"type": "integer", "minimum": 1,
+             "description": "Line number to start reading from (1-indexed)"},
+  "limit": {"type": "integer", "minimum": 1,
+            "description": "Maximum number of lines to read (default 2000)"}
+}, @["path"],
+  "Read a text file — the standard way to inspect file content before " &
+  "editing it. Returns the raw lines verbatim, with NO line numbers: copy " &
+  "text exactly into edit's old_string. Pageable with offset/limit; the " &
+  "pagination hint at the end reports the line range shown and the next " &
+  "offset. Binary files (NUL bytes), UTF-16/32 text and files over 100MB " &
+  "are refused; an empty file reports so; lines over 200KB are elided with " &
+  "a bash inspection hint. For searching across files use grep instead."), hRead)
+
+comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 60000}
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
@@ -728,7 +869,8 @@ discard comp.tool("edit", toolSchema(%*{
   "and must not overlap — merge changes to the same block into one edit. " &
   "Use \"\" as new_string to delete text. For NEW files or wholesale " &
   "rewrites use write; for deleting or moving large blocks you do not want " &
-  "to retype, discover hashline-edit's anchored replace. Every edit is " &
+  "to retype, install the niffler-hashline plugin and discover its " &
+  "anchored replace. Every edit is " &
   "approval-gated and revertible with undo_last_edit."), hEdit)
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
@@ -745,5 +887,23 @@ discard comp.tool("undo_last_edit", toolSchema(%*{
   "The result shows the diff of the revert."), hUndoLastEdit)
 
 comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 120000}
+
+discard comp.tool("write", toolSchema(%*{
+  "path": {"type": "string",
+           "description": "File to write, relative to the harness root or absolute"},
+  "content": {"type": "string",
+              "description": "The full new file content (\"\" truncates the file)"}
+}, @["path", "content"],
+  "Create or overwrite a whole file atomically — temp file + rename, so a " &
+  "crash never leaves a partial file; existing permissions are preserved " &
+  "and parent directories are created automatically. Use this for NEW " &
+  "files (new components, configs, scripts, generated artifacts) and " &
+  "wholesale rewrites of small files. For surgical changes to an existing " &
+  "file prefer the edit tool: exact text match against content you have " &
+  "read. Empty content truncates the file. Content is capped (default " &
+  "900KB — the bus itself cannot carry more); for larger files use bash " &
+  "(heredoc or base64). Approval is required for every write."), hWrite)
+
+comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 60000}
 
 comp.run()

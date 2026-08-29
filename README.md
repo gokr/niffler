@@ -23,8 +23,7 @@ core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
                      ├── models (Go SDK)           ← pluggable model catalog
                      ├── provider (Go SDK)         ← stored LLM provider registry
                      ├── llm (Go SDK)              ← streaming LLM adapter
-                     ├── hashline-edit (Nim SDK)   ← anchored file edits
-                     ├── edit (Nim SDK)           ← exact-text edits + undo
+                     ├── edit (Nim SDK)            ← read/edit/write file tools + undo
                      ├── grep (Nim SDK)            ← code search + file listing
                      ├── git (Nim SDK)             ← read-only repo inspection
                      ├── write (Nim SDK)           ← atomic whole-file writes
@@ -40,8 +39,8 @@ Core speaks exactly one protocol (JSON envelopes over NATS, see
 component with its own language's SDK, not code compiled into core.
 
 On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
-`plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `hashline-edit`,
-`edit`, `grep`, `git`, `write`, `observe` and `logfile`. The Nim SDK powers all of those except
+`plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `edit`,
+`grep`, `git`, `observe` and `logfile`. The Nim SDK powers all of those except
 Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
 clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
 as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
@@ -131,7 +130,7 @@ automatically by nimble on the first build (`make build`).
 | `./var/bin/niffler` | the harness in a terminal: admin shell, never self-terminates |
 | `./var/bin/niffler --minimal` | minimal boot profile: only `store`, `bash`, and `llm` services |
 | `make run` | the harness with the tty admin shell (status commands) |
-| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-git`, `test-write`, `test-models`, `test-observe`, and `test-logfile` |
+| `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-git`, `test-edit`, `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
 | `make clean` | remove all build artifacts |
@@ -192,7 +191,7 @@ when 4222 is taken) and writes `var/nats-url`. Set `NIF_NATS_URL` to attach
 to any bus, even a remote one.
 
 **Approvals.** Tools that change the machine or the harness — including
-`bash`, `builder.build`, `write`, mutating `hashline-edit` tools, and
+`bash`, `builder.build`, `edit`/`write` (mutating file tools), and
 `core.spawn`/`kill`/`remove` — carry `x-harness.approval: "always"` and are
 gated on a human: a y/N prompt in the terminal harness, a dialog in the web
 UI. In a session the request is routed to the specific interactive component
@@ -218,7 +217,7 @@ sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          Nim: store, bash, builder, plugins, skills, fetch,
-                     hashline-edit, edit, grep, git, write, observe,
+                     edit (read/edit/write file tools), grep, git, observe,
                      logfile, cli, console; Go: models, provider, llm
                      + llm-openai example
 tests/               bus-contract suite: helpers + one t_*.nim per component
@@ -394,7 +393,7 @@ to CI any plugin repo — Niffler testing itself.
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
       concurrent session requests are stashed, never nested
 - [x] **bus-contract test suite** — `make test`: one script per non-LLM
-      component (including models, observe, logfile, hashline-edit), each
+      component (including models, observe, logfile, edit), each
       booting the real binaries over its own NATS; hermetic plugin installs
       via `file://`; network opt-ins behind `NIF_TEST_INSTALL`/`NIF_TEST_NETWORK`
 - [x] **streaming** — `llm` adapter streams `ev.llm.token` deltas (content
@@ -403,13 +402,17 @@ to CI any plugin repo — Niffler testing itself.
       (`llm.cancel.<sessionId>`); final assistant event always carries the
       complete content
 - [x] **hashline-edit** — hash-anchored `read`/`replace`/`undo_last_replace`
-      (Nim port of pi-hashline-edit-pro), anchors stable across edits
-- [x] **edit component** — exact-text editing as the primary editor:
+      (Nim port of pi-hashline-edit-pro), anchors stable across edits; since
+      extracted to the [niffler-hashline](https://github.com/gokr/niffler-hashline)
+      plugin
+- [x] **edit component** — the file tools: `read` (plain, pageable),
+      exact-text `edit` as the primary editor:
       old_string uniqueness enforced (ambiguous matches refused with counts),
-      several non-overlapping edits per call, whitespace-tolerant fallback,
-      LF normalization, atomic writes, approval-gated, single-level per-file
-      `undo_last_edit` persisted across restarts; hashline replace/undo moved
-      onDemand (large-block moves stay discover + invoke)
+      several non-overlapping edits per call, guarded fallback cascade
+      (trailing whitespace, indentation, unicode punctuation, block anchors,
+      escaped text), `replace_all`, LF normalization, atomic `write`
+      (merged in from the former write component), approval-gated,
+      single-level per-file `undo_last_edit` persisted across restarts
 - [x] **git component** — read-only repo inspection (`git_status`/`git_diff`/
       `git_log`/`git_show`/`git_blame`): approval-free, fixed argv (no shell),
       path-scoped to the harness root with argument validation, capped output
