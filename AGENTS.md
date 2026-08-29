@@ -133,6 +133,19 @@ The SPA is a NATS client, not a Wails client: it only talks to
   `console`) follow that file when `NIF_NATS_URL` is unset.
 - The `store` component is single-writer: exactly one process owns
   `var/barrel-db`. Never run two stores against the same file.
+- **Reading a conversation (session transcript) from the store**: the store
+  keeps full history even though in-memory context gets trimmed. While the
+  harness that owns the barrel-db is on the bus:
+  `./var/bin/cli call list '{"kind":"conversation"}'` enumerates sessions
+  (id, title, model, createdAt), then
+  `./var/bin/cli call list '{"kind":"message","idPrefix":"<convId>:","limit":1000}'`
+  returns the transcript in order and
+  `./var/bin/cli call get '{"kind":"conversation","id":"<convId>"}'` the
+  header. Mind which store answers: the bus may host a different harness
+  (test or debug NIF_ROOT) — `readlink /proc/$(pgrep -f bin/store | head -1)/cwd`
+  shows which barrel-db the serving store owns. Offline (no harness), values
+  are plain JSON inside `var/barrel-db`, so `strings` carving works in a
+  pinch, but the cli path is the supported way.
 - `llm` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.
   It streams live tokens as `ev.llm.token` deltas; core re-emits them as
