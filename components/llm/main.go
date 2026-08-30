@@ -275,13 +275,13 @@ type registryResponse struct {
 	Ok       bool   `json:"ok"`
 	Source   string `json:"source"`
 	Provider *struct {
-		Nickname string `json:"nickname"`
-		APIKey   string `json:"apiKey"`
-		BaseURL  string `json:"baseUrl"`
-		Model    string `json:"model"`
-		Catalog  string `json:"catalog"`
-		Context  int    `json:"context"`
-		StripPrefix bool `json:"stripPrefix"`
+		Nickname    string `json:"nickname"`
+		APIKey      string `json:"apiKey"`
+		BaseURL     string `json:"baseUrl"`
+		Model       string `json:"model"`
+		Catalog     string `json:"catalog"`
+		Context     int    `json:"context"`
+		StripPrefix bool   `json:"stripPrefix"`
 	} `json:"provider"`
 }
 
@@ -339,6 +339,11 @@ type chatArgs struct {
 	Provider  string                         `json:"provider"`
 	SessionID string                         `json:"sessionId"`
 	Stream    bool                           `json:"stream"`
+	// ReasoningEffort forwards a per-turn thinking-effort selection
+	// ("low"|"medium"|"high"); empty = provider default. Only sent to the
+	// API when set — providers that do not support reasoning_effort
+	// (deepseek-reasoner, most open gateways) never see the field.
+	ReasoningEffort string `json:"reasoning_effort"`
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -349,6 +354,11 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if len(args.Messages) == 0 {
 		return nil, fmt.Errorf("messages required")
 	}
+	// Core replays stored history verbatim; a session poisoned by an
+	// earlier truncated tool-call stream would make strict backends 400 the
+	// whole request ("Assistant tool call function.arguments must be valid
+	// JSON"). Repair before sending — this is what unsticks such sessions.
+	sanitizeMessages(args.Messages)
 
 	// The cancellation side-channel is subscribed before provider/model/context
 	// resolution: a cancel published during that window must still abort the
@@ -397,12 +407,98 @@ func stripModelPrefix(model string) string {
 	return model
 }
 
+// repairToolArgs returns raw when it is valid JSON, otherwise the best
+// repair: complete any unterminated string/containers (truncated streams
+// are the common failure), falling back to "{}" when the content cannot
+// be salvaged. Repaired history keeps strict backends happy without ever
+// executing anything — this runs on text, not on tool dispatch.
+func repairToolArgs(raw string) string {
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "{}"
+	}
+	var out strings.Builder
+	out.WriteString(trimmed)
+	var stack []byte // open containers, outermost last
+	inString := false
+	escaped := false
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, ch)
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			} else {
+				return "{}" // mismatched closer: unrecoverable
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			} else {
+				return "{}"
+			}
+		}
+	}
+	if inString {
+		out.WriteByte('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			out.WriteByte('}')
+		} else {
+			out.WriteByte(']')
+		}
+	}
+	repaired := out.String()
+	if !json.Valid([]byte(repaired)) {
+		return "{}"
+	}
+	return repaired
+}
+
+// sanitizeMessages repairs tool-call arguments in assistant messages so a
+// strict backend never rejects replayed history. Only assistant tool_calls
+// are touched; everything else round-trips unchanged.
+func sanitizeMessages(msgs []openai.ChatCompletionMessage) {
+	for i := range msgs {
+		if msgs[i].Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		for j := range msgs[i].ToolCalls {
+			msgs[i].ToolCalls[j].Function.Arguments =
+				repairToolArgs(msgs[i].ToolCalls[j].Function.Arguments)
+		}
+	}
+}
+
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model:                model,
-		Messages:             args.Messages,
-		Tools:                args.Tools,
-		MaxCompletionTokens:  outputSize,
+		Model:               model,
+		Messages:            args.Messages,
+		Tools:               args.Tools,
+		MaxCompletionTokens: outputSize,
+		ReasoningEffort:     args.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, err
@@ -419,6 +515,38 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
 
+// llmChunk mirrors go-openai's ChatCompletionStreamResponse, but keeps the
+// gateway's `reasoning` delta field: zai/glm-family models stream thinking
+// as "reasoning" while deepseek-reasoner uses "reasoning_content" — the
+// library only knows the latter, which silently dropped all thinking for
+// zai models. The stream loop below therefore reads RecvRaw and unmarshals
+// into these local types instead of stream.Recv().
+type llmChunk struct {
+	Model   string        `json:"model"`
+	Usage   *openai.Usage `json:"usage"`
+	Choices []llmChoice   `json:"choices"`
+}
+
+type llmChoice struct {
+	Delta llmDelta `json:"delta"`
+}
+
+type llmDelta struct {
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content"`
+	Reasoning        string            `json:"reasoning"`
+	ToolCalls        []openai.ToolCall `json:"tool_calls"`
+}
+
+// reasoning returns the delta's thinking text under whichever field name
+// the provider uses.
+func (d llmDelta) reasoning() string {
+	if d.Reasoning != "" {
+		return d.Reasoning
+	}
+	return d.ReasoningContent
+}
+
 func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	// chatHandler owns the llm.cancel.<sessionId> side-channel subscription;
 	// this derivation just bounds this call to that shared context.
@@ -430,6 +558,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		Messages:            args.Messages,
 		Tools:               args.Tools,
 		MaxCompletionTokens: outputSize,
+		ReasoningEffort:     args.ReasoningEffort,
 		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
 	})
 	if err != nil {
@@ -444,12 +573,18 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	var usageSeen bool
 
 	for {
-		resp, err := stream.Recv()
+		// RecvRaw + local unmarshal: the library's delta type drops the
+		// "reasoning" field zai/glm-family gateways stream (see llmChunk).
+		raw, err := stream.RecvRaw()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return nil, err
+		}
+		var resp llmChunk
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("bad stream chunk: %w", err)
 		}
 		if resp.Model != "" {
 			usedModel = resp.Model
@@ -465,15 +600,15 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		if delta.Content != "" {
 			content.WriteString(delta.Content)
 		}
-		if delta.ReasoningContent != "" {
-			reasoning.WriteString(delta.ReasoningContent)
+		if delta.reasoning() != "" {
+			reasoning.WriteString(delta.reasoning())
 		}
 		// one token frame per chunk with anything to show
-		if args.SessionID != "" && (delta.Content != "" || delta.ReasoningContent != "") {
+		if args.SessionID != "" && (delta.Content != "" || delta.reasoning() != "") {
 			_ = c.Emit("ev.llm.token", map[string]any{
 				"sessionId": args.SessionID,
 				"content":   delta.Content,
-				"reasoning": delta.ReasoningContent,
+				"reasoning": delta.reasoning(),
 			})
 		}
 		// streamed tool calls: id/name arrive in the first delta of a call,
@@ -592,6 +727,8 @@ func main() {
 				"description": "Session handle for ev.llm.token routing and llm.cancel.<sessionId> cancellation"},
 			"stream": map[string]any{"type": "boolean",
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
+			"reasoning_effort": map[string]any{"type": "string",
+				"description": "Backend reasoning effort (low/medium/high); omitted when empty = provider default"},
 		},
 		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},

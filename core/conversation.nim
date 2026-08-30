@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times]
+import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -21,12 +21,31 @@ import supervisor
 
 const systemPromptFmt = """
 You are Niffler, a minimal self-extending agent harness.
-Use your direct tools to get things done and read each description before
-calling it. When the direct set does not cover a task, use discover to find
-live components and request only the schemas you need, then call those tools
-through invoke. Discovery results stay in this conversation's history; its
-direct toolset stays fixed so the provider can reuse the prompt prefix.
-Prefer an existing tool (bash usually suffices) over building a new one.
+Read each tool description before calling it. When a task needs a
+capability your direct tools lack, work down this ladder before
+improvising with bash:
+1. discover + invoke — live components may already provide it. The plugins
+   component (always shipped) exposes plugin_search, plugin_installed,
+   plugin_install, plugin_update and plugin_remove as on-demand tools:
+   discover the plugins schema and invoke plugin_search FIRST when the task
+   sounds like something an existing package would cover (weather, third-
+   party APIs, file formats, database access, ...).
+2. plugin_install {repo: "owner/name"} — ecosystem packages are built from
+   source and spawned for you (human-approved); their tools then appear via
+   discover + invoke. Prefer installing an existing package over writing a
+   new component.
+3. skills — skill_list / skill_load cover Agent Skills; check them too.
+4. build your own component (patterns below) via builder.build + core.spawn
+   only when nothing exists.
+5. only then hand-roll a one-off with bash.
+
+Worked example — "what's the weather in Berlin?":
+  discover the plugins schema, invoke plugin_search {query: "weather"},
+  invoke plugin_install {repo: "gokr/niffler-weather"}, discover the new
+  component, then invoke weather_current {place: "Berlin"}.
+
+Discovery results stay in this conversation's history; its direct toolset
+stays fixed so the provider can reuse the prompt prefix.
 You can add capabilities at runtime:
 1. write a component source file — Nim: `import niffler/sdk` and use the
    typed tool pattern:
@@ -140,6 +159,7 @@ type
     messages*: seq[JsonNode]
     persister*: Persister
     modelOverride*: string
+    thinkingEffort*: string  ## "" (provider default) | low | medium | high
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -494,7 +514,8 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
-              onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil): string =
+              onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+              thinkingEffort = ""): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
   ## ("assistant", {sessionId, content}), ("toolcall", {sessionId, tool, args,
@@ -523,6 +544,17 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ct.approval.session = sessionId
   defer:
     if ct.approval != nil: ct.approval.session = ""
+  # Live lease for session-context tools (fabric, agent): dispatchToolCall
+  # injects {session, lease} into their args and pumpNested validates nested
+  # calls against it. A ref on CoreTools so the set survives by-value copies.
+  # Cleared when the turn ends — a stale lease is worthless.
+  if ct.nested != nil:
+    ct.nested.session = sessionId
+    ct.nested.lease = ""
+  defer:
+    if ct.nested != nil:
+      ct.nested.session = ""
+      ct.nested.lease = ""
   # Live LLM token stream: subscribe before the first chat call so no
   # delta is missed, and forward every frame to the caller as a "token"
   # event (the UI renders them as streaming text/thinking). The frames
@@ -550,6 +582,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       llmArgs["model"] = %selectedModel
     if resolvedProvider.len > 0:
       llmArgs["provider"] = %resolvedProvider
+    if thinkingEffort.len > 0:
+      llmArgs["reasoning_effort"] = %thinkingEffort
     var resp: JsonNode
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
@@ -593,7 +627,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "model": usedModel,
         "context": p.ctxSize,
         "promptTokens": p.promptTokens,
-        "usedTokens": p.contextUsed
+        "usedTokens": p.contextUsed,
+        "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
       onEvent("status", statusEv)
@@ -628,17 +663,30 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     let tcMsg = %*{"role": "assistant", "content": nil, "tool_calls": toolCalls}
     messages.add(tcMsg)
-    p.persistMsg(tcMsg)
     for tc in toolCalls:
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
+      let rawArgs = tc{"function"}{"arguments"}.getStr("{}")
       var args = newJObject()
+      var parseFailed = false
       try:
-        args = parseJson(tc{"function"}{"arguments"}.getStr("{}"))
+        args = parseJson(rawArgs)
       except CatchableError:
-        discard
+        # A truncated or garbled stream can leave tool-call arguments that
+        # are not valid JSON. Neutralize the call in the persisted history
+        # (strict backends re-validate assistant tool_calls on every
+        # request and would 400 the whole turn) and tell the model what
+        # happened instead of dispatching an empty args object.
+        parseFailed = true
+        tc{"function"}["arguments"] = %"{}"
       try:
-        let toolResult = ct.dispatchToolCall(name, args)
+        let toolResult =
+          if parseFailed:
+            %*{"ok": false,
+               "error": "tool call arguments were not valid JSON (truncated or garbled stream): " &
+                        rawArgs[0 ..< min(rawArgs.len, 200)]}
+          else:
+            ct.dispatchToolCall(name, args)
         ct.cat.pump()
         if ct.sup != nil:
           ct.sup.pump(ct.cat)
@@ -659,10 +707,27 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
                                  "args": args, "error": e.msg})
+    p.persistMsg(tcMsg)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
 # ---------------------------------------------------------------------------
+
+proc shortTitle(s: string, max = 48): string =
+  ## Rune-safe trim to `max` characters with an ellipsis when cut — used for
+  ## conversation titles (session lists render them in a fixed-width column).
+  let runes = s.toRunes()
+  if runes.len <= max: return s
+  $runes[0 ..< max] & "…"
+
+proc deriveTitle(content: string): string =
+  ## Auto-title for a fresh conversation: the first non-blank line of the
+  ## first user message (a session {title} rename always wins over it).
+  for line in content.splitLines():
+    let s = line.strip()
+    if s.len > 0:
+      return shortTitle(s)
+  ""
 
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                          sessions: var Table[string, Session],
@@ -675,8 +740,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let sessionId = args{"sessionId"}.getStr("")
   let content = args{"content"}.getStr("")
   let hasModel = args.kind == JObject and args.hasKey("model")
-  if sessionId.len == 0 or (content.len == 0 and not hasModel):
-    return %*{"error": "session needs sessionId and content or model"}
+  let hasThinking = args.kind == JObject and args.hasKey("thinking")
+  let hasTitle = args.kind == JObject and args.hasKey("title")
+  if sessionId.len == 0 or
+      (content.len == 0 and not hasModel and not hasThinking and not hasTitle):
+    return %*{"error": "session needs sessionId and content, model, thinking or title"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
@@ -688,6 +756,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     ensureConversationHeader(ct, sessionId)
     let header = loadConversationHeader(ct, sessionId)
     entry.modelOverride = header{"modelOverride"}.getStr("")
+    entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
     var pt = 0
     var used = 0
     var cs = 0
@@ -704,6 +773,16 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.modelOverride = args{"model"}.getStr("").strip()
     ct.updateConversationHeader(sessionId,
       %*{"modelOverride": entry.modelOverride})
+  if args.kind == JObject and args.hasKey("thinking"):
+    entry.thinkingEffort = args{"thinking"}.getStr("").strip()
+    if entry.thinkingEffort notin ["", "low", "medium", "high"]:
+      return %*{"error": "thinking must be low, medium or high (empty clears)"}
+    ct.updateConversationHeader(sessionId,
+      %*{"thinkingEffort": entry.thinkingEffort})
+  if hasTitle:
+    var title = args{"title"}.getStr("").strip()
+    if title.len > 0:
+      ct.updateConversationHeader(sessionId, %*{"title": shortTitle(title)})
 
   proc onEvent(kind: string, data: JsonNode) {.closure.} =
     let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: data)
@@ -713,12 +792,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var status = %*{
       "sessionId": sessionId,
       "model": entry.modelOverride,
+      "thinkingEffort": entry.thinkingEffort,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed
     }
     try:
-      status = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      # overlay the resolved config onto the literal — do NOT reassign, or
+      # session-local fields (sessionId, thinkingEffort, token counters) are lost
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      for key, fieldValue in resolved:
+        status[key] = fieldValue
       entry.persister.persistConversationRuntime(
         entry.modelOverride, status{"provider"}.getStr(""),
         status{"model"}.getStr(entry.modelOverride))
@@ -733,6 +817,13 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let userMsg = %*{"role": "user", "content": content}
   entry.messages.add(userMsg)
   entry.persister.persistMsg(userMsg)
+  if entry.persister.seqNo == 1 and not hasTitle:
+    # first message of a fresh conversation: title it from the message so
+    # session lists are descriptive instead of conv-<epoch>. An explicit
+    # title on the same call wins; a later rename always overwrites.
+    let auto = deriveTitle(content)
+    if auto.len > 0:
+      ct.updateConversationHeader(sessionId, %*{"title": auto})
 
   # Tag approvals raised during this turn with the driving component so they
   # are routed to its private approval subject. Cleared when the turn ends.
@@ -742,10 +833,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if ct.approval != nil: ct.approval.caller = ""
 
   let reply = runTurn(ct, entry.persister, entry.messages,
-                      entry.modelOverride, entry.exposure, onEvent)
+                      entry.modelOverride, entry.exposure, onEvent,
+                      entry.thinkingEffort)
   sessions[sessionId] = entry
   return %*{"ok": true, "sessionId": sessionId, "reply": reply,
-            "modelOverride": entry.modelOverride}
+            "modelOverride": entry.modelOverride,
+            "thinkingEffort": entry.thinkingEffort}
 
 # ---------------------------------------------------------------------------
 # Session runners — one process per conversation (system side: ensure/forward)
@@ -766,6 +859,12 @@ proc sessionSubject*(sessionId: string): string =
 func steerSubject*(sessionId: string): string =
   ## Fire-and-forget channel a client publishes to in order to inject a message
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
+
+func toolSubject*(sessionId: string): string =
+  ## Nested-call proxy for session-context tools (fabric, agent): generated
+  ## programs route every tool call here; the runner's pump validates the
+  ## live lease and re-enters the one dispatch gate (see dispatch.nim).
+  "svc.session." & sanitizeSessionId(sessionId) & ".tool"
 
 proc ensureRunner*(ct: CoreTools, sessionId: string): string =
   ## Return the scoped call subject for `sessionId`, spawning its session
@@ -814,7 +913,11 @@ proc callSession*(ct: CoreTools, args: JsonNode, caller = ""): JsonNode =
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
   ## Serve pending svc.core.call messages (session/spawn/catalog).
   ## Session requests stashed while a forward was busy are drained first.
-  for pend in ct.pending.items:
+  ## Pop one at a time: callSession can pump and append to pending while
+  ## we work, so a plain `for` over items would trip the seq-mutation assert.
+  while ct.pending.items.len > 0:
+    let pend = ct.pending.items[0]
+    ct.pending.items.delete(0)
     var resp: Envelope
     try:
       let r = callSession(ct, pend.env.args, pend.env.caller)
@@ -843,7 +946,8 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog", "kill", "remove", "status", "discover":
+      of "spawn", "catalog", "kill", "remove", "status", "discover",
+          "session_prepare":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

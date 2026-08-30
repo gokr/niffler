@@ -303,6 +303,27 @@ proc main() =
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream))
+  # Slash registry checkpoint (docs/WIRE.md): every catalog change persists
+  # the merged table to the store BEFORE ev.catalog.updated goes out, so a UI
+  # reading store-first after the event never sees a stale table. Best effort:
+  # when the store is down the live catalog remains authoritative.
+  cat.onChange = proc (cat: Catalog) =
+    try:
+      if not cat.components.hasKey("store"): return
+      discard ct.dispatchToolCall("put", %*{
+        "kind": "slash", "id": "slash", "value": cat.slashTable()})
+    except CatchableError as e:
+      echo "core: WARNING slash checkpoint failed (store down?): " & e.msg
+  # Components that registered during convergence announced before the hook
+  # existed; checkpoint the current table once now.
+  if cat.sortedSlashCommands().len > 0:
+    cat.onChange(cat)
+  # Delegated child-runner preparation: the closure captures the master
+  # CoreTools by reference, so ensureRunner's supervisor mutations (spawn a
+  # session runner) land on the live state. Serves the "session_prepare"
+  # core tool (see dispatch.nim handleCoreTool).
+  ct.prepareSession = proc(sessionId: string): JsonNode =
+    %*{"subject": ensureRunner(ct, sessionId)}
   # Persisted per-conversation auto-approve: the gate consults the store so
   # a decision made in any client (TUI, web UI) is honored everywhere and no
   # dialog is shown at all for auto-approved tools.

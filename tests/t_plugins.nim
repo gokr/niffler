@@ -172,6 +172,18 @@ proc main() =
     check("plugin_search finds gokr/niffler-weather",
           search.output.contains("gokr/niffler-weather"), search.output)
 
+    # Multi-word queries are ANDed by GitHub (name/description/topics), so a
+    # zero-hit multi-word query must be retried with fewer words — gokr/
+    # niffler-stocks has an empty description, only "stocks" in its name.
+    let relaxed = runCli(cliBin, url,
+                         @["call", "plugin_search",
+                           """{"query":"stock price quote"}"""],
+                         90_000, root = root)
+    check("plugin_search falls back from zero-hit multi-word query",
+          relaxed.output.contains("gokr/niffler-stocks"), relaxed.output)
+    check("relaxed search reports attempts",
+          relaxed.output.contains("attempts"), relaxed.output)
+
   # --- teardown: remove leaves no traces -----------------------------------
   let irem = runCli(cliBin, url,
                     @["call", "plugin_remove", """{"package":"testinteractive"}"""],

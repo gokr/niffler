@@ -41,6 +41,41 @@ type Tool struct {
 	handler ToolHandler
 }
 
+// SlashSource describes where a slash-command parameter gets its value
+// candidates: the UI calls this tool lazily when the user hits Tab on the
+// argument and offers its result values for completion. Field selects the
+// value inside each result item when the tool returns objects
+// (e.g. "nickname" for provider_list); empty means "id".
+type SlashSource struct {
+	Tool  string         `json:"tool"`
+	Args  map[string]any `json:"args,omitempty"`
+	Field string         `json:"field,omitempty"`
+}
+
+// SlashParam is one command-line parameter of a slash command.
+// Kind: string | bool | int | enum (default string). Default is the
+// optional default value used when the user omits the parameter. Values
+// lists inline completion candidates (small enums); Source fetches them
+// from a tool when the user hits Tab.
+type SlashParam struct {
+	Name        string       `json:"name"`
+	Kind        string       `json:"kind,omitempty"`
+	Description string       `json:"description,omitempty"`
+	Source      *SlashSource `json:"source,omitempty"`
+	Default     any          `json:"default,omitempty"`
+	Values      []string     `json:"values,omitempty"`
+}
+
+// SlashCommand declares how interactive UIs (TUIs, web) expose this
+// component as a slash command (docs/WIRE.md). Tool is the target tool the
+// UI calls with the parsed arguments; empty means the command name itself.
+type SlashCommand struct {
+	Name        string       `json:"name"`
+	Description string       `json:"description,omitempty"`
+	Tool        string       `json:"tool,omitempty"`
+	Params      []SlashParam `json:"params,omitempty"`
+}
+
 type eventBinding struct {
 	pattern string
 	handler EventHandler
@@ -63,6 +98,7 @@ type Component struct {
 
 	nc           *nats.Conn
 	tools        []Tool
+	slash        []SlashCommand
 	events       []eventBinding
 	taps         []tapBinding
 	subs         []*nats.Subscription
@@ -92,6 +128,17 @@ func (c *Component) handlerView() *Component {
 // Tool registers a tool. Chainable: New("x","1").Tool(...).Tool(...).Run()
 func (c *Component) Tool(name string, schema map[string]any, h ToolHandler) *Component {
 	c.tools = append(c.tools, Tool{Name: name, Schema: schema, handler: h})
+	return c
+}
+
+// Slash registers a slash command for interactive UIs (docs/WIRE.md).
+// Chainable: New("x","1").Tool(...).Slash(...).Run(). The target tool
+// (cmd.Tool, or cmd.Name when empty) must be registered by this component.
+func (c *Component) Slash(cmd SlashCommand) *Component {
+	if cmd.Tool == "" {
+		cmd.Tool = cmd.Name
+	}
+	c.slash = append(c.slash, cmd)
 	return c
 }
 
@@ -386,6 +433,9 @@ func (c *Component) announce(subject string) error {
 	}
 	payload := map[string]any{
 		"name": c.Name, "version": c.Version, "pid": os.Getpid(), "tools": tools,
+	}
+	if len(c.slash) > 0 {
+		payload["slash"] = c.slash
 	}
 	if c.Client {
 		payload["client"] = true

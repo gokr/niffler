@@ -221,6 +221,29 @@ proc main() =
         configuredMessages{"items"}.len == 0,
         $configuredHeader & " " & $configuredMessages)
 
+  # --- session config: persist a thinking-effort selection (the TUI's
+  # ctrl+g cycle) without inference and without being rejected as a
+  # malformed session call.
+  let effort = call(nc, "core", "session", %*{
+    "sessionId": "provider-thinking-effort", "thinking": "high"
+  }, 30_000)
+  check("thinking-only session call persists effort without inference",
+        effort{"ok"}.getBool(false) and
+        effort{"thinkingEffort"}.getStr("") == "high" and
+        effort{"error"} == nil, $effort)
+  let effortHeader = call(nc, "store", "get", %*{
+    "kind": "conversation", "id": "provider-thinking-effort"
+  })
+  check("thinking-only session call updates the header",
+        effortHeader{"value"}{"thinkingEffort"}.getStr("") == "high",
+        $effortHeader)
+  let cleared = call(nc, "core", "session", %*{
+    "sessionId": "provider-thinking-effort", "thinking": ""
+  }, 30_000)
+  check("clearing effort returns to provider default",
+        cleared{"ok"}.getBool(false) and
+        cleared{"thinkingEffort"}.getStr("") == "", $cleared)
+
   # --- export / import round-trip (keys ride along by design)
   let exp = call(nc, "provider", "provider_export", newJObject())
   check("provider_export contains both providers with keys",

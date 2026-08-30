@@ -109,6 +109,23 @@ components:
     required: false
     restart: on-failure
 
+  # Subagent sessions (fabric Phase 1, docs/FABRIC.md): agent_run/agent_steer.
+  - name: agent
+    build: {lang: nim, src: components/agent/main.nim}
+    binary: var/bin/agent
+    autostart: true
+    required: false
+    restart: on-failure
+
+  # Programmable tool calling (fabric Phase 2, docs/FABRIC.md): the fabric
+  # tool spawns var/bin/fabric-exec per program; guests run in the Nim VM.
+  - name: fabric
+    build: {lang: nim, src: components/fabric/fabric.nim}
+    binary: var/bin/fabric
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Minimal example adapter (same tool contract, no streaming). Swap it
   # back in place of `llm` to test: comment out llm, uncomment llm-openai.
   # - name: llm-openai

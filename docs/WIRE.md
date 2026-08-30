@@ -42,13 +42,18 @@ Rules:
 
 ```
 reg.publish            # component announces itself on connect
-                       #   {name, version, pid, tools: [ {name, schema} ], client?}
+                       #   {name, version, pid, tools: [ {name, schema} ], client?,
+                       #    slash?: [SlashCommand]}
 reg.depart             # same shape (name suffices), graceful shutdown
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
-                       #   tool "session" {sessionId, content?, model?}; content runs a turn
-                       #   model-only calls persist/resolve selection without inference;
-                       #   model present + empty clears the conversation override
+                       #   tool "session" {sessionId, content?, model?, thinking?};
+                       #   content runs a turn; model-only calls persist/resolve
+                       #   selection without inference; model present + empty clears
+                       #   the conversation override. thinking (low|medium|high,
+                       #   empty clears) persists a per-conversation thinking-effort
+                       #   selection forwarded to the LLM as reasoning_effort
+                       #   (provider-dependent; providers without support never see it)
 svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)
@@ -58,6 +63,50 @@ ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, lo
                        # invalidates redacted provider/runtime views
 ev.log.<component>     # {component, level, msg, ctx?, at}; SDK log threshold applies
 ```
+
+## Slash commands (declarative UI surface)
+
+Components declare how interactive UIs (TUIs, web) expose them as slash
+commands. The spec is pure data — a UI renders it with its own widgets and
+never executes component-supplied code:
+
+```json
+SlashCommand = {
+  "name": "deploy",          // command word; globally unique like tool names
+  "description": "...",      // one line for /help and completion
+  "tool": "deploy_run",      // optional; target tool (defaults to name) —
+                             //   must be a tool this same component registered
+  "params": [                // command-line surface, positional order
+    {"name": "env", "kind": "enum",     // kind: string|bool|int|enum (default string)
+     "source": {"tool": "deploy.envs", "args": {}},  // value candidates for
+                             //   completion; the UI calls this tool lazily on Tab
+                             //   (resolved server-side via core.invoke)
+     "description": "target environment"},
+    {"name": "force", "kind": "bool", "default": false},
+    {"name": "mode", "kind": "enum", "values": ["fast", "safe"]}  // inline
+                             //   candidates for small enums (no roundtrip)
+  ]
+}
+```
+
+Invocation contract for UIs: parse the command line against `params`
+(positional values in order; `name=value` named; bool flags bare or
+`=on|off`), then issue a regular `svc.<component>.call` to `tool` with the
+resulting arguments object — result/error rendering is the UI's business.
+
+Core validates at registration (bad entries are rejected with a warning and
+skipped): command names are `[a-z0-9_-]` and unique across the catalog, the
+target tool must be registered by the same component, at most 32 commands
+per component and 16 params per command. `source.tool` may live in another
+component and is not resolved at registration time.
+
+Checkpoint: on every catalog change core persists the merged table
+*first* (store kind `slash`, id `slash`: `{updatedAt, commands: [{name,
+description, component, tool, params}]}`), then publishes `ev.catalog.updated`.
+UIs read the store first for the last-known table and follow
+`ev.catalog.updated` live; the live catalog (`catalog` op `snapshot`, which
+now carries each component's `slash` array) remains authoritative. Built-in
+UI commands (e.g. `/help`) shadow registered ones with the same name.
 
 Session runners: one conversation = one process. The system harness
 (`svc.core.call`, tool `session`) ensures a runner for the session id
@@ -137,7 +186,15 @@ ends — turns never nest.
   plus `reg.depart` (graceful) vs silence (crash).
 - Tool names are unique across the whole catalog — enforced by core at
   registration, rejected with an error envelope. The LLM only ever sees tool
-  names; core maps tool → component at dispatch.
+  names; core maps tool → component at dispatch. The namespace is deliberately
+  **flat**, not `component.tool`-qualified: flat names are the LLM's call
+  vocabulary (no `edit.edit` noise), and dot-names would break Anthropic-style
+  providers that restrict tool names to `[a-zA-Z0-9_-]`. Clash avoidance is by
+  convention: **shipped core components own their semantic names** (`read`,
+  `edit`, `bash`, ...); **plugin/third-party components prefix every tool with
+  the component name** (`stocks_quote`, `weather_current`, `git_status`) so
+  independently published packages never collide. Core rejects a clashing
+  registration instead of letting two components share a name.
 - `ev.sys.drain` (core → component): stop taking new calls, finish in-flight,
   then exit. `ev.sys.shutdown` (component → core): I'm leaving.
 

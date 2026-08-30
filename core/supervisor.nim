@@ -56,15 +56,22 @@ proc logTail(path: string, maxLines: int): string =
 proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
+  # Child output goes to var/logs/<name>.log: without a redirect, osproc
+  # gives the child an undrained pipe — a chatty child blocks on write and
+  # freezes silently mid-boot (this actually happened with session runners).
   putEnv("NIF_ROOT", sup.root)
   # stdout+stderr go to var/logs/<name>.log: a supervisor-owned pipe nobody
   # reads would swallow crash messages (and a bash grandchild could hold it
   # open forever). The death report in pump() shows the tail of this file.
   let logDir = sup.root / "var" / "logs"
-  createDir(logDir)
+  try:
+    createDir(logDir)
+  except CatchableError:
+    discard
   let logPath = logDir / (c.name & ".log")
   var cmd = "exec " & quoteShell(c.binary)
-  for a in args: cmd.add(" " & quoteShell(a))
+  for a in args:
+    cmd.add(" " & quoteShell(a))
   cmd.add(" >> " & quoteShell(logPath) & " 2>&1")
   # stdin stays a fresh pipe (EOF on read) as before; the wrapper's own
   # stdout/stderr pipes carry nothing (redirected at exec) and are never read.

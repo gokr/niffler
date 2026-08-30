@@ -39,9 +39,15 @@ proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: strin
     if monitoring:
       args.add(["-m", "-1"])
     args.add(["--ports_file_dir", portsDir])
-    result.prc = startProcess("nats-server",
-      args = args,
-      options = {poUsePath, poStdErrToStdOut})
+    # Redirect the server's output to a file: with the default pipe, the
+    # server's connection logs fill the 64KB buffer (reconnect storms make
+    # this inevitable) and the blocked write freezes the whole bus.
+    var cmd = "exec nats-server"
+    for a in args:
+      cmd.add(" " & quoteShell(a))
+    cmd.add(" >> /tmp/niffler-test-nats.log 2>&1")
+    result.prc = startProcess("/bin/sh", args = ["-c", cmd],
+      options = {poUsePath})
     for i in 0 ..< 100:
       for path in walkFiles(portsDir / "*.ports"):
         try:
@@ -156,11 +162,13 @@ proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
 
 proc startComponent*(bin: string, url: string, root = "",
                      extra: openArray[(string, string)] = [],
-                     args: openArray[string] = []): Process =
+                     args: openArray[string] = [],
+                     logFile = ""): Process =
   ## Start a component (or core) with the standard NIF_* env. The
   ## environment REPLACES the inherited one (osproc), so seed it from the
   ## current env first — components spawn subprocesses (bash, nim, go,
   ## git) that need PATH etc.
+  ## logFile: redirect stdout+stderr to a file (default: inherited streams).
   let root2 = if root.len > 0: root else: getEnv("NIF_ROOT", getAppDir().parentDir())
   var env = newStringTable(modeCaseSensitive)
   for (k, v) in envPairs():
@@ -176,8 +184,14 @@ proc startComponent*(bin: string, url: string, root = "",
   env["XDG_CACHE_HOME"] = root2 / "var" / "xdg-cache"
   for (k, v) in extra:
     env[k] = v
-  result = startProcess(bin, workingDir = root2, args = @args, env = env,
-                        options = {poUsePath})
+  if logFile.len > 0:
+    # exec replaces bash, so the Process handle still tracks the component
+    let cmd = "exec " & quoteShell(bin) & " > " & quoteShell(logFile) & " 2>&1"
+    result = startProcess("bash", workingDir = root2, args = ["-c", cmd],
+                          env = env, options = {poUsePath})
+  else:
+    result = startProcess(bin, workingDir = root2, args = @args, env = env,
+                          options = {poUsePath})
 
 proc runCli*(cliBin, url: string, args: openArray[string],
              timeoutMs = 60_000, root = ""): tuple[code: int, output: string] =

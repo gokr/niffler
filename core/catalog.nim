@@ -15,24 +15,45 @@ type
     schema*: JsonNode
     component*: string
 
+  SlashParam* = object
+    name*: string
+    kind*: string        ## string | bool | int | enum (default string)
+    description*: string
+    source*: JsonNode    ## nil or {tool, args} — completion candidates source
+    default*: JsonNode   ## optional default value
+    values*: seq[string] ## optional inline completion candidates (enums)
+
+  SlashCommand* = object
+    name*: string        ## command word; unique across the catalog
+    description*: string
+    tool*: string        ## target tool in the same component (defaults to name)
+    component*: string
+    params*: seq[SlashParam]
+
   ComponentReg* = object
     name*: string
     version*: string
     pid*: int
     client*: bool       ## interactive frontend (UI) — keeps an autostarted core alive
     tools*: seq[ToolReg]
+    slash*: seq[SlashCommand]
     registeredAt*: float  ## epochTime of reg.publish (uptime for UIs)
 
   Catalog* = ref object
     nc*: NatsConnection
     components*: Table[string, ComponentReg]
-    toolIndex*: Table[string, string]  ## tool name -> component name
+    toolIndex*: Table[string, string]   ## tool name -> component name
+    slashIndex*: Table[string, string]  ## slash command name -> component name
+    ## onChange fires after ev.catalog.updated is published; the system core
+    ## uses it to checkpoint the merged slash table into the store.
+    onChange*: proc (cat: Catalog)
     sub*: ptr natsSubscription
 
 proc newCatalog*(nc: NatsConnection): Catalog =
   result = Catalog(nc: nc,
                    components: initTable[string, ComponentReg](),
-                   toolIndex: initTable[string, string]())
+                   toolIndex: initTable[string, string](),
+                   slashIndex: initTable[string, string]())
   # Core's tools are handled locally in dispatch. discover/invoke stay direct;
   # lifecycle controls remain in the full catalog as on-demand capabilities.
   var coreReg = ComponentReg(name: "core", version: "0.1.0",
@@ -83,7 +104,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke.",
+      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke. When a task needs a capability your direct tools lack (weather, third-party APIs, file formats, ...), check the plugins component first: it exposes plugin_search/plugin_installed/plugin_install/plugin_update/plugin_remove for the niffler-component package ecosystem, and the skills component exposes skill_list/skill_load/skill_search/skill_install for Agent Skills.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
@@ -104,12 +125,23 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Run one conversation turn or update its model selection (used by UIs)",
+      "description": "Run one conversation turn or update its selection (used by UIs)",
       "properties": {
         "sessionId": {"type": "string"},
         "content": {"type": "string"},
-        "model": {"type": "string", "description": "Conversation model override; empty clears it"}
+        "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
+        "model": {"type": "string", "description": "Conversation model override; empty clears it"},
+        "thinking": {"type": "string", "enum": ["low", "medium", "high"],
+                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"}
       },
+      "required": ["sessionId"],
+      "x-harness": {"hidden": true}
+    }))
+  coreReg.tools.add(ToolReg(name: "session_prepare", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Ensure a conversation's session runner is alive and return its direct call subject, without running a turn. Used by components that drive subagent sessions mid-turn (core's session tool would stash them until the running turn ends).",
+      "properties": {"sessionId": {"type": "string"}},
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
@@ -261,10 +293,60 @@ proc toolSchema*(cat: Catalog, tool: string): JsonNode =
   for t in cat.components[comp].tools:
     if t.name == tool: return t.schema
 
+proc sortedSlashCommands*(cat: Catalog): seq[SlashCommand] =
+  for comp in cat.components.values:
+    for cmd in comp.slash:
+      result.add(cmd)
+  result.sort(proc(a, b: SlashCommand): int = cmp(a.name, b.name))
+
+proc slashTable*(cat: Catalog): JsonNode =
+  ## Merged slash-command table — the store checkpoint and snapshot shape
+  ## (docs/WIRE.md). Name-sorted, every entry already validated.
+  var cmds = newJArray()
+  for cmd in cat.sortedSlashCommands():
+    var node = %*{"name": cmd.name, "description": cmd.description,
+                  "component": cmd.component, "tool": cmd.tool}
+    if cmd.params.len > 0:
+      var params = newJArray()
+      for p in cmd.params:
+        var pn = %*{"name": p.name, "kind": p.kind}
+        if p.description.len > 0: pn["description"] = %p.description
+        if p.source != nil: pn["source"] = p.source
+        if p.default != nil: pn["default"] = p.default
+        if p.values.len > 0: pn["values"] = %p.values
+        params.add(pn)
+      node["params"] = %params
+    cmds.add(node)
+  %*{"updatedAt": epochTime(), "commands": cmds}
+
+proc slashList*(reg: ComponentReg): JsonNode =
+  ## Per-component slash surface for catalog snapshots.
+  var cmds = newJArray()
+  for cmd in reg.slash:
+    var node = %*{"name": cmd.name, "description": cmd.description,
+                  "tool": cmd.tool}
+    if cmd.params.len > 0:
+      var params = newJArray()
+      for p in cmd.params:
+        var pn = %*{"name": p.name, "kind": p.kind}
+        if p.description.len > 0: pn["description"] = %p.description
+        if p.source != nil: pn["source"] = p.source
+        if p.default != nil: pn["default"] = p.default
+        if p.values.len > 0: pn["values"] = %p.values
+        params.add(pn)
+      node["params"] = %params
+    cmds.add(node)
+  cmds
+
 proc announce(cat: Catalog) =
   let env = Envelope(v: 1, id: newId(), kind: ekEvent,
                      payload: cat.promptTools())
   cat.nc.publish("ev.catalog.updated", env.encode())
+  if cat.onChange != nil:
+    try:
+      cat.onChange(cat)
+    except CatchableError:
+      discard  # checkpointing is best effort
 
 proc handle(cat: Catalog, subject, data: string) =
   var node: JsonNode
@@ -287,20 +369,72 @@ proc handle(cat: Catalog, subject, data: string) =
                            pid: node{"pid"}.getInt(0),
                            client: node{"client"}.getBool(false),
                            registeredAt: epochTime())
-    for t in node{"tools"}:
-      let tname = t{"name"}.getStr("")
-      if tname.len == 0: continue
-      # tool names are unique across the whole catalog (docs/WIRE.md)
-      let owner = cat.toolIndex.getOrDefault(tname)
-      if owner.len > 0 and owner != name:
-        echo "catalog: rejecting " & name & " — tool '" & tname &
-             "' already provided by " & owner
-        continue
-      reg.tools.add(ToolReg(name: tname, schema: normalizeToolSchema(t{"schema"}), component: name))
-      cat.toolIndex[tname] = name
+    # tool names are unique across the whole catalog (docs/WIRE.md). A clash
+    # refuses the ENTIRE registration, before any state changes: a component
+    # that joins minus its colliding tool shows up "installed" while silently
+    # doing nothing — a loud missing component beats a broken one.
+    if node{"tools"} != nil:
+      for t in node{"tools"}:
+        let tname = t{"name"}.getStr("")
+        if tname.len == 0: continue
+        let owner = cat.toolIndex.getOrDefault(tname)
+        if owner.len > 0 and owner != name:
+          echo "catalog: rejecting " & name & " — tool '" & tname &
+               "' already provided by " & owner &
+               " (refused; use component-prefixed tool names)"
+          return
+        reg.tools.add(ToolReg(name: tname, schema: normalizeToolSchema(t{"schema"}), component: name))
+    for t in reg.tools:
+      cat.toolIndex[t.name] = name
+    # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
+    # so every catalog read and the store checkpoint is already sane.
+    if node{"slash"} != nil and node{"slash"}.kind == JArray:
+      for s in node{"slash"}:
+        if reg.slash.len >= 32:
+          echo "catalog: rejecting " & name & " — too many slash commands"
+          break
+        let sname = s{"name"}.getStr("").toLowerAscii().strip()
+        if sname.len == 0 or sname.len > 32 or
+           not sname.allCharsInSet({'a'..'z', '0'..'9', '-', '_'}):
+          echo "catalog: rejecting " & name & " — invalid slash command name"
+          continue
+        let sowner = cat.slashIndex.getOrDefault(sname)
+        if sowner.len > 0 and sowner != name:
+          echo "catalog: rejecting " & name & " — slash '" & sname &
+               "' already provided by " & sowner
+          continue
+        var cmd = SlashCommand(name: sname,
+                               description: s{"description"}.getStr(""),
+                               tool: s{"tool"}.getStr(""),
+                               component: name)
+        if cmd.tool.len == 0: cmd.tool = sname
+        var targetOK = false
+        for t in reg.tools:
+          if t.name == cmd.tool: targetOK = true
+        if not targetOK:
+          echo "catalog: rejecting " & name & " — slash '" & sname &
+               "' targets unknown tool '" & cmd.tool & "'"
+          continue
+        if s{"params"} != nil and s{"params"}.kind == JArray:
+          for p in s{"params"}:
+            if cmd.params.len >= 16: break
+            var param = SlashParam(name: p{"name"}.getStr(""),
+                                   kind: p{"kind"}.getStr("string"),
+                                   description: p{"description"}.getStr(""),
+                                   source: p{"source"},
+                                   default: p{"default"})
+            if param.name.len == 0: continue
+            if param.kind notin ["string", "bool", "int", "enum"]:
+              param.kind = "string"
+            if p{"values"} != nil and p{"values"}.kind == JArray:
+              for v in p{"values"}:
+                if v.kind == JString: param.values.add(v.getStr(""))
+            cmd.params.add(param)
+        reg.slash.add(cmd)
+        cat.slashIndex[sname] = name
     cat.components[name] = reg
     echo "catalog: " & name & " v" & reg.version & " registered (" &
-         $reg.tools.len & " tools)"
+         $reg.tools.len & " tools, " & $reg.slash.len & " slash commands)"
     cat.announce()
 
   elif subject == "reg.depart":
@@ -308,6 +442,9 @@ proc handle(cat: Catalog, subject, data: string) =
       for t in cat.components[name].tools:
         if cat.toolIndex.getOrDefault(t.name) == name:
           cat.toolIndex.del(t.name)
+      for s in cat.components[name].slash:
+        if cat.slashIndex.getOrDefault(s.name) == name:
+          cat.slashIndex.del(s.name)
       cat.components.del(name)
       echo "catalog: " & name & " departed"
       cat.announce()
@@ -330,6 +467,9 @@ proc dropComponent*(cat: Catalog, name: string) =
     for t in cat.components[name].tools:
       if cat.toolIndex.getOrDefault(t.name) == name:
         cat.toolIndex.del(t.name)
+    for s in cat.components[name].slash:
+      if cat.slashIndex.getOrDefault(s.name) == name:
+        cat.slashIndex.del(s.name)
     cat.components.del(name)
     echo "catalog: " & name & " lost (process died)"
     cat.announce()

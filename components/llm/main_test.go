@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -188,14 +191,139 @@ func TestResultJSONIncludesProvider(t *testing.T) {
 
 func TestStripModelPrefix(t *testing.T) {
 	cases := map[string]string{
-		"alibaba/glm-5.2": "glm-5.2",
-		"glm-5.2":         "glm-5.2",
+		"alibaba/glm-5.2":        "glm-5.2",
+		"glm-5.2":                "glm-5.2",
 		"deepseek/deepseek-chat": "deepseek-chat",
-		"":                "",
+		"":                       "",
 	}
 	for in, want := range cases {
 		if got := stripModelPrefix(in); got != want {
 			t.Fatalf("stripModelPrefix(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+func TestRepairToolArgs(t *testing.T) {
+	truncated := `{"command": "cd /home/gokr && echo \"=== worktrees ===\"`
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"valid passes through", `{"tool":"info","arguments":{}}`, `{"tool":"info","arguments":{}}`},
+		{"truncated string value completes", truncated, truncated + `"}`},
+		{"truncated object completes", `{"a": 1`, `{"a": 1}`},
+		{"truncated array completes", `[1, 2`, `[1, 2]`},
+		{"truncated bare string completes", `"abc`, `"abc"`},
+		{"empty falls back", "", `{}`},
+		{"garbage falls back", `garbage`, `{}`},
+		{"trailing garbage falls back", `{"a": 1} junk`, `{}`},
+		{"mismatched closer falls back", `{"a": 1]`, `{}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := repairToolArgs(c.in)
+			if !json.Valid([]byte(got)) {
+				t.Fatalf("repairToolArgs(%q) = %q, not valid JSON", c.in, got)
+			}
+			if got != c.want {
+				t.Fatalf("repairToolArgs(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
+	bad := `{"command": "cd /home/gokr && echo \"=== worktrees ===\"`
+	msgs := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "hi"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			{ID: "c1", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "bash", Arguments: bad}},
+			{ID: "c2", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "invoke", Arguments: `{"tool":"info"}`}},
+		}},
+		{Role: openai.ChatMessageRoleTool, Content: "{}"},
+	}
+	sanitizeMessages(msgs)
+	if got := msgs[1].ToolCalls[0].Function.Arguments; !json.Valid([]byte(got)) {
+		t.Fatalf("first tool call still invalid after sanitize: %q", got)
+	}
+	if got := msgs[1].ToolCalls[0].Function.Arguments; got != bad+`"}` {
+		t.Fatalf("repaired arguments = %q", got)
+	}
+	if got := msgs[1].ToolCalls[1].Function.Arguments; got != `{"tool":"info"}` {
+		t.Fatalf("valid arguments were altered: %q", got)
+	}
+	if msgs[0].Content != "hi" || msgs[2].Content != "{}" {
+		t.Fatal("non-assistant messages were altered")
+	}
+}
+
+// TestChatStreamCapturesZaiReasoningField covers the regression where
+// zai/glm-family gateways stream thinking as "reasoning" — a field the
+// go-openai library drops — so every thinking block silently vanished.
+// The stream loop reads RecvRaw and keeps both field names.
+func TestChatStreamCapturesZaiReasoningField(t *testing.T) {
+	tests := []struct {
+		name      string
+		fieldName string // "reasoning" (zai) or "reasoning_content" (deepseek)
+	}{
+		{name: "zai reasoning", fieldName: "reasoning"},
+		{name: "deepseek reasoning_content", fieldName: "reasoning_content"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newSSEChatServer(t, []string{
+				`{"model":"m1","choices":[{"delta":{"` + test.fieldName + `":"The user"}}]}`,
+				`{"model":"m1","choices":[{"delta":{"` + test.fieldName + `":" asked"}}]}`,
+				`{"choices":[{"delta":{"content":"Sure!"}}]}`,
+			})
+			defer server.Close()
+
+			cfg := openai.DefaultConfig("test-key")
+			cfg.BaseURL = server.URL
+			client := openai.NewClientWithConfig(cfg)
+
+			result, err := chatStream(t.Context(), nil, client, "m1", "test",
+				chatArgs{}, 128000, 4096)
+			if err != nil {
+				t.Fatalf("chatStream: %v", err)
+			}
+			got, ok := result.(map[string]any)
+			if !ok {
+				t.Fatalf("result = %#v, want map", result)
+			}
+			if got["reasoning"] != "The user asked" {
+				t.Fatalf("reasoning = %q, want %q", got["reasoning"], "The user asked")
+			}
+			if got["content"] != "Sure!" {
+				t.Fatalf("content = %q, want %q", got["content"], "Sure!")
+			}
+		})
+	}
+}
+
+// newSSEChatServer serves an OpenAI-compatible SSE chat stream with the
+// given JSON chunk payloads, terminated by [DONE].
+func newSSEChatServer(t *testing.T, chunks []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range chunks {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunk); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
 }

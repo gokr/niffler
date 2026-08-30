@@ -69,29 +69,49 @@ proc resolveBusUrl(): string =
     discard
   "nats://127.0.0.1:4222"
 
+proc followBus() =
+  ## Connect, announce, and follow the bus until the connection is lost,
+  ## then return so the caller can retry. The discovery file is re-read on
+  ## every attempt, so a harness restarting on a new random port is found.
+  let url = resolveBusUrl()
+  var nc = connect(url)
+
+  # announce so the catalog (and core's log) sees us, like the ui component
+  let reg = Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"name": "console", "version": "0.1.0",
+                                 "pid": getCurrentProcessId(),
+                                 "tools": newJArray()})
+  nc.publish("reg.publish", reg.encode())
+
+  var sub: ptr natsSubscription
+  let st = natsConnection_SubscribeSync(addr sub, nc.conn, ">".cstring)
+  if not checkStatus(st):
+    raise newException(IOError, "subscribe >: " & getErrorString(st))
+
+  echo styled("console: following the bus at " & url &
+              " — every envelope the harness speaks.", 2)
+  while true:
+    var msg: ptr natsMsg
+    let ns = natsSubscription_NextMsg(addr msg, sub, 200)
+    if ns == NATS_OK:
+      let subject = $natsMsg_GetSubject(msg)
+      let data = $natsMsg_GetData(msg)
+      natsMsg_Destroy(msg)
+      render(subject, data)
+    elif ns == NATS_TIMEOUT:
+      discard  # idle — the normal quiet-bus path
+    else:
+      # connection lost (nats.c abandons its reconnect budget after ~2min
+      # of unreachable server) or the subscription went invalid: NextMsg
+      # then fails INSTANTLY, so this must not fall through to a tight loop.
+      echo styled("console: bus connection lost — reconnecting…", 3)
+      nc.close()
+      return
+
 loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
-let url = resolveBusUrl()
-var nc = connect(url)
-
-# announce so the catalog (and core's log) sees us, like the ui component
-let reg = Envelope(v: 1, id: newId(), kind: ekEvent,
-                   payload: %*{"name": "console", "version": "0.1.0",
-                               "pid": getCurrentProcessId(),
-                               "tools": newJArray()})
-nc.publish("reg.publish", reg.encode())
-
-var sub: ptr natsSubscription
-let st = natsConnection_SubscribeSync(addr sub, nc.conn, ">".cstring)
-if not checkStatus(st):
-  raise newException(IOError, "subscribe >: " & getErrorString(st))
-
-echo styled("console: following the bus at " & url &
-            " — every envelope the harness speaks.", 2)
 while true:
-  var msg: ptr natsMsg
-  let ns = natsSubscription_NextMsg(addr msg, sub, 200)
-  if ns == NATS_OK:
-    let subject = $natsMsg_GetSubject(msg)
-    let data = $natsMsg_GetData(msg)
-    natsMsg_Destroy(msg)
-    render(subject, data)
+  try:
+    followBus()
+  except CatchableError as e:
+    echo styled("console: " & e.msg & " — retrying in 2s", 3)
+  sleep(2000)

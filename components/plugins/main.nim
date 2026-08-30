@@ -5,6 +5,8 @@
 ## ({"name", "version", "components":
 ##   [{"name", "lang", "main", "sources"?, "env"?, "interactive"?}]}).
 ## Discovery is GitHub topic search (topic:niffler-component) — no registry.
+## GitHub ANDs query words, so plugin_search retries a zero-hit multi-word
+## query with fewer words (see the plugin_search docstring).
 ##
 ## Install: shallow clone into var/plugins/<repo>@<ref>/, then build every
 ## component from source through the builder component (the same path the
@@ -155,7 +157,7 @@ proc dropRecord(pkg: string) =
 
 type
   ManifestComp = tuple[name, lang, main: string, sources, env: seq[string],
-                       interactive: bool]
+                       defines: seq[string], interactive: bool]
   Manifest = tuple[name, version: string, comps: seq[ManifestComp]]
 
 proc validManifestSourcePath(path: string): bool =
@@ -208,6 +210,14 @@ proc readManifest(dir: string): Manifest =
     if envArr != nil:
       for en in envArr:
         mc.env.add(en.getStr(""))
+    mc.defines = @[]
+    let definesArr = e{"defines"}
+    if definesArr != nil:
+      if definesArr.kind != JArray:
+        raise newException(ValueError,
+          "niffler.json: defines must be an array on " & mc.name)
+      for dn in definesArr:
+        mc.defines.add(dn.getStr(""))
     if mc.name.len == 0 or mc.main.len == 0:
       raise newException(ValueError,
         "niffler.json component entry needs name and main")
@@ -242,6 +252,8 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
   try:
     var buildArgs = %*{"lang": mc.lang, "name": mc.name,
                        "source": readFile(dest / mc.main)}
+    if mc.defines.len > 0:
+      buildArgs["defines"] = %mc.defines
     if mc.sources.len > 0:
       var files = newJObject()
       for source in mc.sources:
@@ -350,6 +362,17 @@ proc removeComps(rec: JsonNode): JsonNode =
     except CatchableError as err:
       result.add(%*{"name": name, "removed": false, "error": err.msg})
 
+proc toPkgs(items: JsonNode): JsonNode =
+  ## GitHub search "items" -> compact package list (repo, description,
+  ## stars, url) for plugin_search.
+  result = newJArray()
+  if items == nil: return
+  for item in items:
+    result.add(%*{"repo": item{"full_name"}.getStr(""),
+                  "description": item{"description"}.getStr(""),
+                  "stars": item{"stargazers_count"}.getInt(0),
+                  "url": item{"html_url"}.getStr("")})
+
 # --------------------------------------------------------------------------
 # tools
 
@@ -361,26 +384,83 @@ comp.tool:
     ## user asks what extra capabilities exist, then present the results
     ## and let the user pick before calling plugin_install.
     ## - query: Keywords to narrow the search (e.g. "weather"); empty lists all known packages
-    try:
-      let client = ghClient()
-      defer: client.close()
+    ##
+    ## Matching is GitHub's, not ours: space-separated words are ANDed
+    ## against each repo's name, description and topics, so "stock price
+    ## quote" matches only repos containing ALL three words — one fluffy
+    ## word zeroes the result set. Prefer 1-3 broad keywords or synonyms
+    ## ("stocks" beats "stock price quote"). A multi-word query with zero
+    ## hits is retried automatically: last word dropped repeatedly, then
+    ## each word alone (first query with hits wins). The response lists
+    ## every query tried in "attempts", the winning one in "query", and
+    ## sets "note" when results come from a relaxed query.
+    const maxCalls = 6    # stay clear of GitHub's 10 searches/min (anon)
+    let client = ghClient()
+    defer: client.close()
+
+    var calls = 0
+    var tried: seq[JsonNode] = @[]  # one entry per query actually sent
+    var items: JsonNode             # search "items" of the first query with hits
+    var hitQuery = ""               # the query that produced them
+    var apiErr = ""                 # first transport/API error, if any
+
+    proc doSearch(terms: seq[string]): int =
+      ## One GitHub call: returns its total_count (-1 on error), records
+      ## the attempt, and captures the first query that returns hits.
+      inc calls
       let q = "topic:" & topic &
-              (if query.strip().len > 0: " " & query.strip() else: "")
-      let resp = client.getContent(
-        githubApi & "/search/repositories?q=" & encodeUrl(q) &
-        "&per_page=20&sort=stars").parseJson()
-      var pkgs = newJArray()
-      let items = resp{"items"}
-      if items != nil:
-        for item in items:
-          pkgs.add(%*{"repo": item{"full_name"}.getStr(""),
-                      "description": item{"description"}.getStr(""),
-                      "stars": item{"stargazers_count"}.getInt(0),
-                      "url": item{"html_url"}.getStr("")})
-      return %*{"ok": true, "packages": pkgs,
-                "hint": "install with plugin_install {repo: \"owner/name\"}"}
-    except CatchableError as e:
-      return %*{"ok": false, "error": "GitHub search failed: " & e.msg}
+              (if terms.len > 0: " " & terms.join(" ") else: "")
+      try:
+        let resp = client.getContent(
+          githubApi & "/search/repositories?q=" & encodeUrl(q) &
+          "&per_page=20&sort=stars").parseJson()
+        let n = resp{"total_count"}.getInt(0)
+        tried.add(%*{"query": q, "results": n})
+        if n > 0 and items == nil:
+          items = resp{"items"}
+          hitQuery = q
+        return n
+      except CatchableError as e:
+        apiErr = e.msg
+        tried.add(%*{"query": q, "error": e.msg})
+        return -1
+
+    let words = query.strip().splitWhitespace()
+    let fullQuery = "topic:" & topic &
+                    (if words.len > 0: " " & words.join(" ") else: "")
+
+    if words.len <= 1:
+      discard doSearch(words)
+    else:
+      # AND semantics mean each extra word can only shrink the set: drop
+      # the last word and retry until one word remains or something hits.
+      var w = words
+      var count = doSearch(w)
+      while count == 0 and w.len > 1 and calls < maxCalls and apiErr.len == 0:
+        w = w[0 ..< w.high]
+        count = doSearch(w)
+      # Still nothing: the key word may sit mid-sentence ("weather berlin"
+      # would stop at generic "weather" matches above). Sweep single words,
+      # skipping the one already tried alone as the final prefix.
+      if count == 0 and apiErr.len == 0:
+        for term in words:
+          if calls >= maxCalls or apiErr.len > 0: break
+          if w.len == 1 and w[0] == term: continue
+          if doSearch(@[term]) > 0: break
+
+    if items == nil:
+      var err = "no packages found"
+      if apiErr.len > 0:
+        err = "GitHub search failed: " & apiErr
+      return %*{"ok": false, "error": err, "attempts": tried}
+
+    var res = %*{"ok": true, "packages": toPkgs(items),
+                 "query": hitQuery, "attempts": tried,
+                 "hint": "install with plugin_install {repo: \"owner/name\"}"}
+    if hitQuery != fullQuery:
+      res["note"] = %("GitHub ANDs all query words against name, description and topics; '" &
+        fullQuery & "' matched 0 results, so these come from the relaxed query in 'query'")
+    return res
 
 comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
