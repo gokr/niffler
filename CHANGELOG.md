@@ -8,6 +8,68 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **UI: conversation controls at TUI parity** — slash commands (built-ins
+  `/provider /model /effort /connect /status /new /session /think /tools
+  /locale /help` plus the declarative plugin registry) with tab completion
+  and did-you-mean hints, thinking and tool-card display modes
+  (ctrl+T / ctrl+E), a colored context gauge (same 75%/90% thresholds as
+  core), mid-turn steer, and a two-stage stop (arm, then force-cancel via
+  `llm.cancel.<sessionId>`).
+- **Per-conversation thinking effort** — `session {thinking}` accepts
+  low/medium/high (empty clears, thinking-only calls run no inference),
+  persists it in the conversation header and forwards it to the LLM as
+  `reasoning_effort` (omitted for providers without support). The TUI
+  cycles it with ctrl+g.
+- **Session titles** — `session {title}` renames a conversation
+  (rune-safe 48-char cap; title-only calls are valid); fresh
+  conversations auto-title from the first user message's first line, so
+  session lists are descriptive instead of `conv-<epoch>`.
+- **Declarative slash-command registry** — components declare a `slash`
+  section in reg.publish (`{name, description, tool, params[]}` with
+  per-param completion sources); core validates it, exposes it in
+  catalog snapshots and checkpoints the merged table to the store
+  (kind `slash`) before `ev.catalog.updated`, so UIs read store-first
+  and follow live. Both SDKs gain the registration API.
+- **fabric component** — programmable tool calling via an embedded Nim
+  VM (docs/FABRIC.md): the model writes a Nim program, a per-program
+  executor (nimeval, RLIMIT-capped, no bus access) runs it, and every
+  nested tool call re-enters the session proxy (approval, lease,
+  budgets, audit). maxCalls budget, output cap with artifact fallback,
+  compile errors surfaced as diagnostics, `ev.fabric.log` activity
+  events, and worked examples the LLM reads as its documentation.
+- **agent component** — subagent sessions via delegated child runners:
+  `agent_run` prepares a child session runner (`session_prepare`),
+  drives it mid-turn and returns its reply; a depth guard denies nested
+  agents; the child transcript is inspectable via the returned
+  sessionId. Hybrid fabric programs can call `agent_run` mid-program.
+- **Nested-call proxy + session leases** — `svc.session.<id>.tool` is
+  pumped from dispatch's idle slot so nested calls (fabric programs,
+  subagents) re-enter the one dispatch gate (approval, required-args
+  validation, per-tool timeout); `x-harness.sessionContext` injects
+  `{session, lease}` and stale leases or hidden/chat/invoke targets are
+  denied fail-closed.
+- **edit component** — the file-tools component: `read` (plain, pageable,
+  verbatim content for old_string), `write` (atomic whole-file, merged
+  from the former write component) and `edit`/`undo_last_edit` with a
+  guarded fallback cascade for near-miss old_strings (trailing
+  whitespace, indentation drift, unicode punctuation folding, block
+  anchors with Levenshtein similarity, double-escaped text),
+  `replace_all`, and lenient input shapes — ambiguity always stays a
+  hard error, fuzziness only rescues not-found.
+- **git component** — read-only repo inspection: `git_status`/
+  `git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (never a
+  shell), paths scoped to the harness root, ~40KB caps with narrowing
+  hints; mutations stay in bash.
+- **UI locales** — typed en/zh/zh-TW catalogs (missing keys fail
+  typecheck), auto-detected from `navigator.language` and cycled via a
+  header button; bilingual website and zh/zh-TW docs.
+- **Network mirror knobs** — `NIF_GIT_MIRROR` rewrites the plugins clone
+  host (CNB/Gitee mirrors), `NIF_NPM_REGISTRY` overrides the registry
+  for TS-component builds (docs/MANUAL.md).
+- **Component manifest defines** — `niffler.json` entries may list
+  `defines: ["ssl", ...]`, appended as `-d:NAME` (identifier-whitelisted,
+  so defines can never inject flags or shell) by builder and plugins.
+
 - **Minimal boot profile** — `./var/bin/niffler --minimal` starts only the
   `store`, `bash`, and `llm` manifest services, using `NIF_OPENAI_*` directly
   without the `provider` or `models` components. Core/NATS and on-demand
@@ -258,6 +320,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **edit absorbs read + write; hashline-edit moved to a plugin** — the
+  whole file surface lives in one component; the write component is gone
+  (t_edit covers the merged tools) and hashline anchors ship as the
+  niffler-hashline plugin (install via plugins; `replace`/
+  `undo_last_replace` stay onDemand for large block moves).
+- **System prompt leads with the capability ladder** — an explicit
+  discover+invoke → plugin install → skills → bash ordering, so models
+  stop hand-rolling curl for missing capabilities and reach for the
+  ecosystem first.
 - **Bus discovery prefers the canonical port** — when core spawns its own
   `nats-server` it now tries `127.0.0.1:4222` first (the port local clients
   default to) and falls back to a random loopback port only when 4222 is
@@ -286,6 +357,66 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Tool-call reasoning survives the round trip** — core persisted the
+  provider-neutral `reasoning` field, but the OpenAI wire expects
+  `reasoning_content`, so thinking models (deepseek-reasoner) 400'd the
+  next request ("The `reasoning_content` in the thinking mode must be
+  passed back"). The llm adapter now maps stored `reasoning` back to
+  `reasoning_content` on replay, and a tool-calling round is persisted
+  as one assistant message (content + reasoning + tool_calls) *before*
+  its tool results, instead of a contentless call entry persisted after
+  them.
+- **Truncated tool-call arguments repaired on replay** — a session
+  poisoned by a truncated stream 400-bricked every later turn on strict
+  backends; core neutralizes garbled assistant tool_calls in the
+  persisted history and the llm adapter completes/repairs arguments
+  before sending.
+- **Console survives bus loss** — `natsSubscription_NextMsg` fails
+  instantly once the connection is closed (nats.c abandons its
+  reconnect budget after ~2min of unreachable server), and the follow
+  loop treated every error as continue — a console left open across a
+  harness restart spun at 100% CPU. Idle timeouts are the normal path;
+  any other error closes and retries every 2s, re-reading bus discovery
+  so the console follows a harness restarting on a new port.
+- **Session status keeps its own fields** — `resolveTurnConfig`'s return
+  was assigned over the status literal, dropping sessionId,
+  thinkingEffort and the token counters from the reply and
+  `ev.session.status` (the ctrl+g effort selector never saw its
+  selection echoed); invoke's unknown/hidden error message stays
+  identical and name-free (existence-oracle leak).
+- **Client flag survives catalog reseeding** — a fresh core's snapshot
+  reseed lost `reg.client`, so child session runners computed zero
+  interactive clients and their fallback approval routing denied every
+  request; the snapshot op carries `reg.client` through.
+- **Clashing tool registrations refused entirely** — a reg.publish whose
+  tools collide with another component's used to have the colliding tool
+  silently dropped, leaving a component that shows installed but does
+  nothing; the whole registration is now refused. `invoke` also accepts
+  `component.tool` spellings (the namespace stays flat).
+- **zai/glm 'reasoning' stream field captured** — go-openai only parses
+  `reasoning_content`, so every thinking delta from glm-family gateways
+  streaming `reasoning` was silently dropped: no reasoning reached
+  `ev.session.token` and ctrl+t had nothing to toggle. The stream loop
+  reads both field names (regression-tested via a fake SSE server).
+- **UTF-8-safe truncation + rune-aware tty backspace** — byte-window
+  truncation now snaps to UTF-8 boundaries so CJK runes are never split
+  into invalid UTF-8 (which would poison JSON envelopes downstream), and
+  the tty admin shell's backspace deletes a whole character.
+- **Supervisor surfaces child death cause; no silent backoff drop** —
+  child stdout/stderr go to `var/logs/<name>.log` (an unread pipe
+  swallowed crash messages) and pump() reports exit code + log tail when
+  a child dies; a child dying twice in a row was nil'ed during its
+  backoff window and never restarted again. `make down` stops stray
+  harnesses, components and nats-server.
+- **nimble task parser fixes** — backticks/hyphens in task names and
+  descriptions broke `nimble install -d` for every plugin CI that
+  bootstraps Niffler's dependencies (natswrapper/bitbarrel were never
+  installed).
+- **plugin_search relaxes zero-hit queries** — GitHub repo search ANDs
+  space-separated words, so natural-language queries returned zero hits
+  even when a matching package existed; the search now retries by
+  dropping the last word, then sweeps single words, reporting every
+  attempt and the winning query.
 - **Complete Makefile component build** — `make build` now includes the shipped
   `skills` and `fetch` binaries, matching `niffler.nimble`, the manifest, and
   their bus-contract test targets.
