@@ -486,7 +486,9 @@ proc validateRequired(schema, args: JsonNode): string =
   ## validation is a documented gap; this catches the common "generated
   ## program guessed the argument shape" case with an actionable error.
   if schema == nil: return ""
-  for field in schema{"required"}:
+  let required = schema{"required"}
+  if required == nil or required.kind != JArray: return ""
+  for field in required:
     let name = field.getStr("")
     if name.len == 0: continue
     let v = args{name}
@@ -501,6 +503,8 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   ## dispatchToolCall re-enters the single gate (approval, timeout).
   if env.kind != ekCall:
     return errorEnvelope(env.id, "no-call", "expected a call envelope")
+  if env.args == nil or env.args.kind != JObject:
+    return errorEnvelope(env.id, "bad-args", "tool arguments must be an object")
   # lease: the in-flight session-context tool owns the proxy; a request
   # without the live lease (stale, guessed, or no turn running) is denied.
   if ct.nested == nil or ct.nested.session.len == 0 or ct.nested.lease.len == 0:
@@ -524,11 +528,15 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   if schema != nil and schema.isHidden():
     return errorEnvelope(env.id, "denied",
       "tool '" & tool & "' is hidden and not reachable through nested calls")
-  let missing = validateRequired(schema, env.args)
+  # __session is private proxy context. Validate it above, then remove it from
+  # the copy that reaches approval, session events, and the target component.
+  let cleanArgs = env.args.copy()
+  cleanArgs.delete("__session")
+  let missing = validateRequired(schema, cleanArgs)
   if missing.len > 0:
     return errorEnvelope(env.id, "bad-args", missing)
   try:
-    result = resultEnvelope(env.id, ct.dispatchToolCall(tool, env.args))
+    result = resultEnvelope(env.id, ct.dispatchToolCall(tool, cleanArgs))
   except CatchableError as e:
     result = errorEnvelope(env.id, "boom", e.msg)
 
@@ -625,9 +633,10 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       "no component provides tool '" & tool & "' — is it registered?")
 
   let schema = ct.cat.toolSchema(tool)
+  let callArgs = if args == nil: newJObject() else: args.copy()
   # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
   if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
-    if ct.approval == nil or not ct.approval.ask(tool, args):
+    if ct.approval == nil or not ct.approval.ask(tool, callArgs):
       raise newException(ValueError, "approval denied for tool '" & tool & "'")
 
   # per-tool timeout from its schema (x-harness.timeoutMs)
@@ -636,15 +645,18 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
 
   # Session-context tools (fabric, agent): inject the calling session plus a
-  # lease for the nested-call proxy. The lease is regenerated on every
-  # session-context dispatch, so it expires with the next flagged call or the
-  # turn end — nested requests without the live lease are denied (pumpNested).
+  # lease for the nested-call proxy. Nested session-context calls temporarily
+  # replace the current lease and restore it on return, so an outer Fabric
+  # program remains valid after a nested agent_run.
   if schema != nil and schema{"x-harness"}{"sessionContext"}.getBool(false):
     if ct.nested == nil or ct.nested.session.len == 0:
       raise newException(ValueError,
         "tool '" & tool & "' needs a live session (no conversation turn is running)")
+    let previousLease = ct.nested.lease
     ct.nested.lease = newId()
-    args["__session"] = %*{"session": ct.nested.session, "lease": ct.nested.lease}
+    defer: ct.nested.lease = previousLease
+    callArgs["__session"] = %*{"session": ct.nested.session,
+                                "lease": ct.nested.lease}
     # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
     # with a parent record in the store — may not call spawn-class tools. The
     # check MUST live here, not in the component's handler: the handler blocks
@@ -661,5 +673,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       if hasParent:
         raise newException(ValueError,
           "subagents cannot spawn subagents (depth limit)")
+    return dispatchSubjectCall(ct, "svc." & comp & ".call", tool,
+                               callArgs, timeoutMs)
 
-  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, args, timeoutMs)
+  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)

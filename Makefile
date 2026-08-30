@@ -157,7 +157,7 @@ COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo get
 var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
 
-var/bin/fabric: components/fabric/fabric.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fabric/fabric.nim
 
 components:
@@ -280,6 +280,8 @@ test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_autostart
+test-fabric: build var/bin/test_t_fabric var/bin/test_t_fabric_frames ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_frames && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric
+test-nested: build var/bin/test_t_nested ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_nested
 
 smoke: test-smoke  # legacy alias
 

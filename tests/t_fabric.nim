@@ -127,7 +127,8 @@ proc main() =
     if st != NATS_OK: break
     natsMsg_Destroy(msg)
     inc logLines
-  check("guest logg() surfaced as ev.fabric.log", logLines >= 1)
+  check("coalesced guest logs surfaced as ev.fabric.log", logLines >= 3,
+        "received " & $logLines & " of 3 expected log frames")
 
   # the three fabric results live in the persisted transcript: user(1),
   # assistant(2), tool(3), assistant(4), tool(5), assistant(6), tool(7)
@@ -146,10 +147,14 @@ proc main() =
         transcript.contains("Error"), transcript)
   check("maxCalls budget enforced",
         transcript.contains("maxCalls budget exceeded"), transcript)
+  check("timed out guest returns an actionable error",
+        transcript.contains("fabric-exec timed out"), transcript)
 
   # hybrid: fabric program -> agent_run -> subagent session -> reply
   check("hybrid fabric->agent_run returned the subagent reply",
         transcript.contains("subagent-done"), transcript)
+  check("outer Fabric lease restored after agent_run",
+        transcript.contains("lease-restored"), transcript)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""

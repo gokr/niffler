@@ -70,9 +70,10 @@ explicit policy:
    `os`/`osproc`/`net` imports, `natswrapper`) reject the program with a clear
    error. A lint is not bulletproof — it is auditable policy, not a boundary.
 3. Executor child runs with a **cleared environment** (no `NIF_*` vars) and
-   **no NATS connection** — the fabric parent owns the bus and serves the
-   child's bridge requests over framed stdio. Even a VM escape finds no
-   credentials and no reachable bus.
+   **no configured NATS connection** — the fabric parent owns the bus and
+   serves the child's bridge requests over framed stdio. The guest still
+   shares the host filesystem, UID and network namespace, so this reduces
+   accidental access rather than creating a security boundary.
 4. `posix.setrlimit(RLIMIT_AS)` + process kill for timeout — resource limits,
    not effect limits.
 5. Honest framing: approval is the boundary. `x-harness.approval: "always"`

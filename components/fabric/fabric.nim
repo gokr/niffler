@@ -12,6 +12,7 @@ import std/[json, os, osproc, posix, selectors, streams, strtabs,
             strutils, times]
 import natswrapper
 import niffler/sdk
+import framing
 
 let comp = newComponent("fabric", "0.1.0")
 
@@ -33,30 +34,6 @@ proc lint(code: string): string =
       return "program rejected: '" & b & "' is not allowed in fabric programs"
   return ""
 
-proc readFramed(fd: cint, deadline: float, sel: Selector[cint]): string =
-  ## One \\n-terminated line from the child, honoring the deadline. Raw fd
-  ## reads with our own buffering — osproc's Stream may over-read past the
-  ## line, which would desync select() (the bash-component lesson).
-  var buf = ""
-  while true:
-    let idx = buf.find('\n')
-    if idx >= 0:
-      result = buf[0 ..< idx]
-      buf = buf[idx + 1 .. ^1]
-      return
-    let left = int((deadline - epochTime()) * 1000.0)
-    if left <= 0:
-      raise newException(CatchableError, "fabric-exec timed out")
-    let ready = sel.select(min(left, 200))
-    if ready.len == 0:
-      continue
-    var chunk: array[4096, char]
-    let n = posix.read(fd, addr chunk[0], 4096)
-    if n <= 0:
-      raise newException(CatchableError, "fabric-exec closed its output")
-    for i in 0 ..< n:
-      buf.add(chunk[i])
-
 proc writeLineTo(p: Process, line: string) =
   p.inputStream.write(line & "\n")
   p.inputStream.flush()
@@ -77,7 +54,27 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   let sh = "exec " & quoteShell(bin) & " 2> " & quoteShell(errFile)
   let p = startProcess("/bin/sh", args = ["-c", sh], env = env,
                        options = {poUsePath})
+  var sel = newSelector[cint]()
+  var selectorRegistered = false
+  proc stopChild() =
+    try:
+      if p.running():
+        p.terminate()
+        discard p.waitForExit(1000)
+      if p.running():
+        p.kill()
+        discard p.waitForExit(1000)
+    except CatchableError:
+      discard
   defer:
+    if selectorRegistered:
+      try: sel.unregister(p.outputHandle)
+      except CatchableError: discard
+    try: sel.close()
+    except CatchableError: discard
+    stopChild()
+    try: p.close()
+    except CatchableError: discard
     if fileExists(errFile):
       try: removeFile(errFile)
       except CatchableError: discard
@@ -89,16 +86,17 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     if e.len > 0:
       let capped = if e.len > 4000: e[e.len - 4000 .. ^1] else: e
       result["diagnostics"] = %capped
-  var sel = newSelector[cint]()
   sel.registerHandle(p.outputHandle.SocketHandle, {Read}, p.outputHandle.cint)
+  selectorRegistered = true
   let deadline = epochTime() + timeoutMs.float / 1000.0
   var resultJ = JsonNode(nil)
+  var reader: FrameReader
   try:
     p.inputStream.write($(%*{"code": code, "strings": strings}) & "\n")
     p.inputStream.flush()
     var calls = 0
     while resultJ == nil:
-      let line = readFramed(p.outputHandle.cint, deadline, sel)
+      let line = reader.readFrame(p.outputHandle.cint, deadline, sel)
       let j = parseJson(line)
       case j{"t"}.getStr("")
       of "log":
@@ -137,21 +135,11 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         discard  # unknown frame: ignore, keep pumping
   except CatchableError as e:
     if resultJ == nil:
-      try:
-        p.terminate()
-      except CatchableError: discard
+      stopChild()
       return diag(e.msg)
   if resultJ == nil:
-    try: p.terminate()
-    except CatchableError: discard
-    sel.unregister(p.outputHandle)
-    sel.close()
+    stopChild()
     return diag("fabric program timed out after " & $timeoutMs & "ms")
-  sel.unregister(p.outputHandle)
-  sel.close()
-  if p.running():
-    p.terminate()
-  p.close()
   return resultJ
 
 proc storeArtifact(runId: string, value: string): string =
@@ -169,7 +157,7 @@ proc storeArtifact(runId: string, value: string): string =
 # low-level registration: the handler needs the raw __session injection
 let fabSchema = toolSchema(%*{
   "code": {"type": "string",
-           "description": "A complete Nim program importing fabricguest. Orchestrate tool calls (callTool), compute on the results, and return ONE value with finish(...). Only the finish value reaches this conversation; everything else stays in the sandbox."},
+           "description": "A complete Nim program importing fabricguest. Orchestrate tool calls (callTool), compute on the results, and return ONE value with finish(...). Only the finish value reaches this conversation; everything else stays in the trusted guest process."},
   "strings": {"type": "object",
               "description": "Optional key/value entries readable via stringArg(key) — pass big payloads (file contents, long prompts) here instead of inside code"},
   "timeoutMs": {"type": "integer",

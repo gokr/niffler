@@ -35,11 +35,28 @@ proc main() =
   if waitForExit(compProc, 120_000) != 0:
     fail("ctxtest component failed to compile")
     quit(1)
+  let sinkBin = sandbox.sandboxBin("ctxsink")
+  let sinkCompile = startProcess("nim", args = [
+    "c", "--hints:off", "--warnings:off",
+    "--path:" & repoRoot / "sdk",
+    "-o:" & sinkBin,
+    repoRoot / "components" / "ctxtest" / "sink.nim"],
+    options = {poUsePath, poStdErrToStdOut})
+  defer: sinkCompile.close()
+  if waitForExit(sinkCompile, 120_000) != 0:
+    fail("ctxsink component failed to compile")
+    quit(1)
 
   let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
+
+  var eventSub: ptr natsSubscription
+  let eventSt = natsConnection_SubscribeSync(addr eventSub, nc.conn,
+                                              "ev.session.toolcall".cstring)
+  doAssert checkStatus(eventSt)
+  defer: natsSubscription_Destroy(eventSub)
 
   var coreProc = startComponent(coreBin, url, root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1")])
@@ -69,6 +86,14 @@ proc main() =
       if ctxProc.running(): ctxProc.kill()
     ctxProc.close()
   check("ctxtest registered", waitRegistered(nc, "ctxtest"))
+  let sinkProc = startComponent(sinkBin, url, root = root)
+  defer:
+    if sinkProc.running():
+      sinkProc.terminate()
+      sleep(800)
+      if sinkProc.running(): sinkProc.kill()
+    sinkProc.close()
+  check("ctxsink registered", waitRegistered(nc, "ctxsink"))
 
   # --- session_prepare: delegated child-runner preparation -----------------
   let sessionId = "nested-test"
@@ -121,6 +146,19 @@ proc main() =
   check("missing required arg rejected at proxy",
         transcript.contains("badArgsCode\\\":\\\"bad-args") and
         transcript.contains("command"), transcript)
+  check("nested target did not receive private session context",
+        transcript.contains("targetSawSession\\\":false"), transcript)
+
+  var publicArgsClean = false
+  for i in 0 ..< 10:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, eventSub, 300)
+    if st != NATS_OK: break
+    let event = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if event{"payload"}{"tool"}.getStr("") == "ctxecho":
+      publicArgsClean = event{"payload"}{"args"}{"__session"} == nil
+  check("session event did not expose private session context", publicArgsClean)
 
   # --- fail closed: sessionContext tool without a live turn ----------------
   # Direct call (no dispatch, no injection): the proxy sees no live lease.

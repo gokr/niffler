@@ -56,10 +56,13 @@ comp.tool(%*{"hidden": true}):
     if sessionId == "fab-test":
       case stage
       of 0:
-        # happy path: guest calls bash through the bridge, finishes with one value
+        # Happy path plus framing regression: several adjacent log frames must
+        # survive when one pipe read receives them together with the result.
         let prog = "import fabricguest\n" &
           "let r = callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo fabric-ok\"))))\n" &
-          "logg(\"ran bash\")\n" &
+          "logg(\"ran bash 1\")\n" &
+          "logg(\"ran bash 2\")\n" &
+          "logg(\"ran bash 3\")\n" &
           "finish(jobj(jpair(\"bashResult\", jesc(r))))\n"
         return toolCall("t1", "fabric", %*{"code": prog})
       of 1:
@@ -75,12 +78,17 @@ comp.tool(%*{"hidden": true}):
           "  discard callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo x\"))))\n"
         return toolCall("t3", "fabric", %*{"code": loop, "maxCalls": 5})
       of 3:
-        # hybrid: the program delegates a judgment task to a subagent; the
-        # subagent's own spawn attempt is denied at dispatch (noSpawn)
+        # Hybrid plus lease restoration: after the nested session-context
+        # agent_run returns, the outer Fabric lease must still admit calls.
         let prog = "import fabricguest\n" &
           "let a = callTool(\"agent_run\", jobj(jpair(\"task\", jesc(\"echo agent-ok and report\"))))\n" &
-          "finish(jobj(jpair(\"agent\", jesc(a))))\n"
+          "let b = callTool(\"bash\", jobj(jpair(\"command\", jesc(\"echo lease-restored\"))))\n" &
+          "finish(jobj(jpair(\"agent\", jesc(a)), jpair(\"after\", jesc(b))))\n"
         return toolCall("t4", "fabric", %*{"code": prog})
+      of 4:
+        # Forced termination path: the parent must reap and close the guest.
+        let loop = "import fabricguest\nvar i = 0\nwhile true:\n  inc i\n"
+        return toolCall("t5", "fabric", %*{"code": loop, "timeoutMs": 100})
       else:
         return %*{"content": "fabric-turn-done"}
     if sessionId.startsWith("sp-"):
@@ -132,6 +140,9 @@ discard comp.tool("ctxecho", ctxSchema,
                             %*{"tool": "bash", "arguments": {}}, lease, 10_000)
     # 5. required-args validation: bash without "command" -> bad-args
     let badArgs = nestedCall(subject, "bash", %*{"timeoutMs": 5}, lease, 10_000)
+    # 6. valid call context is stripped before the target sees its arguments
+    let inspect = nestedCall(subject, "ctxinspect", %*{"value": "clean"},
+                             lease, 10_000)
     return %*{
       "goodKind": $good.kind,
       "goodOutput": good.args{"output"}.getStr(""),
@@ -141,6 +152,7 @@ discard comp.tool("ctxecho", ctxSchema,
       "invokeCode": invokeDeny.error{"code"}.getStr(""),
       "badArgsCode": badArgs.error{"code"}.getStr(""),
       "badArgsMsg": badArgs.error{"message"}.getStr(""),
+      "targetSawSession": inspect.args{"sawSession"}.getBool(true),
     })
 
 comp.run()
