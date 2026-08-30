@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Niffler — a self-extending agent harness</title>
-<meta name="description" content="Niffler is a minimal, self-extending agent harness. Components are processes, the bus is NATS, and the agent writes, builds and spawns its own tools mid-conversation.">
+<meta name="description" content="Niffler is an extremely modular, self-extending agent harness. Components are processes, the bus is NATS, and the agent writes, builds and spawns its own tools mid-conversation.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -19,10 +19,8 @@
     <a href="#why" data-i18n="nav.why">why</a>
     <a href="#architecture" data-i18n="nav.architecture">architecture</a>
     <a href="#quickstart" data-i18n="nav.quickstart">quickstart</a>
-    <a href="#components" data-i18n="nav.components">components</a>
-    <a href="#screens" data-i18n="nav.screens">screens</a>
-    <a href="#wire" data-i18n="nav.wire">wire</a>
-    <a href="#status" data-i18n="nav.status">status</a>
+    <a href="components.html" data-i18n="nav.components">components</a>
+    <a href="components.html#status" data-i18n="nav.status">status</a>
     <a href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener">discord</a>
     <a class="btn" href="https://github.com/gokr/niffler" target="_blank" rel="noopener" data-i18n="nav.gitclone">git clone</a>
     <span class="locales" role="group" aria-label="Language">
@@ -48,9 +46,10 @@
   </div>
   <h1 data-i18n-html="hero.h1">A harness that builds<br><span class="accent">itself out</span> — mid-conversation.</h1>
   <p class="hero-sub" data-i18n-html="hero.sub">
-    Niffler is a minimal, self-extending agent harness. Components are
-    <strong>processes</strong>, the bus is <strong>NATS</strong>, and the agent
-    writes, compiles and spawns its own tools while you talk to it.
+    Niffler is an extremely modular, self-extending agent harness. Components are
+    <strong>processes</strong> in <strong>any language</strong>, the bus is
+    <strong>NATS</strong>, and the agent writes, compiles and spawns its own
+    tools while you talk to it.
   </p>
   <div class="hero-cta">
     <a class="btn btn-primary" href="#quickstart" data-i18n="hero.ctaMake">make && ui/build/bin/niffler-ui</a>
@@ -58,8 +57,27 @@
     <a class="btn" href="https://discord.gg/ThJFEAJUAk" target="_blank" rel="noopener" data-i18n="hero.ctaDiscord">discord →</a>
   </div>
   <div class="badges">
-    <span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span><span class="badge">wails</span><span class="badge">svelte 5</span>
+    <span class="badge badge-hl" data-i18n="hero.badgeAny">any language</span><span class="badge">nim</span><span class="badge">go</span><span class="badge">typescript</span><span class="badge">nats</span><span class="badge">svelte 5</span>
   </div>
+</section>
+
+<!-- ============ SCREENS ============ -->
+<section class="section screens-top" id="screens">
+  <div class="screens screens-show">
+    <figure class="shot">
+      <a class="shot-frame" href="img/niffler-ui.png" target="_blank" rel="noopener" data-lightbox="niffler-ui — the desktop chat interface">
+        <img src="img/niffler-ui.png" alt="niffler-ui — the desktop chat interface" width="1200" height="934">
+      </a>
+      <figcaption><span class="shot-name" data-i18n="screens.ui.name">niffler-ui</span> — <span data-i18n="screens.ui.desc">the desktop chat UI: sessions, streaming tokens, tool runs, approvals, model controls</span></figcaption>
+    </figure>
+    <figure class="shot">
+      <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
+        <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="763">
+      </a>
+      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — it attaches to an already-running harness)</span></figcaption>
+    </figure>
+  </div>
+  <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-ui</code> and <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
 </section>
 
 <!-- ============ TERMINAL ============ -->
@@ -225,62 +243,6 @@
   </div>
 </section>
 
-<!-- ============ COMPONENTS ============ -->
-<section class="section" id="components">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="comp.title">shipped components</span></h2>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th data-i18n="comp.th.component">component</th><th data-i18n="comp.th.language">language</th><th data-i18n="comp.th.purpose">purpose</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>core</td><td>nim</td><td data-i18n="comp.core.p">conversation loop, supervisor, catalog, dispatch</td></tr>
-        <tr><td>session</td><td>nim</td><td data-i18n="comp.session.p">one conversation = one process — an ephemeral per-conversation runner that resumes from the store; killing one loses only the in-flight turn</td></tr>
-        <tr><td>bash</td><td>nim</td><td data-i18n="comp.bash.p">shell access as a tool — approval-gated</td></tr>
-        <tr><td>builder</td><td>nim</td><td data-i18n="comp.builder.p">compiles agent-written source → binary</td></tr>
-        <tr><td>store</td><td>nim</td><td data-i18n="comp.store.p">document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
-        <tr><td>plugins</td><td>nim</td><td data-i18n-html="comp.plugins.p">component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
-        <tr><td>skills</td><td>nim</td><td data-i18n="comp.skills.p">Agent Skills discovery, progressive-disclosure loading, resources, and managed install/remove</td></tr>
-        <tr><td>fetch</td><td>nim</td><td data-i18n="comp.fetch.p">bounded HTTP(S) retrieval with methods/headers/body, Trafilatura-first HTML extraction, pure-Nim fallback, and large-result file spill</td></tr>
-        <tr><td>edit</td><td>nim</td><td data-i18n-html="comp.edit.p">the file tools — pageable <code>read</code>, exact-match <code>edit</code> with a guarded fallback cascade, atomic <code>write</code>, single-level undo; mutations approval-gated</td></tr>
-        <tr><td>grep</td><td>nim</td><td data-i18n="comp.grep.p">ripgrep-backed content search and sorted repository file listing, with exact truncation markers</td></tr>
-        <tr><td>git</td><td>nim</td><td data-i18n-html="comp.git.p">read-only repo inspection — <code>status</code>/<code>diff</code>/<code>log</code>/<code>show</code>/<code>blame</code>, approval-free, fixed argv, path-scoped to the harness root</td></tr>
-        <tr><td>observe</td><td>nim</td><td data-i18n="comp.observe.p">live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
-        <tr><td>logfile</td><td>nim</td><td data-i18n-html="comp.logfile.p">durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
-        <tr><td>models</td><td>go</td><td data-i18n-html="comp.models.p">models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
-        <tr><td>provider</td><td>go</td><td data-i18n="comp.provider.p">store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
-        <tr><td>llm</td><td>go</td><td data-i18n-html="comp.llm.p">streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
-        <tr><td>fabric</td><td>nim</td><td data-i18n-html="comp.fabric.p">programmable tool calling — the LLM writes a Nim program that owns the intra-turn control flow, run in an embedded VM that can call bus tools (<code>callTool</code>); only the result enters the conversation</td></tr>
-        <tr><td>agent</td><td>nim</td><td data-i18n-html="comp.agent.p">subagent sessions — turn any conversation into a delegated child runner with fresh context; the summary returns to the caller</td></tr>
-        <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
-        <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
-        <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">the desktop chat UI — sessions, streaming tokens, tool runs, approvals, model controls · Wails-hosted SPA, architecturally a NATS client</td></tr>
-        <tr class="row-your"><td data-i18n="comp.your.name">your tool</td><td data-i18n="comp.your.lang">any</td><td data-i18n="comp.your.p">port the SDK — the envelope is the artifact (~200 lines)</td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<!-- ============ SCREENS ============ -->
-<section class="section" id="screens">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="screens.title">screens</span></h2>
-  <div class="screens">
-    <figure class="shot">
-      <a class="shot-frame" href="img/niffler-ui.png" target="_blank" rel="noopener">
-        <img src="img/niffler-ui.png" alt="niffler-ui — the desktop chat interface" loading="lazy" width="1200" height="1029">
-      </a>
-      <figcaption><span class="shot-name" data-i18n="screens.ui.name">niffler-ui</span> — <span data-i18n="screens.ui.desc">the desktop chat UI: sessions, streaming tokens, tool runs, approvals, model controls</span></figcaption>
-    </figure>
-    <figure class="shot">
-      <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener">
-        <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="763">
-      </a>
-      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — it autostarts the harness like any interactive frontend)</span></figcaption>
-    </figure>
-  </div>
-  <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-ui</code> and <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
-</section>
-
 <!-- ============ WIRE ============ -->
 <section class="section" id="wire">
   <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="wire.title">one wire to rule them</span></h2>
@@ -308,51 +270,6 @@
       events on <code>ev.*</code>. that's the whole bus contract.</p>
       <p class="dim" data-i18n-html="wire.note2">spec: <a href="https://github.com/gokr/niffler/blob/main/docs/WIRE.md" target="_blank" rel="noopener">docs/WIRE.md</a> · rationale: <a href="https://github.com/gokr/niffler/blob/main/docs/REBOOT.md" target="_blank" rel="noopener">docs/REBOOT.md</a></p>
     </div>
-  </div>
-</section>
-
-<!-- ============ STATUS ============ -->
-<section class="section" id="status">
-  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="status.title">status</span></h2>
-  <div class="status">
-    <ul class="done">
-      <li><span class="check">✓</span> <span data-i18n="status.l1">wire spec, envelope, Nim + Go + TypeScript SDKs</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l2">supervisor, catalog, dispatch</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l3">bash + builder + store + llm (streaming adapter)</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l4">agent adds itself a tool end-to-end (live, with DeepSeek)</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l5">persistence of shape across restarts</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l6">session service + Wails SPA shell</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l7">session runners — one conversation = one process</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l8">approvals — terminal y/N, directed UI requests with ack + broadcast fallback, headless deny, resolved-event cleanup</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l9">recover mode — <code>make recover</code></span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l10">plugins — component ecosystem (discover, install, update, remove)</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l11">skills — progressive discovery and loading of Agent Skills</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l12">fetch — bounded web retrieval with Trafilatura-first text extraction</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l13">edit — read/edit/write/undo file tools (hashline-edit extracted to the niffler-hashline plugin)</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l14">grep + git — repository search and read-only Git inspection</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l15">console + cli — follow and drive the bus from a terminal</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l16">streaming — live <code>ev.session.token</code> deltas in the UI</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l17">UI: components panel, tool-run view, light/dark theme, About dialog</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l18">bus-contract test suite — <code>make test</code>, isolated per-test NATS + temp root</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l19">tty admin shell — help/status/catalog/tools/sessions, no chat in the REPL</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l20">observe + logfile — live bus introspection, durable rotating JSONL logs</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l21">models — models.dev catalog over the bus, catalog-driven context windows</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l22">provider — store-backed LLM provider registry, live switching</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l23">UI-owned harness lifecycle — the desktop icon is the whole system: build once, any UI autostarts core, the last UI stops it</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l24">minimal boot profile — <code>--minimal</code> starts only store, bash, and llm while preserving skipped records</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l25">provider/model controls — stored providers, model selection, context meters, and live session status</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l26">progressive tool discovery — immutable per-session direct tools, discover/invoke gateways, and Live Components exposure state</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l27">fabric — programmable tool calling: LLM-written Nim programs in a VM-embedding executor, calling bus tools from inside the guest</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l28">subagent sessions — delegated child runners with fresh context, summaries returned to the caller</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l29">slash commands — declarative <code>niffler.json</code> registry for UIs, checkpointed in the store</span></li>
-      <li><span class="check">✓</span> <span data-i18n-html="status.l30">thinking effort — per-conversation <code>reasoning_effort</code> (ctrl+g), streamed reasoning rendering in the TUI</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.l31">cancellation — per-call LLM cancel and the TUI's two-stage stop (ESC, ESC)</span></li>
-      <li><span class="check">✓</span> <span data-i18n="status.i18n">UI + TUI localization — en/zh/zh-TW locales, CJK-safe truncation and editing</span></li>
-    </ul>
-    <ul class="todo">
-      <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>
-      <li><span class="todo-x">✗</span> <span data-i18n="status.t3">store-tidb with FTS + vector memory</span></li>
-    </ul>
   </div>
 </section>
 

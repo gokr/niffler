@@ -12,17 +12,19 @@
     zh: {
       "meta.title": "Niffler — 可自我扩展的 agent harness",
       "meta.description": "Niffler 是一个极简、可自我扩展的 agent harness。组件以独立进程运行并通过 NATS 总线通信；agent 可以在对话过程中编写、编译并启动自己的工具。",
+      "meta.titleComponents": "Niffler — 组件与状态",
+      "meta.descComponents": "Niffler 的每个能力都是独立的进程组件，通过 NATS 上的 JSON envelope 通信——内置 Nim、Go 和 TypeScript，可移植到任何语言。",
       "locale.label": "语言",
+      "nav.home": "首页",
       "nav.why": "为什么",
       "nav.architecture": "架构",
       "nav.quickstart": "快速开始",
       "nav.components": "组件",
-      "nav.screens": "截图",
-      "nav.wire": "协议",
       "nav.status": "状态",
       "nav.gitclone": "git clone",
       "hero.h1": "一个能在对话中途<br><span class=\"accent\">扩展自身能力</span>的 harness。",
-      "hero.sub": "Niffler 是一个极简、可自我扩展的 agent harness。每个组件都是<strong>独立进程</strong>，并通过 <strong>NATS 总线</strong>通信；agent 可以在对话过程中自行编写、编译并启动新工具。",
+      "hero.sub": "Niffler 是一个高度模块化、可自我扩展的 agent harness。组件是<strong>任意语言</strong>编写的<strong>独立进程</strong>，总线是 <strong>NATS</strong>；agent 在对话过程中自行编写、编译并启动新工具。",
+      "hero.badgeAny": "任意语言",
       "hero.ctaMake": "make && ui/build/bin/niffler-ui",
       "hero.ctaGithub": "github →",
       "hero.ctaDiscord": "discord →",
@@ -91,11 +93,10 @@
       "comp.your.p": "移植 SDK；envelope 是跨语言契约（约 200 行）",
       "comp.your.name": "你的工具",
       "comp.your.lang": "任意",
-      "screens.title": "界面",
       "screens.ui.name": "niffler-ui",
       "screens.ui.desc": "桌面聊天 UI：会话、流式 token、工具运行、审批、模型控制",
       "screens.tui.name": "niffler-tui",
-      "screens.tui.desc": "终端聊天客户端（一个插件——像任何交互式前端一样自动启动 harness）",
+      "screens.tui.desc": "终端聊天客户端（一个插件——连接到已在运行的 harness）",
       "screens.note": "<code>./var/bin/niffler</code> 在终端里是管理 shell——help/status/catalog/tools/sessions，不含聊天。对话在 <code>niffler-ui</code> 和 <code>niffler-tui</code> 中进行；脚本走 <code>./var/bin/cli</code>。",
       "wire.title": "一种协议，统领一切",
       "wire.note1": "core → <code>svc.core.call</code>，组件 → <code>svc.&lt;name&gt;.call</code>，<br>事件走 <code>ev.*</code>。这就是全部总线契约。",
@@ -140,17 +141,19 @@
     "zh-TW": {
       "meta.title": "Niffler — 可自我擴展的 agent harness",
       "meta.description": "Niffler 是一個極簡、可自我擴展的 agent harness。組件以獨立行程執行並透過 NATS 訊息匯流排通訊；agent 可以在對話過程中撰寫、編譯並啟動自己的工具。",
+      "meta.titleComponents": "Niffler — 組件與狀態",
+      "meta.descComponents": "Niffler 的每個能力都是獨立的行程組件，透過 NATS 上的 JSON envelope 通訊——內建 Nim、Go 和 TypeScript，可移植到任何語言。",
       "locale.label": "語言",
+      "nav.home": "首頁",
       "nav.why": "為什麼",
       "nav.architecture": "架構",
       "nav.quickstart": "快速開始",
       "nav.components": "組件",
-      "nav.screens": "截圖",
-      "nav.wire": "協定",
       "nav.status": "狀態",
       "nav.gitclone": "git clone",
       "hero.h1": "一個能在對話途中<br><span class=\"accent\">擴展自身能力</span>的 harness。",
-      "hero.sub": "Niffler 是一個極簡、可自我擴展的 agent harness。每個組件都是<strong>獨立行程</strong>，並透過 <strong>NATS 訊息匯流排</strong>通訊；agent 可以在對話過程中自行撰寫、編譯並啟動新工具。",
+      "hero.sub": "Niffler 是一個高度模組化、可自我擴展的 agent harness。組件是以<strong>任意語言</strong>撰寫的<strong>獨立行程</strong>，透過 <strong>NATS 訊息匯流排</strong>通訊；agent 可以在對話過程中自行撰寫、編譯並啟動新工具。",
+      "hero.badgeAny": "任意語言",
       "hero.ctaMake": "make && ui/build/bin/niffler-ui",
       "hero.ctaGithub": "github →",
       "hero.ctaDiscord": "discord →",
@@ -219,11 +222,10 @@
       "comp.your.p": "移植 SDK；envelope 是跨語言契約（約 200 行）",
       "comp.your.name": "你的工具",
       "comp.your.lang": "任意",
-      "screens.title": "介面",
       "screens.ui.name": "niffler-ui",
       "screens.ui.desc": "桌面聊天 UI：對話、串流 token、工具執行、核准、模型控制",
       "screens.tui.name": "niffler-tui",
-      "screens.tui.desc": "終端機聊天客戶端（一個外掛——像任何互動式前端一樣自動啟動 harness）",
+      "screens.tui.desc": "終端機聊天客戶端（一個外掛——連接到已在執行的 harness）",
       "screens.note": "<code>./var/bin/niffler</code> 在終端機裡是管理 shell——help/status/catalog/tools/sessions，不含聊天。對話在 <code>niffler-ui</code> 和 <code>niffler-tui</code> 中進行；腳本走 <code>./var/bin/cli</code>。",
       "wire.title": "一種協定，統領一切",
       "wire.note1": "core → <code>svc.core.call</code>，組件 → <code>svc.&lt;name&gt;.call</code>，<br>事件走 <code>ev.*</code>。這就是全部匯流排契約。",
@@ -321,6 +323,8 @@
       if (englishLocaleGroup) englishLocaleGroup.setAttribute("aria-label", defaults.localeLabel);
       return;
     }
+    var titleKey = document.body.getAttribute("data-title-key") || "meta.title";
+    var descKey = document.body.getAttribute("data-desc-key") || "meta.description";
     document.documentElement.lang = locale === "zh" ? "zh-CN" : "zh-TW";
     document.querySelectorAll("[data-i18n]").forEach(function (el) {
       var v = cat[el.getAttribute("data-i18n")];
@@ -334,9 +338,9 @@
       var v = cat[el.getAttribute("data-i18n-title")];
       if (v !== undefined) el.title = v;
     });
-    document.title = cat["meta.title"] || defaults.title;
+    document.title = cat[titleKey] || defaults.title;
     var description = document.querySelector('meta[name="description"]');
-    if (description) description.content = cat["meta.description"] || defaults.description;
+    if (description) description.content = cat[descKey] || defaults.description;
     var localeGroup = document.querySelector(".locales");
     if (localeGroup) localeGroup.setAttribute("aria-label", cat["locale.label"] || defaults.localeLabel);
   }
