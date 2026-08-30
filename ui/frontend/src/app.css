@@ -78,6 +78,15 @@ body,
 .msg-reasoning {
   @apply mb-1.5 whitespace-pre-wrap border-l-2 border-ink-600 pl-2.5 text-[12px] italic leading-relaxed text-ink-400;
 }
+.msg-reasoning-brief {
+  @apply cursor-default select-none text-ink-600 not-italic;
+}
+.msg-meta-block {
+  @apply self-center max-w-[92%] rounded-lg bg-ink-800/70 px-3 py-1.5 text-[12px] text-ink-400 whitespace-pre-wrap font-mono;
+}
+.msg-error-block {
+  @apply self-start max-w-[92%] rounded-lg border border-danger/40 bg-danger/10 px-3 py-1.5 text-[12px] text-danger whitespace-pre-wrap;
+}
 .msg-assistant pre {
   @apply bg-ink-900 border border-ink-600 rounded-lg p-3 overflow-x-auto text-[13px];
 }

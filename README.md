@@ -456,7 +456,12 @@ to CI any plugin repo — Niffler testing itself.
       helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
-- [ ] cancellation polish in the web UI (per-call cancel ships in the TUI; ev.cancel flow polish)
+- [x] Web UI TUI-parity features: slash commands (built-ins + the plugin
+  registry, Tab completion, did-you-mean), thinking/tool display cycles
+  (Ctrl+T/E + header chips), per-conversation thinking effort (Ctrl+G +
+  header chip), visible context gauge (bar, 75%/90% thresholds, survives
+  resume), mid-turn steer, two-stage stop, /status provenance,
+  /provider /provider-strip command routes
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
 

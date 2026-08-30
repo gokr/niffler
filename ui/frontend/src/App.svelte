@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
-  import { send, online, onStatus, isWails, busUrl, on, emit } from "./nats";
+  import { send, onStatus, isWails, busUrl, on, emit } from "./nats";
   import Components from "./views/Components.svelte";
   import { initTheme, toggleTheme } from "./lib/theme";
   import { t, cycleLocale, locale } from "./lib/i18n.svelte";
@@ -11,6 +11,8 @@
   import ModelPicker from "./components/ModelPicker.svelte";
   import type { ProviderSummary, ResolvedConfig, SessionStatus } from "./lib/providers";
   import { fmtContext, contextPct } from "./lib/providers";
+  import { thinkLevel, toolLevel, cycleThinkLevel, cycleToolLevel, type ThinkLevel, type ToolLevel } from "./lib/prefs.svelte";
+  import { effortLabel, nextEffort, isValidEffort, saveThinkingEffort, type EffortLevel } from "./lib/effort";
 
   interface ApprovalReq {
     id: string;
@@ -26,11 +28,17 @@
   let approvals = $state<ApprovalReq[]>([]);
   let theme = $state<"light" | "dark">(initTheme());
   let autoApproved = $state<Record<string, string[]>>({});
+  let chatRef: Chat | undefined = $state();
 
   // Provider/model state
   let providers = $state<ProviderSummary[]>([]);
   let effective = $state<ResolvedConfig | null>(null);
   let sessionModels = $state<Record<string, string>>({});
+  // Per-conversation thinking effort ("" = provider default "auto").
+  let sessionEfforts = $state<Record<string, EffortLevel>>({});
+  // Per-conversation context usage as persisted in the conversation header
+  // (survives resume; live updates arrive via ev.session.status).
+  let sessionCtxUsed = $state<Record<string, number>>({});
   let sessionStatus = $state<Record<string, SessionStatus>>({});
   let managerOpen = $state(false);
   let modelPickerOpen = $state(false);
@@ -59,11 +67,17 @@
     }
   }
 
-  async function loadSessionModel(sid: string) {
+  // Conversation metadata: model override, thinking effort and persisted
+  // context usage. All three survive resume and feed the header chips and
+  // the context gauge even before the first turn in this UI.
+  async function loadSessionState(sid: string) {
     try {
       const resp = await send("store", "get", { kind: "conversation", id: sid });
       const v = resp.value ?? {};
-      sessionModels[sid] = v.modelOverride ?? "";
+      sessionModels = { ...sessionModels, [sid]: v.modelOverride ?? "" };
+      sessionEfforts = { ...sessionEfforts, [sid]: isValidEffort(v.thinkingEffort) ? v.thinkingEffort : "" };
+      sessionCtxUsed = { ...sessionCtxUsed, [sid]: v.contextUsed ?? 0 };
+      chatRef?.setSessionModel(v.modelOverride ?? "");
     } catch {
       // store unreachable
     }
@@ -83,16 +97,96 @@
     await loadEffective(sessionModels[sessionId ?? ""] || undefined);
   }
 
+  async function toggleStripPrefix(on: boolean) {
+    const p = providers.find((x) => x.active);
+    const nickname = p?.nickname || effective?.provider || "default";
+    try {
+      await send("provider", "provider_update", { nickname, stripPrefix: on }, 30000);
+    } catch {
+      // keep current state
+    }
+    await loadProviders();
+  }
+
   async function pickModel(model: string) {
     const sid = sessionId;
     if (!sid) return;
-    sessionModels[sid] = model;
+    sessionModels = { ...sessionModels, [sid]: model };
+    chatRef?.setSessionModel(model);
     try {
       await send("core", "session", { sessionId: sid, model }, 30000);
     } catch {
       // approval denied or llm unavailable
     }
     await loadEffective(model || undefined);
+  }
+
+  /** Rotate/set the conversation's thinking effort and persist it like the
+   * TUI's ctrl+g (core.session {thinking}, model-only: no inference). */
+  async function setEffort(effort: EffortLevel) {
+    const sid = sessionId;
+    if (!sid) return;
+    const previous = sessionEfforts[sid] ?? "";
+    sessionEfforts = { ...sessionEfforts, [sid]: effort };
+    try {
+      await saveThinkingEffort(sid, effort);
+    } catch {
+      sessionEfforts = { ...sessionEfforts, [sid]: previous };
+    }
+  }
+
+  function cycleEffort() {
+    if (!sessionId) return;
+    setEffort(nextEffort(sessionEfforts[sessionId] ?? ""));
+  }
+
+  // Ctrl+T / Ctrl+E / Ctrl+G — the TUI's display + effort cycles.
+  function onKeydown(e: KeyboardEvent) {
+    if (!(e.ctrlKey && !e.altKey && !e.metaKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === "t") {
+      e.preventDefault();
+      cycleThinkLevel();
+    } else if (k === "e") {
+      e.preventDefault();
+      cycleToolLevel();
+    } else if (k === "g") {
+      e.preventDefault();
+      cycleEffort();
+    }
+  }
+
+  // Slash commands the Chat view routes to App-owned controls.
+  async function handleCommand(cmd: string) {
+    if (cmd === "providers" || cmd === "connect") {
+      managerOpen = true;
+    } else if (cmd === "model") {
+      modelPickerOpen = true;
+    } else if (cmd === "provider-env") {
+      await switchProvider("__env__");
+    } else if (cmd === "provider-strip:on") {
+      await toggleStripPrefix(true);
+    } else if (cmd === "provider-strip:off") {
+      await toggleStripPrefix(false);
+    } else if (cmd.startsWith("provider-switch:")) {
+      await switchProvider(cmd.slice("provider-switch:".length));
+    } else if (cmd.startsWith("model-set:")) {
+      await pickModel(cmd.slice("model-set:".length));
+    } else if (cmd.startsWith("effort-set:")) {
+      await setEffort(cmd.slice("effort-set:".length) as EffortLevel);
+    } else if (cmd === "sessions") {
+      // The sidebar lists conversations; switching is a sidebar concern.
+      // Surfacing it as a no-op keeps /session idempotent here.
+    } else if (cmd.startsWith("switch-session:")) {
+      sessionId = cmd.slice("switch-session:".length);
+    } else if (cmd.startsWith("new-session:")) {
+      const id = cmd.slice("new-session:".length);
+      sessionId = id || null;
+      refreshKey++;
+    } else if (cmd === "new-session") {
+      sessionId = null;
+      refreshKey++;
+    }
   }
 
   // What the header shows for "model": session override if set, else effective.
@@ -113,7 +207,11 @@
   const headerContext = $derived(
     headerStatus?.context ?? effective?.context ?? 0
   );
-  const headerUsed = $derived(headerStatus?.usedTokens ?? 0);
+  // Live usedTokens from ev.session.status first, then the persisted
+  // conversation header (contextUsed) so the gauge survives resume.
+  const headerUsed = $derived(
+    headerStatus?.usedTokens ?? (sessionId ? sessionCtxUsed[sessionId] ?? 0 : 0)
+  );
   const ctxPct = $derived(contextPct(headerUsed, headerContext));
 
   // The UI's own bus identity (see ui/bridge.go: sdk.New("ui", ...)).
@@ -147,24 +245,66 @@
         const sid = p.sessionId ?? "";
         if (isAutoApproved(sid, p.tool)) {
           emit("ev.approval.reply", { id: p.id, ok: true });
-        } else {
-          approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
+          return;
         }
+        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
       }
     })
   );
 
   onMount(() =>
     on("ev.approval.resolved", (ev) => {
-      // The gate reached a verdict (possibly via another client): drop the
-      // matching modal instead of leaving a stale prompt open.
       const p = ev.payload ?? {};
-      if (p.id) approvals = approvals.filter((r) => r.id !== p.id);
+      if (p.id) approvals = approvals.filter((a) => a.id !== p.id);
+    })
+  );
+
+  onMount(() =>
+    on("ev.session.status", (ev) => {
+      // Runtime/status frames update the header's provider/model/context
+      // provenance and the context gauge live during a turn.
+      const p = ev.payload ?? {};
+      if (p.sessionId) {
+        sessionStatus = { ...sessionStatus, [p.sessionId]: p };
+      }
     })
   );
 
   onMount(() => {
-    const onKey = (e: KeyboardEvent) => {
+    loadProviders();
+    loadEffective();
+  });
+
+  onMount(() =>
+    onStatus((isOnline, busUrl) => {
+      connected = isOnline;
+      url = busUrl;
+      if (isOnline) {
+        loadProviders();
+        loadEffective(sessionModels[sessionId ?? ""] || undefined);
+        if (sessionId) loadSessionState(sessionId);
+      }
+    })
+  );
+
+  // Provider or model-catalog changes from OTHER clients (e.g. the TUI)
+  // refresh this UI's header state too.
+  onMount(() =>
+    on("ev.provider.", () => {
+      loadProviders();
+      loadEffective(sessionModels[sessionId ?? ""] || undefined);
+    })
+  );
+
+  onMount(() =>
+    on("ev.models.updated", () => {
+      loadEffective(sessionModels[sessionId ?? ""] || undefined);
+    })
+  );
+
+  onMount(() => {
+    // Answer approvals with keyboard, like the TUI: Enter ok, Esc deny.
+    const handler = (e: KeyboardEvent) => {
       if (approvals.length === 0) return;
       if (e.key === "Enter") {
         e.preventDefault();
@@ -174,48 +314,63 @@
         answerApproval(false);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   });
 
-  // Provider/model event subscriptions
-  onMount(() => on("ev.provider.changed", () => {
-    loadProviders();
-    loadEffective(sessionModels[sessionId ?? ""] || undefined);
-  }));
-
-  onMount(() => on("ev.models.updated", () => {
-    loadEffective(sessionModels[sessionId ?? ""] || undefined);
-  }));
-
-  onMount(() => on("ev.session.status", (ev) => {
-    const p = ev.payload ?? {};
-    if (p.sessionId) {
-      sessionStatus = { ...sessionStatus, [p.sessionId]: p };
-    }
-  }));
-
-  // Initial load + connection state
-  onMount(() =>
-    onStatus((online, u) => {
-      connected = online;
-      url = u;
-      if (online) {
-        loadProviders();
-        loadEffective();
+  async function answerApproval(ok: boolean, auto: boolean = false) {
+    const req = approvals[0];
+    if (!req) return;
+    if (auto) {
+      autoApproved = {
+        ...autoApproved,
+        [req.sessionId]: [...(autoApproved[req.sessionId] ?? []), req.tool],
+      };
+      try {
+        await send("store", "put", {
+          kind: "approval",
+          id: req.sessionId + ":" + req.tool,
+          value: { tool: req.tool, sessionId: req.sessionId },
+        });
+      } catch {
+        // best effort: in-memory list still covers this session
       }
-    })
-  );
+    }
+    emit("ev.approval.reply", { id: req.id, ok });
+    approvals = approvals.slice(1);
+  }
 
-  // Load session model when session changes
+  function loadAutoApproved(sid: string) {
+    if (!sid) return;
+    // Auto-approves are persisted per conversation; a fresh UI instance
+    // reloads them lazily when the first gate for that session arrives.
+    // (The store read is best effort; core's gate remains authoritative.)
+    send("store", "list", { kind: "approval", idPrefix: sid + ":" })
+      .then((resp) => {
+        const tools: string[] = [];
+        for (const item of resp.items ?? []) {
+          const tool = item.id?.slice(sid.length + 1);
+          if (tool) tools.push(tool);
+        }
+        if (tools.length > 0) {
+          autoApproved = { ...autoApproved, [sid]: tools };
+        }
+      })
+      .catch(() => {});
+  }
+
+  // Session changed: refresh the effective resolution against this
+  // conversation's model override and load its persisted state.
   let prevSession: string | null = null;
   $effect(() => {
     if (sessionId !== prevSession) {
       prevSession = sessionId;
       if (sessionId) {
-        loadSessionModel(sessionId);
+        loadSessionState(sessionId);
+        loadAutoApproved(sessionId);
         loadEffective(sessionModels[sessionId] || undefined);
       } else {
+        chatRef?.setSessionModel("");
         loadEffective();
       }
     }
@@ -224,28 +379,6 @@
   function prettyArgs(args: any): string {
     const s = JSON.stringify(args ?? {}, null, 2);
     return s.length > 3000 ? s.slice(0, 3000) + "…" : s;
-  }
-
-  function answerApproval(ok: boolean, auto = false) {
-    const req = approvals[0];
-    if (!req) return;
-    if (auto) rememberAutoApprove(req.sessionId, req.tool);
-    emit("ev.approval.reply", { id: req.id, ok });
-    approvals = approvals.slice(1);
-  }
-
-  function rememberAutoApprove(sid: string, tool: string) {
-    if (!sid) return;
-    const list = autoApproved[sid] ?? [];
-    if (!list.includes(tool)) autoApproved[sid] = [...list, tool];
-    // Persist so the core's gate honors it for every client (no dialog at
-    // all, not even a flash). Best effort: the in-memory list still covers
-    // this session if the store is unreachable.
-    send("store", "put", {
-      kind: "approval",
-      id: sid + ":" + tool,
-      value: { tool, sessionId: sid },
-    }, 5000).catch(() => {});
   }
 
   function selectSession(id: string) {
@@ -265,6 +398,8 @@
     return id.startsWith("conv-") ? id.slice(5, 13) : id.slice(0, 8);
   }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="flex h-screen">
   <aside class="w-64 shrink-0 border-r border-ink-700 flex flex-col bg-ink-900">
@@ -298,6 +433,34 @@
       {/if}
 
       <div class="ml-auto flex items-center gap-1.5">
+        <!-- think chip: reasoning display level (Ctrl+T) -->
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 {thinkLevel() === 'off' ? 'text-ink-600' : 'text-accent'}"
+          title={t("app.thinkTitle")}
+          onclick={() => cycleThinkLevel()}
+        >
+          {t("app.think")}: {thinkLevel()}
+        </button>
+
+        <!-- tool chip: tool card display level (Ctrl+E) -->
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 {toolLevel() === 'off' ? 'text-ink-600' : 'text-ink-300'}"
+          title={t("app.toolsTitle")}
+          onclick={() => cycleToolLevel()}
+        >
+          {t("app.toolsDisplay")}: {toolLevel()}
+        </button>
+
+        <!-- effort chip: per-conversation thinking effort (Ctrl+G) -->
+        <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 text-accent disabled:opacity-40"
+          title={t("app.effortTitle")}
+          disabled={!sessionId}
+          onclick={() => cycleEffort()}
+        >
+          {t("app.effort")}: {effortLabel(sessionId ? sessionEfforts[sessionId] ?? "" : "")}
+        </button>
+
         <ProviderControl {providers} {effective} onSwitch={switchProvider} onManage={() => (managerOpen = true)} />
 
         <button
@@ -310,14 +473,22 @@
           <span class="text-ink-200 ml-1">{headerModel || "—"}</span>
         </button>
 
+        <!-- context gauge: bar + used/limit, colored at the same 75%/90%
+             warning/trim thresholds as core -->
         {#if headerContext > 0}
           <span
-            class="font-mono text-[11px] px-1.5 py-0.5 rounded"
+            class="flex items-center gap-1.5 font-mono text-[11px] px-1.5 py-0.5 rounded"
             class:text-ink-400={ctxPct < 75}
             class:text-warn={ctxPct >= 75 && ctxPct < 90}
             class:text-danger={ctxPct >= 90}
             title={t("app.tokens", { used: headerUsed.toLocaleString(), context: headerContext.toLocaleString() })}
           >
+            <span class="inline-block w-16 h-1.5 rounded overflow-hidden bg-ink-700">
+              <span
+                class="block h-full rounded {ctxPct >= 90 ? 'bg-danger' : ctxPct >= 75 ? 'bg-warn' : 'bg-accent'}"
+                style="width: {Math.min(100, ctxPct)}%"
+              ></span>
+            </span>
             {fmtContext(headerUsed)} / {fmtContext(headerContext)}
           </span>
         {/if}
@@ -350,7 +521,7 @@
         <code class="font-mono">NATS_URL={url || "nats://127.0.0.1:4222"} ./var/bin/niffler</code>
       </div>
     {/if}
-    <Chat bind:sessionId={sessionId} />
+    <Chat bind:sessionId={sessionId} bind:this={chatRef} onCommand={handleCommand} />
   </main>
 </div>
 

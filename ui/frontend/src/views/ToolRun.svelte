@@ -2,6 +2,11 @@
   // One card for a run of consecutive tool calls. Collapsed it shows the
   // call count and one chip per call; expanding reveals a row per call,
   // each expandable in turn to show its args and result (two levels).
+  // The global tool level (ctrl+e in the TUI) decides how much shows:
+  // brief (collapsed cards, default), full (every card expanded) and off
+  // (hidden entirely). Display-side only — cards always arrive.
+  import { toolLevel } from "../lib/prefs.svelte";
+
   interface Item {
     tool?: string;
     args?: any;
@@ -17,6 +22,8 @@
   const failed = $derived(items.some((m) => m.error));
 
   let openIdx = $state<number | null>(null);
+
+  const level = $derived(toolLevel());
 
   function status(m: Item): "ok" | "err" | "run" {
     if (m.pending) return "run";
@@ -47,7 +54,8 @@
   }
 </script>
 
-<details class="tool-run" open={anyPending}>
+{#if level !== "off"}
+<details class="tool-run" open={level === "full" || anyPending}>
   <summary>
     <span class="tool-run-chevron">▸</span>
     {#if items.length === 1}
@@ -70,7 +78,7 @@
     {/if}
   </summary>
   {#each items as m, i (i)}
-    <details class="tool-run-item" open={openIdx === i || m.pending}>
+    <details class="tool-run-item" open={openIdx === i || m.pending || level === "full"}>
       <summary onclick={(e) => {
         e.preventDefault();
         toggle(i);
@@ -101,3 +109,4 @@
     </details>
   {/each}
 </details>
+{/if}

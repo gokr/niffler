@@ -18,6 +18,8 @@ export interface ResolvedConfig {
   catalog: string;
   context: number;
   contextSource: string;
+  output?: number;
+  outputSource?: string;
   hasKey: boolean;
 }
 
