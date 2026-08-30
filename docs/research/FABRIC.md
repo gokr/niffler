@@ -20,7 +20,7 @@ are thin surfaces over infrastructure core already has.
 ```
 LLM turn (session runner)
   └─ dispatchToolCall("fabric"|"agent")            ← approval: "always"
-       │  args.__session = {session, lease} injected (sessionContext flag)
+       │  args.__session = {session, lease, remainingMs} injected
        ▼
  ┌─ fabric component ─────────────────┐  ┌─ agent component ──────────────┐
  │ spawns var/bin/fabric-exec (child) │  │ agent_run/steer: prepare a     │
@@ -85,7 +85,8 @@ explicit policy:
 ## Core plumbing (shipped)
 
 - **`sessionContext: true`** schema flag (`x-harness`): `dispatchToolCall`
-  injects `args.__session = {session, lease}` for `fabric` and `agent_run`.
+  injects `args.__session = {session, lease, remainingMs}` for `fabric` and
+  `agent_run`.
   The lease is a one-shot token owned by the in-flight call — the predictable
   nested-call subject is worthless without the live lease. Fail closed: no
   live turn or no matching lease → denied.
@@ -93,9 +94,9 @@ explicit policy:
   `core/dispatch.nim`): admission checks, in order —
   live session context → live lease → not an internal/recursive surface
   (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare` are all
-  rejected) → tool exists → not hidden → required arguments present
-  (`validateRequired` against the catalog schema) — then re-enters the single
-  `dispatchToolCall` gate (approval, timeout). Drained from the idle slot of
+  rejected) → tool exists → not hidden → complete bounded schema validation —
+  then re-enters the single `dispatchToolCall` gate (approval, remaining
+  deadline, target timeout). Drained from the idle slot of
   `dispatchSubjectCall`, like steer, so the blocked runner stays responsive.
 - **`session_prepare`** core op: ensures a conversation header + runner for a
   child session and returns the runner's **direct subject**
@@ -132,9 +133,14 @@ need worker processes + durable state — not shipped):
   sessionContext, onDemand.
 - Owns the NATS side of the bridge; enforces per-program budgets: **maxCalls**
   (default 200) bridge calls, per-call timeout = min(tool timeout, remaining
-  program time). Oversized `finish()` values spill to
-  `var/fabric-artifacts/<run>.json` (mode 0600) and only the path returns.
-- Emits `ev.fabric.log` per guest `logg()` call.
+  monotonic program time). Nested arguments are validated against the complete
+  bounded schema subset before approval or dispatch; malformed `argsJson` is
+  rejected rather than rewritten. Source, strings, frames, logs, and results
+  all have explicit byte/count limits.
+- Oversized `finish()` values spill to mode-0600 files under
+  `var/fabric-artifacts/`; artifacts expire after seven days and the directory
+  is capped at 100 files / 100 MB.
+- Emits `ev.fabric.log` per guest `logg()` call within the log budget.
 
 **`executor.nim`** (binary `var/bin/fabric-exec`):
 
@@ -144,9 +150,10 @@ need worker processes + durable state — not shipped):
   `{t: "resp", id, ok, result|error}` on the child's stdin), `{t: "log", s}`,
   and finally `{t: "result", ok, value, diagnostics?}`. The parent drains
   continuously — no pipe-fill deadlock (the bash-component lesson).
-- Cleared environment, no NATS in the child; `setrlimit(RLIMIT_AS)` before
-  `createInterpreter`; fresh interpreter per program (kill = timeout; the VM
-  API has no interrupt hook).
+- Cleared environment, no NATS in the child; CPU, address-space, file
+  descriptor, and child-process `setrlimit` caps before `createInterpreter`;
+  fresh interpreter per program (kill = timeout; the VM API has no interrupt
+  hook).
 - Runtime search paths resolved from the compiling toolchain (compile-time
   self-locating — valid because components are built in place).
 - Bridge via `implementRoutine`; the `.nimble` file in `fabricguest/` is
@@ -184,11 +191,13 @@ aggregate), `hybrid.nim` (fabric calling agent).
 ## Tests
 
 - `tests/t_nested.nim` — proxy admission: lease checks, internal-surface
-  rejection, hidden tools, required-arg validation, live-turn fail-closed.
+  rejection, hidden tools, private-context stripping, live-turn fail-closed.
+- `tests/t_schema_validation.nim` — full supported scalar/object/array types,
+  enums, bounds, additional properties, and schema depth/size limits.
 - `tests/t_agent.nim` — run → reply (child runner direct, parent turn live),
   steer mid-turn, depth guard, deadlock regression.
 - `tests/t_fabric.nim` — compile-error round-trip, real programs driving bus
-  tools, lint rejections, budget/timeout behavior.
+  tools, malformed arguments, budget/deadline behavior, and private artifacts.
 
 ## Not shipped (deliberately later)
 

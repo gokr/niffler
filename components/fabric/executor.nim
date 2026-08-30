@@ -52,14 +52,32 @@ proc readResp(id: string): JsonNode =
     if j{"t"}.getStr("") == "resp" and j{"id"}.getStr("") == id:
       return j
 
-const rlimitAs = cint(9)  # Linux <sys/resource.h> RLIMIT_AS (not in Nim's posix)
+when defined(linux):
+  const
+    rlimitCpu = cint(0)   # <sys/resource.h> values absent from Nim's posix
+    rlimitNproc = cint(6)
+    rlimitNofile = cint(7)
+    rlimitAs = cint(9)
+elif defined(macosx):
+  const
+    rlimitCpu = cint(0)
+    rlimitAs = cint(5)
+    rlimitNproc = cint(7)
+    rlimitNofile = cint(8)
+
+proc setLimit(resource: cint, value: int) =
+  var lim: RLimit
+  lim.rlim_cur = value
+  lim.rlim_max = value
+  discard setrlimit(resource, lim)
 
 proc main =
   # resource cap before anything heavy: the VM's compile+eval allocation
-  var lim: RLimit
-  lim.rlim_cur = 768 * 1024 * 1024
-  lim.rlim_max = 768 * 1024 * 1024
-  discard setrlimit(rlimitAs, lim)
+  when defined(linux) or defined(macosx):
+    setLimit(rlimitCpu, 300)
+    setLimit(rlimitNproc, 0)
+    setLimit(rlimitNofile, 64)
+    setLimit(rlimitAs, 768 * 1024 * 1024)
 
   let ctx = parseJson(stdinFs.readLine())
   let code = ctx{"code"}.getStr("")

@@ -133,7 +133,7 @@ proc main() =
   # the three fabric results live in the persisted transcript: user(1),
   # assistant(2), tool(3), assistant(4), tool(5), assistant(6), tool(7)
   var transcript = ""
-  for i in 1 .. 12:
+  for i in 1 .. 24:
     let m = call(nc, "store", "get",
                  %*{"kind": "message",
                     "id": sessionId & ":" & align($i, 6, '0')}, 10_000)
@@ -149,6 +149,22 @@ proc main() =
         transcript.contains("maxCalls budget exceeded"), transcript)
   check("timed out guest returns an actionable error",
         transcript.contains("fabric-exec timed out"), transcript)
+  check("malformed argsJson is rejected explicitly",
+        transcript.contains("invalid argsJson"), transcript)
+  check("maxCalls range is enforced",
+        transcript.contains("maxCalls must be in 1..1000"), transcript)
+  check("timeoutMs range is enforced",
+        transcript.contains("timeoutMs must be in 1..300000"), transcript)
+  check("oversized result retained as an artifact",
+        transcript.contains("artifactPath"), transcript)
+  var artifactPrivate = false
+  let artifactDir = root / "var" / "fabric-artifacts"
+  if dirExists(artifactDir):
+    for kind, path in walkDir(artifactDir):
+      if kind == pcFile:
+        artifactPrivate = getFilePermissions(path) ==
+          {fpUserRead, fpUserWrite}
+  check("artifact is created mode 0600", artifactPrivate)
 
   # hybrid: fabric program -> agent_run -> subagent session -> reply
   check("hybrid fabric->agent_run returned the subagent reply",

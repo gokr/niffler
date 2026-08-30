@@ -1,6 +1,6 @@
 # Fabric Reliability and Typed Wrappers Plan
 
-Status: proposed follow-up to the shipped Fabric implementation described in
+Status: in progress as a follow-up to the shipped Fabric implementation in
 `docs/FABRIC.md`.
 
 This plan keeps Fabric's current architecture: a disposable Nim guest owns
@@ -23,7 +23,9 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] scoped nested leases, including Fabric calls after `agent_run`;
 - [x] private session context stripped from targets and public events;
 - [x] trusted-guest wording aligned with the actual boundary;
-- [ ] absolute deadlines, full schema validation, and remaining data budgets;
+- [x] monotonic deadline propagation and complete bounded schema validation;
+- [x] source, strings, call, frame, log, result, artifact, and OS limits;
+- [ ] transport cancellation propagation when supported;
 - [ ] generated input-typed Nim wrappers and catalog pinning;
 - [ ] bounded concurrency, durable agents, and structured observability.
 
@@ -108,8 +110,8 @@ deadlines, and cancellation identifiers.
 
 ### 4. Use one absolute deadline
 
-The current bridge uses a fixed 120-second nested timeout even when the target
-schema or remaining program time differs.
+Before this milestone, the bridge used a fixed 120-second nested timeout even
+when the target schema or remaining program time differed.
 
 At Fabric admission, calculate one monotonic absolute deadline. Every nested
 call receives:

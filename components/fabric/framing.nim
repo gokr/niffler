@@ -1,6 +1,6 @@
 ## Bounded newline framing for the fabric executor's stdout protocol.
 
-import std/[selectors, strutils, times]
+import std/[monotimes, selectors, strutils, times]
 import std/posix
 
 const maxFrameBytes* = 1_000_000
@@ -29,14 +29,14 @@ proc takeFrame*(reader: var FrameReader): tuple[available: bool, line: string] =
   else:
     reader.buffer.setLen(0)
 
-proc readFrame*(reader: var FrameReader, fd: cint, deadline: float,
+proc readFrame*(reader: var FrameReader, fd: cint, deadline: MonoTime,
                 selector: Selector[cint]): string =
   ## Read one newline-terminated frame without discarding bytes after it.
   while true:
     let buffered = reader.takeFrame()
     if buffered.available:
       return buffered.line
-    let left = int((deadline - epochTime()) * 1000.0)
+    let left = (deadline - getMonoTime()).inMilliseconds.int
     if left <= 0:
       raise newException(CatchableError, "fabric-exec timed out")
     if selector.select(min(left, 200)).len == 0:

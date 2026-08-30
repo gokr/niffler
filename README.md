@@ -31,10 +31,9 @@ core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
                      ├── edit (Nim SDK)            ← read/edit/write file tools + undo
                      ├── grep (Nim SDK)            ← code search + file listing
                      ├── git (Nim SDK)             ← read-only repo inspection
-                      ├── agent (Nim SDK)           ← subagent sessions
-                      ├── fabric (Nim SDK)          ← programmable tool calling
-                      ├── expert (Nim SDK)          ← advisory peer (1:1, LLM-judged)
-                      ├── observe (Nim SDK)         ← live bus inspection
+                     ├── agent (Nim SDK)           ← subagent sessions
+                     ├── fabric (Nim SDK)          ← programmable tool calling
+                     ├── observe (Nim SDK)         ← live bus inspection
                      ├── logfile (Nim SDK)         ← rotating JSONL logs
                      ├── cli (Nim SDK)             ← on-demand script client
                      ├── console (Nim SDK)         ← on-demand bus viewer
@@ -462,13 +461,16 @@ to CI any plugin repo — Niffler testing itself.
       + kill timeout); the guest's tool calls cross a framed stdio bridge to
       the parent and re-enter the single dispatch gate via the session
       nested-call proxy (`svc.session.<id>.tool`, live lease, hidden-tool and
-      depth guards); compile errors return as real Nim diagnostics; only the
+      depth guards); monotonic deadlines, complete bounded schema validation,
+      framed-data limits, and scoped lease restoration keep nested execution
+      predictable; compile errors return as real Nim diagnostics; only the
       program's `finish()` value enters the conversation (oversized results
-      spilled to 0600 artifacts); the `agent` tool turns sessions into
+      spill to quota-managed 0600 artifacts); the `agent` tool turns sessions into
       subagents (delegated child runners, synchronous run + steer, dispatch-
       time depth guard); guests stay stdlib-free (import-free j* JSON
       helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
-      (`tests/t_nested.nim`, `tests/t_agent.nim`, `tests/t_fabric.nim`)
+      (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
+      `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [x] **expert advisory peer** (EXPERT.md) — one expert follows one working
       session: bounded current-turn observation from `ev.session.*`, a
       stateless LLM judgment over a cache-stable knowledge prefix, and a

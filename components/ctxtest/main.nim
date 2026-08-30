@@ -89,6 +89,25 @@ comp.tool(%*{"hidden": true}):
         # Forced termination path: the parent must reap and close the guest.
         let loop = "import fabricguest\nvar i = 0\nwhile true:\n  inc i\n"
         return toolCall("t5", "fabric", %*{"code": loop, "timeoutMs": 100})
+      of 5:
+        # Malformed bridge arguments must be rejected, never changed to {}.
+        let malformed = "import fabricguest\n" &
+          "discard callTool(\"bash\", \"{\")\n" &
+          "finish(\"{}\")\n"
+        return toolCall("t6", "fabric", %*{"code": malformed})
+      of 6:
+        let tiny = "import fabricguest\nfinish(\"{}\")\n"
+        return toolCall("t7", "fabric", %*{"code": tiny, "maxCalls": 0})
+      of 7:
+        let tiny = "import fabricguest\nfinish(\"{}\")\n"
+        return toolCall("t8", "fabric",
+                        %*{"code": tiny, "timeoutMs": 300_001})
+      of 8:
+        let large = "import fabricguest\n" &
+          "var s = \"\"\n" &
+          "for i in 0 ..< 60000:\n  s.add(\"x\")\n" &
+          "finish(jesc(s))\n"
+        return toolCall("t9", "fabric", %*{"code": large})
       else:
         return %*{"content": "fabric-turn-done"}
     if sessionId.startsWith("sp-"):

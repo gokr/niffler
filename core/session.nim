@@ -112,7 +112,8 @@ proc main() =
     stderr.writeLine("session: subscribe " & nestedSubjectStr & ": " &
                      getErrorString(nst))
     quit(1)
-  ct.nested = NestedState(sub: nestedSub, session: "", lease: "")
+  ct.nested = NestedState(sub: nestedSub, session: "", lease: "",
+                          hasDeadline: false)
   # Readiness signal for the system's ensureRunner: presence in the catalog.
   let reg = %*{"name": name, "version": "0.1.0", "pid": getCurrentProcessId(),
                "tools": newJArray()}

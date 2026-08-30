@@ -8,18 +8,29 @@
 ## approval, budgets and audit apply exactly as for direct tool calls.
 ## The child holds no credentials and no NATS connection.
 
-import std/[json, os, osproc, posix, selectors, streams, strtabs,
-            strutils, times]
+import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
+            strtabs, strutils, times]
 import natswrapper
 import niffler/sdk
 import framing
 
 let comp = newComponent("fabric", "0.1.0")
 
-const maxResultChars = 50_000
+const
+  maxResultChars = 50_000
   ## the conversation sees at most this many chars of the program's value;
   ## oversized results land in var/fabric-artifacts/<run>.json (mode 0600)
   ## and the path is returned instead.
+  maxCodeBytes = 256_000
+  maxStringsEntries = 128
+  maxStringsBytes = 2_000_000
+  maxCallsLimit = 1_000
+  maxTimeoutMs = 300_000
+  maxLogEvents = 1_000
+  maxLogBytes = 1_000_000
+  maxArtifactFiles = 100
+  maxArtifactBytes = 100_000_000'i64
+  artifactMaxAgeSeconds = 7 * 24 * 60 * 60
 
 const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
                       "importc", "osproc", "natswrapper", "std/os",
@@ -88,19 +99,26 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       result["diagnostics"] = %capped
   sel.registerHandle(p.outputHandle.SocketHandle, {Read}, p.outputHandle.cint)
   selectorRegistered = true
-  let deadline = epochTime() + timeoutMs.float / 1000.0
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
   var resultJ = JsonNode(nil)
   var reader: FrameReader
   try:
     p.inputStream.write($(%*{"code": code, "strings": strings}) & "\n")
     p.inputStream.flush()
     var calls = 0
+    var logEvents = 0
+    var logBytes = 0
     while resultJ == nil:
       let line = reader.readFrame(p.outputHandle.cint, deadline, sel)
       let j = parseJson(line)
       case j{"t"}.getStr("")
       of "log":
-        comp.emit("ev.fabric.log", %*{"s": j{"s"}.getStr("")})
+        let message = j{"s"}.getStr("")
+        inc logEvents
+        logBytes += message.len
+        if logEvents > maxLogEvents or logBytes > maxLogBytes:
+          return diag("fabric log budget exceeded")
+        comp.emit("ev.fabric.log", %*{"s": message})
       of "req":
         inc calls
         var resp: JsonNode
@@ -110,15 +128,22 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         else:
           var toolArgs: JsonNode
           try:
-            toolArgs = parseJson(j{"argsJson"}.getStr("{}"))
+            toolArgs = parseJson(j{"argsJson"}.getStr(""))
             if toolArgs.kind != JObject:
-              toolArgs = %*{"_value": toolArgs}
-          except CatchableError:
-            toolArgs = %*{}
-          toolArgs["__session"] = %*{"lease": lease}
+              raise newException(ValueError, "tool arguments must be a JSON object")
+          except CatchableError as e:
+            resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
+                      "error": "invalid argsJson: " & e.msg}
+            p.writeLineTo($resp)
+            continue
+          let remainingMs = (deadline - getMonoTime()).inMilliseconds.int
+          if remainingMs <= 0:
+            return diag("fabric-exec timed out")
+          toolArgs["__session"] = %*{"lease": lease,
+                                      "remainingMs": remainingMs}
           try:
             let env = callEnvelope(j{"tool"}.getStr(""), toolArgs, "fabric")
-            let r = comp.requestEnvelope(subject, env, 120_000)
+            let r = comp.requestEnvelope(subject, env, remainingMs)
             if r.kind == ekResult:
               resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": true,
                         "result": $r.args}
@@ -128,7 +153,13 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           except CatchableError as e:
             resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
                       "error": e.msg}
-        p.writeLineTo($resp)
+        let responseLine = $resp
+        if responseLine.len > maxFrameBytes:
+          p.writeLineTo($(%*{"t": "resp", "id": j{"id"}.getStr(""),
+                              "ok": false,
+                              "error": "tool response exceeds frame budget"}))
+        else:
+          p.writeLineTo(responseLine)
       of "result":
         resultJ = j
       else:
@@ -142,6 +173,58 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     return diag("fabric program timed out after " & $timeoutMs & "ms")
   return resultJ
 
+proc cleanupArtifacts(dir: string, incomingBytes: int64) =
+  ## Expire old files, then evict oldest entries until the retained set fits.
+  var files: seq[tuple[path: string, modified: times.Time, size: int64]]
+  let cutoff = getTime() - initDuration(seconds = artifactMaxAgeSeconds)
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    try:
+      let modified = getLastModificationTime(path)
+      if modified < cutoff:
+        removeFile(path)
+      else:
+        files.add((path, modified, getFileSize(path)))
+    except CatchableError:
+      discard
+  files.sort(proc(a, b: auto): int = cmp(a.modified, b.modified))
+  var retainedBytes = incomingBytes
+  var retainedFiles = files.len
+  for file in files: retainedBytes += file.size
+  var first = 0
+  while first < files.len and
+      (retainedFiles >= maxArtifactFiles or
+       retainedBytes > maxArtifactBytes):
+    try:
+      removeFile(files[first].path)
+      retainedBytes -= files[first].size
+      dec retainedFiles
+    except CatchableError:
+      discard
+    inc first
+  if retainedFiles >= maxArtifactFiles or retainedBytes > maxArtifactBytes:
+    raise newException(ValueError, "fabric artifact quota cannot be reclaimed")
+
+proc writePrivateFile(path, value: string) =
+  ## O_EXCL plus mode 0600 avoids a world-readable creation window.
+  let fd = posix.open(path.cstring, O_WRONLY or O_CREAT or O_EXCL,
+                      Mode(0o600))
+  if fd < 0:
+    raiseOSError(osLastError(), path)
+  var complete = false
+  defer:
+    discard posix.close(fd)
+    if not complete:
+      try: removeFile(path)
+      except CatchableError: discard
+  var written = 0
+  while written < value.len:
+    let count = posix.write(fd, unsafeAddr value[written], value.len - written)
+    if count <= 0:
+      raiseOSError(osLastError(), path)
+    written += count
+  complete = true
+
 proc storeArtifact(runId: string, value: string): string =
   ## Oversized results: mode-0600 file under var/fabric-artifacts (the one
   ## documented trusted-host exception — everything else crosses the bridge).
@@ -149,21 +232,28 @@ proc storeArtifact(runId: string, value: string): string =
   try:
     createDir(dir)
   except CatchableError: discard
+  if value.len.int64 > maxArtifactBytes:
+    raise newException(ValueError, "fabric result exceeds artifact quota")
+  cleanupArtifacts(dir, value.len.int64)
   let path = dir / (runId & ".json")
-  writeFile(path, value)
-  setFilePermissions(path, {fpUserRead, fpUserWrite})
+  writePrivateFile(path, value)
   return path
 
 # low-level registration: the handler needs the raw __session injection
 let fabSchema = toolSchema(%*{
   "code": {"type": "string",
+           "maxLength": maxCodeBytes,
            "description": "A complete Nim program importing fabricguest. Orchestrate tool calls (callTool), compute on the results, and return ONE value with finish(...). Only the finish value reaches this conversation; everything else stays in the trusted guest process."},
   "strings": {"type": "object",
+              "maxProperties": maxStringsEntries,
+              "additionalProperties": {"type": "string"},
               "description": "Optional key/value entries readable via stringArg(key) — pass big payloads (file contents, long prompts) here instead of inside code"},
   "timeoutMs": {"type": "integer",
+                "minimum": 1, "maximum": maxTimeoutMs,
                 "description": "Kill the program after this many ms (default 240000)"},
   "maxCalls": {"type": "integer",
-               "description": "Budget: reject tool calls beyond this count (default 200)"}
+               "minimum": 1, "maximum": maxCallsLimit,
+                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @["code"],
    description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest (read components/fabric/fabricguest/fabricguest.nim — it is the typed API) and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; big payloads go through the strings argument and stringArg(key). Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation — compute, filter, distill inside the program. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
@@ -177,16 +267,37 @@ discard comp.tool("fabric", fabSchema,
     let code = toolArgs{"code"}.getStr("")
     if code.len == 0:
       return %*{"error": "fabric needs code"}
+    if code.len > maxCodeBytes:
+      return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
     let lintMsg = lint(code)
     if lintMsg.len > 0:
       return %*{"error": lintMsg}
     let subject = sessionToolSubject(sess)
     let runId = newId()
     let maxCalls = toolArgs{"maxCalls"}.getInt(200)
-    let timeoutMs = toolArgs{"timeoutMs"}.getInt(240_000)
+    if maxCalls <= 0 or maxCalls > maxCallsLimit:
+      return %*{"error": "maxCalls must be in 1.." & $maxCallsLimit}
+    let outerRemainingMs = toolArgs{"__session"}{"remainingMs"}.getInt(0)
+    let requestedTimeoutMs = toolArgs{"timeoutMs"}.getInt(240_000)
+    if requestedTimeoutMs <= 0 or requestedTimeoutMs > maxTimeoutMs:
+      return %*{"error": "timeoutMs must be in 1.." & $maxTimeoutMs}
+    if outerRemainingMs <= 0:
+      return %*{"error": "fabric execution deadline expired"}
+    let timeoutMs = min(requestedTimeoutMs, outerRemainingMs)
     let stringsJ = if toolArgs{"strings"} != nil: toolArgs{"strings"}
                    else: newJObject()
       # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys)
+    if stringsJ.kind != JObject:
+      return %*{"error": "strings must be an object"}
+    if stringsJ.len > maxStringsEntries:
+      return %*{"error": "strings exceeds " & $maxStringsEntries & " entries"}
+    var stringsBytes = 0
+    for key, value in stringsJ:
+      if value.kind != JString:
+        return %*{"error": "strings." & key & " must be a string"}
+      stringsBytes += key.len + value.getStr().len
+      if stringsBytes > maxStringsBytes:
+        return %*{"error": "strings exceeds " & $maxStringsBytes & " bytes"}
     let r = runExecutor(subject, lease, code, stringsJ, maxCalls, timeoutMs)
     if r{"error"} != nil:
       return r
@@ -199,7 +310,11 @@ discard comp.tool("fabric", fabSchema,
         parsed = %value
       let rendered = $parsed
       if rendered.len > maxResultChars:
-        let path = storeArtifact(runId, rendered)
+        var path: string
+        try:
+          path = storeArtifact(runId, rendered)
+        except CatchableError as e:
+          return %*{"error": "cannot retain Fabric result: " & e.msg}
         return %*{"ok": true,
                   "value": rendered[0 ..< maxResultChars] &
                     "\n[... truncated — full result at " & path & " ...]",

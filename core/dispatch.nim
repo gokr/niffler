@@ -5,12 +5,13 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, os, osproc, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, strutils, tables, times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
 import approval
 import catalog
+import schema_validation
 import supervisor
 
 type
@@ -78,11 +79,14 @@ type
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
     lease*: string           ## current lease; "" = no session-context call in flight
+    deadline*: MonoTime      ## monotonic limit for the current lease
+    hasDeadline*: bool
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000): JsonNode
+                       defaultTimeoutMs: int = 120000,
+                       deadlineMs: int = 0): JsonNode
 
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
@@ -480,21 +484,6 @@ proc pumpAdvise*(ct: CoreTools) =
     except CatchableError as e:
       stderr.writeLine("core: advise reply publish failed: " & e.msg)
 
-proc validateRequired(schema, args: JsonNode): string =
-  ## Minimal admission validation for nested calls: every required field of
-  ## the tool schema must be present and non-null. Full JSON Schema
-  ## validation is a documented gap; this catches the common "generated
-  ## program guessed the argument shape" case with an actionable error.
-  if schema == nil: return ""
-  let required = schema{"required"}
-  if required == nil or required.kind != JArray: return ""
-  for field in required:
-    let name = field.getStr("")
-    if name.len == 0: continue
-    let v = args{name}
-    if v == nil or v.kind == JNull:
-      return "'" & name & "' is required for this tool"
-
 proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   ## Admission + dispatch for one nested tool call from a session-context
   ## program (arrives on svc.session.<id>.tool, pumped from the idle slot).
@@ -531,12 +520,21 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   # __session is private proxy context. Validate it above, then remove it from
   # the copy that reaches approval, session events, and the target component.
   let cleanArgs = env.args.copy()
+  let requestedMs = cleanArgs{"__session"}{"remainingMs"}.getInt(0)
   cleanArgs.delete("__session")
-  let missing = validateRequired(schema, cleanArgs)
-  if missing.len > 0:
-    return errorEnvelope(env.id, "bad-args", missing)
+  let invalid = validateToolArgs(schema, cleanArgs)
+  if invalid.len > 0:
+    return errorEnvelope(env.id, "bad-args", invalid)
+  if not ct.nested.hasDeadline:
+    return errorEnvelope(env.id, "expired", "nested-call deadline is unavailable")
+  let outerMs = (ct.nested.deadline - getMonoTime()).inMilliseconds.int
+  let remainingMs = if requestedMs > 0: min(outerMs, requestedMs)
+                    else: outerMs
+  if remainingMs <= 0:
+    return errorEnvelope(env.id, "expired", "nested-call deadline expired")
   try:
-    result = resultEnvelope(env.id, ct.dispatchToolCall(tool, cleanArgs))
+    result = resultEnvelope(env.id,
+      ct.dispatchToolCall(tool, cleanArgs, deadlineMs = remainingMs))
   except CatchableError as e:
     result = errorEnvelope(env.id, "boom", e.msg)
 
@@ -595,6 +593,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
+    pumpTokenStream(ct)
     pumpSteer(ct)
     pumpAdvise(ct)
     pumpNested(ct)
@@ -603,7 +602,8 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     $timeoutMs & "ms")
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000): JsonNode =
+                       defaultTimeoutMs: int = 120000,
+                       deadlineMs: int = 0): JsonNode =
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
 
@@ -634,15 +634,29 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 
   let schema = ct.cat.toolSchema(tool)
   let callArgs = if args == nil: newJObject() else: args.copy()
+  let hasDeadline = deadlineMs > 0
+  let deadline = if hasDeadline:
+                   getMonoTime() + initDuration(milliseconds = deadlineMs)
+                 else: MonoTime()
+  if hasDeadline and getMonoTime() >= deadline:
+    raise newException(IOError, "tool '" & tool & "' deadline expired")
   # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
   if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
     if ct.approval == nil or not ct.approval.ask(tool, callArgs):
       raise newException(ValueError, "approval denied for tool '" & tool & "'")
+    if hasDeadline and getMonoTime() >= deadline:
+      raise newException(IOError,
+        "tool '" & tool & "' deadline expired while awaiting approval")
 
   # per-tool timeout from its schema (x-harness.timeoutMs)
   var timeoutMs = defaultTimeoutMs
   if schema != nil:
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+  if hasDeadline:
+    timeoutMs = min(timeoutMs,
+      (deadline - getMonoTime()).inMilliseconds.int)
+    if timeoutMs <= 0:
+      raise newException(IOError, "tool '" & tool & "' deadline expired")
 
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Nested session-context calls temporarily
@@ -653,10 +667,18 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       raise newException(ValueError,
         "tool '" & tool & "' needs a live session (no conversation turn is running)")
     let previousLease = ct.nested.lease
+    let previousDeadline = ct.nested.deadline
+    let previousHasDeadline = ct.nested.hasDeadline
     ct.nested.lease = newId()
-    defer: ct.nested.lease = previousLease
+    ct.nested.deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+    ct.nested.hasDeadline = true
+    defer:
+      ct.nested.lease = previousLease
+      ct.nested.deadline = previousDeadline
+      ct.nested.hasDeadline = previousHasDeadline
     callArgs["__session"] = %*{"session": ct.nested.session,
-                                "lease": ct.nested.lease}
+                                "lease": ct.nested.lease,
+                                "remainingMs": timeoutMs}
     # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
     # with a parent record in the store — may not call spawn-class tools. The
     # check MUST live here, not in the component's handler: the handler blocks
