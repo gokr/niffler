@@ -31,7 +31,7 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (kind `slash`) before `ev.catalog.updated`, so UIs read store-first
   and follow live. Both SDKs gain the registration API.
 - **fabric component** — programmable tool calling via an embedded Nim
-  VM (docs/FABRIC.md): the model writes a Nim program, a per-program
+  VM (docs/research/FABRIC.md): the model writes a Nim program, a per-program
   executor (nimeval, RLIMIT-capped, no bus access) runs it, and every
   nested tool call re-enters the session proxy (approval, lease,
   budgets, audit). maxCalls budget, output cap with artifact fallback,
@@ -77,7 +77,7 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stay stopped without their records being deleted, and a later normal boot
   restores them. `--minimal` composes with `--recover`; covered by the core
   bus-contract test.
-- **Progressive tool discovery** (docs/DISCOVER.md) — the catalog stays
+- **Progressive tool discovery** (docs/MANUAL.md, "Progressive tool discovery") — the catalog stays
   complete, but each conversation freezes a small immutable *direct*
   toolset into its LLM prompt (13 shipped tools: core `discover`/`invoke`,
   bash, store get/list, grep/files, write, hashline read/replace/
@@ -123,7 +123,7 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installed desktop icon is the whole system; `make recover` stops any
   running harness inline. Covered by `tests/t_autostart.nim`.
 - **models component** — a Go component serving the models.dev provider/
-  model catalog over the bus (docs/MODELS.md): embedded offline seed,
+  model catalog over the bus (docs/MANUAL.md, "Model catalog"): embedded offline seed,
   validated atomic cache with last-known-good fallback, strict model
   resolution, searchable capabilities/limits/pricing, and deterministic
   `x-models-source` plugin patches (RFC 7396 JSON Merge Patch) discovered
@@ -492,5 +492,5 @@ process component.
   `status`/`run`/`test`/`dev`/`clean`, `setup`/`doctor` per platform.
 - **Smoke test** (`tests/smoke.nim`) — the one end-to-end test: spawns its
   own bus, exercises bash + store over the wire.
-- **Docs** — REBOOT (design rationale), ARCHITECTURE (why core is core),
+- **Docs** — MANUAL (operating guide), ARCHITECTURE (why core is core),
   WIRE (protocol), AGENTS (working guidelines), README.

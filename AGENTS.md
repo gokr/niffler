@@ -5,8 +5,8 @@ It replaces, not extends, the old Niffler codebase (now at `~/git/niffler-old`);
 only its **Nim style guidelines** (in `~/git/niffler-old/CLAUDE.md`) apply here:
 camelCase, `fmt("...")` as a proc call, no asyncdispatch, doc comments with `##`.
 
-Design rationale: [docs/REBOOT.md](docs/REBOOT.md). The one wire spec:
-[docs/WIRE.md](docs/WIRE.md). Why core is core:
+Design rationale: [docs/research/REBOOT.md](docs/research/REBOOT.md). The one
+wire spec: [docs/WIRE.md](docs/WIRE.md). Why core is core:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Read these before changing
 anything structural.
 
@@ -44,7 +44,8 @@ anything structural.
   registration.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
   e.g. `chat`), `x-harness.onDemand` (kept out of a conversation's frozen
-  direct toolset; reachable via `discover` + `invoke` — docs/DISCOVER.md),
+  direct toolset; reachable via `discover` + `invoke` — docs/MANUAL.md,
+  "Progressive tool discovery"),
   `x-harness.approval` (**enforced**: terminal y/N prompt; session-driven
   requests route to the caller's private UI approval subject with broadcast
   fallback; deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),

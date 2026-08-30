@@ -1,25 +1,41 @@
 # Niffler Manual
 
-Everything you need to operate, configure and recover a Niffler harness.
-Design rationale: [REBOOT.md](REBOOT.md) · wire protocol: [WIRE.md](WIRE.md) ·
-architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
-[MODELS.md](MODELS.md) · observation/logging: [OBSERVE.md](OBSERVE.md).
+Everything you need to operate, configure and recover a Niffler harness, plus
+reference chapters for the shipped components. Design rationale lives in
+[research/REBOOT.md](research/REBOOT.md); the wire protocol is
+[WIRE.md](WIRE.md); the core/component boundary is
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Contents
+
+- [Layout of a running system](#layout-of-a-running-system)
+- [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
+- [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
+- [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
+- [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
+- [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch)
+- [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
+- [Model catalog (`models`)](#model-catalog-models)
+- [Observation and logs (`observe`, `logfile`)](#observation-and-logs)
+- [Fabric and subagents](#fabric-and-subagents)
+- [Recovery](#recovery--recover) · [The store](#the-store) · [Testing](#testing)
+- [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
 ## Layout of a running system
 
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `agent`, `fabric`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
-| `docs/` | this manual + design docs |
+| `docs/` | this manual, the wire spec, the core-boundary rationale and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, and with what restart policy; `--minimal` filters it to `store`, `bash`, and `llm` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
 | `var/barrel-db` | the store's embedded KV file — **single-writer**: exactly one `store` process may open it |
 | `var/nats-url` | bus address of the last spawned bus; the UI bridge reads it to find core |
 | `var/nats-monitor-url` | HTTP monitoring endpoint when core spawned the bus; absent for reused/remote buses |
-| `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports ([OBSERVE.md](OBSERVE.md)) |
+| `var/logs/`, `var/captures/` | rotating structured logs and explicit observe probe exports (see [Observation and logs](#observation-and-logs)) |
 | `var/nats-pid` | pid of the bus core spawned (crash cleanup only — a live core stops its own bus on exit) |
 | `var/build/` | source files of agent-built components (builder's scratch dir) |
 | `nimcache/`, `ui/build/`, `ui/frontend/node_modules/`, `ui/frontend/dist/` | build artifacts; `make clean` removes them |
@@ -32,19 +48,20 @@ architecture boundary: [ARCHITECTURE.md](ARCHITECTURE.md) · model catalog:
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming OpenAI-compatible chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
-| `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers ([MODELS.md](MODELS.md)) |
+| `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) |
+| `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_steer` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
-| `write` | Nim | optional | atomic whole-file write: create/overwrite/truncate with permission preservation (approval-gated) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
-| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring ([OBSERVE.md](OBSERVE.md)) |
-| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search ([OBSERVE.md](OBSERVE.md)) |
+| `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
+| `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) |
 
 ### Minimal boot profile (`--minimal`)
 
@@ -288,7 +305,7 @@ reports:
   the models catalog; a small built-in table and conservative 128K remain as
   fallback if `models` is removed. The result includes secret-free provider,
   model, catalog and context provenance for interactive clients. See
-  [MODELS.md](MODELS.md).
+  [Model catalog](#model-catalog-models).
 
 - `session {sessionId, content?, model?}` accepts a conversation-scoped model
   override. A model-only call persists and resolves the selection without
@@ -325,7 +342,7 @@ The agent adds capabilities at runtime, mid-conversation:
 2. `builder.build {lang, name, source}` compiles it into `var/bin/`
 3. `core.spawn {name, binary}` starts it; it registers itself; new
    conversations expose its tools directly (when not on demand), existing
-   ones reach them via `discover` + `invoke` (docs/DISCOVER.md)
+   ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery))
 4. `core.kill {name}` stops it temporarily (restored on next boot);
    `core.remove {name}` stops it and deletes its persisted record
 
@@ -380,7 +397,7 @@ topic `niffler-component` are discoverable without any registry:
 - A package can extend or correct model metadata by registering a hidden tool
   with `x-models-source: {version: 1, priority: ...}`. The `models` component
   discovers it automatically and applies its JSON Merge Patch while that
-  component is present. See [MODELS.md](MODELS.md#source-plugins).
+  component is present. See [Source plugins](#source-plugins).
 
 ## Skills
 
@@ -492,13 +509,578 @@ The `fetch` component is the web access tool (a port of the old niffler
   come back as `ok: false` with the status and a body snippet.
 - Read-only network access — no approval gate (like `plugin_search`).
 
-## Fabric and subagents (docs/FABRIC.md)
+## Progressive tool discovery (`discover`/`invoke`)
+
+Status: **implemented**.
+
+Niffler keeps one complete global catalog while exposing a small, immutable
+toolset to each conversation. Additional schemas enter the append-only message
+history through `discover`; calls to those tools go through the fixed `invoke`
+gateway. This reduces prompt bloat without weakening core approval or timeout
+policy.
+
+### Model
+
+#### Existence is global; exposure is per conversation
+
+A component exists when it is live on the bus. `reg.publish` inserts all its
+tools into core's catalog; `reg.depart` or supervisor cleanup removes them. A
+binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a
+plugin install starts it.
+
+Exposure is a separate concern:
+
+| Level | Schema metadata | Direct LLM schema | Discovery | Invocation |
+|---|---|---|---|---|
+| direct | `x-harness.onDemand` absent | included in a new session snapshot | hint + schema lookup | direct or `invoke` |
+| on demand | `x-harness.onDemand: true` | omitted | hint + schema lookup | `invoke` |
+| hidden | `x-harness.hidden: true` | omitted | omitted, including explicit lookup | components/core only |
+
+Hidden takes precedence if both flags are present. Exposure is not an ACL:
+the complete catalog remains authoritative for routing. The LLM-facing
+`invoke` gateway refuses hidden targets, while components can still request
+hidden tools directly over NATS.
+
+#### Full catalog and projections
+
+- `catalog {op: "snapshot"}` returns complete component registrations and
+  schemas. Session runners seed their local catalogs from it.
+- `catalog {op: "components"}` returns the complete component-to-tool-name
+  map used by the CLI.
+- `catalog {op: "list"}` returns the current name-sorted direct projection for
+  a *new* conversation. It is not the toolset of an existing session.
+- Dispatch, approvals, `x-harness.timeoutMs`, and component-to-component calls
+  always consult the full catalog.
+
+### Core tools
+
+`discover` and `invoke` are direct core tools in every new conversation.
+
+#### Hints
+
+```json
+{"query": "web"}
+```
+
+`query` is optional and matches component names, tool names, and descriptions
+case-insensitively. The result is deterministic: components and tools are
+name-sorted, descriptions are whitespace-normalized one-line hints capped at
+200 characters, and volatile fields such as pid and registration time are
+excluded.
+
+```json
+{
+  "components": [
+    {
+      "name": "fetch",
+      "version": "0.1.0",
+      "direct": [],
+      "onDemand": [
+        {"name": "fetch", "description": "Fetch a web page or API endpoint..."}
+      ]
+    }
+  ],
+  "count": 1
+}
+```
+
+`discover {component: "fetch"}` returns that component's direct and on-demand
+hints. Components with no non-hidden tools are omitted.
+
+#### Schemas
+
+Request only the tools needed for the next step, up to 16 at a time:
+
+```json
+{"component": "fetch", "tools": ["fetch"]}
+```
+
+The result contains normalized full schemas, sorted by tool name:
+
+```json
+{
+  "component": "fetch",
+  "tools": [
+    {"name": "fetch", "schema": {"type": "object", "properties": {}}}
+  ]
+}
+```
+
+Unknown and hidden tool requests have the same error shape so discovery is not
+a hidden-tool existence oracle.
+
+#### Invocation
+
+Call a discovered schema through the fixed gateway:
+
+```json
+{
+  "tool": "fetch",
+  "arguments": {"url": "https://example.com"}
+}
+```
+
+`invoke` recursively enters the normal `dispatchToolCall` path. The target
+tool's approval dialog, timeout, component routing, and errors therefore behave
+exactly like a direct call. It can also reach a newly registered non-hidden
+tool that was not present when the conversation started.
+
+### Session state and caching
+
+Provider prompt caches include top-level tool definitions. Adding a discovered
+concrete schema to a later `tools` array would change the prefix and invalidate
+the accumulated cache. Returning a schema only as a tool result is append-only,
+but the model still needs a declared function through which to call it; that is
+why `invoke` is fixed and generic.
+
+On the first turn, a session runner:
+
+1. computes `Catalog.promptTools()`;
+2. stores the exact ordered schemas under store kind `session`, id
+   `<sessionId>:tools`;
+3. uses that snapshot for every LLM round and after runner restart.
+
+The document shape is:
+
+```json
+{
+  "version": 1,
+  "direct": [
+    {"component": "bash", "name": "bash", "schema": {}}
+  ],
+  "discovered": [
+    {"component": "fetch", "name": "fetch"}
+  ],
+  "initializedAt": 0,
+  "updatedAt": 0
+}
+```
+
+`direct` carries schemas because it is the resume-safe provider snapshot.
+`discovered` is a durable summary for inspection and UI state; the schemas
+themselves live in persisted tool-result messages. Only a successful
+full-schema `discover` call updates it. Hint searches and failed lookups do not.
+
+Component registration churn never changes an existing conversation's direct
+array. A late component is found through `discover` and called through
+`invoke`. If a direct component departs, its frozen schema remains in that
+conversation for cache stability; a call fails through normal routing and
+current discovery reflects that it is gone.
+
+### Shipped policy
+
+With the complete shipped manifest, 13 tools are direct:
+
+- Core: `discover`, `invoke`.
+- Routine work: `bash`, store `get`/`list`, `grep`/`files`, and the file
+  tools `read`/`edit`/`write`/`undo_last_edit` (the `edit` component).
+  Anchored block moves (the niffler-hashline plugin) register their
+  `replace`/`undo_last_replace` as onDemand: run `discover`/`invoke` against
+  them once installed.
+- Skill entry points: `skill_list`, `skill_load`.
+
+The long tail is on demand:
+
+- Core lifecycle/status/catalog, builder, plugins, and fetch.
+- Models and provider administration.
+- Observe and logfile diagnostics.
+- Skill resources, online search, install, and remove.
+
+Internal tools remain hidden: core `session`, store `put`/`del`, LLM `chat`,
+and credential-bearing `provider_active`.
+
+Absent `onDemand` metadata remains direct for third-party compatibility. A
+component spawned after a session starts still does not mutate that session's
+frozen direct array; discover/invoke is the handshake for the new capability.
+
+### UI
+
+The Live Components panel joins global `core.status` data with the active
+session's exposure document. Tool chips use text plus color:
+
+- `direct`: in the immutable provider tool array;
+- `seen`: its schema was successfully discovered in this conversation;
+- `demand`: live and non-hidden, but not exposed in this conversation;
+- `internal`: hidden from the LLM.
+
+Component liveness remains a separate status dot. The panel reloads on session
+selection, catalog changes, discovery/done events, reconnect, and periodic
+polling. Deleting a conversation also deletes its exposure document.
+
+### Verification
+
+`tests/t_discover.nim` is the end-to-end contract. It proves deterministic
+projection and discovery, full-catalog retention, hidden non-disclosure,
+approval and timeout preservation through invoke, the actual session-runner LLM
+payload, immutable behavior across late registrations, schema persistence in
+message history, and durable UI exposure metadata.
+
+Run it alone with `make test-discover`; it is also part of `make test`.
+
+---
+
+## Model catalog (`models`)
+
+The `models` component is Niffler's replaceable provider/model metadata plane.
+It does not belong in core and it is not a universal inference adapter. It
+answers which providers and models exist, how they are addressed, what they
+support, and their limits and prices. An `llm` component still owns the actual
+wire protocol, authentication flow, request transforms, and streaming.
+
+The design borrows the useful common shape from Pi and OpenCode:
+
+- models.dev is the broad curated baseline.
+- A small embedded seed makes a first offline boot useful.
+- The last validated download is written atomically and retained on failure.
+- Corrections and provider discovery are deterministic layers, not edits to
+  the downloaded file.
+- User-supplied model ids are resolved strictly; ambiguous bare ids are never
+  selected by catalog order.
+
+### Merge order
+
+The effective catalog is rebuilt in this order:
+
+1. `NIF_MODELS_PATH`, the cached models.dev catalog, or the embedded seed.
+2. Registered `x-models-source` plugins, ascending by `priority` and then by
+   `component/tool`. A larger priority therefore wins.
+3. `NIF_MODELS_OVERRIDE`, always last.
+
+Plugin and local layers are JSON Merge Patches (RFC 7396): objects merge,
+arrays and scalar values replace, and `null` deletes a key. The full
+models.dev shape is preserved, including fields Niffler does not yet use.
+
+The component refreshes at startup and hourly. A models.dev download is
+skipped while its cache is younger than five minutes. HTTP fetches are bounded,
+retried, validated (a catalog with no usable model entries is rejected, so a
+malformed response cannot replace the last-known-good cache), and atomically
+renamed into `var/models/api.json`. Each registered plugin source also has a
+last-known-good patch under `var/models/sources/`; that patch is used when the
+source temporarily fails, but only while the source component remains
+registered. The local override keeps its previous patch when the file is
+unreadable mid-rewrite. A failed refresh is retried automatically (30s or the
+configured interval, whichever is sooner) so crash reconciliation without
+`reg.depart` is not stranded until the next hourly tick. `ev.sys.drain`
+cancels refresh work and shuts the component down.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `models_providers` | provider connection metadata and configured status, never secret values |
+| `models_list` | filtered model search with capabilities, modalities, limits, and costs |
+| `models_get` | exact provider/model descriptor for another component |
+| `models_resolve` | strict `provider/model` or globally unique bare-id resolution |
+| `models_refresh` | queue a refresh of models.dev and every live extension source |
+| `models_sources` | provenance, freshness, stale fallback, and error diagnostics |
+
+`models_list {status: "active"}` also matches models whose status field is
+absent (models.dev omits it for normal models). List results are trimmed when
+they would exceed the bus payload limit, and an oversized single descriptor
+errors instead of timing out on the wire. Descriptor metadata is recursively
+redacted: secret-like keys (api keys, tokens, passwords, credentials,
+authorization headers, private keys, cookies) never reach a caller, at
+provider or model level.
+
+`llm` asks `models_get` for the selected model's context window. Explicit
+provider `context` and `NIF_OPENAI_CONTEXT` still win, and the existing small
+fallback remains available if `models` is removed. Provider endpoints are
+classified by hostname, not URL substring. Interactive clients should call the
+hidden, credential-free `llm_resolve {model?}` rather than duplicating this
+precedence: it reports the effective global provider, optional conversation
+model override, catalog, context, and each value's provenance.
+
+### Source plugins
+
+A model source is an ordinary component installed by `plugins`. One hidden
+tool carries this registration extension:
+
+```json
+{
+  "x-models-source": {"version": 1, "priority": 200},
+  "x-harness": {"hidden": true}
+}
+```
+
+`models` discovers marked tools from `reg.publish` and from core's full catalog
+snapshot, so component boot order does not matter. It calls the tool with
+`{"version": 1}`. The result is:
+
+```json
+{
+  "patch": {
+    "openai": {
+      "models": {
+        "model-with-wrong-limit": {"limit": {"context": 200000}},
+        "retired-model": null
+      }
+    }
+  }
+}
+```
+
+Minimal Nim source component:
+
+```nim
+import niffler/sdk
+
+let comp = newComponent("my-models", "0.1.0")
+comp.tool:
+  proc my_models_source(version: int = 1): JsonNode =
+    ## Add or correct model catalog data for My Provider.
+    ## - version: models source protocol version
+    %*{"patch": {
+      "my-provider": {
+        "id": "my-provider",
+        "name": "My Provider",
+        "env": ["MY_PROVIDER_API_KEY"],
+        "npm": "@ai-sdk/openai-compatible",
+        "api": "https://api.example.com/v1",
+        "models": {
+          "my-model": {
+            "id": "my-model",
+            "name": "My Model",
+            "reasoning": true,
+            "tool_call": true,
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "limit": {"context": 200000, "output": 32000},
+            "cost": {"input": 1.0, "output": 5.0}
+          }
+        }
+      }
+    }}
+
+comp.tools[^1].schema["x-models-source"] = %*{"version": 1, "priority": 200}
+comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
+comp.run()
+```
+
+Put that component in a normal `niffler.json` package. Installation, update,
+removal, process isolation, and persistence are already handled by the existing
+`plugins` and core lifecycle. Removing the source component immediately removes
+its patch from the effective catalog. No model-specific extension mechanism is
+added to core.
+
+### Configuration
+
+Configuration variables (`NIF_MODELS_*`) are listed in the master
+[Environment variables](#environment-variables) table above.
+
+The component only reports which credential environment names a provider uses
+and whether one is set. It never returns credential values. Provider-specific
+OAuth, ambient credentials, headers, request transformations, and native API
+behavior belong in inference adapter components, which can be shipped or
+installed as plugins independently of this catalog.
+
+---
+
+## Observation and logs (`observe`, `logfile`)
+
+Status: **implemented** by the `observe` and `logfile` components.
+
+### Boundary
+
+Observe the bus, not component internals. Both components are ordinary NATS
+citizens built on the SDK; core never imports them. The only core integration is
+optional nats-server HTTP monitoring: when core owns the bus it allocates a
+second loopback port and writes `var/nats-monitor-url` after the server is live.
+
+Observation is an administrative capability. A bus capture can contain tool
+arguments, model output, approvals, and data from every session. Niffler's
+current trust model is a single trusted user/admin; do not expose the observe
+service or capture directories to untrusted bus clients.
+
+### `observe`: bounded live inspection
+
+`observe` has one raw `>` subscription. It preserves the original JSON node,
+including unknown envelope fields and bare registration payloads. Malformed JSON
+is retained as `{raw, decodeError}` when it is valid UTF-8; arbitrary bytes use
+lossless `rawBase64` instead. Oversized messages are represented by a bounded
+base64 preview rather than letting one message consume the process.
+
+The global ring is bounded by both message count and approximate wire bytes.
+Each targeted probe has independent count and byte bounds; the number of probes
+is also capped. Stopped probes remain queryable until `observe_remove` releases
+their memory.
+
+| Tool | Use |
+|---|---|
+| `observe_subjects` | List the authoritative component/service view when core is reachable, known event patterns, and the most frequently observed concrete subjects |
+| `observe_listen` | Start a bounded capture for a token-correct NATS pattern (`*` and terminal `>`) plus optional regex |
+| `observe_trace` | Capture calls to one component and correlate result/error inbox replies by envelope id |
+| `observe_probes` | Inspect probe state, retained bytes, caps, and pending traces |
+| `observe_stop` | Freeze a probe while retaining its entries |
+| `observe_remove` | Delete a probe and release its memory |
+| `observe_events` | Query a probe or the global ring, newest first, with time/kind/component/subject/regex filters |
+| `observe_logs` | Query recent `ev.log.*` events in memory |
+| `observe_dump` | Approval-gated export of one probe beneath `NIF_OBSERVE_CAPTURE_DIR`; arbitrary output paths are not accepted |
+| `observe_monitor` | Read nats-server connection/subscription counts and most-subscribed patterns |
+| `observe_send` | Publish an event to a concrete `ev.*` or `llm.cancel.*` subject; approval-gated |
+| `observe_request` | Diagnostic request/reply to a concrete `svc.*.call`; approval-gated and limited to 30 seconds |
+
+`observe_send` cannot send call/result/error envelopes or registrations.
+`observe_send`, `observe_request`, and the filesystem-mutating `observe_dump`
+carry `x-harness.approval: always`, so an LLM path must pass core's human gate.
+A client talking directly to `svc.observe.call` is already a trusted bus peer
+and bypasses core policy, just as it can call any other service subject directly.
+Generated captures are pruned oldest-first to a byte quota and a 256-file cap.
+
+Trace requests expire from the pending correlation table after 60 seconds.
+Probe subjects, labels, and regular expressions have fixed input limits;
+oversized probe entries are dropped and counted rather than retained outside the
+byte budget. Tool responses stop before the wire's approximately 64 KiB
+inline-result convention and report `truncated` (or value byte metadata for a
+large diagnostic reply) rather than returning unbounded data.
+
+### `logfile`: rotating JSONL persistence
+
+`logfile` is best-effort process-local persistence, not an audit log. Core NATS
+is at-most-once: records emitted before startup or during a restart are lost.
+Guaranteed replay would require an explicit JetStream design.
+
+Default input is `ev.log.>`. A valid component name gets one file:
+
+```text
+var/logs/bash.jsonl
+var/logs/bash.jsonl.1
+...
+```
+
+`NIF_LOGFILE_SUBJECTS` can select other subjects. Non-log traffic, including
+whole-bus `>`, goes to a single `bus.jsonl`; dynamic inbox subjects therefore do
+not create unbounded file descriptors or filenames. The number of component log
+files is capped, and excess/spoofed component subjects also fall back to
+`bus.jsonl`. Multiple configured patterns are treated as one locally filtered
+union, so overlapping patterns persist each matching publication exactly once.
+
+Every line records sink time and original wire data:
+
+```json
+{"receivedAt": 1780000000.25, "subject": "ev.log.bash", "message": {"v": 1, "id": "...", "kind": "event", "payload": {"level": "info", "msg": "..."}}}
+```
+
+Malformed UTF-8 input uses lossless `rawBase64`; textual malformed input uses
+`raw` and `decodeError`. The sink opens, appends, flushes, and closes each record.
+Rotation compares `current size + record size` before
+renaming closed files, so exact-boundary writes cannot leave a stale file handle.
+A single record larger than the configured file size is retained as the active
+file and rotated before the next record. `NIF_LOGFILE_KEEP=0` retains no rotated
+generation.
+
+`logfile_search` reads only a bounded tail from the retained files, sorts
+matching records by `receivedAt` newest-first, and reports `truncated`,
+`scannedBytes`, malformed line counts, and read errors. Results also have an
+encoded response-byte budget. Structured log records expose `component`,
+`level`, `msg`, `ctx`, and optional emitter time; raw bus records expose the
+preserved message. Search never trusts an emitter-supplied timestamp for
+`since`/`until` windows.
+Directory enumeration is capped by `NIF_LOGFILE_DIRECTORY_ENTRIES` and reports
+`directoryTruncated` when more files exist; searches still inspect the bounded
+subset.
+
+`logfile_paths` reports a bounded retained-file list plus `writeErrors`,
+`lastError`, and `lastErrorAt`. Filesystem failures also go to stderr. Capture
+directories are user-only where the platform permits; active symlink targets
+are rejected.
+
+### SDK APIs
+
+All three SDKs expose the same observation/logging and raw-envelope APIs:
+
+```nim
+type TapHandler* = proc(c: Component, subject: string, data: string)
+proc tap*(c: Component, pattern: string, handler: TapHandler): Component
+proc log*(c: Component, level, msg: string, ctx: JsonNode = nil)
+proc publishEnvelope*(c: Component, subject: string, env: Envelope)
+proc requestEnvelope*(c: Component, subject: string, env: Envelope,
+                      timeoutMs: int = 5000): Envelope
+```
+
+```go
+func (c *Component) Tap(pattern string, h TapHandler) *Component
+func (c *Component) Log(level, msg string, ctx any) error
+func (c *Component) PublishEnvelope(subject string, env Envelope) error
+func (c *Component) RequestEnvelope(subject string, env Envelope, timeout time.Duration) (Envelope, error)
+```
+
+```ts
+comp.tap(pattern, handler)
+comp.log(level, msg, ctx?)
+comp.publishEnvelope(subject, envelope)
+await comp.requestEnvelope(subject, envelope, timeoutMs?)
+```
+
+Each SDK lets NATS perform subject matching and dispatches only the handler bound
+to the subscription that delivered the message. This avoids the previous
+cross-product where one call could be delivered through the call, event, and tap
+paths multiple times. Nim remains callback-free and thread-free; Go uses its
+existing mutex and TypeScript its promise chain.
+Go waits for drained subscription callbacks (up to its bounded shutdown grace),
+and TypeScript waits for queued handlers without deadlocking a handler that
+explicitly closes its own component.
+
+Nim's arbitrary-envelope request helper continues pumping only raw tap
+subscriptions while it waits. Tool and event handlers remain non-nested, while
+an observer can timestamp the target request and reply during an
+`observe_request`. Trace durations and expiry use a monotonic clock; displayed
+`at` values remain wall-clock epoch seconds.
+
+Structured logs publish an event on the exact subject `ev.log.<component>` with
+`{component, level, msg, ctx?, at}`. Levels are `debug`, `info`, `warn`, and
+`error`. `NIF_LOG_LEVEL` defaults to `info` and suppresses lower levels before
+publication in every SDK. Invalid emitted levels fail; an invalid threshold
+falls back to `info`.
+
+### Monitoring
+
+When core spawns nats-server it uses distinct loopback client and HTTP ports,
+then writes:
+
+```text
+var/nats-url
+var/nats-monitor-url
+```
+
+The monitor discovery file is written only after the client connection succeeds.
+A reused or remote bus has no discoverable HTTP endpoint; configure
+`NIF_OBSERVE_MONITOR_URL` explicitly. `NIF_NATS_SPAWN=1` forces an isolated
+core-owned bus (primarily useful for tests and diagnostics) — only when
+`NIF_NATS_URL` is unset; an explicit URL always wins.
+
+`observe_monitor` reads `/subsz` and `/connz` with a fresh HTTP client for each
+request. It reports whether subscription detail was truncated; `mostSubscribed`
+means subscriber density, not message throughput.
+
+#All `NIF_OBSERVE_*`, `NIF_LOGFILE_*` and `NIF_LOG_LEVEL` variables are
+listed in the master [Environment variables](#environment-variables) table above.
+
+All bounds are validated at startup; invalid configuration exits non-zero
+rather than silently substituting a default.
+
+All bounds are validated at startup; invalid configuration exits non-zero rather
+than silently substituting a default.
+
+### Verification
+
+`tests/t_observe.nim` covers exact-once taps, wildcard boundaries, registration
+capture, cap/byte eviction, monotonic trace correlation during diagnostic
+requests, malformed-call replies, timeout behavior, embedded-NUL and
+invalid-UTF-8 raw data, response bounds, approval metadata, quota-pruned safe
+dumps, monitor discovery, and invalid configuration.
+
+`tests/t_logfile.nim` covers SDK log filtering, newest-first queries, time/regex
+filters, encoded response and actual disk-read bounds, exact-once overlapping
+subject patterns, closed-file rotation, zero retention, embedded-NUL whole-bus
+preservation, bounded path listings, sink health, and invalid configuration.
+Both tests use isolated temporary output directories and are part of `make test`.
+## Fabric and subagents
 
 The `fabric` component adds programmable tool calling: the model writes a
 Nim program that drives Niffler tools itself, and only the program's
 `finish()` value enters the conversation. The `agent` component turns
-sessions into subagents. Design, threat model, and shipped-scope notes:
-`docs/FABRIC.md`.
+sessions into subagents. The full design and threat model:
+[research/FABRIC.md](research/FABRIC.md) (the external review that shaped it:
+[research/FABRIC_FEEDBACK.md](research/FABRIC_FEEDBACK.md)).
 
 | Tool | What it does |
 |---|---|

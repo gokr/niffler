@@ -1,4 +1,4 @@
-## Nested-call proxy tests (fabric Phase 0, docs/FABRIC.md).
+## Nested-call proxy tests (fabric Phase 0, docs/research/FABRIC.md).
 ##
 ## Boots a sandbox core (store + bash, no LLM) plus a test-only component
 ## (components/ctxtest) whose stub `chat` drives one real session turn.

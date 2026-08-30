@@ -1,7 +1,10 @@
 # Fabric + Subagents
 
+> Research note — full design record. Operating reference for the `fabric` and
+> `agent` tools: [docs/MANUAL.md#fabric-and-subagents](../MANUAL.md#fabric-and-subagents).
+
 Status: **shipped**. The design was an approved plan (revised after external
-review — see `docs/FABRIC_FEEDBACK.md` for the review that shaped it); this
+review — see `FABRIC_FEEDBACK.md` (same directory) for the review that shaped it); this
 document describes what actually shipped. Divergences from the original plan
 are marked where they matter.
 
@@ -36,7 +39,7 @@ LLM turn (session runner)
 Shared invariant: **every effect of a generated program crosses the session
 proxy.** This is a *governance* guarantee (audit, approval, budgets), not a
 security sandbox — see "Threat model" below. The envelope codec
-(`sdk/envelope.nim`, WIRE.md, Go SDK) is untouched.
+(`sdk/envelope.nim`, docs/WIRE.md, Go SDK) is untouched.
 
 Design posture:
 

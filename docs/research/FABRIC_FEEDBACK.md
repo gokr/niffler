@@ -1,6 +1,6 @@
 <!-- Historical: the external review that shaped the fabric design. Its
      findings are resolved in the shipped implementation — see
-     docs/FABRIC.md for what actually shipped. -->
+     FABRIC.md (same directory) for what actually shipped. -->
 
 Assessment
 The core idea is sound: one model-generated program can internalize deterministic intra-turn control flow and keep intermediate tool results out of model context. It does not replace the completions protocol entirely, however. The model still emits the outer fabric call through completions, and semantic replanning still requires another completion or a subagent.
@@ -16,7 +16,7 @@ Blocking Issues
 1. nimeval is not currently a security sandbox
 RLIMIT_AS and process timeout constrain resources, but they do not constrain effects. Nim’s createInterpreter defaults to registerOps = true, and the VM exposes filesystem/environment operations. More seriously, staticRead and staticExec are system-level compiler magics implemented directly by the VM.
 A guest can potentially bypass callTool() using operations such as staticExec, read host files, inspect environment variables, and reach NATS using inherited credentials. Supplying the stdlib pure and core directories also contradicts “stdlib-free”; it makes imports available unless explicitly prohibited.
-This breaks the central invariant in docs/FABRIC.md:34.
+This breaks the central invariant in FABRIC.md:34.
 A real design needs one of these:
 - A patched/restricted Nim VM that rejects imports, Slurp, StaticExec, FFI, dangerous callbacks, and relevant compiler magics.
 - An OS sandbox with an isolated filesystem, cleared environment, no process execution, and no network.
@@ -57,7 +57,7 @@ Phase 0 must either add these capabilities or stop claiming schema, cancellation
 - Bounded per-call outcome events or a final structured trace,
 - Cloning of arguments before private context injection so secrets do not enter UI events/history.
 6. The depth rule contradicts the hybrid design
-docs/FABRIC.md:59-60 says session-context tools reject at depth 1, but docs/FABRIC.md:141 explicitly wants fabric to call an agent. That call is already depth 1.
+FABRIC.md:59-60 says session-context tools reject at depth 1, but FABRIC.md:141 explicitly wants fabric to call an agent. That call is already depth 1.
 A numeric depth is too coarse. Use explicit provenance rules:
 - Fabric calling fabric: deny.
 - A child session spawning another child: deny via persisted parent metadata.
@@ -68,8 +68,8 @@ A numeric depth is too coarse. Use explicit provenance rules:
 The plan gives stdout two meanings: final JSON framing and log() lines. It also proposes waiting for the child while capturing output. A chatty child can fill an undrained pipe and deadlock, exactly the problem already avoided in components/bash/main.nim:77-86.
 Use bounded temporary files or a framed IPC loop. Reserve stdout for one protocol.
 There is also an invariant conflict:
-- docs/FABRIC.md:34: every effect crosses the session proxy.
-- docs/FABRIC.md:115: artifact() writes directly to the filesystem.
+- FABRIC.md:34: every effect crosses the session proxy.
+- FABRIC.md:115: artifact() writes directly to the filesystem.
 Either artifacts must go through a component, or executor-owned artifact writing must be documented as a trusted-host exception with mode 0600, quotas, symlink protection, and retention cleanup.
 8. The self-hosting acceptance criterion is not currently possible
 The builder supports one Nim source and produces one binary. Fabric requires:
@@ -78,7 +78,7 @@ The builder supports one Nim source and produces one binary. Fabric requires:
 - fabricguest/,
 - A .nimble package,
 - Compiler source paths.
-Therefore docs/FABRIC.md:168-170 cannot work through the current builder. Either extend builder for package/multi-binary builds or change that acceptance criterion to the normal shipped build.
+Therefore FABRIC.md:168-170 cannot work through the current builder. Either extend builder for package/multi-binary builds or change that acceptance criterion to the normal shipped build.
 Also, findNimStdLibCompileTime() returns the compiler’s build-time libPath; it is not genuinely runtime self-locating.
 Semantic Overclaims
 - “Fan-out” is sequential until concurrent bridge calls exist.

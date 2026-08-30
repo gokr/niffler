@@ -1,6 +1,6 @@
 ## Niffler core — entry point.
 ##
-## Boot sequence (docs/REBOOT.md): spawn NATS (if no NIF_NATS_URL) → open catalog →
+## Boot sequence (docs/research/REBOOT.md): spawn NATS (if no NIF_NATS_URL) → open catalog →
 ## resolve manifest + boot profile to binaries → spawn children → converge on
 ## the required set → serve svc.core.call (tty stdin becomes the admin shell,
 ## core/tty.nim).
@@ -98,7 +98,7 @@ proc connectWithRetry(url: string, tries = 40): NatsConnection =
 
 proc loadManifest(root: string): JsonNode =
   ## manifest.yaml bootstraps fresh systems; the DB catalog becomes
-  ## authoritative later (docs/REBOOT.md).
+  ## authoritative later (docs/research/REBOOT.md).
   let path = root / "manifest.yaml"
   if not fileExists(path):
     raise newException(IOError, "manifest not found: " & path)

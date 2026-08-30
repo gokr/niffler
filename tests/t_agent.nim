@@ -1,4 +1,4 @@
-## agent component tests (fabric Phase 1, docs/FABRIC.md).
+## agent component tests (fabric Phase 1, docs/research/FABRIC.md).
 ##
 ## Boots a sandbox core (store + bash, no LLM) with the test-only stub
 ## component (components/ctxtest) and the agent component. Drives one parent

@@ -15,7 +15,8 @@ Niffler is meant to be cloned out and run using its own git repo as "home" so th
 
 The agent can add capabilities at runtime — writes source, compiles it with the `builder` component,
 starts it via `core.spawn` — mid-conversation. Design rationale:
-[docs/REBOOT.md](docs/REBOOT.md). Wire protocol: [docs/WIRE.md](docs/WIRE.md).
+[docs/research/REBOOT.md](docs/research/REBOOT.md). Wire protocol:
+[docs/WIRE.md](docs/WIRE.md).
 
 ```
 core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
@@ -51,10 +52,10 @@ clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
 as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
 add Node.js components mid-conversation.
 
-Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the
-bus, approvals, recovery, troubleshooting). Observation and logs:
-[docs/OBSERVE.md](docs/OBSERVE.md). Changelog:
-[CHANGELOG.md](CHANGELOG.md).
+Operating guide: [docs/MANUAL.md](docs/MANUAL.md) (env vars, `.env`, the bus,
+approvals, recovery, troubleshooting, and reference chapters for discovery,
+models, observation/logs, providers, fetch, plugins, skills, fabric and
+subagents). Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Quickstart
 
@@ -222,7 +223,8 @@ wins. Service mode (no tty): `NIF_NATS_URL=... NIF_OPENAI_API_KEY=...
 ## Layout
 
 ```
-docs/                REBOOT.md (design rationale), WIRE.md (wire protocol)
+docs/                MANUAL.md (operating guide), WIRE.md (wire protocol),
+                     ARCHITECTURE.md (core boundary), research/ (design history)
 manifest.yaml        bootstrap component manifest
 sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
@@ -334,7 +336,7 @@ to CI any plugin repo — Niffler testing itself.
 - [x] supervisor (spawn/monitor/restart/drain), catalog, dispatch
 - [x] bash + builder components, llm adapter (streaming OpenAI-compatible) in Go
 - [x] typed tool definitions (nimcp-inspired: schema + handler from a proc)
-- [x] **agent adds itself a tool end-to-end** (docs/REBOOT.md milestone, live
+- [x] **agent adds itself a tool end-to-end** (docs/research/REBOOT.md milestone, live
       test with DeepSeek: wrote → built → spawned → called `greet`)
 - [x] **store component** — barrel-backed document store over the bus
       (put/get/list/del, rev-based optimistic concurrency); core persists
@@ -437,14 +439,14 @@ to CI any plugin repo — Niffler testing itself.
       conversation freezes a small immutable direct toolset (13 shipped);
       `discover` returns hints/full schemas into the append-only history and
       `invoke` calls any live non-hidden tool through the normal approval/
-      timeout path (docs/DISCOVER.md); UI Live Components panel colors
+      timeout path (docs/MANUAL.md); UI Live Components panel colors
       direct/seen/demand/internal per active session (`tests/t_discover.nim`)
 - [x] **directed approval routing** — approval requests route to the
       component driving the turn via its private `svc.approval.<caller>.request`
       (ack-gated, broadcast fallback when the driver is gone, `ev.approval.resolved`
       clears stale modals); call envelopes carry a self-declared `caller` across
       all four SDKs; web UI acks + answers on the private subject
-- [x] **fabric + subagents** (docs/FABRIC.md) — programmable tool calling:
+- [x] **fabric + subagents** (docs/research/FABRIC.md) — programmable tool calling:
       the `fabric` tool runs an LLM-written Nim program in a VM-embedding
       executor child (fresh process per program, no NATS/credentials, RLIMIT
       + kill timeout); the guest's tool calls cross a framed stdio bridge to

@@ -1,4 +1,4 @@
-## fabric component — programmable tool calling (docs/FABRIC.md Phase 2).
+## fabric component — programmable tool calling (docs/research/FABRIC.md Phase 2).
 ##
 ## One tool, `fabric`: the LLM writes a Nim program (guest) that orchestrates
 ## tool calls; only the program's finish() value enters the conversation.
@@ -28,7 +28,7 @@ proc sanitizeSessionId(s: string): string =
 const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
                       "importc", "osproc", "natswrapper", "std/os",
                       "std/net", "std/selectors"]
-  ## source lint: auditable policy, not a sandbox claim (docs/FABRIC.md,
+  ## source lint: auditable policy, not a sandbox claim (docs/research/FABRIC.md,
   ## threat model). The VM itself also refuses FFI and gorge magics (the
   ## executor is built without -d:nimcore).
 

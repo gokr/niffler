@@ -51,7 +51,7 @@ The mind is split across two processes: the *system harness* (`niffler.nim`,
 the irreducible root) owns the `session` tool's address — it ensures a
 *session runner* (`session.nim`, `var/bin/session <id>`) per conversation and
 forwards to `svc.session.<id>.call` — and the runner executes turns, one
-process per conversation. Crash isolation (docs/REBOOT.md) works because the
+process per conversation. Crash isolation (docs/research/REBOOT.md) works because the
 mind's *state* is a component (`store`); the mind's *code* is a spawned
 process that can be restarted freely: a killed runner loses nothing but the
 in-flight turn — the next session call spawns a fresh runner that resumes
@@ -79,7 +79,7 @@ to its own body.
 `x-harness.approval` and `x-harness.timeoutMs` are honored on the dispatch path.
 Approval is deliberately kept as a synchronous interceptor in core rather than
 a bus hop: policy must be synchronous and central, and a multi-hop middleware
-chain over NATS would be slower and less trustworthy (docs/REBOOT.md, open
+chain over NATS would be slower and less trustworthy (docs/research/REBOOT.md, open
 threads). Unlike 1–4 this is a *choice*, not a structural necessity — it could
 become a component the day the harness outgrows one interceptor.
 

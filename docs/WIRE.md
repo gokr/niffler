@@ -174,7 +174,7 @@ seed their catalog from it at startup, then follow `reg.>` live).
 The LLM-facing core tools also include `discover` (hint/schema lookup
 over the non-hidden catalog) and `invoke` (generic gateway into any live
 non-hidden tool, preserving its approval/timeout policy) — see
-[DISCOVER.md](DISCOVER.md).
+docs/MANUAL.md, section "Progressive tool discovery".
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
@@ -223,7 +223,7 @@ Core publishes it on user cancel. ~10 lines in the SDK.
 
 ## Approvals
 
-Dispatch honors `x-harness.approval` on the tool schema (docs/REBOOT.md,
+Dispatch honors `x-harness.approval` on the tool schema (docs/research/REBOOT.md,
 "policy rides the schema"): a tool marked `"always"` is held until a human
 answers. Terminal harness: y/N prompt on stdin. Service mode: the request
 is routed to the interactive component that drove the current turn — its

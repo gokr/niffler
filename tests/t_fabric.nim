@@ -1,4 +1,4 @@
-## fabric component tests (fabric Phase 2, docs/FABRIC.md).
+## fabric component tests (fabric Phase 2, docs/research/FABRIC.md).
 ##
 ## Boots a sandbox core (store + bash, no LLM) with the stub component
 ## (components/ctxtest) and the fabric component. Drives one session turn

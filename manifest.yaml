@@ -1,5 +1,5 @@
 # Bootstrap manifest — YAML bootstraps fresh systems; the DB catalog
-# becomes authoritative later (docs/REBOOT.md).
+# becomes authoritative later (docs/research/REBOOT.md).
 #
 # build: {lang, src} kept as documentation; `nimble build` compiles all
 # shipped components. Agent-written components go through builder + spawn.
@@ -93,7 +93,7 @@ components:
     required: false
     restart: on-failure
 
-  # Observation (docs/OBSERVE.md): observe = live ring + probes + send/
+  # Observation (docs/MANUAL.md ("Observation and logs")): observe = live ring + probes + send/
   # trace tools; logfile = durable JSONL sink for ev.log.* events.
   - name: observe
     build: {lang: nim, src: components/observe/main.nim}
@@ -109,7 +109,7 @@ components:
     required: false
     restart: on-failure
 
-  # Subagent sessions (fabric Phase 1, docs/FABRIC.md): agent_run/agent_steer.
+  # Subagent sessions (fabric Phase 1, docs/research/FABRIC.md): agent_run/agent_steer.
   - name: agent
     build: {lang: nim, src: components/agent/main.nim}
     binary: var/bin/agent
@@ -117,7 +117,7 @@ components:
     required: false
     restart: on-failure
 
-  # Programmable tool calling (fabric Phase 2, docs/FABRIC.md): the fabric
+  # Programmable tool calling (fabric Phase 2, docs/research/FABRIC.md): the fabric
   # tool spawns var/bin/fabric-exec per program; guests run in the Nim VM.
   - name: fabric
     build: {lang: nim, src: components/fabric/fabric.nim}

@@ -1,4 +1,4 @@
-## agent component — subagent sessions (fabric Phase 1, docs/FABRIC.md).
+## agent component — subagent sessions (fabric Phase 1, docs/research/FABRIC.md).
 ##
 ## A subagent is a Niffler session like any other: its own runner process,
 ## resumed from the store, full toolset. This component is the thin surface

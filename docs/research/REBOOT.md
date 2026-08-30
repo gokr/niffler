@@ -1,5 +1,9 @@
 # Reboot — Niffler
 
+> Research note — the original design rationale. What actually shipped and how to
+> operate it: [docs/MANUAL.md](../MANUAL.md); the component/core boundary rationale
+> that grew out of this: [docs/ARCHITECTURE.md](../ARCHITECTURE.md).
+
 A design summary for a minimal, self-extending agent harness, distilled from a
 design conversation (2026-08) covering the DeepSeek Harness, the Cordis plugin
 framework (cordiverse/cordis) and its paper, and comparisons with Pi, NATS, and

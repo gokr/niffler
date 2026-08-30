@@ -1,4 +1,4 @@
-## fabric-exec — per-program guest executor child (docs/FABRIC.md Phase 2).
+## fabric-exec — per-program guest executor child (docs/research/FABRIC.md Phase 2).
 ##
 ## One process per program: embeds the Nim VM (compiler/nimeval), evaluates
 ## the guest program against the fabricguest bridge, and speaks a framed

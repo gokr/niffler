@@ -12,7 +12,7 @@ Niffler 的設計是把它 clone 出來、以自己的 git 倉庫為「家」執
 
 Agent 可以在執行期添加能力——寫原始碼、用 `builder` 組件編譯、
 透過 `core.spawn` 啟動——全程發生在對話中途。設計理由：
-[docs/REBOOT.md](docs/REBOOT.md)。線上協定：[docs/WIRE.md](docs/WIRE.md)。
+[docs/research/REBOOT.md](docs/research/REBOOT.md)。線上協定：[docs/WIRE.md](docs/WIRE.md)。
 
 ```
 core (Nim) ── NATS ──┬── store (Nim SDK)           ← 持久化
@@ -48,7 +48,7 @@ Core 只講一種協定（基於 NATS 的 JSON envelope，見
 Node.js 組件。
 
 操作指南：[docs/MANUAL.md](docs/MANUAL.md)（環境變數、`.env`、匯流排、
-核准、復原、排障）。觀測與日誌：[docs/OBSERVE.md](docs/OBSERVE.md)。
+核准、復原、排障，以及發現、模型目錄、觀測/日誌、供應商、fetch、外掛、技能、fabric 與子代理等參考章節）。
 更新日誌：[CHANGELOG.md](CHANGELOG.md)。
 
 社群：[Discord](https://discord.gg/ThJFEAJUAk)。
@@ -199,7 +199,8 @@ harness 同時測試 Nim 和 Go 組件）。可寫狀態放在唯一的暫時 `N
 ## 目錄結構
 
 ```
-docs/                REBOOT.md（設計理由）、WIRE.md（線上協定）
+docs/                MANUAL.md（操作指南）、WIRE.md（線上協定）、
+                     ARCHITECTURE.md（核心邊界）、research/（設計歷史）
 manifest.yaml        啟動組件清單
 sdk/envelope.nim     envelope 編解碼（std/json，刻意保持可移植）
 sdk/niffler/         Nim 組件 SDK（約 250 行）
@@ -303,7 +304,7 @@ Agent 在對話中途自己完成這一切——這就是該架構的驗證標�
 - [x] supervisor（spawn/monitor/restart/drain）、catalog、dispatch
 - [x] bash + builder 組件、Go 串流 LLM 配接器（OpenAI 相容）
 - [x] 型別化工具定義（nimcp 啟發：proc → schema + handler）
-- [x] **agent 端到端給自己加工具**（docs/REBOOT.md 里程碑，用 DeepSeek
+- [x] **agent 端到端給自己加工具**（docs/research/REBOOT.md 里程碑，用 DeepSeek
       實測：寫 → 建置 → 啟動 → 呼叫 `greet`）
 - [x] **store 組件** —— 匯流排上 barrel 支撐的文件儲存（put/get/list/del，
       基於 rev 的樂觀並行）；core 持久化對話、訊息與已產生組件；已產生
@@ -392,7 +393,7 @@ Agent 在對話中途自己完成這一切——這就是該架構的驗證標�
 - [x] **漸進式工具發現** —— 一個完整的全域 catalog，但每個對話凍結
       一個小型不可變直接工具集（13 個內建）；`discover` 把提示/完整
       schema 回傳進 append-only 歷史，`invoke` 經正常核准/逾時路徑呼叫
-      任意 live 非隱藏工具（docs/DISCOVER.md）；UI Live Components 面板
+      任意 live 非隱藏工具（docs/MANUAL.md）；UI Live Components 面板
       按活動對話給 direct/seen/demand/internal 上色
       （tests/t_discover.nim）
 - [x] **定向核准路由** —— 核准請求經私有
