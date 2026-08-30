@@ -45,6 +45,12 @@ comp.tool:
         return toolCall("t1", "agent_run",
                         %*{"task": "echo agent-ok via a subagent"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "si-live":
+      if stage == 0:
+        # current-session introspection: no sessionId arg — the runner must
+        # inject its own id (t_core asserts the tool result carries it)
+        return toolCall("t1", "session_info", %*{})
+      return %*{"content": "introspect-done"}
     if sessionId == "fab-test":
       case stage
       of 0:

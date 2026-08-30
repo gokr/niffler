@@ -167,6 +167,94 @@ proc main() =
   check("rogue tool not registered", rogueTool.code != 0, rogueTool.output)
   discard call(nc, "core", "remove", %*{"name": "rogue"}, 60_000)
 
+  # --- session_info: conversation introspection -----------------------------
+  # The direct toolset includes the tool — self-introspection is a core tool.
+  check("session_info is in the direct LLM toolset",
+        coreCat.output.contains("\"session_info\""), coreCat.output)
+
+  # The system-side handler needs no LLM: a content-less session call spins up
+  # the conversation's runner and returns its status (header created).
+  let sessSt = call(nc, "core", "session",
+                    %*{"sessionId": "si-introspect", "model": ""}, 120_000)
+  check("session status path works without an LLM",
+        sessSt{"ok"}.getBool(false), $sessSt)
+
+  # fresh conversation: header fields present, zero messages
+  let si0 = call(nc, "core", "session_info",
+                 %*{"sessionId": "si-introspect"}, 10_000)
+  check("session_info reads a fresh conversation",
+        si0{"error"} == nil and
+        si0{"sessionId"}.getStr("") == "si-introspect" and
+        si0{"messageCount"}.getInt(0) == 0, $si0)
+
+  # seed messages directly (persistMsg shape) and recount by role
+  var seedOk = true
+  var seqNo = 0
+  for role in ["user", "assistant", "tool", "assistant"]:
+    inc seqNo
+    let r = call(nc, "store", "put", %*{
+      "kind": "message",
+      "id": "si-introspect:" & align($seqNo, 6, '0'),
+      "value": %*{"role": role, "content": "x"}}, 10_000)
+    if not r{"ok"}.getBool(false): seedOk = false
+  check("seed conversation messages", seedOk)
+  let si1 = call(nc, "core", "session_info",
+                 %*{"sessionId": "si-introspect"}, 10_000)
+  check("session_info counts messages by role",
+        si1{"messageCount"}.getInt(0) == 4 and
+        si1{"messagesByRole"}{"user"}.getInt(0) == 1 and
+        si1{"messagesByRole"}{"assistant"}.getInt(0) == 2 and
+        si1{"messagesByRole"}{"tool"}.getInt(0) == 1, $si1)
+
+  # unknown conversation: a clear not-found error
+  let siMissing = call(nc, "core", "session_info",
+                       %*{"sessionId": "conv-nope"}, 10_000)
+  check("session_info reports unknown conversations",
+        siMissing{"error"}.getStr("").contains("no conversation"), $siMissing)
+
+  # current-session injection: the stub LLM (ctxtest) calls session_info with
+  # no sessionId; the runner must inject its own id before the call reaches
+  # the system. The tool result lands in the persisted transcript.
+  let ctxBin = sandbox.sandboxBin("ctxtest")
+  let ctxtestProc = startProcess("nim", args = [
+    "c", "--hints:off", "--warnings:off",
+    "--path:" & repoRoot / "sdk",
+    "-o:" & ctxBin,
+    repoRoot / "components" / "ctxtest" / "main.nim"],
+    options = {poUsePath, poStdErrToStdOut})
+  defer: ctxtestProc.close()
+  if waitForExit(ctxtestProc, 120_000) != 0:
+    fail("ctxtest component failed to compile")
+    quit(1)
+  let ctxProc = startComponent(ctxBin, url, root = root)
+  defer:
+    if ctxProc.running():
+      ctxProc.terminate()
+      sleep(800)
+      if ctxProc.running(): ctxProc.kill()
+    ctxProc.close()
+  var ctxUp = false
+  for i in 0 ..< 100:
+    let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+    if snap{"components"}{"ctxtest"} != nil:
+      ctxUp = true
+      break
+    sleep(200)
+  check("ctxtest registered", ctxUp)
+
+  let liveTurn = call(nc, "core", "session",
+                      %*{"sessionId": "si-live", "content": "go"}, 120_000)
+  check("stub-LLM turn completed",
+        liveTurn{"reply"}.getStr("") == "introspect-done", $liveTurn)
+
+  let toolMsg = call(nc, "store", "get",
+                     %*{"kind": "message", "id": "si-live:000003"}, 10_000)
+  check("session_info tool result carries the injected session id",
+        toolMsg{"error"} == nil and
+        toolMsg{"value"}{"name"}.getStr("") == "session_info" and
+        toolMsg{"value"}{"content"}.getStr("").contains("\"sessionId\":\"si-live\""),
+        $toolMsg)
+
   # --- approval gating on a bus without NIF_AUTO_APPROVE --------------------
   # (core 1 must be fully down first: the store is single-writer)
   if coreProc.running():

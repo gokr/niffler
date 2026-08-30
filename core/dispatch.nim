@@ -284,6 +284,49 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           discard
       comps.add(entry)
     return %*{"components": comps, "at": now}
+  of "session_info":
+    ## Read-only conversation introspection for the LLM: the current session
+    ## (its runner injects the session id when the arg is absent — see
+    ## dispatchToolCall) or any other stored conversation. Header fields come
+    ## from the conversation doc (kept fresh by the turn loop), message counts
+    ## from the persisted transcript.
+    let sessionId = args{"sessionId"}.getStr("").strip()
+    if sessionId.len == 0:
+      return %*{"error": "session_info needs sessionId (a session runner injects its own id for the current session)"}
+    var info = %*{"sessionId": sessionId}
+    try:
+      let header = ct.dispatchToolCall("get",
+        %*{"kind": "conversation", "id": sessionId})
+      if not header{"ok"}.getBool(false):
+        return %*{"error": "no conversation '" & sessionId & "'"}
+      for f in ["title", "createdAt", "model", "modelOverride", "provider",
+                "thinkingEffort", "context", "contextUsed", "promptTokens"]:
+        if header{"value"}{f} != nil:
+          info[f] = header{"value"}{f}
+      # subagent lineage (the agent component records kind sessionmeta)
+      let meta = ct.dispatchToolCall("get",
+        %*{"kind": "sessionmeta", "id": sessionId})
+      if meta{"ok"}.getBool(false) and meta{"value"}{"parent"} != nil:
+        info["parent"] = meta{"value"}{"parent"}
+      # role counts from the message log (zero-padded ids → store key order
+      # = message order). The store caps a list at 1000 items; flag the cut.
+      let listed = ct.dispatchToolCall("list",
+        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000})
+      var byRole = newJObject()
+      var total = 0
+      if listed{"items"} != nil:
+        for item in listed{"items"}:
+          inc total
+          let role = item{"value"}{"role"}.getStr("")
+          let key = if role.len > 0: role else: "unknown"
+          byRole[key] = %(byRole{key}.getInt(0) + 1)
+      info["messageCount"] = %total
+      info["messagesByRole"] = byRole
+      if total >= 1000:
+        info["truncated"] = %true
+    except CatchableError as e:
+      info["warning"] = %("store unavailable: " & e.msg)
+    return info
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
@@ -480,9 +523,20 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
 
+  # session_info with no sessionId means "my own conversation": while a turn
+  # is live (ct.nested.session is set only inside runTurn) the runner injects
+  # its own session id before the call reaches the system, so the model's
+  # introspection always answers about the conversation it is running in.
+  # Direct (non-session) callers have no live nested session and get the
+  # tool's clear "needs sessionId" error instead.
+  if tool == "session_info" and ct.nested != nil and
+      ct.nested.session.len > 0 and args{"sessionId"}.getStr("").len == 0:
+    args["sessionId"] = %ct.nested.session
+
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
-  if tool in ["spawn", "catalog", "kill", "remove", "status", "discover"] and
+  if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
+              "session_info"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:

@@ -101,6 +101,15 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {},
       "x-harness": {"onDemand": true}
     }))
+  coreReg.tools.add(ToolReg(name: "session_info", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Summarize a conversation: its id, title, model selection, thinking effort, context window and token usage, plus message counts by role (user, assistant, tool, system). Called without sessionId (or with an empty one) it answers about the CURRENT session — your own conversation. Pass another conversation's id to inspect that conversation instead; enumerate stored conversations with the store list tool (kind \"conversation\").",
+      "properties": {
+        "sessionId": {"type": "string",
+                      "description": "Conversation id (conv-*). Omit or leave empty to summarize the current session"}
+      }
+    }))
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
