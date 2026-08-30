@@ -65,7 +65,7 @@ help:
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
 	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make down      stop any running harness, components and nats-server'
-	@echo 'make test      end-to-end smoke test (spawns its own bus)'
+	@echo 'make test      bus-contract suite: one test per component + smoke + go tests'
 	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'

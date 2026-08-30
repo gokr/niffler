@@ -1,6 +1,7 @@
 # Niffler
 
 [English](README.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) ·
+[website](https://gokr.github.io/niffler/) ·
 [Discord](https://discord.gg/ThJFEAJUAk)
 
 This is Niffler (reborn), a minimalistic, self-extending agent harness similar in philosophy
@@ -29,7 +30,8 @@ core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
                      ├── edit (Nim SDK)            ← read/edit/write file tools + undo
                      ├── grep (Nim SDK)            ← code search + file listing
                      ├── git (Nim SDK)             ← read-only repo inspection
-                     ├── write (Nim SDK)           ← atomic whole-file writes
+                     ├── agent (Nim SDK)           ← subagent sessions
+                     ├── fabric (Nim SDK)          ← programmable tool calling
                      ├── observe (Nim SDK)         ← live bus inspection
                      ├── logfile (Nim SDK)         ← rotating JSONL logs
                      ├── cli (Nim SDK)             ← on-demand script client
@@ -43,8 +45,8 @@ component with its own language's SDK, not code compiled into core.
 
 On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
 `plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `edit`,
-`grep`, `git`, `observe` and `logfile`. The Nim SDK powers all of those except
-Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
+`grep`, `git`, `observe`, `logfile`, `agent` and `fabric`. The Nim SDK
+powers all of those except Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
 clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
 as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
 add Node.js components mid-conversation.
@@ -57,8 +59,11 @@ bus, approvals, recovery, troubleshooting). Observation and logs:
 ## Quickstart
 
 ```bash
+git clone https://github.com/gokr/niffler.git && cd niffler
+make setup              # prerequisites for your platform
 make                    # build everything, once
-ui/build/bin/niffler-ui # or click the installed desktop icon
+ui/build/bin/niffler-ui # the desktop UI; or:
+make ui-install         # install the launcher + app icon (Linux), then click it
 ```
 
 Build once, then launch the UI — any UI (the desktop app, an interactive
@@ -129,10 +134,13 @@ automatically by nimble on the first build (`make build`).
 
 | Command | What it does |
 |---|---|
-| `niffler-ui` | the desktop UI — autostarts core if needed; the last UI stops an autostarted core |
+| `ui/build/bin/niffler-ui` | the desktop UI — autostarts core if needed; the last UI stops an autostarted core |
+| `make ui-install` | installs `niffler-ui` to `~/.local/bin` + the launcher/app icon (Linux); `make ui-uninstall` removes it |
 | `./var/bin/niffler` | the harness in a terminal: admin shell, never self-terminates |
 | `./var/bin/niffler --minimal` | minimal boot profile: only `store`, `bash`, and `llm` services |
-| `make run` | the harness with the tty admin shell (status commands) |
+| `make build` | core + components only (skip the desktop UI) |
+| `make run` | build, then the harness with the tty admin shell (status commands) |
+| `make down` | stop any running harness, components and nats-server (e.g. a stray core holding the store lock) |
 | `make test` | the bus-contract test suite (each test spawns its own bus) — `make test-<comp>` runs one component contract, including `test-grep`, `test-git`, `test-edit`, `test-models`, `test-observe`, and `test-logfile` |
 | `make recover` | stop everything, rebuild shipped binaries, wipe spawned-component records, restart (see Recovery below) |
 | `make dev` | Svelte dev server in a browser (bridge stubbed) |
@@ -220,9 +228,9 @@ sdk/go/              Go component SDK (mirror of the Nim one)
 sdk/ts/              TypeScript/Node.js component SDK (mirror, npm package)
 core/                catalog, supervisor, dispatch, conversation loop
 components/          Nim: store, bash, builder, plugins, skills, fetch,
-                     edit (read/edit/write file tools), grep, git, observe,
-                     logfile, cli, console; Go: models, provider, llm
-                     + llm-openai example
+                     edit (read/edit/write file tools), grep, git,
+                     observe, logfile, agent, fabric, cli, console;
+                     Go: models, provider, llm + llm-openai example
 tests/               bus-contract suite: helpers + one t_*.nim per component
 ui/                  web SPA over NATS — direction + Wails bridge design
 var/                 runtime: binaries, build cache (gitignored)
@@ -448,7 +456,7 @@ to CI any plugin repo — Niffler testing itself.
       helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
-- [ ] cancellation in the terminal harness + UI (ev.cancel flow polish)
+- [ ] cancellation polish in the web UI (per-call cancel ships in the TUI; ev.cancel flow polish)
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
 

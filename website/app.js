@@ -32,7 +32,7 @@
   }
   type();
 
-  var revealEls = document.querySelectorAll(".card, .step, .arch, .table-wrap, .term, .wire, .status, .qs");
+  var revealEls = document.querySelectorAll(".card, .step, .arch, .table-wrap, .term, .wire, .status, .qs, .shot");
   if ("IntersectionObserver" in window) {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {

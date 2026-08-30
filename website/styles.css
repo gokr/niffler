@@ -430,6 +430,34 @@ tbody td:nth-child(2) { color: var(--dim); white-space: nowrap; }
 
 .row-your td { border-top: 1px dashed var(--amber-dim); background: rgba(245, 185, 66, 0.04); }
 
+/* ── screens ──────────────────────────────────────────────────────────── */
+
+.screens {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.shot { margin: 0; }
+
+.shot-frame {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel-2);
+  line-height: 0;
+  transition: border-color 0.15s ease;
+}
+.shot-frame:hover { border-color: var(--border-2); }
+.shot-frame img { width: 100%; height: auto; display: block; }
+
+.shot figcaption { margin-top: 10px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
+.shot-name { color: var(--amber); font-weight: 500; }
+
+.screens-note { margin-top: 26px; font-size: 12.5px; color: var(--dim-2); line-height: 1.7; }
+
 /* ── wire ─────────────────────────────────────────────────────────────── */
 
 .wire {
@@ -471,7 +499,7 @@ tbody td:nth-child(2) { color: var(--dim); white-space: nowrap; }
 /* ── responsive ───────────────────────────────────────────────────────── */
 
 @media (max-width: 760px) {
-  .qs, .wire, .status { grid-template-columns: 1fr; }
+  .qs, .wire, .status, .screens { grid-template-columns: 1fr; }
   .nav-links { gap: 10px; }
   .nav-links a:not(.btn) { display: none; }
   .step-arrow { transform: rotate(90deg); padding: 4px 0; }
