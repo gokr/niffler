@@ -612,8 +612,11 @@ There is no launcher script — the binaries own the lifecycle:
   127.0.0.1:4222 for a live core; if none answers, spawn `var/bin/niffler`
   detached with `NIF_AUTOSTART=1`. The repo root is baked in at `make ui`
   time (ldflags), so the installed icon works as well as the in-tree binary.
-- **Interactive plugins** (e.g. `niffler-tui`) — same `ensureHarness` call,
-  so starting one from a terminal also starts the harness when needed.
+- **Interactive plugins** (e.g. `niffler-tui`) — they do **not** call
+  `ensureHarness` and never spawn a harness: they probe for a live bus
+  (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222), connect and register
+  `client: true` (so an autostarted core stays up while they run). Start the
+  harness first — desktop UI or `./var/bin/niffler`.
 - **Terminal admin shell** — `./var/bin/niffler` directly, or
   `./var/bin/niffler --minimal` for the three-component boot profile. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.

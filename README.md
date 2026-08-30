@@ -66,9 +66,11 @@ ui/build/bin/niffler-ui # the desktop UI; or:
 make ui-install         # install the launcher + app icon (Linux), then click it
 ```
 
-Build once, then launch the UI — any UI (the desktop app, an interactive
-terminal plugin like `niffler-tui`) autostarts core if it isn't running, and the
-**last UI to close stops the harness it started**.
+Build once, then launch the UI — the desktop app autostarts core if it isn't
+running (via the SDK's `ensureHarness`), and the **last interactive client to
+close stops a harness it autostarted**. Note that the `niffler-tui` plugin
+does *not* autostart anything: it attaches to an already-running harness
+(like any bus client, it probes `NIF_NATS_URL` → `var/nats-url` → 4222).
 
 Using multiple UIs in parallel? Start core manually with
 `./var/bin/niffler`; its admin shell stays up until you stop it. Then launch
