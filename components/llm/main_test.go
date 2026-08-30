@@ -235,7 +235,7 @@ func TestRepairToolArgs(t *testing.T) {
 
 func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	bad := `{"command": "cd /home/gokr && echo \"=== worktrees ===\"`
-	msgs := []openai.ChatCompletionMessage{
+	msgs := []chatMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "hi"},
 		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
 			{ID: "c1", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "bash", Arguments: bad}},
@@ -255,6 +255,24 @@ func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	}
 	if msgs[0].Content != "hi" || msgs[2].Content != "{}" {
 		t.Fatal("non-assistant messages were altered")
+	}
+}
+
+func TestChatArgsRestoresReasoningContent(t *testing.T) {
+	var args chatArgs
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"assistant","content":null,"reasoning":"checked the tools","tool_calls":[{"id":"c1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(openAIMessages(args.Messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(encoded)
+	if !strings.Contains(got, `"reasoning_content":"checked the tools"`) {
+		t.Fatalf("reasoning_content missing from provider messages: %s", got)
+	}
+	if strings.Contains(got, `"reasoning":`) {
+		t.Fatalf("internal reasoning field leaked to provider: %s", got)
 	}
 }
 

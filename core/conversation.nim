@@ -632,16 +632,21 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
       onEvent("status", statusEv)
-    if content.len > 0:
-      let assistantMsg = %*{"role": "assistant", "content": content}
+    let toolCalls = resp{"tool_calls"}
+    let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and
+                       toolCalls.len > 0
+    if content.len > 0 or hasToolCalls:
+      let assistantMsg = %*{"role": "assistant",
+                            "content": (if content.len > 0: %content else: newJNull())}
       if reasoning.len > 0: assistantMsg["reasoning"] = %reasoning
+      if hasToolCalls: assistantMsg["tool_calls"] = toolCalls
       if usedProvider.len > 0: assistantMsg["provider"] = %usedProvider
       if usedModel.len > 0: assistantMsg["model"] = %usedModel
       if ctxSize > 0: assistantMsg["context"] = %ctxSize
       if usageObj.len > 0: assistantMsg["usage"] = usageObj
       messages.add(assistantMsg)
       p.persistMsg(assistantMsg)
-      if onEvent != nil:
+      if content.len > 0 and onEvent != nil:
         var ev = %*{"sessionId": sessionId, "content": content}
         if reasoning.len > 0: ev["reasoning"] = %reasoning
         if usedProvider.len > 0: ev["provider"] = %usedProvider
@@ -650,8 +655,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if usageObj.len > 0: ev["usage"] = usageObj
         onEvent("assistant", ev)
 
-    let toolCalls = resp{"tool_calls"}
-    if toolCalls == nil or toolCalls.kind != JArray or toolCalls.len == 0:
+    if not hasToolCalls:
       # No tool calls: the model wants to stop. But if the client injected a
       # steering message while this response was in flight, fold it in and keep
       # going rather than ending the turn early (Pi's continuation-on-nudge).
@@ -661,8 +665,6 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         onEvent("done", %*{"sessionId": sessionId, "reply": content})
       return content
 
-    let tcMsg = %*{"role": "assistant", "content": nil, "tool_calls": toolCalls}
-    messages.add(tcMsg)
     for tc in toolCalls:
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
@@ -707,7 +709,6 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
                                  "args": args, "error": e.msg})
-    p.persistMsg(tcMsg)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")

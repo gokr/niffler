@@ -119,11 +119,20 @@ proc main() =
             last{"content"}.getStr("") == "discover-alpha":
           let arguments = $(%*{"component": "discover-fixture",
                                "tools": ["fixture_demand_alpha"]})
-          return %*{"content": "", "tool_calls": [{
+          return %*{"content": "", "reasoning": "select discover schema",
+                    "tool_calls": [{
             "id": "fixture-discover", "type": "function",
             "function": {"name": "discover", "arguments": arguments}}]}
         if last{"role"}.getStr("") == "tool":
-          return %*{"content": "discovery complete"}
+          for message in messages:
+            if message{"role"}.getStr("") == "assistant" and
+                message{"tool_calls"} != nil:
+              return %*{"content":
+                if message{"reasoning"}.getStr("") == "select discover schema":
+                  "discovery complete"
+                else:
+                  "reasoning missing"}
+          return %*{"content": "tool call missing"}
         return %*{"content": $tools}
     comp.tools[^1].schema["x-harness"] =
       %*{"hidden": true, "timeoutMs": 300000}
@@ -319,6 +328,21 @@ proc main() =
       schemaInHistory = true
   check("discovered schemas are additive conversation history", schemaInHistory,
         $messages)
+  var reasoningCall = -1
+  var discoveryResult = -1
+  var messageIndex = 0
+  for item in messages{"items"}:
+    let value = item{"value"}
+    if value{"role"}.getStr("") == "assistant" and
+        value{"reasoning"}.getStr("") == "select discover schema" and
+        value{"tool_calls"} != nil:
+      reasoningCall = messageIndex
+    if value{"role"}.getStr("") == "tool" and
+        value{"name"}.getStr("") == "discover":
+      discoveryResult = messageIndex
+    messageIndex.inc
+  check("tool-call reasoning is persisted before its result",
+        reasoningCall >= 0 and discoveryResult > reasoningCall, $messages)
 
   let started = epochTime()
   let timedOut = call(nc, "core", "invoke", %*{

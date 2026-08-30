@@ -332,13 +332,41 @@ func namedStoredProvider(c *sdk.Component, name string) (provider, string, strin
 // ---------------------------------------------------------------------------
 // chat tool
 
+type chatMessage openai.ChatCompletionMessage
+
+func (m *chatMessage) UnmarshalJSON(data []byte) error {
+	var decoded openai.ChatCompletionMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.ReasoningContent == "" {
+		var internal struct {
+			Reasoning string `json:"reasoning"`
+		}
+		if err := json.Unmarshal(data, &internal); err != nil {
+			return err
+		}
+		decoded.ReasoningContent = internal.Reasoning
+	}
+	*m = chatMessage(decoded)
+	return nil
+}
+
+func openAIMessages(messages []chatMessage) []openai.ChatCompletionMessage {
+	result := make([]openai.ChatCompletionMessage, len(messages))
+	for i := range messages {
+		result[i] = openai.ChatCompletionMessage(messages[i])
+	}
+	return result
+}
+
 type chatArgs struct {
-	Messages  []openai.ChatCompletionMessage `json:"messages"`
-	Tools     []openai.Tool                  `json:"tools"`
-	Model     string                         `json:"model"`
-	Provider  string                         `json:"provider"`
-	SessionID string                         `json:"sessionId"`
-	Stream    bool                           `json:"stream"`
+	Messages  []chatMessage `json:"messages"`
+	Tools     []openai.Tool `json:"tools"`
+	Model     string        `json:"model"`
+	Provider  string        `json:"provider"`
+	SessionID string        `json:"sessionId"`
+	Stream    bool          `json:"stream"`
 	// ReasoningEffort forwards a per-turn thinking-effort selection
 	// ("low"|"medium"|"high"); empty = provider default. Only sent to the
 	// API when set — providers that do not support reasoning_effort
@@ -480,7 +508,7 @@ func repairToolArgs(raw string) string {
 // sanitizeMessages repairs tool-call arguments in assistant messages so a
 // strict backend never rejects replayed history. Only assistant tool_calls
 // are touched; everything else round-trips unchanged.
-func sanitizeMessages(msgs []openai.ChatCompletionMessage) {
+func sanitizeMessages(msgs []chatMessage) {
 	for i := range msgs {
 		if msgs[i].Role != openai.ChatMessageRoleAssistant {
 			continue
@@ -495,7 +523,7 @@ func sanitizeMessages(msgs []openai.ChatCompletionMessage) {
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model:               model,
-		Messages:            args.Messages,
+		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
 		MaxCompletionTokens: outputSize,
 		ReasoningEffort:     args.ReasoningEffort,
@@ -555,7 +583,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:               model,
-		Messages:            args.Messages,
+		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
 		MaxCompletionTokens: outputSize,
 		ReasoningEffort:     args.ReasoningEffort,
