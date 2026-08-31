@@ -345,3 +345,46 @@ func newSSEChatServer(t *testing.T, chunks []string) *httptest.Server {
 		flusher.Flush()
 	}))
 }
+
+func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
+	usage := openai.Usage{
+		PromptTokens:     900,
+		CompletionTokens: 30,
+		TotalTokens:      930,
+		PromptTokensDetails: &openai.PromptTokensDetails{
+			CachedTokens: 800,
+		},
+	}
+	result, err := resultJSON("deepseek", "deepseek-chat", 128000,
+		"ok", "", nil, usage, true)
+	if err != nil {
+		t.Fatalf("resultJSON: %v", err)
+	}
+	got, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %#v, want map", result)
+	}
+	u, ok := got["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage missing: %#v", got)
+	}
+	details, ok := u["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("prompt_tokens_details missing: %#v", u)
+	}
+	if details["cached_tokens"] != 800 {
+		t.Fatalf("cached_tokens = %v, want 800", details["cached_tokens"])
+	}
+
+	// Without a details breakdown the field is omitted entirely (WIRE.md:
+	// missing fields are omitted, never null).
+	plain, err := resultJSON("deepseek", "deepseek-chat", 128000,
+		"ok", "", nil, openai.Usage{PromptTokens: 10, TotalTokens: 10}, true)
+	if err != nil {
+		t.Fatalf("resultJSON plain: %v", err)
+	}
+	u2 := plain.(map[string]any)["usage"].(map[string]any)
+	if _, present := u2["prompt_tokens_details"]; present {
+		t.Fatalf("prompt_tokens_details should be omitted without details: %#v", u2)
+	}
+}

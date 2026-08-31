@@ -108,6 +108,11 @@ var
   gRejected = 0
   gStaleDrops = 0
   gErrors = 0
+  # judgment token accounting (EXPERT.md §8: measure before claiming a
+  # cache win; cached input is what the knowledge prefix should optimize)
+  gTokPrompt = 0
+  gTokCached = 0
+  gTokCompletion = 0
 
 proc clip(s: string, max: int): string =
   ## Rune-safe truncation with an ellipsis.
@@ -226,6 +231,11 @@ proc evaluate(comp: Component) =
   try:
     gJudgments += 1
     resp = comp.request("llm", "chat", chatArgs, ChatTimeoutMs)
+    let u = resp{"usage"}
+    if u != nil:
+      gTokPrompt += u{"prompt_tokens"}.getInt(0)
+      gTokCompletion += u{"completion_tokens"}.getInt(0)
+      gTokCached += u{"prompt_tokens_details"}{"cached_tokens"}.getInt(0)
   except CatchableError as e:
     gErrors += 1
     comp.log("warn", "judgment failed", %*{"error": clip(e.msg, 160)})
@@ -407,7 +417,10 @@ comp.tool:
        "accepted": gAccepted,
        "rejected": gRejected,
        "staleDrops": gStaleDrops,
-       "errors": gErrors}
+       "errors": gErrors,
+       "tokens": {"prompt": gTokPrompt,
+                  "cached": gTokCached,
+                  "completion": gTokCompletion}}
 
 comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 

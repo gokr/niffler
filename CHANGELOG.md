@@ -19,7 +19,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ev.session.toolcall` gained `callId`, start/done phases and a stable
   `errorCode`. Silent by default, approval-gated follow, best-effort
   scheduling (the working session never waits); `tests/t_expert.nim`
-  proves the loop with a scripted mock llm.
+  proves the loop with a scripted mock llm. Cache economics are
+  measurable from day one: the `llm` adapter forwards
+  `prompt_tokens_details.cached_tokens`, core passes usage through, and
+  `expert_status` accumulates judgment prompt/cached/completion tokens.
 - **Subscription OAuth logins (ChatGPT Plus/Pro, Claude Pro/Max)** — the
   same PKCE flows Pi and opencode use: `provider_oauth_start` returns the
   authorization URL (browser login via fixed localhost callback ports, or

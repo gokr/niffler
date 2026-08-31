@@ -169,6 +169,9 @@ proc main() =
         $status)
   check("expert saw a steer", status{"steers"}.getInt(0) >= 1, $status)
   check("expert steer accepted", status{"accepted"}.getInt(0) >= 1, $status)
+  check("expert token accounting reports cached input",
+        status{"tokens"}{"cached"}.getInt(0) >= 800 and
+        status{"tokens"}{"prompt"}.getInt(0) >= 900, $status)
 
   # Turn-bound guarantee: after the turn, a late advise is rejected, never
   # queued into the next turn.

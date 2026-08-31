@@ -749,11 +749,19 @@ func resultJSON(providerName, model string, ctx int, content, reasoning string,
 		}
 	}
 	if usageSeen && (usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0) {
-		r["usage"] = map[string]any{
+		u := map[string]any{
 			"prompt_tokens":     usage.PromptTokens,
 			"completion_tokens": usage.CompletionTokens,
 			"total_tokens":      usage.TotalTokens,
 		}
+		// Cache economics (EXPERT.md §8): forward the provider's cached-input
+		// breakdown when reported, so callers can measure prompt-cache hits.
+		if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+			u["prompt_tokens_details"] = map[string]any{
+				"cached_tokens": usage.PromptTokensDetails.CachedTokens,
+			}
+		}
+		r["usage"] = u
 	}
 	return r, nil
 }

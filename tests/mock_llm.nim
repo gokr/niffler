@@ -38,7 +38,12 @@ proc(c: Component, args: JsonNode): JsonNode =
       "{\"action\":\"steer\",\"message\":\"Use `git_diff` for the next " &
       "comparison instead of shell git.\",\"tools\":[\"git_diff\"]," &
       "\"confidence\":\"high\",\"reason\":\"dedicated tool exists\"}",
-      "model": "mock-model"}
+      "model": "mock-model",
+      # cached-input breakdown (EXPERT.md §8): lets t_expert assert the
+      # expert's token accounting sees prompt-cache hits
+      "usage": {"prompt_tokens": 900, "completion_tokens": 30,
+                "total_tokens": 930,
+                "prompt_tokens_details": {"cached_tokens": 800}}}
   workingRounds += 1
   if workingRounds == 1:
     # The scripted bash call sleeps: it is the expert's delivery window. The
