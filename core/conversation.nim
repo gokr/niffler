@@ -19,110 +19,69 @@ import catalog
 import dispatch
 import supervisor
 
+## The minimal structural fallback prompt. The real constitution lives in
+## the systemprompt component (components/systemprompt/): the session
+## runner requests svc.systemprompt.call once per conversation
+## (resolveSystemPrompt below, frozen for the conversation's lifetime) and
+## uses this only when the component is absent, slow, or broken. Keep this
+## tiny — it must teach just enough structure (discover/invoke, session
+## persistence) for a degraded-but-usable harness, not the full tutorial.
 const systemPromptFmt = """
-You are Niffler, a minimal self-extending agent harness.
-Read each tool description before calling it. When a task needs a
-capability your direct tools lack, work down this ladder before
-improvising with bash:
-1. discover + invoke — live components may already provide it. The plugins
-   component (always shipped) exposes plugin_search, plugin_installed,
-   plugin_install, plugin_update and plugin_remove as on-demand tools:
-   discover the plugins schema and invoke plugin_search FIRST when the task
-   sounds like something an existing package would cover (weather, third-
-   party APIs, file formats, database access, ...).
-2. plugin_install {repo: "owner/name"} — ecosystem packages are built from
-   source and spawned for you (human-approved); their tools then appear via
-   discover + invoke. Prefer installing an existing package over writing a
-   new component.
-3. skills — skill_list / skill_load cover Agent Skills; check them too.
-4. build your own component (patterns below) via builder.build + core.spawn
-   only when nothing exists.
-5. only then hand-roll a one-off with bash.
-
-Worked example — "what's the weather in Berlin?":
-  discover the plugins schema, invoke plugin_search {query: "weather"},
-  invoke plugin_install {repo: "gokr/niffler-weather"}, discover the new
-  component, then invoke weather_current {place: "Berlin"}.
-
-Discovery results stay in this conversation's history; its direct toolset
-stays fixed so the provider can reuse the prompt prefix.
-You can add capabilities at runtime:
-1. write a component source file — Nim: `import niffler/sdk` and use the
-   typed tool pattern:
-
-   let comp = newComponent("greet", "0.1.0")
-   comp.tool:
-     proc greet(name: string): JsonNode =
-       ## Greet someone
-       ## - name: the name to greet
-       %*{"greeting": "Hello, " & name}
-   comp.run()
-
-   Go: package main importing `niffler.dev/sdk` (module path; import it as
-   `sdk`, matching the module basename — do not invent other import paths),
-   same surface (New/Tool/On/Emit/Run):
-
-   package main
-   import (
-     "encoding/json"
-     sdk "niffler.dev/sdk"
-   )
-   func main() {
-     comp := sdk.New("greet", "0.1.0")
-     comp.Tool("greet", map[string]any{
-       "type": "object",
-       "properties": map[string]any{"name": map[string]any{"type": "string"}},
-       "required": []string{"name"},
-     }, func(c *sdk.Component, args json.RawMessage) (any, error) {
-       var a struct{ Name string `json:"name"` }
-       if err := json.Unmarshal(args, &a); err != nil { return nil, err }
-       return map[string]any{"greeting": "Hello, " + a.Name}, nil
-     })
-     if err := comp.Run(); err != nil { panic(err) }
-   }
-
-   TypeScript (runs under Node.js; requires node + npm on PATH): package
-   `niffler-sdk` (the builder wires it via a file: dependency — do not
-   invent other import paths), same surface (newComponent/Tool/On/Emit/
-   Request/Run). Handlers may be async:
-
-   import sdk from "niffler-sdk";
-   const comp = sdk.newComponent("greet", "0.1.0");
-   comp.tool("greet", {
-     type: "object",
-     description: "Greet someone",
-     properties: { name: { type: "string" } },
-     required: ["name"],
-   }, async (_c, args: any) => {
-     return { greeting: "Hello, " + (args?.name ?? "world") };
-   });
-   comp.run();
-2. discover the builder build schema and invoke it with {lang, name, source}
-   (builder.info explains the pattern)
-3. discover the core spawn schema and invoke it with {name, binary}
-4. discover the new component and invoke its tools; the fixed direct toolset
-   does not change mid-conversation
-The live catalog is authoritative. In a custom or `--minimal` profile,
-`build` may be absent: do not invent or call an absent tool. Use the tools
-that remain, or use bash to write/compile a component and then discover and
-invoke core spawn when self-extension is necessary.
-To stop a tool again, discover and invoke core kill (temporary; restored on
-normal boot) or remove (forgotten permanently).
+You are Niffler, a minimal self-extending agent harness (fallback prompt:
+the systemprompt component is not answering — components/ or var/bin/ may
+be incomplete).
+When a task needs a capability your direct tools lack, work down this
+ladder before improvising with bash: 1. discover + invoke — live
+components may already provide it; 2. skills — skill_list / skill_load;
+3. build your own component via builder.build + core.spawn (write source,
+invoke builder build {lang, name, source}, invoke core spawn {name,
+binary}); 4. only then hand-roll a one-off with bash. The live catalog is
+authoritative: never invent or call a tool that is not registered.
 Conversations and messages persist automatically via the store.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
-sources: components/ (manifest.yaml lists the boot set), SDKs: sdk/ +
-sdk/go + sdk/ts (when available, builder.info has exact paths), design docs:
-docs/, build
-front door: Makefile (make build / make test / make help). var/ is
-disposable runtime state (binaries, barrel-db, agent builds) — gitignored;
-the repo is the snapshot and `--recover` rebuilds it.
+sources: components/, SDKs: sdk/, design docs: docs/, build front door:
+Makefile. var/ is disposable runtime state — gitignored.
 
 Be concise.
 """
 
 proc systemPrompt(root: string): string =
   result = systemPromptFmt % [root]
+
+const systemPromptTimeoutMs = 8_000
+  ## Generous: the component only reads a few files, but a first-call compile
+  ## hiccup on a loaded machine should not degrade every conversation.
+
+proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId: string): string =
+  ## One request/reply attempt; "" on timeout or any failure.
+  try:
+    let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
+      %*{"cwd": ct.root, "sessionId": sessionId}, waitMs)
+    result = r{"systemPrompt"}.getStr("")
+  except CatchableError:
+    result = ""
+
+proc resolveSystemPrompt*(ct: CoreTools, sessionId: string): string =
+  ## The conversation's system prompt: ask the systemprompt component once
+  ## per conversation and freeze the answer for the conversation's lifetime
+  ## (the prompt prefix must stay stable so providers reuse it). Falls back
+  ## to the minimal baked-in prompt when the component is absent, slow, or
+  ## broken — core never hard-depends on a component for boot. Truncates
+  ## absurd answers so a runaway generated constitution cannot poison the
+  ## context window.
+  # Quick probe first: an absent component costs 500ms, not the full
+  # timeout. Only when the catalog says the component IS registered do we
+  # grant the full budget (covers a boot race or a slow first call).
+  result = askSystemPrompt(ct, 500, sessionId)
+  if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
+    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId)
+  if result.len > 200_000:
+    result = result[0 ..< 200_000] &
+      "\n\n[system prompt truncated at 200000 bytes]\n"
+  if result.len == 0:
+    echo "core: systemprompt component not answering — using minimal fallback prompt"
+    result = systemPrompt(ct.root)
 
 proc formatToolsForLlm(tools: JsonNode): JsonNode =
   result = newJArray()
@@ -751,11 +710,27 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
   else:
-    entry.messages = @[%*{"role": "system", "content": systemPrompt(ct.root)}]
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
     ensureConversationHeader(ct, sessionId)
     let header = loadConversationHeader(ct, sessionId)
+    # The conversation's constitution, frozen at first turn: resolved once
+    # from the systemprompt component (or taken from the caller's prefetch,
+    # e.g. the agent component's subagent children) and persisted in the
+    # header. Resumes — in this or a later runner process — reuse the stored
+    # value verbatim: the prompt prefix must stay stable so providers reuse
+    # it, and a component that dies or changes mid-conversation must not
+    # rewrite a running conversation's instructions.
+    var sp = header{"systemPrompt"}.getStr("")
+    if sp.len == 0:
+      sp = args{"systemPrompt"}.getStr("")
+    if sp.len == 0:
+      sp = resolveSystemPrompt(ct, sessionId)
+    try:
+      ct.updateConversationHeader(sessionId, %*{"systemPrompt": sp})
+    except CatchableError as e:
+      echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
+    entry.messages = @[%*{"role": "system", "content": sp}]
     entry.modelOverride = header{"modelOverride"}.getStr("")
     entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
     var pt = 0

@@ -40,6 +40,17 @@ components:
     required: false
     restart: on-failure
 
+  # The conversation constitution: session runners ask svc.systemprompt.call
+  # once per conversation for the real system prompt (product prompt + the
+  # repo's AGENTS.md/CLAUDE.md chain). Absent/slow/broken → core's minimal
+  # baked-in fallback. Replace this component to replace the constitution.
+  - name: systemprompt
+    build: {lang: nim, src: components/systemprompt/main.nim}
+    binary: var/bin/systemprompt
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: fetch
     build: {lang: nim, src: components/fetch/main.nim}
     binary: var/bin/fetch

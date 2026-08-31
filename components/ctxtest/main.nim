@@ -32,6 +32,8 @@ comp.tool:
     ## - agent-* sessions (real subagent children): depth-guard attempt,
     ##   then bash work, then final reply.
     ## - "agt-parent": agent_run tool call, then final reply.
+    ## - "sp-*": echo the conversation's system message (messages[0]) as the
+    ##   final reply — t_systemprompt asserts on what the LLM actually saw.
     ## - anything else (t_nested): ctxecho probe, then final reply.
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
@@ -81,6 +83,17 @@ comp.tool:
         return toolCall("t4", "fabric", %*{"code": prog})
       else:
         return %*{"content": "fabric-turn-done"}
+    if sessionId.startsWith("sp-"):
+      # every turn: echo the conversation's system message (messages[0])
+      # so the test asserts on what the LLM actually saw, on turn 1 AND on
+      # a resumed turn after the runner died
+      var sys = ""
+      if messages != nil:
+        for m in messages:
+          if m{"role"}.getStr("") == "system":
+            sys = m{"content"}.getStr("")
+            break
+      return %*{"content": "sys-echo<<<" & sys & ">>>end"}
     if stage == 0:
       return toolCall("t1", "ctxecho", %*{"msg": "hi"})
     return %*{"content": "nested-turn-done"}

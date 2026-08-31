@@ -16,6 +16,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
+- [System prompt (`systemprompt`)](#system-prompt-systemprompt)
 - [Observation and logs (`observe`, `logfile`)](#observation-and-logs)
 - [Fabric and subagents](#fabric-and-subagents)
 - [Recovery](#recovery--recover) · [The store](#the-store) · [Testing](#testing)
@@ -58,6 +59,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_steer` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
+| `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
@@ -873,6 +875,59 @@ behavior belong in inference adapter components, which can be shipped or
 installed as plugins independently of this catalog.
 
 ---
+
+## System prompt (`systemprompt`)
+
+Status: **implemented** by the `systemprompt` component.
+
+### Boundary
+
+The system prompt is not a tool the LLM calls — it is the standing
+instruction set every conversation starts under. It lives in a component,
+not in core: core keeps only a minimal structural fallback, and a session
+runner fetches the real constitution from `svc.systemprompt.call` once per
+conversation. Replacing the constitution is a normal Niffler operation:
+write a component that answers on the same subject, `builder.build`,
+`core.kill` the old one, `core.spawn` yours. The agent can do this to
+itself.
+
+### How it works
+
+- **Frozen per conversation.** The resolved prompt is persisted in the
+  conversation header (`systemPrompt` field) at the first turn and reused
+  verbatim on every resume, in any runner process. The prompt prefix stays
+  stable so providers reuse it; a component that dies or changes
+  mid-conversation never rewrites a running conversation's instructions.
+- **Fallback.** Component absent, slow (500 ms probe, then an 8 s budget
+  when the catalog says it is registered), or broken → core's baked-in
+  minimal prompt. Core never hard-depends on a component for boot.
+- **Cap.** Answers are truncated at 200 KB (both sides).
+- **Agent pre-fetch.** The `agent` component requests the prompt for
+  subagent children before their first turn and passes it via the session
+  call's `systemPrompt` field (best effort — the runner's own fallback
+  covers a missing component).
+
+### The default component's prompt assembly
+
+1. `components/systemprompt/baseprompt.txt` — the product prompt
+   (self-extension ladder, SDK examples, repo layout), `$ROOT`-substituted,
+   baked into the binary at compile time via `staticRead`. Editing it is
+   rebuild + respawn; there is no runtime file dependency.
+2. The repo's local context files, Pi-style, wrapped in
+   `<project_context>`/`<project_instructions path="...">` tags after the
+   product prompt:
+   - per directory, first hit wins: `AGENTS.override.md`, `AGENTS.md`,
+     `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (one file per directory —
+     `AGENTS.md` shadows a `CLAUDE.md` next to it; symlinks are followed);
+   - ancestor walk from the conversation's cwd up to `/`, harness root
+     first, deduplicated by path — nearer-to-cwd files appear later, so the
+     most specific instructions are the last thing the model reads;
+   - worktree shadow rule: when the harness root is a `git worktree` under
+     the main repo, the main repo root's context file is skipped — the
+     ancestor walk would otherwise apply the same logical repo scope twice.
+
+The tool is `x-harness.hidden` — it never appears in an LLM toolset; it is
+infrastructure, reachable only by core and by components.
 
 ## Observation and logs (`observe`, `logfile`)
 

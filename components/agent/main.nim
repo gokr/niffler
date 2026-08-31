@@ -14,7 +14,7 @@
 ## the child route to the driving client via the caller field; with no
 ## reachable human they are denied (never silently approved).
 
-import std/[json]
+import std/[json, os]
 import natswrapper
 import niffler/sdk
 
@@ -82,6 +82,20 @@ discard comp.tool("agent_run", runSchema,
     except CatchableError:
       discard  # lineage is a guard, not a hard requirement
     var sessArgs = %*{"sessionId": child, "content": taskPreamble & task}
+    # Subagent conversations get the same pluggable constitution as normal
+    # ones: fetch the systemprompt component's prompt (best effort — the
+    # runner's own fallback already covers a missing component) and set it
+    # as the child's system message before the first turn. Frozen per
+    # conversation like every other session.
+    try:
+      let sp = comp.request("systemprompt", "systemprompt",
+        %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()), "sessionId": child},
+        5_000)
+      let prompt = sp{"systemPrompt"}.getStr("")
+      if prompt.len > 0:
+        sessArgs["systemPrompt"] = %prompt
+    except CatchableError:
+      discard
     let model = toolArgs{"model"}.getStr("")
     if model.len > 0:
       sessArgs["model"] = %model
