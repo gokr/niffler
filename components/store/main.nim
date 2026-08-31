@@ -21,7 +21,7 @@
 ##                                  checkpoint of the merged slash-command
 ##                                  table (docs/WIRE.md); UIs read it first
 
-import std/[json, os, strutils]
+import std/[json, strutils]
 when defined(posix):
   import std/posix
   proc flock(fd: cint, operation: cint): cint {.importc: "flock", header: "<sys/file.h>".}
@@ -54,7 +54,7 @@ proc acquireLock(path: string) =
 
 proc openDb() =
   # barrel is bitcask-style: the path is a data file, created if missing
-  let path = getEnv("NIF_ROOT", ".") / "var" / "barrel-db"
+  let path = rootVarDir("barrel-db")
   acquireLock(path)
   var config = defaultBarrelConfig()
   config.mode = bmCritBit  # ordered prefix scans
@@ -69,7 +69,7 @@ proc getRev(kind, id: string): int =
   if raw.len == 0: return 0
   return raw.parseInt()
 
-comp.tool:
+comp.tool(%*{"hidden": true}):
   proc put(kind: string, id: string, value: JsonNode, expectRev: int = 0): JsonNode =
     ## Upsert a document into the store. Hidden from the LLM: writes are
     ## made by core on the agent's behalf (conversations, messages,
@@ -82,15 +82,13 @@ comp.tool:
     let cur = getRev(kind, id)
     if expectRev > 0:
       if cur == 0:
-        return %*{"ok": false, "error": "not found", "code": "rev-conflict"}
+        return errResult("not found", "rev-conflict")
       if cur != expectRev:
-        return %*{"ok": false, "error": "rev conflict", "code": "rev-conflict",
-                  "currentRev": cur}
-    discard   db.set(docKey(kind, id), $value)
-    discard   db.set(revKey(kind, id), $(cur + 1))
-    return %*{"ok": true, "rev": cur + 1}
-
-comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
+        return errResult("rev conflict", "rev-conflict",
+                         %*{"currentRev": cur})
+    discard db.set(docKey(kind, id), $value)
+    discard db.set(revKey(kind, id), $(cur + 1))
+    return okResult(%*{"rev": cur + 1})
 
 comp.tool:
   proc get(kind: string, id: string): JsonNode =
@@ -102,8 +100,8 @@ comp.tool:
     ## - id: Document id within the kind
     let rev = getRev(kind, id)
     if rev == 0:
-      return %*{"ok": false, "error": "not found", "code": "not-found"}
-    return %*{"ok": true, "rev": rev, "value": parseJson(  db.get(docKey(kind, id)))}
+      return errResult("not found", "not-found")
+    return okResult(%*{"rev": rev, "value": parseJson(db.get(docKey(kind, id)))})
 
 comp.tool:
   proc list(kind: string, idPrefix: string = "", limit: int = 100): JsonNode =
@@ -115,30 +113,25 @@ comp.tool:
     ## - idPrefix: Only items whose id starts with this
     ## - limit: Max items (default 100, cap 1000)
     let prefix = "d:" & kind & ":" & idPrefix
-    let (keys, _, _) =   db.keysByPrefix(prefix, min(limit, 1000))
+    let (keys, _, _) = db.keysByPrefix(prefix, min(limit, 1000))
     var items = newJArray()
     for key in keys:
       let id = key[len("d:" & kind & ":" ) .. ^1]
       let rev = getRev(kind, id)
       if rev == 0: continue  # tombstoned
       items.add(%*{"id": id, "rev": rev,
-                   "value": parseJson(  db.get(docKey(kind, id)))})
-    return %*{"ok": true, "items": items}
+                   "value": parseJson(db.get(docKey(kind, id)))})
+    return okResult(%*{"items": items})
 
-comp.tool:
+comp.tool(%*{"hidden": true}):
   proc del(kind: string, id: string): JsonNode =
     ## Delete a document. Hidden from the LLM: deletes are made by core
     ## (e.g. core.remove dropping a component record).
     ## - kind: Document kind
     ## - id: Document id within the kind
-    discard   db.delete(docKey(kind, id))
-    discard   db.delete(revKey(kind, id))
-    return %*{"ok": true}
+    discard db.delete(docKey(kind, id))
+    discard db.delete(revKey(kind, id))
+    return okResult()
 
-comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
-
-proc onDrain(c: Component, subject: string, payload: JsonNode) =
-  db.close()
-
-discard comp.on("ev.sys.drain", onDrain)
+discard comp.onDrain(proc(c: Component) = db.close())
 comp.run()

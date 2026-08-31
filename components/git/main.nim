@@ -14,7 +14,7 @@
 ## missing; "not a git repository" is flagged so the LLM knows the
 ## harness root is not inside a repo. Read-only, so approval-free.
 
-import std/[json, os, osproc, sequtils, strutils, times]
+import std/[json, os, sequtils, strutils]
 import niffler/sdk
 
 let comp = newComponent("git", "0.1.0")
@@ -47,68 +47,18 @@ const
     ## Fixed flags: no lock writes on read-only ops, no ANSI colors,
     ## readable non-ASCII paths, no pager regardless of tty.
 
-proc capOutput(output: string): string =
-  let totalLen = output.len
-  if totalLen <= maxOutputBytes: return output
-  let headLen = maxOutputBytes div 2
-  let tailLen = maxOutputBytes - headLen
-  let omitted = totalLen - maxOutputBytes
-  result = output[0 ..< headLen] &
-    "\n\n[... truncated " & $omitted & " of " & $totalLen &
-    " bytes — scope with path or narrow the ref for the missing part ...]\n\n" &
-    output[totalLen - tailLen ..< totalLen]
-
-proc capLines(output: string, maxLines: int): string =
-  ## Keep the first maxLines lines; drop the tail with an exact marker.
-  if output.len == 0: return output
-  var lines = output.split('\n')
-  if lines[^1].len == 0: lines.setLen(lines.len - 1)  # trailing-newline artifact
-  if lines.len <= maxLines: return output
-  let kept = lines[0 ..< maxLines].join("\n")
-  let dropped = lines.len - maxLines
-  result = kept & "\n\n[... " & $dropped & " more line" &
-    (if dropped == 1: "" else: "s") & " — narrow the scope ...]\n"
-
-var callCounter = 0
-  ## Calls are serialized (single-threaded SDK poll loop), so a plain
-  ## counter is enough to keep temp-file names unique across calls.
-
 proc runGit(args: seq[string], timeoutMs: int): tuple[code: int, output: string] =
-  ## bash -c with every argv shell-quoted (the absolute git path, flags,
-  ## refs and paths travel byte-for-byte; the shell only joins words) and
-  ## combined output redirected to a temp file — osproc pipes deadlock
-  ## chatty children, same fix as the bash and grep components.
+  ## argv through runArgv: the absolute git path, flags, refs and paths
+  ## travel byte-for-byte (every argument quoteShell'd; the shell only
+  ## joins words) and combined output is captured to a temp file — osproc
+  ## pipes deadlock chatty children (sdk/procutil).
   if gGitPath.len == 0 or sameFile(gGitPath, getAppFilename()):
     result.code = 127
     result.output = "git is not installed on this machine (or cannot be " &
       "resolved past the git component's own binary) — install it " &
       "(e.g. `sudo apt install git`) or use bash for git operations"
     return
-  inc callCounter
-  let tmpPath = getTempDir() /
-    ("niffler-git-" & $getCurrentProcessId() & "-" & $callCounter & ".out")
-  let cmd = "( " & quoteShell(gGitPath) & " " &
-    args.mapIt(quoteShell(it)).join(" ") & " ) > " & quoteShell(tmpPath) & " 2>&1"
-  var p = startProcess("bash", args = ["-c", cmd], options = {poUsePath})
-  result.code = -1
-  let deadline = epochTime() + timeoutMs.float / 1000.0
-  while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1: break
-    sleep(50)
-  if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running(): p.kill()
-    result.code = 124
-  p.close()
-  try:
-    if fileExists(tmpPath):
-      result.output = readFile(tmpPath)
-  finally:
-    if fileExists(tmpPath):
-      try: removeFile(tmpPath)
-      except CatchableError: discard
+  runArgv(gGitPath, args, timeoutMs)
 
 proc finish(code: int, output: string, maxLines = 10_000): JsonNode =
   ## Shared result shape: git exit code + line-capped, byte-capped output;
@@ -118,7 +68,12 @@ proc finish(code: int, output: string, maxLines = 10_000): JsonNode =
     o = "[timed out]\n" & o
   if code == 128 and o.contains("not a git repository"):
     o = "[no git repository at the harness root]\n" & o
-  result = %*{"exit_code": code, "output": capOutput(capLines(o, maxLines))}
+  result = %*{"exit_code": code,
+              "output": capBytes(
+                capLines(o, maxLines, label = "lines",
+                         hint = "narrow the scope"),
+                maxOutputBytes,
+                hint = "scope with path or narrow the ref for the missing part")}
 
 proc refused(msg: string): JsonNode =
   ## Argument refused before any git process runs.
@@ -146,7 +101,7 @@ proc validAuthor(author: string): bool =
   author.len < 200 and not author.startsWith("-") and
     not author.contains('\n') and not author.contains('\r')
 
-comp.tool:
+comp.tool(%*{"timeoutMs": 45000}):
   proc git_status(path: string = ""): JsonNode =
     ## Cheap repo state check — run it whenever you are unsure what
     ## changed: before starting work, after your own edits, or to detect
@@ -169,9 +124,7 @@ comp.tool:
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, 200)
 
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 45000}
-
-comp.tool:
+comp.tool(%*{"timeoutMs": 45000}):
   proc git_diff(path: string = "", unified: int = 3, stat: bool = false): JsonNode =
     ## Diff of everything changed since the last commit (staged AND
     ## unstaged — `git diff HEAD`) with context lines. Use it to review
@@ -201,9 +154,7 @@ comp.tool:
       return %*{"exit_code": 0, "output": "[no changes since HEAD]"}
     return finish(code, output, if stat: 500 else: 10_000)
 
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 45000}
-
-comp.tool:
+comp.tool(%*{"timeoutMs": 45000}):
   proc git_log(path: string = "", max_count: int = 20, author: string = ""): JsonNode =
     ## Recent commit history, one line per commit: short hash, subject,
     ## and branch/tag decorations. Use it to see what changed recently,
@@ -232,9 +183,7 @@ comp.tool:
       return %*{"exit_code": 0, "output": "[no commits matched]"}
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 45000}
-
-comp.tool:
+comp.tool(%*{"timeoutMs": 45000}):
   proc git_show(rev: string, path: string = ""): JsonNode =
     ## Show one commit in full: metadata, message, and the complete diff
     ## (optionally limited to one path). Use it after git_log to see what
@@ -256,9 +205,7 @@ comp.tool:
     let (code, output) = runGit(args, 20_000)
     return finish(code, output)
 
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 45000}
-
-comp.tool:
+comp.tool(%*{"timeoutMs": 45000}):
   proc git_blame(path: string, start_line: int = 1, max_lines: int = 200): JsonNode =
     ## Line-by-line attribution for one file: for each line, the commit
     ## that last touched it, its author, and the line content. Use it to
@@ -278,8 +225,6 @@ comp.tool:
                            "--", path]
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, min(max(max_lines, 1), 500) + 1)
-
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 45000}
 
 resolveGit()
 comp.run()

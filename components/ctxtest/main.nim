@@ -25,7 +25,7 @@ proc toolCall(id, name: string, args: JsonNode): JsonNode =
                        "function": {"name": name,
                                     "arguments": $args}}]}
 
-comp.tool:
+comp.tool(%*{"hidden": true}):
   proc chat(messages: JsonNode = nil, tools: JsonNode = nil,
             sessionId: string = "", stream: bool = false): JsonNode =
     ## Stub LLM surface for the session runner. Scripted per session kind:
@@ -84,8 +84,6 @@ comp.tool:
     if stage == 0:
       return toolCall("t1", "ctxecho", %*{"msg": "hi"})
     return %*{"content": "nested-turn-done"}
-comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
-
 proc nestedCall(subject, tool: string, args: JsonNode, lease: string,
                 timeoutMs: int): Envelope =
   ## One request over the nested-call proxy with an explicit lease value.

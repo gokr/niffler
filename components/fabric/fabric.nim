@@ -20,11 +20,6 @@ const maxResultChars = 50_000
   ## oversized results land in var/fabric-artifacts/<run>.json (mode 0600)
   ## and the path is returned instead.
 
-proc sanitizeSessionId(s: string): string =
-  ## Mirror of the runner's subject sanitization (core/conversation.nim).
-  for c in s:
-    result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
-
 const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
                       "importc", "osproc", "natswrapper", "std/os",
                       "std/net", "std/selectors"]
@@ -162,7 +157,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
 proc storeArtifact(runId: string, value: string): string =
   ## Oversized results: mode-0600 file under var/fabric-artifacts (the one
   ## documented trusted-host exception — everything else crosses the bridge).
-  let dir = getEnv("NIF_ROOT", ".") / "var" / "fabric-artifacts"
+  let dir = rootVarDir("fabric-artifacts")
   try:
     createDir(dir)
   except CatchableError: discard
@@ -197,7 +192,7 @@ discard comp.tool("fabric", fabSchema,
     let lintMsg = lint(code)
     if lintMsg.len > 0:
       return %*{"error": lintMsg}
-    let subject = "svc.session." & sanitizeSessionId(sess) & ".tool"
+    let subject = sessionToolSubject(sess)
     let runId = newId()
     let maxCalls = toolArgs{"maxCalls"}.getInt(200)
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(240_000)

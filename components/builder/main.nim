@@ -6,7 +6,7 @@
 ## same-package .go files.
 ## The agent's next step is core.spawn {name, binary}.
 
-import std/[json, os, osproc, streams, strutils, times]
+import std/[json, os, strutils]
 import niffler/sdk
 
 proc validComponentName(name: string): bool =
@@ -21,36 +21,6 @@ proc validComponentName(name: string): bool =
     else:
       return false
   true
-
-proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
-  ## NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
-  ## returns 137, so the timeout branch would never fire — poll
-  ## peekExitCode and own the kill (exit code 124 on timeout).
-  var p = startProcess("bash", args = ["-c", cmd],
-                       options = {poUsePath, poStdErrToStdOut})
-  result.code = -1
-  let deadline = epochTime() + timeoutMs.float / 1000.0
-  while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1: break
-    sleep(50)
-  if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running(): p.kill()
-    result.code = 124
-  result.output = p.outputStream.readAll()
-  p.close()
-
-proc tail(s: string, n: int): string =
-  ## Last n bytes of s, snapped forward to a UTF-8 boundary so a multi-byte
-  ## character (CJK in compiler output, etc.) is never split into invalid
-  ## UTF-8 — a broken rune here would poison the JSON envelope downstream.
-  if s.len <= n: return s
-  var start = s.len - n
-  while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
-    inc start  # skip a continuation byte: start at the rune's first byte
-  return "…" & s[start .. ^1]
 
 proc validGoSourceName(name: string): bool =
   ## Additional builder files are deliberately flat: no path traversal,
@@ -76,7 +46,7 @@ proc validDefine(name: string): bool =
 
 let comp = newComponent("builder", "0.1.0")
 
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
   proc build(lang: string, name: string, source: string,
              files: JsonNode = nil, defines: JsonNode = nil): JsonNode =
     ## Compile a new component from source into a binary under var/bin.
@@ -100,8 +70,8 @@ comp.tool:
     ## - defines: Optional array of Nim compile defines, e.g. ["ssl"] for
     ##   HTTPS-capable httpclient — appended as -d:NAME (validated; Nim
     ##   identifier characters only)
-    let root = getEnv("NIF_ROOT", ".")
-    let srcDir = root / "var" / "build"
+    let root = rootDir()
+    let srcDir = rootVarDir("build")
     let binDir = root / "var" / "bin"
     if not validComponentName(name):
       return %*{"ok": false,
@@ -121,18 +91,18 @@ comp.tool:
           let dn = d.getStr("")
           if not validDefine(dn):
             return %*{"ok": false, "lang": lang,
-                      "error": "invalid define: " & dn.tail(64)}
+                      "error": "invalid define: " & tailBytes(dn, 64)}
           dflags.add(" -d:" & dn)
-      let (output, code) = runCmd(
+      let (code, output) = runCmd(
         "nim c --hints:off -d:release" & dflags & " --path:" &
         quoteShell(root / "sdk") &
         " -o:" & quoteShell(tmpBinary) & " " & quoteShell(srcPath))
       if code != 0:
         removeFile(tmpBinary)
-        return %*{"ok": false, "lang": lang, "error": tail(output, 2000)}
+        return %*{"ok": false, "lang": lang, "error": tailBytes(output, 2000)}
       moveFile(tmpBinary, binary)
       return %*{"ok": true, "lang": lang, "name": name,
-                "binary": binary, "log": tail(output, 500)}
+                "binary": binary, "log": tailBytes(output, 500)}
     of "go":
       let dir = srcDir / name
       if dirExists(dir): removeDir(dir)
@@ -165,16 +135,16 @@ comp.tool:
           "replace niffler.dev/sdk => " & root & "/sdk/go\n")
       let binary = binDir / name
       let tmpBinary = binDir / (name & ".tmp-" & $getCurrentProcessId())
-      let (output, code) = runCmd(
+      let (code, output) = runCmd(
         "cd " & quoteShell(dir) & " && go mod tidy && go build -o " &
         quoteShell(tmpBinary) & " .",
         300000)
       if code != 0:
         removeFile(tmpBinary)
-        return %*{"ok": false, "lang": lang, "error": tail(output, 2000)}
+        return %*{"ok": false, "lang": lang, "error": tailBytes(output, 2000)}
       moveFile(tmpBinary, binary)
       return %*{"ok": true, "lang": lang, "name": name,
-                "binary": binary, "log": tail(output, 500)}
+                "binary": binary, "log": tailBytes(output, 500)}
     of "ts":
       if findExe("node").len == 0 or findExe("npm").len == 0:
         return %*{"ok": false, "lang": lang,
@@ -199,17 +169,17 @@ comp.tool:
       # networks usually reach npm mirrors fine.
       let registry = getEnv("NIF_NPM_REGISTRY")
       let registryFlag = if registry.len > 0: " --registry " & quoteShell(registry) else: ""
-      let (io, ic) = runCmd(
+      let (ic, io) = runCmd(
         "cd " & quoteShell(dir) &
         " && npm install" & registryFlag & " --no-audit --no-fund --loglevel=error",
         300000)
       if ic != 0:
-        return %*{"ok": false, "lang": lang, "error": tail(io, 2000)}
-      let (co, cc) = runCmd("cd " & quoteShell(dir) &
+        return %*{"ok": false, "lang": lang, "error": tailBytes(io, 2000)}
+      let (cc, co) = runCmd("cd " & quoteShell(dir) &
                             " && ./node_modules/.bin/tsc",
                             120000)
       if cc != 0:
-        return %*{"ok": false, "lang": lang, "error": tail(co, 2000)}
+        return %*{"ok": false, "lang": lang, "error": tailBytes(co, 2000)}
       if not fileExists(dir / "dist" / "main.js"):
         return %*{"ok": false, "lang": lang,
                   "error": "tsc produced no dist/main.js"}
@@ -225,23 +195,18 @@ comp.tool:
       moveFile(tmpBinary, binary)
       return %*{"ok": true, "lang": lang, "name": name,
                 "binary": binary,
-                "log": tail(io & "\n" & co, 500)}
+                "log": tailBytes(io & "\n" & co, 500)}
     else:
       return %*{"ok": false, "error": "unsupported lang '" & lang &
                 "' (supported: nim, go, ts)"}
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 300000, "onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc info(): JsonNode =
     ## Info about the builder and SDK locations
-    let root = getEnv("NIF_ROOT", ".")
+    let root = rootDir()
     return %*{"langs": ["nim", "go", "ts"], "sdk": root / "sdk",
               "sdkGo": root / "sdk" / "go", "sdkTs": root / "sdk" / "ts",
               "naming": "tool names are globally unique — prefix plugin tools with the component name (stocks_quote); bare semantic names are reserved for shipped core components",
               "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then discover and invoke core.spawn {name, binary}"}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.run()

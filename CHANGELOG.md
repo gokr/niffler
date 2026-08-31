@@ -20,6 +20,22 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `errorCode`. Silent by default, approval-gated follow, best-effort
   scheduling (the working session never waits); `tests/t_expert.nim`
   proves the loop with a scripted mock llm.
+
+- **SDK result-convention helpers** — `okResult(extra)` / `errResult(msg, code, extra)`
+  build the canonical `{ok, error}` tool-result shape (mirrored as
+  `OK`/`Err`/`ErrCode` in the Go SDK and `okResult`/`errResult` in the TS SDK),
+  and `comp.requestOk(...)` turns an `ok:false` reply into an exception so
+  callers stop hand-rolling ok-flag chains. Components migrated off the
+  hand-rolled `%*{"ok": false, "error": ...}` literals.
+- **SDK session-subject + path helpers** — `sanitizeSessionId`,
+  `sessionCallSubject`/`sessionSteerSubject`/`sessionToolSubject`,
+  `resolveNatsUrl`, `rootDir`/`rootVarDir` (Nim: pure `sdk/subjects.nim`,
+  shared by core like the envelope; Go `wire.go`, TS `wire.ts`). The
+  sanitize-once rule now has a single implementation per language — previously
+  copied in core, agent and fabric.
+- **`comp.onDrain(handler)`** (Nim/Go/TS) — register cleanup callbacks for
+  `ev.sys.drain` without hand-wiring an event subscription (store closes its
+  barrel-db with it).
 - **Subscription OAuth logins (ChatGPT Plus/Pro, Claude Pro/Max)** — the
   same PKCE flows Pi and opencode use: `provider_oauth_start` returns the
   authorization URL (browser login via fixed localhost callback ports, or
@@ -354,6 +370,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`tool` macro accepts an x-harness argument** — `comp.tool(%*{"approval":
+  "always", "timeoutMs": 60000}): proc ...` replaces the ~45
+  `comp.tools[^1].schema["x-harness"] = ...` post-registration pokes; the
+  low-level `comp.tool(name, schema, handler, xharness)` form gained the same
+  optional parameter.
+- **`sdk/procutil.nim`** — one implementation of the process-with-timeout
+  runner (`runCmd`, `runArgv`) with the temp-file capture that avoids osproc
+  pipe deadlocks and the peekExitCode poll-kill (osproc's `waitForExit(timeout)`
+  SIGKILLs and returns 137 itself), plus output capping (`capBytes`,
+  `capLines`, `tailBytes` with UTF-8 boundary snapping). bash, grep, git,
+  builder, plugins and skills now share it; skills' local `tail` copy had
+  silently lost the UTF-8 snap.
 - **edit absorbs read + write; hashline-edit moved to a plugin** — the
   whole file surface lives in one component; the write component is gone
   (t_edit covers the merged tools) and hashline anchors ship as the

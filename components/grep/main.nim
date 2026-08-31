@@ -6,10 +6,11 @@
 ## express (and for paths whose ignore rules you must bypass).
 ##
 ## The pattern travels as an argv to rg, never through an unquoted shell:
-## every argument is quoteShell'd, so quotes, backslashes and spaces need
-## no escaping by the model — the main reliability win over bash one-liners.
+## runArgv quoteShell's every argument, so quotes, backslashes and spaces
+## need no escaping by the model — the main reliability win over bash
+## one-liners.
 
-import std/[json, os, osproc, sequtils, strutils, times]
+import std/[json, os, strutils]
 import niffler/sdk
 
 let comp = newComponent("grep", "0.1.0")
@@ -18,69 +19,14 @@ const maxOutputBytes = 100_000
   ## Line-capped already (max_results, default 200 lines), so the byte cap
   ## only fires on pathological single lines (minified bundles).
 
-proc capOutput(output: string): string =
-  let totalLen = output.len
-  if totalLen <= maxOutputBytes: return output
-  let headLen = maxOutputBytes div 2
-  let tailLen = maxOutputBytes - headLen
-  let omitted = totalLen - maxOutputBytes
-  result = output[0 ..< headLen] &
-    "\n\n[... truncated " & $omitted & " of " & $totalLen &
-    " bytes — narrow pattern/path/glob for the missing part ...]\n\n" &
-    output[totalLen - tailLen ..< totalLen]
-
-proc capLines(output: string, maxResults: int): string =
-  ## Keep the first maxResults lines; drop the tail with an exact marker.
-  if output.len == 0: return output
-  var lines = output.split('\n')
-  if lines[^1].len == 0: lines.setLen(lines.len - 1)  # trailing-newline artifact
-  if lines.len <= maxResults: return output
-  let kept = lines[0 ..< maxResults].join("\n")
-  let dropped = lines.len - maxResults
-  result = kept & "\n\n[... " & $dropped & " more result line" &
-    (if dropped == 1: "" else: "s") &
-    " — raise max_results or narrow pattern/path/glob ...]\n"
-
-var callCounter = 0
-  ## Calls are serialized (single-threaded SDK poll loop), so a plain
-  ## counter is enough to keep temp-file names unique across calls.
-
 proc runRg(args: seq[string], timeoutMs: int): tuple[code: int, output: string] =
-  ## bash -c with every rg argv shell-quoted (the pattern reaches rg
-  ## byte-for-byte; the shell only joins words) and combined output
-  ## redirected to a temp file — osproc pipes deadlock chatty children,
-  ## same fix as the bash component.
   if findExe("rg").len == 0:
     result.code = 127
     result.output = "ripgrep (rg) is not installed on this machine — " &
       "install it (e.g. `sudo apt install ripgrep`) or fall back to " &
       "bash: grep -rn <pattern> <path>"
     return
-  inc callCounter
-  let tmpPath = getTempDir() /
-    ("niffler-grep-" & $getCurrentProcessId() & "-" & $callCounter & ".out")
-  let cmd = "( rg " & args.mapIt(quoteShell(it)).join(" ") &
-    " ) > " & quoteShell(tmpPath) & " 2>&1"
-  var p = startProcess("bash", args = ["-c", cmd], options = {poUsePath})
-  result.code = -1
-  let deadline = epochTime() + timeoutMs.float / 1000.0
-  while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1: break
-    sleep(50)
-  if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running(): p.kill()
-    result.code = 124
-  p.close()
-  try:
-    if fileExists(tmpPath):
-      result.output = readFile(tmpPath)
-  finally:
-    if fileExists(tmpPath):
-      try: removeFile(tmpPath)
-      except CatchableError: discard
+  runArgv("rg", args, timeoutMs)
 
 proc finish(code: int, output: string, maxResults: int): JsonNode =
   ## Shared result shape: rg exit code (0 matches / 1 none / 2 error / 124
@@ -91,9 +37,13 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
   if code == 1 and o.strip().len == 0:
     o = "[no matches]"
   result = %*{"exit_code": code,
-              "output": capOutput(capLines(o, maxResults))}
+              "output": capBytes(
+                capLines(o, maxResults,
+                         hint = "raise max_results or narrow pattern/path/glob"),
+                maxOutputBytes,
+                hint = "narrow pattern/path/glob for the missing part")}
 
-comp.tool:
+comp.tool(%*{"timeoutMs": 60000}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
@@ -136,9 +86,7 @@ comp.tool:
     let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
     return finish(code, output, min(max(1, max_results), 10_000))
 
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 60000}
-
-comp.tool:
+comp.tool(%*{"timeoutMs": 60000}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
              max_results: int = 500, timeoutMs: int = 30000): JsonNode =
     ## List repository files, sorted, one path per line — the fastest way
@@ -164,7 +112,5 @@ comp.tool:
     if code == 0 and output.strip().len == 0:
       return %*{"exit_code": 0, "output": "[no files]"}
     return finish(code, output, min(max(1, max_results), 10_000))
-
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 60000}
 
 comp.run()

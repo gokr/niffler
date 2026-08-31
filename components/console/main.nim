@@ -14,6 +14,7 @@ import std/[json, os, strutils, times]
 import natswrapper
 import envelope
 import dotenv
+import subjects
 when defined(posix):
   import std/posix
 
@@ -56,18 +57,9 @@ proc render(subject: string, data: string) =
 
 proc resolveBusUrl(): string =
   ## NIF_NATS_URL wins; otherwise follow the harness's discovery file so a
-  ## randomly-port bus still answers, defaulting to the canonical 4222.
-  if getEnv("NIF_NATS_URL").len > 0:
-    return getEnv("NIF_NATS_URL")
-  let discovery = getEnv("NIF_ROOT", ".") / "var" / "nats-url"
-  try:
-    if fileExists(discovery):
-      let found = readFile(discovery).strip()
-      if found.len > 0:
-        return found
-  except CatchableError:
-    discard
-  "nats://127.0.0.1:4222"
+  ## randomly-port bus still answers, defaulting to the canonical 4222
+  ## (SDK's resolveNatsUrl — the same order every client follows).
+  resolveNatsUrl()
 
 proc followBus() =
   ## Connect, announce, and follow the bus until the connection is lost,
@@ -108,7 +100,7 @@ proc followBus() =
       nc.close()
       return
 
-loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
+loadDotEnv(".env", rootDir() / ".env")
 while true:
   try:
     followBus()

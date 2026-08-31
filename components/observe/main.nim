@@ -10,7 +10,7 @@ import std/[algorithm, base64, httpclient, json, monotimes, os, re, sequtils,
 import niffler/sdk
 import ../../sdk/dotenv
 
-loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
+loadDotEnv(".env", rootDir() / ".env")
 
 const
   DefaultRingMessages = 2000
@@ -77,7 +77,7 @@ proc configInt(name: string, default, minimum, maximum: int): int =
     raise newException(ValueError, name & " must be in " & $minimum & ".." &
       $maximum & ", got " & $result)
 
-let root = getEnv("NIF_ROOT", ".")
+let root = rootDir()
 let ringCap = configInt("NIF_OBSERVE_RING", DefaultRingMessages, 1, 10_000)
 let ringByteCap = configInt("NIF_OBSERVE_RING_BYTES", DefaultRingBytes, 65_536,
                             104_857_600)
@@ -304,7 +304,7 @@ proc serviceSubject(name: string): string =
     return "svc.session." & name[8 .. ^1] & ".call"
   "svc." & name & ".call"
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_subjects(): JsonNode =
     ## Discover components, service subjects, known event patterns, and the
     ## most frequently observed concrete subjects. Use this before starting a
@@ -368,10 +368,7 @@ comp.tool:
        "observedSubjectsTruncated": observedTruncated,
        "droppedSubjectNames": droppedSubjects,
        "responseBytes": responseBytes}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"approval": "always", "onDemand": true}):
   proc observe_send(subject: string, payload: JsonNode = nil): JsonNode =
     ## Publish one event envelope. Use this only to exercise an event-driven
     ## behavior; it cannot call tools or spoof registrations. Core asks for
@@ -384,12 +381,9 @@ comp.tool:
     if not (subject.startsWith("ev.") or subject.startsWith("llm.cancel.")):
       raise newException(ValueError, "observe_send only publishes ev.* or llm.cancel.* events")
     comp.emit(subject, if payload == nil: newJObject() else: payload)
-    %*{"ok": true, "subject": subject}
+    okResult(%*{"subject": subject})
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "onDemand": true}
-
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 35_000, "onDemand": true}):
   proc observe_request(subject: string, tool: string,
                        args: JsonNode = nil, timeoutMs: int = 5000): JsonNode =
     ## Send a request/reply call to a concrete service subject for diagnosis.
@@ -419,12 +413,9 @@ comp.tool:
       return %*{"ok": false, "error": reply.error, "elapsedMs": elapsedMs}
     let valueBytes = if reply.args == nil: 4 else: ($reply.args).len
     if valueBytes > ResponseItemBudget:
-      return %*{"ok": true, "valueTruncated": true,
-                "valueBytes": valueBytes, "elapsedMs": elapsedMs}
-    %*{"ok": true, "value": reply.args, "elapsedMs": elapsedMs}
-
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 35_000, "onDemand": true}
+      return okResult(%*{"valueTruncated": true,
+                         "valueBytes": valueBytes, "elapsedMs": elapsedMs})
+    okResult(%*{"value": reply.args, "elapsedMs": elapsedMs})
 
 proc newProbe(kind: ProbeKind, subject, label: string, cap: int): Probe =
   if probes.len >= maxProbes:
@@ -435,7 +426,7 @@ proc newProbe(kind: ProbeKind, subject, label: string, cap: int): Probe =
                  pending: initTable[string, PendingTrace](),
                  startedAt: epochTime())
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_listen(subject: string, regex: string = "", label: string = "",
                       cap: int = 500): JsonNode =
     ## Start a bounded recording probe for a NATS subject pattern. Optional
@@ -459,14 +450,11 @@ comp.tool:
         pr.regex = re(regex)
         pr.hasRegex = true
       except RegexError:
-        return %*{"error": "invalid regex: " & regex}
+        return errResult("invalid regex: " & regex)
     probes[pr.id] = pr
     %*{"probeId": pr.id, "subject": subject, "listening": true,
        "cap": pr.cap}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_trace(component: string, toolRegex: string = "",
                      cap: int = 500): JsonNode =
     ## Trace calls to svc.<component>.call and one scoped suffix
@@ -487,14 +475,11 @@ comp.tool:
         pr.toolRegex = re(toolRegex)
         pr.hasToolRegex = true
       except RegexError:
-        return %*{"error": "invalid toolRegex: " & toolRegex}
+        return errResult("invalid toolRegex: " & toolRegex)
     probes[pr.id] = pr
     %*{"probeId": pr.id, "subject": pr.subject, "listening": true,
        "cap": pr.cap}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_probes(): JsonNode =
     ## List active and stopped probes with their bounds and pending trace
     ## counts. Remove stopped probes after exporting anything you need.
@@ -516,37 +501,28 @@ comp.tool:
     %*{"items": items, "count": items.len, "total": probes.len,
        "max": maxProbes, "truncated": truncated,
        "responseBytes": responseBytes}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_stop(probeId: string): JsonNode =
     ## Stop recording into a probe while keeping its entries queryable.
     ## - probeId: id returned by observe_listen or observe_trace
     if probeId.len > 128:
-      return %*{"error": "invalid probe id"}
+      return errResult("invalid probe id")
     let pr = probes.getOrDefault(probeId)
     if pr == nil:
-      return %*{"error": "no such probe"}
+      return errResult("no such probe")
     pr.stopped = true
     pr.pending.clear()
     %*{"stopped": true, "probeId": probeId, "captured": pr.entries.len}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_remove(probeId: string): JsonNode =
     ## Delete a probe and release its captured memory.
     ## - probeId: id returned by observe_listen or observe_trace
     if probeId.len > 128 or not probes.hasKey(probeId):
-      return %*{"error": "no such probe"}
+      return errResult("no such probe")
     let captured = probes[probeId].entries.len
     probes.del(probeId)
     %*{"removed": true, "probeId": probeId, "captured": captured}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_events(probeId: string = "", limit: int = 100,
                       since: float = 0.0, until: float = 0.0,
                       kind: string = "", component: string = "",
@@ -562,18 +538,18 @@ comp.tool:
     ## - subject: exact concrete subject
     ## - regex: regex over serialized wire JSON
     if probeId.len > 128:
-      return %*{"error": "invalid probe id"}
+      return errResult("invalid probe id")
     if kind.len > 16 or (kind.len > 0 and
        kind notin ["call", "result", "event", "error"]):
-      return %*{"error": "invalid kind"}
+      return errResult("invalid kind")
     if component.len > MaxComponentBytes:
-      return %*{"error": "component filter is too long"}
+      return errResult("component filter is too long")
     if subject.len > MaxSubjectBytes:
-      return %*{"error": "subject filter is too long"}
+      return errResult("subject filter is too long")
     if regex.len > MaxRegexBytes:
-      return %*{"error": "regex is too long"}
+      return errResult("regex is too long")
     if since > 0 and until > 0 and since > until:
-      return %*{"error": "since must be <= until"}
+      return errResult("since must be <= until")
     var rx: Regex
     var hasRegex = false
     if regex.len > 0:
@@ -581,14 +557,14 @@ comp.tool:
         rx = re(regex)
         hasRegex = true
       except RegexError:
-        return %*{"error": "invalid regex: " & regex}
+        return errResult("invalid regex: " & regex)
     let resultLimit = min(max(limit, 1), 500)
     var source: seq[Captured] = @[]
     var sourceName = "ring"
     if probeId.len > 0:
       let pr = probes.getOrDefault(probeId)
       if pr == nil:
-        return %*{"error": "no such probe"}
+        return errResult("no such probe")
       sourceName = "probe " & probeId
       for entry in pr.entries:
         source.add(Captured(at: entry{"at"}.getFloat(0.0),
@@ -622,10 +598,7 @@ comp.tool:
         responseBytes += itemBytes
     %*{"items": items, "count": items.len, "source": sourceName,
        "truncated": truncated, "responseBytes": responseBytes}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc observe_logs(level: string = "", component: string = "",
                     regex: string = "", since: float = 0.0,
                     limit: int = 100): JsonNode =
@@ -638,11 +611,11 @@ comp.tool:
     ## - limit: max items (default 100, cap 500)
     if level.len > 16 or (level.len > 0 and
        level notin ["debug", "info", "warn", "error"]):
-      return %*{"error": "invalid level"}
+      return errResult("invalid level")
     if component.len > MaxComponentBytes:
-      return %*{"error": "component filter is too long"}
+      return errResult("component filter is too long")
     if regex.len > MaxRegexBytes:
-      return %*{"error": "regex is too long"}
+      return errResult("regex is too long")
     var rx: Regex
     var hasRegex = false
     if regex.len > 0:
@@ -650,7 +623,7 @@ comp.tool:
         rx = re(regex)
         hasRegex = true
       except RegexError:
-        return %*{"error": "invalid regex: " & regex}
+        return errResult("invalid regex: " & regex)
     let resultLimit = min(max(limit, 1), 500)
     var items = newJArray()
     var responseBytes = 0
@@ -686,9 +659,6 @@ comp.tool:
         responseBytes += itemBytes
     %*{"items": items, "count": items.len, "truncated": truncated,
        "responseBytes": responseBytes}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
 proc prepareCapture(path: string, requiredBytes: int) =
   if requiredBytes > captureByteCap:
     raise newException(IOError, "probe exceeds capture byte quota")
@@ -714,17 +684,17 @@ proc prepareCapture(path: string, requiredBytes: int) =
      totalBytes + requiredBytes.int64 > captureByteCap.int64:
     raise newException(IOError, "capture directory quota is exhausted")
 
-comp.tool:
+comp.tool(%*{"approval": "always", "onDemand": true}):
   proc observe_dump(probeId: string): JsonNode =
     ## Export a probe to NIF_OBSERVE_CAPTURE_DIR (default var/captures).
     ## The generated filename is confined to that directory; arbitrary paths
     ## are intentionally unsupported.
     ## - probeId: id returned by observe_listen or observe_trace
     if probeId.len > 128:
-      return %*{"error": "invalid probe id"}
+      return errResult("invalid probe id")
     let pr = probes.getOrDefault(probeId)
     if pr == nil:
-      return %*{"error": "no such probe"}
+      return errResult("no such probe")
     createDir(captureDir)
     try:
       setFilePermissions(captureDir, {fpUserRead, fpUserWrite, fpUserExec})
@@ -751,10 +721,7 @@ comp.tool:
     %*{"path": path, "lines": pr.entries.len, "bytes": requiredBytes,
        "captureByteCap": captureByteCap}
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "onDemand": true}
-
-comp.tool:
+comp.tool(%*{"approval": "always", "onDemand": true}):
   proc observe_monitor(): JsonNode =
     ## Read nats-server HTTP monitoring counts and the most-subscribed subject
     ## patterns. Core writes var/nats-monitor-url only for a bus it spawned;
@@ -765,7 +732,7 @@ comp.tool:
       if fileExists(monitorFile):
         url = readFile(monitorFile).strip()
     if url.len == 0:
-      return %*{"error": "no NATS monitoring endpoint; set NIF_OBSERVE_MONITOR_URL or let core spawn the bus"}
+      return errResult("no NATS monitoring endpoint; set NIF_OBSERVE_MONITOR_URL or let core spawn the bus")
     try:
       proc fetch(path: string): JsonNode =
         var client = newHttpClient()
@@ -781,7 +748,7 @@ comp.tool:
       let subscriptions = fetch("/subsz?subs=1&limit=1024")
       let list = subscriptions{"subscriptions_list"}
       if list == nil or list.kind != JArray:
-        return %*{"error": "monitor " & url & ": /subsz omitted subscriptions_list"}
+        return errResult("monitor " & url & ": /subsz omitted subscriptions_list")
       var counts = initCountTable[string]()
       for item in list:
         if item.kind != JObject: continue
@@ -801,7 +768,7 @@ comp.tool:
       let connectionCount = connections{"num_connections"}
       let subscriptionCount = subscriptions{"num_subscriptions"}
       if connectionCount == nil or subscriptionCount == nil:
-        return %*{"error": "monitor " & url & ": count fields missing"}
+        return errResult("monitor " & url & ": count fields missing")
       return %*{"connections": connectionCount.getInt(0),
                 "subscriptions": subscriptionCount.getInt(0),
                 "mostSubscribed": mostSubscribed,
@@ -809,8 +776,5 @@ comp.tool:
                 "subscriptionDetailsTruncated":
                   subscriptionCount.getInt(0) > list.len}
     except CatchableError as e:
-      return %*{"error": "monitor " & url & ": " & e.msg}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
+      return errResult("monitor " & url & ": " & e.msg)
 comp.run()

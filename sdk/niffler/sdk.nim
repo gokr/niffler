@@ -1,7 +1,13 @@
 ## Niffler component SDK (Nim)
 ##
-## ~250 lines. Ports in other languages (sdk/go) mirror this file 1:1 — the
-## envelope (sdk/envelope.nim + docs/WIRE.md) is the artifact, SDKs follow.
+## The core component surface lives here; companion modules keep concerns
+## separable and core-importable:
+##   sdk/envelope.nim     pure wire codec (imported by core directly)
+##   sdk/subjects.nim     pure wire helpers: session subjects, bus discovery,
+##                        root paths (imported by core directly)
+##   sdk/procutil.nim     shell-out + output capping utilities (components)
+## Ports in other languages (sdk/go, sdk/ts) mirror this surface 1:1 —
+## the envelope (sdk/envelope.nim + docs/WIRE.md) is the artifact, SDKs follow.
 ##
 ## Surface:
 ##   let comp = newComponent("greet", "0.1.0")
@@ -10,8 +16,14 @@
 ##       ## Greet someone
 ##       ## - name: the name to greet
 ##       %*{"greeting": "Hello, " & name}
+##   comp.tool(%*{"onDemand": true}):               # x-harness schema ext
+##     proc discover(): JsonNode = newJArray()
 ##   comp.run()                     # register, serve calls, drain on signal
 ##   inside a handler: c.emit("ev.x", %*{}), c.request("llm-openai", "chat", ...)
+##   result conventions: okResult(extra), errResult(msg, code, extra),
+##   c.requestOk(...) raises on {"ok": false} replies; c.onDrain(h) cleanup;
+##   shell-outs: runCmd/runArgv, output caps capBytes/capLines/tailBytes;
+##   paths: rootDir()/rootVarDir(name).
 ##
 ## Implementation notes:
 ## - No cdecl callbacks, no threads: subscriptions are polled with
@@ -26,8 +38,13 @@ import std/macros
 import natswrapper
 import ../envelope
 import ../dotenv
+import ../subjects
+import procutil
 
 export envelope
+export subjects  # session subject builders (wire spec, docs/WIRE.md)
+export procutil  # runCmd/runArgv/capBytes/capLines/tailBytes
+export dotenv    # standalone clients (cli, console) import niffler/sdk only
 export json  # components write %*{"..."} and JsonNode without their own import
 
 type
@@ -59,9 +76,14 @@ type
     slashCommands*: seq[JsonNode]  ## declared slash command specs (docs/WIRE.md)
     eventHandlers*: seq[tuple[pattern: string, handler: EventHandler]]
     taps*: seq[tuple[pattern: string, handler: TapHandler]]
+    drainHandlers: seq[DrainHandler]
     nc*: NatsConnection
     bindings: seq[SubscriptionBinding]
     shuttingDown*: bool
+
+  DrainHandler* = proc(c: Component)
+    ## Cleanup callback registered with onDrain; invoked (on the main
+    ## thread, like every handler) when the component shuts down.
 
 var libOpened = false
 
@@ -76,8 +98,15 @@ proc newComponent*(name, version: string): Component =
   ensureLib()
   result = Component(name: name, version: version)
 
-proc tool*(c: Component, name: string, schema: JsonNode, handler: ToolHandler): Component =
-  c.tools.add(Tool(name: name, schema: schema, handler: handler))
+proc tool*(c: Component, name: string, schema: JsonNode,
+           handler: ToolHandler, xharness: JsonNode = nil): Component =
+  ## Low-level registration (the `comp.tool:` macro wraps this). xharness
+  ## is the optional x-harness schema extension (docs/WIRE.md).
+  var s = schema
+  if xharness != nil:
+    s = schema.copy()
+    s["x-harness"] = xharness
+  c.tools.add(Tool(name: name, schema: s, handler: handler))
   return c
 
 proc registerTool*(c: Component, name: string, schemaJson: string,
@@ -119,6 +148,33 @@ proc emit*(c: Component, subject: string, payload: JsonNode) =
   let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: payload)
   c.nc.publish(subject, env.encode())
 
+# ---------------------------------------------------------------------------
+# Result conventions — the {ok, error} shape of tool results.
+#
+# Tools that report success/failure inside the result JSON (rather than
+# raising, which becomes a bus-level error envelope) use one canonical
+# shape so the LLM and component callers never hand-roll it:
+#   success → {"ok": true, ...extra}
+#   failure → {"ok": false, "error": msg, "code": code?, ...extra}
+
+proc mergeExtra(result: JsonNode, extra: JsonNode) =
+  if extra != nil and extra.kind == JObject:
+    for key, val in extra:
+      result[key] = val
+
+proc okResult*(extra: JsonNode = nil): JsonNode =
+  ## Canonical success tool result: {"ok": true} merged with extra fields.
+  result = %*{"ok": true}
+  mergeExtra(result, extra)
+
+proc errResult*(msg: string, code = "", extra: JsonNode = nil): JsonNode =
+  ## Canonical failure tool result: {"ok": false, "error": msg}, plus the
+  ## optional machine-readable code (e.g. "not-found", "rev-conflict")
+  ## and extra fields.
+  result = %*{"ok": false, "error": msg}
+  if code.len > 0: result["code"] = %code
+  mergeExtra(result, extra)
+
 proc messageData(msg: ptr natsMsg): string =
   let data = natsMsg_GetData(msg)
   let length = natsMsg_GetDataLength(msg).int
@@ -150,6 +206,24 @@ proc request*(c: Component, componentName, toolName: string, args: JsonNode,
   if reply.kind != ekResult:
     raise newException(IOError, "request " & subject & ": expected result envelope")
   return reply.args
+
+proc requestOk*(c: Component, componentName, toolName: string, args: JsonNode,
+                timeoutMs: int = 5000): JsonNode =
+  ## request() plus the {ok, error} result convention: raises when the
+  ## reply carries ok:false (its "error" field becomes the message), so
+  ## callers stop writing `if r{"ok"}.getBool()` chains. Replies without
+  ## an "ok" field pass through unchanged.
+  result = c.request(componentName, toolName, args, timeoutMs)
+  if result.hasKey("ok") and not result{"ok"}.getBool(false):
+    raise newException(IOError,
+      result{"error"}.getStr("tool call failed"))
+
+proc onDrain*(c: Component, handler: DrainHandler): Component =
+  ## Register a cleanup callback (e.g. close a database) invoked when the
+  ## component receives ev.sys.drain — its authorized orderly shutdown
+  ## event. Chainable like tool/on/tap.
+  c.drainHandlers.add(handler)
+  return c
 
 when defined(posix):
   import std/posix
@@ -273,18 +347,6 @@ proc interactive*(c: Component): Component =
   ## interactive client is registered (and exits when the last one departs).
   c.client = true
   return c
-
-proc resolveNatsUrl*(root = ""): string =
-  ## Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
-  ## the well-known local default.
-  result = getEnv("NIF_NATS_URL")
-  if result.len > 0: return
-  let r = if root.len > 0: root else: getEnv("NIF_ROOT", ".")
-  let disc = r / "var" / "nats-url"
-  if fileExists(disc):
-    let u = readFile(disc).strip()
-    if u.len > 0: return u
-  return "nats://127.0.0.1:4222"
 
 proc coreAnswers*(url: string, timeoutMs = 500): bool =
   ## Is a live core answering svc.core.call on this bus?
@@ -445,6 +507,11 @@ proc pumpTaps(c: Component, maxMessages: int): int =
       break
 
 proc drainHandler(c: Component, subject: string, payload: JsonNode) =
+  for h in c.drainHandlers:
+    try:
+      h(c)
+    except CatchableError as e:
+      stderr.writeLine(c.name & ": drain handler failed: " & e.msg)
   gShutdown = true
 
 proc run*(c: Component) =
@@ -522,6 +589,12 @@ proc run*(c: Component) =
 #       ## Greet someone
 #       ## - name: the name to greet
 #       %*{"greeting": "Hello, " & name}
+#
+# An optional xharness argument carries the schema's x-harness
+# extension (docs/WIRE.md) — no post-registration schema poking:
+#
+#   comp.tool(%*{"approval": "always", "timeoutMs": 60000}):
+#     proc bash(command: string): JsonNode = ...
 #
 # Doc comments: first line = tool description, "- param: text" = parameter
 # descriptions. Params without defaults are required. Supported types:
@@ -654,8 +727,10 @@ proc argJsonD*(args: JsonNode, name: string, default: JsonNode): JsonNode =
   if v == nil or v.kind == JNull: return default
   v
 
-macro tool*(c: untyped, procDef: untyped): untyped =
-  var procDef = procDef
+proc toolImpl(c, procDefArg, xharness: NimNode): NimNode =
+  ## Shared body of the two `tool` macro overloads (block form and
+  ## x-harness form). All nodes are untyped macro AST.
+  var procDef = procDefArg
   if procDef.kind == nnkStmtList:
     # `comp.tool:` block form — the proc def sits inside the statement list
     for stmt in procDef:
@@ -755,9 +830,34 @@ macro tool*(c: untyped, procDef: untyped): untyped =
      newIdentDefs(handlerArgs, bindSym("JsonNode"))],
     body,
     nnkProcDef)
-  result = newStmtList(
-    procDef,
-    handler,
-    nnkDiscardStmt.newTree(
+  var registerStmt: NimNode
+  if xharness.kind == nnkNilLit:
+    registerStmt = nnkDiscardStmt.newTree(
       newCall(ident("registerTool"), c, newLit(procName),
-              newLit($schema), handlerName)))
+              newLit($schema), handlerName))
+  else:
+    # x-harness extension (docs/WIRE.md): evaluate the caller's JsonNode
+    # expression at runtime and merge it into the schema before registering
+    let schemaSym = genSym(nskLet, "toolSchema")
+    registerStmt = newStmtList(
+      newLetStmt(schemaSym, newCall(ident("parseJson"), newLit($schema))),
+      newAssignment(
+        nnkBracketExpr.newTree(schemaSym, newLit("x-harness")),
+        xharness),
+      nnkDiscardStmt.newTree(
+        newCall(ident("registerTool"), c, newLit(procName),
+                newCall(ident("$"), schemaSym), handlerName)))
+  result = newStmtList(procDef, handler, registerStmt)
+
+macro tool*(c: untyped, procDef: untyped): untyped =
+  ## Register a tool from a proc definition (block form):
+  ##   comp.tool:
+  ##     proc greet(name: string): JsonNode = %*{"greeting": "Hi " & name}
+  toolImpl(c, procDef, newNilLit())
+
+macro tool*(c: untyped, xharness: untyped, procDef: untyped): untyped =
+  ## Register a tool from a proc definition, with the schema's x-harness
+  ## extension (docs/WIRE.md) given as a JsonNode expression:
+  ##   comp.tool(%*{"approval": "always", "timeoutMs": 60000}):
+  ##     proc bash(command: string): JsonNode = ...
+  toolImpl(c, procDef, xharness)

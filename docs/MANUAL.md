@@ -881,7 +881,7 @@ Minimal Nim source component:
 import niffler/sdk
 
 let comp = newComponent("my-models", "0.1.0")
-comp.tool:
+comp.tool(%*{"hidden": true}):
   proc my_models_source(version: int = 1): JsonNode =
     ## Add or correct model catalog data for My Provider.
     ## - version: models source protocol version
@@ -907,7 +907,6 @@ comp.tool:
     }}
 
 comp.tools[^1].schema["x-models-source"] = %*{"version": 1, "priority": 200}
-comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
 comp.run()
 ```
 
