@@ -1,0 +1,2 @@
+{ "id": "t05-todostore", "title": "Implement TodoStore (Node)", "language": "javascript",
+  "protected": ["test.sh", "tests/**", "package.json", "README.md"] }

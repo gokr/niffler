@@ -1,0 +1,49 @@
+{
+  "$comment": [
+    "Harness benchmark matrix. API keys are NEVER stored here: each entry's",
+    "apiKeyEnv names an environment variable that bench/lib/keys.mjs fills in",
+    "from your local key stores (env var > niffler .env > opencode auth.json).",
+    "Model ids must exist on the given endpoints; see bench/README.md."
+  ],
+  "models": {
+    "deepseek-v4-flash": {
+      "label": "DeepSeek V4 Flash",
+      "niffler": {
+        "baseUrl": "https://api.deepseek.com/v1",
+        "model": "deepseek-v4-flash",
+        "apiKeyEnv": "DEEPSEEK_API_KEY"
+      },
+      "pi": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "apiKeyEnv": "DEEPSEEK_API_KEY"
+      },
+      "opencode": {
+        "model": "deepseek/deepseek-v4-flash"
+      }
+    },
+    "glm-5.3-flash": {
+      "label": "GLM-5.3-Flash",
+      "niffler": {
+        "baseUrl": "https://api.llmgateway.io/v1",
+        "model": "glm-5.3-flash",
+        "apiKeyEnv": "LLMGATEWAY_API_KEY"
+      },
+      "pi": {
+        "provider": "llmgateway",
+        "model": "glm-5.3-flash",
+        "apiKeyEnv": "LLMGATEWAY_API_KEY"
+      },
+      "opencode": {
+        "model": "llmgateway/glm-5.3-flash"
+      }
+    }
+  },
+  "defaults": {
+    "rounds": 6,
+    "taskTimeoutMin": 25,
+    "turnTimeoutMin": 10,
+    "testTimeoutSec": 180,
+    "jobs": 2
+  }
+}
