@@ -18,6 +18,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Model catalog (`models`)](#model-catalog-models)
 - [Observation and logs (`observe`, `logfile`)](#observation-and-logs)
 - [Fabric and subagents](#fabric-and-subagents)
+- [Expert advisory peer (`expert`)](#expert-advisory-peer-expert)
 - [Recovery](#recovery--recover) · [The store](#the-store) · [Testing](#testing)
 - [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
@@ -56,6 +57,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) |
 | `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_steer` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
@@ -205,12 +207,17 @@ Core speaks exactly one protocol: JSON envelopes over NATS (details in
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
 reg.depart             graceful shutdown announcement
 svc.<component>.call   queue-grouped tool call request/reply
-ev.session.assistant   {sessionId, content, provider?, model?, context?, usage?}
-ev.session.status      {sessionId, provider?, model?, context?, usedTokens?}
-ev.session.token       {sessionId, content, reasoning}        (live token deltas)
-ev.session.toolcall    {sessionId, tool, args, result|error}
-ev.session.done        {sessionId, reply} | {sessionId, error}
-ev.session.context     {sessionId, promptTokens, usedTokens, context, warning?|trimmed?}
+svc.session.<id>.steer   fire-and-forget mid-turn message injection ({content})
+svc.session.<id>.advise  turn-bound advisory request/reply (the expert peer):
+                         accepted only while the named turnId is live
+ev.session.turn        {sessionId, turnId, phase: start|done, content?, error?}
+ev.session.assistant   {sessionId, turnId?, content, provider?, model?, context?, usage?}
+ev.session.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
+ev.session.token       {sessionId, turnId?, content, reasoning}  (live token deltas)
+ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error}
+ev.session.advice      {sessionId, turnId?, source, content} an advisory was folded in
+ev.session.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
+ev.session.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
 ev.catalog.updated     direct (prompt-facing) tool projection after any
                        registration change; `catalog {op: snapshot}` still
                        returns everything incl. hidden/on-demand schemas
@@ -1156,6 +1163,35 @@ sessions into subagents. The full design and threat model:
 - **When to use what**: direct loop for judgment-per-step work; `fabric` for
   mechanical known-shape orchestration; `agent_run` for exploratory subtasks
   that need their own context; hybrid programs may call `agent_run`.
+
+## Expert advisory peer (`expert`)
+
+The `expert` component is a non-interactive advisory peer (design:
+[EXPERT.md](../EXPERT.md)). It follows ONE working session — armed explicitly
+with `expert_follow {session_id}` (approval-gated, off by default) — watches
+that session's `ev.session.*` events into a bounded in-memory current-turn
+frame, and asks an LLM judge (a stateless hidden-`chat` call: fixed
+cache-stable knowledge prefix + one ephemeral observation, no tools) whether
+the evidence warrants a steer. Only high-confidence steers naming live,
+non-hidden tools are delivered, through the turn-bound
+`svc.session.<id>.advise` request/reply surface: the runner accepts advice
+only while that exact turn is still running — late advice is rejected
+(`stale-turn`/`no-active-turn`), never queued into the next turn. Accepted
+advice is folded as a marked user message (`[Niffler advisor: expert] ...`),
+persisted, and announced on `ev.session.advice`.
+
+| Tool | What it does |
+|---|---|
+| `expert_follow {session_id, model?}` | Follow one session (1:1); captures the non-hidden catalog into the knowledge prefix. Approval-gated. |
+| `expert_unfollow` | Stop following and drop the observation frame. |
+| `expert_reload` | Rebuild the knowledge prefix from the live catalog (new cache epoch). |
+| `expert_status` | Target, active turn, inference state, and bounded counters (judgments, silences, steers, accepted, rejected, staleDrops, errors). |
+
+Design invariants: the working session never waits for the expert
+(best-effort, cooldown, latest-state coalescing); no growing expert
+transcript (every judgment is stateless); fail closed (any parse/validation/
+transport error is silence); the expert never acts — it only suggests, and
+approval-gated work stays with the working session's human gate.
 
 ## Recovery — `--recover`
 

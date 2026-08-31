@@ -31,9 +31,10 @@ core (Nim) ── NATS ──┬── store (Nim SDK)           ← persistence
                      ├── edit (Nim SDK)            ← read/edit/write file tools + undo
                      ├── grep (Nim SDK)            ← code search + file listing
                      ├── git (Nim SDK)             ← read-only repo inspection
-                     ├── agent (Nim SDK)           ← subagent sessions
-                     ├── fabric (Nim SDK)          ← programmable tool calling
-                     ├── observe (Nim SDK)         ← live bus inspection
+                      ├── agent (Nim SDK)           ← subagent sessions
+                      ├── fabric (Nim SDK)          ← programmable tool calling
+                      ├── expert (Nim SDK)          ← advisory peer (1:1, LLM-judged)
+                      ├── observe (Nim SDK)         ← live bus inspection
                      ├── logfile (Nim SDK)         ← rotating JSONL logs
                      ├── cli (Nim SDK)             ← on-demand script client
                      ├── console (Nim SDK)         ← on-demand bus viewer
@@ -468,6 +469,13 @@ to CI any plugin repo — Niffler testing itself.
       time depth guard); guests stay stdlib-free (import-free j* JSON
       helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_agent.nim`, `tests/t_fabric.nim`)
+- [x] **expert advisory peer** (EXPERT.md) — one expert follows one working
+      session: bounded current-turn observation from `ev.session.*`, a
+      stateless LLM judgment over a cache-stable knowledge prefix, and a
+      turn-bound `svc.session.<id>.advise` request/reply (stale advice
+      rejected, never queued into a later turn); core emits `ev.session.turn`
+      and `turnId`-correlated session events; silent by default, fail-closed
+      (`tests/t_expert.nim` with a scripted mock llm)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [x] Web UI TUI-parity features: slash commands (built-ins + the plugin
   registry, Tab completion, did-you-mean), thinking/tool display cycles

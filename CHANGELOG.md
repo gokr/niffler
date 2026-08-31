@@ -8,6 +8,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Expert advisory peer (`expert`)** — one expert follows one working
+  session: a bounded current-turn observation built from `ev.session.*`
+  events, a stateless LLM judgment over a cache-stable knowledge prefix
+  (policy + non-hidden catalog hints, versioned), and fail-closed delivery
+  through the new turn-bound `svc.session.<id>.advise` request/reply —
+  accepted only while that exact turn is live, folded as a marked user
+  message and announced on `ev.session.advice`. Core now emits
+  `ev.session.turn` and correlates every session event with a `turnId`;
+  `ev.session.toolcall` gained `callId`, start/done phases and a stable
+  `errorCode`. Silent by default, approval-gated follow, best-effort
+  scheduling (the working session never waits); `tests/t_expert.nim`
+  proves the loop with a scripted mock llm.
 - **Subscription OAuth logins (ChatGPT Plus/Pro, Claude Pro/Max)** — the
   same PKCE flows Pi and opencode use: `provider_oauth_start` returns the
   authorization URL (browser login via fixed localhost callback ports, or

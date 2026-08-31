@@ -2,8 +2,12 @@
 
 Design sketch for a **non-interactive advisory peer** that follows one working
 session on the bus and occasionally injects a steer when a separate LLM judges
-that the working agent is not fully exploiting Niffler. Status: **design
-sketch**; nothing is implemented.
+that the working agent is not fully exploiting Niffler. Status: **phase 1
+implemented** — the turn-bound wire surfaces (`ev.session.turn`, `turnId`
+correlation, `svc.session.<id>.advise`) and the 1:1 `expert` component with
+the LLM judgment contract and fail-closed delivery (`tests/t_expert.nim`,
+mock-llm driven). Not yet built: cached-token instrumentation, judgment
+quality tuning against a real model, and anything beyond one target session.
 
 The working session should keep its small frozen direct toolset and
 task-focused transcript, as described in

@@ -57,6 +57,11 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
 svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)
+svc.session.<id>.advise # turn-bound advisory request/reply (the expert peer,
+                        #   EXPERT.md): {sessionId, turnId, source, content, ...};
+                        #   answered {accepted, reason?} — accepted only while
+                        #   that exact turn is live (stale-turn, no-active-turn,
+                        #   advisory-limit, duplicate, ...); never queued past it
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
                        # models.updated reports effective model-catalog refreshes
                        # provider.switch selects the global backend; provider.changed
@@ -120,20 +125,32 @@ Session subjects (core emits during `svc.core.call` session turns — UIs
 subscribe `ev.session.>` and render live):
 
 ```
-ev.session.assistant   # {sessionId, content, provider?, model?, context?, usage?}
+ev.session.turn        # {sessionId, turnId, phase: start|done, content?, error?}
+                       #   turn lifecycle; content (the user request) on start.
+                       #   turnId identifies the turn — advisory delivery binds
+                       #   to it and every session event carries it
+ev.session.assistant   # {sessionId, turnId?, content, provider?, model?,
+                       #   context?, usage?}
                        #   complete model text + actual backend metadata per LLM round
-ev.session.status      # {sessionId, provider?, providerSource?, model?, catalog?,
-                       #   context?, contextSource?, promptTokens?, usedTokens?}
+ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?,
+                       #   catalog?, context?, contextSource?, promptTokens?,
+                       #   usedTokens?}
                        #   resolved turn config and live context occupancy.
                        #   Also emitted by model-only session calls (no inference)
-ev.session.token       # {sessionId, content, reasoning}   live token deltas
+ev.session.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
-ev.session.toolcall    # {sessionId, tool, args, result | error}
-ev.session.steer       # {sessionId, content} a steer message was folded in
-ev.session.context     # {sessionId, promptTokens, usedTokens, context,
+ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
+                       #   tool, args, result? | error?, errorCode?}
+                       #   start fires before dispatch, done after the result
+                       #   (error keeps its legacy string shape; errorCode is
+                       #   the stable machine code when known)
+ev.session.steer       # {sessionId, turnId?, content} a steer message was folded in
+ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
+                       #   advisory message (svc.session.<id>.advise) was folded in
+ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)
-ev.session.done        # {sessionId, reply} or {sessionId, error}
+ev.session.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
 ```
 
 LLM streaming (adapter → core → UI): the `llm` component emits
