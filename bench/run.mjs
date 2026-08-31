@@ -65,6 +65,14 @@ function git(repo, args) {
 function prepareRepo(taskId, dest) {
   const src = path.join(BENCH_DIR, "tasks", taskId, "repo");
   fs.cpSync(src, dest, { recursive: true });
+  // Task repos ship as plain files; create the pristine base commit here so
+  // every run gets an identical history to diff against.
+  if (!fs.existsSync(path.join(dest, ".git"))) {
+    git(dest, ["init", "-q"]);
+    git(dest, ["add", "-A"]);
+    git(dest, ["-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-qm", "base"]);
+    git(dest, ["tag", "base"]);
+  }
   try {
     git(dest, ["rev-parse", "base"]); // sanity: pristine history must be present
   } catch {
