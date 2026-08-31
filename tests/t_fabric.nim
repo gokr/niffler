@@ -228,9 +228,20 @@ proc main() =
   check("outer Fabric lease restored after agent_run",
         transcript.contains("lease-restored"), transcript)
 
-  # program library: the named run executed the stored source
+  # program library: a dedicated turn runs the stored program by name
+  let libTurn = call(nc, "core", "session",
+                     %*{"sessionId": "fab-lib", "content": "go"}, 120_000)
+  check("library turn completed",
+        libTurn{"reply"}.getStr("") == "lib-turn-done", $libTurn)
+  var libTranscript = ""
+  for i in 1 .. 4:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "fab-lib:" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    libTranscript.add(m{"value"}{"content"}.getStr(""))
   check("stored program ran by name",
-        transcript.contains("stored-ok"), transcript)
+        libTranscript.contains("stored-ok"), libTranscript)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""
