@@ -116,11 +116,6 @@ proc clip(s: string, max: int): string =
   while cut > 0 and (s[cut].uint8 and 0xC0) == 0x80: dec cut
   result = s[0 ..< cut] & "..."
 
-proc sanitizeSessionId(s: string): string =
-  ## Mirror of core's subject sanitization: session ids become NATS tokens.
-  for c in s:
-    result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
-
 proc resetFrame(turnId, content: string) =
   gTurnId = turnId
   gUserRequest = clip(content, MaxField)
@@ -176,7 +171,7 @@ proc sendAdvise(comp: Component, turnId, content, reason: string): bool =
     "content": content, "reason": reason,
     "knowledgeVersion": gKnowledgeVersion}
   let env = callEnvelope("advise", payload, "expert")
-  let subject = "svc.session." & sanitizeSessionId(gTarget) & ".advise"
+  let subject = sessionAdviseSubject(gTarget)
   let reply = comp.requestEnvelope(subject, env, 10_000)
   if reply.kind == ekError:
     gRejected += 1

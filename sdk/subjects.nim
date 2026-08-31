@@ -53,3 +53,8 @@ proc sessionToolSubject*(sessionId: string): string =
   ## programs route every tool call here; the runner's pump validates the
   ## live lease and re-enters the one dispatch gate.
   "svc.session." & sanitizeSessionId(sessionId) & ".tool"
+
+proc sessionAdviseSubject*(sessionId: string): string =
+  ## Turn-bound advisory request/reply subject (expert → runner): accepted
+  ## only while the addressed turn is still live (EXPERT.md).
+  "svc.session." & sanitizeSessionId(sessionId) & ".advise"

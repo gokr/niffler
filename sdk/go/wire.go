@@ -52,6 +52,12 @@ func SessionToolSubject(sessionID string) string {
 	return "svc.session." + SanitizeSessionID(sessionID) + ".tool"
 }
 
+// SessionAdviseSubject is the turn-bound advisory request/reply subject
+// (expert → runner): accepted only while the addressed turn is still live.
+func SessionAdviseSubject(sessionID string) string {
+	return "svc.session." + SanitizeSessionID(sessionID) + ".advise"
+}
+
 // ResolveNATSURL is the bus address: NIF_NATS_URL env →
 // <root>/var/nats-url discovery file → the well-known local default.
 func ResolveNATSURL(root string) string {

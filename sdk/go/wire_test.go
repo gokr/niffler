@@ -32,6 +32,10 @@ func TestSanitizeSessionID(t *testing.T) {
 	if got := SessionToolSubject("conv:1"); got != "svc.session.conv-1.tool" {
 		t.Errorf("SessionToolSubject = %q", got)
 	}
+
+	if got := SessionAdviseSubject("conv:1"); got != "svc.session.conv-1.advise" {
+		t.Errorf("SessionAdviseSubject = %q", got)
+	}
 }
 
 func TestResolveNATSURL(t *testing.T) {

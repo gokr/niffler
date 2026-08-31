@@ -30,6 +30,11 @@ export function sessionToolSubject(sessionId: string): string {
   return "svc.session." + sanitizeSessionId(sessionId) + ".tool";
 }
 
+/** Turn-bound advisory request/reply subject (expert → runner). */
+export function sessionAdviseSubject(sessionId: string): string {
+  return "svc.session." + sanitizeSessionId(sessionId) + ".advise";
+}
+
 /** Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
  *  the well-known local default. */
 export function resolveNatsUrl(root = ""): string {
