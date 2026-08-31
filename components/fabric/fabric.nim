@@ -9,7 +9,7 @@
 ## The child holds no credentials and no NATS connection.
 
 import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
-            strtabs, strutils, times]
+            strtabs, strutils, tables, times]
 import natswrapper
 import niffler/sdk
 import framing
@@ -31,6 +31,9 @@ const
   maxArtifactFiles = 100
   maxArtifactBytes = 100_000_000'i64
   artifactMaxAgeSeconds = 7 * 24 * 60 * 60
+  maxSelectedTools = 16
+  forbiddenSelectedTools = ["fabric", "agent", "chat", "session", "invoke",
+                            "session_prepare"]
 
 const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
                       "importc", "osproc", "natswrapper", "std/os",
@@ -50,7 +53,7 @@ proc writeLineTo(p: Process, line: string) =
   p.inputStream.flush()
 
 proc runExecutor(subject, lease, code: string, strings: JsonNode,
-                 maxCalls, timeoutMs: int): JsonNode =
+                 schemas: JsonNode, maxCalls, timeoutMs: int): JsonNode =
   ## Spawn the executor, serve its bridge, return the tool result.
   let bin = getAppDir() / "fabric-exec"
   if not fileExists(bin):
@@ -102,8 +105,15 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
   var resultJ = JsonNode(nil)
   var reader: FrameReader
+  let selectedMode = schemas != nil
+  var selected = initTable[string, JsonNode]()
+  if selectedMode:
+    for entry in schemas:
+      selected[entry{"name"}.getStr("")] = entry
   try:
-    p.inputStream.write($(%*{"code": code, "strings": strings}) & "\n")
+    var context = %*{"code": code, "strings": strings}
+    if selectedMode: context["schemas"] = schemas
+    p.inputStream.write($context & "\n")
     p.inputStream.flush()
     var calls = 0
     var logEvents = 0
@@ -121,10 +131,14 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         comp.emit("ev.fabric.log", %*{"s": message})
       of "req":
         inc calls
+        let tool = j{"tool"}.getStr("")
         var resp: JsonNode
         if calls > maxCalls:
           resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
                     "error": "maxCalls budget exceeded (" & $maxCalls & ")"}
+        elif selectedMode and not selected.hasKey(tool):
+          resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
+                    "error": "tool '" & tool & "' is not selected for this Fabric run"}
         else:
           var toolArgs: JsonNode
           try:
@@ -141,8 +155,14 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
             return diag("fabric-exec timed out")
           toolArgs["__session"] = %*{"lease": lease,
                                       "remainingMs": remainingMs}
+          if selectedMode:
+            let pin = selected[tool]
+            toolArgs["__session"]["catalog"] = %*{
+              "component": pin{"component"}.getStr(""),
+              "version": pin{"version"}.getStr(""),
+              "fingerprint": pin{"fingerprint"}.getStr("")}
           try:
-            let env = callEnvelope(j{"tool"}.getStr(""), toolArgs, "fabric")
+            let env = callEnvelope(tool, toolArgs, "fabric")
             let r = comp.requestEnvelope(subject, env, remainingMs)
             if r.kind == ekResult:
               resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": true,
@@ -248,6 +268,9 @@ let fabSchema = toolSchema(%*{
               "maxProperties": maxStringsEntries,
               "additionalProperties": {"type": "string"},
               "description": "Optional key/value entries readable via stringArg(key) — pass big payloads (file contents, long prompts) here instead of inside code"},
+  "tools": {"type": "array", "items": {"type": "string"},
+            "maxItems": maxSelectedTools,
+            "description": "Optional exact tool allowlist for pinned typed mode. callTool rejects names outside this set."},
   "timeoutMs": {"type": "integer",
                 "minimum": 1, "maximum": maxTimeoutMs,
                 "description": "Kill the program after this many ms (default 240000)"},
@@ -255,7 +278,7 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                 "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @["code"],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest (read components/fabric/fabricguest/fabricguest.nim — it is the typed API) and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; big payloads go through the strings argument and stringArg(key). Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation — compute, filter, distill inside the program. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 discard comp.tool("fabric", fabSchema,
@@ -284,6 +307,7 @@ discard comp.tool("fabric", fabSchema,
     if outerRemainingMs <= 0:
       return %*{"error": "fabric execution deadline expired"}
     let timeoutMs = min(requestedTimeoutMs, outerRemainingMs)
+    let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
     let stringsJ = if toolArgs{"strings"} != nil: toolArgs{"strings"}
                    else: newJObject()
       # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys)
@@ -298,7 +322,37 @@ discard comp.tool("fabric", fabSchema,
       stringsBytes += key.len + value.getStr().len
       if stringsBytes > maxStringsBytes:
         return %*{"error": "strings exceeds " & $maxStringsBytes & " bytes"}
-    let r = runExecutor(subject, lease, code, stringsJ, maxCalls, timeoutMs)
+    var schemas: JsonNode
+    let requestedTools = toolArgs{"tools"}
+    if requestedTools != nil:
+      if requestedTools.kind != JArray or requestedTools.len == 0 or
+          requestedTools.len > maxSelectedTools:
+        return %*{"error": "tools must contain 1.." & $maxSelectedTools &
+                           " tool names"}
+      for node in requestedTools:
+        let name = node.getStr("")
+        if node.kind != JString or name.len == 0:
+          return %*{"error": "tools entries must be non-empty strings"}
+        if name in forbiddenSelectedTools:
+          return %*{"error": "tool '" & name &
+                             "' is not reachable from Fabric"}
+      let snapshotMs = (deadline - getMonoTime()).inMilliseconds.int
+      if snapshotMs <= 0:
+        return %*{"error": "fabric execution deadline expired"}
+      try:
+        let snapshot = c.request("core", "catalog",
+          %*{"op": "schemas", "tools": requestedTools},
+          min(10_000, snapshotMs))
+        schemas = snapshot{"tools"}
+        if schemas == nil or schemas.kind != JArray:
+          return %*{"error": "catalog returned an invalid schema snapshot"}
+      except CatchableError as e:
+        return %*{"error": "cannot pin Fabric tool schemas: " & e.msg}
+    let executionMs = (deadline - getMonoTime()).inMilliseconds.int
+    if executionMs <= 0:
+      return %*{"error": "fabric execution deadline expired"}
+    let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
+                        executionMs)
     if r{"error"} != nil:
       return r
     if r{"ok"}.getBool(false):

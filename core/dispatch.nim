@@ -182,6 +182,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%t.name)
         comps[name] = tools
       return %*{"components": comps}
+    if args{"op"}.getStr("") == "schemas":
+      return ct.cat.selectedSchemas(args{"tools"})
     if args{"op"}.getStr("") == "snapshot":
       ## Full registration view ({name, version, pid, tools with schemas}) —
       ## session runners (and any late-joining client) seed their catalog
@@ -234,7 +236,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             discard
         comps.add(entry)
       return %*{"components": comps}
-    return %*{"error": "catalog op must be 'list', 'components' or 'snapshot'"}
+    return %*{"error":
+      "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
   of "discover":
     ct.cat.pump()
     return ct.cat.discover(args)
@@ -517,6 +520,14 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   if schema != nil and schema.isHidden():
     return errorEnvelope(env.id, "denied",
       "tool '" & tool & "' is hidden and not reachable through nested calls")
+  let expected = env.args{"__session"}{"catalog"}
+  if expected != nil:
+    let reg = ct.cat.components[comp]
+    if expected{"component"}.getStr("") != comp or
+        expected{"version"}.getStr("") != reg.version or
+        expected{"fingerprint"}.getStr("") != schemaFingerprint(schema):
+      return errorEnvelope(env.id, "catalog-changed",
+        "tool '" & tool & "' changed after the Fabric schema snapshot")
   # __session is private proxy context. Validate it above, then remove it from
   # the copy that reaches approval, session events, and the target component.
   let cleanArgs = env.args.copy()

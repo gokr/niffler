@@ -128,8 +128,8 @@ need worker processes + durable state — not shipped):
 
 **`fabric.nim`** — SDK component, one tool:
 
-- Schema `{code: string required, strings?: object, timeoutMs?: int,
-  maxCalls?: int}`; `x-harness`: approval "always", timeoutMs 300000,
+- Schema `{code: string required, tools?: string[], strings?: object,
+  timeoutMs?: int, maxCalls?: int}`; `x-harness`: approval "always", timeoutMs 300000,
   sessionContext, onDemand.
 - Owns the NATS side of the bridge; enforces per-program budgets: **maxCalls**
   (default 200) bridge calls, per-call timeout = min(tool timeout, remaining
@@ -141,11 +141,14 @@ need worker processes + durable state — not shipped):
   `var/fabric-artifacts/`; artifacts expire after seven days and the directory
   is capped at 100 files / 100 MB.
 - Emits `ev.fabric.log` per guest `logg()` call within the log budget.
+- `tools` selects up to 16 exact non-hidden tools. Core returns a canonical
+  owner/version/schema fingerprint snapshot; every selected bridge call checks
+  that pin against the live catalog and fails if a component changed mid-run.
 
 **`executor.nim`** (binary `var/bin/fabric-exec`):
 
-- **Framed stdio protocol**: stdin receives `{code, strings, sessionSubject,
-  lease}` once; the child then writes framed lines — `{t: "req", id, tool,
+- **Framed stdio protocol**: stdin receives `{code, strings, schemas?}` once;
+  the child then writes framed lines — `{t: "req", id, tool,
   args}` (bridge requests: the parent performs the NATS call and replies
   `{t: "resp", id, ok, result|error}` on the child's stdin), `{t: "log", s}`,
   and finally `{t: "result", ok, value, diagnostics?}`. The parent drains
@@ -160,7 +163,7 @@ need worker processes + durable state — not shipped):
   **load-bearing** (callback key = nimble package name).
 - Compile errors: real Nim compiler diagnostics passed back verbatim.
 
-**Guest API** (`components/fabric/fabricguest/fabricguest.nim`) — typed,
+**Raw guest API** (`components/fabric/fabricguest/fabricguest.nim`) —
 stdlib-free (no imports; cold eval ~ms):
 
 | Proc | Purpose |
@@ -170,6 +173,14 @@ stdlib-free (no imports; cold eval ~ms):
 | `logg(message)` | emit an `ev.fabric.log` event |
 | `stringArg(key): string` | read a `strings` argument |
 | `jesc / jpair / jobj / jarr / jnum / jbool` | JSON string builders — heavy parsing stays native in the bridge |
+
+Selected mode injects `fabricmeta.nim`, whose `fabricTools` macro generates
+`tools.<tool>(required = value, optional = value)` wrappers from the pinned
+runtime schemas. Scalar arguments and arrays are Nim-typed; objects degrade to
+`JsonNode`; wrappers return `JsonNode`. Optional arguments use `FabricArg[T]`,
+so omission remains distinct from explicit `false`, `0`, or `""`. Ambiguous
+style-insensitive names omit the wrapper and retain allowlisted `callTool` as a
+fallback. Host validation remains authoritative.
 
 ## Teaching the LLM
 
@@ -197,18 +208,14 @@ aggregate), `hybrid.nim` (fabric calling agent).
 - `tests/t_agent.nim` — run → reply (child runner direct, parent turn live),
   steer mid-turn, depth guard, deadlock regression.
 - `tests/t_fabric.nim` — compile-error round-trip, real programs driving bus
-  tools, malformed arguments, budget/deadline behavior, and private artifacts.
+  tools, typed wrapper generation, catalog replacement, malformed arguments,
+  budget/deadline behavior, and private artifacts.
 
 ## Not shipped (deliberately later)
 
 - `agent_spawn`/`agent_wait` background mode (worker processes + store-backed
   job records).
 - Concurrent bridge fan-out (multiple inboxes — still no threads).
-- Catalog snapshot pinning at program start (semantic pinning against
-  mid-program component reloads).
-- Typed guest wrappers generated from the catalog (compile-time-checked proc
-  signatures) — biggest known reliability lever, deferred until the mechanism
-  has more mileage.
 - Live executor event streaming beyond `ev.fabric.log`;
   `ev.fabric.done`/`ev.agent.done` summary events.
 - Cancellation propagation into a running guest (request/reply has no cancel

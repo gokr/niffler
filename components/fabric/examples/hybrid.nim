@@ -7,22 +7,22 @@
 ## denies it at dispatch).
 ##
 ## Run by the model as one fabric tool call:
-##   code = <the program below>,
+##   tools = ["bash", "agent_run"], code = <the program below>,
 ##   strings = {"scope": "components/fabric", "question": "Which bridge frame
 ##              types does the executor emit?"}
 
 import fabricguest
 
 # mechanical part: list the fabric sources (cheap, deterministic)
-let files = callTool("bash", jobj(
-  jpair("command", jesc("ls " & stringArg("scope")))))
+let files = tools.bash(command = "ls " & stringArg("scope"))
 
 # judgment part: delegate to a fresh session; only the reply comes back
-let agent = callTool("agent_run", jobj(
-  jpair("task", jesc(stringArg("question") & "\n\nScope: " & stringArg("scope") &
-                     "\nFiles: " & files)),
-  jpair("timeoutMs", jnum(300000))))
+let agent = tools.agent_run(
+  task = stringArg("question") & "\n\nScope: " & stringArg("scope") &
+         "\nFiles: " & $files,
+  timeoutMs = 300000)
 
-finish(jobj(
-  jpair("files", jesc(files)),
-  jpair("agentReply", jesc(agent))))
+# the outer selected lease remains valid after the nested session-context call
+let after = tools.bash(command = "echo lease-restored")
+
+finish($(%*{"files": files, "agentReply": agent, "after": after}))

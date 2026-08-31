@@ -154,7 +154,7 @@ var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # binaries, so readlink lies — getCurrentCompilerExe does not).
 COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
 
-var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
 
 var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin

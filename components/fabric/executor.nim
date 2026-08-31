@@ -80,10 +80,15 @@ proc main =
     setLimit(rlimitAs, 768 * 1024 * 1024)
 
   let ctx = parseJson(stdinFs.readLine())
-  let code = ctx{"code"}.getStr("")
+  var code = ctx{"code"}.getStr("")
   if code.len == 0:
     emitLine(%*{"t": "result", "ok": false, "diagnostics": "empty program"})
     return
+  let schemas = ctx{"schemas"}
+  if schemas != nil:
+    let snapshot = $schemas
+    code = "import fabricmeta\n" &
+      "fabricTools(" & $(%snapshot) & ")\n" & code
   for k, v in ctx{"strings"}:
     stringsTable[][k] = v.getStr("")
 

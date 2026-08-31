@@ -208,6 +208,29 @@ proc main() =
         hiddenLookup{"error"}.getStr("").len > 0,
         $hiddenLookup & " / " & $unknownLookup)
 
+  let pinned1 = call(nc, "core", "catalog", %*{
+    "op": "schemas",
+    "tools": ["fixture_times_out", "fixture_demand_alpha"]})
+  let pinned2 = call(nc, "core", "catalog", %*{
+    "op": "schemas",
+    "tools": ["fixture_demand_alpha", "fixture_times_out"]})
+  check("selected catalog snapshot is deterministic",
+        $pinned1 == $pinned2 and
+        names(pinned1{"tools"}) ==
+          @["fixture_demand_alpha", "fixture_times_out"], $pinned1)
+  check("selected snapshot includes owner version and fingerprint",
+        pinned1{"tools"}[0]{"component"}.getStr("") == "discover-fixture" and
+        pinned1{"tools"}[0]{"version"}.getStr("").len > 0 and
+        pinned1{"tools"}[0]{"fingerprint"}.getStr("").len > 0, $pinned1)
+  let pinnedHidden = call(nc, "core", "catalog", %*{
+    "op": "schemas", "tools": ["fixture_hidden_needle"]})
+  let pinnedUnknown = call(nc, "core", "catalog", %*{
+    "op": "schemas", "tools": ["fixture_unknown"]})
+  check("selected lookup does not distinguish hidden and unknown tools",
+        pinnedHidden{"error"}.getStr("") == pinnedUnknown{"error"}.getStr("") and
+        pinnedHidden{"error"}.getStr("").len > 0,
+        $pinnedHidden & " / " & $pinnedUnknown)
+
   let invoked = call(nc, "core", "invoke", %*{
     "tool": "fixture_demand_alpha", "arguments": {"value": "through-core"}})
   check("invoke dispatches an on-demand tool",

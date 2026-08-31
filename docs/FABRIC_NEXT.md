@@ -26,7 +26,7 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] monotonic deadline propagation and complete bounded schema validation;
 - [x] source, strings, call, frame, log, result, artifact, and OS limits;
 - [ ] transport cancellation propagation when supported;
-- [ ] generated input-typed Nim wrappers and catalog pinning;
+- [x] generated input-typed Nim wrappers and catalog pinning;
 - [ ] bounded concurrency, durable agents, and structured observability.
 
 ## Usage model

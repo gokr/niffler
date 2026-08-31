@@ -25,7 +25,7 @@ proc main() =
 
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for bin in ["niffler", "fabric", "fabric-exec"]:
+  for bin in ["niffler", "fabric", "fabric-exec", "agent", "grep"]:
     if not fileExists(repoRoot / "var" / "bin" / bin):
       fail("missing binary " & bin & " — run `make build` first")
       quit(1)
@@ -37,6 +37,8 @@ proc main() =
                           sandbox.sandboxBin("fabric-exec"))
   copyFileWithPermissions(repoRoot / "var" / "bin" / "agent",
                           sandbox.sandboxBin("agent"))
+  copyFileWithPermissions(repoRoot / "var" / "bin" / "grep",
+                          sandbox.sandboxBin("grep"))
     # NOTE: fabric-exec bakes the worktree's fabricguest path at compile
     # time — the test runs from the same worktree, so it resolves
 
@@ -113,10 +115,19 @@ proc main() =
       if agentProc.running(): agentProc.kill()
     agentProc.close()
   check("agent registered", waitComponent(nc, "agent"))
+  let grepProc = startComponent(sandbox.sandboxBin("grep"), url, root = root,
+                                 logFile = "/tmp/opencode/grep-fab.log")
+  defer:
+    if grepProc.running():
+      grepProc.terminate()
+      sleep(800)
+      if grepProc.running(): grepProc.kill()
+    grepProc.close()
+  check("grep registered", waitComponent(nc, "grep"))
 
   let sessionId = "fab-test"
   let turn = call(nc, "core", "session",
-                  %*{"sessionId": sessionId, "content": "go"}, 300_000)
+                  %*{"sessionId": sessionId, "content": "go"}, 600_000)
   check("turn completed",
         turn{"reply"}.getStr("") == "fabric-turn-done", $turn)
 
@@ -133,12 +144,15 @@ proc main() =
   # the three fabric results live in the persisted transcript: user(1),
   # assistant(2), tool(3), assistant(4), tool(5), assistant(6), tool(7)
   var transcript = ""
-  for i in 1 .. 24:
+  var selectedTranscript = ""
+  for i in 1 .. 42:
     let m = call(nc, "store", "get",
                  %*{"kind": "message",
                     "id": sessionId & ":" & align($i, 6, '0')}, 10_000)
     if m{"error"} != nil: break
-    transcript.add(m{"value"}{"content"}.getStr(""))
+    let content = m{"value"}{"content"}.getStr("")
+    transcript.add(content)
+    if i >= 20: selectedTranscript.add(content)
 
   check("guest bash call through the bridge succeeded",
         transcript.contains("fabric-ok"), transcript)
@@ -165,6 +179,37 @@ proc main() =
         artifactPrivate = getFilePermissions(path) ==
           {fpUserRead, fpUserWrite}
   check("artifact is created mode 0600", artifactPrivate)
+  check("selected tool executes with a valid catalog pin",
+        transcript.contains("selected-ok"), selectedTranscript)
+  check("selected mode rejects tools outside its allowlist",
+        transcript.contains("is not selected for this Fabric run"),
+        selectedTranscript)
+  check("typed wrappers preserve explicit optional zero values",
+        selectedTranscript.contains("optionalString") and
+        selectedTranscript.contains("optionalInt") and
+        selectedTranscript.contains("optionalBool") and
+        selectedTranscript.contains("dash-value") and
+        selectedTranscript.contains("keyword"), selectedTranscript)
+  check("typed wrappers preserve omission separately from explicit values",
+        selectedTranscript.contains("\"omitted\":{\"requiredValue\":\"only\"}"),
+        selectedTranscript)
+  check("typed wrapper scalar mismatch is a compile error",
+        selectedTranscript.contains("type mismatch") and
+        selectedTranscript.contains("requiredValue"), selectedTranscript)
+  check("typed wrapper enum remains host-enforced",
+        selectedTranscript.contains("declared enum values"), selectedTranscript)
+  check("ambiguous wrapper keeps exact raw callTool fallback",
+        selectedTranscript.contains("foo_bar") and
+        selectedTranscript.contains("fooBar"), selectedTranscript)
+  check("style-insensitive property collision omits typed wrapper",
+        selectedTranscript.contains("ctx_collision") and
+        selectedTranscript.contains("undeclared"), selectedTranscript)
+  check("live catalog replacement invalidates a pinned run",
+        selectedTranscript.contains("changed after the Fabric schema snapshot"),
+        selectedTranscript)
+  check("checked-in typed examples execute end to end",
+        transcript.contains("grepDone") and transcript.contains("rawBytes") and
+        transcript.contains("agentReply"), transcript)
 
   # hybrid: fabric program -> agent_run -> subagent session -> reply
   check("hybrid fabric->agent_run returned the subagent reply",
@@ -174,10 +219,14 @@ proc main() =
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""
-  let marker = transcript.find("sessionId\\\":\\\"agent-")
+  var marker = transcript.find("sessionId\\\":\\\"agent-")
     # the fabric result is embedded as an escaped JSON string
+  var markerText = "sessionId\\\":\\\""
+  if marker < 0:
+    markerText = "\"sessionId\":\""
+    marker = transcript.find(markerText & "agent-")
   if marker >= 0:
-    let start = marker + "sessionId\\\":\\\"".len
+    let start = marker + markerText.len
     var stop = start
     while stop < transcript.len and
           (transcript[stop] in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}):

@@ -1194,14 +1194,14 @@ sessions into subagents. The full design and threat model:
 
 | Tool | What it does |
 |---|---|
-| `fabric {code, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). The guest imports `fabricguest` and orchestrates tool calls with `callTool`; only `finish(value)` reaches the conversation. |
+| `fabric {code, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
 | `agent_run {task, model?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. |
 | `agent_steer {session_id, message}` | Inject a message into a running subagent turn (drained between LLM rounds). |
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call
   crosses the session nested-call proxy (`svc.session.<id>.tool`), re-entering
-  the single dispatch gate (approval, required-args validation, timeout).
+  the single dispatch gate (approval, complete schema validation, deadline).
   The executor child holds no NATS connection and no credentials.
 - **Guards**: proxy rejects hidden tools and internal/recursive surfaces
   (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare`); a
@@ -1210,10 +1210,10 @@ sessions into subagents. The full design and threat model:
 - **Context economy**: intermediate results never enter the conversation;
   oversized `finish()` values spill to `var/fabric-artifacts/<run>.json`
   (mode 0600) and the tool result points at the path.
-- **Guest API**: `components/fabric/fabricguest/fabricguest.nim` is the typed
-  surface (`callTool`, `finish`, `logg`, `stringArg`, plus import-free `j*`
-  JSON helpers — guests stay stdlib-free, so cold eval is ~ms). Worked
-  examples: `components/fabric/examples/`.
+- **Guest API**: `fabricguest.nim` provides the raw bridge (`callTool`,
+  `finish`, `logg`, `stringArg`, and import-free `j*` helpers).
+  `fabricmeta.nim` turns pinned runtime schemas into input-typed wrappers with
+  `JsonNode` results. Worked examples: `components/fabric/examples/`.
 - **When to use what**: direct loop for judgment-per-step work; `fabric` for
   mechanical known-shape orchestration; `agent_run` for exploratory subtasks
   that need their own context; hybrid programs may call `agent_run`.

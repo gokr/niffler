@@ -463,7 +463,9 @@ to CI any plugin repo — Niffler testing itself.
       nested-call proxy (`svc.session.<id>.tool`, live lease, hidden-tool and
       depth guards); monotonic deadlines, complete bounded schema validation,
       framed-data limits, and scoped lease restoration keep nested execution
-      predictable; compile errors return as real Nim diagnostics; only the
+      predictable; selected-tool mode pins canonical catalog fingerprints and
+      generates input-typed `tools.<name>(...)` Nim wrappers at guest compile
+      time; compile errors return as real Nim diagnostics; only the
       program's `finish()` value enters the conversation (oversized results
       spill to quota-managed 0600 artifacts); the `agent` tool turns sessions into
       subagents (delegated child runners, synchronous run + steer, dispatch-

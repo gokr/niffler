@@ -148,6 +148,8 @@ proc main() =
         transcript.contains("command"), transcript)
   check("nested target did not receive private session context",
         transcript.contains("targetSawSession\\\":false"), transcript)
+  check("stale catalog pin rejected before dispatch",
+        transcript.contains("staleCode\\\":\\\"catalog-changed"), transcript)
 
   var publicArgsClean = false
   for i in 0 ..< 10:

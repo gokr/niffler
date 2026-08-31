@@ -143,3 +143,8 @@ proc validateToolArgs*(schema, args: JsonNode): string =
   if result.len > 0: return
   var nodes = 0
   result = validateNode(schema, args, "arguments", 0, nodes)
+
+proc validateSchemaBounds*(schema: JsonNode): string =
+  ## Validate catalog-controlled schema size/depth without needing arguments.
+  var nodes = 0
+  result = checkSchemaBounds(schema, 0, nodes)
