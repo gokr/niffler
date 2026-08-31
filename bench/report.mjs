@@ -33,11 +33,20 @@ else if (opt("latest")) {
 }
 
 const results = [];
-for (const f of fs.readdirSync(runDir)) {
-  if (!f.endsWith(".json") || f === "run.json") continue;
-  const r = JSON.parse(fs.readFileSync(path.join(runDir, f), "utf8"));
-  if (r.verdict) results.push(r);
+function scan(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (!e.name.startsWith("_")) scan(p); // _combo-* holds harness state only
+    } else if (e.name.endsWith(".json") && e.name !== "run.json") {
+      try {
+        const r = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (r.verdict) results.push(r);
+      } catch {}
+    }
+  }
 }
+scan(runDir);
 if (!results.length) {
   console.error(`no results in ${runDir}`);
   process.exit(1);
