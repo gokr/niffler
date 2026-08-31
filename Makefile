@@ -52,7 +52,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
         test test-bash test-store test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-core test-discover test-cli \
-        test-grep test-git test-edit \
+        test-grep test-git test-edit test-expert \
         test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps
@@ -141,6 +141,11 @@ var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthr
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
 
+# expert — advisory peer (EXPERT.md): follows one session, LLM-judged,
+# turn-bound steer. Inert until expert_follow names a target.
+var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/expert/main.nim
+
 # fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
 # on the search path, resolved via the real toolchain (choosenim shims are
 # binaries, so readlink lies — getCurrentCompilerExe does not).
@@ -160,7 +165,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
-	var/bin/agent var/bin/fabric var/bin/fabric-exec
+	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec
 
 build: components
 
@@ -268,6 +273,7 @@ test-cli:     build var/bin/test_t_cli     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-grep:    build var/bin/test_t_grep    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_grep
 test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_git
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
+test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_autostart
 

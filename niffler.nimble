@@ -13,6 +13,7 @@ bin           = @[]
 requires "nim >= 2.2.10"
 requires "yaml"
 requires "htmlparser"
+requires "checksums"
 requires "https://github.com/gokr/natswrapper"
 requires "https://github.com/gokr/bitbarrel"
 
@@ -35,6 +36,7 @@ task all_internal, "Unlocked internal build — invoke through all (or the Makef
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/agent components/agent/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/expert components/expert/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/fabric components/fabric/fabric.nim"
   exec "nim c --hints:off --path:sdk --path:\"$$(nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / \"compiler\"' 2>/dev/null | tail -1)\" -o:var/bin/fabric-exec components/fabric/executor.nim"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."

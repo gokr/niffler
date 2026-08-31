@@ -117,6 +117,15 @@ components:
     required: false
     restart: on-failure
 
+  # Advisory peer (EXPERT.md): follows one working session on demand,
+  # LLM-judged, turn-bound steer. Inert until expert_follow names a target.
+  - name: expert
+    build: {lang: nim, src: components/expert/main.nim}
+    binary: var/bin/expert
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Programmable tool calling (fabric Phase 2, docs/research/FABRIC.md): the fabric
   # tool spawns var/bin/fabric-exec per program; guests run in the Nim VM.
   - name: fabric
