@@ -1,0 +1,2 @@
+{ "id": "t02-jsonrepair", "title": "JSON repair util (Python)", "language": "python",
+  "protected": ["test.sh", "tests/**", "README.md"] }

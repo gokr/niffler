@@ -1,0 +1,2 @@
+{ "id": "t04-csvbugfix", "title": "Fix seeded CSV stats bugs (Python)", "language": "python",
+  "protected": ["test.sh", "tests/**", "data/**", "README.md"] }

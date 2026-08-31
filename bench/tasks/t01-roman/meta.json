@@ -1,0 +1,2 @@
+{ "id": "t01-roman", "title": "Implement Roman numerals (Go)", "language": "go",
+  "protected": ["test.sh", "roman_test.go", "go.mod", "README.md"] }

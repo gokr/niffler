@@ -1,0 +1,2 @@
+{ "id": "t03-ringbuffer", "title": "Ring buffer (Nim)", "language": "nim",
+  "protected": ["test.sh", "tests/**", "README.md"] }
