@@ -133,12 +133,26 @@ proc parseSkillDir(skillDir: string): Option[Skill] =
   except CatchableError:
     return none(Skill)
 
+proc bundledSkillsDir(root: string): string =
+  ## Where the bundled (shipped-with-Niffler) skills live. Normally
+  ## <repo>/skills next to this component's checkout; NIF_ROOT/skills
+  ## is the fallback for relocated deployments.
+  let repoRoot = currentSourcePath().parentDir.parentDir.parentDir
+  let repoSkills = repoRoot / "skills"
+  if dirExists(repoSkills): return repoSkills
+  root / "skills"
+
 proc skillSearchPaths(root, home, config: string): seq[(string, string)] =
   ## Ordered (source, dir) pairs; the first dir holding a skill name wins.
+  ## "bundled" is the NIF_ROOT/skills tree shipped with the repo — always
+  ## discovered (even when NIF_ROOT differs from the repo, e.g. a harness
+  ## started elsewhere), shadowable by project/home dirs, and never
+  ## removable via skill_remove (outside the managed roots).
   result = @[
     ("project", root / ".agents" / "skills"),
     ("project", root / ".claude" / "skills"),
     ("project", root / ".opencode" / "skills"),
+    ("bundled", bundledSkillsDir(root)),
     ("home", home / ".agents" / "skills"),
     ("home", home / ".claude" / "skills"),
     ("home", home / ".opencode" / "skills"),

@@ -407,14 +407,20 @@ frontmatter), the same convention Claude Code, opencode and Cursor use. It is
 read/load only over the bus: no tool adds skills to the prompt, loading is
 progressive disclosure through the tool result.
 
-Discovery covers the standard agent directories (first match per skill name
-wins — project beats home beats config):
+Discovery covers the bundled skills shipped in the repo plus the standard
+agent directories (first match per skill name wins — project beats bundled
+beats home beats config):
 
 | Source | Directories |
 |---|---|
 | project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
+| bundled | `<repo>/skills` (shipped with Niffler; `$NIF_ROOT/skills` as fallback) — never removable |
 | home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
 | config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
+
+Bundled skills (e.g. `todo-markdown` — keep todo state in a repo TODO.md,
+not in tool state) make Niffler useful out of the box; shadow one by
+dropping a same-named skill into a project or home directory.
 
 | Tool | What it does |
 |---|---|

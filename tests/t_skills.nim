@@ -103,8 +103,12 @@ proc main() =
   var qNames = newSeq[string]()
   for item in lq{"skills"}:
     qNames.add(item{"name"}.getStr(""))
-  check("query filter matches name+desc", qNames == @["projskill"],
-        qNames.join(","))
+  # Bundled repo skills (shipped in <repo>/skills) may legitimately match
+  # too, so assert on the fixture skills: projskill's description contains
+  # "project"; homeskill's and configskill's must not match the query.
+  check("query filter matches name+desc",
+        "projskill" in qNames and "homeskill" notin qNames and
+        "configskill" notin qNames, qNames.join(","))
 
   # first-wins: a home skill shadowed by the same name in the project
   writeSkill(root / ".agents" / "skills" / "homeskill",
