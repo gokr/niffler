@@ -409,7 +409,8 @@ proc trimContext*(messages: var seq[JsonNode]): int =
     messages.delete(1 .. second - 1)
 
 proc checkContext*(p: var Persister, messages: var seq[JsonNode],
-                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil) =
+                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                   turnId = "") =
   ## Called before each chat request: warn once at ctxWarnRatio, trim whole
   ## turns at ctxTrimRatio. Token accounting comes from the model's own
   ## usage (persisted with assistant messages, restored on resume); before
@@ -429,7 +430,8 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
       p.ctxWarned = false
       echo "core: context at " & $pct & "% — trimmed " & $dropped & " messages"
       if onEvent != nil:
-        onEvent("context", %*{"sessionId": p.convId, "promptTokens": p.promptTokens,
+        onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                              "promptTokens": p.promptTokens,
                               "usedTokens": used, "context": p.ctxSize,
                               "trimmed": dropped})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
@@ -437,7 +439,8 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
     echo "core: WARNING context at " & $pct & "% — will trim at " &
          $(int(ctxTrimRatio * 100)) & "%"
     if onEvent != nil:
-      onEvent("context", %*{"sessionId": p.convId, "promptTokens": p.promptTokens,
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "promptTokens": p.promptTokens,
                             "usedTokens": used, "context": p.ctxSize,
                             "warning": true})
 
@@ -496,7 +499,8 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   }
 
 proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
-             onEvent: proc(kind: string, data: JsonNode) {.closure.}): int =
+              onEvent: proc(kind: string, data: JsonNode) {.closure.},
+              turnId = ""): int =
   ## Pop any steering messages queued by pumpSteer (client typed mid-turn) and
   ## append each as a user message into the running conversation. Returns how
   ## many were folded in; runTurn uses >0 to keep the turn alive on early stop.
@@ -507,21 +511,73 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     messages.add(steerMsg)
     p.persistMsg(steerMsg)
     if onEvent != nil:
-      onEvent("steer", %*{"sessionId": sessionId, "content": steered})
+      onEvent("steer", %*{"sessionId": sessionId, "turnId": turnId,
+                          "content": steered})
     result += 1
   ct.steerStream.queue.setLen(0)
+
+proc drainAdvisories(ct: CoreTools, p: var Persister,
+                     messages: var seq[JsonNode],
+                     onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                     turnId = ""): int =
+  ## Pop accepted advisor payloads queued by pumpAdvise (the expert peer,
+  ## EXPERT.md) and append each as a distinctly marked user message into the
+  ## running conversation. Like steer, folding keeps the turn alive on early
+  ## stop; the "advice" event carries the structured provenance.
+  if ct.adviseStream == nil: return 0
+  let sessionId = p.convId
+  for adv in ct.adviseStream.queue:
+    let content = adv{"content"}.getStr("")
+    if content.len == 0: continue
+    let source = adv{"source"}.getStr("advisor")
+    let advMsg = %*{"role": "user",
+                    "content": "[Niffler advisor: " & source & "] " & content}
+    messages.add(advMsg)
+    p.persistMsg(advMsg)
+    if onEvent != nil:
+      onEvent("advice", %*{"sessionId": sessionId, "turnId": turnId,
+                           "source": source, "content": content,
+                           "reason": adv{"reason"}.getStr("")})
+    result += 1
+  ct.adviseStream.queue.setLen(0)
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-              thinkingEffort = ""): string =
+              thinkingEffort = "", turnContent = ""): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
-  ## ("assistant", {sessionId, content}), ("toolcall", {sessionId, tool, args,
-  ## result|error}), ("token", {sessionId, content, reasoning} live deltas),
-  ## ("done", {sessionId, reply}) as they happen.
+  ## ("turn", {sessionId, turnId, phase: start|done, content?, error?}),
+  ## ("assistant", {sessionId, turnId, content}), ("toolcall", {sessionId,
+  ## turnId, callId, phase, tool, args, result|error, errorCode?}),
+  ## ("token", {sessionId, turnId, content, reasoning} live deltas),
+  ## ("status", {...turnId...}), ("advice", {sessionId, turnId, source,
+  ## content}) and ("done", {sessionId, turnId, reply}) as they happen.
+  ## turnContent is the user request that started this turn (ev.session.turn).
   let sessionId = p.convId
+  let turnId = "turn-" & newId()
+  # Live turn identity for pumpAdvise: advisor requests are accepted only
+  # while this turn is running and only for its turnId.
+  if ct.activeTurn != nil:
+    ct.activeTurn.session = sessionId
+    ct.activeTurn.id = turnId
+    ct.activeTurn.advisories = 0
+  defer:
+    if ct.activeTurn != nil:
+      ct.activeTurn.session = ""
+      ct.activeTurn.id = ""
+  # Every exit path closes the turn event — including exceptions.
+  var turnClosed = false
+  proc emitTurnDone(err = "") =
+    if onEvent != nil and not turnClosed:
+      var ev = %*{"sessionId": sessionId, "turnId": turnId, "phase": "done"}
+      if err.len > 0: ev["error"] = %err
+      onEvent("turn", ev)
+    turnClosed = true
+  if onEvent != nil:
+    onEvent("turn", %*{"sessionId": sessionId, "turnId": turnId,
+                       "phase": "start", "content": turnContent})
 
   # Resolve once before the turn so the context guard sees the selected
   # model's effective window before inference. The resolved model is then
@@ -529,7 +585,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   var selectedModel = modelOverride
   var resolvedProvider = ""
   try:
-    let status = resolveTurnConfig(ct, p, modelOverride)
+    var status = resolveTurnConfig(ct, p, modelOverride)
+    status["turnId"] = %turnId
     resolvedProvider = status{"provider"}.getStr("")
     selectedModel = status{"model"}.getStr(selectedModel)
     if onEvent != nil:
@@ -555,6 +612,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if ct.nested != nil:
       ct.nested.session = ""
       ct.nested.lease = ""
+  defer:
+    emitTurnDone("aborted")
   # Live LLM token stream: subscribe before the first chat call so no
   # delta is missed, and forward every frame to the caller as a "token"
   # event (the UI renders them as streaming text/thinking). The frames
@@ -562,16 +621,18 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # thread is needed.
   startTokenStream(ct, sessionId, proc(sid, content, reasoning: string) {.closure.} =
     if onEvent != nil:
-      onEvent("token", %*{"sessionId": sid, "content": content,
-                          "reasoning": reasoning}))
+      onEvent("token", %*{"sessionId": sid, "turnId": turnId,
+                          "content": content, "reasoning": reasoning}))
   defer: stopTokenStream(ct)
   var rounds = 0
   while rounds < 20:
     rounds += 1
-    checkContext(p, messages, onEvent)
+    checkContext(p, messages, onEvent, turnId)
     # Fold any steering messages the client injected mid-turn into the running
-    # conversation before the next LLM call (Pi-style steering).
-    discard drainSteer(ct, p, messages, onEvent)
+    # conversation before the next LLM call (Pi-style steering), plus any
+    # accepted advisor messages (pumpAdvise).
+    discard drainSteer(ct, p, messages, onEvent, turnId)
+    discard drainAdvisories(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
     let llmArgs = %*{"messages": messages,
@@ -590,7 +651,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     except CatchableError as e:
       let msg = "llm error: " & e.msg
       if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "error": msg})
+        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                           "error": msg})
+      emitTurnDone(msg)
       return msg
     ct.cat.pump()
     if ct.sup != nil:
@@ -623,6 +686,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if onEvent != nil:
       var statusEv = %*{
         "sessionId": sessionId,
+        "turnId": turnId,
         "provider": usedProvider,
         "model": usedModel,
         "context": p.ctxSize,
@@ -647,7 +711,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       messages.add(assistantMsg)
       p.persistMsg(assistantMsg)
       if content.len > 0 and onEvent != nil:
-        var ev = %*{"sessionId": sessionId, "content": content}
+        var ev = %*{"sessionId": sessionId, "turnId": turnId,
+                    "content": content}
         if reasoning.len > 0: ev["reasoning"] = %reasoning
         if usedProvider.len > 0: ev["provider"] = %usedProvider
         if usedModel.len > 0: ev["model"] = %usedModel
@@ -659,10 +724,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # No tool calls: the model wants to stop. But if the client injected a
       # steering message while this response was in flight, fold it in and keep
       # going rather than ending the turn early (Pi's continuation-on-nudge).
-      if drainSteer(ct, p, messages, onEvent) > 0:
+      if drainSteer(ct, p, messages, onEvent, turnId) +
+          drainAdvisories(ct, p, messages, onEvent, turnId) > 0:
         continue
       if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "reply": content})
+        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                           "reply": content})
+      emitTurnDone()
       return content
 
     for tc in toolCalls:
@@ -681,6 +749,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
+      if onEvent != nil:
+        onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                               "callId": id, "phase": "start",
+                               "tool": name, "args": args})
       try:
         let toolResult =
           if parseFailed:
@@ -699,16 +771,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         messages.add(toolMsg)
         p.persistMsg(toolMsg)
         if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
-                                 "args": args, "result": toolResult})
+          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                                 "callId": id, "phase": "done",
+                                 "tool": name, "args": args,
+                                 "result": toolResult})
       except CatchableError as e:
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": "ERROR: " & e.msg}
         messages.add(toolMsg)
         p.persistMsg(toolMsg)
         if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "tool": name,
-                                 "args": args, "error": e.msg})
+          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                                 "callId": id, "phase": "done",
+                                 "tool": name, "args": args,
+                                 "error": e.msg})
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
@@ -835,7 +911,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort)
+                      entry.thinkingEffort, content)
   sessions[sessionId] = entry
   return %*{"ok": true, "sessionId": sessionId, "reply": reply,
             "modelOverride": entry.modelOverride,
@@ -860,6 +936,12 @@ proc sessionSubject*(sessionId: string): string =
 func steerSubject*(sessionId: string): string =
   ## Fire-and-forget channel a client publishes to in order to inject a message
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
+
+func adviseSubject*(sessionId: string): string =
+  ## Turn-bound advisory requests from the expert peer (EXPERT.md): answered
+  ## by the runner's pumpAdvise with {accepted, reason}; advice never leaks
+  ## past the named turn.
+  "svc.session." & sanitizeSessionId(sessionId) & ".advise"
 
 func toolSubject*(sessionId: string): string =
   ## Nested-call proxy for session-context tools (fabric, agent): generated

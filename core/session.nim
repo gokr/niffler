@@ -45,7 +45,9 @@ proc main() =
                      approval: approval, coreSub: nil, runner: true,
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream),
-                     steerStream: new(SteerStream))
+                     steerStream: new(SteerStream),
+                     adviseStream: new(AdviseStream),
+                     activeTurn: new(ActiveTurn))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
   # consults the store so a decision made in any client is honored here too.
   approval.checkAuto = proc(session, tool: string): bool =
@@ -85,6 +87,19 @@ proc main() =
     stderr.writeLine("session: subscribe " & steerSubjectStr & ": " & getErrorString(sst))
     quit(1)
   ct.steerStream.sub = steerSub
+  # Advisory channel: sync subscribe to svc.session.<id>.advise (EXPERT.md).
+  # pumpAdvise answers each turn-bound advisory request — accepted only while
+  # that turn is live — from dispatch's idle slot during a turn and from the
+  # main loop while idle, so late advice is rejected, never queued.
+  let adviseSubjectStr = adviseSubject(sessionId)
+  var adviseSub: ptr natsSubscription
+  let ast = natsConnection_SubscribeSync(addr adviseSub, nc.conn,
+                                         adviseSubjectStr.cstring)
+  if not checkStatus(ast):
+    stderr.writeLine("session: subscribe " & adviseSubjectStr & ": " &
+                     getErrorString(ast))
+    quit(1)
+  ct.adviseStream.sub = adviseSub
   # Nested-call proxy: sync subscribe to svc.session.<id>.tool. pumpNested
   # drains it from dispatch's idle slot while a session-context tool (fabric,
   # agent) is running, so a generated program's callTool requests re-enter
@@ -115,7 +130,11 @@ proc main() =
   while not gStop:
     var msg: ptr natsMsg
     let ms = natsSubscription_NextMsg(addr msg, sub, 200)
-    if ms == NATS_TIMEOUT: continue
+    if ms == NATS_TIMEOUT:
+      # Keep the advisory surface responsive while idle: a late advise must
+      # get its rejection reply now, not when the next turn happens to pump.
+      pumpAdvise(ct)
+      continue
     if not checkStatus(ms): break
     let data = $natsMsg_GetData(msg)
     let reply = $natsMsg_GetReply(msg)

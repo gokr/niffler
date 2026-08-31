@@ -30,6 +30,8 @@ type
     # in niffler.nim or session.nim, shared everywhere).
     tokenStream*: TokenStream
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
+    adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
+    activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
     nested*: NestedState               ## nested-call proxy (session runners only)
     prepareSession*: proc(sessionId: string): JsonNode {.closure.}
       ## Delegated child-runner preparation (set by the system harness after
@@ -52,6 +54,21 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+  # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
+  # request/reply surface. pumpAdvise answers each request immediately —
+  # accepted only while the named turn is still live — and queues accepted
+  # payloads for runTurn to fold in as distinctly marked user messages.
+  # A ref, like steerStream, so runTurn's state survives by-value copies.
+  AdviseStream* = ref object
+    sub*: ptr natsSubscription
+    queue*: seq[JsonNode]    # accepted advisory payloads (drained by runTurn)
+    lastContent*: string     # naive dedupe: reject an exact repeat
+  # Identity of the turn currently running in this process, maintained by
+  # runTurn so pumpAdvise can bind advice to it (stale-turn rejection).
+  ActiveTurn* = ref object
+    session*: string         ## active conversation ("" = no live turn)
+    id*: string              ## turnId of the live turn
+    advisories*: int         ## accepted advisor messages this turn
   # Nested-call proxy state (svc.session.<id>.tool): session-context tools
   # (fabric, agent) receive {session, lease} in args; the runner's pump
   # validates nested calls against the live lease before re-entering the one
@@ -405,6 +422,64 @@ proc pumpSteer*(ct: CoreTools) =
     if content.len > 0:
       ct.steerStream.queue.add(content)
 
+proc pumpAdvise*(ct: CoreTools) =
+  ## Drain svc.session.<id>.advise — turn-bound advisory requests from the
+  ## expert peer. Each request is answered immediately: accepted only while
+  ## the named turn is still active (one advisory per turn, no exact repeat),
+  ## otherwise rejected with a stable reason. Fire-and-forget steer is for
+  ## user type-ahead; autonomous advice must not leak into a later turn, so
+  ## this surface is request/reply and fail-closed. Also serviced while the
+  ## runner's main loop is idle (session.nim), so a late advise gets a
+  ## rejection reply instead of sitting queued for the next turn.
+  if ct.adviseStream == nil or ct.adviseStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.adviseStream.sub, 1)
+    if st != NATS_OK: break  # timeout or error: nothing (more) to do now
+    let data = $natsMsg_GetData(msg)
+    let reply = $natsMsg_GetReply(msg)
+    natsMsg_Destroy(msg)
+    if reply.len == 0: continue
+    var env: Envelope
+    try:
+      env = decode(data)
+    except CatchableError:
+      let resp = errorEnvelope(newId(), "bad-envelope",
+        "expected a call envelope on the advise subject")
+      ct.nc.publish(reply, resp.encode())
+      continue
+    let p = env.args
+    let sessionId = p{"sessionId"}.getStr("")
+    let turnId = p{"turnId"}.getStr("")
+    let content = p{"content"}.getStr("")
+    var reason = ""
+    var accepted = false
+    if env.kind != ekCall or env.tool != "advise":
+      reason = "bad-envelope"
+    elif ct.activeTurn == nil or ct.activeTurn.session.len == 0:
+      reason = "no-active-turn"
+    elif sessionId.len == 0 or sessionId != ct.activeTurn.session:
+      reason = "wrong-session"
+    elif turnId.len == 0 or turnId != ct.activeTurn.id:
+      reason = "stale-turn"
+    elif content.len == 0:
+      reason = "empty"
+    elif content == ct.adviseStream.lastContent:
+      reason = "duplicate"
+    elif ct.activeTurn.advisories >= 1:
+      reason = "advisory-limit"
+    else:
+      accepted = true
+      ct.activeTurn.advisories += 1
+      ct.adviseStream.lastContent = content
+      ct.adviseStream.queue.add(p)
+    try:
+      let resp = resultEnvelope(env.id,
+        %*{"accepted": accepted, "reason": reason})
+      ct.nc.publish(reply, resp.encode())
+    except CatchableError as e:
+      stderr.writeLine("core: advise reply publish failed: " & e.msg)
+
 proc validateRequired(schema, args: JsonNode): string =
   ## Minimal admission validation for nested calls: every required field of
   ## the tool schema must be present and non-null. Full JSON Schema
@@ -513,6 +588,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpAdvise(ct)
     pumpNested(ct)
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &

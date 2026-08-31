@@ -302,7 +302,9 @@ proc main() =
                      root: root, runner: false,
                      pending: PendingCalls(items: @[]),
                      tokenStream: new(TokenStream),
-                     steerStream: new(SteerStream))
+                     steerStream: new(SteerStream),
+                     adviseStream: new(AdviseStream),
+                     activeTurn: new(ActiveTurn))
   # Slash registry checkpoint (docs/WIRE.md): every catalog change persists
   # the merged table to the store BEFORE ev.catalog.updated goes out, so a UI
   # reading store-first after the event never sees a stale table. Best effort:
