@@ -38,6 +38,11 @@ comp.tool(%*{"hidden": true}):
     let stage = chatStage.mgetOrPut(sessionId, 0)
     chatStage[sessionId] = stage + 1
     if sessionId.startsWith("agent-"):
+      # forced LLM failure: a task carrying the marker makes the child's
+      # chat raise — the runner turns that into a turnError, and agent_run
+      # must report it as a failure, not a successful text reply
+      if messages != nil and ($messages).contains("FORCE_LLM_FAILURE"):
+        raise newException(CatchableError, "llm exploded")
       case stage
       of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
       of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
@@ -46,6 +51,11 @@ comp.tool(%*{"hidden": true}):
       if stage == 0:
         return toolCall("t1", "agent_run",
                         %*{"task": "echo agent-ok via a subagent"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-llmfail":
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "FORCE_LLM_FAILURE then report"})
       return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:

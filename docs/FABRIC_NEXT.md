@@ -25,10 +25,17 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] trusted-guest wording aligned with the actual boundary;
 - [x] monotonic deadline propagation and complete bounded schema validation;
 - [x] source, strings, call, frame, log, result, artifact, and OS limits;
-- [ ] transport cancellation propagation when supported;
+- [x] transport cancellation: resolved by deferral — NATS request/reply has
+  no cancel semantics; kill-on-timeout remains the only stop (documented in
+  `research/FABRIC.md`), revisited with durable workers;
 - [x] generated input-typed Nim wrappers and catalog pinning;
 - [x] approval manifests: source digest, viewable source artifact, selected
   tools and budgets at the gate; digest-keyed persisted auto-approval;
+- [x] agent lifecycle: `agent_steer` removed (unreachable during synchronous
+  runs; returns with durable workers), fail-closed lineage, interactive-caller
+  propagation to child approvals, child LLM failures reported as failures,
+  idle runner retirement. Lineage-record cleanup lands with a conversation
+  deletion surface (none exists yet);
 - [ ] bounded concurrency, durable agents, and structured observability.
 
 ## Usage model

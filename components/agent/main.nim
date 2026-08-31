@@ -5,14 +5,16 @@
 ## the LLM drives:
 ## - agent_run: prepare a child runner (session_prepare — never core's
 ##   session tool, which stashes mid-turn), record lineage in the store,
-##   run the child turn synchronously, return its final reply.
-## - agent_steer: fire-and-forget mid-turn message injection into any
-##   session (the runner's drainSteer consumes it between LLM rounds).
+##   run the child turn synchronously, return its final reply. Lineage
+##   persistence and reads fail closed (no store, no spawning); child LLM
+##   failures are reported as failures; approvals inside the child route to
+##   the original interactive caller, not to this component. Idle child
+##   runners retire themselves (NIF_RUNNER_IDLE_S, core/session.nim) and are
+##   re-ensured on demand.
 ##
 ## Depth rule: a session spawned as a child (sessionmeta.parent set) cannot
-## spawn children itself — recursion stops at one level. Approvals inside
-## the child route to the driving client via the caller field; with no
-## reachable human they are denied (never silently approved).
+## spawn children itself — recursion stops at one level. With no reachable
+## human, approvals are denied (never silently approved).
 
 import std/[json, os]
 import natswrapper
@@ -26,13 +28,13 @@ const taskPreamble =
   "only thing the caller sees.\n\nTask:\n"
 
 proc hasParent(sessionId: string): bool =
-  ## True when the session was itself spawned as a subagent child.
-  try:
-    let meta = comp.request("store", "get",
-      %*{"kind": "sessionmeta", "id": sessionId}, 10_000)
-    return meta{"value"}{"parent"}.getStr("").len > 0
-  except CatchableError:
-    return false
+  ## True when the session was itself spawned as a subagent child. Raises
+  ## when the lineage store is unreachable — callers must fail closed.
+  ## A session with no lineage record arrives as a not-found RESULT, not
+  ## an error, so root sessions are unaffected.
+  let meta = comp.request("store", "get",
+    %*{"kind": "sessionmeta", "id": sessionId}, 10_000)
+  return meta{"value"}{"parent"}.getStr("").len > 0
 
 # low-level registration: the handler needs the raw __session injection
 let runSchema = toolSchema(%*{
@@ -51,7 +53,13 @@ discard comp.tool("agent_run", runSchema,
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
     if parentSession.len == 0:
       return errResult("agent_run needs a live session context")
-    if hasParent(parentSession):
+    var isChild = false
+    try:
+      isChild = hasParent(parentSession)
+    except CatchableError as e:
+      return errResult("cannot verify subagent lineage (store unreachable): " &
+                       e.msg)
+    if isChild:
       return errResult("subagents cannot spawn subagents (depth limit)")
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
@@ -68,14 +76,15 @@ discard comp.tool("agent_run", runSchema,
     if subject.len == 0:
       return errResult("session_prepare returned no subject",
                        extra = %*{"detail": $prep})
-    # lineage before the turn, so a nested agent_run inside the child is
-    # denied by hasParent
+    # lineage before the turn, fail closed: an unrecorded child would pass
+    # its own depth guard and could spawn grandchildren
     try:
       discard comp.request("store", "put",
         %*{"kind": "sessionmeta", "id": child,
            "value": %*{"parent": parentSession}}, 10_000)
-    except CatchableError:
-      discard  # lineage is a guard, not a hard requirement
+    except CatchableError as e:
+      return errResult("cannot record subagent lineage (store unreachable): " &
+                       e.msg, extra = %*{"sessionId": child})
     var sessArgs = %*{"sessionId": child, "content": taskPreamble & task}
     # Subagent conversations get the same pluggable constitution as normal
     # ones: fetch the systemprompt component's prompt (best effort — the
@@ -95,22 +104,21 @@ discard comp.tool("agent_run", runSchema,
     if model.len > 0:
       sessArgs["model"] = %model
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
-    let env = callEnvelope("session", sessArgs, "agent")
+    # approvals inside the child route to the original interactive caller
+    # (injected as private context by the dispatch gate), not to this
+    # component — which is blocked in this handler and could not answer
+    let originalCaller = toolArgs{"__session"}{"caller"}.getStr("agent")
+    let env = callEnvelope("session", sessArgs, originalCaller)
     let resp = comp.requestEnvelope(subject, env, timeoutMs)
     if resp.kind == ekError:
       return errResult(resp.error{"message"}.getStr("subagent failed"),
                        extra = %*{"sessionId": child})
+    # a child whose LLM failed reports failure, not a text reply
+    let turnError = resp.args{"turnError"}.getStr("")
+    if turnError.len > 0:
+      return errResult(turnError, extra = %*{"sessionId": child})
     return okResult(%*{"sessionId": child,
                        "reply": resp.args{"reply"}.getStr(""),
                        "model": resp.args{"modelOverride"}.getStr("")}))
-
-comp.tool:
-  proc agent_steer(session_id: string, message: string): JsonNode =
-    ## Inject a message into a RUNNING subagent turn (folded in between LLM
-    ## rounds). Fire-and-forget: success means published, not processed.
-    ## - session_id: The subagent session id returned by agent_run
-    ## - message: The steering message for the running turn
-    comp.emit(sessionSteerSubject(session_id), %*{"content": message})
-    return okResult(%*{"published": true})
 
 comp.run()

@@ -13,7 +13,7 @@ are marked where they matter.
 One programmable tool (`fabric`) lets the LLM write a Nim program that owns the
 intra-turn control flow — branching, loops, fan-out, data flow — instead of one
 tool call per loop round. Only the program's result enters the conversation.
-Alongside it, an `agent` tool (`agent_run`/`agent_steer`) turns any Niffler
+Alongside it, an `agent` tool (`agent_run`) turns any Niffler
 conversation into a subagent (fresh context, own loop, summary returned). Both
 are thin surfaces over infrastructure core already has.
 
@@ -125,12 +125,22 @@ need worker processes + durable state — not shipped):
   `session_prepare`, call the child runner's subject directly with the framed
   task, return its final reply with `{reply, sessionId}`. The child session
   call is a plain request/reply whose result carries the final reply.
-- **`agent_steer {sessionId, message}`** — fire-and-forget publish to
-  `svc.session.<id>.steer`; the running turn folds it in at the next round.
 - Fixed task preamble ("You are a subagent. Work autonomously, report a
   concise result."). The subagent gets the full normal toolset and loop.
-- Approvals inside the subagent route to the driving client
-  (`approval.caller`) — the human still sees every gate.
+- Approvals inside the subagent route to the original interactive caller
+  (dispatch injects it as private `__session.caller`; the child's
+  `approval.caller` becomes the driving client) — the human still sees every
+  gate. With no reachable human they are denied.
+- Lineage fails closed: the depth-guard `sessionmeta` read/write treats a
+  store outage as "cannot verify → deny", for both the dispatch-time guard
+  and the component's own guard.
+- Child LLM failures surface as `{"error": ...}` from `agent_run` (the
+  runner marks failed turns with `turnError`), never as successful text.
+- `agent_steer` was removed: it could never run while synchronous
+  `agent_run` occupied the agent component's handler. Steering returns with
+  durable background workers.
+- Idle child runners retire themselves (`NIF_RUNNER_IDLE_S`, default 600 s)
+  and are re-ensured on demand — conversations resume from the store.
 
 ## The `fabric` component (`components/fabric/`)
 

@@ -687,9 +687,14 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       ct.nested.lease = previousLease
       ct.nested.deadline = previousDeadline
       ct.nested.hasDeadline = previousHasDeadline
+    # caller is private proxy context: the interactive component driving this
+    # turn. Session-context components (agent) forward it to child runners so
+    # approvals raised inside a subagent route to the original human's client.
+    let turnCaller = if ct.approval != nil: ct.approval.caller else: ""
     callArgs["__session"] = %*{"session": ct.nested.session,
                                 "lease": ct.nested.lease,
-                                "remainingMs": timeoutMs}
+                                "remainingMs": timeoutMs,
+                                "caller": turnCaller}
     # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
     # with a parent record in the store — may not call spawn-class tools. The
     # check MUST live here, not in the component's handler: the handler blocks
@@ -702,7 +707,10 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
           %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
         hasParent = meta{"value"}{"parent"}.getStr("").len > 0
       except CatchableError:
-        discard  # store unreachable: the component's own guard still applies
+        # fail closed: a missing sessionmeta record arrives as a result
+        # (not-found), so an exception here means the lineage store is
+        # unreachable — spawning cannot be verified, so it is denied
+        hasParent = true
       if hasParent:
         raise newException(ValueError,
           "subagents cannot spawn subagents (depth limit)")

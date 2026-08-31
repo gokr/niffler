@@ -89,7 +89,11 @@ proc pump*(sup: Supervisor, cat: Catalog) =
   ## Check children for unexpected death; restart per policy. Call from
   ## event gaps in the loop (registrations converge in the catalog).
   let now = epochTime()
-  for c in sup.children:
+  var retired: seq[int]
+  for i in 0 ..< sup.children.len:
+    # index access: `for c in sup.children` yields copies, and mutating a
+    # copy's process field would leave a stale pointer in the managed set
+    template c: untyped = sup.children[i]
     if not c.wanted or c.process == nil: continue
     if c.process.running(): continue
     # died — keep c.process until the backoff window passes: a child that
@@ -99,6 +103,10 @@ proc pump*(sup: Supervisor, cat: Catalog) =
       c.process.close()
       c.process = nil
       cat.dropComponent(c.name)
+      # retire the entry entirely: ensureRunner probes sup.children to tell
+      # "spawning" from "dead", and a stale entry would block re-ensure of
+      # an intentionally retired (idle-exited) runner forever
+      retired.add(i)
       continue
     if now < c.nextStart: continue
     let code = c.process.peekExitCode()
@@ -113,6 +121,9 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     if tail.len > 0:
       echo "supervisor:   last output: " & tail
     startChild(sup, c)
+  # delete retired entries descending so earlier indices stay valid
+  for i in countdown(retired.len - 1, 0):
+    sup.children.delete(i)
 
 proc removeChild*(sup: Supervisor, name: string): bool =
   ## Stop one child for good, then drop it from the managed set (no restart,

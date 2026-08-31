@@ -509,7 +509,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-              thinkingEffort = "", turnContent = ""): string =
+              thinkingEffort = "", turnContent = "",
+              turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
   ## ("turn", {sessionId, turnId, phase: start|done, content?, error?}),
@@ -614,6 +615,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
     except CatchableError as e:
       let msg = "llm error: " & e.msg
+      turnError = msg
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
                            "error": msg})
@@ -890,13 +892,19 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   defer:
     if ct.approval != nil: ct.approval.caller = ""
 
+  var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort, content)
+                      entry.thinkingEffort, content, turnError)
   sessions[sessionId] = entry
-  return %*{"ok": true, "sessionId": sessionId, "reply": reply,
-            "modelOverride": entry.modelOverride,
-            "thinkingEffort": entry.thinkingEffort}
+  # turnError distinguishes "the turn failed" from "the model said this" so
+  # drivers (agent_run) report child LLM failures as failures, not text.
+  var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
+                  "modelOverride": entry.modelOverride,
+                  "thinkingEffort": entry.thinkingEffort}
+  if turnError.len > 0:
+    sessionResult["turnError"] = %turnError
+  return sessionResult
 
 # ---------------------------------------------------------------------------
 # Session runners — one process per conversation (system side: ensure/forward)

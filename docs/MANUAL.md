@@ -57,7 +57,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) |
-| `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_steer` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
@@ -1198,7 +1198,6 @@ guide with nudge phrasing and worked examples:
 |---|---|
 | `fabric {code, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
 | `agent_run {task, model?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. |
-| `agent_steer {session_id, message}` | Inject a message into a running subagent turn (drained between LLM rounds). |
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call

@@ -1,11 +1,12 @@
 ## agent component tests (fabric Phase 1, docs/research/FABRIC.md).
 ##
 ## Boots a sandbox core (store + bash, no LLM) with the test-only stub
-## component (components/ctxtest) and the agent component. Drives one parent
-## turn whose stub LLM calls agent_run; the child session (its own runner,
-## stub-scripted) attempts a nested agent_run (must be denied by the depth
-## guard), runs bash, and finishes. Asserts the full loop: delegated
-## child-runner prep, lineage metadata, synchronous reply, depth guard.
+## component (components/ctxtest) and the agent component. Drives parent
+## turns whose stub LLM calls agent_run; child sessions (their own runners,
+## stub-scripted) attempt a nested agent_run (denied by the depth guard),
+## run bash, or force an LLM failure. Asserts the full loop: delegated
+## child-runner prep, lineage metadata, synchronous reply, depth guard,
+## child LLM failure surfaced as a failure, and idle runner retirement.
 
 import std/[json, os, osproc, strutils]
 import natswrapper
@@ -56,7 +57,8 @@ proc main() =
   defer: nc.close()
 
   var coreProc = startComponent(coreBin, url, root = root,
-                                extra = [("NIF_AUTO_APPROVE", "1")],
+                                extra = [("NIF_AUTO_APPROVE", "1"),
+                                         ("NIF_RUNNER_IDLE_S", "2")],
                                 logFile = "/tmp/opencode/core.log")
   defer:
     if coreProc != nil and coreProc.running():
@@ -140,12 +142,46 @@ proc main() =
   check("child sessionmeta records parent",
         meta{"value"}{"parent"}.getStr("") == parentId, $meta)
 
-  # --- agent_steer: fire-and-forget publish ---------------------------------
-  let steer = call(nc, "agent", "agent_steer",
-                   %*{"session_id": childId, "message": "keep going"}, 10_000)
-  check("agent_steer published",
-        steer{"ok"}.getBool(false) and steer{"published"}.getBool(false),
-        $steer)
+  # --- child LLM failure is a failure, not a successful text reply ----------
+  # The stub chat raises for a task carrying the marker; agent_run must
+  # surface the runner's turnError instead of an ok reply.
+  let failParent = "agt-llmfail"
+  let failTurn = call(nc, "core", "session",
+                      %*{"sessionId": failParent, "content": "go"}, 120_000)
+  check("failing parent turn completed",
+        failTurn{"reply"}.getStr("") == "agent-turn-done", $failTurn)
+  var failResult = JsonNode(nil)
+  for i in 1 .. 6:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": failParent & ":" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    let content = m{"value"}{"content"}.getStr("")
+    if content.contains("llm error") or content.contains("\"error\""):
+      try: failResult = parseJson(content)
+      except CatchableError: discard
+  check("child LLM failure reported as a failure",
+        failResult != nil and failResult{"error"}.getStr("").len > 0 and
+        failResult{"error"}.getStr("").contains("llm error"),
+        if failResult != nil: $failResult else: "no agent_run failure result")
+  check("child failure carries the session id",
+        failResult != nil and
+        failResult{"sessionId"}.getStr("").startsWith("agent-"),
+        if failResult != nil: $failResult else: "no agent_run failure result")
+
+  # --- idle retirement: quiet runners self-exit (NIF_RUNNER_IDLE_S=2) -------
+  # The parent runner still exists right after the turn; after the idle
+  # window it is gone. A probe returns {"error": "timeout"} (no responder);
+  # the runner is re-ensured on the next real session call.
+  sleep(4000)
+  let retired = call(nc, "session." & childId, "session",
+                     %*{"sessionId": childId, "model": ""}, 2_000)
+  check("idle child runner retired",
+        retired{"error"}.getStr("") != "", $retired)
+  let reensured = call(nc, "core", "session",
+                       %*{"sessionId": childId, "model": ""}, 30_000)
+  check("retired runner re-ensured on demand",
+        reensured{"error"} == nil, $reensured)
 
   report("agent")
 

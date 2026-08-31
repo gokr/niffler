@@ -11,7 +11,7 @@
 ## Runners are ephemeral — history lives in the store; a fresh runner
 ## resumes the conversation on the next session call.
 
-import std/[json, os, tables]
+import std/[json, os, strutils, tables, times]
 when defined(posix):
   import std/posix
 import natswrapper
@@ -128,6 +128,15 @@ proc main() =
     discard signal(SIGINT, onSig)
 
   var sessions = initTable[string, Session]()
+  # Idle retirement: a runner with no session call for NIF_RUNNER_IDLE_S
+  # exits gracefully (reg.depart; the supervisor's restart-never policy drops
+  # it). Conversations resume from the store, and the next session call
+  # re-ensures the runner on demand — so idle subagent runners do not
+  # accumulate for the harness's lifetime.
+  var lastActivity = epochTime()
+  let idleLimitSecs = block:
+    try: parseFloat(getEnv("NIF_RUNNER_IDLE_S", "600"))
+    except CatchableError: 600.0
   while not gStop:
     var msg: ptr natsMsg
     let ms = natsSubscription_NextMsg(addr msg, sub, 200)
@@ -135,8 +144,12 @@ proc main() =
       # Keep the advisory surface responsive while idle: a late advise must
       # get its rejection reply now, not when the next turn happens to pump.
       pumpAdvise(ct)
+      if epochTime() - lastActivity > idleLimitSecs:
+        echo "session: retiring after " & $idleLimitSecs.int & "s idle"
+        break
       continue
     if not checkStatus(ms): break
+    lastActivity = epochTime()
     let data = $natsMsg_GetData(msg)
     let reply = $natsMsg_GetReply(msg)
     natsMsg_Destroy(msg)
