@@ -668,7 +668,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     let usage = resp{"usage"}
     var usageObj = newJObject()
     if usage != nil:
-      for k in ["prompt_tokens", "completion_tokens", "total_tokens"]:
+      for k in ["prompt_tokens", "completion_tokens", "total_tokens",
+                "prompt_tokens_details"]:
         if usage{k} != nil:
           usageObj[k] = usage{k}
     # token accounting for the context check on the next round

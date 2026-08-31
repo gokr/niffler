@@ -6,8 +6,11 @@ that the working agent is not fully exploiting Niffler. Status: **phase 1
 implemented** — the turn-bound wire surfaces (`ev.session.turn`, `turnId`
 correlation, `svc.session.<id>.advise`) and the 1:1 `expert` component with
 the LLM judgment contract and fail-closed delivery (`tests/t_expert.nim`,
-mock-llm driven). Not yet built: cached-token instrumentation, judgment
-quality tuning against a real model, and anything beyond one target session.
+mock-llm driven). Cached-token plumbing is in place: the `llm` adapter
+forwards `prompt_tokens_details.cached_tokens`, core passes usage through,
+and `expert_status` accumulates judgment prompt/cached/completion tokens.
+Not yet built: judgment quality tuning against a real model, and anything
+beyond one target session.
 
 The working session should keep its small frozen direct toolset and
 task-focused transcript, as described in
