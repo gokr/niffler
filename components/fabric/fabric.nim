@@ -263,7 +263,9 @@ proc storeArtifact(runId: string, value: string): string =
 let fabSchema = toolSchema(%*{
   "code": {"type": "string",
            "maxLength": maxCodeBytes,
-           "description": "A complete Nim program importing fabricguest. Orchestrate tool calls (callTool), compute on the results, and return ONE value with finish(...). Only the finish value reaches this conversation; everything else stays in the trusted guest process."},
+           "description": "A complete Nim program importing fabricguest. Orchestrate tool calls (callTool), compute on the results, and return ONE value with finish(...). Only the finish value reaches this conversation; everything else stays in the trusted guest process. Give either code or name, not both."},
+  "name": {"type": "string",
+           "description": "Run a stored program from the model-curated library (store kind 'fabricprog') instead of passing code. Save programs with the store's put tool; list what exists with store list. A stored program that stabilizes should graduate into a real component via builder + core spawn."},
   "strings": {"type": "object",
               "maxProperties": maxStringsEntries,
               "additionalProperties": {"type": "string"},
@@ -276,9 +278,9 @@ let fabSchema = toolSchema(%*{
                 "description": "Kill the program after this many ms (default 240000)"},
   "maxCalls": {"type": "integer",
                "minimum": 1, "maximum": maxCallsLimit,
-                "description": "Budget: reject tool calls beyond this count (default 200)"}
-}, required = @["code"],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+               "description": "Budget: reject tool calls beyond this count (default 200)"}
+}, required = @[],
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 discard comp.tool("fabric", fabSchema,
@@ -287,9 +289,33 @@ discard comp.tool("fabric", fabSchema,
     let lease = toolArgs{"__session"}{"lease"}.getStr("")
     if sess.len == 0 or lease.len == 0:
       return %*{"error": "fabric needs a live session context"}
-    let code = toolArgs{"code"}.getStr("")
+    var code = toolArgs{"code"}.getStr("")
+    let name = toolArgs{"name"}.getStr("")
+    if code.len > 0 and name.len > 0:
+      return %*{"error": "fabric takes either code or name, not both"}
     if code.len == 0:
-      return %*{"error": "fabric needs code"}
+      if name.len == 0:
+        return %*{"error": "fabric needs code or name"}
+      # program library: fetch the stored source (the model curates it
+      # via the store's put/get/list — fabric only runs it)
+      var stored: JsonNode
+      try:
+        stored = comp.request("store", "get",
+          %*{"kind": "fabricprog", "id": name}, 10_000)
+      except CatchableError:
+        stored = nil
+      if stored == nil or stored{"value"}{"code"}.getStr("").len == 0:
+        var known: seq[string] = @[]
+        try:
+          let lst = comp.request("store", "list",
+            %*{"kind": "fabricprog", "limit": 50}, 10_000)
+          for it in lst{"items"}:
+            known.add(it{"id"}.getStr(""))
+        except CatchableError: discard
+        var hint = ""
+        if known.len > 0: hint = " Known programs: " & known.join(", ")
+        return %*{"error": "no stored program named '" & name & "'." & hint}
+      code = stored{"value"}{"code"}.getStr("")
     if code.len > maxCodeBytes:
       return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
     let lintMsg = lint(code)

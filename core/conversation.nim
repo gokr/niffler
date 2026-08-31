@@ -38,6 +38,11 @@ invoke builder build {lang, name, source}, invoke core spawn {name,
 binary}); 4. only then hand-roll a one-off with bash. The live catalog is
 authoritative: never invent or call a tool that is not registered.
 Conversations and messages persist automatically via the store.
+For routing multi-step work: mechanical, known-shape tasks (fan-out,
+search-then-distill, batch edits, polling) belong in a program — discover
+and use the `fabric` tool. Exploratory subtasks that need fresh context and
+per-step judgment belong in `agent_run` subagents. Single-step requests
+stay direct.
 
 Your home is $# — the git repo Niffler runs from. Shipped component
 sources: components/, SDKs: sdk/, design docs: docs/, build front door:

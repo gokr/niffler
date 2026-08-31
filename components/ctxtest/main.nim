@@ -173,6 +173,11 @@ comp.tool(%*{"hidden": true}):
           "tools": ["bash"], "code": example, "strings": {"dirs": "."}})
       else:
         return %*{"content": "fabric-turn-done"}
+    if sessionId == "fab-lib":
+      if stage == 0:
+        # program library: run the stored program by name
+        return toolCall("t1", "fabric", %*{"name": "fab-lib-test"})
+      return %*{"content": "lib-turn-done"}
     if sessionId.startsWith("sp-"):
       # every turn: echo the conversation's system message (messages[0])
       # so the test asserts on what the LLM actually saw, on turn 1 AND on
