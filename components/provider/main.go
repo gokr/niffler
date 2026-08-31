@@ -8,8 +8,13 @@
 //
 // Data model
 //
-//	provider:<nickname>  {nickname, apiKey, baseUrl, model, catalog, context, plugin}
+//	provider:<nickname>  {nickname, authType, protocol, apiKey|oauth, baseUrl, model, ...}
 //	provider:active      {nickname, updatedAt}   -> the currently selected provider
+//
+// API-key providers use the OpenAI-compatible chat protocol by default. OAuth
+// providers use either ChatGPT's Codex Responses endpoint or Anthropic's
+// Messages endpoint; the provider component owns login, refresh and storage so
+// the llm component never needs a refresh token.
 //
 // On switch the component emits ev.provider.switch {nickname, previous, ...} so
 // provider plugin components (e.g. provider-deepseek exposing deepseek_balance)
@@ -32,17 +37,36 @@ const (
 	kindProvider = "provider"
 	activeID     = "active"
 	defaultModel = "deepseek-chat"
+
+	authAPIKey = "api_key"
+	authOAuth  = "oauth"
+
+	protocolOpenAI    = "openai-chat"
+	protocolCodex     = "openai-codex"
+	protocolAnthropic = "anthropic"
 )
+
+// OAuthCredential is the refreshable credential stored for a subscription
+// login. Expires is a Unix timestamp in milliseconds, matching browser time.
+type OAuthCredential struct {
+	Access    string `json:"access"`
+	Refresh   string `json:"refresh"`
+	Expires   int64  `json:"expires"`
+	AccountID string `json:"accountId,omitempty"`
+}
 
 // Provider is one configured LLM backend.
 type Provider struct {
-	Nickname string `json:"nickname"`
-	APIKey   string `json:"apiKey"`
-	BaseURL  string `json:"baseUrl"`
-	Model    string `json:"model"`
-	Catalog  string `json:"catalog"` // models.dev provider id for context lookup
-	Context  int    `json:"context"` // explicit context window override (0 = auto)
-	Plugin   string `json:"plugin"`  // component that hooks provider-specific tools (optional)
+	Nickname string           `json:"nickname"`
+	AuthType string           `json:"authType,omitempty"`
+	Protocol string           `json:"protocol,omitempty"`
+	APIKey   string           `json:"apiKey,omitempty"`
+	OAuth    *OAuthCredential `json:"oauth,omitempty"`
+	BaseURL  string           `json:"baseUrl"`
+	Model    string           `json:"model"`
+	Catalog  string           `json:"catalog"` // models.dev provider id for context lookup
+	Context  int              `json:"context"` // explicit context window override (0 = auto)
+	Plugin   string           `json:"plugin"`  // component that hooks provider-specific tools (optional)
 	// StripPrefix models a gateway (LLMgateway, devpass) that routes on the
 	// canonical id and rejects vendor-prefixed ids like "alibaba/glm-5.2".
 	// When set, the llm component sends the model id without the "vendor/"
@@ -53,29 +77,40 @@ type Provider struct {
 // providerSummary is the only provider shape intended for interactive clients.
 // It deliberately contains no credential value.
 type providerSummary struct {
-	Nickname string `json:"nickname"`
-	BaseURL  string `json:"baseUrl"`
-	Model    string `json:"model"`
-	Catalog  string `json:"catalog"`
-	Context  int    `json:"context"`
-	Plugin   string `json:"plugin"`
-	Active   bool   `json:"active"`
-	HasKey   bool   `json:"hasKey"`
+	Nickname  string `json:"nickname"`
+	AuthType  string `json:"authType"`
+	Protocol  string `json:"protocol"`
+	BaseURL   string `json:"baseUrl"`
+	Model     string `json:"model"`
+	Catalog   string `json:"catalog"`
+	Context   int    `json:"context"`
+	Plugin    string `json:"plugin"`
+	Active    bool   `json:"active"`
+	HasKey    bool   `json:"hasKey"` // compatibility name: true for any usable credential
+	ExpiresAt int64  `json:"expiresAt,omitempty"`
 	// StripPrefix mirrors Provider; surfaced so interactive clients can show
 	// and toggle it without an admin round-trip.
 	StripPrefix bool `json:"stripPrefix"`
 }
 
 func summarizeProvider(p Provider, active bool) providerSummary {
+	p = p.withDefaults()
+	expiresAt := int64(0)
+	if p.OAuth != nil {
+		expiresAt = p.OAuth.Expires
+	}
 	return providerSummary{
 		Nickname:    p.Nickname,
+		AuthType:    p.AuthType,
+		Protocol:    p.Protocol,
 		BaseURL:     p.BaseURL,
 		Model:       p.Model,
 		Catalog:     p.Catalog,
 		Context:     p.Context,
 		Plugin:      p.Plugin,
 		Active:      active,
-		HasKey:      p.APIKey != "",
+		HasKey:      p.hasCredential(),
+		ExpiresAt:   expiresAt,
 		StripPrefix: p.StripPrefix,
 	}
 }
@@ -91,6 +126,8 @@ func environmentProvider() Provider {
 	}
 	return Provider{
 		Nickname: "default",
+		AuthType: authAPIKey,
+		Protocol: protocolOpenAI,
 		APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
 		BaseURL:  baseURL,
 		Model:    model,
@@ -99,20 +136,72 @@ func environmentProvider() Provider {
 }
 
 func (p Provider) withDefaults() Provider {
+	if p.AuthType == "" {
+		if p.OAuth != nil {
+			p.AuthType = authOAuth
+		} else {
+			p.AuthType = authAPIKey
+		}
+	}
+	if p.Protocol == "" {
+		p.Protocol = protocolOpenAI
+	}
 	if p.BaseURL == "" {
-		switch p.Nickname {
-		case "deepseek":
-			p.BaseURL = "https://api.deepseek.com"
-		case "openai":
-			p.BaseURL = "https://api.openai.com/v1"
+		switch p.Protocol {
+		case protocolCodex:
+			p.BaseURL = "https://chatgpt.com/backend-api"
+		case protocolAnthropic:
+			p.BaseURL = "https://api.anthropic.com"
 		default:
-			p.BaseURL = ""
+			switch p.Nickname {
+			case "deepseek":
+				p.BaseURL = "https://api.deepseek.com"
+			case "openai":
+				p.BaseURL = "https://api.openai.com/v1"
+			}
 		}
 	}
 	if p.Model == "" {
-		p.Model = defaultModel
+		switch p.Protocol {
+		case protocolCodex:
+			p.Model = "gpt-5.4"
+		case protocolAnthropic:
+			p.Model = "claude-sonnet-4-6"
+		default:
+			p.Model = defaultModel
+		}
+	}
+	if p.Catalog == "" {
+		switch p.Protocol {
+		case protocolCodex:
+			p.Catalog = "openai"
+		case protocolAnthropic:
+			p.Catalog = "anthropic"
+		}
 	}
 	return p
+}
+
+func (p Provider) hasCredential() bool {
+	if p.AuthType == authOAuth || p.OAuth != nil {
+		return p.OAuth != nil && strings.TrimSpace(p.OAuth.Access) != "" &&
+			strings.TrimSpace(p.OAuth.Refresh) != ""
+	}
+	return strings.TrimSpace(p.APIKey) != ""
+}
+
+func validProtocol(value string) bool {
+	return value == protocolOpenAI || value == protocolCodex || value == protocolAnthropic
+}
+
+func validStoredProvider(p Provider) bool {
+	if !validProtocol(p.Protocol) || !p.hasCredential() {
+		return false
+	}
+	if p.AuthType == authOAuth {
+		return p.Protocol == protocolCodex || p.Protocol == protocolAnthropic
+	}
+	return p.AuthType == authAPIKey && p.Protocol != protocolCodex
 }
 
 type activeDoc struct {
@@ -229,17 +318,21 @@ func decodeArgs(raw json.RawMessage, target any) error {
 }
 
 func main() {
-	comp := sdk.New("provider", "0.2.0")
+	comp := sdk.New("provider", "0.3.0")
 	sc := &storeClient{c: comp}
+	oauth := newOAuthManager(sc, comp)
+	defer oauth.close()
+	oauth.registerTools()
 
 	// ---------------------------------------------------------------- add
 	comp.Tool("provider_add", map[string]any{
 		"type":        "object",
-		"description": "Add or update a configured LLM provider in the store. Requires an API key. Optionally set active.",
+		"description": "Add or update an API-key LLM provider in the store. Use provider_oauth_start for ChatGPT or Claude subscription login. Optionally set active.",
 		"properties": map[string]any{
 			"nickname":    map[string]any{"type": "string", "description": "Provider nickname (e.g. deepseek, openrouter, local)"},
 			"apiKey":      map[string]any{"type": "string", "description": "API key / secret"},
-			"baseUrl":     map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname for deepseek/openai)"},
+			"protocol":    map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolAnthropic}, "description": "Wire API (default openai-chat)"},
+			"baseUrl":     map[string]any{"type": "string", "description": "Optional base URL (defaults by nickname/protocol)"},
 			"model":       map[string]any{"type": "string", "description": "Default model id"},
 			"catalog":     map[string]any{"type": "string", "description": "models.dev provider id for context lookup (optional)"},
 			"context":     map[string]any{"type": "integer", "description": "Explicit context window in tokens (0 = auto)"},
@@ -253,6 +346,7 @@ func main() {
 		var args struct {
 			Nickname    string `json:"nickname"`
 			APIKey      string `json:"apiKey"`
+			Protocol    string `json:"protocol"`
 			BaseURL     string `json:"baseUrl"`
 			Model       string `json:"model"`
 			Catalog     string `json:"catalog"`
@@ -274,11 +368,19 @@ func main() {
 		if strings.TrimSpace(args.APIKey) == "" {
 			return nil, errors.New("apiKey required")
 		}
+		if args.Protocol == "" {
+			args.Protocol = protocolOpenAI
+		}
+		if !validProtocol(args.Protocol) || args.Protocol == protocolCodex {
+			return nil, errors.New("protocol must be openai-chat or anthropic for API-key providers")
+		}
 		if args.Context < 0 {
 			return nil, errors.New("context must be non-negative")
 		}
 		p := Provider{
 			Nickname:    args.Nickname,
+			AuthType:    authAPIKey,
+			Protocol:    args.Protocol,
 			APIKey:      args.APIKey,
 			BaseURL:     args.BaseURL,
 			Model:       args.Model,
@@ -336,10 +438,11 @@ func main() {
 	// ------------------------------------------------------------ update
 	comp.Tool("provider_update", map[string]any{
 		"type":        "object",
-		"description": "Update non-secret provider settings while preserving its stored API key. A non-empty apiKey rotates the credential.",
+		"description": "Update non-secret provider settings while preserving its stored credential. A non-empty apiKey rotates an API-key credential.",
 		"properties": map[string]any{
 			"nickname":    map[string]any{"type": "string"},
-			"apiKey":      map[string]any{"type": "string", "description": "Optional replacement credential; omitted preserves the current key"},
+			"apiKey":      map[string]any{"type": "string", "description": "Optional replacement API-key credential; omitted preserves the current credential"},
+			"protocol":    map[string]any{"type": "string", "enum": []string{protocolOpenAI, protocolCodex, protocolAnthropic}},
 			"baseUrl":     map[string]any{"type": "string"},
 			"model":       map[string]any{"type": "string"},
 			"catalog":     map[string]any{"type": "string"},
@@ -353,6 +456,7 @@ func main() {
 		var args struct {
 			Nickname    string  `json:"nickname"`
 			APIKey      *string `json:"apiKey"`
+			Protocol    *string `json:"protocol"`
 			BaseURL     *string `json:"baseUrl"`
 			Model       *string `json:"model"`
 			Catalog     *string `json:"catalog"`
@@ -382,7 +486,21 @@ func main() {
 			if strings.TrimSpace(*args.APIKey) == "" {
 				return nil, errors.New("apiKey cannot be empty")
 			}
+			if p.AuthType == authOAuth || p.OAuth != nil {
+				return nil, errors.New("cannot replace an OAuth login with apiKey; remove it and add an API-key provider")
+			}
+			p.AuthType = authAPIKey
 			p.APIKey = *args.APIKey
+		}
+		if args.Protocol != nil {
+			protocol := strings.TrimSpace(*args.Protocol)
+			if !validProtocol(protocol) {
+				return nil, errors.New("invalid protocol")
+			}
+			if p.AuthType == authOAuth && protocol != p.Protocol {
+				return nil, errors.New("OAuth provider protocol cannot be changed; sign in again")
+			}
+			p.Protocol = protocol
 		}
 		if args.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*args.BaseURL)
@@ -495,7 +613,7 @@ func main() {
 		"properties":  map[string]any{},
 		"x-harness":   map[string]any{"hidden": true},
 	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
-		p, source, ok, err := effectiveProvider(sc)
+		p, source, ok, err := oauth.effectiveProvider()
 		if err != nil {
 			return nil, err
 		}
@@ -519,7 +637,7 @@ func main() {
 		if err := activateEnvironment(comp, sc); err != nil {
 			return nil, err
 		}
-		p, source, ok, err := effectiveProvider(sc)
+		p, source, ok, err := oauth.effectiveProvider()
 		if err != nil {
 			return nil, err
 		}
@@ -568,7 +686,7 @@ func main() {
 		"properties":  map[string]any{},
 		"x-harness":   map[string]any{"hidden": true},
 	}, func(_ *sdk.Component, _ json.RawMessage) (any, error) {
-		p, source, ok, err := effectiveProvider(sc)
+		p, source, ok, err := oauth.effectiveProvider()
 		if err != nil {
 			return nil, err
 		}
@@ -601,24 +719,28 @@ func main() {
 		if args.Nickname == "" || args.Nickname == activeID {
 			return nil, errors.New("valid nickname required")
 		}
-		rawProvider, _, err := sc.get(kindProvider, args.Nickname)
+		rawProvider, rev, err := sc.get(kindProvider, args.Nickname)
 		if err != nil {
 			return nil, err
 		}
-		if rawProvider == nil {
+		if rawProvider == nil || rev == nil {
 			return nil, fmt.Errorf("provider %q not found", args.Nickname)
 		}
 		var p Provider
 		if err := json.Unmarshal(rawProvider, &p); err != nil {
 			return nil, fmt.Errorf("corrupt provider %q: %w", args.Nickname, err)
 		}
-		return map[string]any{"ok": true, "source": "store", "provider": p.withDefaults()}, nil
+		p, err = oauth.ensureFresh(p.withDefaults(), *rev)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "source": "store", "provider": p}, nil
 	})
 
 	// ------------------------------------------------------------- export
 	comp.Tool("provider_export", map[string]any{
 		"type":        "object",
-		"description": "Export all configured providers as JSON (including API keys). Use to back up or migrate.",
+		"description": "Export all configured providers as JSON (including API keys and OAuth refresh tokens). Use to back up or migrate.",
 		"properties":  map[string]any{},
 		"x-harness":   map[string]any{"approval": "always", "timeoutMs": 30000, "onDemand": true},
 	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
@@ -679,10 +801,10 @@ func main() {
 			if pr.Nickname == "" || pr.Nickname == activeID {
 				continue
 			}
-			if strings.TrimSpace(pr.APIKey) == "" {
+			final := pr.withDefaults()
+			if !validStoredProvider(final) {
 				continue
 			}
-			final := pr.withDefaults()
 			_, rev, err := sc.get(kindProvider, pr.Nickname)
 			if err != nil {
 				return nil, err
@@ -764,7 +886,8 @@ func effectiveProvider(sc *storeClient) (Provider, string, bool, error) {
 				if err := json.Unmarshal(providerRaw, &p); err != nil {
 					return Provider{}, "", false, fmt.Errorf("corrupt provider doc: %w", err)
 				}
-				return p.withDefaults(), "store", p.APIKey != "", nil
+				p = p.withDefaults()
+				return p, "store", p.hasCredential(), nil
 			}
 		}
 		// Empty/stale markers must not prevent the next added provider from
@@ -772,7 +895,7 @@ func effectiveProvider(sc *storeClient) (Provider, string, bool, error) {
 		_, _ = sc.del(kindProvider, activeID)
 	}
 	p := environmentProvider()
-	return p, "environment", p.APIKey != "", nil
+	return p, "environment", p.hasCredential(), nil
 }
 
 func emitProviderChanged(comp *sdk.Component, sc *storeClient, op, nickname string) {

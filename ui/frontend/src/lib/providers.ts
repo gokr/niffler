@@ -1,5 +1,10 @@
+export type ProviderProtocol = "openai-chat" | "openai-codex" | "anthropic";
+export type ProviderAuthType = "api_key" | "oauth";
+
 export interface ProviderSummary {
   nickname: string;
+  authType: ProviderAuthType;
+  protocol: ProviderProtocol;
   baseUrl: string;
   model: string;
   catalog: string;
@@ -7,6 +12,7 @@ export interface ProviderSummary {
   plugin: string;
   active: boolean;
   hasKey: boolean;
+  expiresAt?: number;
   stripPrefix?: boolean;
 }
 
@@ -20,6 +26,8 @@ export interface ResolvedConfig {
   contextSource: string;
   output?: number;
   outputSource?: string;
+  protocol?: ProviderProtocol;
+  authType?: ProviderAuthType;
   hasKey: boolean;
 }
 

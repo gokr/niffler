@@ -47,9 +47,9 @@ reference chapters for the shipped components. Design rationale lives in
 | `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
-| `llm` | Go | required | streaming OpenAI-compatible chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
+| `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
-| `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, `ev.provider.switch` notifications |
+| `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
@@ -457,16 +457,59 @@ the `active` marker doc) and exposes them to the agent and to `llm`:
 
 | Tool | What it does |
 |---|---|
-| `provider_add {nickname, apiKey, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add a provider; the first one becomes active automatically; response is redacted |
-| `provider_update {nickname, apiKey?, baseUrl?, model?, catalog?, context?, plugin?}` | hidden client API for partial updates; omitted API key is preserved |
-| `provider_list` | all stored providers (redacted — no keys), which one is active |
+| `provider_add {nickname, apiKey, protocol?, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add an API-key provider (`protocol`: `openai-chat` default or `anthropic`); the first one becomes active automatically; response is redacted |
+| `provider_update {nickname, apiKey?, protocol?, baseUrl?, model?, catalog?, context?, plugin?}` | hidden client API for partial updates; omitted API key is preserved |
+| `provider_oauth_start {protocol, method?, nickname?, model?, active?}` | hidden, start a subscription login: `protocol` `openai-codex` (ChatGPT Plus/Pro) or `anthropic` (Claude Pro/Max); `method` `browser` (local callback) or `device` (headless, OpenAI only). Returns `{flowId, url, userCode?, callbackAvailable, expiresAt}` |
+| `provider_oauth_complete {flowId, code?}` | hidden, poll/finish a login; returns `{pending, retryAfterMs?}` until the callback (or pasted `code`) lands, then stores the provider and reports it redacted |
+| `provider_oauth_cancel {flowId}` | hidden, cancel a pending login and close its callback listener |
+| `provider_list` | all stored providers (redacted — no keys/tokens), which one is active; each entry carries `authType` (`api_key`/`oauth`), `protocol` and `expiresAt` |
 | `provider_status` | hidden, redacted effective provider including environment fallback and `hasKey` |
-| `provider_active` | hidden internal read of the effective provider's full config, API key included |
+| `provider_active` | hidden internal read of the effective provider's full config, credential included |
 | `provider_get {nickname}` | hidden internal full-config read used to pin an explicit stored provider across a turn |
 | `provider_switch {nickname}` | make another stored provider active; live-updates the LLM backend |
 | `provider_use_environment` | hidden client API that clears the stored marker and returns to `NIF_OPENAI_*` |
 | `provider_remove {nickname}` | delete a provider; if it was active, another one takes over or environment fallback resumes |
-| `provider_export` / `provider_import` | JSON backup/migration round-trip, keys included; import merges and can restore the active marker |
+| `provider_export` / `provider_import` | JSON backup/migration round-trip, credentials included; import merges, validates records and can restore the active marker |
+
+### Wire protocols
+
+Each provider carries a `protocol` that `llm` routes on:
+
+- `openai-chat` — the OpenAI-compatible Chat Completions endpoint (default;
+  DeepSeek, OpenRouter, local vLLM, …).
+- `openai-codex` — ChatGPT's Codex Responses endpoint
+  (`https://chatgpt.com/backend-api/codex/responses`) with ChatGPT OAuth
+  headers (`chatgpt-account-id`, `OpenAI-Beta: responses=experimental`);
+  messages are translated to the Responses API input format and the SSE event
+  stream (text/reasoning deltas, function calls) is mapped back to the
+  shared result shape.
+- `anthropic` — the Anthropic Messages endpoint; OAuth logins send Claude
+  Code identity headers and betas, system prompts lead with the Claude Code
+  preamble, and tool calls/results are translated to `tool_use`/`tool_result`
+  blocks (consecutive tool results merge into one user message).
+
+### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)
+
+The `provider` component implements the same PKCE login flows Pi and opencode
+use (fixed localhost callback ports, manual redirect/code fallback, and the
+OpenAI device-code flow for headless machines):
+
+1. `provider_oauth_start` returns the authorization URL; interactive clients
+   open it in the system browser. OpenAI alternatively offers `device` login
+   (a short code entered at `auth.openai.com/codex/device`).
+2. `provider_oauth_complete` polls until authorization completes, then
+   exchanges the code and stores the provider — `authType: "oauth"` with the
+   access token, refresh token, expiry and (for ChatGPT) the account id
+   extracted from the JWT.
+3. Every credential read (`provider_active`, `provider_get`, status
+   resolution) refreshes the token transparently when it is within 5 minutes
+   of expiry and persists the rotated credential. The `llm` component never
+   sees a refresh token.
+
+Environment knobs: `NIF_OAUTH_CALLBACK_HOST` (default `127.0.0.1`) moves the
+local callback listener (ports stay fixed at 1455/53692 like the reference
+clients). Exports contain live refresh tokens — treat `provider_export`
+output as a secret.
 
 - `provider_add`/`provider_update`/`provider_import`/`provider_export` carry
   `x-harness.approval: "always"` — they move credentials or mutate connection

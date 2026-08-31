@@ -132,10 +132,10 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/models && go build -o ../../var/bin/models .'
 
-var/bin/provider: components/provider/main.go components/provider/go.mod components/provider/go.sum $(SDK_GO) | var/bin
+var/bin/provider: components/provider/main.go components/provider/oauth.go components/provider/go.mod components/provider/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/provider && go build -o ../../var/bin/provider .'
 
-var/bin/llm: components/llm/main.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
+var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthropic.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin

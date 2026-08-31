@@ -302,6 +302,36 @@ proc main() =
   check("provider_remove on an unknown provider errors",
         remX{"error"}.getStr("").len > 0, $remX)
 
+  # --- OAuth provider records: refresh tokens stay internal, while the llm
+  # receives the access token plus protocol/account metadata. A far-future
+  # expiry keeps this contract test hermetic (no token endpoint call).
+  let oauthImport = call(nc, "provider", "provider_import", %*{
+    "json": """{"active":"openai-codex","providers":[{
+      "nickname":"openai-codex","authType":"oauth","protocol":"openai-codex",
+      "oauth":{"access":"header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0In19.sig","refresh":"refresh-secret","expires":4102444800000,"accountId":"acct-test"},
+      "baseUrl":"https://chatgpt.com/backend-api","model":"gpt-test","catalog":"openai"
+    }]}"""
+  })
+  check("provider_import accepts refreshable OAuth providers",
+        oauthImport{"ok"}.getBool(false) and oauthImport{"count"}.getInt(0) == 1,
+        $oauthImport)
+  let oauthList = call(nc, "provider", "provider_list", newJObject())
+  check("provider_list identifies OAuth without leaking either token",
+        oauthList{"active"}.getStr("") == "openai-codex" and
+        oauthList{"providers"}[0]{"authType"}.getStr("") == "oauth" and
+        oauthList{"providers"}[0]{"protocol"}.getStr("") == "openai-codex" and
+        oauthList{"providers"}[0]{"hasKey"}.getBool(false) and
+        not ($oauthList).contains("refresh-secret") and
+        not ($oauthList).contains("header."), $oauthList)
+  let oauthResolved = call(nc, "llm", "llm_resolve", newJObject())
+  check("llm_resolve routes an OAuth provider with its wire protocol",
+        oauthResolved{"provider"}.getStr("") == "openai-codex" and
+        oauthResolved{"protocol"}.getStr("") == "openai-codex" and
+        oauthResolved{"authType"}.getStr("") == "oauth" and
+        oauthResolved{"model"}.getStr("") == "gpt-test" and
+        not ($oauthResolved).contains("refresh-secret"), $oauthResolved)
+  discard call(nc, "provider", "provider_remove", %*{"nickname": "openai-codex"})
+
   # --- llm integration: an active stored provider routes llm chat calls.
   # Point the stored provider at a closed loopback port: if llm resolves it,
   # the chat call fails with a connection error; if llm ignored the store it
@@ -453,7 +483,7 @@ proc main() =
     if item{"name"}.getStr("") == "provider":
       providerSnapshot = item
   check("full catalog keeps all provider tools and hides credential access",
-        providerSnapshot != nil and providerSnapshot{"tools"}.len == 11 and
+        providerSnapshot != nil and providerSnapshot{"tools"}.len == 14 and
         ($providerSnapshot).contains("provider_active") and
         ($providerSnapshot).contains("provider_update") and
         ($providerSnapshot).contains("\"hidden\":true"), $providerSnapshot)

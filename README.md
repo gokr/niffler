@@ -376,9 +376,18 @@ to CI any plugin repo — Niffler testing itself.
       last-known-good fallback; `llm` consumes its context metadata
 - [x] **provider component** — store-backed LLM provider registry
       (add/list/switch/active/remove/export/import, keys never leaked on
-      list), `ev.provider.switch` notifications, and live backend switching:
+      list), subscription OAuth logins (ChatGPT Codex + Claude Pro/Max:
+      PKCE browser/device flows, transparent token refresh, refresh tokens
+      never leave the provider component), `ev.provider.switch`
+      notifications, and live backend switching:
       `llm` resolves its default provider from the active stored one and
       falls back to `NIF_OPENAI_*` / `NIF_LLM_PROVIDERS` when absent
+- [x] **wire protocols** — `llm` routes per provider `protocol`:
+      OpenAI-compatible Chat Completions, OpenAI Codex Responses
+      (ChatGPT OAuth headers, Responses API translation, SSE event
+      mapping) and Anthropic Messages (Claude Code identity headers,
+      tool_use/tool_result block translation) — all sharing the same
+      streaming result shape (`ev.llm.token`, tool calls, usage)
 - [x] **grep + write components** — ripgrep-backed code search
       (`grep`: path:line:match results with .gitignore/hidden/binary handling;
       `files`: sorted repo listing) and approval-gated atomic whole-file

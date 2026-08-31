@@ -8,6 +8,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Subscription OAuth logins (ChatGPT Plus/Pro, Claude Pro/Max)** — the
+  same PKCE flows Pi and opencode use: `provider_oauth_start` returns the
+  authorization URL (browser login via fixed localhost callback ports, or
+  OpenAI's device-code flow for headless machines; manual
+  code/redirect-URL paste as fallback), `provider_oauth_complete` polls and
+  exchanges the code, and the provider component owns refresh — tokens
+  rotate transparently on read within 5 minutes of expiry and refresh
+  tokens never leave the component. Providers gain `authType`, `protocol`
+  and `expiresAt` fields; exports carry live refresh tokens.
+- **Wire-protocol routing in `llm`** — providers now declare a `protocol`:
+  `openai-chat` (default, unchanged), `openai-codex` (ChatGPT's Codex
+  Responses endpoint with OAuth headers, message translation to the
+  Responses API, SSE event mapping) or `anthropic` (Messages endpoint with
+  Claude Code identity headers and tool_use/tool_result block
+  translation). All three share the existing chat result shape, so core
+  and UIs are unchanged.
+- **Provider Manager OAuth UI** — subscription sign-in buttons (OpenAI
+  browser/device, Anthropic browser) with live pending state, device-code
+  display, manual-code fallback and OAuth badges on stored providers;
+  an API-protocol selector for API-key providers; protocol-aware model
+  defaults (`gpt-5.4`, `claude-sonnet-4-6`) and catalog ids.
+
 - **UI: conversation controls at TUI parity** — slash commands (built-ins
   `/provider /model /effort /connect /status /new /session /think /tools
   /locale /help` plus the declarative plugin registry) with tab completion

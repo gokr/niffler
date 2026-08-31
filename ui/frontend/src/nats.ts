@@ -5,7 +5,7 @@
 // proxy later, swap this file only.
 
 import { Send, Emit, Online, BusUrl } from "../wailsjs/go/main/Bridge";
-import { EventsOn } from "../wailsjs/runtime/runtime";
+import { BrowserOpenURL, EventsOn } from "../wailsjs/runtime/runtime";
 
 export interface NatEvent {
   subject: string;
@@ -64,6 +64,11 @@ export function online(): Promise<boolean> {
 /** Bus address the bridge is using. */
 export function busUrl(): Promise<string> {
   return bridge().BusUrl();
+}
+
+/** Open an authentication/documentation URL in the system browser. */
+export function openExternal(url: string): void {
+  BrowserOpenURL(url);
 }
 
 /** Live connection state: cb(online, url) on every change. */

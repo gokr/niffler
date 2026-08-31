@@ -47,12 +47,23 @@ import (
 // vLLM or a second DeepSeek workspace. A chat call picks one with the
 // `provider` arg; `model` still overrides the provider's default.
 
+const (
+	protocolOpenAI    = "openai-chat"
+	protocolCodex     = "openai-codex"
+	protocolAnthropic = "anthropic"
+	authAPIKey        = "api_key"
+	authOAuth         = "oauth"
+)
+
 type provider struct {
-	BaseURL string `json:"baseUrl"`
-	APIKey  string `json:"apiKey"`
-	Model   string `json:"model"`
-	Context int    `json:"context"`
-	Catalog string `json:"catalog"`
+	BaseURL   string `json:"baseUrl"`
+	APIKey    string `json:"apiKey"`
+	Model     string `json:"model"`
+	Context   int    `json:"context"`
+	Catalog   string `json:"catalog"`
+	Protocol  string `json:"protocol"`
+	AuthType  string `json:"authType"`
+	AccountID string `json:"accountId"`
 	// StripPrefix models a gateway that routes on the canonical id and
 	// rejects vendor-prefixed ids ("alibaba/glm-5.2"); send "glm-5.2".
 	StripPrefix bool `json:"stripPrefix"`
@@ -209,10 +220,12 @@ func loadProviders() (map[string]provider, error) {
 	}
 	ps := map[string]provider{
 		defaultProvider: {
-			BaseURL: base,
-			APIKey:  os.Getenv("NIF_OPENAI_API_KEY"),
-			Model:   model,
-			Catalog: os.Getenv("NIF_OPENAI_PROVIDER"),
+			BaseURL:  base,
+			APIKey:   os.Getenv("NIF_OPENAI_API_KEY"),
+			Model:    model,
+			Catalog:  os.Getenv("NIF_OPENAI_PROVIDER"),
+			Protocol: protocolOpenAI,
+			AuthType: authAPIKey,
 		},
 	}
 	if v := os.Getenv("NIF_LLM_PROVIDERS"); v != "" {
@@ -265,6 +278,12 @@ func envProvider(name string) (provider, string, error) {
 	if !ok {
 		return provider{}, "", fmt.Errorf("unknown provider %q (have: %s)", name, providerNames(providers))
 	}
+	if p.Protocol == "" {
+		p.Protocol = protocolOpenAI
+	}
+	if p.AuthType == "" {
+		p.AuthType = authAPIKey
+	}
 	if p.APIKey == "" {
 		return provider{}, "", fmt.Errorf("provider %q: no API key (set NIF_OPENAI_API_KEY or NIF_LLM_PROVIDERS apiKey)", name)
 	}
@@ -275,8 +294,14 @@ type registryResponse struct {
 	Ok       bool   `json:"ok"`
 	Source   string `json:"source"`
 	Provider *struct {
-		Nickname    string `json:"nickname"`
-		APIKey      string `json:"apiKey"`
+		Nickname string `json:"nickname"`
+		AuthType string `json:"authType"`
+		Protocol string `json:"protocol"`
+		APIKey   string `json:"apiKey"`
+		OAuth    *struct {
+			Access    string `json:"access"`
+			AccountID string `json:"accountId"`
+		} `json:"oauth"`
 		BaseURL     string `json:"baseUrl"`
 		Model       string `json:"model"`
 		Catalog     string `json:"catalog"`
@@ -296,7 +321,16 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 		return provider{}, "", "", false
 	}
 	var resp registryResponse
-	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Ok || resp.Provider == nil || resp.Provider.APIKey == "" {
+	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Ok || resp.Provider == nil {
+		return provider{}, "", "", false
+	}
+	credential := resp.Provider.APIKey
+	accountID := ""
+	if resp.Provider.OAuth != nil {
+		credential = resp.Provider.OAuth.Access
+		accountID = resp.Provider.OAuth.AccountID
+	}
+	if credential == "" {
 		return provider{}, "", "", false
 	}
 	source := resp.Source
@@ -306,12 +340,23 @@ func requestStoredProvider(c *sdk.Component, tool string, args map[string]any) (
 			source = "environment"
 		}
 	}
+	protocol := resp.Provider.Protocol
+	if protocol == "" {
+		protocol = protocolOpenAI
+	}
+	authType := resp.Provider.AuthType
+	if authType == "" {
+		authType = authAPIKey
+	}
 	return provider{
 		BaseURL:     resp.Provider.BaseURL,
-		APIKey:      resp.Provider.APIKey,
+		APIKey:      credential,
 		Model:       resp.Provider.Model,
 		Catalog:     resp.Provider.Catalog,
 		Context:     resp.Provider.Context,
+		Protocol:    protocol,
+		AuthType:    authType,
+		AccountID:   accountID,
 		StripPrefix: resp.Provider.StripPrefix,
 	}, resp.Provider.Nickname, source, true
 }
@@ -416,14 +461,24 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if resolved.StripPrefix {
 		model = stripModelPrefix(model)
 	}
-	cfg := openai.DefaultConfig(resolved.Provider.APIKey)
-	cfg.BaseURL = resolved.Provider.BaseURL
-	client := openai.NewClientWithConfig(cfg)
-
-	if args.Stream {
-		return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+	switch resolved.Provider.Protocol {
+	case protocolCodex:
+		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+			resolved.Context)
+	case protocolAnthropic:
+		return chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+			resolved.Context, resolved.Output)
+	case "", protocolOpenAI:
+		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
+		cfg.BaseURL = resolved.Provider.BaseURL
+		client := openai.NewClientWithConfig(cfg)
+		if args.Stream {
+			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+		}
+		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+	default:
+		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
-	return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
 }
 
 // stripModelPrefix returns the model id after the last "/" — the canonical
@@ -725,12 +780,13 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 		"model": resolved.Model, "catalog": resolved.Catalog,
 		"context": resolved.Context, "contextSource": resolved.ContextSource,
 		"output": resolved.Output, "outputSource": resolved.OutputSource,
+		"protocol": resolved.Provider.Protocol, "authType": resolved.Provider.AuthType,
 		"hasKey": resolved.Provider.APIKey != "",
 	}, nil
 }
 
 func main() {
-	comp := sdk.New("llm", "0.3.0")
+	comp := sdk.New("llm", "0.4.0")
 	comp.Tool("llm_resolve", map[string]any{
 		"type":        "object",
 		"description": "Resolve the effective provider, model and context window without exposing credentials or making an inference request.",
