@@ -9,9 +9,8 @@
 import std/[algorithm, base64, json, os, re, sequtils, strutils, tables, times,
             unicode]
 import niffler/sdk
-import ../../sdk/dotenv
 
-loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
+loadDotEnv(".env", rootDir() / ".env")
 
 const
   DefaultMaxBytes = 10_485_760
@@ -39,7 +38,7 @@ proc configInt(name: string, default, minimum, maximum: int): int =
     raise newException(ValueError, name & " must be in " & $minimum & ".." &
       $maximum & ", got " & $result)
 
-let root = getEnv("NIF_ROOT", ".")
+let root = rootDir()
 let configuredDir = getEnv("NIF_LOGFILE_DIR")
 let logDir =
   if configuredDir.len == 0: root / "var" / "logs"
@@ -300,7 +299,7 @@ proc readTail(path: string, maxRead: int): tuple[data: string, bytes: int,
     else:
       result.data = result.data[newline + 1 .. ^1]
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc logfile_search(component: string = "", level: string = "",
                       regex: string = "", since: float = 0.0,
                       until: float = 0.0, limit: int = 100): JsonNode =
@@ -456,9 +455,7 @@ comp.tool:
        "maxDirectoryEntries": maxDirectoryEntries,
        "responseBytes": responseBytes}
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc logfile_paths(): JsonNode =
     ## Report the configured directory, retained JSONL files, and sink health.
     ## A non-empty lastError means writes were lost; inspect stderr and fix the
@@ -502,7 +499,5 @@ comp.tool:
        "directoryTruncated": directoryTruncated,
        "maxDirectoryEntries": maxDirectoryEntries,
        "responseBytes": responseBytes}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.run()

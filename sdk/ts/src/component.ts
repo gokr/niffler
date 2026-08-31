@@ -74,6 +74,7 @@ export class Component {
   private tools: Tool[] = [];
   private events: EventBinding[] = [];
   private taps: TapBinding[] = [];
+  private drainHandlers: ((c: Component) => void)[] = [];
   private subs: Subscription[] = [];
   /** Serializes handlers (mirrors the Nim SDK's single thread). */
   private chain: Promise<unknown> = Promise.resolve();
@@ -107,6 +108,14 @@ export class Component {
    *  handler stream; sees all envelope kinds, incl. this component's calls. */
   tap(pattern: string, handler: TapHandler): Component {
     this.taps.push({ pattern, handler });
+    return this;
+  }
+
+  /** Register a cleanup callback (e.g. close a database) invoked when the
+   *  component receives ev.sys.drain — its authorized orderly shutdown
+   *  event. Chainable like tool/on/tap. Mirrors the Nim SDK's onDrain. */
+  onDrain(handler: (c: Component) => void): Component {
+    this.drainHandlers.push(handler);
     return this;
   }
 
@@ -203,6 +212,28 @@ export class Component {
     return resp.args;
   }
 
+  /** request() plus the {ok, error} result convention: throws when the
+   *  reply carries ok:false (its "error" field becomes the message), so
+   *  callers stop writing ok-flag chains. Replies without an "ok" field
+   *  pass through unchanged. */
+  async requestOk(
+    component: string,
+    tool: string,
+    args: unknown,
+    timeoutMs: number = 5000
+  ): Promise<unknown> {
+    const result = (await this.request(component, tool, args, timeoutMs)) as {
+      ok?: unknown;
+      error?: unknown;
+    };
+    if (result && result.ok === false) {
+      throw new Error(
+        typeof result.error === "string" ? result.error : "tool call failed"
+      );
+    }
+    return result;
+  }
+
   /** Connect, announce registration and start serving calls. */
   async connect(): Promise<void> {
     loadDotEnv(
@@ -230,7 +261,14 @@ export class Component {
     // passive event subscriptions + the SDK-managed drain subject
     this.events.push({
       pattern: "ev.sys.drain",
-      handler: () => {
+      handler: (c) => {
+        for (const h of this.drainHandlers) {
+          try {
+            h(c);
+          } catch (err) {
+            console.error(`${this.name}: drain handler error:`, err);
+          }
+        }
         this.requestShutdown();
       },
     });

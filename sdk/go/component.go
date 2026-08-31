@@ -96,18 +96,19 @@ type Component struct {
 	// registered, exiting when the last one departs.
 	Client bool
 
-	nc           *nats.Conn
-	tools        []Tool
-	slash        []SlashCommand
-	events       []eventBinding
-	taps         []tapBinding
-	subs         []*nats.Subscription
-	mu           sync.Mutex // serializes handlers (mirrors Nim SDK's single thread)
-	closeMu      sync.Mutex
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	owner        *Component
-	inHandler    bool
+	nc            *nats.Conn
+	tools         []Tool
+	slash         []SlashCommand
+	events        []eventBinding
+	taps          []tapBinding
+	drainHandlers []func(*Component)
+	subs          []*nats.Subscription
+	mu            sync.Mutex // serializes handlers (mirrors Nim SDK's single thread)
+	closeMu       sync.Mutex
+	shutdown      chan struct{}
+	shutdownOnce  sync.Once
+	owner         *Component
+	inHandler     bool
 }
 
 // New creates a component with the given bus identity.
@@ -121,6 +122,7 @@ func (c *Component) handlerView() *Component {
 	return &Component{
 		Name: c.Name, Version: c.Version, nc: c.nc, tools: c.tools,
 		events: c.events, taps: c.taps, subs: c.subs, shutdown: c.shutdown,
+		drainHandlers: c.drainHandlers,
 		owner: c, inHandler: true,
 	}
 }
@@ -153,6 +155,15 @@ func (c *Component) On(pattern string, h EventHandler) *Component {
 // parity). Taps see all envelope kinds, including this component's own calls.
 func (c *Component) Tap(pattern string, h TapHandler) *Component {
 	c.taps = append(c.taps, tapBinding{pattern, h})
+	return c
+}
+
+// OnDrain registers a cleanup callback (e.g. close a database) invoked
+// when the component receives ev.sys.drain — its authorized orderly
+// shutdown event. Chainable like Tool/On/Tap. Mirrors the Nim SDK's
+// onDrain.
+func (c *Component) OnDrain(h func(*Component)) *Component {
+	c.drainHandlers = append(c.drainHandlers, h)
 	return c
 }
 
@@ -296,6 +307,31 @@ func (c *Component) RequestContext(ctx context.Context, component, tool string, 
 	return resp.Args, nil
 }
 
+// RequestOK is Request plus the {ok, error} result convention: it fails
+// when the reply carries ok:false (its "error" field becomes the
+// message), so callers stop writing ok-flag chains. Replies without an
+// "ok" field pass through unchanged.
+func (c *Component) RequestOK(component, tool string, args any, timeout time.Duration) (json.RawMessage, error) {
+	raw, err := c.Request(component, tool, args, timeout)
+	if err != nil {
+		return nil, err
+	}
+	var reply struct {
+		OK    *bool  `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return raw, nil // not the convention's shape — pass through
+	}
+	if reply.OK != nil && !*reply.OK {
+		if reply.Error != "" {
+			return nil, errors.New(reply.Error)
+		}
+		return nil, errors.New("tool call failed")
+	}
+	return raw, nil
+}
+
 // Connect connects to the bus, announces registration and starts serving
 // calls in the background. For embedding (e.g. a Wails bridge): call
 // Connect, do your thing, call Close. Run() = Connect + block on signal +
@@ -329,7 +365,19 @@ func (c *Component) Connect() error {
 
 	// passive event subscriptions + SDK-managed drain
 	c.events = append(c.events, eventBinding{"ev.sys.drain",
-		func(c *Component, subject string, p json.RawMessage) { c.signalShutdown() }})
+		func(c *Component, subject string, p json.RawMessage) {
+			for _, h := range c.drainHandlers {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Error("drain handler panic", "component", c.Name, "panic", r)
+						}
+					}()
+					h(c)
+				}()
+			}
+			c.signalShutdown()
+		}})
 	for _, e := range c.events {
 		e := e
 		s, err := nc.Subscribe(e.pattern, func(m *nats.Msg) {

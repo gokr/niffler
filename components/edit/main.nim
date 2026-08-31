@@ -141,7 +141,7 @@ proc loadText(displayPath: string): TextFile =
   ## symlinks are followed to the target, the BOM is stripped (restored on
   ## write) and line endings normalized to \n (restored on write). Binaries,
   ## UTF-16/32 text and oversized files are refused.
-  let target = followSymlink(toCwd(displayPath, getEnv("NIF_ROOT", ".")))
+  let target = followSymlink(toCwd(displayPath, rootDir()))
   if dirExists(target):
     raise newException(ValueError,
       "[E_NOT_TEXT] " & displayPath & " is a directory — edit changes files; list it with bash")
@@ -671,7 +671,7 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
     raise newException(ValueError,
       "[E_BAD_SHAPE] Undo request requires a non-empty \"path\" string.")
   let path = pathNode.getStr()
-  let target = followSymlink(toCwd(path, getEnv("NIF_ROOT", ".")))
+  let target = followSymlink(toCwd(path, rootDir()))
   if not gUndo.hasKey(target):
     raise newException(ValueError,
       "No undo history for " & path & " — there is no previous edit to revert.")
@@ -724,7 +724,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
   let limit = if limN != nil and limN.kind == JInt: limN.getInt() else: MAX_READ_LINES
 
-  let target = followSymlink(toCwd(path, getEnv("NIF_ROOT", ".")))
+  let target = followSymlink(toCwd(path, rootDir()))
   if dirExists(target):
     raise newException(ValueError,
       "[E_NOT_TEXT] " & path & " is a directory — list it with bash or grep files")
@@ -802,7 +802,7 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
     raise newException(ValueError,
       "content is " & $content.len & " bytes, over the write cap of " &
       $maxWriteBytes() & " — use bash for large files")
-  let target = followSymlink(toCwd(path, getEnv("NIF_ROOT", ".")))
+  let target = followSymlink(toCwd(path, rootDir()))
   if dirExists(target):
     raise newException(ValueError,
       target & " is a directory — write needs a file path")
@@ -832,9 +832,8 @@ discard comp.tool("read", toolSchema(%*{
   "pagination hint at the end reports the line range shown and the next " &
   "offset. Binary files (NUL bytes), UTF-16/32 text and files over 100MB " &
   "are refused; an empty file reports so; lines over 200KB are elided with " &
-  "a bash inspection hint. For searching across files use grep instead."), hRead)
-
-comp.tools[^1].schema["x-harness"] = %*{"timeoutMs": 60000}
+  "a bash inspection hint. For searching across files use grep instead."), hRead,
+  %*{"timeoutMs": 60000})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
@@ -871,9 +870,8 @@ discard comp.tool("edit", toolSchema(%*{
   "rewrites use write; for deleting or moving large blocks you do not want " &
   "to retype, install the niffler-hashline plugin and discover its " &
   "anchored replace. Every edit is " &
-  "approval-gated and revertible with undo_last_edit."), hEdit)
-
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 300000}
+  "approval-gated and revertible with undo_last_edit."), hEdit,
+  %*{"approval": "always", "timeoutMs": 300000})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
   "path": {"type": "string",
@@ -884,9 +882,8 @@ discard comp.tool("undo_last_edit", toolSchema(%*{
   "wrong results. History is per-file and single-level, persisted across " &
   "restarts; the undo is refused with E_UNDO_STALE when the file was " &
   "modified or deleted after the edit — re-read and edit forward instead. " &
-  "The result shows the diff of the revert."), hUndoLastEdit)
-
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 120000}
+  "The result shows the diff of the revert."), hUndoLastEdit,
+  %*{"approval": "always", "timeoutMs": 120000})
 
 discard comp.tool("write", toolSchema(%*{
   "path": {"type": "string",
@@ -902,8 +899,7 @@ discard comp.tool("write", toolSchema(%*{
   "file prefer the edit tool: exact text match against content you have " &
   "read. Empty content truncates the file. Content is capped (default " &
   "900KB — the bus itself cannot carry more); for larger files use bash " &
-  "(heredoc or base64). Approval is required for every write."), hWrite)
-
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always", "timeoutMs": 60000}
+  "(heredoc or base64). Approval is required for every write."), hWrite,
+  %*{"approval": "always", "timeoutMs": 60000})
 
 comp.run()

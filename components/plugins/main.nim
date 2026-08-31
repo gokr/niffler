@@ -23,7 +23,7 @@
 ## code: install/update/remove carry x-harness.approval, and core's own
 ## spawn/remove gate fires per component on top.
 
-import std/[httpclient, json, os, osproc, sequtils, streams, strutils, times, uri]
+import std/[httpclient, json, os, sequtils, strutils, times, uri]
 import niffler/sdk
 
 let comp = newComponent("plugins", "0.1.0")
@@ -31,41 +31,11 @@ let comp = newComponent("plugins", "0.1.0")
 const githubApi = "https://api.github.com"
 const topic = "niffler-component"
 
-proc root(): string = getEnv("NIF_ROOT", ".")
+proc root(): string = rootDir()
 
 proc ghClient(): HttpClient =
   result = newHttpClient("niffler-plugins/0.1", timeout = 30_000)
   result.headers = newHttpHeaders({"Accept": "application/vnd.github+json"})
-
-proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
-  ## NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
-  ## returns 137, so the timeout branch would never fire — poll
-  ## peekExitCode and own the kill (exit code 124 on timeout).
-  var p = startProcess("bash", args = ["-c", cmd],
-                       options = {poUsePath, poStdErrToStdOut})
-  result.code = -1
-  let deadline = epochTime() + timeoutMs.float / 1000.0
-  while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1: break
-    sleep(50)
-  if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running(): p.kill()
-    result.code = 124
-  result.output = p.outputStream.readAll()
-  p.close()
-
-proc tail(s: string, n: int): string =
-  ## Last n bytes of s, snapped forward to a UTF-8 boundary so a multi-byte
-  ## character (CJK in compiler output, etc.) is never split into invalid
-  ## UTF-8 — a broken rune here would poison the JSON envelope downstream.
-  if s.len <= n: return s
-  var start = s.len - n
-  while start > 0 and (s[start].uint8 and 0xC0) == 0x80:
-    inc start  # skip a continuation byte: start at the rune's first byte
-  return "…" & s[start .. ^1]
 
 # --------------------------------------------------------------------------
 # repo/ref plumbing
@@ -146,11 +116,13 @@ proc pluginRecord(pkg: string): JsonNode =
   return nil
 
 proc saveRecord(pkg: string, value: JsonNode) =
-  discard comp.request("store", "put",
+  ## requestOk: a refused put is exceptional (never silently dropped) —
+  ## the raise surfaces as an error envelope to the install tool.
+  discard comp.requestOk("store", "put",
     %*{"kind": "plugin", "id": pkg, "value": value})
 
 proc dropRecord(pkg: string) =
-  discard comp.request("store", "del", %*{"kind": "plugin", "id": pkg})
+  discard comp.requestOk("store", "del", %*{"kind": "plugin", "id": pkg})
 
 # --------------------------------------------------------------------------
 # install / update / remove internals
@@ -272,7 +244,7 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
         result["env"] = %mc.env
     else:
       result = %*{"name": mc.name, "spawned": false,
-                  "error": "build failed: " & r{"error"}.getStr("?").tail(400)}
+                  "error": "build failed: " & tailBytes(r{"error"}.getStr("?"), 400)}
   except CatchableError as e:
     result = %*{"name": mc.name, "spawned": false,
                 "error": "build failed: " & e.msg}
@@ -301,8 +273,8 @@ proc doInstall(repo, refArg: string): JsonNode =
     except CatchableError:
       discard
     if oldName.len > 0 and pluginRecord(oldName) != nil:
-      return %*{"ok": false, "error": "already installed: " & oldName &
-                " — use plugin_update, or plugin_remove first"}
+      return errResult("already installed: " & oldName &
+                       " — use plugin_update, or plugin_remove first")
     removeDir(dest)
   createDir(dest.parentDir())
   # NIF_GIT_MIRROR rewrites the clone host (e.g. a CNB/Gitee mirror) for
@@ -313,13 +285,13 @@ proc doInstall(repo, refArg: string): JsonNode =
     if local: repo
     elif mirror.len > 0: mirror & "/" & repo & ".git"
     else: "https://github.com/" & repo & ".git"
-  let (cout, ccode) = if refTag.len > 0:
+  let (ccode, cout) = if refTag.len > 0:
     runCmd("git clone --depth 1 --branch " & refTag & " " & url & " " & dest)
   else:
     runCmd("git clone --depth 1 " & url & " " & dest)
   if ccode != 0:
     if dirExists(dest): removeDir(dest)
-    return %*{"ok": false, "error": "git clone failed", "output": tail(cout, 800)}
+    return errResult("git clone failed", extra = %*{"output": tailBytes(cout, 800)})
 
   let mf = readManifest(dest)
   let binDir = root() / "var" / "bin"
@@ -335,14 +307,14 @@ proc doInstall(repo, refArg: string): JsonNode =
 
   if installed == 0:
     removeDir(dest)
-    return %*{"ok": false, "error": "no component could be installed",
-              "components": components}
+    return errResult("no component could be installed",
+                     extra = %*{"components": components})
 
   saveRecord(mf.name, %*{"name": mf.name, "repo": repo, "ref": refTag,
                          "dir": dest, "version": mf.version,
                          "components": components, "addedAt": epochTime()})
-  result = %*{"ok": true, "package": mf.name, "repo": repo, "ref": refTag,
-              "dir": dest, "components": components}
+  result = okResult(%*{"package": mf.name, "repo": repo, "ref": refTag,
+                       "dir": dest, "components": components})
 
 proc removeComps(rec: JsonNode): JsonNode =
   ## core.remove every recorded component; tolerate individual failures.
@@ -376,7 +348,7 @@ proc toPkgs(items: JsonNode): JsonNode =
 # --------------------------------------------------------------------------
 # tools
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc plugin_search(query: string = ""): JsonNode =
     ## Search GitHub for installable Niffler component packages. The
     ## community publishes them as repos tagged with the topic
@@ -452,19 +424,18 @@ comp.tool:
       var err = "no packages found"
       if apiErr.len > 0:
         err = "GitHub search failed: " & apiErr
-      return %*{"ok": false, "error": err, "attempts": tried}
+      return errResult(err, extra = %*{"attempts": tried})
 
-    var res = %*{"ok": true, "packages": toPkgs(items),
-                 "query": hitQuery, "attempts": tried,
-                 "hint": "install with plugin_install {repo: \"owner/name\"}"}
+    var res = okResult(%*{"packages": toPkgs(items),
+                          "query": hitQuery, "attempts": tried,
+                          "hint": "install with plugin_install {repo: \"owner/name\"}"})
     if hitQuery != fullQuery:
       res["note"] = %("GitHub ANDs all query words against name, description and topics; '" &
         fullQuery & "' matched 0 results, so these come from the relaxed query in 'query'")
     return res
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc plugin_installed(): JsonNode =
     ## List the third-party component packages installed on this harness
     ## (name, repo, pinned ref and the components each provides). Use this
@@ -476,11 +447,10 @@ comp.tool:
     if items != nil:
       for item in items:
         pkgs.add(item{"value"})
-    return %*{"ok": true, "packages": pkgs}
+    return okResult(%*{"packages": pkgs})
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_install(repo: string, version: string = ""): JsonNode =
     ## Install a community component package from GitHub: clones the repo
     ## into var/plugins (pinned to version, else the latest release tag,
@@ -494,21 +464,18 @@ comp.tool:
     ## - repo: "owner/name" or a github.com URL, e.g. "gokr/niffler-weather"
     ## - version: Git tag or branch to install (empty = latest release, else default branch)
     if findExe("git").len == 0:
-      return %*{"ok": false, "error": "git not found on PATH"}
+      return errResult("git not found on PATH")
     let cleanRepo = normalizeRepo(repo)
     if pluginRecord(repoSlug(cleanRepo)) != nil:
-      return %*{"ok": false, "error": "already installed: " &
-                repoSlug(cleanRepo) &
-                " — use plugin_update for a newer version, or plugin_remove first"}
+      return errResult("already installed: " & repoSlug(cleanRepo) &
+                       " — use plugin_update for a newer version, or plugin_remove first")
     let r = doInstall(cleanRepo, version)
     if not r{"ok"}.getBool(false): return r
     r["note"] = %"service components restart on harness boot; interactive components must be started manually"
     return r
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 600000, "onDemand": true}
 
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_update(package: string): JsonNode =
     ## Update an installed package to its latest release tag: removes its
     ## current components and reinstalls at the new ref (each service removal
@@ -518,31 +485,29 @@ comp.tool:
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
     if rec == nil:
-      return %*{"ok": false, "error": "package not installed: " & package &
-                " — see plugin_installed"}
+      return errResult("package not installed: " & package &
+                       " — see plugin_installed")
     let repo = rec{"repo"}.getStr("")
     let latest = resolveTag(repo)
     if latest.len == 0:
-      return %*{"ok": false, "error": "repo " & repo &
-                " has no releases — cannot update beyond " &
-                rec{"ref"}.getStr("")}
+      return errResult("repo " & repo &
+                       " has no releases — cannot update beyond " &
+                       rec{"ref"}.getStr(""))
     if latest == rec{"ref"}.getStr(""):
-      return %*{"ok": true, "updated": false, "ref": latest}
+      return okResult(%*{"updated": false, "ref": latest})
     let removed = removeComps(rec)
     if dirExists(rec{"dir"}.getStr("")):
       removeDir(rec{"dir"}.getStr(""))
     let r = doInstall(repo, latest)
     if not r{"ok"}.getBool(false):
       dropRecord(package)
-      return %*{"ok": false, "error": "update failed; package removed",
-                "removed": removed, "detail": r}
-    return %*{"ok": true, "updated": true, "from": rec{"ref"}.getStr(""),
-              "to": latest, "removed": removed, "install": r}
+      return errResult("update failed; package removed",
+                       extra = %*{"removed": removed, "detail": r})
+    return okResult(%*{"updated": true, "from": rec{"ref"}.getStr(""),
+                       "to": latest, "removed": removed, "install": r})
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 600000, "onDemand": true}
 
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
   proc plugin_remove(package: string): JsonNode =
     ## Uninstall a package: core.remove each supervised component (they will
     ## not come back on the next boot), delete the local clone and drop the
@@ -551,7 +516,7 @@ comp.tool:
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
     if rec == nil:
-      return %*{"ok": false, "error": "package not installed: " & package}
+      return errResult("package not installed: " & package)
     let removed = removeComps(rec)
     let dir = rec{"dir"}.getStr("")
     if dir.len > 0 and dirExists(dir):
@@ -559,11 +524,9 @@ comp.tool:
     try:
       dropRecord(package)
     except CatchableError as e:
-      return %*{"ok": true, "removed": removed,
-                "warning": "record not deleted (store down?): " & e.msg}
-    return %*{"ok": true, "package": package, "removed": removed}
+      return okResult(%*{"removed": removed,
+                         "warning": "record not deleted (store down?): " & e.msg})
+    return okResult(%*{"package": package, "removed": removed})
 
-comp.tools[^1].schema["x-harness"] =
-  %*{"approval": "always", "timeoutMs": 300000, "onDemand": true}
 
 comp.run()

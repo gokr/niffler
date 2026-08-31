@@ -25,12 +25,6 @@ const taskPreamble =
   "available tools. When done, report a concise final result — it is the " &
   "only thing the caller sees.\n\nTask:\n"
 
-proc sanitizeSessionId(s: string): string =
-  ## Mirror of the runner's subject sanitization (core/conversation.nim):
-  ## session ids become NATS subject tokens, keep alnum/-/_.
-  for c in s:
-    result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
-
 proc hasParent(sessionId: string): bool =
   ## True when the session was itself spawned as a subagent child.
   try:
@@ -56,12 +50,12 @@ discard comp.tool("agent_run", runSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
     if parentSession.len == 0:
-      return %*{"error": "agent_run needs a live session context"}
+      return errResult("agent_run needs a live session context")
     if hasParent(parentSession):
-      return %*{"error": "subagents cannot spawn subagents (depth limit)"}
+      return errResult("subagents cannot spawn subagents (depth limit)")
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
-      return %*{"error": "agent_run needs task"}
+      return errResult("agent_run needs task")
     let child = "agent-" & newId()
     # prepare the runner directly (core's session tool would stash mid-turn)
     var prep: JsonNode
@@ -69,10 +63,11 @@ discard comp.tool("agent_run", runSchema,
       prep = comp.request("core", "session_prepare",
                           %*{"sessionId": child}, 60_000)
     except CatchableError as e:
-      return %*{"error": "session_prepare failed: " & e.msg}
+      return errResult("session_prepare failed: " & e.msg)
     let subject = prep{"subject"}.getStr("")
     if subject.len == 0:
-      return %*{"error": "session_prepare returned no subject", "detail": $prep}
+      return errResult("session_prepare returned no subject",
+                       extra = %*{"detail": $prep})
     # lineage before the turn, so a nested agent_run inside the child is
     # denied by hasParent
     try:
@@ -89,11 +84,11 @@ discard comp.tool("agent_run", runSchema,
     let env = callEnvelope("session", sessArgs, "agent")
     let resp = comp.requestEnvelope(subject, env, timeoutMs)
     if resp.kind == ekError:
-      return %*{"error": resp.error{"message"}.getStr("subagent failed"),
-                "sessionId": child}
-    return %*{"ok": true, "sessionId": child,
-              "reply": resp.args{"reply"}.getStr(""),
-              "model": resp.args{"modelOverride"}.getStr("")})
+      return errResult(resp.error{"message"}.getStr("subagent failed"),
+                       extra = %*{"sessionId": child})
+    return okResult(%*{"sessionId": child,
+                       "reply": resp.args{"reply"}.getStr(""),
+                       "model": resp.args{"modelOverride"}.getStr("")}))
 
 comp.tool:
   proc agent_steer(session_id: string, message: string): JsonNode =
@@ -101,8 +96,7 @@ comp.tool:
     ## rounds). Fire-and-forget: success means published, not processed.
     ## - session_id: The subagent session id returned by agent_run
     ## - message: The steering message for the running turn
-    comp.emit("svc.session." & sanitizeSessionId(session_id) & ".steer",
-              %*{"content": message})
-    return %*{"ok": true, "published": true}
+    comp.emit(sessionSteerSubject(session_id), %*{"content": message})
+    return okResult(%*{"published": true})
 
 comp.run()

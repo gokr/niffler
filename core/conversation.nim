@@ -845,11 +845,12 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
 # Session runners — one process per conversation (system side: ensure/forward)
 # ---------------------------------------------------------------------------
 
+import ../sdk/subjects
+
 proc sanitizeSessionId*(s: string): string =
   ## Session ids become a NATS subject token (svc.session.<id>.call) and a
   ## catalog component name; keep alnum/-/_ and replace everything else.
-  for c in s:
-    result.add(if c in Letters + Digits + {'-', '_'}: c else: '-')
+  subjects.sanitizeSessionId(s)
 
 proc runnerName*(sessionId: string): string =
   "session-" & sanitizeSessionId(sessionId)

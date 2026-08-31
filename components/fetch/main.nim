@@ -38,7 +38,7 @@ proc fetchDir(): string =
   let dir = getEnv("NIF_FETCH_DIR")
   if dir.len > 0:
     return dir
-  getEnv("NIF_ROOT", ".") / "var" / "fetch"
+  rootVarDir("fetch")
 
 proc htmlToText(html: string): string =
   ## Walk the parsed HTML: drop script/style subtrees, add newlines at
@@ -141,7 +141,7 @@ proc saveToFile(content: string, url: string): string =
   writeFile(path, content)
   path
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc fetch(url: string, `method`: string = "GET",
              headers: JsonNode = newJObject(), body: string = "",
              timeout: int = 30000, maxSize: int = DefaultMaxSize,
@@ -163,26 +163,23 @@ comp.tool:
     ## - maxSize: response size cap in bytes (default 10 MiB, max 50 MiB)
     ## - convertToText: extract readable text from HTML (default true)
     if url.len == 0:
-      return %*{"ok": false, "error": "url is required"}
+      return errResult("url is required")
     if url.len > 2048:
-      return %*{"ok": false, "error": "url is too long"}
+      return errResult("url is too long")
     var parsed: Uri
     try:
       parsed = parseUri(url)
     except ValueError:
-      return %*{"ok": false, "error": "invalid URL: " & url}
+      return errResult("invalid URL: " & url)
     if parsed.scheme notin ["http", "https"] or parsed.hostname.len == 0:
-      return %*{"ok": false, "error": "url must be http(s): " & url}
+      return errResult("url must be http(s): " & url)
     let cleanMethod = `method`.toUpperAscii()
     if cleanMethod notin AllowedMethods:
-      return %*{"ok": false,
-                "error": "method must be one of: " & AllowedMethods.join(", ")}
+      return errResult("method must be one of: " & AllowedMethods.join(", "))
     if timeout <= 0 or timeout > MaxTimeoutMs:
-      return %*{"ok": false,
-                "error": "timeout must be 1.." & $MaxTimeoutMs & " ms"}
+      return errResult("timeout must be 1.." & $MaxTimeoutMs & " ms")
     if maxSize < 1024 or maxSize > MaxSizeLimit:
-      return %*{"ok": false,
-                "error": "maxSize must be 1024.." & $MaxSizeLimit & " bytes"}
+      return errResult("maxSize must be 1024.." & $MaxSizeLimit & " bytes")
 
     try:
       let client = newHttpClient("niffler-fetch/0.1", timeout = timeout)
@@ -221,15 +218,16 @@ comp.tool:
           ""
         let statusParts = resp.status.split(' ', 1)
         let reason = if statusParts.len > 1: statusParts[1].strip() else: ""
-        return %*{"ok": false, "status": statusCode,
-                  "error": "HTTP " & $statusCode &
-                    (if reason.len > 0: " " & reason else: "") &
-                    (if snippet.len > 0: " — " & snippet else: "")}
+        return errResult(
+          "HTTP " & $statusCode &
+          (if reason.len > 0: " " & reason else: "") &
+          (if snippet.len > 0: " — " & snippet else: ""),
+          extra = %*{"status": statusCode})
 
       if resp.body.len > maxSize:
-        return %*{"ok": false, "status": statusCode,
-                  "error": "response is " & $resp.body.len &
-                    " bytes, over the " & $maxSize & " byte cap"}
+        return errResult("response is " & $resp.body.len &
+                         " bytes, over the " & $maxSize & " byte cap",
+                         extra = %*{"status": statusCode})
 
       var contentType = ""
       if resp.headers.hasKey("Content-Type"):
@@ -260,14 +258,12 @@ comp.tool:
         content = "Content saved to file (over " & $MaxInlineBytes &
           " bytes after processing): " & filePath &
           "\nOriginal URL: " & url
-      %*{"ok": true, "url": url, "status": statusCode,
-         "content": content, "contentType": contentType,
-         "contentLength": resp.body.len, "convertedToText": convertedToText,
-         "extractionMethod": extractionMethod, "savedToFile": savedToFile,
-         "filePath": filePath}
+      okResult(%*{"url": url, "status": statusCode,
+                 "content": content, "contentType": contentType,
+                 "contentLength": resp.body.len, "convertedToText": convertedToText,
+                 "extractionMethod": extractionMethod, "savedToFile": savedToFile,
+                 "filePath": filePath})
     except CatchableError as e:
-      return %*{"ok": false, "error": "fetch failed: " & e.msg}
-
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
+      return errResult("fetch failed: " & e.msg)
 
 comp.run()

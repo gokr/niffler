@@ -32,8 +32,8 @@
 ## Install/remove run no code — only SKILL.md trees are copied — but they
 ## do write outside var/, so both carry x-harness.approval.
 
-import std/[algorithm, httpclient, json, os, osproc, sequtils, streams,
-            strutils, tables, times, uri]
+import std/[algorithm, httpclient, json, os, sequtils, streams, strutils,
+            tables, uri]
 import niffler/sdk
 import yaml
 
@@ -163,7 +163,7 @@ proc skillSearchPaths(root, home, config: string): seq[(string, string)] =
 proc discoverSkills(): seq[Skill] =
   ## Fresh full scan: recursive walk for SKILL.md, dedup by name, first
   ## match wins. Sorted by name.
-  let root = getEnv("NIF_ROOT", ".")
+  let root = rootDir()
   let home = getHomeDir()
   let config = getConfigDir()
   var seen = initTable[string, bool]()
@@ -229,8 +229,8 @@ comp.tool:
     ## - name: skill name (see skill_list)
     let s = findSkill(name)
     if s.isNone:
-      return %*{"ok": false, "error": "skill not found: " & name &
-                " — see skill_list"}
+      return errResult("skill not found: " & name &
+                       " — see skill_list")
     var skill = s.get
     var truncated = false
     if skill.content.len > MaxContentBytes:
@@ -242,7 +242,7 @@ comp.tool:
     %*{"ok": true, "skill": skillJson(skill), "content": skill.content,
        "resources": res, "resourceCount": res.len, "truncated": truncated}
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc skill_resources(name: string): JsonNode =
     ## List the resources of a skill (references/, scripts/, assets/
     ## files). Resources are loaded on demand — read them with
@@ -250,15 +250,13 @@ comp.tool:
     ## - name: skill name (see skill_list)
     let s = findSkill(name)
     if s.isNone:
-      return %*{"ok": false, "error": "skill not found: " & name}
+      return errResult("skill not found: " & name)
     var res = newJArray()
     for r in s.get.resources:
       res.add(%*{"kind": r.kind, "name": r.name, "path": r.relPath})
     %*{"ok": true, "skill": name, "resources": res, "count": res.len}
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
-
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc skill_resource(name: string, path: string): JsonNode =
     ## Read one resource file of a skill (references/scripts/assets).
     ## Use for progressive disclosure: pull a reference or script only
@@ -266,10 +264,10 @@ comp.tool:
     ## - name: skill name (see skill_list)
     ## - path: resource path relative to the skill dir, e.g. "references/schema.md"
     if path.len == 0 or path.startsWith("/") or ".." in path.split('/'):
-      return %*{"ok": false, "error": "resource path must be relative"}
+      return errResult("resource path must be relative")
     let s = findSkill(name)
     if s.isNone:
-      return %*{"ok": false, "error": "skill not found: " & name}
+      return errResult("skill not found: " & name)
     let skill = s.get
     var known = false
     for r in skill.resources:
@@ -277,18 +275,17 @@ comp.tool:
         known = true
         break
     if not known:
-      return %*{"ok": false, "error": "no such resource: " & path &
-                " — see skill_resources"}
+      return errResult("no such resource: " & path &
+                       " — see skill_resources")
     try:
       let full = skill.rootDir / path
       if not fileExists(full):
-        return %*{"ok": false, "error": "resource not on disk: " & path}
+        return errResult("resource not on disk: " & path)
       return %*{"ok": true, "skill": name, "path": path,
                 "content": readFile(full)}
     except CatchableError as e:
-      return %*{"ok": false, "error": "failed to read resource: " & e.msg}
+      return errResult("failed to read resource: " & e.msg)
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 # --------------------------------------------------------------------------
 # online search (skills.sh registry — the same API `npx skills find` uses)
@@ -314,7 +311,7 @@ proc searchRegistry(query, owner: string): JsonNode =
                  "url": "https://skills.sh/" & slug})
   items
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc skill_search(query: string, owner: string = ""): JsonNode =
     ## Search the skills.sh registry online for skills to install — the
     ## same registry `npx skills find` uses. Call this when the user asks
@@ -324,45 +321,18 @@ comp.tool:
     ## - query: keywords, at least 2 characters (e.g. "typescript", "web design")
     ## - owner: restrict to a GitHub owner or organization (e.g. "vercel-labs")
     if query.strip().len < 2:
-      return %*{"ok": false, "error": "query needs at least 2 characters"}
+      return errResult("query needs at least 2 characters")
     try:
       let items = searchRegistry(query.strip(), owner.strip())
       return %*{"ok": true, "count": items.len, "skills": items,
                 "registry": "skills.sh",
                 "hint": "install with skill_install {repo: \"<source>\", skill: \"<name>\"}"}
     except CatchableError as e:
-      return %*{"ok": false, "error": "skills.sh search failed: " & e.msg}
+      return errResult("skills.sh search failed: " & e.msg)
 
-comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 # --------------------------------------------------------------------------
 # install / remove (managed dirs only)
-
-proc runCmd(cmd: string, timeoutMs = 120000): tuple[output: string, code: int] =
-  ## Poll peekExitCode and own the kill (osproc's waitForExit(timeout)
-  ## SIGKILLs the child and returns a signal code — 124 means timeout).
-  var p = startProcess("bash", args = ["-c", cmd],
-                       options = {poUsePath, poStdErrToStdOut})
-  result.code = -1
-  let deadline = epochTime() + timeoutMs.float / 1000.0
-  while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1:
-      break
-    sleep(50)
-  if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running():
-      p.kill()
-    result.code = 124
-  result.output = p.outputStream.readAll()
-  p.close()
-
-proc tail(s: string, n: int): string =
-  if s.len <= n:
-    return s
-  "…" & s[^n .. ^1]
 
 proc normalizeRepo(repoArg: string): string =
   ## "owner/name", a github.com URL, or a file:// URL (local mirrors).
@@ -398,7 +368,7 @@ proc repoSlug(repo: string): string =
 proc managedInstallRoots(): seq[string] =
   ## The only directories skill_remove may delete from.
   result = @[getHomeDir() / ".niffler" / "skills",
-             getEnv("NIF_ROOT", ".") / ".opencode" / "skills"]
+             rootDir() / ".opencode" / "skills"]
 
 proc isManagedDir(dir: string): bool =
   for root in managedInstallRoots():
@@ -415,7 +385,9 @@ proc skillCandidates(repoDir: string): seq[Skill] =
         result.add(s.get)
   result.sort(proc(a, b: Skill): int = cmp(a.name, b.name))
 
-comp.tool:
+comp.tool(%*{"approval": "always",
+             "timeoutMs": 600000,
+             "onDemand": true}):
   proc skill_install(repo: string, skill: string = "",
                      global: bool = true): JsonNode =
     ## Install a skill from a git repo: clones the repo, finds its
@@ -431,34 +403,34 @@ comp.tool:
     ## - skill: skill name or directory inside the repo (empty = the only skill)
     ## - global: install under ~/.niffler/skills (default); false = project .opencode/skills
     if findExe("git").len == 0:
-      return %*{"ok": false, "error": "git not found on PATH"}
+      return errResult("git not found on PATH")
     var cleanRepo: string
     try:
       cleanRepo = normalizeRepo(repo)
     except ValueError as e:
-      return %*{"ok": false, "error": e.msg}
+      return errResult(e.msg)
     let target =
       if global: getHomeDir() / ".niffler" / "skills"
-      else: getEnv("NIF_ROOT", ".") / ".opencode" / "skills"
-    let tmp = getEnv("NIF_ROOT", ".") / "var" / "skills-tmp" / repoSlug(cleanRepo)
+      else: rootDir() / ".opencode" / "skills"
+    let tmp = rootVarDir("skills-tmp") / repoSlug(cleanRepo)
     if dirExists(tmp):
       removeDir(tmp)
     createDir(tmp.parentDir())
     let url = if cleanRepo.startsWith("file://"): cleanRepo
               else: "https://github.com/" & cleanRepo & ".git"
-    let (cout, ccode) = runCmd("git clone --depth 1 " & url & " " & tmp)
+    let (ccode, cout) = runCmd("git clone --depth 1 " & url & " " & tmp)
     if ccode != 0:
       if dirExists(tmp):
         removeDir(tmp)
-      return %*{"ok": false, "error": "git clone failed",
-                "output": tail(cout, 800)}
+      return errResult("git clone failed",
+                       extra = %*{"output": tailBytes(cout, 800)})
     defer:
       if dirExists(tmp):
         removeDir(tmp)
 
     let candidates = skillCandidates(tmp)
     if candidates.len == 0:
-      return %*{"ok": false, "error": "no SKILL.md found in " & cleanRepo}
+      return errResult("no SKILL.md found in " & cleanRepo)
     var chosen: Option[Skill]
     if skill.len > 0:
       for c in candidates:
@@ -470,35 +442,30 @@ comp.tool:
         for c in candidates:
           names.add(%*{"name": c.name,
                        "dir": c.rootDir.replace(tmp, "")})
-        return %*{"ok": false, "error": "no skill '" & skill &
-                  "' in " & cleanRepo, "skills": names}
+        return errResult("no skill '" & skill & "' in " & cleanRepo,
+                         extra = %*{"skills": names})
     elif candidates.len == 1:
       chosen = some(candidates[0])
     else:
       var names = newJArray()
       for c in candidates:
         names.add(%*{"name": c.name, "dir": c.rootDir.replace(tmp, "")})
-      return %*{"ok": false,
-                "error": "repo " & cleanRepo & " contains " & $candidates.len &
-                " skills — pass the one you want",
-                "skills": names}
+      return errResult("repo " & cleanRepo & " contains " & $candidates.len &
+                       " skills — pass the one you want",
+                       extra = %*{"skills": names})
 
     let name = chosen.get.name
     let dest = target / name
     if dirExists(dest):
-      return %*{"ok": false, "error": "skill already installed at " & dest &
-                " — skill_remove first"}
+      return errResult("skill already installed at " & dest &
+                       " — skill_remove first")
     createDir(target)
     copyDir(chosen.get.rootDir, dest)
-    %*{"ok": true, "skill": name, "dir": dest, "repo": cleanRepo,
-       "source": if global: "home" else: "project",
-       "description": chosen.get.description}
+    okResult(%*{"skill": name, "dir": dest, "repo": cleanRepo,
+                "source": if global: "home" else: "project",
+                "description": chosen.get.description})
 
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always",
-                                         "timeoutMs": 600000,
-                                         "onDemand": true}
-
-comp.tool:
+comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
   proc skill_remove(name: string): JsonNode =
     ## Remove a skill installed by skill_install: deletes its directory
     ## under ~/.niffler/skills or $NIF_ROOT/.opencode/skills. Skills that
@@ -507,20 +474,16 @@ comp.tool:
     ## - name: skill name (see skill_list)
     let s = findSkill(name)
     if s.isNone:
-      return %*{"ok": false, "error": "skill not found: " & name &
-                " — see skill_list"}
+      return errResult("skill not found: " & name &
+                       " — see skill_list")
     let skill = s.get
     if not isManagedDir(skill.rootDir):
-      return %*{"ok": false, "error": name & " lives in " & skill.rootDir &
-                " which is not Niffler-managed — removing it is refused"}
+      return errResult(name & " lives in " & skill.rootDir &
+                       " which is not Niffler-managed — removing it is refused")
     try:
       removeDir(skill.rootDir)
-      return %*{"ok": true, "skill": name, "removed": skill.rootDir}
+      return okResult(%*{"skill": name, "removed": skill.rootDir})
     except CatchableError as e:
-      return %*{"ok": false, "error": "failed to remove: " & e.msg}
-
-comp.tools[^1].schema["x-harness"] = %*{"approval": "always",
-                                         "timeoutMs": 300000,
-                                         "onDemand": true}
+      return errResult("failed to remove: " & e.msg)
 
 comp.run()

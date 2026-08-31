@@ -70,7 +70,7 @@ proc main() =
     import niffler/sdk
 
     let comp = newComponent("models-fixture", "0.1.0")
-    comp.tool:
+    comp.tool(%*{"hidden": true}):
       proc fixture_models_source(version: int = 1): JsonNode =
         ## Supply deterministic model catalog corrections for the models test.
         ## - version: models source protocol version
@@ -101,7 +101,6 @@ proc main() =
         }}
 
     comp.tools[^1].schema["x-models-source"] = %*{"version": 1, "priority": 200}
-    comp.tools[^1].schema["x-harness"] = %*{"hidden": true}
     comp.run()
     """.dedent()
 

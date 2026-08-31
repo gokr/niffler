@@ -81,36 +81,29 @@ proc main() =
         ## - value: value to echo
         %*{"value": value, "via": "direct"}
 
-    comp.tool:
+    comp.tool(%*{"onDemand": true}):
       proc fixture_demand_alpha(value: string): JsonNode =
         ## Echo through an on-demand fixture tool.
         ## - value: value to echo
         %*{"value": value, "via": "invoke"}
-    comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
-    comp.tool:
+    comp.tool(%*{"onDemand": true, "approval": "always"}):
       proc fixture_needs_approval(): JsonNode =
         ## Approval-gated on-demand fixture tool.
         %*{"called": true}
-    comp.tools[^1].schema["x-harness"] =
-      %*{"onDemand": true, "approval": "always"}
 
-    comp.tool:
+    comp.tool(%*{"onDemand": true, "timeoutMs": 150}):
       proc fixture_times_out(): JsonNode =
         ## Slow on-demand fixture tool.
         sleep(800)
         %*{"called": true}
-    comp.tools[^1].schema["x-harness"] =
-      %*{"onDemand": true, "timeoutMs": 150}
 
-    comp.tool:
+    comp.tool(%*{"hidden": true, "onDemand": true}):
       proc fixture_hidden_needle(): JsonNode =
         ## HIDDEN_SENTINEL must never appear in discovery.
         %*{"hidden": true}
-    comp.tools[^1].schema["x-harness"] =
-      %*{"hidden": true, "onDemand": true}
 
-    comp.tool:
+    comp.tool(%*{"hidden": true, "timeoutMs": 300000}):
       proc chat(messages: JsonNode, tools: JsonNode,
                 sessionId: string, stream: bool): JsonNode =
         ## Fake LLM used by the discovery bus test.
@@ -134,8 +127,6 @@ proc main() =
                   "reasoning missing"}
           return %*{"content": "tool call missing"}
         return %*{"content": $tools}
-    comp.tools[^1].schema["x-harness"] =
-      %*{"hidden": true, "timeoutMs": 300000}
 
     comp.run()
     """.dedent()
