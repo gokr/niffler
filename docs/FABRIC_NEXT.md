@@ -1,7 +1,7 @@
 # Fabric Reliability and Typed Wrappers Plan
 
 Status: in progress as a follow-up to the shipped Fabric implementation in
-`docs/FABRIC.md`.
+`docs/research/FABRIC.md`.
 
 This plan keeps Fabric's current architecture: a disposable Nim guest owns
 deterministic intra-turn control flow, while every declared effect crosses the

@@ -2,6 +2,8 @@
 
 > Research note — full design record. Operating reference for the `fabric` and
 > `agent` tools: [docs/MANUAL.md#fabric-and-subagents](../MANUAL.md#fabric-and-subagents).
+> User-facing guide — how to ask for Fabric, worked examples, and what to
+> expect from a run: [FABRIC_GUIDE.md](../FABRIC_GUIDE.md).
 
 Status: **shipped**. The design was an approved plan (revised after external
 review — see `FABRIC_FEEDBACK.md` (same directory) for the review that shaped it); this

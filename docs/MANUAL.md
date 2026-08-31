@@ -1190,7 +1190,9 @@ Nim program that drives Niffler tools itself, and only the program's
 `finish()` value enters the conversation. The `agent` component turns
 sessions into subagents. The full design and threat model:
 [research/FABRIC.md](research/FABRIC.md) (the external review that shaped it:
-[research/FABRIC_FEEDBACK.md](research/FABRIC_FEEDBACK.md)).
+[research/FABRIC_FEEDBACK.md](research/FABRIC_FEEDBACK.md)). User-facing
+guide with nudge phrasing and worked examples:
+[FABRIC_GUIDE.md](FABRIC_GUIDE.md).
 
 | Tool | What it does |
 |---|---|
