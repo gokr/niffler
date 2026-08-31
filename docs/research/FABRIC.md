@@ -81,6 +81,12 @@ explicit policy:
    the bridge get per-call approval and audit; effects that exploit a VM
    accident are *policy violations caught by the lint*, treated like a guest
    that lied in its approved source.
+6. **Approval manifests**: a program approval shows what is actually approved —
+   a source digest, the full program at a stable digest-keyed path under
+   `var/approval-sources/` (mode 0600), the selected tools, and the declared
+   budgets (UI modal and tty prompt both render it). Persisted auto-approval is
+   keyed by digest (`fabric:<digest>`), never by tool name alone, so a blanket
+   "always approve fabric" cannot cover unreviewed source.
 
 ## Core plumbing (shipped)
 
@@ -205,6 +211,8 @@ aggregate), `hybrid.nim` (fabric calling agent).
   rejection, hidden tools, private-context stripping, live-turn fail-closed.
 - `tests/t_schema_validation.nim` — full supported scalar/object/array types,
   enums, bounds, additional properties, and schema depth/size limits.
+- `tests/t_approval_manifest.nim` — program digests, digest-keyed auto-approval
+  keys, and mode-0600 source artifacts.
 - `tests/t_agent.nim` — run → reply (child runner direct, parent turn live),
   steer mid-turn, depth guard, deadlock regression.
 - `tests/t_fabric.nim` — compile-error round-trip, real programs driving bus

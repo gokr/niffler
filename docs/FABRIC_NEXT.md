@@ -27,6 +27,8 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] source, strings, call, frame, log, result, artifact, and OS limits;
 - [ ] transport cancellation propagation when supported;
 - [x] generated input-typed Nim wrappers and catalog pinning;
+- [x] approval manifests: source digest, viewable source artifact, selected
+  tools and budgets at the gate; digest-keyed persisted auto-approval;
 - [ ] bounded concurrency, durable agents, and structured observability.
 
 ## Usage model

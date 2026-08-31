@@ -1203,6 +1203,10 @@ sessions into subagents. The full design and threat model:
   crosses the session nested-call proxy (`svc.session.<id>.tool`), re-entering
   the single dispatch gate (approval, complete schema validation, deadline).
   The executor child holds no NATS connection and no credentials.
+- **Approval manifests**: program approvals show a source digest, the full
+  program under `var/approval-sources/<digest>.nim` (mode 0600), the selected
+  tools, and the declared budgets. Persisted auto-approve is keyed by
+  `fabric:<digest>` — approving one program never covers a different one.
 - **Guards**: proxy rejects hidden tools and internal/recursive surfaces
   (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare`); a
   per-turn lease expires stale requests; `maxCalls` budgets calls;

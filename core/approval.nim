@@ -17,7 +17,10 @@
 ## NIF_AUTO_APPROVE=1 bypasses the gate entirely (headless automation,
 ## explicit opt-in; see docs/MANUAL.md).
 
-import std/[json, os, strutils, tables, times]
+import std/[algorithm, json, os, posix, strutils, times]
+{.push warning[Deprecated]: off.}
+import std/sha1
+{.pop.}
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -56,10 +59,94 @@ proc describe(tool: string, args: JsonNode): string =
   if a.len > 400: a = a[0 .. 399] & "…"
   return tool & " " & a
 
+proc programDigest*(args: JsonNode): string =
+  ## Identity of a program-shaped approval (any args carrying a string `code`):
+  ## the digest covers the source plus every dimension the human approved —
+  ## selected tools and the call budget — so a changed program or capability
+  ## set is a different approval. Empty for ordinary (non-program) calls.
+  if args == nil: return ""
+  if args{"code"} == nil or args{"code"}.kind != JString: return ""
+  var material = %*{"code": args{"code"}}
+  let tools = args{"tools"}
+  if tools != nil and tools.kind == JArray:
+    var names: seq[string]
+    for t in tools: names.add(t.getStr(""))
+    names.sort()
+    material["tools"] = %names
+  if args{"maxCalls"} != nil and args{"maxCalls"}.kind != JNull:
+    material["maxCalls"] = args{"maxCalls"}
+  result = $secureHash(canonicalJson(material))
+
+proc sourceArtifact*(digest, code: string): string =
+  ## The full program source at a stable digest-keyed path (mode 0600), so
+  ## the approver can read everything, not a prompt-truncated excerpt.
+  let dir = getEnv("NIF_ROOT", ".") / "var" / "approval-sources"
+  try:
+    createDir(dir)
+  except CatchableError: discard
+  let path = dir / (digest & ".nim")
+  if not fileExists(path):
+    let fd = posix.open(path.cstring, O_WRONLY or O_CREAT or O_EXCL,
+                        Mode(0o600))
+    if fd >= 0:
+      var written = 0
+      while written < code.len:
+        let count = posix.write(fd, unsafeAddr code[written],
+                                code.len - written)
+        if count <= 0: break
+        written += count
+      discard posix.close(fd)
+      if written < code.len:
+        try: removeFile(path)
+        except CatchableError: discard
+  return path
+
+proc approvalManifest*(args: JsonNode): JsonNode =
+  ## Extra view data for program-shaped approvals (nil otherwise): digest,
+  ## viewable full source, selected tools, and declared budgets.
+  let digest = programDigest(args)
+  if digest.len == 0: return nil
+  let code = args{"code"}.getStr("")
+  result = %*{"digest": digest}
+  if code.len > 0:
+    result["source"] = %sourceArtifact(digest, code)
+  if args{"tools"} != nil: result["tools"] = args{"tools"}
+  if args{"maxCalls"} != nil: result["maxCalls"] = args{"maxCalls"}
+  if args{"timeoutMs"} != nil: result["timeoutMs"] = args{"timeoutMs"}
+
+proc autoKey*(tool: string, args: JsonNode): string =
+  ## Persisted auto-approval key: program-shaped calls are keyed by manifest
+  ## digest, never by tool name alone (a blanket "always approve fabric"
+  ## would approve arbitrary source).
+  let digest = programDigest(args)
+  if digest.len > 0: tool & ":" & digest else: tool
+
+proc describeApproval(tool: string, args: JsonNode, manifest: JsonNode): string =
+  ## What the human sees at a tty gate: the manifest for program approvals,
+  ## the classic one-line summary otherwise.
+  if manifest == nil: return describe(tool, args)
+  result = "program " & manifest{"digest"}.getStr("")
+  let tools = manifest{"tools"}
+  if tools != nil and tools.kind == JArray and tools.len > 0:
+    var names: seq[string]
+    for t in tools: names.add(t.getStr(""))
+    result.add("\n  selected tools: " & names.join(", "))
+  if manifest{"maxCalls"} != nil:
+    result.add("\n  maxCalls: " & $manifest{"maxCalls"}.getInt(0))
+  if manifest{"timeoutMs"} != nil:
+    result.add("\n  timeoutMs: " & $manifest{"timeoutMs"}.getInt(0))
+  let source = manifest{"source"}.getStr("")
+  if source.len > 0:
+    result.add("\n  full source: " & source)
+  let code = args{"code"}.getStr("")
+  var head = code.split('\n')[0]
+  if head.len > 120: head = head[0 ..< 120] & "…"
+  result.add("\n  code begins: " & head)
+
 proc askTty(tool: string, args: JsonNode): bool =
   echo ""
   echo "[approval] this tool call needs your ok:"
-  echo "  " & describe(tool, args)
+  echo "  " & describeApproval(tool, args, approvalManifest(args))
   stdout.write("Approve? [y/N] ")
   stdout.flushFile()
   try:
@@ -77,6 +164,9 @@ proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
   let id = newId()
   var payload = %*{"id": id, "tool": tool, "args": args,
                    "sessionId": a.session}
+  let manifest = approvalManifest(args)
+  if manifest != nil:
+    payload["manifest"] = manifest
   var directed = a.caller.len > 0
   if directed:
     payload["caller"] = %a.caller
@@ -152,9 +242,13 @@ proc ask*(a: Approval, tool: string, args: JsonNode): bool =
     return true
   # Persisted per-conversation auto-approve (set by a client's "auto
   # approve" action): grant without asking any client, so no dialog is
-  # shown at all — not even a flash.
-  if a.checkAuto != nil and a.session.len > 0 and a.checkAuto(a.session, tool):
-    return true
+  # shown at all — not even a flash. Program-shaped calls are keyed by
+  # manifest digest (autoKey), so a blanket tool-name record never covers
+  # unreviewed source.
+  if a.checkAuto != nil and a.session.len > 0:
+    let key = autoKey(tool, args)
+    if a.checkAuto(a.session, key):
+      return true
   # Fall back to the tty prompt only when core is on a terminal AND no
   # interactive client is attached (classic terminal-harness usage). The
   # tty fallback never applies to session turns — runners always have

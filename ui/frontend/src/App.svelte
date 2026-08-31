@@ -14,11 +14,27 @@
   import { thinkLevel, toolLevel, cycleThinkLevel, cycleToolLevel, type ThinkLevel, type ToolLevel } from "./lib/prefs.svelte";
   import { effortLabel, nextEffort, isValidEffort, saveThinkingEffort, type EffortLevel } from "./lib/effort";
 
+  interface ApprovalManifest {
+    digest: string;
+    source?: string;
+    tools?: string[];
+    maxCalls?: number;
+    timeoutMs?: number;
+  }
+
   interface ApprovalReq {
     id: string;
     tool: string;
     args: any;
     sessionId: string;
+    manifest?: ApprovalManifest | null;
+  }
+
+  // Persisted auto-approvals are keyed by tool name, or by
+  // "tool:<digest>" for program approvals (fabric) so a blanket
+  // record never covers unreviewed source.
+  function autoKey(tool: string, digest?: string): string {
+    return digest ? tool + ":" + digest : tool;
   }
 
   let connected = $state<boolean | null>(null);
@@ -43,8 +59,9 @@
   let managerOpen = $state(false);
   let modelPickerOpen = $state(false);
 
-  function isAutoApproved(sid: string, tool: string): boolean {
-    return (autoApproved[sid] ?? []).includes(tool);
+  function isAutoApproved(sid: string, tool: string, digest?: string): boolean {
+    const keys = autoApproved[sid] ?? [];
+    return keys.includes(autoKey(tool, digest));
   }
 
   async function loadProviders() {
@@ -225,14 +242,14 @@
       const p = ev.payload ?? {};
       if (!p.id || !p.tool) return;
       const sid = p.sessionId ?? "";
-      if (isAutoApproved(sid, p.tool)) {
+      if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
         // Decision alone resolves the gate; no ack needed.
         emit("ev.approval.reply", { id: p.id, ok: true });
         return;
       }
       // Ack so the runner knows a human is being asked; then show the modal.
       emit("ev.approval.reply", { id: p.id, ack: true });
-      approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
+      approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid, manifest: p.manifest ?? null }];
     })
   );
 
@@ -243,11 +260,11 @@
       const p = ev.payload ?? {};
       if (p.id && p.tool) {
         const sid = p.sessionId ?? "";
-        if (isAutoApproved(sid, p.tool)) {
+        if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
           emit("ev.approval.reply", { id: p.id, ok: true });
           return;
         }
-        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid }];
+        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid, manifest: p.manifest ?? null }];
       }
     })
   );
@@ -322,15 +339,16 @@
     const req = approvals[0];
     if (!req) return;
     if (auto) {
+      const key = autoKey(req.tool, req.manifest?.digest);
       autoApproved = {
         ...autoApproved,
-        [req.sessionId]: [...(autoApproved[req.sessionId] ?? []), req.tool],
+        [req.sessionId]: [...(autoApproved[req.sessionId] ?? []), key],
       };
       try {
         await send("store", "put", {
           kind: "approval",
-          id: req.sessionId + ":" + req.tool,
-          value: { tool: req.tool, sessionId: req.sessionId },
+          id: req.sessionId + ":" + key,
+          value: { tool: req.tool, sessionId: req.sessionId, digest: req.manifest?.digest ?? null },
         });
       } catch {
         // best effort: in-memory list still covers this session
@@ -537,6 +555,23 @@
       </div>
       <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
         <div class="font-mono text-[13px] text-accent">{approvals[0].tool}</div>
+        {#if approvals[0].manifest}
+          <div class="mt-2 space-y-0.5 font-mono text-[12px] text-ink-300">
+            <div>digest: <span class="text-accent">{approvals[0].manifest.digest.slice(0, 16)}…</span></div>
+            {#if approvals[0].manifest.tools?.length}
+              <div>tools: {approvals[0].manifest.tools.join(", ")}</div>
+            {/if}
+            {#if approvals[0].manifest.maxCalls != null}
+              <div>maxCalls: {approvals[0].manifest.maxCalls}</div>
+            {/if}
+            {#if approvals[0].manifest.timeoutMs != null}
+              <div>timeoutMs: {approvals[0].manifest.timeoutMs}</div>
+            {/if}
+            {#if approvals[0].manifest.source}
+              <div>full source: {approvals[0].manifest.source}</div>
+            {/if}
+          </div>
+        {/if}
         <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
       </div>
       {#if approvals.length > 1}
