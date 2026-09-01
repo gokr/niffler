@@ -53,12 +53,13 @@ proc writeLineTo(p: Process, line: string) =
   p.inputStream.flush()
 
 proc runExecutor(subject, lease, code: string, strings: JsonNode,
-                 schemas: JsonNode, maxCalls, timeoutMs: int): JsonNode =
+                 schemas: JsonNode, maxCalls, timeoutMs: int,
+                 runId, sessionId: string): JsonNode =
   ## Spawn the executor, serve its bridge, return the tool result.
+  ## runId/sessionId correlate the ev.fabric.* lifecycle events.
   let bin = getAppDir() / "fabric-exec"
   if not fileExists(bin):
     return %*{"error": "fabric-exec binary missing — run `make build`"}
-  let runId = newId()
   let errFile = getTempDir() / ("niffler-fabric-exec-" & runId & ".err")
   var env = newStringTable(modeCaseSensitive)
   env["PATH"] = getEnv("PATH")
@@ -92,11 +93,13 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     if fileExists(errFile):
       try: removeFile(errFile)
       except CatchableError: discard
+  var calls = 0
+
   proc diag(msg: string): JsonNode =
     ## Failure result with the guest's compiler/quit output as diagnostics.
     let e = if fileExists(errFile): readFile(errFile).strip()
             else: ""
-    result = %*{"error": msg}
+    result = %*{"error": msg, "calls": calls}
     if e.len > 0:
       let capped = if e.len > 4000: e[e.len - 4000 .. ^1] else: e
       result["diagnostics"] = %capped
@@ -110,7 +113,6 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   if selectedMode:
     for entry in schemas:
       selected[entry{"name"}.getStr("")] = entry
-  var calls = 0
   var logEvents = 0
   var logBytes = 0
   const maxBatchInflight = 4
@@ -120,6 +122,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   type Pending = object
     id: string
     sub: ptr natsSubscription
+    launchedAt: float
   var inFlight: seq[Pending]
   var queued: seq[JsonNode]   ## admitted req frames waiting for a slot
 
@@ -167,6 +170,9 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         "component": pin{"component"}.getStr(""),
         "version": pin{"version"}.getStr(""),
         "fingerprint": pin{"fingerprint"}.getStr("")}
+    comp.emit("ev.fabric.call.started", %*{"runId": runId,
+              "sessionId": sessionId, "seq": frame{"id"}.getStr(""),
+              "tool": tool})
     let env = callEnvelope(tool, toolArgs, "fabric")
     let data = env.encode()
     let inbox = "_INBOX.fabric." & newId()
@@ -182,7 +188,8 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       natsSubscription_Destroy(sub)
       raise newException(CatchableError,
         "publish nested request: " & getErrorString(pst))
-    inFlight.add(Pending(id: frame{"id"}.getStr(""), sub: sub))
+    inFlight.add(Pending(id: frame{"id"}.getStr(""), sub: sub,
+                         launchedAt: epochTime()))
 
   proc topUp() =
     while inFlight.len < maxBatchInflight and queued.len > 0:
@@ -210,7 +217,12 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     of "req":
       let resp = admit(frame)
       if resp != nil:
-        writeResp(frame{"id"}.getStr(""), resp)
+        let id = frame{"id"}.getStr("")
+        writeResp(id, resp)
+        comp.emit("ev.fabric.call.done", %*{"runId": runId,
+                  "sessionId": sessionId, "seq": id, "ok": false,
+                  "durationMs": 0,
+                  "error": resp{"error"}.getStr("")})
       else:
         queued.add(frame)
         topUp()
@@ -248,14 +260,24 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           let r = decode($natsMsg_GetData(msg))
           natsMsg_Destroy(msg)
           let id = inFlight[i].id
+          let launchedAt = inFlight[i].launchedAt
           natsSubscription_Destroy(inFlight[i].sub)
           inFlight.delete(i)
+          var callOk = false
+          var callError = ""
           if r.kind == ekResult:
+            callOk = true
             writeResp(id, %*{"t": "resp", "id": id, "ok": true,
                              "result": $r.args})
           else:
+            callError = r.error{"message"}.getStr("call failed")
             writeResp(id, %*{"t": "resp", "id": id, "ok": false,
-                             "error": r.error{"message"}.getStr("call failed")})
+                             "error": callError})
+          comp.emit("ev.fabric.call.done", %*{"runId": runId,
+                    "sessionId": sessionId, "seq": id, "ok": callOk,
+                    "durationMs": ((epochTime() - launchedAt) *
+                        1000.0).int,
+                    "error": callError})
           progressed = true
         else:
           inc i
@@ -281,6 +303,8 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           break
   except CatchableError as e:
     finishPending()
+    if resultJ != nil:
+      resultJ["_calls"] = %calls
     if resultJ == nil:
       stopChild()
       return diag(e.msg)
@@ -420,6 +444,12 @@ discard comp.tool("fabric", fabSchema,
       return %*{"error": lintMsg}
     let subject = sessionToolSubject(sess)
     let runId = newId()
+    # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+    let selectedJ = if toolArgs{"tools"} != nil: toolArgs{"tools"}
+                    else: newJArray()
+    comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
+              "selected": selectedJ,
+              "maxCalls": toolArgs{"maxCalls"}.getInt(200)})
     let maxCalls = toolArgs{"maxCalls"}.getInt(200)
     if maxCalls <= 0 or maxCalls > maxCallsLimit:
       return %*{"error": "maxCalls must be in 1.." & $maxCallsLimit}
@@ -474,9 +504,21 @@ discard comp.tool("fabric", fabSchema,
     let executionMs = (deadline - getMonoTime()).inMilliseconds.int
     if executionMs <= 0:
       return %*{"error": "fabric execution deadline expired"}
+    let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
-                        executionMs)
+                        executionMs, runId, sess)
+    proc emitDone(status: string, extra: JsonNode = nil) =
+      ## Correlated terminal lifecycle event (bounded metadata).
+      var ev = %*{"runId": runId, "sessionId": sess, "status": status,
+                  "durationMs": ((epochTime() - fabricStart) * 1000.0).int,
+                  "calls": r{"_calls"}.getInt(0)}
+      if extra != nil:
+        for key, val in extra: ev[key] = val
+      comp.emit("ev.fabric.done", ev)
     if r{"error"} != nil:
+      let msg = r{"error"}.getStr("")
+      emitDone(if msg.contains("timed out"): "timeout" else: "failed",
+               %*{"error": msg[0 ..< min(msg.len, 200)]})
       return r
     if r{"ok"}.getBool(false):
       let value = r{"value"}.getStr("")
@@ -491,12 +533,17 @@ discard comp.tool("fabric", fabSchema,
         try:
           path = storeArtifact(runId, rendered)
         except CatchableError as e:
+          emitDone("failed", %*{"error": "cannot retain Fabric result: " &
+                                            e.msg})
           return %*{"error": "cannot retain Fabric result: " & e.msg}
+        emitDone("done", %*{"resultSize": rendered.len, "artifact": path})
         return %*{"ok": true,
                   "value": rendered[0 ..< maxResultChars] &
                     "\n[... truncated — full result at " & path & " ...]",
                   "artifactPath": path}
+      emitDone("done", %*{"resultSize": rendered.len})
       return %*{"ok": true, "value": parsed}
+    emitDone("failed")
     return %*{"ok": false, "diagnostics": r{"diagnostics"}.getStr("failed")})
 
 comp.run()

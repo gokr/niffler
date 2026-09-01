@@ -200,6 +200,9 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("could not start the job: " & getErrorString(st),
                        extra = %*{"jobId": jobId,
                                   "sessionId": prep.child})
+    comp.emit("ev.agent.started", %*{"jobId": jobId,
+                                     "sessionId": prep.child,
+                                     "parent": parentSession})
     return okResult(%*{"jobId": jobId, "sessionId": prep.child,
                        "steer": "svc.session." &
                                 sanitizeSessionId(prep.child) & ".steer"}))

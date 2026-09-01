@@ -189,6 +189,11 @@ proc main() =
                                             "ev.agent.done".cstring)
   doAssert checkStatus(doneSt)
   defer: natsSubscription_Destroy(doneSub)
+  var startedSub: ptr natsSubscription
+  let startedSt = natsConnection_SubscribeSync(addr startedSub, nc.conn,
+                                               "ev.agent.started".cstring)
+  doAssert checkStatus(startedSt)
+  defer: natsSubscription_Destroy(startedSub)
 
   proc fetchJobId(parent: string): string =
     for i in 1 .. 6:
@@ -232,6 +237,17 @@ proc main() =
       doneSeen = ev{"payload"}{"status"}.getStr("") == "done"
       break
   check("ev.agent.done announced the terminal state", doneSeen)
+  var startedSeen = false
+  for i in 0 ..< 20:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, startedSub, 300)
+    if st != NATS_OK: break
+    let ev = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if ev{"payload"}{"jobId"}.getStr("") == jobId:
+      startedSeen = ev{"payload"}{"sessionId"}.getStr("").startsWith("agent-")
+      break
+  check("ev.agent.started announced the job", startedSeen)
   let late = call(nc, "agent", "agent_wait", %*{"jobId": jobId}, 30_000)
   check("late agent_wait reads the durable record",
         late{"status"}.getStr("") == "done", $late)

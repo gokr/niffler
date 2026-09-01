@@ -245,6 +245,11 @@ proc main() =
 
   # bounded batch: independent calls overlap on the host, one failing item
   # is isolated in its slot, outcomes come back in input order
+  var evSub: ptr natsSubscription
+  let evSt = natsConnection_SubscribeSync(addr evSub, nc.conn,
+                                          "ev.fabric.>".cstring)
+  doAssert checkStatus(evSt)
+  defer: natsSubscription_Destroy(evSub)
   let batchStart = epochTime()
   let batchTurn = call(nc, "core", "session",
                        %*{"sessionId": "fab-batch", "content": "go"}, 120_000)
@@ -268,6 +273,35 @@ proc main() =
         batchTranscript.contains("\"nope\":\"no component provides tool") and
         batchTranscript.contains("\"b3\":true"),
         batchTranscript)
+
+  # lifecycle events: correlated started/call/done frames on the bus
+  var evStarted = 0
+  var evCallDone = 0
+  var evCallFail = 0
+  var evDone = 0
+  var evDoneOk = false
+  for i in 0 ..< 80:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, evSub, 200)
+    if st != NATS_OK: break
+    let env = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    let p = env{"payload"}
+    if p{"selected"} != nil: inc evStarted
+    elif p{"status"} != nil:
+      inc evDone
+      evDoneOk = evDoneOk or p{"status"}.getStr("") == "done"
+    elif p{"seq"} != nil:
+      inc evCallDone
+      if not p{"ok"}.getBool(false): inc evCallFail
+  check("ev.fabric.started announces each run", evStarted >= 1,
+        "started=" & $evStarted)
+  check("ev.fabric.call.done covers every nested call", evCallDone >= 4,
+        "call.done=" & $evCallDone)
+  check("ev.fabric.call.done records per-item failure", evCallFail >= 1,
+        "call failures=" & $evCallFail)
+  check("ev.fabric.done announces the terminal state",
+        evDone >= 1 and evDoneOk, "done=" & $evDone)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""
