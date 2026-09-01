@@ -242,7 +242,10 @@ proc publishEnvelope*(c: Component, subject: string, env: Envelope) =
   ## Publish any pre-built envelope to any subject (fire-and-forget).
   c.nc.publish(subject, env.encode())
 
-proc pumpTaps(c: Component, maxMessages: int): int
+proc pumpTaps*(c: Component, maxMessages: int): int
+  ## Drain queued tap subscriptions. Exported for components that block in
+  ## a handler: a polling wait must keep its taps current, or replies that
+  ## arrive during the block sit queued until it returns.
 
 proc requestEnvelope*(c: Component, subject: string, env: Envelope,
                       timeoutMs: int = 5000): Envelope =
@@ -498,7 +501,10 @@ proc pumpTaps(c: Component, maxMessages: int): int =
       continue
     while result < maxMessages:
       var msg: ptr natsMsg
-      let st = natsSubscription_NextMsg(addr msg, binding.sub, 0)
+      # bounded wait: a blocking NextMsg here would freeze a caller that
+      # pumps taps from inside a handler (agent_wait) when the queue is
+      # empty, and freeze requestEnvelope for tap-owning components
+      let st = natsSubscription_NextMsg(addr msg, binding.sub, 25)
       if st != NATS_OK:
         break
       inc result

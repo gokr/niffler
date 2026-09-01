@@ -2,6 +2,8 @@
 
 > Research note — full design record. Operating reference for the `fabric` and
 > `agent` tools: [docs/MANUAL.md#fabric-and-subagents](../MANUAL.md#fabric-and-subagents).
+> User-facing guide — how to ask for Fabric, worked examples, and what to
+> expect from a run: [FABRIC_GUIDE.md](../FABRIC_GUIDE.md).
 
 Status: **shipped**. The design was an approved plan (revised after external
 review — see `FABRIC_FEEDBACK.md` (same directory) for the review that shaped it); this
@@ -11,7 +13,7 @@ are marked where they matter.
 One programmable tool (`fabric`) lets the LLM write a Nim program that owns the
 intra-turn control flow — branching, loops, fan-out, data flow — instead of one
 tool call per loop round. Only the program's result enters the conversation.
-Alongside it, an `agent` tool (`agent_run`/`agent_steer`) turns any Niffler
+Alongside it, an `agent` tool (`agent_run`) turns any Niffler
 conversation into a subagent (fresh context, own loop, summary returned). Both
 are thin surfaces over infrastructure core already has.
 
@@ -20,7 +22,7 @@ are thin surfaces over infrastructure core already has.
 ```
 LLM turn (session runner)
   └─ dispatchToolCall("fabric"|"agent")            ← approval: "always"
-       │  args.__session = {session, lease} injected (sessionContext flag)
+       │  args.__session = {session, lease, remainingMs} injected
        ▼
  ┌─ fabric component ─────────────────┐  ┌─ agent component ──────────────┐
  │ spawns var/bin/fabric-exec (child) │  │ agent_run/steer: prepare a     │
@@ -70,9 +72,10 @@ explicit policy:
    `os`/`osproc`/`net` imports, `natswrapper`) reject the program with a clear
    error. A lint is not bulletproof — it is auditable policy, not a boundary.
 3. Executor child runs with a **cleared environment** (no `NIF_*` vars) and
-   **no NATS connection** — the fabric parent owns the bus and serves the
-   child's bridge requests over framed stdio. Even a VM escape finds no
-   credentials and no reachable bus.
+   **no configured NATS connection** — the fabric parent owns the bus and
+   serves the child's bridge requests over framed stdio. The guest still
+   shares the host filesystem, UID and network namespace, so this reduces
+   accidental access rather than creating a security boundary.
 4. `posix.setrlimit(RLIMIT_AS)` + process kill for timeout — resource limits,
    not effect limits.
 5. Honest framing: approval is the boundary. `x-harness.approval: "always"`
@@ -80,11 +83,18 @@ explicit policy:
    the bridge get per-call approval and audit; effects that exploit a VM
    accident are *policy violations caught by the lint*, treated like a guest
    that lied in its approved source.
+6. **Approval manifests**: a program approval shows what is actually approved —
+   a source digest, the full program at a stable digest-keyed path under
+   `var/approval-sources/` (mode 0600), the selected tools, and the declared
+   budgets (UI modal and tty prompt both render it). Persisted auto-approval is
+   keyed by digest (`fabric:<digest>`), never by tool name alone, so a blanket
+   "always approve fabric" cannot cover unreviewed source.
 
 ## Core plumbing (shipped)
 
 - **`sessionContext: true`** schema flag (`x-harness`): `dispatchToolCall`
-  injects `args.__session = {session, lease}` for `fabric` and `agent_run`.
+  injects `args.__session = {session, lease, remainingMs}` for `fabric` and
+  `agent_run`.
   The lease is a one-shot token owned by the in-flight call — the predictable
   nested-call subject is worthless without the live lease. Fail closed: no
   live turn or no matching lease → denied.
@@ -92,9 +102,9 @@ explicit policy:
   `core/dispatch.nim`): admission checks, in order —
   live session context → live lease → not an internal/recursive surface
   (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare` are all
-  rejected) → tool exists → not hidden → required arguments present
-  (`validateRequired` against the catalog schema) — then re-enters the single
-  `dispatchToolCall` gate (approval, timeout). Drained from the idle slot of
+  rejected) → tool exists → not hidden → complete bounded schema validation —
+  then re-enters the single `dispatchToolCall` gate (approval, remaining
+  deadline, target timeout). Drained from the idle slot of
   `dispatchSubjectCall`, like steer, so the blocked runner stays responsive.
 - **`session_prepare`** core op: ensures a conversation header + runner for a
   child session and returns the runner's **direct subject**
@@ -108,60 +118,105 @@ explicit policy:
 
 ## The `agent` component (`components/agent/`)
 
-Synchronous only (the SDK serializes handlers on one thread; background jobs
-need worker processes + durable state — not shipped):
+The SDK serializes handlers on one thread, so long-running work is split
+into a synchronous surface and durable background jobs:
 
-- **`agent_run {task, model?, timeoutMs?}`** — prepare a child runner via
-  `session_prepare`, call the child runner's subject directly with the framed
-  task, return its final reply with `{reply, sessionId}`. The child session
-  call is a plain request/reply whose result carries the final reply.
-- **`agent_steer {sessionId, message}`** — fire-and-forget publish to
-  `svc.session.<id>.steer`; the running turn folds it in at the next round.
+- **`agent_run {task, model?, timeoutMs?}`** — synchronous: prepare a child
+  runner via `session_prepare`, call the child runner's subject directly with
+  the framed task, return its final reply with `{reply, sessionId}`. The
+  child session call is a plain request/reply whose result carries the final
+  reply.
+- **`agent_spawn {task, model?}`** — background: same preparation, then the
+  child turn is published fire-and-forget with a reply inbox the component
+  taps; the handler returns `{jobId, sessionId}` immediately. The tap records
+  the terminal state durably (store kind `agentjob`) and emits
+  `ev.agent.done` — a late status lookup or wait can never miss it.
+- **`agent_status {jobId}`** — non-blocking durable lookup.
+- **`agent_wait {jobId, timeoutMs?}`** — blocks until the job reaches a
+  terminal state, reading the durable record (works for jobs that finished
+  long ago). While waiting it pumps the component's taps, since the
+  completion tap shares the same serialized pump.
+- **`agent_stop {jobId}`** — marks a running job "stopping"; the terminal
+  record says "stopped" when the child turn ends. The process is not killed
+  outright (kill-on-timeout still bounds a runaway turn).
+- **`agent_steer {session_id, message}`** — fire-and-forget injection into a
+  live child turn; meaningful for spawned jobs, whose child runs while the
+  caller continues.
 - Fixed task preamble ("You are a subagent. Work autonomously, report a
-  concise result."). The subagent gets the full normal toolset and loop.
-- Approvals inside the subagent route to the driving client
-  (`approval.caller`) — the human still sees every gate.
+  concise result."). The subagent gets the full normal toolset and loop, and
+  the conversation's pluggable constitution (systemprompt) like any session.
+- Approvals inside the subagent route to the original interactive caller
+  (dispatch injects it as private `__session.caller`; the child's
+  `approval.caller` becomes the driving client) — the human still sees every
+  gate. With no reachable human they are denied.
+- Lineage fails closed: the depth-guard `sessionmeta` read/write treats a
+  store outage as "cannot verify → deny", for both the dispatch-time guard
+  and the component's own guard.
+- Child LLM failures surface as failures (`{"error": ...}`, durable job
+  status "failed"), never as successful text.
+- Idle child runners retire themselves (`NIF_RUNNER_IDLE_S`, default 600 s)
+  and are re-ensured on demand — conversations resume from the store.
 
 ## The `fabric` component (`components/fabric/`)
 
 **`fabric.nim`** — SDK component, one tool:
 
-- Schema `{code: string required, strings?: object, timeoutMs?: int,
-  maxCalls?: int}`; `x-harness`: approval "always", timeoutMs 300000,
+- Schema `{code: string required, tools?: string[], strings?: object,
+  timeoutMs?: int, maxCalls?: int}`; `x-harness`: approval "always", timeoutMs 300000,
   sessionContext, onDemand.
 - Owns the NATS side of the bridge; enforces per-program budgets: **maxCalls**
   (default 200) bridge calls, per-call timeout = min(tool timeout, remaining
-  program time). Oversized `finish()` values spill to
-  `var/fabric-artifacts/<run>.json` (mode 0600) and only the path returns.
-- Emits `ev.fabric.log` per guest `logg()` call.
+  monotonic program time). Nested arguments are validated against the complete
+  bounded schema subset before approval or dispatch; malformed `argsJson` is
+  rejected rather than rewritten. Source, strings, frames, logs, and results
+  all have explicit byte/count limits.
+- Oversized `finish()` values spill to mode-0600 files under
+  `var/fabric-artifacts/`; artifacts expire after seven days and the directory
+  is capped at 100 files / 100 MB.
+- Emits `ev.fabric.log` per guest `logg()` call within the log budget.
+- `tools` selects up to 16 exact non-hidden tools. Core returns a canonical
+  owner/version/schema fingerprint snapshot; every selected bridge call checks
+  that pin against the live catalog and fails if a component changed mid-run.
 
 **`executor.nim`** (binary `var/bin/fabric-exec`):
 
-- **Framed stdio protocol**: stdin receives `{code, strings, sessionSubject,
-  lease}` once; the child then writes framed lines — `{t: "req", id, tool,
+- **Framed stdio protocol**: stdin receives `{code, strings, schemas?}` once;
+  the child then writes framed lines — `{t: "req", id, tool,
   args}` (bridge requests: the parent performs the NATS call and replies
   `{t: "resp", id, ok, result|error}` on the child's stdin), `{t: "log", s}`,
   and finally `{t: "result", ok, value, diagnostics?}`. The parent drains
   continuously — no pipe-fill deadlock (the bash-component lesson).
-- Cleared environment, no NATS in the child; `setrlimit(RLIMIT_AS)` before
-  `createInterpreter`; fresh interpreter per program (kill = timeout; the VM
-  API has no interrupt hook).
+- Cleared environment, no NATS in the child; CPU, address-space, file
+  descriptor, and child-process `setrlimit` caps before `createInterpreter`;
+  fresh interpreter per program (kill = timeout; the VM API has no interrupt
+  hook).
 - Runtime search paths resolved from the compiling toolchain (compile-time
   self-locating — valid because components are built in place).
 - Bridge via `implementRoutine`; the `.nimble` file in `fabricguest/` is
   **load-bearing** (callback key = nimble package name).
 - Compile errors: real Nim compiler diagnostics passed back verbatim.
 
-**Guest API** (`components/fabric/fabricguest/fabricguest.nim`) — typed,
+**Raw guest API** (`components/fabric/fabricguest/fabricguest.nim`) —
 stdlib-free (no imports; cold eval ~ms):
 
 | Proc | Purpose |
 | --- | --- |
 | `callTool(tool, argsJson): string` | call a bus tool through the proxy; returns the result JSON |
+| `batch(callsJson): string` | run up to 16 independent calls CONCURRENTLY on the host (max 4 on the bus at once); callsJson is a JSON array of `{tool, args}`; returns a JSON array of per-item outcomes in input order — a failing item never aborts the others; every call still crosses the proxy (approval, budget, deadline) |
 | `finish(valueJson)` | end the program with a result (control exception) |
 | `logg(message)` | emit an `ev.fabric.log` event |
 | `stringArg(key): string` | read a `strings` argument |
 | `jesc / jpair / jobj / jarr / jnum / jbool` | JSON string builders — heavy parsing stays native in the bridge |
+
+Selected mode injects `fabricmeta.nim`, whose `fabricTools` macro generates
+`tools.<tool>(required = value, optional = value)` wrappers from the pinned
+runtime schemas. Scalar arguments and arrays are Nim-typed; objects degrade to
+`JsonNode`. Optional arguments use `FabricArg[T]`, so omission remains
+distinct from explicit `false`, `0`, or `""`. A tool may declare a scalar
+`outputSchema` alongside its input schema; the wrapper's return type is then
+Nim-typed (`string`, `int`, `float`, `bool`, `seq[T]`) instead of `JsonNode`.
+Ambiguous style-insensitive names omit the wrapper and retain allowlisted
+`callTool` as a fallback. Host validation remains authoritative.
 
 ## Teaching the LLM
 
@@ -183,23 +238,26 @@ aggregate), `hybrid.nim` (fabric calling agent).
 ## Tests
 
 - `tests/t_nested.nim` — proxy admission: lease checks, internal-surface
-  rejection, hidden tools, required-arg validation, live-turn fail-closed.
+  rejection, hidden tools, private-context stripping, live-turn fail-closed.
+- `tests/t_schema_validation.nim` — full supported scalar/object/array types,
+  enums, bounds, additional properties, and schema depth/size limits.
+- `tests/t_approval_manifest.nim` — program digests, digest-keyed auto-approval
+  keys, and mode-0600 source artifacts.
 - `tests/t_agent.nim` — run → reply (child runner direct, parent turn live),
   steer mid-turn, depth guard, deadlock regression.
 - `tests/t_fabric.nim` — compile-error round-trip, real programs driving bus
-  tools, lint rejections, budget/timeout behavior.
+  tools, typed wrapper generation, catalog replacement, malformed arguments,
+  budget/deadline behavior, and private artifacts.
 
 ## Not shipped (deliberately later)
 
-- `agent_spawn`/`agent_wait` background mode (worker processes + store-backed
-  job records).
-- Concurrent bridge fan-out (multiple inboxes — still no threads).
-- Catalog snapshot pinning at program start (semantic pinning against
-  mid-program component reloads).
-- Typed guest wrappers generated from the catalog (compile-time-checked proc
-  signatures) — biggest known reliability lever, deferred until the mechanism
-  has more mileage.
+- Effect declarations and conflict detection for batch calls (concurrent
+  mutations to one target are not prevented; reads are the intended use).
+- Job budgets beyond the wait timeout (per-job token/call caps), process-level
+  `agent_stop` cancellation, and agent restart recovery for jobs whose
+  completion tap was missed (they surface as "running"; status shows the
+  child runner's retirement).
 - Live executor event streaming beyond `ev.fabric.log`;
-  `ev.fabric.done`/`ev.agent.done` summary events.
+  `ev.fabric.done` summary events.
 - Cancellation propagation into a running guest (request/reply has no cancel
   semantics; kill-on-timeout is the only stop).

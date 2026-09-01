@@ -1,11 +1,12 @@
 ## agent component tests (fabric Phase 1, docs/research/FABRIC.md).
 ##
 ## Boots a sandbox core (store + bash, no LLM) with the test-only stub
-## component (components/ctxtest) and the agent component. Drives one parent
-## turn whose stub LLM calls agent_run; the child session (its own runner,
-## stub-scripted) attempts a nested agent_run (must be denied by the depth
-## guard), runs bash, and finishes. Asserts the full loop: delegated
-## child-runner prep, lineage metadata, synchronous reply, depth guard.
+## component (components/ctxtest) and the agent component. Drives parent
+## turns whose stub LLM calls agent_run; child sessions (their own runners,
+## stub-scripted) attempt a nested agent_run (denied by the depth guard),
+## run bash, or force an LLM failure. Asserts the full loop: delegated
+## child-runner prep, lineage metadata, synchronous reply, depth guard,
+## child LLM failure surfaced as a failure, and idle runner retirement.
 
 import std/[json, os, osproc, strutils]
 import natswrapper
@@ -56,7 +57,8 @@ proc main() =
   defer: nc.close()
 
   var coreProc = startComponent(coreBin, url, root = root,
-                                extra = [("NIF_AUTO_APPROVE", "1")],
+                                extra = [("NIF_AUTO_APPROVE", "1"),
+                                         ("NIF_RUNNER_IDLE_S", "2")],
                                 logFile = "/tmp/opencode/core.log")
   defer:
     if coreProc != nil and coreProc.running():
@@ -140,12 +142,140 @@ proc main() =
   check("child sessionmeta records parent",
         meta{"value"}{"parent"}.getStr("") == parentId, $meta)
 
-  # --- agent_steer: fire-and-forget publish ---------------------------------
+  # --- child LLM failure is a failure, not a successful text reply ----------
+  # The stub chat raises for a task carrying the marker; agent_run must
+  # surface the runner's turnError instead of an ok reply.
+  let failParent = "agt-llmfail"
+  let failTurn = call(nc, "core", "session",
+                      %*{"sessionId": failParent, "content": "go"}, 120_000)
+  check("failing parent turn completed",
+        failTurn{"reply"}.getStr("") == "agent-turn-done", $failTurn)
+  var failResult = JsonNode(nil)
+  for i in 1 .. 6:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": failParent & ":" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    let content = m{"value"}{"content"}.getStr("")
+    if content.contains("llm error") or content.contains("\"error\""):
+      try: failResult = parseJson(content)
+      except CatchableError: discard
+  check("child LLM failure reported as a failure",
+        failResult != nil and failResult{"error"}.getStr("").len > 0 and
+        failResult{"error"}.getStr("").contains("llm error"),
+        if failResult != nil: $failResult else: "no agent_run failure result")
+  check("child failure carries the session id",
+        failResult != nil and
+        failResult{"sessionId"}.getStr("").startsWith("agent-"),
+        if failResult != nil: $failResult else: "no agent_run failure result")
+
+  # --- idle retirement: quiet runners self-exit (NIF_RUNNER_IDLE_S=2) -------
+  # The parent runner still exists right after the turn; after the idle
+  # window it is gone. A probe returns {"error": "timeout"} (no responder);
+  # the runner is re-ensured on the next real session call.
+  sleep(4000)
+  let retired = call(nc, "session." & childId, "session",
+                     %*{"sessionId": childId, "model": ""}, 2_000)
+  check("idle child runner retired",
+        retired{"error"}.getStr("") != "", $retired)
+  let reensured = call(nc, "core", "session",
+                       %*{"sessionId": childId, "model": ""}, 30_000)
+  check("retired runner re-ensured on demand",
+        reensured{"error"} == nil, $reensured)
+
+  # --- background jobs: spawn, status, wait, steer, stop, failure -----------
+  var doneSub: ptr natsSubscription
+  let doneSt = natsConnection_SubscribeSync(addr doneSub, nc.conn,
+                                            "ev.agent.done".cstring)
+  doAssert checkStatus(doneSt)
+  defer: natsSubscription_Destroy(doneSub)
+  var startedSub: ptr natsSubscription
+  let startedSt = natsConnection_SubscribeSync(addr startedSub, nc.conn,
+                                               "ev.agent.started".cstring)
+  doAssert checkStatus(startedSt)
+  defer: natsSubscription_Destroy(startedSub)
+
+  proc fetchJobId(parent: string): string =
+    for i in 1 .. 6:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      let content = m{"value"}{"content"}.getStr("")
+      let marker = content.find("\"jobId\":\"job-")
+      if marker >= 0:
+        let start = marker + "\"jobId\":\"".len
+        var stop = start
+        while stop < content.len and content[stop] != '"': inc stop
+        return content[start ..< stop]
+    return ""
+
+  let spawnParent = "agt-spawn"
+  let spawnTurn = call(nc, "core", "session",
+                       %*{"sessionId": spawnParent, "content": "go"}, 120_000)
+  check("spawn parent turn completed",
+        spawnTurn{"reply"}.getStr("") == "agent-turn-done", $spawnTurn)
+  let jobId = fetchJobId(spawnParent)
+  check("agent_spawn returned a jobId immediately",
+        jobId.startsWith("job-"), jobId)
+  let st1 = call(nc, "agent", "agent_status", %*{"jobId": jobId}, 10_000)
+  check("agent_status reports the job",
+        st1{"status"}.getStr("") in ["running", "done"], $st1)
+  let waited = call(nc, "agent", "agent_wait",
+                    %*{"jobId": jobId, "timeoutMs": 60_000}, 90_000)
+  check("agent_wait returns the terminal reply",
+        waited{"status"}.getStr("") == "done" and
+        waited{"reply"}.getStr("") == "subagent-done", $waited)
+  var doneSeen = false
+  for i in 0 ..< 20:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, doneSub, 300)
+    if st != NATS_OK: break
+    let ev = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if ev{"payload"}{"jobId"}.getStr("") == jobId:
+      doneSeen = ev{"payload"}{"status"}.getStr("") == "done"
+      break
+  check("ev.agent.done announced the terminal state", doneSeen)
+  var startedSeen = false
+  for i in 0 ..< 20:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, startedSub, 300)
+    if st != NATS_OK: break
+    let ev = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if ev{"payload"}{"jobId"}.getStr("") == jobId:
+      startedSeen = ev{"payload"}{"sessionId"}.getStr("").startsWith("agent-")
+      break
+  check("ev.agent.started announced the job", startedSeen)
+  let late = call(nc, "agent", "agent_wait", %*{"jobId": jobId}, 30_000)
+  check("late agent_wait reads the durable record",
+        late{"status"}.getStr("") == "done", $late)
+
+  # failure: a spawned child whose LLM fails records a failed job
+  let failSpawn = "agt-spawnfail"
+  discard call(nc, "core", "session",
+               %*{"sessionId": failSpawn, "content": "go"}, 120_000)
+  let failJob = fetchJobId(failSpawn)
+  check("failed spawn returned a jobId", failJob.startsWith("job-"), failJob)
+  let failed = call(nc, "agent", "agent_wait",
+                    %*{"jobId": failJob, "timeoutMs": 60_000}, 90_000)
+  check("failed job reports the child LLM failure",
+        failed{"status"}.getStr("") == "failed" and
+        failed{"error"}.getStr("").contains("llm error"), $failed)
+
+  # steering a spawned job's child: fire-and-forget publish
   let steer = call(nc, "agent", "agent_steer",
-                   %*{"session_id": childId, "message": "keep going"}, 10_000)
-  check("agent_steer published",
+                   %*{"session_id": waited{"sessionId"}.getStr(""),
+                      "message": "wrap it up"}, 10_000)
+  check("agent_steer publishes to the live child",
         steer{"ok"}.getBool(false) and steer{"published"}.getBool(false),
         $steer)
+
+  # stop on an already-terminal job just returns the record
+  let stopped = call(nc, "agent", "agent_stop", %*{"jobId": jobId}, 10_000)
+  check("agent_stop on a finished job returns the record",
+        stopped{"status"}.getStr("") == "done", $stopped)
 
   report("agent")
 

@@ -52,20 +52,58 @@ proc readResp(id: string): JsonNode =
     if j{"t"}.getStr("") == "resp" and j{"id"}.getStr("") == id:
       return j
 
-const rlimitAs = cint(9)  # Linux <sys/resource.h> RLIMIT_AS (not in Nim's posix)
+const maxBatchCalls = 16
+  ## Guest-side cap on one batch call: outcomes are buffered in the guest,
+  ## so the array size — not just the bus — must stay bounded.
+
+proc nextRespFrame(): JsonNode =
+  ## One resp frame from the parent, whichever request id it answers.
+  while true:
+    if stdinFs.endOfFile:
+      raise newException(CatchableError, "fabric parent closed the pipe")
+    let line = stdinFs.readLine()
+    if line.len == 0: continue
+    let j = parseJson(line)
+    if j{"t"}.getStr("") == "resp":
+      return j
+
+when defined(linux):
+  const
+    rlimitCpu = cint(0)   # <sys/resource.h> values absent from Nim's posix
+    rlimitNproc = cint(6)
+    rlimitNofile = cint(7)
+    rlimitAs = cint(9)
+elif defined(macosx):
+  const
+    rlimitCpu = cint(0)
+    rlimitAs = cint(5)
+    rlimitNproc = cint(7)
+    rlimitNofile = cint(8)
+
+proc setLimit(resource: cint, value: int) =
+  var lim: RLimit
+  lim.rlim_cur = value
+  lim.rlim_max = value
+  discard setrlimit(resource, lim)
 
 proc main =
   # resource cap before anything heavy: the VM's compile+eval allocation
-  var lim: RLimit
-  lim.rlim_cur = 768 * 1024 * 1024
-  lim.rlim_max = 768 * 1024 * 1024
-  discard setrlimit(rlimitAs, lim)
+  when defined(linux) or defined(macosx):
+    setLimit(rlimitCpu, 300)
+    setLimit(rlimitNproc, 0)
+    setLimit(rlimitNofile, 64)
+    setLimit(rlimitAs, 768 * 1024 * 1024)
 
   let ctx = parseJson(stdinFs.readLine())
-  let code = ctx{"code"}.getStr("")
+  var code = ctx{"code"}.getStr("")
   if code.len == 0:
     emitLine(%*{"t": "result", "ok": false, "diagnostics": "empty program"})
     return
+  let schemas = ctx{"schemas"}
+  if schemas != nil:
+    let snapshot = $schemas
+    code = "import fabricmeta\n" &
+      "fabricTools(" & $(%snapshot) & ")\n" & code
   for k, v in ctx{"strings"}:
     stringsTable[][k] = v.getStr("")
 
@@ -90,6 +128,42 @@ proc main =
         raise newException(CatchableError,
           "tool '" & a.getString(0) & "' failed: " &
           resp{"error"}.getStr("call failed")))
+
+  interp.implementRoutine("fabricguest", "fabricguest", "batch",
+    proc (a: VmArgs) {.gcsafe.} =
+      # Concurrent calls: emit every request first, then buffer the
+      # responses until all ids are answered. Outcomes return in input
+      # order with per-item success/failure — one failing item never
+      # aborts the others. The parent caps how many are on the bus at
+      # once; from here the protocol is identical to callTool's.
+      let calls = parseJson(a.getString(0))
+      if calls.kind != JArray:
+        raise newException(CatchableError,
+          "batch needs a JSON array of {tool, args} calls")
+      if calls.len > maxBatchCalls:
+        raise newException(CatchableError,
+          "batch is limited to " & $maxBatchCalls & " calls")
+      var ids: seq[string]
+      for call in calls:
+        inc callCount
+        let id = $callCount
+        ids.add(id)
+        emitLine(%*{"t": "req", "id": id,
+                     "tool": call{"tool"}.getStr(""),
+                     "argsJson": $(call{"args"})})
+      var answers = initTable[string, JsonNode]()
+      while answers.len < ids.len:
+        let frame = nextRespFrame()
+        answers[frame{"id"}.getStr("")] = frame
+      var outcomes = newJArray()
+      for id in ids:
+        let r = answers[id]
+        if r{"ok"}.getBool(false):
+          outcomes.add(%*{"ok": true, "result": r{"result"}.getStr("")})
+        else:
+          outcomes.add(%*{"ok": false,
+                          "error": r{"error"}.getStr("call failed")})
+      a.setResult($outcomes))
 
   interp.implementRoutine("fabricguest", "fabricguest", "finish",
     proc (a: VmArgs) {.gcsafe.} =

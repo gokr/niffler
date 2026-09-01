@@ -57,7 +57,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) |
-| `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_steer` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
@@ -1190,19 +1190,29 @@ Nim program that drives Niffler tools itself, and only the program's
 `finish()` value enters the conversation. The `agent` component turns
 sessions into subagents. The full design and threat model:
 [research/FABRIC.md](research/FABRIC.md) (the external review that shaped it:
-[research/FABRIC_FEEDBACK.md](research/FABRIC_FEEDBACK.md)).
+[research/FABRIC_FEEDBACK.md](research/FABRIC_FEEDBACK.md)). User-facing
+guide with nudge phrasing and worked examples:
+[FABRIC_GUIDE.md](FABRIC_GUIDE.md).
 
 | Tool | What it does |
 |---|---|
-| `fabric {code, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). The guest imports `fabricguest` and orchestrates tool calls with `callTool`; only `finish(value)` reaches the conversation. |
+| `fabric {code, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
 | `agent_run {task, model?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. |
-| `agent_steer {session_id, message}` | Inject a message into a running subagent turn (drained between LLM rounds). |
+| `agent_spawn {task, model?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. |
+| `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
+| `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
+| `agent_stop {jobId}` | Mark a running job for stopping; the terminal record says "stopped". |
+| `agent_steer {session_id, message}` | Inject a message into a running background job's turn (drained between LLM rounds). |
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call
   crosses the session nested-call proxy (`svc.session.<id>.tool`), re-entering
-  the single dispatch gate (approval, required-args validation, timeout).
+  the single dispatch gate (approval, complete schema validation, deadline).
   The executor child holds no NATS connection and no credentials.
+- **Approval manifests**: program approvals show a source digest, the full
+  program under `var/approval-sources/<digest>.nim` (mode 0600), the selected
+  tools, and the declared budgets. Persisted auto-approve is keyed by
+  `fabric:<digest>` — approving one program never covers a different one.
 - **Guards**: proxy rejects hidden tools and internal/recursive surfaces
   (`fabric`, `agent`, `chat`, `session`, `invoke`, `session_prepare`); a
   per-turn lease expires stale requests; `maxCalls` budgets calls;
@@ -1210,10 +1220,10 @@ sessions into subagents. The full design and threat model:
 - **Context economy**: intermediate results never enter the conversation;
   oversized `finish()` values spill to `var/fabric-artifacts/<run>.json`
   (mode 0600) and the tool result points at the path.
-- **Guest API**: `components/fabric/fabricguest/fabricguest.nim` is the typed
-  surface (`callTool`, `finish`, `logg`, `stringArg`, plus import-free `j*`
-  JSON helpers — guests stay stdlib-free, so cold eval is ~ms). Worked
-  examples: `components/fabric/examples/`.
+- **Guest API**: `fabricguest.nim` provides the raw bridge (`callTool`,
+  `finish`, `logg`, `stringArg`, and import-free `j*` helpers).
+  `fabricmeta.nim` turns pinned runtime schemas into input-typed wrappers with
+  `JsonNode` results. Worked examples: `components/fabric/examples/`.
 - **When to use what**: direct loop for judgment-per-step work; `fabric` for
   mechanical known-shape orchestration; `agent_run` for exploratory subtasks
   that need their own context; hybrid programs may call `agent_run`.

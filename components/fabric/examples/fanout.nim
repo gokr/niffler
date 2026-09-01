@@ -6,7 +6,8 @@
 ## through the model.)
 ##
 ## Run by the model as one fabric tool call:
-##   code = <the program below>, strings = {"dirs": "core,components,sdk,tests"}
+##   tools = ["bash"], code = <the program below>,
+##   strings = {"dirs": "core,components,sdk,tests"}
 
 import fabricguest
 
@@ -23,15 +24,12 @@ for c in csv:
 dirs.add(cur)
 
 # fan out: count Nim lines per directory
-var parts: seq[string] = @[]
+var parts = newJArray()
 var total = 0
 for d in dirs:
-  let r = callTool("bash", jobj(
-    jpair("command", jesc("find " & d & " -name '*.nim' | xargs wc -l | tail -1"))))
-  parts.add(jobj(jpair("dir", jesc(d)), jpair("raw", jesc(r))))
-  if r.len > 0: total = total + r.len
+  let r = tools.bash(
+    command = "find " & d & " -name '*.nim' | xargs wc -l | tail -1")
+  parts.add(%*{"dir": d, "result": r})
+  total += ($r).len
 
-finish(jobj(
-  jpair("count", jnum(dirs.len)),
-  jpair("rawBytes", jnum(total)),
-  jpair("dirs", jarr(parts))))
+finish($(%*{"count": dirs.len, "rawBytes": total, "dirs": parts}))

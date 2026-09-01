@@ -5,9 +5,13 @@
 ## Every change is announced as ev.catalog.updated so discovery and UIs stay
 ## fresh; each conversation keeps its own immutable direct-tool snapshot.
 
-import std/[algorithm, json, os, strutils, tables, times]
+import std/[algorithm, json, os, sets, strutils, tables, times]
+{.push warning[Deprecated]: off.}
+import std/sha1
+{.pop.}
 import natswrapper
 import ../sdk/envelope
+import schema_validation
 
 type
   ToolReg* = object
@@ -90,7 +94,12 @@ proc newCatalog*(nc: NatsConnection): Catalog =
     schema: %*{
       "type": "object",
       "description": "Inspect the component catalog (list = LLM toolset)",
-      "properties": {"op": {"type": "string", "enum": ["list"]}},
+       "properties": {
+         "op": {"type": "string",
+                "enum": ["list", "schemas"]},
+         "tools": {"type": "array", "items": {"type": "string"},
+                   "maxItems": 16}
+       },
       "required": ["op"],
       "x-harness": {"onDemand": true}
     }))
@@ -177,6 +186,71 @@ proc normalizeToolSchema*(schema: JsonNode): JsonNode =
     result["type"] = %"object"
   if result{"properties"} == nil or result{"properties"}.kind != JObject:
     result["properties"] = %*{}
+
+proc canonicalJson*(node: JsonNode): string =
+  ## Stable JSON independent of object insertion order.
+  if node == nil: return "null"
+  case node.kind
+  of JObject:
+    var keys: seq[string]
+    for key, value in node: keys.add(key)
+    keys.sort()
+    result.add('{')
+    for i, key in keys:
+      if i > 0: result.add(',')
+      result.add($(%key))
+      result.add(':')
+      result.add(canonicalJson(node[key]))
+    result.add('}')
+  of JArray:
+    result.add('[')
+    for i in 0 ..< node.len:
+      if i > 0: result.add(',')
+      result.add(canonicalJson(node[i]))
+    result.add(']')
+  else:
+    result = $node
+
+proc schemaFingerprint*(schema: JsonNode): string =
+  ## SHA-1 is an identity checksum here, not a security boundary.
+  result = $secureHash(canonicalJson(normalizeToolSchema(schema)))
+
+proc isHidden*(schema: JsonNode): bool
+proc toolSchema*(cat: Catalog, tool: string): JsonNode
+
+proc selectedSchemas*(cat: Catalog, requested: JsonNode): JsonNode =
+  ## Return a deterministic, bounded schema snapshot for typed Fabric runs.
+  if requested == nil or requested.kind != JArray or requested.len == 0:
+    return %*{"error": "catalog schemas needs a non-empty tools array"}
+  if requested.len > 16:
+    return %*{"error": "catalog schemas returns at most 16 tools"}
+  var names: seq[string]
+  var seen = initHashSet[string]()
+  for node in requested:
+    if node.kind != JString or node.getStr("").len == 0:
+      return %*{"error": "catalog schema names must be non-empty strings"}
+    let name = node.getStr("")
+    if name notin seen:
+      seen.incl(name)
+      names.add(name)
+  names.sort()
+  var tools = newJArray()
+  for name in names:
+    let owner = cat.toolIndex.getOrDefault(name)
+    let schema = cat.toolSchema(name)
+    if owner.len == 0 or schema == nil or schema.isHidden():
+      return %*{"error": "one or more requested tools are not available"}
+    let normalized = normalizeToolSchema(schema).copy()
+    let boundsError = validateSchemaBounds(normalized)
+    if boundsError.len > 0:
+      return %*{"error": "tool schema is not available: " & boundsError}
+    let reg = cat.components[owner]
+    tools.add(%*{"name": name, "component": owner, "version": reg.version,
+                 "schema": normalized,
+                 "fingerprint": schemaFingerprint(normalized)})
+    if ($(%*{"tools": tools})).len > 512_000:
+      return %*{"error": "catalog schema snapshot exceeds 512000 bytes"}
+  result = %*{"tools": tools}
 
 proc isHidden*(schema: JsonNode): bool =
   schema != nil and schema{"x-harness"}{"hidden"}.getBool(false)

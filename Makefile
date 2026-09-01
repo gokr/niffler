@@ -154,10 +154,10 @@ var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # binaries, so readlink lies — getCurrentCompilerExe does not).
 COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
 
-var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
 
-var/bin/fabric: components/fabric/fabric.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fabric/fabric.nim
 
 components:
@@ -253,6 +253,10 @@ TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/$*.nim
 
+var/bin/test_t_schema_validation: core/schema_validation.nim
+
+var/bin/test_t_approval_manifest: core/approval.nim core/catalog.nim
+
 test: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
@@ -280,6 +284,9 @@ test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_autostart
+test-fabric: build var/bin/test_t_fabric var/bin/test_t_fabric_frames ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_frames && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric
+test-nested: build var/bin/test_t_nested var/bin/test_t_schema_validation ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_schema_validation && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_nested
+test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_approval_manifest
 
 smoke: test-smoke  # legacy alias
 

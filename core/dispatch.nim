@@ -5,12 +5,13 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, os, osproc, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, strutils, tables, times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
 import approval
 import catalog
+import schema_validation
 import supervisor
 
 type
@@ -78,11 +79,14 @@ type
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
     lease*: string           ## current lease; "" = no session-context call in flight
+    deadline*: MonoTime      ## monotonic limit for the current lease
+    hasDeadline*: bool
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000): JsonNode
+                       defaultTimeoutMs: int = 120000,
+                       deadlineMs: int = 0): JsonNode
 
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
@@ -178,6 +182,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           tools.add(%t.name)
         comps[name] = tools
       return %*{"components": comps}
+    if args{"op"}.getStr("") == "schemas":
+      return ct.cat.selectedSchemas(args{"tools"})
     if args{"op"}.getStr("") == "snapshot":
       ## Full registration view ({name, version, pid, tools with schemas}) —
       ## session runners (and any late-joining client) seed their catalog
@@ -230,7 +236,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             discard
         comps.add(entry)
       return %*{"components": comps}
-    return %*{"error": "catalog op must be 'list', 'components' or 'snapshot'"}
+    return %*{"error":
+      "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
   of "discover":
     ct.cat.pump()
     return ct.cat.discover(args)
@@ -480,19 +487,6 @@ proc pumpAdvise*(ct: CoreTools) =
     except CatchableError as e:
       stderr.writeLine("core: advise reply publish failed: " & e.msg)
 
-proc validateRequired(schema, args: JsonNode): string =
-  ## Minimal admission validation for nested calls: every required field of
-  ## the tool schema must be present and non-null. Full JSON Schema
-  ## validation is a documented gap; this catches the common "generated
-  ## program guessed the argument shape" case with an actionable error.
-  if schema == nil: return ""
-  for field in schema{"required"}:
-    let name = field.getStr("")
-    if name.len == 0: continue
-    let v = args{name}
-    if v == nil or v.kind == JNull:
-      return "'" & name & "' is required for this tool"
-
 proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   ## Admission + dispatch for one nested tool call from a session-context
   ## program (arrives on svc.session.<id>.tool, pumped from the idle slot).
@@ -501,6 +495,8 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   ## dispatchToolCall re-enters the single gate (approval, timeout).
   if env.kind != ekCall:
     return errorEnvelope(env.id, "no-call", "expected a call envelope")
+  if env.args == nil or env.args.kind != JObject:
+    return errorEnvelope(env.id, "bad-args", "tool arguments must be an object")
   # lease: the in-flight session-context tool owns the proxy; a request
   # without the live lease (stale, guessed, or no turn running) is denied.
   if ct.nested == nil or ct.nested.session.len == 0 or ct.nested.lease.len == 0:
@@ -524,11 +520,32 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   if schema != nil and schema.isHidden():
     return errorEnvelope(env.id, "denied",
       "tool '" & tool & "' is hidden and not reachable through nested calls")
-  let missing = validateRequired(schema, env.args)
-  if missing.len > 0:
-    return errorEnvelope(env.id, "bad-args", missing)
+  let expected = env.args{"__session"}{"catalog"}
+  if expected != nil:
+    let reg = ct.cat.components[comp]
+    if expected{"component"}.getStr("") != comp or
+        expected{"version"}.getStr("") != reg.version or
+        expected{"fingerprint"}.getStr("") != schemaFingerprint(schema):
+      return errorEnvelope(env.id, "catalog-changed",
+        "tool '" & tool & "' changed after the Fabric schema snapshot")
+  # __session is private proxy context. Validate it above, then remove it from
+  # the copy that reaches approval, session events, and the target component.
+  let cleanArgs = env.args.copy()
+  let requestedMs = cleanArgs{"__session"}{"remainingMs"}.getInt(0)
+  cleanArgs.delete("__session")
+  let invalid = validateToolArgs(schema, cleanArgs)
+  if invalid.len > 0:
+    return errorEnvelope(env.id, "bad-args", invalid)
+  if not ct.nested.hasDeadline:
+    return errorEnvelope(env.id, "expired", "nested-call deadline is unavailable")
+  let outerMs = (ct.nested.deadline - getMonoTime()).inMilliseconds.int
+  let remainingMs = if requestedMs > 0: min(outerMs, requestedMs)
+                    else: outerMs
+  if remainingMs <= 0:
+    return errorEnvelope(env.id, "expired", "nested-call deadline expired")
   try:
-    result = resultEnvelope(env.id, ct.dispatchToolCall(tool, env.args))
+    result = resultEnvelope(env.id,
+      ct.dispatchToolCall(tool, cleanArgs, deadlineMs = remainingMs))
   except CatchableError as e:
     result = errorEnvelope(env.id, "boom", e.msg)
 
@@ -587,6 +604,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
+    pumpTokenStream(ct)
     pumpSteer(ct)
     pumpAdvise(ct)
     pumpNested(ct)
@@ -595,7 +613,8 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     $timeoutMs & "ms")
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000): JsonNode =
+                       defaultTimeoutMs: int = 120000,
+                       deadlineMs: int = 0): JsonNode =
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
 
@@ -625,26 +644,57 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       "no component provides tool '" & tool & "' — is it registered?")
 
   let schema = ct.cat.toolSchema(tool)
+  let callArgs = if args == nil: newJObject() else: args.copy()
+  let hasDeadline = deadlineMs > 0
+  let deadline = if hasDeadline:
+                   getMonoTime() + initDuration(milliseconds = deadlineMs)
+                 else: MonoTime()
+  if hasDeadline and getMonoTime() >= deadline:
+    raise newException(IOError, "tool '" & tool & "' deadline expired")
   # approval gate: x-harness.approval == "always" needs a human (or NIF_AUTO_APPROVE)
   if schema != nil and schema{"x-harness"}{"approval"}.getStr("") == "always":
-    if ct.approval == nil or not ct.approval.ask(tool, args):
+    if ct.approval == nil or not ct.approval.ask(tool, callArgs):
       raise newException(ValueError, "approval denied for tool '" & tool & "'")
+    if hasDeadline and getMonoTime() >= deadline:
+      raise newException(IOError,
+        "tool '" & tool & "' deadline expired while awaiting approval")
 
   # per-tool timeout from its schema (x-harness.timeoutMs)
   var timeoutMs = defaultTimeoutMs
   if schema != nil:
     timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+  if hasDeadline:
+    timeoutMs = min(timeoutMs,
+      (deadline - getMonoTime()).inMilliseconds.int)
+    if timeoutMs <= 0:
+      raise newException(IOError, "tool '" & tool & "' deadline expired")
 
   # Session-context tools (fabric, agent): inject the calling session plus a
-  # lease for the nested-call proxy. The lease is regenerated on every
-  # session-context dispatch, so it expires with the next flagged call or the
-  # turn end — nested requests without the live lease are denied (pumpNested).
+  # lease for the nested-call proxy. Nested session-context calls temporarily
+  # replace the current lease and restore it on return, so an outer Fabric
+  # program remains valid after a nested agent_run.
   if schema != nil and schema{"x-harness"}{"sessionContext"}.getBool(false):
     if ct.nested == nil or ct.nested.session.len == 0:
       raise newException(ValueError,
         "tool '" & tool & "' needs a live session (no conversation turn is running)")
+    let previousLease = ct.nested.lease
+    let previousDeadline = ct.nested.deadline
+    let previousHasDeadline = ct.nested.hasDeadline
     ct.nested.lease = newId()
-    args["__session"] = %*{"session": ct.nested.session, "lease": ct.nested.lease}
+    ct.nested.deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+    ct.nested.hasDeadline = true
+    defer:
+      ct.nested.lease = previousLease
+      ct.nested.deadline = previousDeadline
+      ct.nested.hasDeadline = previousHasDeadline
+    # caller is private proxy context: the interactive component driving this
+    # turn. Session-context components (agent) forward it to child runners so
+    # approvals raised inside a subagent route to the original human's client.
+    let turnCaller = if ct.approval != nil: ct.approval.caller else: ""
+    callArgs["__session"] = %*{"session": ct.nested.session,
+                                "lease": ct.nested.lease,
+                                "remainingMs": timeoutMs,
+                                "caller": turnCaller}
     # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
     # with a parent record in the store — may not call spawn-class tools. The
     # check MUST live here, not in the component's handler: the handler blocks
@@ -657,9 +707,14 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
           %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
         hasParent = meta{"value"}{"parent"}.getStr("").len > 0
       except CatchableError:
-        discard  # store unreachable: the component's own guard still applies
+        # fail closed: a missing sessionmeta record arrives as a result
+        # (not-found), so an exception here means the lineage store is
+        # unreachable — spawning cannot be verified, so it is denied
+        hasParent = true
       if hasParent:
         raise newException(ValueError,
           "subagents cannot spawn subagents (depth limit)")
+    return dispatchSubjectCall(ct, "svc." & comp & ".call", tool,
+                               callArgs, timeoutMs)
 
-  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, args, timeoutMs)
+  dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
