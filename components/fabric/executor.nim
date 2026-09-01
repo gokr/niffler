@@ -52,6 +52,21 @@ proc readResp(id: string): JsonNode =
     if j{"t"}.getStr("") == "resp" and j{"id"}.getStr("") == id:
       return j
 
+const maxBatchCalls = 16
+  ## Guest-side cap on one batch call: outcomes are buffered in the guest,
+  ## so the array size — not just the bus — must stay bounded.
+
+proc nextRespFrame(): JsonNode =
+  ## One resp frame from the parent, whichever request id it answers.
+  while true:
+    if stdinFs.endOfFile:
+      raise newException(CatchableError, "fabric parent closed the pipe")
+    let line = stdinFs.readLine()
+    if line.len == 0: continue
+    let j = parseJson(line)
+    if j{"t"}.getStr("") == "resp":
+      return j
+
 when defined(linux):
   const
     rlimitCpu = cint(0)   # <sys/resource.h> values absent from Nim's posix
@@ -113,6 +128,42 @@ proc main =
         raise newException(CatchableError,
           "tool '" & a.getString(0) & "' failed: " &
           resp{"error"}.getStr("call failed")))
+
+  interp.implementRoutine("fabricguest", "fabricguest", "batch",
+    proc (a: VmArgs) {.gcsafe.} =
+      # Concurrent calls: emit every request first, then buffer the
+      # responses until all ids are answered. Outcomes return in input
+      # order with per-item success/failure — one failing item never
+      # aborts the others. The parent caps how many are on the bus at
+      # once; from here the protocol is identical to callTool's.
+      let calls = parseJson(a.getString(0))
+      if calls.kind != JArray:
+        raise newException(CatchableError,
+          "batch needs a JSON array of {tool, args} calls")
+      if calls.len > maxBatchCalls:
+        raise newException(CatchableError,
+          "batch is limited to " & $maxBatchCalls & " calls")
+      var ids: seq[string]
+      for call in calls:
+        inc callCount
+        let id = $callCount
+        ids.add(id)
+        emitLine(%*{"t": "req", "id": id,
+                     "tool": call{"tool"}.getStr(""),
+                     "argsJson": $(call{"args"})})
+      var answers = initTable[string, JsonNode]()
+      while answers.len < ids.len:
+        let frame = nextRespFrame()
+        answers[frame{"id"}.getStr("")] = frame
+      var outcomes = newJArray()
+      for id in ids:
+        let r = answers[id]
+        if r{"ok"}.getBool(false):
+          outcomes.add(%*{"ok": true, "result": r{"result"}.getStr("")})
+        else:
+          outcomes.add(%*{"ok": false,
+                          "error": r{"error"}.getStr("call failed")})
+      a.setResult($outcomes))
 
   interp.implementRoutine("fabricguest", "fabricguest", "finish",
     proc (a: VmArgs) {.gcsafe.} =

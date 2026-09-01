@@ -8,7 +8,7 @@
 ## program (infinite call loop dies at maxCalls). Asserts the results from
 ## the persisted transcript and the ev.fabric.log activity stream.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, times]
 import natswrapper
 import helpers
 
@@ -242,6 +242,32 @@ proc main() =
     libTranscript.add(m{"value"}{"content"}.getStr(""))
   check("stored program ran by name",
         libTranscript.contains("stored-ok"), libTranscript)
+
+  # bounded batch: independent calls overlap on the host, one failing item
+  # is isolated in its slot, outcomes come back in input order
+  let batchStart = epochTime()
+  let batchTurn = call(nc, "core", "session",
+                       %*{"sessionId": "fab-batch", "content": "go"}, 120_000)
+  let batchSecs = epochTime() - batchStart
+  check("batch turn completed",
+        batchTurn{"reply"}.getStr("") == "batch-turn-done", $batchTurn)
+  var batchTranscript = ""
+  for i in 1 .. 4:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "fab-batch:" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    batchTranscript.add(m{"value"}{"content"}.getStr(""))
+  # the guest measured the overlap itself: bash's end timestamp falls
+  # inside ctx_sleep's wall-clock window only if both were on the bus
+  # at the same time (serialized would place it a second past the end)
+  check("batch items ran concurrently",
+        batchTranscript.contains("\"concurrent\":true"), batchTranscript)
+  check("batch keeps input order, budgets, and per-item failures",
+        batchTranscript.contains("\"items\":4") and
+        batchTranscript.contains("\"nope\":\"no component provides tool") and
+        batchTranscript.contains("\"b3\":true"),
+        batchTranscript)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""

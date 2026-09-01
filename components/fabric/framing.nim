@@ -47,3 +47,21 @@ proc readFrame*(reader: var FrameReader, fd: cint, deadline: MonoTime,
       raise newException(CatchableError, "fabric-exec closed its output")
     for i in 0 ..< count:
       reader.buffer.add(chunk[i])
+
+proc readReady*(reader: var FrameReader, fd: cint,
+                selector: Selector[cint]): bool =
+  ## Non-blocking: read whatever bytes are ready right now into the buffer;
+  ## true when bytes arrived. Complete frames stay in the buffer until
+  ## takeFrame pulls them out — bounded concurrency uses this to harvest a
+  ## guest's follow-up requests while earlier calls are still on the bus.
+  if selector.select(0).len == 0:
+    return false
+  var chunk: array[4096, char]
+  let count = posix.read(fd, addr chunk[0], chunk.len)
+  if count <= 0:
+    raise newException(CatchableError, "fabric-exec closed its output")
+  var s = ""
+  for i in 0 ..< count:
+    s.add(chunk[i])
+  reader.feed(s)
+  return true

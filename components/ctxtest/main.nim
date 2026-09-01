@@ -9,7 +9,7 @@
 ##   bogus lease, and one targeting a hidden core tool. The evidence comes
 ##   back in the tool result so the test can assert on all three.
 
-import std/[json, os, strutils, tables]
+import std/[json, os, strutils, tables, times]
 import natswrapper
 import niffler/sdk
 
@@ -188,6 +188,34 @@ comp.tool(%*{"hidden": true}):
         # program library: run the stored program by name
         return toolCall("t1", "fabric", %*{"name": "fab-lib-test"})
       return %*{"content": "lib-turn-done"}
+    if sessionId == "fab-batch":
+      if stage == 0:
+        # bounded batch: the two slow items run in DIFFERENT components
+        # (bash and ctxtest). The guest itself proves overlap: item 1 ends
+        # with `date` while item 2 (ctx_sleep) reports its start/end wall
+        # clock — if bash's timestamp falls inside the sleep window, the
+        # two calls were on the bus at the same time. Components are
+        # single-threaded, so same-component items would serialize there.
+        let batched = "import fabricguest\n" &
+          "import std/json\nimport std/strutils\n" &
+          "let r = batch(jarr(\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"sleep 1 && echo b1 && date +%s.%N\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1000)), jpair(\"say\", jesc(\"b2\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"nope\")), jpair(\"args\", jobj())),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3\")))))))\n" &
+          "let outcomes = parseJson(r)\n" &
+          "let bashOut = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
+          "let sleepOut = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
+          "let bashEnd = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let sleepStart = sleepOut{\"started\"}.getFloat()\n" &
+          "let sleepEnd = sleepOut{\"ended\"}.getFloat()\n" &
+          "finish($(%*{\"concurrent\": bashEnd < sleepEnd + 0.3,\n" &
+          "  \"bashEnd\": bashEnd, \"sleepStart\": sleepStart,\n" &
+          "  \"sleepEnd\": sleepEnd, \"items\": outcomes.len,\n" &
+          "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
+          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
+        return toolCall("t1", "fabric", %*{"code": batched})
+      return %*{"content": "batch-turn-done"}
     if sessionId.startsWith("sp-"):
       # every turn: echo the conversation's system message (messages[0])
       # so the test asserts on what the LLM actually saw, on turn 1 AND on
@@ -238,6 +266,17 @@ discard comp.tool("ctx_republish", republishSchema,
       "tools": registeredTools}))
     sleep(250)
     %*{"republished": true})
+
+let sleepSchema = toolSchema(%*{
+  "ms": {"type": "integer", "minimum": 0},
+  "say": {"type": "string"}
+}, required = @["ms"])
+discard comp.tool("ctx_sleep", sleepSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let started = epochTime()
+    sleep(toolArgs{"ms"}.getInt(0))
+    %*{"said": toolArgs{"say"}.getStr(""),
+        "started": started, "ended": epochTime()})
 
 proc nestedCall(subject, tool: string, args: JsonNode, lease: string,
                 timeoutMs: int, catalog: JsonNode = nil): Envelope =

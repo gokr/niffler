@@ -19,6 +19,17 @@ proc callTool*(tool: string, argsJson: string): string =
   ## written as "get"); argsJson is the tool's arguments object as JSON.
   discard "implementation provided by the fabric executor"
 
+proc batch*(callsJson: string): string =
+  ## Run independent tool calls CONCURRENTLY on the host. callsJson is a
+  ## JSON array of {"tool": name, "args": {...}} objects (max 16); the
+  ## result is a JSON array of outcomes in the same order —
+  ## {"ok": true, "result": <raw JSON>} or {"ok": false, "error": msg}.
+  ## A failing item never aborts the others. Every call still crosses the
+  ## session proxy (approval, budget, the one deadline); at most 4 calls
+  ## are on the bus at once, the rest queue in launch order. Use it for
+  ## independent reads — results that feed each other belong in callTool.
+  discard "implementation provided by the fabric executor"
+
 proc finish*(valueJson: string) =
   ## End the program and return valueJson to the conversation — the only
   ## thing the model sees. Call exactly once; nothing after it runs.

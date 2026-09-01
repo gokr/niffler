@@ -36,7 +36,10 @@ Implementation progress on `feat/fabric-reliability`:
   propagation to child approvals, child LLM failures reported as failures,
   idle runner retirement. Lineage-record cleanup lands with a conversation
   deletion surface (none exists yet);
-- [ ] bounded concurrency, durable agents, and structured observability.
+- [x] bounded batch calls: `batch(...)` runs up to 16 independent calls with
+  4 on the bus at once, per-item outcomes in input order, one deadline for
+  all branches (Phase 4 of this plan);
+- [ ] durable agent workers and structured observability.
 
 ## Usage model
 

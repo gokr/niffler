@@ -110,84 +110,181 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   if selectedMode:
     for entry in schemas:
       selected[entry{"name"}.getStr("")] = entry
+  var calls = 0
+  var logEvents = 0
+  var logBytes = 0
+  const maxBatchInflight = 4
+    ## Explicit concurrency cap (FABRIC_NEXT Phase 4): at most this many
+    ## nested calls are on the bus at once; the rest queue in launch
+    ## order. Sequential callTool never queues more than one.
+  type Pending = object
+    id: string
+    sub: ptr natsSubscription
+  var inFlight: seq[Pending]
+  var queued: seq[JsonNode]   ## admitted req frames waiting for a slot
+
+  proc finishPending() =
+    ## Destroy every in-flight inbox subscription (error/timeout paths).
+    for pending in inFlight:
+      natsSubscription_Destroy(pending.sub)
+    inFlight.setLen(0)
+
+  proc admit(frame: JsonNode): JsonNode =
+    ## Checks that reject without a bus call: budget, allowlist, args.
+    ## Returns an immediate resp node, or nil when the call may launch.
+    inc calls
+    let tool = frame{"tool"}.getStr("")
+    if calls > maxCalls:
+      return %*{"t": "resp", "id": frame{"id"}.getStr(""), "ok": false,
+                "error": "maxCalls budget exceeded (" & $maxCalls & ")"}
+    if selectedMode and not selected.hasKey(tool):
+      return %*{"t": "resp", "id": frame{"id"}.getStr(""), "ok": false,
+                "error": "tool '" & tool &
+                         "' is not selected for this Fabric run"}
+    try:
+      let toolArgs = parseJson(frame{"argsJson"}.getStr(""))
+      if toolArgs.kind != JObject:
+        raise newException(ValueError, "tool arguments must be a JSON object")
+      frame["_args"] = toolArgs
+      return nil
+    except CatchableError as e:
+      return %*{"t": "resp", "id": frame{"id"}.getStr(""), "ok": false,
+                "error": "invalid argsJson: " & e.msg}
+
+  proc launch(frame: JsonNode) =
+    ## Publish one admitted request with its own inbox and its own slice
+    ## of the remaining program time.
+    let tool = frame{"tool"}.getStr("")
+    let remainingMs = (deadline - getMonoTime()).inMilliseconds.int
+    if remainingMs <= 0:
+      raise newException(CatchableError, "fabric-exec timed out")
+    let toolArgs = frame["_args"]
+    toolArgs["__session"] = %*{"lease": lease,
+                                "remainingMs": remainingMs}
+    if selectedMode:
+      let pin = selected[tool]
+      toolArgs["__session"]["catalog"] = %*{
+        "component": pin{"component"}.getStr(""),
+        "version": pin{"version"}.getStr(""),
+        "fingerprint": pin{"fingerprint"}.getStr("")}
+    let env = callEnvelope(tool, toolArgs, "fabric")
+    let data = env.encode()
+    let inbox = "_INBOX.fabric." & newId()
+    var sub: ptr natsSubscription
+    let st = natsConnection_SubscribeSync(addr sub, comp.nc.conn,
+                                          inbox.cstring)
+    if not checkStatus(st):
+      raise newException(CatchableError,
+        "subscribe nested inbox: " & getErrorString(st))
+    let pst = natsConnection_PublishRequest(comp.nc.conn, subject.cstring,
+      inbox.cstring, data.cstring, data.len.cint)
+    if not checkStatus(pst):
+      natsSubscription_Destroy(sub)
+      raise newException(CatchableError,
+        "publish nested request: " & getErrorString(pst))
+    inFlight.add(Pending(id: frame{"id"}.getStr(""), sub: sub))
+
+  proc topUp() =
+    while inFlight.len < maxBatchInflight and queued.len > 0:
+      launch(queued[0])
+      queued.delete(0)
+
+  proc writeResp(id: string, resp: JsonNode) =
+    let line = $resp
+    if line.len > maxFrameBytes:
+      p.writeLineTo($(%*{"t": "resp", "id": id, "ok": false,
+                          "error": "tool response exceeds frame budget"}))
+    else:
+      p.writeLineTo(line)
+
+  proc handleFrame(frame: JsonNode): bool =
+    ## One guest frame; true when the program's result arrived.
+    case frame{"t"}.getStr("")
+    of "log":
+      let message = frame{"s"}.getStr("")
+      inc logEvents
+      logBytes += message.len
+      if logEvents > maxLogEvents or logBytes > maxLogBytes:
+        raise newException(CatchableError, "fabric log budget exceeded")
+      comp.emit("ev.fabric.log", %*{"s": message})
+    of "req":
+      let resp = admit(frame)
+      if resp != nil:
+        writeResp(frame{"id"}.getStr(""), resp)
+      else:
+        queued.add(frame)
+        topUp()
+    of "result":
+      resultJ = frame
+      return true
+    else:
+      discard  # unknown frame: ignore, keep pumping
+    return false
+
+  proc drainPipeFrames() =
+    ## Harvest bytes that are ready right now and handle their complete
+    ## frames: a batch guest emits follow-up requests while earlier calls
+    ## are still on the bus, and they must launch as slots free up.
+    while resultJ == nil:
+      if not reader.readReady(p.outputHandle.cint, sel): break
+      while resultJ == nil:
+        let buffered = reader.takeFrame()
+        if not buffered.available: break
+        if handleFrame(parseJson(buffered.line)): break
+
+  proc pumpInFlight() =
+    ## Collect replies from in-flight nested calls, writing resp frames
+    ## as they land and topping up slots from the queue (bounded
+    ## concurrency). Returns when every slot is free or the deadline hits.
+    while inFlight.len > 0 and resultJ == nil:
+      drainPipeFrames()
+      if resultJ != nil: break
+      var progressed = false
+      var i = 0
+      while i < inFlight.len:
+        var msg: ptr natsMsg
+        let st = natsSubscription_NextMsg(addr msg, inFlight[i].sub, 50)
+        if st == NATS_OK:
+          let r = decode($natsMsg_GetData(msg))
+          natsMsg_Destroy(msg)
+          let id = inFlight[i].id
+          natsSubscription_Destroy(inFlight[i].sub)
+          inFlight.delete(i)
+          if r.kind == ekResult:
+            writeResp(id, %*{"t": "resp", "id": id, "ok": true,
+                             "result": $r.args})
+          else:
+            writeResp(id, %*{"t": "resp", "id": id, "ok": false,
+                             "error": r.error{"message"}.getStr("call failed")})
+          progressed = true
+        else:
+          inc i
+      if progressed:
+        topUp()
+      if (deadline - getMonoTime()).inMilliseconds.int <= 0:
+        raise newException(CatchableError, "fabric-exec timed out")
+
   try:
     var context = %*{"code": code, "strings": strings}
     if selectedMode: context["schemas"] = schemas
     p.inputStream.write($context & "\n")
     p.inputStream.flush()
-    var calls = 0
-    var logEvents = 0
-    var logBytes = 0
     while resultJ == nil:
-      let line = reader.readFrame(p.outputHandle.cint, deadline, sel)
-      let j = parseJson(line)
-      case j{"t"}.getStr("")
-      of "log":
-        let message = j{"s"}.getStr("")
-        inc logEvents
-        logBytes += message.len
-        if logEvents > maxLogEvents or logBytes > maxLogBytes:
-          return diag("fabric log budget exceeded")
-        comp.emit("ev.fabric.log", %*{"s": message})
-      of "req":
-        inc calls
-        let tool = j{"tool"}.getStr("")
-        var resp: JsonNode
-        if calls > maxCalls:
-          resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
-                    "error": "maxCalls budget exceeded (" & $maxCalls & ")"}
-        elif selectedMode and not selected.hasKey(tool):
-          resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
-                    "error": "tool '" & tool & "' is not selected for this Fabric run"}
-        else:
-          var toolArgs: JsonNode
-          try:
-            toolArgs = parseJson(j{"argsJson"}.getStr(""))
-            if toolArgs.kind != JObject:
-              raise newException(ValueError, "tool arguments must be a JSON object")
-          except CatchableError as e:
-            resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
-                      "error": "invalid argsJson: " & e.msg}
-            p.writeLineTo($resp)
-            continue
-          let remainingMs = (deadline - getMonoTime()).inMilliseconds.int
-          if remainingMs <= 0:
-            return diag("fabric-exec timed out")
-          toolArgs["__session"] = %*{"lease": lease,
-                                      "remainingMs": remainingMs}
-          if selectedMode:
-            let pin = selected[tool]
-            toolArgs["__session"]["catalog"] = %*{
-              "component": pin{"component"}.getStr(""),
-              "version": pin{"version"}.getStr(""),
-              "fingerprint": pin{"fingerprint"}.getStr("")}
-          try:
-            let env = callEnvelope(tool, toolArgs, "fabric")
-            let r = comp.requestEnvelope(subject, env, remainingMs)
-            if r.kind == ekResult:
-              resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": true,
-                        "result": $r.args}
-            else:
-              resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
-                        "error": r.error{"message"}.getStr("call failed")}
-          except CatchableError as e:
-            resp = %*{"t": "resp", "id": j{"id"}.getStr(""), "ok": false,
-                      "error": e.msg}
-        let responseLine = $resp
-        if responseLine.len > maxFrameBytes:
-          p.writeLineTo($(%*{"t": "resp", "id": j{"id"}.getStr(""),
-                              "ok": false,
-                              "error": "tool response exceeds frame budget"}))
-        else:
-          p.writeLineTo(responseLine)
-      of "result":
-        resultJ = j
+      drainPipeFrames()
+      if resultJ != nil: break
+      if inFlight.len > 0:
+        pumpInFlight()
       else:
-        discard  # unknown frame: ignore, keep pumping
+        # nothing in flight: block for the next frame
+        if handleFrame(parseJson(
+            reader.readFrame(p.outputHandle.cint, deadline, sel))):
+          break
   except CatchableError as e:
+    finishPending()
     if resultJ == nil:
       stopChild()
       return diag(e.msg)
+  finishPending()
   if resultJ == nil:
     stopChild()
     return diag("fabric program timed out after " & $timeoutMs & "ms")

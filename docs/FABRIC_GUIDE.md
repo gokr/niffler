@@ -133,19 +133,31 @@ table."*
 
 ```nim
 import fabricguest
+import std/json
 
+# independent calls run concurrently on the host (4 on the bus at once):
 var parts = %*[]
-for d in @["core", "components", "sdk", "tests"]:
-  let r = tools.bash(
-    command = "find " & d & " -name '*.nim' | xargs wc -l | tail -1")
-  logg("counted " & d)
-  parts.add(%*{"dir": d, "result": r})
+let outcomes = parseJson(batch(jarr(
+  jobj(jpair("tool", jesc("bash")), jpair("args", jobj(jpair("command", jesc("find core -name '*.nim' | xargs wc -l | tail -1"))))),
+  jobj(jpair("tool", jesc("bash")), jpair("args", jobj(jpair("command", jesc("find components -name '*.nim' | xargs wc -l | tail -1"))))),
+  jobj(jpair("tool", jesc("bash")), jpair("args", jobj(jpair("command", jesc("find sdk -name '*.nim' | xargs wc -l | tail -1"))))),
+  jobj(jpair("tool", jesc("bash")), jpair("args", jobj(jpair("command", jesc("find tests -name '*.nim' | xargs wc -l | tail -1")))))))
 
-finish($(%*{"count": 4, "dirs": parts}))
+for i, o in outcomes:
+  let dir = @["core", "components", "sdk", "tests"][i]
+  if o{"ok"}.getBool(false):
+    parts.add(%*{"dir": dir, "result": parseJson(o{"result"}.getStr(""))})
+  else:
+    parts.add(%*{"dir": dir, "error": o{"error"}.getStr("")})
+  logg("counted " & dir)
+
+finish($(%*{"count": outcomes.len, "dirs": parts}))
 ```
 
-N tool calls, one turn, one result. The model never sees the intermediate
-`wc` output.
+N tool calls, one turn, one result — and the independent calls overlap on
+the host instead of queuing. The model never sees the intermediate `wc`
+output. A failing item lands in its slot as `{"ok": false, "error": ...}`
+without aborting the rest.
 
 ### 3. Big data that must never enter the conversation
 
@@ -281,9 +293,12 @@ whole run, and a call cannot outlive it.
 
 ## What to expect — honestly
 
-- **Sequential.** Tool calls inside a program run one after another; a
-  fan-out over N items takes the sum of the calls. (Concurrency is a planned
-  milestone, not current behavior.)
+- **Concurrent where it counts, sequential otherwise.** Plain `callTool`
+  runs one after another. `batch(...)` runs up to 16 independent calls with
+  4 on the bus at once — a fan-out over N independent reads takes roughly
+  the slowest call, not the sum. Items in one component still serialize at
+  that component (components are single-threaded); a failing item never
+  aborts the others.
 - **One approval per program** (per digest for repeat runs). Nested calls
   that need their own approval — e.g. `agent_run` — still ask.
 - **Progress is not chat.** `logg()` lines surface in the activity stream

@@ -187,6 +187,7 @@ stdlib-free (no imports; cold eval ~ms):
 | Proc | Purpose |
 | --- | --- |
 | `callTool(tool, argsJson): string` | call a bus tool through the proxy; returns the result JSON |
+| `batch(callsJson): string` | run up to 16 independent calls CONCURRENTLY on the host (max 4 on the bus at once); callsJson is a JSON array of `{tool, args}`; returns a JSON array of per-item outcomes in input order — a failing item never aborts the others; every call still crosses the proxy (approval, budget, deadline) |
 | `finish(valueJson)` | end the program with a result (control exception) |
 | `logg(message)` | emit an `ev.fabric.log` event |
 | `stringArg(key): string` | read a `strings` argument |
@@ -235,7 +236,8 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 - `agent_spawn`/`agent_wait` background mode (worker processes + store-backed
   job records).
-- Concurrent bridge fan-out (multiple inboxes — still no threads).
+- Effect declarations and conflict detection for batch calls (concurrent
+  mutations to one target are not prevented; reads are the intended use).
 - Live executor event streaming beyond `ev.fabric.log`;
   `ev.fabric.done`/`ev.agent.done` summary events.
 - Cancellation propagation into a running guest (request/reply has no cancel
