@@ -22,8 +22,9 @@ bench/
   lib/                 # util + key resolution (keys never stored/logged)
   adapters/            # pi.mjs, opencode.mjs, niffler.mjs
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
-  results/<runId>/     # one result.json + patch.diff + round logs per combo×task
+  reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)
+var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wipes it)
 ```
 
 ## Tasks
@@ -50,11 +51,16 @@ prompt text (with the repo path substituted) goes to every harness.
 # single combo
 node bench/run.mjs --harness pi --model deepseek-v4-flash --task t01-roman
 
+# paired Niffler run: ordinary loop vs explicitly armed advisory peer
+node bench/run.mjs --harness niffler,niffler-expert --model all --task all \
+  --jobs 2 --run-id niffler-advisory
+
 # everything (3 harnesses × 2 models × 5 tasks), 2 lanes
 node bench/run.mjs --all --jobs 2 --run-id pilot1
 
 # report
 node bench/report.mjs --run pilot1     # prints table, writes report.md/.csv
+node bench/report.mjs --latest         # most recent run in var/bench/results
 ```
 
 Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
@@ -78,6 +84,16 @@ Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
   `usage`). `NIF_AUTO_APPROVE=1` is set on this private harness because gated
   tools (edit/write) otherwise deny with no human reachable — it affects only
   the bench's throwaway harness, never a developer's.
+- **niffler-expert** — the same private Niffler setup, but the runner waits for
+  the expert component and calls `expert_follow` with the exact task session id
+  before the first turn. The result records judgment/steer/acceptance counters,
+  and expert prompt/completion/cache tokens are added to total usage. Judgments
+  run on a separate cheap flash provider (`config.json` → `expertJudge`, default
+  Synthetic `syn:small:text`, wired through `NIF_LLM_PROVIDERS`) so the judge
+  never competes with the worker's model — the worker's input cost stays
+  comparable to plain Niffler. This is a separate harness label because
+  autostart alone leaves expert inert and its extra model calls must not
+  disappear from Niffler's cost.
 
 ## Model wiring (as configured here)
 
@@ -112,6 +128,10 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
 - Niffler currently re-sends full conversation context each call without
   provider cache hits; multi-round tasks amplify this. That is real Niffler
   cost today, not a bench artifact.
+- Expert-assisted runs are paired experiments, not the default Niffler score:
+  the advisor uses additional model calls concurrently, can remain silent, and
+  may finish too late to affect short tasks. Check each result's `expert.active`,
+  judgment, steer, acceptance and stale-drop counters before interpreting it.
 
 ## SWE-bench Verified
 

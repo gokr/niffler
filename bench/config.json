@@ -45,5 +45,18 @@
     "turnTimeoutMin": 10,
     "testTimeoutSec": 180,
     "jobs": 2
+  },
+  "expertJudge": {
+    "$comment": [
+      "Judgment provider for the niffler-expert harness variant. Reached via",
+      "NIF_LLM_PROVIDERS (second provider next to the worker's gateway), so a",
+      "cheap flash model judges while the worker keeps its own. syn:small:text",
+      "= GLM-4.7-Flash ($0.10/M in, $0.02/M cache-read, $0.50/M out); use",
+      "syn:large:text (GLM-5.3-Flash) for stronger judgment at ~1.5x input cost."
+    ],
+    "provider": "synthetic",
+    "model": "syn:small:text",
+    "baseUrl": "https://api.synthetic.new/openai/v1",
+    "apiKeyEnv": "SYNTHETIC_API_KEY"
   }
 }

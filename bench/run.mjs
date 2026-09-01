@@ -34,7 +34,7 @@ const harnessArg = opt("harness", "all");
 const modelArg = opt("model", "all");
 const taskArg = opt("task", "all");
 const RUN_ID = opt("run-id", new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19));
-const RESULTS = path.join(BENCH_DIR, "results", RUN_ID);
+const RESULTS = path.join(BENCH_ROOT, "var", "bench", "results", RUN_ID);
 const roundsMax = Number(opt("rounds", cfg.defaults.rounds));
 const taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin)) * 60_000;
 const turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
@@ -54,6 +54,16 @@ const tasks = taskArg === "all" ? taskDirs : taskArg.split(",");
 const { keys, missing } = resolveKeys(BENCH_ROOT);
 if (missing.length) {
   console.error(`bench: missing API keys: ${missing.join(", ")} — see bench/README.md`);
+  process.exit(1);
+}
+if (
+  harnessArg.split(",").includes("niffler-expert") &&
+  cfg.expertJudge &&
+  !keys[cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY"]
+) {
+  console.error(
+    `bench: missing ${cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY"} for the expert judge (config.expertJudge)`,
+  );
   process.exit(1);
 }
 
@@ -148,7 +158,14 @@ const ADAPTERS = {
     needsKeys: [],
     isService: true, // harness lifecycle per combo
   },
+  "niffler-expert": {
+    mod: niffler,
+    needsKeys: [],
+    isService: true,
+  },
 };
+
+const isNifflerHarness = (name) => name === "niffler" || name === "niffler-expert";
 
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
@@ -157,6 +174,20 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   fs.mkdirSync(workdir, { recursive: true });
   const repo = path.join(workdir, "repo");
   prepareRepo(taskId, repo);
+  const sessionId = `bench-${RUN_ID}-${combo.harness}-${taskId}`.replace(
+    /[^a-zA-Z0-9._-]/g,
+    "-",
+  );
+  let setupError = null;
+  if (combo.harness === "niffler-expert") {
+    try {
+      // Setup is outside time-to-green: expert_follow arms observation but
+      // does not perform a judgment until the measured turn starts.
+      await shared.niffler.beginTask(sessionId);
+    } catch (e) {
+      setupError = e;
+    }
+  }
 
   const startedAt = nowIso();
   const t0 = Date.now();
@@ -169,6 +200,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let roundReply = "";
 
   try {
+    if (setupError) throw setupError;
     for (let r = 1; r <= roundsMax; r++) {
       if (Date.now() - t0 > taskTimeoutMs) {
         verdict = "timeout";
@@ -199,9 +231,9 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
           sessionId: adapterState.sessionId || null,
         });
         adapterState.sessionId = res.sessionId;
-      } else if (combo.harness === "niffler") {
+      } else if (isNifflerHarness(combo.harness)) {
         res = await shared.niffler.round({
-          sessionId: `bench-${RUN_ID}-${taskId}`.replace(/[^a-zA-Z0-9._-]/g, "-"),
+          sessionId,
           prompt,
           turnTimeoutMs,
         });
@@ -257,15 +289,24 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
 
   // Token usage per harness source of truth.
   let usage = zeroUsage();
+  let expert = null;
   try {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
-    else if (combo.harness === "niffler")
-      usage = await shared.niffler.usageFromTranscript(
-        `bench-${RUN_ID}-${taskId}`.replace(/[^a-zA-Z0-9._-]/g, "-"),
-      );
+    else if (isNifflerHarness(combo.harness))
+      usage = await shared.niffler.usageFromTranscript(sessionId);
   } catch (e) {
     usage.error = String(e);
+  }
+  if (combo.harness === "niffler-expert") {
+    try {
+      expert = await shared.niffler.expertMetricsSince(sessionId);
+      usage.input += expert.tokens.prompt;
+      usage.output += expert.tokens.completion;
+      usage.cacheRead += expert.tokens.cached;
+    } catch (e) {
+      expert = { active: false, error: String(e) };
+    }
   }
 
   // Diff stats + protected-file guard.
@@ -297,6 +338,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     testTimeS: Number(testTimeS.toFixed(1)),
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
+    expert,
     diff,
     roundsDetail: rounds,
     finalReply: tail(roundReply, 2000),
@@ -318,13 +360,21 @@ async function runCombo(combo, taskIds) {
   fs.mkdirSync(comboRoot, { recursive: true });
   const shared = { piCfgDir: pi.setupPiConfig(comboRoot, cfg) };
 
-  if (combo.harness === "niffler") {
+  if (isNifflerHarness(combo.harness)) {
     shared.niffler = new niffler.NifflerHarness({
       benchRoot: BENCH_ROOT,
       runRoot: comboRoot,
       baseUrl: combo.modelCfg.niffler.baseUrl,
       apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
       model: combo.modelCfg.niffler.model,
+      expertEnabled: combo.harness === "niffler-expert",
+      expertJudge:
+        combo.harness === "niffler-expert" && cfg.expertJudge
+          ? {
+              ...cfg.expertJudge,
+              apiKey: keys[cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY"] || "",
+            }
+          : null,
     });
     console.log(`booting niffler harness (${combo.model}) on a private bus…`);
     try {
