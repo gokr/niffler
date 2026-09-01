@@ -1198,6 +1198,11 @@ guide with nudge phrasing and worked examples:
 |---|---|
 | `fabric {code, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
 | `agent_run {task, model?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. |
+| `agent_spawn {task, model?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. |
+| `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
+| `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
+| `agent_stop {jobId}` | Mark a running job for stopping; the terminal record says "stopped". |
+| `agent_steer {session_id, message}` | Inject a message into a running background job's turn (drained between LLM rounds). |
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call

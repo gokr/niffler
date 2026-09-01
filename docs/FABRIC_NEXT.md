@@ -39,7 +39,12 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] bounded batch calls: `batch(...)` runs up to 16 independent calls with
   4 on the bus at once, per-item outcomes in input order, one deadline for
   all branches (Phase 4 of this plan);
-- [ ] durable agent workers and structured observability.
+- [x] durable agent jobs: `agent_spawn`/`agent_status`/`agent_wait`/
+  `agent_stop` over store-backed records with `ev.agent.done` terminal
+  events, plus usable `agent_steer` for live spawned children (Phase 5
+  core; per-job budgets, process-level stop cancellation, and restart
+  recovery are future work);
+- [ ] structured lifecycle events and retention.
 
 ## Usage model
 

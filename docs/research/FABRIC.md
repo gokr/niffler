@@ -118,15 +118,33 @@ explicit policy:
 
 ## The `agent` component (`components/agent/`)
 
-Synchronous only (the SDK serializes handlers on one thread; background jobs
-need worker processes + durable state — not shipped):
+The SDK serializes handlers on one thread, so long-running work is split
+into a synchronous surface and durable background jobs:
 
-- **`agent_run {task, model?, timeoutMs?}`** — prepare a child runner via
-  `session_prepare`, call the child runner's subject directly with the framed
-  task, return its final reply with `{reply, sessionId}`. The child session
-  call is a plain request/reply whose result carries the final reply.
+- **`agent_run {task, model?, timeoutMs?}`** — synchronous: prepare a child
+  runner via `session_prepare`, call the child runner's subject directly with
+  the framed task, return its final reply with `{reply, sessionId}`. The
+  child session call is a plain request/reply whose result carries the final
+  reply.
+- **`agent_spawn {task, model?}`** — background: same preparation, then the
+  child turn is published fire-and-forget with a reply inbox the component
+  taps; the handler returns `{jobId, sessionId}` immediately. The tap records
+  the terminal state durably (store kind `agentjob`) and emits
+  `ev.agent.done` — a late status lookup or wait can never miss it.
+- **`agent_status {jobId}`** — non-blocking durable lookup.
+- **`agent_wait {jobId, timeoutMs?}`** — blocks until the job reaches a
+  terminal state, reading the durable record (works for jobs that finished
+  long ago). While waiting it pumps the component's taps, since the
+  completion tap shares the same serialized pump.
+- **`agent_stop {jobId}`** — marks a running job "stopping"; the terminal
+  record says "stopped" when the child turn ends. The process is not killed
+  outright (kill-on-timeout still bounds a runaway turn).
+- **`agent_steer {session_id, message}`** — fire-and-forget injection into a
+  live child turn; meaningful for spawned jobs, whose child runs while the
+  caller continues.
 - Fixed task preamble ("You are a subagent. Work autonomously, report a
-  concise result."). The subagent gets the full normal toolset and loop.
+  concise result."). The subagent gets the full normal toolset and loop, and
+  the conversation's pluggable constitution (systemprompt) like any session.
 - Approvals inside the subagent route to the original interactive caller
   (dispatch injects it as private `__session.caller`; the child's
   `approval.caller` becomes the driving client) — the human still sees every
@@ -134,11 +152,8 @@ need worker processes + durable state — not shipped):
 - Lineage fails closed: the depth-guard `sessionmeta` read/write treats a
   store outage as "cannot verify → deny", for both the dispatch-time guard
   and the component's own guard.
-- Child LLM failures surface as `{"error": ...}` from `agent_run` (the
-  runner marks failed turns with `turnError`), never as successful text.
-- `agent_steer` was removed: it could never run while synchronous
-  `agent_run` occupied the agent component's handler. Steering returns with
-  durable background workers.
+- Child LLM failures surface as failures (`{"error": ...}`, durable job
+  status "failed"), never as successful text.
 - Idle child runners retire themselves (`NIF_RUNNER_IDLE_S`, default 600 s)
   and are re-ensured on demand — conversations resume from the store.
 
@@ -234,11 +249,13 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- `agent_spawn`/`agent_wait` background mode (worker processes + store-backed
-  job records).
 - Effect declarations and conflict detection for batch calls (concurrent
   mutations to one target are not prevented; reads are the intended use).
+- Job budgets beyond the wait timeout (per-job token/call caps), process-level
+  `agent_stop` cancellation, and agent restart recovery for jobs whose
+  completion tap was missed (they surface as "running"; status shows the
+  child runner's retirement).
 - Live executor event streaming beyond `ev.fabric.log`;
-  `ev.fabric.done`/`ev.agent.done` summary events.
+  `ev.fabric.done` summary events.
 - Cancellation propagation into a running guest (request/reply has no cancel
   semantics; kill-on-timeout is the only stop).

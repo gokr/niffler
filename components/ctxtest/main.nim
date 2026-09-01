@@ -57,6 +57,16 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_run",
                         %*{"task": "FORCE_LLM_FAILURE then report"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-spawn":
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "echo agent-ok via a background subagent"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-spawnfail":
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "FORCE_LLM_FAILURE then report"})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must
