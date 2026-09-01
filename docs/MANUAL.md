@@ -732,9 +732,9 @@ With the complete shipped manifest, 13 tools are direct:
 - Core: `discover`, `invoke`.
 - Routine work: `bash`, store `get`/`list`, `grep`/`files`, and the file
   tools `read`/`edit`/`write`/`undo_last_edit` (the `edit` component).
-  Anchored block moves (the niffler-hashline plugin) register their
-  `replace`/`undo_last_replace` as onDemand: run `discover`/`invoke` against
-  them once installed.
+  Anchored block moves (the niffler-hashline plugin) register
+  `hashline_replace`/`hashline_undo` as onDemand: run `discover`/`invoke`
+  against them once installed.
 - Skill entry points: `skill_list`, `skill_load`.
 
 The long tail is on demand:

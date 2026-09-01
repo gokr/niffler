@@ -373,7 +373,7 @@ Agent 在对话中途自己完成这一切——这就是该架构的验证标�
       推理），core 转发为 `ev.session.token`，UI 追加到 live assistant
       气泡；按调用取消（`llm.cancel.<sessionId>`）；最终 assistant 事件
       总是携带完整内容
-- [x] **hashline-edit** —— 哈希锚定的 `read`/`replace`/`undo_last_replace`
+- [x] **hashline-edit** —— 哈希锚定的 `hashline_read`/`hashline_replace`/`hashline_undo`
       （pi-hashline-edit-pro 的 Nim 移植），锚点跨编辑稳定；已抽出为
       [niffler-hashline](https://github.com/gokr/niffler-hashline) 插件
 - [x] **edit 组件** —— 文件工具：`read`（纯文本、可分页）、精确文本

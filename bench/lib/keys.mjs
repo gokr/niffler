@@ -18,9 +18,6 @@ export function resolveKeys(benchRoot) {
     "";
 
   if (!keys.LLMGATEWAY_API_KEY) {
-    keys.LLMGATEWAY_API_KEY = env.LLMGATEWAY_API_KEY || "";
-  }
-  if (!keys.LLMGATEWAY_API_KEY) {
     try {
       const auth = JSON.parse(
         fs.readFileSync(
@@ -29,6 +26,21 @@ export function resolveKeys(benchRoot) {
         ),
       );
       keys.LLMGATEWAY_API_KEY = auth?.llmgateway?.key || "";
+    } catch {}
+  }
+
+  // Optional: Synthetic (expert judge provider for the niffler-expert
+  // variant). Only required when config.json's expertJudge is used.
+  keys.SYNTHETIC_API_KEY = env.SYNTHETIC_API_KEY || "";
+  if (!keys.SYNTHETIC_API_KEY) {
+    try {
+      const auth = JSON.parse(
+        fs.readFileSync(
+          path.join(os.homedir(), ".local/share/opencode/auth.json"),
+          "utf8",
+        ),
+      );
+      keys.SYNTHETIC_API_KEY = auth?.synthetic?.key || "";
     } catch {}
   }
 

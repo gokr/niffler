@@ -30,6 +30,3 @@ ui/frontend/package.json.md5
 nimble.develop
 nimble.paths
 nimbledeps
-
-# bench runtime outputs
-bench/results/

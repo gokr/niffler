@@ -38,6 +38,13 @@ export class NifflerHarness {
     this.harnessProc = null;
     this.natsPort = 0;
     this.stopped = false;
+    this.expertEnabled = opts.expertEnabled || false;
+    // Optional judgment provider for niffler-expert runs:
+    // {provider, model, baseUrl, apiKey}. Routed via NIF_LLM_PROVIDERS so
+    // the shared llm component can reach a second provider (e.g. Synthetic)
+    // without touching the provider store; the worker keeps its own model.
+    this.expertJudge = opts.expertJudge || null;
+    this.expertBaselines = new Map();
   }
 
   cliEnv() {
@@ -95,6 +102,16 @@ export class NifflerHarness {
       // private bench harness (isolated NIF_ROOT + bus), never the dev's.
       NIF_AUTO_APPROVE: "1",
     };
+    if (this.expertEnabled && this.expertJudge) {
+      env.NIF_LLM_PROVIDERS = JSON.stringify({
+        [this.expertJudge.provider]: {
+          baseUrl: this.expertJudge.baseUrl,
+          apiKey: this.expertJudge.apiKey,
+          model: this.expertJudge.model,
+          catalog: this.expertJudge.provider,
+        },
+      });
+    }
     this.harnessProc = spawn(path.join(this.binDir, "niffler"), {
       cwd: this.root,
       env,
@@ -105,9 +122,11 @@ export class NifflerHarness {
     this.harnessProc.stdout.on("data", (d) => fs.writeSync(this.harnessLog, d));
     this.harnessProc.stderr.on("data", (d) => fs.writeSync(this.harnessLog, d));
 
-    // 3. Wait for the bus contract: store first, then llm.
+    // 3. Wait for the bus contract: store first, then llm. Expert-assisted
+    // runs also wait for the advisory peer so follow happens before turn start.
     const cli = path.join(this.binDir, "cli");
-    for (const comp of ["store", "llm"]) {
+    const required = ["store", "llm", ...(this.expertEnabled ? ["expert"] : [])];
+    for (const comp of required) {
       const res = await run(cli, ["wait", comp, "120"], {
         cwd: this.root,
         env: this.cliEnv(),
@@ -158,6 +177,79 @@ export class NifflerHarness {
     if (typeof reply === "object" && reply !== null) reply = reply.content ?? JSON.stringify(reply);
     const error = parsed.error ? String(parsed.error) : null;
     return { reply: String(reply), error };
+  }
+
+  async callTool(tool, args, timeoutMs = 30_000) {
+    const cli = path.join(this.binDir, "cli");
+    const res = await run(
+      cli,
+      [
+        `--timeout:${Math.ceil(timeoutMs / 1000)}`,
+        "call",
+        tool,
+        JSON.stringify(args),
+      ],
+      { cwd: this.root, env: this.cliEnv(), timeoutMs: timeoutMs + 30_000 },
+    );
+    let parsed = null;
+    try {
+      parsed = JSON.parse(res.stdout.trim().split("\n").at(-1));
+    } catch {}
+    if (res.code !== 0 || !parsed || parsed.error) {
+      throw new Error(
+        `niffler ${tool} failed (exit ${res.code}): ${(
+          parsed?.error || res.stderr || res.stdout
+        ).toString().slice(-400)}`,
+      );
+    }
+    return parsed;
+  }
+
+  async beginTask(sessionId) {
+    if (!this.expertEnabled) return;
+    const followArgs = { session_id: sessionId };
+    // A cheaper/faster judgment model than the worker's (expert_follow's
+    // optional overrides); absent = the harness's own model/provider.
+    if (this.expertJudge?.model) followArgs.model = this.expertJudge.model;
+    if (this.expertJudge?.provider) {
+      followArgs.provider = this.expertJudge.provider;
+    }
+    const follow = await this.callTool("expert_follow", followArgs, 30_000);
+    if (!follow.ok || follow.target !== sessionId) {
+      throw new Error(`expert_follow did not target ${sessionId}: ${JSON.stringify(follow)}`);
+    }
+    // Counters are component-lifetime totals, so snapshot after follow and
+    // subtract at task end. Follow itself performs no judgment.
+    const status = await this.callTool("expert_status", {}, 30_000);
+    this.expertBaselines.set(sessionId, status);
+  }
+
+  async expertMetricsSince(sessionId) {
+    if (!this.expertEnabled) return null;
+    // A status request queued behind an in-flight judgment can take as long
+    // as the expert's chat timeout; waiting also makes token accounting final.
+    const status = await this.callTool("expert_status", {}, 150_000);
+    const base = this.expertBaselines.get(sessionId) || {};
+    const delta = (key) => Math.max(0, (status[key] || 0) - (base[key] || 0));
+    const tokenDelta = (key) =>
+      Math.max(0, (status.tokens?.[key] || 0) - (base.tokens?.[key] || 0));
+    return {
+      active: status.target === sessionId && delta("judgments") > 0,
+      target: status.target || "",
+      knowledgeVersion: status.knowledgeVersion || "",
+      judgments: delta("judgments"),
+      silences: delta("silences"),
+      steers: delta("steers"),
+      accepted: delta("accepted"),
+      rejected: delta("rejected"),
+      staleDrops: delta("staleDrops"),
+      errors: delta("errors"),
+      tokens: {
+        prompt: tokenDelta("prompt"),
+        cached: tokenDelta("cached"),
+        completion: tokenDelta("completion"),
+      },
+    };
   }
 
   // Sum token usage over the conversation transcript in the store.

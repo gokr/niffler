@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 // bench/report.mjs — aggregate bench results into a markdown + CSV report.
 //
-//   node bench/report.mjs --run <runId>     # bench/results/<runId>
+//   node bench/report.mjs --run <runId>     # var/bench/results/<runId>
 //   node bench/report.mjs --latest
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
 
 const BENCH_DIR = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)));
+// Raw run output lives under var/ (disposable runtime state, wiped by
+// `make clean`); the committed record is the aggregated bench/reports/.
+const RESULTS_ROOT = path.join(BENCH_DIR, "..", "var", "bench", "results");
 const argv = process.argv.slice(2);
 function opt(name) {
   const i = argv.indexOf("--" + name);
-  return i === -1 ? null : argv[i + 1];
+  if (i === -1) return null;
+  return argv[i + 1] ?? true; // flag form (--latest) must be truthy too
 }
 
 let runDir;
-if (opt("run")) runDir = path.join(BENCH_DIR, "results", opt("run"));
+if (opt("run")) runDir = path.join(RESULTS_ROOT, opt("run"));
 else if (opt("latest")) {
   const dirs = fs
-    .readdirSync(path.join(BENCH_DIR, "results"), { withFileTypes: true })
+    .readdirSync(RESULTS_ROOT, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
     .sort();
@@ -26,7 +30,7 @@ else if (opt("latest")) {
     console.error("no runs found");
     process.exit(1);
   }
-  runDir = path.join(BENCH_DIR, "results", dirs.at(-1));
+  runDir = path.join(RESULTS_ROOT, dirs.at(-1));
 } else {
   console.error("usage: report.mjs --run <id> | --latest");
   process.exit(1);
@@ -60,13 +64,18 @@ results.sort(
 );
 
 const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+const hasExpert = results.some((r) => r.expert);
 const md = [];
 md.push(`# bench report — ${path.basename(runDir)}`);
 md.push("");
 md.push(
-  "| model | harness | task | verdict | time (s) | rounds | tok in | tok out | cache r/w | cost $ | diff (+/-) |",
+  "| model | harness | task | verdict | time (s) | rounds | tok in | tok out | cache r/w | cost $ | diff (+/-) |" +
+    (hasExpert ? " expert judge/steer/accepted |" : ""),
 );
-md.push("|---|---|---|---|---:|---:|---:|---:|---|---:|---|");
+md.push(
+  "|---|---|---|---|---:|---:|---:|---:|---|---:|---|" +
+    (hasExpert ? "---|" : ""),
+);
 for (const r of results) {
   md.push(
     `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""} | ` +
@@ -74,7 +83,10 @@ for (const r of results) {
       `${fmtTok(r.tokens?.output || 0)} | ` +
       `${fmtTok(r.tokens?.cacheRead || 0)}/${fmtTok(r.tokens?.cacheWrite || 0)} | ` +
       `${(r.tokens?.cost || 0).toFixed(4)} | ` +
-      `${r.diff?.insertions || 0}/${r.diff?.deletions || 0} |`,
+      `${r.diff?.insertions || 0}/${r.diff?.deletions || 0} |` +
+      (hasExpert
+        ? ` ${r.expert ? `${r.expert.judgments || 0}/${r.expert.steers || 0}/${r.expert.accepted || 0}` : "-"} |`
+        : ""),
   );
 }
 md.push("");
@@ -106,7 +118,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions"];
+const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
 for (const r of results) {
   csv.push(
     [
@@ -124,6 +136,17 @@ for (const r of results) {
       (r.tokens?.cost || 0).toFixed(6),
       r.diff?.insertions || 0,
       r.diff?.deletions || 0,
+      r.expert?.active || false,
+      r.expert?.judgments || 0,
+      r.expert?.silences || 0,
+      r.expert?.steers || 0,
+      r.expert?.accepted || 0,
+      r.expert?.rejected || 0,
+      r.expert?.staleDrops || 0,
+      r.expert?.errors || 0,
+      r.expert?.tokens?.prompt || 0,
+      r.expert?.tokens?.cached || 0,
+      r.expert?.tokens?.completion || 0,
     ].join(","),
   );
 }

@@ -8,6 +8,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bench `niffler-expert` variant** — paired measurement of plain Niffler
+  vs expert-assisted Niffler: the runner arms `expert_follow` on the exact
+  task session before its first turn (setup excluded from time-to-green),
+  records judgment/steer/acceptance/stale-drop counters plus judge tokens
+  per result, and folds judge usage into the run totals. Judgments run on a
+  separate cheap flash provider — `config.json → expertJudge`, default
+  Synthetic `syn:small:text` (GLM-4.7-Flash), wired through
+  `NIF_LLM_PROVIDERS` so the shared llm component reaches a second provider
+  without touching the worker's. Raw run output moved from `bench/results/`
+  to `var/bench/results/` (disposable runtime state; `make clean` wipes it,
+  the committed record is `bench/reports/`), so editor git-repo scanning no
+  longer sees the task repos; `report.mjs` gained a working `--latest`.
+
 - **Expert advisory peer (`expert`)** — one expert follows one working
   session: a bounded current-turn observation built from `ev.session.*`
   events, a stateless LLM judgment over a cache-stable knowledge prefix
@@ -373,6 +386,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`expert` judgment economics tuned from the first bench data** —
+  `EvalCooldownMs` 2000 → 8000 (a flash judge re-judged near-identical frames
+  every 2s: 5–9 calls per short task, all silent) and the policy now pins the
+  judge to harness usage only: task-strategy advice (what to implement, which
+  file to edit, when to run tests) and "read X" nudges must return silent —
+  the cheap synthetic judge steered 12×/10 bench tasks with exactly that
+  generic content, inflating worker tokens for no gain. `expert_follow` also
+  gained a `provider` override (NIF_LLM_PROVIDERS nickname or stored
+  provider) so judgments can run on a cheap flash model off the worker's
+  bill; `expert_status` reports it.
+
 - **`tool` macro accepts an x-harness argument** — `comp.tool(%*{"approval":
   "always", "timeoutMs": 60000}): proc ...` replaces the ~45
   `comp.tools[^1].schema["x-harness"] = ...` post-registration pokes; the
@@ -421,6 +445,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **systemprompt: context files deduped by file identity, not path** — a
+  symlink farm (the bench harness re-exposes the repo root inside its runtime
+  dir) made the same AGENTS.md reachable twice in one ancestor walk, so every
+  bench conversation carried its standing instructions twice. Dedup via
+  `getFileInfo` id; identical content from different paths now counts once.
 
 - **Tool-call reasoning survives the round trip** — core persisted the
   provider-neutral `reasoning` field, but the OpenAI wire expects

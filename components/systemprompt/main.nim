@@ -56,6 +56,18 @@ proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
                          p & ": " & e.msg)
   return ("", "")
 
+proc fileId(path: string): string =
+  ## File identity for dedupe, not the path: a symlink farm (the bench
+  ## harness re-exposes the repo root inside its runtime dir) makes the same
+  ## AGENTS.md reachable twice in one ancestor walk — farm copy first, real
+  ## repo later. Including it twice would double every conversation's
+  ## standing instructions.
+  try:
+    let fi = getFileInfo(path)
+    result = $fi.id.device & ":" & $fi.id.file
+  except CatchableError:
+    result = path
+
 proc contextFileName(path: string): string =
   ## The concrete candidate filename a directory resolved to — the shadow
   ## rule must skip the main repo's AGENTS.override.md when the worktree
@@ -111,11 +123,13 @@ proc main() =
       var dir = cwd
       while true:
         let f = loadContextFileFromDir(dir)
-        if f.path.len > 0 and f.path != shadowed and f.path notin seen:
-          inc count
-          seen.add(f.path)
-          files.add(f)
-          if count >= maxFiles: break
+        if f.path.len > 0 and f.path != shadowed:
+          let fid = fileId(f.path)
+          if fid notin seen:
+            inc count
+            seen.add(fid)
+            files.add(f)
+            if count >= maxFiles: break
         if dir == "/" or dir.len <= 1: break
         dir = parentDir(dir)
 

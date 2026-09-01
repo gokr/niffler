@@ -29,7 +29,11 @@ const
   MaxField = 400          # per-field text clip (chars, rune-safe)
   MaxReasoningTail = 2000 # reasoning tail kept in the frame
   MaxMessage = 500        # advisory message cap
-  EvalCooldownMs = 2000   # minimum space between judgments (best effort)
+  EvalCooldownMs = 8_000  # minimum space between judgments (best effort).
+                          # Tuned from the bench: flash judges eagerly
+                          # re-judge near-identical frames every 2s (5-9
+                          # calls per short task, all silent). Frames change
+                          # little in 8s; ~3-4x fewer judgments, same cover.
   ChatTimeoutMs = 120_000
 
 const expertPolicy = """
@@ -47,6 +51,12 @@ Policy (fixed):
   workflow to use next. "Use better tools" is not advice.
 - Do not interrupt a valid approach just because an alternative exists.
 - Do not repeat advice that is already visible in the observation.
+- You judge HARNESS USAGE, not coding strategy. Which file to edit, what the
+  code should do, in which order to run/read things — that is the task, and
+  advice any competent agent on ANY harness would follow unprompted is NOT a
+  steer. For task-strategy content the only correct answer is silent.
+- Check the observation before steering: if the agent already did, or is
+  already about to do, the suggested action, return silent.
 - Never recommend hidden, absent or incompatible tools; only tools listed
   under Live tools below are callable.
 - Niffler knowledge you may draw on: progressive discovery (discover + invoke
@@ -62,8 +72,8 @@ Policy (fixed):
   each result changes the plan.
 - Approval-gated operations (core.spawn, plugin_install, bash, ...) may be
   SUGGESTED; the human gate still belongs to the working session.
-- Return silent when evidence is incomplete, stale, ambiguous, or the issue is
-  mere style preference.
+- Return silent when evidence is incomplete, stale, ambiguous, a matter of
+  style, or the advice concerns the task rather than the harness.
 
 Output format (strict JSON, nothing else):
 {"action":"silent","reason":"<one line>"}
@@ -97,6 +107,7 @@ var
   gKnowledgeVersion = ""
   gLiveTools: seq[string] = @[]
   gModel = ""              # optional model override for judgments
+  gProvider = ""           # optional provider override for judgments
   gEvaluating = false
   gPending = false
   gLastEval = default(MonoTime)
@@ -222,6 +233,7 @@ proc evaluate(comp: Component) =
     "sessionId": "expert-" & gTarget,
     "stream": false}
   if gModel.len > 0: chatArgs["model"] = %gModel
+  if gProvider.len > 0: chatArgs["provider"] = %gProvider
   var resp: JsonNode
   try:
     gJudgments += 1
@@ -346,7 +358,8 @@ gComp = comp
 discard comp.tap("ev.session.>", onSessionEvent)
 
 comp.tool:
-  proc expert_follow(session_id: string, model: string = ""): JsonNode =
+  proc expert_follow(session_id: string, model: string = "",
+                     provider: string = ""): JsonNode =
     ## Follow one working session (1:1). The expert watches its ev.session.*
     ## events into a bounded current-turn frame and asks an LLM judge whether
     ## to steer; high-confidence steers are delivered turn-bound (rejected
@@ -355,10 +368,13 @@ comp.tool:
     ## usage — never for work the agent should do itself.
     ## - session_id: the conversation id to follow (conv-*)
     ## - model: optional model override for the judgment calls
+    ## - provider: optional provider for the judgment calls (a NIF_LLM_PROVIDERS
+    ##   nickname or stored provider) — keeps judge cost off the worker's model
     if session_id.len == 0:
       return %*{"error": "expert_follow needs session_id"}
     gTarget = session_id
     gModel = model
+    gProvider = provider
     clearFrame()
     gKnowledge = buildKnowledge(comp)
     comp.log("info", "following session",
@@ -402,6 +418,7 @@ comp.tool:
        "target": gTarget,
        "turnId": gTurnId,
        "model": gModel,
+       "provider": gProvider,
        "evaluating": gEvaluating,
        "pending": gPending,
        "knowledgeVersion": gKnowledgeVersion,

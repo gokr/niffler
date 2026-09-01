@@ -240,6 +240,9 @@ The fixed policy tells the model:
 - Advice is additive and actionable. Name the concrete next mechanism rather
   than saying "use better tools."
 - Do not interrupt a valid approach merely because an alternative exists.
+- Judge harness usage only: task-strategy advice (what to implement, which
+  file to edit, when to run tests) is always silent — that is the working
+  agent's job, not the expert's.
 - Do not repeat advice already present in the observation.
 - Never recommend a hidden, absent, or incompatible tool.
 - Fabric is for mechanical known-shape orchestration and context isolation, not
@@ -320,7 +323,8 @@ on-demand controls:
 let comp = newComponent("expert", "0.1.0")
 
 comp.tool:
-  proc expert_follow(session_id: string, model: string = ""): JsonNode =
+  proc expert_follow(session_id: string, model: string = "",
+                     provider: string = ""): JsonNode =
     ## Follow one working session. Replaces any current target, clears the
     ## observation frame, and starts a new best-effort advisory lane.
 
