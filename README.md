@@ -426,7 +426,7 @@ to CI any plugin repo — Niffler testing itself.
       them to the live assistant bubble; per-call cancellation
       (`llm.cancel.<sessionId>`); final assistant event always carries the
       complete content
-- [x] **hashline-edit** — hash-anchored `read`/`replace`/`undo_last_replace`
+- [x] **hashline-edit** — hash-anchored `hashline_read`/`hashline_replace`/`hashline_undo`
       (Nim port of pi-hashline-edit-pro), anchors stable across edits; since
       extracted to the [niffler-hashline](https://github.com/gokr/niffler-hashline)
       plugin
