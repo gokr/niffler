@@ -63,6 +63,10 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 	defer stream.Close()
 
 	var content, reasoning strings.Builder
+	// Reasoning summaries stream as one delta per step title with no
+	// newline between items (the API leaves item separation to the
+	// renderer) — track the item index so items land one per line.
+	lastSummaryIndex := -1
 	calls := make(map[int]*openai.ToolCall)
 	usedModel := model
 	var usage openai.Usage
@@ -81,7 +85,28 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 		case "response.output_text.delta":
 			content.WriteString(event.Delta)
 			emitLLMToken(c, args, event.Delta, "")
-		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		case "response.reasoning_summary_text.delta":
+			// One summary item (a bolded step title) per delta; separate
+			// items with a newline so the transcript doesn't glue the
+			// whole run of headings together.
+			sep := ""
+			if event.SummaryIndex != lastSummaryIndex && reasoning.Len() > 0 &&
+				!strings.HasSuffix(reasoning.String(), "\n") {
+				sep = "\n"
+			}
+			lastSummaryIndex = event.SummaryIndex
+			reasoning.WriteString(sep + event.Delta)
+			emitLLMToken(c, args, "", sep+event.Delta)
+		case "response.reasoning_summary_text.done":
+			// Item boundary: backends that keep summary_index constant
+			// still get their line break here.
+			if reasoning.Len() > 0 && !strings.HasSuffix(reasoning.String(), "\n") {
+				reasoning.WriteString("\n")
+				emitLLMToken(c, args, "", "\n")
+			}
+		case "response.reasoning_text.delta":
+			// Full chain-of-thought deltas are fragments of one continuous
+			// text — append verbatim, no separator.
 			reasoning.WriteString(event.Delta)
 			emitLLMToken(c, args, "", event.Delta)
 		case "response.output_item.added", "response.output_item.done":

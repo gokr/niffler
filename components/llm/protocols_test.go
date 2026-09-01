@@ -56,6 +56,7 @@ func TestChatCodexUsesOAuthResponsesProtocol(t *testing.T) {
 		flusher := w.(http.Flusher)
 		events := []any{
 			map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "Checked"},
+			map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "Double-checked", "summary_index": 1},
 			map[string]any{"type": "response.output_text.delta", "delta": "Hello"},
 			map[string]any{"type": "response.output_item.added", "output_index": 1, "item": map[string]any{
 				"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "bash", "arguments": "",
@@ -101,7 +102,7 @@ func TestChatCodexUsesOAuthResponsesProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := result.(map[string]any)
-	if got["content"] != "Hello" || got["reasoning"] != "Checked" || got["model"] != "gpt-test-actual" {
+	if got["content"] != "Hello" || got["reasoning"] != "Checked\nDouble-checked" || got["model"] != "gpt-test-actual" {
 		t.Fatalf("result = %#v", got)
 	}
 	usage := got["usage"].(map[string]any)
