@@ -303,6 +303,22 @@ proc main() =
   check("ev.fabric.done announces the terminal state",
         evDone >= 1 and evDoneOk, "done=" & $evDone)
 
+  # output schema: the wrapper's declared outputSchema types the return
+  let outTurn = call(nc, "core", "session",
+                     %*{"sessionId": "fab-out", "content": "go"}, 120_000)
+  check("output-schema turn completed",
+        outTurn{"reply"}.getStr("") == "out-turn-done", $outTurn)
+  var outTranscript = ""
+  for i in 1 .. 4:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "fab-out:" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    outTranscript.add(m{"value"}{"content"}.getStr(""))
+  check("typed output schema returns a typed value",
+        outTranscript.contains("typed-ok") and
+        not outTranscript.contains("Error"), outTranscript)
+
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""
   var marker = transcript.find("sessionId\\\":\\\"agent-")

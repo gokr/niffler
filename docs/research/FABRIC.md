@@ -211,10 +211,12 @@ stdlib-free (no imports; cold eval ~ms):
 Selected mode injects `fabricmeta.nim`, whose `fabricTools` macro generates
 `tools.<tool>(required = value, optional = value)` wrappers from the pinned
 runtime schemas. Scalar arguments and arrays are Nim-typed; objects degrade to
-`JsonNode`; wrappers return `JsonNode`. Optional arguments use `FabricArg[T]`,
-so omission remains distinct from explicit `false`, `0`, or `""`. Ambiguous
-style-insensitive names omit the wrapper and retain allowlisted `callTool` as a
-fallback. Host validation remains authoritative.
+`JsonNode`. Optional arguments use `FabricArg[T]`, so omission remains
+distinct from explicit `false`, `0`, or `""`. A tool may declare a scalar
+`outputSchema` alongside its input schema; the wrapper's return type is then
+Nim-typed (`string`, `int`, `float`, `bool`, `seq[T]`) instead of `JsonNode`.
+Ambiguous style-insensitive names omit the wrapper and retain allowlisted
+`callTool` as a fallback. Host validation remains authoritative.
 
 ## Teaching the LLM
 

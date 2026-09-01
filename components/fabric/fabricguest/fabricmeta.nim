@@ -63,6 +63,18 @@ proc scalarType(schema: JsonNode): NimNode =
   else:
     ident("JsonNode")
 
+proc isScalarSchema(schema: JsonNode): bool =
+  ## True when a wrapper can map the schema to a Nim scalar/seq type;
+  ## everything else (objects, mixed arrays, absent schemas) stays JsonNode.
+  if schema == nil or schema.kind != JObject: return false
+  case schema{"type"}.getStr("")
+  of "string", "integer", "number", "boolean": result = true
+  of "array":
+    let item = schema{"items"}
+    result = item != nil and item{"type"}.getStr("") in
+      ["string", "integer", "number", "boolean"]
+  else: result = false
+
 macro fabricTools*(snapshot: static[string]): untyped =
   ## Generate one method-style wrapper per unambiguous selected tool.
   let entries = parseJson(snapshot)
@@ -86,6 +98,13 @@ macro fabricTools*(snapshot: static[string]): untyped =
     if requiredNode != nil and requiredNode.kind == JArray:
       for node in requiredNode:
         required.incl(node.getStr(""))
+    # Optional output typing: a tool may declare an outputSchema alongside
+    # its input schema; scalar outputs become typed wrapper results,
+    # everything else stays JsonNode (host validation remains authoritative).
+    let outSchema = schema{"outputSchema"}
+    let typedOut = isScalarSchema(outSchema)
+    let returnType = if typedOut: scalarType(outSchema)
+                     else: ident("JsonNode")
 
     var propertyCounts = initCountTable[string]()
     if properties != nil and properties.kind == JObject:
@@ -96,7 +115,7 @@ macro fabricTools*(snapshot: static[string]): untyped =
       if count > 1: ambiguous = true
     if ambiguous: continue
 
-    var params = @[ident("JsonNode"),
+    var params = @[returnType,
                    newIdentDefs(ident("fabricTools"), ident("FabricTools"))]
     var body = newStmtList()
     let argsIdent = genSym(nskVar, "fabricCallArgs")
@@ -127,7 +146,12 @@ macro fabricTools*(snapshot: static[string]): untyped =
               `argsIdent`[`key`] = fabricJson(`parameter`.value)
 
     let wireTool = newLit(rawTool)
-    body.add quote do:
-      result = parseJson(callTool(`wireTool`, $`argsIdent`))
+    if typedOut:
+      body.add quote do:
+        result = to(parseJson(callTool(`wireTool`, $`argsIdent`)),
+                    `returnType`)
+    else:
+      body.add quote do:
+        result = parseJson(callTool(`wireTool`, $`argsIdent`))
     result.add(newProc(postfix(ident(wrapperName), "*"), params = params,
                        body = body))

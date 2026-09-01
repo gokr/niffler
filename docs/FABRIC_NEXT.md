@@ -31,11 +31,10 @@ Implementation progress on `feat/fabric-reliability`:
 - [x] generated input-typed Nim wrappers and catalog pinning;
 - [x] approval manifests: source digest, viewable source artifact, selected
   tools and budgets at the gate; digest-keyed persisted auto-approval;
-- [x] agent lifecycle: `agent_steer` removed (unreachable during synchronous
-  runs; returns with durable workers), fail-closed lineage, interactive-caller
-  propagation to child approvals, child LLM failures reported as failures,
-  idle runner retirement. Lineage-record cleanup lands with a conversation
-  deletion surface (none exists yet);
+- [x] agent lifecycle: fail-closed lineage, interactive-caller propagation
+  to child approvals, child LLM failures reported as failures, idle runner
+  retirement. Lineage-record cleanup lands with a conversation deletion
+  surface (none exists yet);
 - [x] bounded batch calls: `batch(...)` runs up to 16 independent calls with
   4 on the bus at once, per-item outcomes in input order, one deadline for
   all branches (Phase 4 of this plan);
@@ -44,7 +43,12 @@ Implementation progress on `feat/fabric-reliability`:
   events, plus usable `agent_steer` for live spawned children (Phase 5
   core; per-job budgets, process-level stop cancellation, and restart
   recovery are future work);
-- [ ] structured lifecycle events and retention.
+- [x] structured lifecycle events: ev.fabric.started/call.started/call.done/
+  done correlated by runId with bounded metadata, ev.agent.started/done for
+  jobs; the console renders them live (UI activity cards remain future
+  work);
+- [x] optional output schemas: a tool's scalar outputSchema types the
+  generated wrapper's return value; everything else stays JsonNode.
 
 ## Usage model
 

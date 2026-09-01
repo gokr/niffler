@@ -226,6 +226,16 @@ comp.tool(%*{"hidden": true}):
           "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
         return toolCall("t1", "fabric", %*{"code": batched})
       return %*{"content": "batch-turn-done"}
+    if sessionId == "fab-out":
+      if stage == 0:
+        # output schema: the wrapper's return type is `string` (declared
+        # via outputSchema); a compile-fails if typing regressed
+        let prog = "import fabricguest\n" &
+          "let s: string = tools.ctx_out(say = \"typed-ok\")\n" &
+          "finish(jesc(s))\n"
+        return toolCall("t1", "fabric", %*{
+          "tools": ["ctx_out"], "code": prog})
+      return %*{"content": "out-turn-done"}
     if sessionId.startsWith("sp-"):
       # every turn: echo the conversation's system message (messages[0])
       # so the test asserts on what the LLM actually saw, on turn 1 AND on
@@ -287,6 +297,16 @@ discard comp.tool("ctx_sleep", sleepSchema,
     sleep(toolArgs{"ms"}.getInt(0))
     %*{"said": toolArgs{"say"}.getStr(""),
         "started": started, "ended": epochTime()})
+
+# output-schema fixture: the tool declares a scalar outputSchema, so the
+# generated wrapper's return type is `string` instead of JsonNode
+let echoOutSchema = toolSchema(%*{
+  "say": {"type": "string"}
+}, required = @["say"])
+echoOutSchema["outputSchema"] = %*{"type": "string"}
+discard comp.tool("ctx_out", echoOutSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    %toolArgs{"say"}.getStr(""))
 
 proc nestedCall(subject, tool: string, args: JsonNode, lease: string,
                 timeoutMs: int, catalog: JsonNode = nil): Envelope =
