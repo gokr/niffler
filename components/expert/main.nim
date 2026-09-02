@@ -34,11 +34,18 @@ const
                           # Tuned from the bench: flash judges eagerly
                           # re-judge near-identical frames every 2s.
   ChatTimeoutMs = 120_000
-  JudgeMaxOutputTokens = 512
+  JudgeMaxOutputTokens = 1024
     ## The judge answers a constrained-JSON verdict ("silent" or a small
     ## steer); uncapped flash models rambled to 0.9–1.8k completion tokens
-    ## per judgment. The cap only lowers the provider default and is best-
-    ## effort (gateways may ignore it).
+    ## per judgment. The cap only lowers the provider default, is best-
+    ## effort (gateways may ignore it) and must stay generous enough that
+    ## reasoning tokens cannot starve the verdict — at 512, GLM-4.7-Flash
+    ## reasoning ate the whole budget and the verdict came back null.
+  JudgeReasoningEffort = "low"
+    ## Cut judgment cost at the source: reasoning dominates the completion
+    ## (~290 → ~10–30 tokens on Synthetic). Only sent when the llm provider
+    ## accepts the field; strict providers that reject it should not be
+    ## configured as the judge.
 
 const expertPolicy = """
 You are the Niffler expert: a silent advisory peer watching one working agent
@@ -249,7 +256,8 @@ proc evaluate(comp: Component) =
     ],
     "sessionId": "expert-" & gTarget,
     "stream": false,
-    "maxTokens": JudgeMaxOutputTokens}
+    "maxTokens": JudgeMaxOutputTokens,
+    "reasoning_effort": JudgeReasoningEffort}
   if gModel.len > 0: chatArgs["model"] = %gModel
   if gProvider.len > 0: chatArgs["provider"] = %gProvider
   var resp: JsonNode
