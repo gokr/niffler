@@ -253,10 +253,10 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 - Effect declarations and conflict detection for batch calls (concurrent
   mutations to one target are not prevented; reads are the intended use).
-- Job budgets beyond the wait timeout (per-job token/call caps), process-level
-  `agent_stop` cancellation (it only marks the job stopping today), and agent
-  restart recovery for jobs whose completion tap was missed (they surface as
-  "running"; status shows the child runner's retirement).
+- Per-job token/call caps (time budgets and reasoning-effort selection are
+  shipped), and cancellation propagation into already-dispatched nested calls
+  (`agent_stop` cancels the child turn for real; NATS request/reply still has
+  no cancel semantics for in-flight tool calls).
 - Structured-output schemas, tool allowlists, canonical working directories,
   and isolated git worktrees for spawned subagents.
 - Cancellation propagation into a running guest (request/reply has no cancel

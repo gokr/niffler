@@ -714,11 +714,13 @@ The consolidated backlog of explicitly deferred work (in priority order).
    abandoned still runs its guest to the deadline, and already-dispatched
    nested calls are not cancelled (NATS request/reply has no cancel
    semantics; kill-on-timeout is the only stop today).
-2. **Durable-agent hardening.** Restart recovery for jobs whose completion
-   tap was missed (they surface as "running"; status shows the child
-   runner's retirement), per-job call/token/time budgets, tool allowlists,
-   reasoning selection, structured-output schemas, canonical working
-   directories, and optional isolated git worktrees for spawned children.
+2. **Durable-agent hardening.** Restart recovery (shipped: lazy
+   reconciliation of stale records against the live catalog and the child
+   transcript), per-job time budgets (shipped: enforced lazily on
+   observation with agent_stop semantics) and reasoning-effort selection
+   (shipped). Still open: per-job token/call budgets, tool allowlists,
+   structured-output schemas, canonical working directories, and optional
+   isolated git worktrees — all need core session-surface design.
 3. **Batch effect declarations.** Concurrent mutations to one target are
    not prevented; reads are the intended use. Effect declarations
    (`x-harness.effect`) plus per-target serialization would make mutation
