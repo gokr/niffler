@@ -518,6 +518,13 @@ discard comp.tool("fabric", fabSchema,
     comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
               "selected": selectedJ,
               "maxCalls": maxCalls, "timeoutMs": executionMs})
+    # opportunistic retention sweep: expired artifacts are normally reaped
+    # when another oversized result is stored; running the expiry pass at
+    # the start of every run keeps the directory bounded even when no
+    # oversized result ever lands again
+    try:
+      cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+    except CatchableError: discard
     let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
                         executionMs, runId, sess)
@@ -562,4 +569,11 @@ discard comp.tool("fabric", fabSchema,
     emitDone("failed")
     return %*{"ok": false, "diagnostics": r{"diagnostics"}.getStr("failed")})
 
+# boot-time retention sweep: artifacts expire after artifactMaxAgeSeconds,
+# but the expiry pass used to run only when another oversized result was
+# stored — a quiet system never cleaned up. Sweep once at boot too (the
+# per-run sweep below keeps it bounded afterwards).
+try:
+  cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+except CatchableError: discard
 comp.run()
