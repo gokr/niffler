@@ -254,6 +254,32 @@ broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
 denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
 
+## x-harness schema extensions
+
+Tool schemas may carry an `x-harness` object (docs/research/REBOOT.md,
+"policy rides the schema") that the session runner honors at dispatch. Known
+keys:
+
+- `approval`: `"always"` gates the call on a human (see Approvals).
+- `timeoutMs`: per-tool request timeout (default 120s).
+- `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
+- `onDemand`: kept out of a conversation's frozen direct toolset; reachable
+  via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
+- `sessionContext`: the call runs in the live conversation (fabric, agent);
+  the runner injects `__session` context and a nested-call lease.
+- `noSpawn`: a subagent (a session with a parent lineage record) may not call
+  this tool (depth guard enforced at dispatch).
+- `parallel`: `true` marks the tool safe to dispatch **concurrently** with
+  other `parallel`-marked tools in the same assistant message. The runner
+  fans out the batch over the bus and reassembles results in call order.
+  Default (absent/`false`) is strictly serial — which is also enforced for
+  any tool carrying `approval: "always"` or `sessionContext: true`, whatever
+  `parallel` says. `parallel` is a *runner-side* scheduling hint: it does not
+  by itself make a component execute its own calls concurrently (that needs
+  the component to serve from a worker pool or run multiple replicas — the
+  NATS queue group on `svc.<component>.call` distributes one call per
+  subscriber).
+
 ## Conventions
 
 - Component names: lowercase, hyphens (`hashline-edit`). Tool names: lowercase,

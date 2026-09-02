@@ -505,6 +505,52 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
     result += 1
   ct.adviseStream.queue.setLen(0)
 
+# A parsed tool call from an assistant message, ready for the wave scheduler.
+# parseFailed calls were garbled/truncated at the source and are neutralized
+# (never dispatched) — their history entry carries valid {} args for strict
+# backends that re-validate assistant tool_calls on every request.
+type
+  ToolCallItem = tuple
+    id, name: string
+    args: JsonNode
+    parseFailed: bool
+    rawArgs: string
+
+proc commitToolItem(ct: CoreTools, p: var Persister,
+                    messages: var seq[JsonNode],
+                    exposure: var ToolExposure,
+                    onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                    sessionId, turnId: string,
+                    it: ToolCallItem, oc: ToolCallOutcome) =
+  ## Shared post-processing for one executed tool call (serial or from a
+  ## parallel wave): catalog pump, discovery recording, transcript append,
+  ## persistence, and the "done" toolcall event.
+  ct.cat.pump()
+  if ct.sup != nil:
+    ct.sup.pump(ct.cat)
+  if oc.ok and it.name == "discover":
+    recordDiscovery(ct, sessionId, exposure, oc.value)
+  let toolMsg =
+    if oc.ok:
+      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+         "content": $oc.value}
+    else:
+      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+         "content": "ERROR: " & oc.error}
+  messages.add(toolMsg)
+  p.persistMsg(toolMsg)
+  if onEvent != nil:
+    if oc.ok:
+      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                             "callId": it.id, "phase": "done",
+                             "tool": it.name, "args": it.args,
+                             "result": oc.value})
+    else:
+      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                             "callId": it.id, "phase": "done",
+                             "tool": it.name, "args": it.args,
+                             "error": oc.error})
+
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
@@ -700,6 +746,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       emitTurnDone()
       return content
 
+    # --- Tool-call execution: parallel-safe calls (x-harness.parallel) fan
+    # out over the bus; the rest (approval-gated, session-context, parse
+    # failures, unmarked tools) run one at a time, in order. Results always
+    # land in tool_calls order so strict backends keep call/result pairing.
+    var items: seq[ToolCallItem] = @[]
     for tc in toolCalls:
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
@@ -716,42 +767,54 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
+      items.add((id: id, name: name, args: args,
+                 parseFailed: parseFailed, rawArgs: rawArgs))
       if onEvent != nil:
         onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                "callId": id, "phase": "start",
                                "tool": name, "args": args})
-      try:
-        let toolResult =
-          if parseFailed:
-            %*{"ok": false,
-               "error": "tool call arguments were not valid JSON (truncated or garbled stream): " &
-                        rawArgs[0 ..< min(rawArgs.len, 200)]}
-          else:
-            ct.dispatchToolCall(name, args)
-        ct.cat.pump()
-        if ct.sup != nil:
-          ct.sup.pump(ct.cat)
-        if name == "discover":
-          recordDiscovery(ct, sessionId, exposure, toolResult)
-        let toolMsg = %*{"role": "tool", "tool_call_id": id,
-                         "name": name, "content": $toolResult}
-        messages.add(toolMsg)
-        p.persistMsg(toolMsg)
-        if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                                 "callId": id, "phase": "done",
-                                 "tool": name, "args": args,
-                                 "result": toolResult})
-      except CatchableError as e:
-        let toolMsg = %*{"role": "tool", "tool_call_id": id,
-                         "name": name, "content": "ERROR: " & e.msg}
-        messages.add(toolMsg)
-        p.persistMsg(toolMsg)
-        if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                                 "callId": id, "phase": "done",
-                                 "tool": name, "args": args,
-                                 "error": e.msg})
+
+    var idx = 0
+    while idx < items.len:
+      # A wave is a maximal run of consecutive parallel-safe calls. Waves fan
+      # out; serial calls (or a parse failure) run alone, in order.
+      var wave: seq[tuple[id, name: string, args: JsonNode]] = @[]
+      while idx < items.len and isParallelSafeTool(ct, items[idx].name) and
+          not items[idx].parseFailed:
+        wave.add((items[idx].id, items[idx].name, items[idx].args))
+        inc idx
+      if wave.len > 0:
+        var calls: seq[tuple[tool: string, args: JsonNode]] = @[]
+        for w in wave: calls.add((w.name, w.args))
+        var outcomes: seq[ToolCallOutcome] = @[]
+        try:
+          outcomes = ct.dispatchToolCalls(calls)
+        except CatchableError as e:
+          for w in wave:
+            outcomes.add(ToolCallOutcome(error: e.msg))
+        for k, w in wave:
+          commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
+                         turnId,
+                         (id: w.id, name: w.name, args: w.args,
+                          parseFailed: false, rawArgs: ""),
+                         (if k < outcomes.len: outcomes[k]
+                          else: ToolCallOutcome(error: "no outcome")))
+        continue
+      let it = items[idx]
+      inc idx
+      var oc: ToolCallOutcome
+      if it.parseFailed:
+        oc = ToolCallOutcome(error:
+          "tool call arguments were not valid JSON (truncated or garbled stream): " &
+          it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
+      else:
+        try:
+          oc = ToolCallOutcome(ok: true,
+                               value: ct.dispatchToolCall(it.name, it.args))
+        except CatchableError as e:
+          oc = ToolCallOutcome(error: e.msg)
+      commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
+                     it, oc)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")

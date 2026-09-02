@@ -833,7 +833,7 @@ discard comp.tool("read", toolSchema(%*{
   "offset. Binary files (NUL bytes), UTF-16/32 text and files over 100MB " &
   "are refused; an empty file reports so; lines over 200KB are elided with " &
   "a bash inspection hint. For searching across files use grep instead."), hRead,
-  %*{"timeoutMs": 60000})
+  %*{"timeoutMs": 60000, "parallel": true})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",

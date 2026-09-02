@@ -718,3 +718,141 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                                callArgs, timeoutMs)
 
   dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+
+# ---------------------------------------------------------------------------
+# Parallel dispatch — fan out a wave of tool calls over the bus
+# ---------------------------------------------------------------------------
+#
+# x-harness.parallel (docs/WIRE.md) marks a tool safe to dispatch concurrently
+# with other parallel-safe tools in the same assistant message. The runner
+# fires the whole wave at once (distinct inbox reply subjects), then collects
+# replies by round-robin polling — no threads, no asyncdispatch. This
+# parallelizes calls to *different* components (read ∥ grep ∥ git_status);
+# same-component calls still serialize at the component unless the component
+# serves from a worker pool or runs multiple replicas.
+
+type
+  ToolCallOutcome* = object
+    ok*: bool
+    value*: JsonNode   ## result payload when ok
+    error*: string     ## human error text when not ok
+
+proc isParallelSafeTool*(ct: CoreTools, tool: string): bool =
+  ## True when the session runner may dispatch this tool concurrently with
+  ## other parallel-safe tools in the same assistant message. Opt-in via
+  ## x-harness.parallel; approval-gated, session-context, core and unknown
+  ## tools are never parallel (they are the serial spine of a turn).
+  let schema = ct.cat.toolSchema(tool)
+  if schema == nil: return false
+  let x = schema{"x-harness"}
+  if x == nil or x.kind != JObject: return false
+  if x{"approval"}.getStr("") == "always": return false
+  if x{"sessionContext"}.getBool(false): return false
+  x{"parallel"}.getBool(false)
+
+proc dispatchToolCalls*(ct: CoreTools,
+                        calls: openArray[tuple[tool: string, args: JsonNode]],
+                        defaultTimeoutMs: int = 120000): seq[ToolCallOutcome] =
+  ## Fan out N tool calls to their component processes concurrently (distinct
+  ## inbox reply subjects, published in one pass, replies collected by
+  ## round-robin polling). Results are returned in input order regardless of
+  ## completion order, so the transcript keeps tool_calls / tool_result
+  ## pairing intact for strict backends.
+  ##
+  ## Callers must only pass parallel-safe component tools (isParallelSafeTool);
+  ## per-call errors are reported in the outcome, never raised — one slow or
+  ## failing call must not fail the whole wave.
+  result = newSeq[ToolCallOutcome](calls.len)
+  type
+    Pending = object
+      sub: ptr natsSubscription
+      tool: string
+      timeoutMs: int
+      deadline: float
+      done: bool
+      ok: bool
+      value: JsonNode
+      error: string
+  var pending = newSeq[Pending](calls.len)
+  # Resolve every target and fire every request before waiting on any reply,
+  # so all components start working at once.
+  for i, call in calls:
+    let comp = ct.cat.toolIndex.getOrDefault(call.tool)
+    if comp.len == 0:
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "no component provides tool '" & call.tool &
+               "' — is it registered?")
+      continue
+    let schema = ct.cat.toolSchema(call.tool)
+    var timeoutMs = defaultTimeoutMs
+    if schema != nil:
+      timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+    let env = callEnvelope(call.tool,
+      (if call.args == nil: newJObject() else: call.args))
+    let data = env.encode()
+    let inbox = "_INBOX." & newId()
+    var sub: ptr natsSubscription
+    let st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
+    if not checkStatus(st):
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "subscribe inbox for '" & call.tool & "': " & getErrorString(st))
+      continue
+    pending[i] = Pending(sub: sub, tool: call.tool, timeoutMs: timeoutMs,
+                         deadline: epochTime() + timeoutMs.float / 1000.0)
+    let ps = natsConnection_PublishRequest(ct.nc.conn,
+      ("svc." & comp & ".call").cstring, inbox.cstring, data.cstring,
+      data.len.cint)
+    if not checkStatus(ps):
+      natsSubscription_Destroy(pending[i].sub)
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "publish request '" & call.tool & "': " & getErrorString(ps))
+  # Make sure every request is on the wire before we start polling replies.
+  let flush = natsConnection_FlushTimeout(ct.nc.conn,
+    min(defaultTimeoutMs, 1000).int64)
+  if not checkStatus(flush):
+    discard  # polling still converges; flush is only a liveness hint
+  defer:
+    for i in 0 ..< calls.len:
+      if pending[i].sub != nil:
+        natsSubscription_Destroy(pending[i].sub)
+  # Collect replies. Round-robin polling keeps core's service surface alive (a
+  # component calling back into core mid-wave cannot deadlock) and streams LLM
+  # tokens / steering while the wave is in flight.
+  while true:
+    var allDone = true
+    let now = epochTime()
+    for i in 0 ..< calls.len:
+      if pending[i].done: continue
+      allDone = false
+      if now >= pending[i].deadline:
+        pending[i].done = true
+        pending[i].error = "tool '" & pending[i].tool & "' timed out after " &
+          $pending[i].timeoutMs & "ms"
+        continue
+      var msg: ptr natsMsg
+      let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, 25)
+      if ns == NATS_OK:
+        let resp = decode($natsMsg_GetData(msg))
+        natsMsg_Destroy(msg)
+        pending[i].done = true
+        if resp.kind == ekError:
+          pending[i].error = resp.error{"message"}.getStr("component error")
+        else:
+          pending[i].ok = true
+          pending[i].value = resp.args
+    if allDone: break
+    # idle slot (same set as dispatchSubjectCall): keep core's own tools, the
+    # catalog, the supervisor, the live LLM token stream, steering, advice and
+    # nested-call surfaces serviced while we wait.
+    pumpCoreWhileBusy(ct)
+    ct.cat.pump()
+    if ct.sup != nil:
+      ct.sup.pump(ct.cat)
+    pumpTokenStream(ct)
+    pumpSteer(ct)
+    pumpAdvise(ct)
+    pumpNested(ct)
+  for i in 0 ..< calls.len:
+    result[i] = ToolCallOutcome(ok: pending[i].ok,
+                                value: pending[i].value,
+                                error: pending[i].error)

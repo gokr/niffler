@@ -43,7 +43,7 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
                 maxOutputBytes,
                 hint = "narrow pattern/path/glob for the missing part")}
 
-comp.tool(%*{"timeoutMs": 60000}):
+comp.tool(%*{"timeoutMs": 60000, "parallel": true}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
@@ -86,7 +86,7 @@ comp.tool(%*{"timeoutMs": 60000}):
     let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
     return finish(code, output, min(max(1, max_results), 10_000))
 
-comp.tool(%*{"timeoutMs": 60000}):
+comp.tool(%*{"timeoutMs": 60000, "parallel": true}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
              max_results: int = 500, timeoutMs: int = 30000): JsonNode =
     ## List repository files, sorted, one path per line — the fastest way

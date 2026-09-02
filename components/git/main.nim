@@ -101,7 +101,7 @@ proc validAuthor(author: string): bool =
   author.len < 200 and not author.startsWith("-") and
     not author.contains('\n') and not author.contains('\r')
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "parallel": true}):
   proc git_status(path: string = ""): JsonNode =
     ## Cheap repo state check — run it whenever you are unsure what
     ## changed: before starting work, after your own edits, or to detect
@@ -124,7 +124,7 @@ comp.tool(%*{"timeoutMs": 45000}):
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, 200)
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "parallel": true}):
   proc git_diff(path: string = "", unified: int = 3, stat: bool = false): JsonNode =
     ## Diff of everything changed since the last commit (staged AND
     ## unstaged — `git diff HEAD`) with context lines. Use it to review
@@ -154,7 +154,7 @@ comp.tool(%*{"timeoutMs": 45000}):
       return %*{"exit_code": 0, "output": "[no changes since HEAD]"}
     return finish(code, output, if stat: 500 else: 10_000)
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "parallel": true}):
   proc git_log(path: string = "", max_count: int = 20, author: string = ""): JsonNode =
     ## Recent commit history, one line per commit: short hash, subject,
     ## and branch/tag decorations. Use it to see what changed recently,
@@ -183,7 +183,7 @@ comp.tool(%*{"timeoutMs": 45000}):
       return %*{"exit_code": 0, "output": "[no commits matched]"}
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "parallel": true}):
   proc git_show(rev: string, path: string = ""): JsonNode =
     ## Show one commit in full: metadata, message, and the complete diff
     ## (optionally limited to one path). Use it after git_log to see what
@@ -205,7 +205,7 @@ comp.tool(%*{"timeoutMs": 45000}):
     let (code, output) = runGit(args, 20_000)
     return finish(code, output)
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "parallel": true}):
   proc git_blame(path: string, start_line: int = 1, max_lines: int = 200): JsonNode =
     ## Line-by-line attribution for one file: for each line, the commit
     ## that last touched it, its author, and the line content. Use it to

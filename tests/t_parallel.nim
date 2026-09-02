@@ -1,0 +1,275 @@
+## parallel-safe tool fan-out tests (B1a).
+##
+## When an assistant message carries several tool calls marked
+## x-harness.parallel, the session runner fans them out over the bus
+## (distinct inbox reply subjects, round-robin collection) and reassembles
+## the results in tool_calls order. Three scenarios via a test-only mock llm
+## (tests/mock_parallel_llm.nim, selected by NIF_MOCK_SCENARIO):
+##   wave        — read a.txt, read b.txt, grep needle, files *.txt:
+##                 all four run through the wave path; results must land in
+##                 c1..c4 order with correct contents.
+##   interleave  — read a.txt, bash "echo serial-ok", read b.txt:
+##                 the non-parallel bash call splits the read calls into two
+##                 waves; the transcript must stay c1(read), c2(bash),
+##                 c3(read) — serial calls keep working inside a batch.
+##   slow        — sa_slow + sb_slow, two 1s-sleeping tools on two separate
+##                 spawned components: proves cross-component concurrency
+##                 (the turn finishes in ~1s, not ~2s).
+
+import std/[json, os, osproc, strutils, times]
+import natswrapper
+import envelope
+import helpers
+
+proc compileMock(llmBin, repoRoot, scenario: string) =
+  ## Build the test-only llm stand-in into the sandbox's var/bin (replacing
+  ## the copied real llm binary): same component name, same hidden chat tool.
+  let compProc = startProcess("nim", args = [
+    "c", "--hints:off", "--warnings:off",
+    "--path:" & repoRoot / "sdk",
+    "-o:" & llmBin,
+    repoRoot / "tests" / "mock_parallel_llm.nim"],
+    options = {poUsePath, poStdErrToStdOut})
+  defer: compProc.close()
+  if waitForExit(compProc, 120_000) != 0:
+    fail("mock parallel llm failed to compile")
+    quit(1)
+
+proc compileSlow(bin, src: string) =
+  ## Build one slow test component (sa_slow / sb_slow) into the sandbox.
+  let compProc = startProcess("nim", args = [
+    "c", "--hints:off", "--warnings:off",
+    "--path:" & getEnv("NIF_REPO_ROOT",
+      getEnv("NIF_ROOT", getAppDir().parentDir())) / "sdk",
+    "-o:" & bin, src],
+    options = {poUsePath, poStdErrToStdOut})
+  defer: compProc.close()
+  if waitForExit(compProc, 120_000) != 0:
+    fail("slow component failed to compile: " & src)
+    quit(1)
+
+proc waitComponent(nc: NatsConnection, name: string, secs = 25): bool =
+  for i in 0 ..< secs * 5:
+    let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+    if snap{"components"}{name} != nil:
+      return true
+    sleep(200)
+  return false
+
+proc stopHard(p: var Process) =
+  if p != nil and p.running():
+    p.terminate()
+    sleep(500)
+    if p.running(): p.kill()
+    sleep(100)
+  if p != nil: p.close()
+  p = nil
+
+proc toolMessages(nc: NatsConnection, sessionId: string): seq[JsonNode] =
+  ## Transcript tool messages in store order (store key order = message order).
+  let listed = call(nc, "store", "list",
+    %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 200}, 10_000)
+  for item in listed{"items"}:
+    if item{"value"}{"role"}.getStr("") == "tool":
+      result.add(item{"value"})
+
+proc boot(nc: NatsConnection, coreProc: var Process,
+          sandbox: TestSandbox, url: string, scenario: string) =
+  ## Shared sandbox boot: nats + core (with the scenario env for the mock llm
+  ## child) + wait for the components the scenario needs.
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url, root = sandbox.root,
+                            extra = [("NIF_AUTO_APPROVE", "1"),
+                                     ("NIF_MOCK_SCENARIO", scenario)],
+                            logFile = "/tmp/niffler-t-parallel-" & scenario & ".log")
+  var coreUp = false
+  for i in 0 ..< 100:
+    let r = call(nc, "core", "catalog", %*{"op": "list"}, 3_000)
+    if r{"error"} == nil and r{"tools"} != nil:
+      coreUp = true
+      break
+    sleep(200)
+  check(scenario & ": core up", coreUp)
+  check(scenario & ": store registered", waitComponent(nc, "store"))
+  check(scenario & ": mock llm registered", waitComponent(nc, "llm"))
+
+proc main() =
+  let repoRoot = getEnv("NIF_REPO_ROOT",
+                        getEnv("NIF_ROOT", getAppDir().parentDir()))
+  for bin in ["niffler", "session", "store", "edit", "grep", "bash"]:
+    if not fileExists(repoRoot / "var" / "bin" / bin):
+      fail("missing binary " & bin & " — run `make build` first")
+      quit(1)
+
+  # ---- scenario: wave (4 parallel-safe calls) -----------------------------
+  block:
+    let sandbox = newCoreSandbox("parallel-wave", ["store", "edit", "grep",
+                                                   "llm"])
+    let root = sandbox.root
+    writeFile(root / "a.txt", "AAA line one\n")
+    writeFile(root / "b.txt", "needle hit\n")
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "wave")
+
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    var coreProc: Process
+    boot(nc, coreProc, sandbox, url, "wave")
+    defer: stopHard(coreProc)
+    defer: nc.close()
+    defer: stopServer(server)
+    defer: removeDir(root)
+
+    check("wave: edit registered", waitComponent(nc, "edit"))
+    check("wave: grep registered", waitComponent(nc, "grep"))
+
+    let sessionId = "conv-parallel-wave-" & $int(epochTime())
+    let turn = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+    check("wave: turn ok", turn{"error"} == nil, $turn)
+    check("wave: turn reply", turn{"reply"}.getStr("") == "parallel-done",
+          $turn)
+
+    let tools = toolMessages(nc, sessionId)
+    check("wave: four tool results", tools.len == 4, $tools.len)
+    if tools.len == 4:
+      check("wave: c1 read a.txt", tools[0]{"tool_call_id"}.getStr("") == "c1" and
+            tools[0]{"name"}.getStr("") == "read" and
+            ($tools[0]).contains("AAA"), $tools[0])
+      check("wave: c2 read b.txt", tools[1]{"tool_call_id"}.getStr("") == "c2" and
+            tools[1]{"name"}.getStr("") == "read" and
+            ($tools[1]).contains("needle hit"), $tools[1])
+      check("wave: c3 grep needle", tools[2]{"tool_call_id"}.getStr("") == "c3" and
+            tools[2]{"name"}.getStr("") == "grep" and
+            ($tools[2]).contains("needle"), $tools[2])
+      check("wave: c4 files *.txt", tools[3]{"tool_call_id"}.getStr("") == "c4" and
+            tools[3]{"name"}.getStr("") == "files" and
+            ($tools[3]).contains("a.txt"), $tools[3])
+
+  # ---- scenario: interleave (serial bash between two read waves) ---------
+  block:
+    let sandbox = newCoreSandbox("parallel-interleave",
+                                 ["store", "edit", "bash", "llm"])
+    let root = sandbox.root
+    writeFile(root / "a.txt", "AAA line one\n")
+    writeFile(root / "b.txt", "needle hit\n")
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "interleave")
+
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    var coreProc: Process
+    boot(nc, coreProc, sandbox, url, "interleave")
+    defer: stopHard(coreProc)
+    defer: nc.close()
+    defer: stopServer(server)
+    defer: removeDir(root)
+
+    check("interleave: edit registered", waitComponent(nc, "edit"))
+    check("interleave: bash registered", waitComponent(nc, "bash"))
+
+    let sessionId = "conv-parallel-il-" & $int(epochTime())
+    let turn = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+    check("interleave: turn ok", turn{"error"} == nil, $turn)
+    check("interleave: turn reply", turn{"reply"}.getStr("") == "parallel-done",
+          $turn)
+
+    let tools = toolMessages(nc, sessionId)
+    check("interleave: three tool results", tools.len == 3, $tools.len)
+    if tools.len == 3:
+      check("interleave: c1 read first",
+            tools[0]{"tool_call_id"}.getStr("") == "c1" and
+            tools[0]{"name"}.getStr("") == "read" and
+            ($tools[0]).contains("AAA"), $tools[0])
+      check("interleave: c2 bash serial middle",
+            tools[1]{"tool_call_id"}.getStr("") == "c2" and
+            tools[1]{"name"}.getStr("") == "bash" and
+            ($tools[1]).contains("serial-ok"), $tools[1])
+      check("interleave: c3 read last",
+            tools[2]{"tool_call_id"}.getStr("") == "c3" and
+            tools[2]{"name"}.getStr("") == "read" and
+            ($tools[2]).contains("needle hit"), $tools[2])
+
+  # ---- scenario: slow (cross-component concurrency timing) ----------------
+  block:
+    let sandbox = newCoreSandbox("parallel-slow", ["store", "llm"])
+    let root = sandbox.root
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "slow")
+    # two separate slow components, each one parallel-safe 1s-sleeping tool
+    const slowSrcA = """
+      import std/[os]
+      import niffler/sdk
+      let comp = newComponent("sa", "0.1.0")
+      comp.tool(%*{"parallel": true, "timeoutMs": 30000}):
+        proc sa_slow(): JsonNode =
+          ## Sleep and report
+          sleep(1000)
+          %*{"ok": true, "which": "sa"}
+      comp.run()
+      """.dedent()
+    const slowSrcB = """
+      import std/[os]
+      import niffler/sdk
+      let comp = newComponent("sb", "0.1.0")
+      comp.tool(%*{"parallel": true, "timeoutMs": 30000}):
+        proc sb_slow(): JsonNode =
+          ## Sleep and report
+          sleep(1000)
+          %*{"ok": true, "which": "sb"}
+      comp.run()
+      """.dedent()
+    writeFile(root / "sa.nim", slowSrcA)
+    writeFile(root / "sb.nim", slowSrcB)
+    compileSlow(sandbox.sandboxBin("sa"), root / "sa.nim")
+    compileSlow(sandbox.sandboxBin("sb"), root / "sb.nim")
+
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    var coreProc: Process
+    boot(nc, coreProc, sandbox, url, "slow")
+    defer: stopHard(coreProc)
+    defer: nc.close()
+    defer: stopServer(server)
+    defer: removeDir(root)
+
+    let spA = call(nc, "core", "spawn",
+                   %*{"name": "sa", "binary": sandbox.sandboxBin("sa")},
+                   60_000)
+    check("slow: spawn sa", spA{"ok"}.getBool(false), $spA)
+    let spB = call(nc, "core", "spawn",
+                   %*{"name": "sb", "binary": sandbox.sandboxBin("sb")},
+                   60_000)
+    check("slow: spawn sb", spB{"ok"}.getBool(false), $spB)
+    check("slow: sa registered", waitComponent(nc, "sa"))
+    check("slow: sb registered", waitComponent(nc, "sb"))
+
+    let sessionId = "conv-parallel-slow-" & $int(epochTime())
+    # Warm the runner: a model-only session call spawns the runner process,
+    # seeds its catalog and resolves the system prompt, so the timed turn
+    # below measures only the tool fan-out, not runner startup.
+    let warm = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "model": "mock-model"},
+                    60_000)
+    check("slow: runner warm (model-only)", warm{"ok"}.getBool(false), $warm)
+    let t0 = epochTime()
+    let turn = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+    let dt = epochTime() - t0
+    check("slow: turn ok", turn{"error"} == nil, $turn)
+    check("slow: turn reply", turn{"reply"}.getStr("") == "parallel-done",
+          $turn)
+    # Two 1s-sleeping calls on two processes: ~1s in parallel, ~2s if the
+    # runner serialized them. 1.8s is comfortably between the two.
+    check("slow: cross-component concurrency (turn < 1.8s)",
+          dt < 1.8, "turn took " & $dt & "s")
+    let tools = toolMessages(nc, sessionId)
+    check("slow: two tool results", tools.len == 2, $tools.len)
+    if tools.len == 2:
+      check("slow: c1 sa_slow",
+            tools[0]{"tool_call_id"}.getStr("") == "c1" and
+            ($tools[0]).contains("sa"), $tools[0])
+      check("slow: c2 sb_slow",
+            tools[1]{"tool_call_id"}.getStr("") == "c2" and
+            ($tools[1]).contains("sb"), $tools[1])
+
+  report("PARALLEL")
+
+main()

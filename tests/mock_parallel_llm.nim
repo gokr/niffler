@@ -1,0 +1,70 @@
+## mock_parallel_llm — test-only `llm` stand-in for tests/t_parallel.nim.
+##
+## Answers chat deterministically over the bus, no provider, no network. On
+## the first working round it returns a scripted batch of tool_calls chosen by
+## NIF_MOCK_SCENARIO:
+##   wave        — read a.txt, read b.txt, grep needle, files *.txt
+##                 (4 parallel-safe calls, 2 same-component pairs)
+##   interleave  — read a.txt, bash "echo serial-ok", read b.txt
+##                 (a non-parallel bash call splitting two read waves)
+##   slow        — sa_slow, sb_slow (two 1s-sleeping tools on two different
+##                 spawned components — proves cross-component concurrency)
+## Every later working round returns the final reply "parallel-done".
+
+import std/[json, os]
+import niffler/sdk
+
+let comp = newComponent("llm", "0.1.0-mock")
+var workingRounds = 0
+let scenario = getEnv("NIF_MOCK_SCENARIO", "wave")
+
+discard comp.tool("chat", %*{
+  "type": "object",
+  "description": "Mock chat (test only)",
+  "properties": {
+    "messages": {"type": "array"},
+    "sessionId": {"type": "string"},
+    "stream": {"type": "boolean"}
+  },
+  "required": ["messages"],
+  "x-harness": {"hidden": true, "timeoutMs": 120000}
+},
+proc(c: Component, args: JsonNode): JsonNode =
+  workingRounds += 1
+  if workingRounds == 1:
+    var calls = newJArray()
+    var n = 0
+    let fn = proc(name, arguments: string) =
+      inc n
+      calls.add(%*{"id": "c" & $n, "type": "function",
+                   "function": {"name": name, "arguments": arguments}})
+    case scenario
+    of "wave":
+      fn("read", """{"path":"a.txt"}""")
+      fn("read", """{"path":"b.txt"}""")
+      fn("grep", """{"pattern":"needle"}""")
+      fn("files", """{"glob":"*.txt"}""")
+    of "interleave":
+      fn("read", """{"path":"a.txt"}""")
+      fn("bash", """{"command":"echo serial-ok"}""")
+      fn("read", """{"path":"b.txt"}""")
+    of "slow":
+      fn("sa_slow", "{}")
+      fn("sb_slow", "{}")
+    else:
+      return %*{"content": "unknown scenario", "model": "mock-model"}
+    return %*{"content": "", "tool_calls": calls, "model": "mock-model"}
+  return %*{"content": "parallel-done", "model": "mock-model",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10,
+                      "total_tokens": 110}})
+
+discard comp.tool("llm_resolve", %*{
+  "type": "object",
+  "description": "Mock resolve (test only)",
+  "properties": {},
+  "x-harness": {"hidden": true, "timeoutMs": 10000}
+},
+proc(c: Component, args: JsonNode): JsonNode =
+  %*{"ok": true, "model": "mock-model"})
+
+comp.run()
