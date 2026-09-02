@@ -1,11 +1,12 @@
 {
   // Keep runtime scratch out of the Source Control view: the bench writes
   // real git task repos under var/bench/results/<runId>/<combo>/<task>/repo,
-  // and VSCode would otherwise list every one as a repository.
+  // and VSCode would otherwise list every one as a repository. Patterns
+  // match against absolute paths — anchor with ** or they never fire.
   "git.repositoryScanIgnoredFolders": [
     "**/node_modules",
     "**/vendor",
-    "var/**",
-    "bench/results/**"
+    "**/var/**",
+    "**/bench/results/**"
   ]
 }
