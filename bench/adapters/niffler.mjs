@@ -280,10 +280,20 @@ export class NifflerHarness {
     for (const it of items) {
       const v = it.value || {};
       if (v.role !== "assistant" || !v.usage) continue;
-      usage.input += v.usage.prompt_tokens || 0;
+      // OpenAI prompt_tokens includes cached tokens; pi/opencode expose input
+      // and cacheRead as disjoint counters. Normalize Niffler to the latter
+      // so input + cacheRead + output is an honest cross-harness total.
+      const prompt = v.usage.prompt_tokens || 0;
+      const cached = Math.min(
+        prompt,
+        Math.max(
+          v.usage.prompt_cache_hit_tokens || 0,
+          v.usage.prompt_tokens_details?.cached_tokens || 0,
+        ),
+      );
+      usage.input += prompt - cached;
       usage.output += v.usage.completion_tokens || 0;
-      usage.cacheRead += v.usage.prompt_cache_hit_tokens || 0;
-      usage.cacheWrite += v.usage.prompt_cache_miss_tokens || 0;
+      usage.cacheRead += cached;
       usage.cost += 0; // pricing not configured for bench gateways
     }
     return usage;

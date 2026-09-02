@@ -122,15 +122,17 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
 - Reasoning/thinking is left at each harness's default (config knobs exist in
   `config.json` / the pi adapter for `--thinking`).
 - Token totals are provider-reported sums over all LLM calls of all rounds.
-  Cross-harness **cache** behavior differs (pi reports cacheRead; opencode
-  reports cache r/w; Niffler transcripts currently show ~0 DeepSeek cache
-  hits — worth investigating separately).
+  Counters are normalized to be disjoint: `total = uncached input + output +
+  cache read + cache write`. Pi and opencode already report that shape;
+  OpenAI-style Niffler `prompt_tokens` includes cached tokens, so the adapter
+  subtracts `prompt_tokens_details.cached_tokens` into `cacheRead`.
 - The verify step (`./test.sh`) runs outside the agent's turn and its duration
   is recorded separately (`testTimeS` vs `agentTimeS`).
 - A run is `invalid` when the diff touches protected files even if tests pass.
-- Niffler currently re-sends full conversation context each call without
-  provider cache hits; multi-round tasks amplify this. That is real Niffler
-  cost today, not a bench artifact.
+- Niffler re-sends the full conversation context on each call; provider cache
+  reads are reported when the gateway exposes them (including OpenAI-compatible
+  `prompt_tokens_details.cached_tokens`). Multi-round tasks still amplify the
+  uncached portion and total input processed.
 - Expert-assisted runs are paired experiments, not the default Niffler score:
   the advisor uses additional model calls concurrently, can remain silent, and
   may finish too late to affect short tasks. Check each result's `expert.active`,

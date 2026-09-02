@@ -32,7 +32,8 @@
       "pi": {
         "provider": "llmgateway",
         "model": "glm-5.3-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY"
+        "apiKeyEnv": "LLMGATEWAY_API_KEY",
+        "thinking": "low"
       },
       "opencode": {
         "model": "llmgateway/glm-5.3-flash"

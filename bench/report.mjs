@@ -36,6 +36,11 @@ else if (opt("latest")) {
   process.exit(1);
 }
 
+let runMeta = {};
+try {
+  runMeta = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+} catch {}
+
 const results = [];
 function scan(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -64,23 +69,28 @@ results.sort(
 );
 
 const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+const totalTokens = (r) =>
+  (r.tokens?.input || 0) +
+  (r.tokens?.output || 0) +
+  (r.tokens?.cacheRead || 0) +
+  (r.tokens?.cacheWrite || 0);
 const hasExpert = results.some((r) => r.expert);
 const md = [];
 md.push(`# bench report — ${path.basename(runDir)}`);
 md.push("");
 md.push(
-  "| model | harness | task | verdict | time (s) | rounds | tok in | tok out | cache r/w | cost $ | diff (+/-) |" +
+  "| model | harness | task | verdict | time (s) | rounds | tok total | uncached in | tok out | cache r/w | cost $ | diff (+/-) |" +
     (hasExpert ? " expert judge/steer/accepted |" : ""),
 );
 md.push(
-  "|---|---|---|---|---:|---:|---:|---:|---|---:|---|" +
+  "|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---|" +
     (hasExpert ? "---|" : ""),
 );
 for (const r of results) {
   md.push(
     `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""} | ` +
-      `${r.totalTimeS} | ${r.rounds} | ${fmtTok(r.tokens?.input || 0)} | ` +
-      `${fmtTok(r.tokens?.output || 0)} | ` +
+      `${r.totalTimeS} | ${r.rounds} | ${fmtTok(totalTokens(r))} | ` +
+      `${fmtTok(r.tokens?.input || 0)} | ${fmtTok(r.tokens?.output || 0)} | ` +
       `${fmtTok(r.tokens?.cacheRead || 0)}/${fmtTok(r.tokens?.cacheWrite || 0)} | ` +
       `${(r.tokens?.cost || 0).toFixed(4)} | ` +
       `${r.diff?.insertions || 0}/${r.diff?.deletions || 0} |` +
@@ -92,8 +102,8 @@ for (const r of results) {
 md.push("");
 md.push("## Per-combo summary");
 md.push("");
-md.push("| model | harness | pass rate | avg time (s) | avg tok in | avg tok out | avg diff (+/-) |");
-md.push("|---|---|---|---:|---:|---:|---|");
+md.push("| model | harness | pass rate | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | avg diff (+/-) |");
+md.push("|---|---|---|---:|---:|---:|---:|---:|---|");
 const groups = new Map();
 for (const r of results) {
   const k = `${r.model}|${r.harness}`;
@@ -107,18 +117,27 @@ for (const [k, rs] of groups) {
   const avg = (f) => rs.reduce((s, r) => s + (f(r) || 0), 0) / n;
   md.push(
     `| ${model} | ${harness} | ${pass}/${n} | ${avg((r) => r.totalTimeS).toFixed(0)} | ` +
-      `${fmtTok(avg((r) => r.tokens?.input))} | ${fmtTok(avg((r) => r.tokens?.output))} | ` +
+      `${fmtTok(avg(totalTokens))} | ${fmtTok(avg((r) => r.tokens?.input))} | ` +
+      `${fmtTok(avg((r) => r.tokens?.cacheRead))} | ${fmtTok(avg((r) => r.tokens?.output))} | ` +
       `${avg((r) => r.diff?.insertions).toFixed(0)}/${avg((r) => r.diff?.deletions).toFixed(0)} |`,
   );
 }
 md.push("");
 md.push("*`invalid*` = tests pass but protected files (tests) were modified.*");
+if (runMeta.corrections?.length) {
+  md.push("");
+  md.push("## Corrections");
+  md.push("");
+  for (const c of runMeta.corrections) {
+    md.push(`- **${c.lane}** replaced from \`${c.sourceRun}\`: ${c.reason}`);
+  }
+}
 
 const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
+const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
 for (const r of results) {
   csv.push(
     [
@@ -129,6 +148,7 @@ for (const r of results) {
       r.totalTimeS,
       r.agentTimeS,
       r.rounds,
+      totalTokens(r),
       r.tokens?.input || 0,
       r.tokens?.output || 0,
       r.tokens?.cacheRead || 0,

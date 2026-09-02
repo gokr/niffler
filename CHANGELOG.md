@@ -455,6 +455,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Benchmark token accounting and Pi/GLM wiring** — Niffler now reads
+  OpenAI-compatible `prompt_tokens_details.cached_tokens` and normalizes
+  counters to the same disjoint shape as Pi/OpenCode (`total = uncached input
+  + cache read/write + output`) instead of hiding cache hits or double-counting
+  them; reports show total tokens explicitly. Pi's GLM-5.3-Flash lane now sets
+  `thinking: low` because the gateway rejects Pi's default `off`; the invalid
+  six-task lane was rerun and replaced with a documented 6/6 correction.
+
 - **systemprompt: context files deduped by file identity, not path** — a
   symlink farm (the bench harness re-exposes the repo root inside its runtime
   dir) made the same AGENTS.md reachable twice in one ancestor walk, so every

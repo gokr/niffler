@@ -307,9 +307,12 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   if (combo.harness === "niffler-expert") {
     try {
       expert = await shared.niffler.expertMetricsSince(sessionId);
-      usage.input += expert.tokens.prompt;
+      // Expert prompt is OpenAI-style (cached is a subset of prompt), while
+      // benchmark usage counters are disjoint.
+      const expertCached = Math.min(expert.tokens.prompt, expert.tokens.cached);
+      usage.input += expert.tokens.prompt - expertCached;
       usage.output += expert.tokens.completion;
-      usage.cacheRead += expert.tokens.cached;
+      usage.cacheRead += expertCached;
     } catch (e) {
       expert = { active: false, error: String(e) };
     }
