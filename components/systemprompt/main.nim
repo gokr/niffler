@@ -135,6 +135,10 @@ proc main() =
 
       # --- compose: product prompt + wrapped context files -----------------
       var prompt = basePrompt.replace("$ROOT", root)
+      if cwd != root:
+        prompt &= "\n\n<workspace>\nActive workspace: " & cwd &
+          "\nWorkspace-aware tools resolve relative paths from this directory. " &
+          "Keep all task work inside it.\n</workspace>\n"
 
       if files.len > 0:
         prompt &= "\n\n<project_context>\n\n"

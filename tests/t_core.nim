@@ -187,6 +187,34 @@ proc main() =
         si0{"sessionId"}.getStr("") == "si-introspect" and
         si0{"messageCount"}.getInt(0) == 0, $si0)
 
+  # --- conversation workspaces (cwd) ----------------------------------------
+  # A session may pin an immutable workspace inside NIF_ROOT: relative
+  # paths resolve there, escapes and missing dirs are refused, and the
+  # choice is persisted so resumed runners see the same cwd.
+  createDir(root / "ws")
+  let wsRel = call(nc, "core", "session",
+                   %*{"sessionId": "ws-session", "cwd": "ws"}, 120_000)
+  check("session accepts a workspace inside the root",
+        wsRel{"error"} == nil and wsRel{"cwd"}.getStr("") == root / "ws",
+        $wsRel)
+  let wsInfo = call(nc, "core", "session_info",
+                    %*{"sessionId": "ws-session"}, 10_000)
+  check("session_info reports the persisted workspace",
+        wsInfo{"cwd"}.getStr("") == root / "ws", $wsInfo)
+  let wsEscape = call(nc, "core", "session",
+                      %*{"sessionId": "ws-escape", "cwd": ".."}, 120_000)
+  check("session refuses a workspace outside the root",
+        wsEscape{"error"}.getStr("").contains("inside the harness root"),
+        $wsEscape)
+  let wsMissing = call(nc, "core", "session",
+                       %*{"sessionId": "ws-missing", "cwd": "nope"}, 120_000)
+  check("session refuses a nonexistent workspace",
+        wsMissing{"error"}.getStr("").contains("not a directory"), $wsMissing)
+  let wsImmut = call(nc, "core", "session",
+                     %*{"sessionId": "ws-session", "cwd": ""}, 120_000)
+  check("session workspace is immutable",
+        wsImmut{"error"}.getStr("").contains("immutable"), $wsImmut)
+
   # seed messages directly (persistMsg shape) and recount by role
   var seedOk = true
   var seqNo = 0
@@ -254,6 +282,26 @@ proc main() =
         toolMsg{"value"}{"name"}.getStr("") == "session_info" and
         toolMsg{"value"}{"content"}.getStr("").contains("\"sessionId\":\"si-live\""),
         $toolMsg)
+
+  # workspace injection: in a workspace-pinned conversation the runner
+  # rewrites tool args at dispatch — bash receives cwd = the workspace and
+  # the command runs there.
+  let wsNew = call(nc, "core", "session",
+                   %*{"sessionId": "ws-test", "cwd": "ws"}, 120_000)
+  check("workspace session created",
+        wsNew{"error"} == nil and wsNew{"cwd"}.getStr("") == root / "ws",
+        $wsNew)
+  let wsTurn = call(nc, "core", "session",
+                    %*{"sessionId": "ws-test", "content": "go"}, 120_000)
+  check("workspace turn completed",
+        wsTurn{"reply"}.getStr("") == "workspace-done", $wsTurn)
+  let wsToolMsg = call(nc, "store", "get",
+                       %*{"kind": "message", "id": "ws-test:000003"}, 10_000)
+  check("bash ran inside the conversation workspace",
+        wsToolMsg{"error"} == nil and
+        wsToolMsg{"value"}{"name"}.getStr("") == "bash" and
+        wsToolMsg{"value"}{"content"}.getStr("").contains(root / "ws"),
+        $wsToolMsg)
 
   # --- approval gating on a bus without NIF_AUTO_APPROVE --------------------
   # (core 1 must be fully down first: the store is single-writer)

@@ -43,7 +43,9 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
                 maxOutputBytes,
                 hint = "narrow pattern/path/glob for the missing part")}
 
-comp.tool(%*{"timeoutMs": 60000}):
+comp.tool(%*{"timeoutMs": 60000,
+              "workspace": {"pathFields": ["path"],
+                           "defaultPathFields": ["path"]}}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
@@ -60,7 +62,8 @@ comp.tool(%*{"timeoutMs": 60000}):
     ## Prefer narrowing with path/glob over reading large outputs; when
     ## output is truncated the marker says exactly what to narrow.
     ## - pattern: The regex to search for (no shell escaping needed)
-    ## - path: File or directory to search (default "." = harness root)
+    ## - path: File or directory to search (default: the active conversation
+    ##   workspace, else the harness root)
     ## - glob: Only search files matching this glob (e.g. "*.nim"), like rg -g
     ## - context: Lines of context around each match (rg -C)
     ## - case_insensitive: Case-insensitive matching (rg -i)
@@ -86,7 +89,9 @@ comp.tool(%*{"timeoutMs": 60000}):
     let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
     return finish(code, output, min(max(1, max_results), 10_000))
 
-comp.tool(%*{"timeoutMs": 60000}):
+comp.tool(%*{"timeoutMs": 60000,
+              "workspace": {"pathFields": ["path"],
+                           "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
              max_results: int = 500, timeoutMs: int = 30000): JsonNode =
     ## List repository files, sorted, one path per line — the fastest way
@@ -94,7 +99,8 @@ comp.tool(%*{"timeoutMs": 60000}):
     ## .gitignore and skips hidden files unless hidden: true. Prefer this
     ## over bash ls/find for anything inside the harness root; use bash
     ## when you need metadata (sizes, mtimes) or paths outside the root.
-    ## - path: Directory to list (default "." = harness root)
+    ## - path: Directory to list (default: the active conversation
+    ##   workspace, else the harness root)
     ## - glob: Only files matching this glob (e.g. "*.nim")
     ## - hidden: Also include hidden files (.gitignore still applies)
     ## - max_results: Cap on file paths (default 500, max 10000)

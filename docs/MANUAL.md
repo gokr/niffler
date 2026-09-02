@@ -216,7 +216,7 @@ ev.session.turn        {sessionId, turnId, phase: start|done, content?, error?}
 ev.session.assistant   {sessionId, turnId?, content, provider?, model?, context?, usage?}
 ev.session.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
 ev.session.token       {sessionId, turnId?, content, reasoning}  (live token deltas)
-ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error}
+ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error, durationMs?}
 ev.session.advice      {sessionId, turnId?, source, content} an advisory was folded in
 ev.session.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
 ev.session.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
@@ -316,11 +316,19 @@ reports:
   model, catalog and context provenance for interactive clients. See
   [Model catalog](#model-catalog-models).
 
-- `session {sessionId, content?, model?}` accepts a conversation-scoped model
-  override. A model-only call persists and resolves the selection without
-  inference; presence with an empty value clears it. Core stores the choice in
-  the conversation header and pins the resolved model across all tool rounds
-  in a turn.
+- `session {sessionId, content?, model?, thinking?, title?, cwd?}` accepts a
+  conversation-scoped model override. A model-only call persists and resolves
+  the selection without inference; presence with an empty value clears it.
+  Core stores the choice in the conversation header and pins the resolved
+  model across all tool rounds in a turn.
+- `cwd` pins the conversation's **workspace**: an existing directory inside
+  `NIF_ROOT` (relative paths resolve against the root), immutable after
+  creation and persisted in the header so resumed runners resolve context
+  and paths identically. Session runners rewrite path-shaped tool arguments
+  at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read_many
+  resolve relative paths there, and git tools scope at the workspace repo.
+  The system prompt component appends a workspace notice when it differs
+  from the root. The default workspace is `NIF_ROOT` itself.
 - After every chat call core records prompt tokens and uses
   `usage.total_tokens` (or prompt + completion fallback) as the best current
   occupancy. Provider, model, context, occupancy and the override are also
@@ -328,6 +336,10 @@ reports:
   loading the entire transcript.
 - Core emits `ev.session.status` with the resolved provider/model/context and
   current `usedTokens`; clients render `usedTokens / context` directly.
+- Persisted messages carry audit metadata that never reaches the LLM:
+  `createdAt` on every message, `turnId` everywhere, and `startedAt` /
+  `durationMs` on assistant, tool and error records (an `error` record is
+  persisted when the LLM call itself fails, and replay skips error roles).
 - At **75%** of the window, core warns once (terminal log; the UI shows a
   note) — `ev.session.context {warning: true}`.
 - At **90%**, core trims: whole turns are dropped from the front of the

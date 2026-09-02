@@ -3,7 +3,7 @@
 ## The agent's normal path to self-extension: write source files with bash,
 ## compile with builder, spawn with core.
 
-import std/json
+import std/[json, osproc]
 import niffler/sdk
 
 let comp = newComponent("bash", "0.1.0")
@@ -16,8 +16,10 @@ const maxOutputBytes = 200_000
   ## re-run a narrower command (grep/head/tail/wc) instead of silently
   ## losing data.
 
-comp.tool(%*{"approval": "always", "timeoutMs": 60000}):
-  proc bash(command: string, timeoutMs: int = 30000): JsonNode =
+comp.tool(%*{"approval": "always", "timeoutMs": 60000,
+              "workspace": {"cwdField": "cwd"}}):
+  proc bash(command: string, timeoutMs: int = 30000,
+            cwd: string = ""): JsonNode =
     ## Execute a shell command via bash -c. This is your general-purpose
     ## interface to the machine: files, git, builds, tests, processes,
     ## network. Use it for any task no existing tool covers, and prefer it
@@ -42,7 +44,11 @@ comp.tool(%*{"approval": "always", "timeoutMs": 60000}):
     ## typed tools instead of ad-hoc shell parsing.
     ## - command: The shell command line to run (bash -c)
     ## - timeoutMs: Kill the command after this many ms (default 30000)
-    let (code, captured) = runCmd(command, timeoutMs)
+    ## - cwd: Working directory (defaults to the active conversation workspace)
+    let scoped = if cwd.len > 0:
+                   "cd -- " & quoteShell(cwd) & " && " & command
+                 else: command
+    let (code, captured) = runCmd(scoped, timeoutMs)
     var output = captured
     if code == 124:
       output = "[timed out after " & $timeoutMs & "ms]\n" & captured

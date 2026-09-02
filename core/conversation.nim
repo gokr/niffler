@@ -12,7 +12,8 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
+import std/[algorithm, json, monotimes, os, sequtils, strutils, tables, times,
+    unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -58,16 +59,17 @@ const systemPromptTimeoutMs = 8_000
   ## Generous: the component only reads a few files, but a first-call compile
   ## hiccup on a loaded machine should not degrade every conversation.
 
-proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId: string): string =
+proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd: string): string =
   ## One request/reply attempt; "" on timeout or any failure.
   try:
     let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
-      %*{"cwd": ct.root, "sessionId": sessionId}, waitMs)
+      %*{"cwd": cwd, "sessionId": sessionId}, waitMs)
     result = r{"systemPrompt"}.getStr("")
   except CatchableError:
     result = ""
 
-proc resolveSystemPrompt*(ct: CoreTools, sessionId: string): string =
+proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
+                          cwd = ""): string =
   ## The conversation's system prompt: ask the systemprompt component once
   ## per conversation and freeze the answer for the conversation's lifetime
   ## (the prompt prefix must stay stable so providers reuse it). Falls back
@@ -78,9 +80,10 @@ proc resolveSystemPrompt*(ct: CoreTools, sessionId: string): string =
   # Quick probe first: an absent component costs 500ms, not the full
   # timeout. Only when the catalog says the component IS registered do we
   # grant the full budget (covers a boot race or a slow first call).
-  result = askSystemPrompt(ct, 500, sessionId)
+  let promptCwd = if cwd.len > 0: cwd else: ct.root
+  result = askSystemPrompt(ct, 500, sessionId, promptCwd)
   if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
-    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId)
+    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd)
   if result.len > 200_000:
     result = result[0 ..< 200_000] &
       "\n\n[system prompt truncated at 200000 bytes]\n"
@@ -122,6 +125,7 @@ type
   Session* = object
     messages*: seq[JsonNode]
     persister*: Persister
+    workspace*: string       ## absolute, immutable after conversation creation
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high
     exposure*: ToolExposure
@@ -138,16 +142,23 @@ proc newPersister*(ct: CoreTools): Persister =
   except CatchableError:
     discard
 
-proc persistMsg*(p: var Persister, value: JsonNode) =
+proc persistMsg*(p: var Persister, value: JsonNode,
+                 telemetry: JsonNode = nil) =
   ## Persist one message; warn once on failure and once on recovery.
-  ## Ids are zero-padded so store key order == message order.
+  ## Ids are zero-padded so store key order == message order. Storage-only
+  ## telemetry is copied onto the persisted value, never into LLM history.
   inc p.seqNo
-  value["conversationId"] = %p.convId
+  let stored = value.copy()
+  stored["conversationId"] = %p.convId
+  stored["createdAt"] = %epochTime()
+  if telemetry != nil and telemetry.kind == JObject:
+    for key, fieldValue in telemetry:
+      stored[key] = fieldValue
   try:
     discard p.ct.dispatchToolCall("put", %*{
       "kind": "message",
       "id": p.convId & ":" & align($p.seqNo, 6, '0'),
-      "value": value})
+      "value": stored})
     if p.failing:
       p.failing = false
       echo "core: store reachable again — persistence resumed"
@@ -168,6 +179,8 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
       "kind": "message", "idPrefix": convId & ":"})
     for item in resp{"items"}:
       let v = item{"value"}
+      # Turn errors are audit records, not provider message roles.
+      if v{"role"}.getStr("") == "error": continue
       var msg = newJObject()
       msg["role"] = v{"role"}
       msg["content"] = v{"content"}
@@ -509,7 +522,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-              thinkingEffort = "", turnContent = "",
+              thinkingEffort = "", turnContent = "", workspace = "",
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -572,10 +585,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # Cleared when the turn ends — a stale lease is worthless.
   if ct.nested != nil:
     ct.nested.session = sessionId
+    ct.nested.workspace = workspace
     ct.nested.lease = ""
   defer:
     if ct.nested != nil:
       ct.nested.session = ""
+      ct.nested.workspace = ""
       ct.nested.lease = ""
   defer:
     emitTurnDone("aborted")
@@ -611,10 +626,17 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if thinkingEffort.len > 0:
       llmArgs["reasoning_effort"] = %thinkingEffort
     var resp: JsonNode
+    let llmStartedAt = epochTime()
+    let llmStarted = getMonoTime()
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
     except CatchableError as e:
       let msg = "llm error: " & e.msg
+      let durationMs = (getMonoTime() - llmStarted).inMilliseconds
+      p.persistMsg(%*{"role": "error", "content": msg,
+                      "error": "llm", "turnId": turnId},
+                   %*{"startedAt": llmStartedAt,
+                      "durationMs": durationMs})
       turnError = msg
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
@@ -676,7 +698,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       if ctxSize > 0: assistantMsg["context"] = %ctxSize
       if usageObj.len > 0: assistantMsg["usage"] = usageObj
       messages.add(assistantMsg)
-      p.persistMsg(assistantMsg)
+      p.persistMsg(assistantMsg,
+        %*{"turnId": turnId, "startedAt": llmStartedAt,
+           "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
       if content.len > 0 and onEvent != nil:
         var ev = %*{"sessionId": sessionId, "turnId": turnId,
                     "content": content}
@@ -716,10 +740,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
+      let toolStartedAt = epochTime()
+      let toolStarted = getMonoTime()
       if onEvent != nil:
         onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                "callId": id, "phase": "start",
-                               "tool": name, "args": args})
+                               "tool": name, "args": args,
+                               "at": toolStartedAt})
       try:
         let toolResult =
           if parseFailed:
@@ -735,23 +762,33 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           recordDiscovery(ct, sessionId, exposure, toolResult)
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": $toolResult}
+        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
         messages.add(toolMsg)
-        p.persistMsg(toolMsg)
+        p.persistMsg(toolMsg,
+          %*{"turnId": turnId, "startedAt": toolStartedAt,
+             "durationMs": toolDurationMs})
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                  "callId": id, "phase": "done",
                                  "tool": name, "args": args,
-                                 "result": toolResult})
+                                 "result": toolResult,
+                                 "durationMs": toolDurationMs,
+                                 "at": epochTime()})
       except CatchableError as e:
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": "ERROR: " & e.msg}
+        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
         messages.add(toolMsg)
-        p.persistMsg(toolMsg)
+        p.persistMsg(toolMsg,
+          %*{"turnId": turnId, "startedAt": toolStartedAt,
+             "durationMs": toolDurationMs})
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                  "callId": id, "phase": "done",
                                  "tool": name, "args": args,
-                                 "error": e.msg})
+                                 "error": e.msg,
+                                 "durationMs": toolDurationMs,
+                                 "at": epochTime()})
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
@@ -773,6 +810,21 @@ proc deriveTitle(content: string): string =
       return shortTitle(s)
   ""
 
+proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: string] =
+  ## A conversation workspace is immutable and confined to NIF_ROOT. Keeping
+  ## it in the header makes resumed runners resolve context and paths exactly
+  ## as the original turn did.
+  if requested.strip().len == 0:
+    return (true, root, "")
+  let candidate = normalizedPath(
+    if requested.isAbsolute(): requested else: root / requested)
+  let cleanRoot = normalizedPath(root)
+  if candidate != cleanRoot and not candidate.startsWith(cleanRoot & DirSep):
+    return (false, "", "cwd must stay inside the harness root")
+  if not dirExists(candidate):
+    return (false, "", "cwd is not a directory: " & requested)
+  (true, candidate, "")
+
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
@@ -786,13 +838,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasModel = args.kind == JObject and args.hasKey("model")
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
   let hasTitle = args.kind == JObject and args.hasKey("title")
+  let hasCwd = args.kind == JObject and args.hasKey("cwd")
   if sessionId.len == 0 or
-      (content.len == 0 and not hasModel and not hasThinking and not hasTitle):
-    return %*{"error": "session needs sessionId and content, model, thinking or title"}
+      (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
+       not hasCwd):
+    return %*{"error": "session needs sessionId and content, model, thinking, title or cwd"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
+    if hasCwd:
+      let requested = resolveWorkspace(ct.root, args{"cwd"}.getStr(""))
+      if not requested.ok: return %*{"error": requested.error}
+      if requested.path != entry.workspace:
+        return %*{"error": "conversation cwd is immutable (currently " &
+                              entry.workspace & ")"}
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
@@ -805,13 +865,20 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # value verbatim: the prompt prefix must stay stable so providers reuse
     # it, and a component that dies or changes mid-conversation must not
     # rewrite a running conversation's instructions.
+    let requestedCwd = if header{"cwd"}.getStr("").len > 0:
+                         header{"cwd"}.getStr("")
+                       else: args{"cwd"}.getStr("")
+    let workspace = resolveWorkspace(ct.root, requestedCwd)
+    if not workspace.ok: return %*{"error": workspace.error}
+    entry.workspace = workspace.path
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
     if sp.len == 0:
-      sp = resolveSystemPrompt(ct, sessionId)
+      sp = resolveSystemPrompt(ct, sessionId, entry.workspace)
     try:
-      ct.updateConversationHeader(sessionId, %*{"systemPrompt": sp})
+      ct.updateConversationHeader(sessionId,
+        %*{"systemPrompt": sp, "cwd": entry.workspace})
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages = @[%*{"role": "system", "content": sp}]
@@ -853,6 +920,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "sessionId": sessionId,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
+      "cwd": entry.workspace,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed
@@ -895,13 +963,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort, content, turnError)
+                      entry.thinkingEffort, content, entry.workspace, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
                   "modelOverride": entry.modelOverride,
-                  "thinkingEffort": entry.thinkingEffort}
+                  "thinkingEffort": entry.thinkingEffort,
+                  "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError
   return sessionResult

@@ -34,6 +34,11 @@ const
                           # Tuned from the bench: flash judges eagerly
                           # re-judge near-identical frames every 2s.
   ChatTimeoutMs = 120_000
+  JudgeMaxOutputTokens = 512
+    ## The judge answers a constrained-JSON verdict ("silent" or a small
+    ## steer); uncapped flash models rambled to 0.9–1.8k completion tokens
+    ## per judgment. The cap only lowers the provider default and is best-
+    ## effort (gateways may ignore it).
 
 const expertPolicy = """
 You are the Niffler expert: a silent advisory peer watching one working agent
@@ -243,7 +248,8 @@ proc evaluate(comp: Component) =
       %*{"role": "user", "content": "expert-observation (untrusted evidence):\n" & $obs}
     ],
     "sessionId": "expert-" & gTarget,
-    "stream": false}
+    "stream": false,
+    "maxTokens": JudgeMaxOutputTokens}
   if gModel.len > 0: chatArgs["model"] = %gModel
   if gProvider.len > 0: chatArgs["provider"] = %gProvider
   var resp: JsonNode

@@ -147,6 +147,17 @@ function feedbackPrompt(meta, testOut) {
   ].join("\n");
 }
 
+// Fill the {{REPO}} placeholder per harness. Pi/OpenCode run the agent with
+// cwd = the repo; Niffler sessions get the repo as their workspace (cwd), so
+// the prompt points at the working directory instead of an absolute path —
+// relative paths keep every tool inside the workspace by construction.
+function fillPrompt(template, combo, repo) {
+  if (isNifflerHarness(combo.harness)) {
+    return template.replaceAll("{{REPO}}", "your current working directory");
+  }
+  return template.replaceAll("{{REPO}}", repo);
+}
+
 // ---------- adapters registry ----------
 const ADAPTERS = {
   pi: {
@@ -208,7 +219,9 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         break;
       }
       const prompt =
-        r === 1 ? taskPrompt : feedbackPrompt(taskMeta, rounds.at(-1)?.testOutput || "");
+        r === 1
+          ? fillPrompt(taskPrompt, combo, repo)
+          : feedbackPrompt(taskMeta, rounds.at(-1)?.testOutputTail || "");
       const r0 = Date.now();
       let res;
       if (combo.harness === "pi") {
@@ -237,6 +250,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
           sessionId,
           prompt,
           turnTimeoutMs,
+          cwd: shared.niffler.workspaceFor(repo),
         });
       }
       const agentS = (Date.now() - r0) / 1000;
@@ -293,16 +307,27 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   // can be audited after shutdown.
   let usage = zeroUsage();
   let expert = null;
+  let transcript = null;
   try {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
-      const transcript = await shared.niffler.transcript(sessionId);
+      transcript = await shared.niffler.transcript(sessionId);
       writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
       usage = await shared.niffler.usageFromTranscript(sessionId, transcript);
     }
   } catch (e) {
     usage.error = String(e);
+  }
+  // Prompt-size telemetry: the first assistant answer's prompt_tokens is
+  // the cheapest cross-run proxy for system prompt + toolset bloat (see
+  // bench/README.md — keep an eye on the first-call footprint).
+  let firstPromptTokens = null;
+  if (transcript) {
+    const first = transcript.find(
+      (it) => it.value?.role === "assistant" && it.value?.usage,
+    );
+    firstPromptTokens = first?.value?.usage?.prompt_tokens ?? null;
   }
   if (combo.harness === "niffler-expert") {
     try {
@@ -336,6 +361,10 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   const result = {
     runId: RUN_ID,
     startedAt,
+    sessionId,
+    workspace: isNifflerHarness(combo.harness)
+      ? shared.niffler.workspaceFor(repo)
+      : null,
     harness: combo.harness,
     model: combo.model,
     modelLabel: combo.modelCfg.label || combo.model,
@@ -347,6 +376,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     testTimeS: Number(testTimeS.toFixed(1)),
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
+    firstPromptTokens,
     expert,
     diff,
     roundsDetail: rounds,
@@ -414,9 +444,8 @@ async function runCombo(combo, taskIds) {
   try {
     for (const taskId of taskIds) {
       const meta = readJson(path.join(BENCH_DIR, "tasks", taskId, "meta.json"));
-      let prompt = fs.readFileSync(path.join(BENCH_DIR, "tasks", taskId, "prompt.md"), "utf8");
-      prompt = prompt.replaceAll("{{REPO}}", path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "repo"));
-      await runTask(combo, taskId, meta, prompt, shared);
+      const template = fs.readFileSync(path.join(BENCH_DIR, "tasks", taskId, "prompt.md"), "utf8");
+      await runTask(combo, taskId, meta, template, shared);
     }
   } finally {
     if (shared.niffler) {

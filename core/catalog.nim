@@ -150,7 +150,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},
         "thinking": {"type": "string", "enum": ["low", "medium", "high"],
-                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"}
+                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"},
+        "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

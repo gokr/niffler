@@ -87,6 +87,28 @@ editors do not discover dozens of nested repositories).
   `usage`). `NIF_AUTO_APPROVE=1` is set on this private harness because gated
   tools (edit/write) otherwise deny with no human reachable — it affects only
   the bench's throwaway harness, never a developer's.
+  - **Workspace isolation**: the task repo is handed to the session as its
+    immutable `cwd` workspace (mirrored under the harness root via
+    `var/bench`), and the prompt says "your current working directory"
+    instead of an absolute path — relative paths stay inside the workspace
+    by construction, so no tool can wander into the harness root. Core
+    resolves path-shaped tool args against that workspace at dispatch
+    (bash `cd`, edit/grep/read_many paths, git `repo`).
+  - **No prompt-context asymmetry**: Niffler's own `AGENTS.md` is excluded
+    from the bench harness root, so the system prompt carries no contributor
+    guidance other harnesses don't get.
+  - **Errors are errors**: a parsed `turnError` (transport/LLM failure inside
+    the turn) is reported as a failed round, cli-level transport failures get
+    a bounded 3-attempt retry, and feedback rounds read the stored
+    `testOutputTail` (previously the feedback prompt silently got an empty
+    string). Turn-failure records are persisted with `role: "error"` and
+    skipped when replaying history.
+  - **Telemetry**: every persisted message carries `createdAt`, `turnId` and
+    (`startedAt`, `durationMs`) for assistant/tool/error records — the
+    exported `transcript.json` doubles as the timing event stream. Each
+    `result.json` records `sessionId`, the workspace path and
+    `firstPromptTokens` (prompt tokens of the first assistant answer — the
+    cheapest cross-run proxy for system-prompt + toolset footprint).
 - **niffler-expert** — the same private Niffler setup, but the runner waits for
   the expert component and calls `expert_follow` with the exact task session id
   before the first turn. The result records judgment/steer/acceptance counters,
@@ -118,7 +140,8 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
 - Each harness keeps its **own** system prompt and tool loop — that is the
   thing being measured (harness overhead included). pi's default system prompt
   is ~1.5k tokens, opencode's ~14k, Niffler's sits in between; expect that to
-  show up directly in per-round input tokens.
+  show up directly in per-round input tokens. `firstPromptTokens` in each
+  Niffler result tracks the first-call footprint over time.
 - Reasoning/thinking is left at each harness's default (config knobs exist in
   `config.json` / the pi adapter for `--thinking`).
 - Token totals are provider-reported sums over all LLM calls of all rounds.

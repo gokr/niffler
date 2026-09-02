@@ -73,6 +73,12 @@ comp.tool(%*{"hidden": true}):
         # inject its own id (t_core asserts the tool result carries it)
         return toolCall("t1", "session_info", %*{})
       return %*{"content": "introspect-done"}
+    if sessionId == "ws-test":
+      if stage == 0:
+        # workspace injection: bash gets cwd=<conversation workspace>
+        # injected by the runner (t_core asserts the tool ran there)
+        return toolCall("t1", "bash", %*{"command": "pwd"})
+      return %*{"content": "workspace-done"}
     if sessionId == "fab-test":
       case stage
       of 0:
