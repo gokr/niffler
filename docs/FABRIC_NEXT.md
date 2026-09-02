@@ -1,7 +1,9 @@
 # Fabric Reliability and Typed Wrappers Plan
 
-Status: in progress as a follow-up to the shipped Fabric implementation in
-`docs/research/FABRIC.md`.
+Status: complete. Every item in the progress checklist below is implemented,
+tested, and merged to main. What remains is a short list of explicitly
+deferred follow-ups (see "Deferred follow-ups" at the bottom) — none of them
+block the shipped mechanism.
 
 This plan keeps Fabric's current architecture: a disposable Nim guest owns
 deterministic intra-turn control flow, while every declared effect crosses the
@@ -62,7 +64,7 @@ replacement for the normal agent loop.
 | Large intermediate results that should not enter model context | Fabric |
 | Per-step interpretation or uncertain exploration | `agent_run` |
 | Deterministic evidence collection followed by judgment | Fabric with a final `agent_run` |
-| Independent parallel research or a multi-agent council | Later Fabric concurrency and durable agents |
+| Independent parallel research or a multi-agent council | `batch(...)` in one program, or durable `agent_spawn` jobs |
 
 Programs should:
 
@@ -374,8 +376,10 @@ String enums remain `string` initially, with allowed values in generated API
 documentation. Host validation enforces the enum. Nim enums can be added later
 when sanitization and exact string round-tripping are specified.
 
-Wrappers return `JsonNode` in this phase because Niffler's registration
-contract currently publishes input schemas only.
+Wrappers return `JsonNode` unless the tool declares a scalar `outputSchema`,
+in which case the return value is Nim-typed (`string`, `int`, `float`,
+`bool`, `seq[T]`). Objects and unsupported shapes stay `JsonNode`; host
+validation remains authoritative either way.
 
 ### Names and collisions
 
@@ -468,15 +472,12 @@ language. Nim, Go, and TypeScript components all register the same schema, so
 their input wrappers are equally straightforward. Manually weak schemas simply
 produce weaker or `JsonNode` arguments.
 
-Output typing is separate and language-sensitive because the catalog currently
-has no output schema. Add it later as an optional registration field:
-
-1. Keep all initial wrapper results as `JsonNode`.
-2. Extend registration with optional `outputSchema`.
-3. Let the Nim macro derive scalar and explicitly typed return schemas where
-   possible.
-4. Let Go and TypeScript SDKs accept explicit output schemas.
-5. Generate typed guest results only when a trustworthy output schema exists.
+Output typing is shipped for Nim guests: a component may add a scalar
+`outputSchema` to its registered schema (it flows through catalog
+normalization untouched), and `fabricmeta` then types the wrapper's return
+value (`string`, `int`, `float`, `bool`, `seq[T]`) via `json.to`. Without a
+supported scalar `outputSchema`, results remain `JsonNode`. Go and TypeScript
+SDKs may accept explicit output schemas later.
 
 ## Phase 3: model teaching and examples
 
@@ -526,6 +527,11 @@ duplicated as similar strings in test-only components.
 
 ## Phase 4: bounded concurrent calls
 
+Shipped as the host-backed `batch(...)` primitive (see progress checklist).
+Deferred delta: effect declarations and conflict detection — the section
+below documents the shipped rules; concurrent mutations to one target are
+still not prevented (reads are the intended use).
+
 Independent reads benefit from parallelism, but guest-level async is not
 required initially. Add a host-backed batch primitive:
 
@@ -557,6 +563,12 @@ required for a useful read-only batch primitive.
 
 ## Phase 5: durable agent jobs
 
+Shipped as `agent_spawn`/`agent_status`/`agent_wait`/`agent_stop`/
+`agent_steer` over store-backed records with terminal events. Deferred
+delta: per-job budgets, process-level stop cancellation, restart recovery,
+tool allowlists, structured output, working directories, and worktree
+isolation (see "Deferred follow-ups").
+
 Synchronous `agent_run` remains useful for one bounded judgment task, but
 background work and steering require worker processes plus durable state.
 
@@ -585,6 +597,11 @@ Fabric can then implement bounded councils, map/reduce research, and verifier
 workflows without making those special core primitives.
 
 ## Phase 6: observability and retention
+
+Shipped for the bus side: the correlated events below are emitted with
+bounded metadata and the console renders them live. Deferred delta: a
+Fabric activity card in the desktop UI and durable retention/cleanup for
+traces and events.
 
 Emit correlated lifecycle events:
 
@@ -686,3 +703,31 @@ This order first makes the shipped mechanism dependable, then exploits Nim's
 runtime metaprogramming for a small and natural typed API, and only afterward
 adds the concurrency and durable orchestration features that increase the
 system's operational complexity.
+
+## Deferred follow-ups
+
+The consolidated backlog of explicitly deferred work (in priority order).
+`docs/research/FABRIC.md` § "Not shipped" mirrors this list.
+
+1. **Cancellation.** `agent_stop` only marks a job `stopping`; it neither
+   kills the child runner nor aborts its LLM request. A Fabric turn that is
+   abandoned still runs its guest to the deadline, and already-dispatched
+   nested calls are not cancelled (NATS request/reply has no cancel
+   semantics; kill-on-timeout is the only stop today).
+2. **Durable-agent hardening.** Restart recovery for jobs whose completion
+   tap was missed (they surface as "running"; status shows the child
+   runner's retirement), per-job call/token/time budgets, tool allowlists,
+   reasoning selection, structured-output schemas, canonical working
+   directories, and optional isolated git worktrees for spawned children.
+3. **Batch effect declarations.** Concurrent mutations to one target are
+   not prevented; reads are the intended use. Effect declarations
+   (`x-harness.effect`) plus per-target serialization would make mutation
+   batches safe by construction.
+4. **Observability and retention.** A Fabric/agent activity card in the
+   desktop UI (events are on the bus; the console renders them); retention
+   limits and cleanup for logs and traces; lineage-record cleanup once a
+   conversation deletion surface exists. Artifact expiry is currently lazy
+   (enforced when another oversized artifact is stored, not on a timer).
+5. **Sandboxing.** A separate milestone if and when untrusted guests are
+   required (restricted VM, WASM, or OS isolation). Today the guest is
+   trusted code in `bash`'s trust class and approval is the boundary.

@@ -1,9 +1,10 @@
-## Example 2 — sequential fan-out with aggregation.
+## Example 2 — fan-out with aggregation (deliberately sequential).
 ##
 ## The loop lives in the program: N tool calls, one turn, one return value.
-## The LLM never re-enters the conversation per item. (Calls are sequential
-## until concurrent bridge calls exist — still far cheaper than N round-trips
-## through the model.)
+## The LLM never re-enters the conversation per item. (This example calls
+## one at a time; for independent calls that may overlap on the bus, use
+## `batch(...)` — see retry-loop.nim or the t_fabric batch turn. Either way
+## it is far cheaper than N round-trips through the model.)
 ##
 ## Run by the model as one fabric tool call:
 ##   tools = ["bash"], code = <the program below>,
