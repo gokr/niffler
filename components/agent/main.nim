@@ -104,10 +104,11 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
-proc childSessArgs(child, task, model: string): JsonNode =
-  ## The child session call: task preamble, optional model override, and
-  ## the conversation's pluggable constitution (systemprompt component,
-  ## best effort — the runner's own fallback covers a missing component).
+proc childSessArgs(child, task, model, thinking: string): JsonNode =
+  ## The child session call: task preamble, optional model override and
+  ## reasoning effort, and the conversation's pluggable constitution
+  ## (systemprompt component, best effort — the runner's own fallback covers
+  ## a missing component).
   result = %*{"sessionId": child, "content": taskPreamble & task}
   try:
     let sp = comp.request("systemprompt", "systemprompt",
@@ -120,6 +121,8 @@ proc childSessArgs(child, task, model: string): JsonNode =
     discard
   if model.len > 0:
     result["model"] = %model
+  if thinking.len > 0:
+    result["thinking"] = %thinking
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -185,6 +188,22 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
   let child = value{"sessionId"}.getStr("")
   if child.len == 0: return nil
   if runnerAlive(child):
+    if status == "running" and jobId notin stopArmed and
+        value{"budgetMs"}.getInt(0) > 0 and
+        (epochTime() - value{"startedAt"}.getFloat(0)) * 1000.0 >
+            value{"budgetMs"}.getFloat(0):
+      # Time budget exhausted (enforced lazily on observation): cancel the
+      # turn with agent_stop semantics; the completion tap — or a later
+      # poll after the child dies — terminalizes the record as "stopped".
+      stopArmed.incl(jobId)
+      value["status"] = %"stopping"
+      try:
+        discard comp.request("store", "put",
+          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+      except CatchableError:
+        return nil
+      publishCancel(comp, child)
+      return value
     if status == "stopping" and jobId notin stopArmed:
       # the original stop may have been lost while this component was down;
       # re-arm exactly once per incarnation (never per poll)
@@ -230,6 +249,8 @@ let runSchema = toolSchema(%*{
            "description": "Self-contained task for the subagent. It starts with a fresh context — include everything it needs (paths, goals, constraints), not a continuation of this conversation."},
   "model": {"type": "string",
             "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
+  "thinking": {"type": "string",
+               "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"}
 }, required = @["task"],
@@ -250,7 +271,8 @@ discard comp.tool("agent_run", runSchema,
       return errResult(prep.error)
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr("")),
+      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr("")),
       originalCaller(toolArgs))
     let resp = comp.requestEnvelope(prep.subject, env, timeoutMs)
     if resp.kind == ekError:
@@ -268,9 +290,13 @@ let spawnSchema = toolSchema(%*{
   "task": {"type": "string",
            "description": "Self-contained task for the subagent (same contract as agent_run)"},
   "model": {"type": "string",
-            "description": "Optional model override for the subagent"}
+            "description": "Optional model override for the subagent"},
+  "thinking": {"type": "string",
+               "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "timeoutMs": {"type": "integer",
+                "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
 }, required = @["task"],
-   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop marks it for stopping. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
+   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop cancels it for real. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                               "sessionContext": true, "noSpawn": true}
 discard comp.tool("agent_spawn", spawnSchema,
@@ -288,18 +314,22 @@ discard comp.tool("agent_spawn", spawnSchema,
     let jobId = "job-" & newId()
     # durable record BEFORE the fire-and-forget publish, so a completion
     # that races the spawn cannot arrive at an unknown job
+    var record = %*{"sessionId": prep.child, "parent": parentSession,
+                    "status": "running",
+                    "task": task[0 ..< min(task.len, 200)],
+                    "startedAt": epochTime()}
+    let budgetMs = toolArgs{"timeoutMs"}.getInt(0)
+    if budgetMs > 0:
+      record["budgetMs"] = %budgetMs
     try:
       discard comp.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId,
-           "value": %*{"sessionId": prep.child, "parent": parentSession,
-                       "status": "running",
-                       "task": task[0 ..< min(task.len, 200)],
-                       "startedAt": epochTime()}}, 10_000)
+        %*{"kind": "agentjob", "id": jobId, "value": record}, 10_000)
     except CatchableError as e:
       return errResult("cannot record job (store unreachable): " & e.msg,
                        extra = %*{"sessionId": prep.child})
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr("")),
+      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr("")),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId
@@ -462,6 +492,9 @@ discard comp.tap("_INBOX.agentjob.>",
         value["parent"] = prior{"parent"}
         value["task"] = prior{"task"}
         value["startedAt"] = prior{"startedAt"}
+        # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+        if prior{"budgetMs"} != nil:
+          value["budgetMs"] = prior{"budgetMs"}
         if prior{"status"}.getStr("") == "stopping":
           value["status"] = %"stopped"
       discard c.request("store", "put",

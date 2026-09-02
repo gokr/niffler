@@ -332,6 +332,39 @@ proc main() =
         deadStatus{"status"}.getStr("") == "failed" and
         deadStatus{"error"}.getStr("").contains("interrupted"), $deadStatus)
 
+  # --- reasoning-effort passthrough: the child's LLM sees what was sent ----
+  let thinkParent = "agt-think"
+  discard call(nc, "core", "session",
+               %*{"sessionId": thinkParent, "content": "go"}, 120_000)
+  var thinkReply = ""
+  for i in 1 .. 6:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": thinkParent & ":" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    let content = m{"value"}{"content"}.getStr("")
+    if content.contains("thinking:"): thinkReply = content
+  check("thinking effort reaches the child's LLM",
+        thinkReply.contains("thinking:high"), thinkReply)
+
+  # --- job time budget: exceeded budgets cancel with agent_stop semantics --
+  let budgetParent = "agt-budget"
+  discard call(nc, "core", "session",
+               %*{"sessionId": budgetParent, "content": "go"}, 120_000)
+  let budgetJob = fetchJobId(budgetParent)
+  check("budget spawn returned a jobId", budgetJob.startsWith("job-"),
+        budgetJob)
+  # budget is 2000ms; observe lazily at ~3.5s, then wait out the child turn
+  sleep(3500)
+  let budgetStatus = call(nc, "agent", "agent_status",
+                          %*{"jobId": budgetJob}, 15_000)
+  check("exceeded budget flips the job to stopping",
+        budgetStatus{"status"}.getStr("") == "stopping", $budgetStatus)
+  let budgetWait = call(nc, "agent", "agent_wait",
+                        %*{"jobId": budgetJob, "timeoutMs": 30_000}, 60_000)
+  check("budget-cancelled job terminates as stopped",
+        budgetWait{"status"}.getStr("") == "stopped", $budgetWait)
+
   report("agent")
 
 main()
