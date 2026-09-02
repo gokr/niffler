@@ -15,11 +15,18 @@
 ## - agent_status: non-blocking durable lookup.
 ## - agent_wait: poll the durable record until terminal (for workflows
 ##   that need the result; blocks this component's pump, like agent_run).
-## - agent_stop: mark a running job "stopping"; the terminal record says
-##   "stopped" when the child turn ends (the process itself is not killed —
-##   kill-on-timeout still bounds a runaway turn).
+## - agent_stop: cancel a running job for real — publish llm.cancel.<child>
+##   (aborts an in-flight streaming LLM request) and the runner's
+##   svc.session.<child>.cancel channel (ends the turn between rounds).
+##   The terminal record says "stopped" (the reply, if any, is kept).
 ## - agent_steer: fire-and-forget injection into a live child turn
 ##   (meaningful only for spawned jobs — agent_run blocks the caller).
+##
+## Restart recovery: non-terminal job records are reconciled lazily — on
+## boot and on every status/wait — against the live catalog and the child
+## transcript: a completed turn whose completion tap was missed synthesizes
+## the terminal record from the transcript; a turn whose runner died is
+## recorded as interrupted.
 ##
 ## Depth rule: a session spawned as a child (sessionmeta.parent set) cannot
 ## spawn children itself. Lineage persistence and reads fail closed. Child
@@ -27,7 +34,7 @@
 ## the original interactive caller. Idle child runners retire themselves
 ## (NIF_RUNNER_IDLE_S) and re-ensure on demand.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, os, sets, strutils, tables, times]
 import natswrapper
 import niffler/sdk
 
@@ -43,6 +50,17 @@ proc sanitizeSessionId(s: string): string =
   ## session ids become NATS subject tokens, keep alnum/-/_.
   for c in s:
     result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
+
+proc publishCancel(c: Component, child: string) =
+  ## Two-channel turn cancellation: the llm side-channel aborts an in-flight
+  ## streaming request; a __cancel control message on the proven steer
+  ## channel ends the turn between rounds (the runner's pumpSteer raises the
+  ## flag runTurn checks before the next LLM round — riding the steer
+  ## subscription rather than a dedicated one keeps the connection's pump
+  ## surface unchanged).
+  c.emit("llm.cancel." & sanitizeSessionId(child), %*{"sessionId": child})
+  c.emit("svc.session." & sanitizeSessionId(child) & ".steer",
+         %*{"__cancel": true})
 
 proc hasParent(sessionId: string): bool =
   ## True when the session was itself spawned as a subagent child. Raises
@@ -108,6 +126,103 @@ proc originalCaller(toolArgs: JsonNode): string =
   ## (injected as private context by the dispatch gate), not to this
   ## component — which may be blocked in a handler and could not answer.
   toolArgs{"__session"}{"caller"}.getStr("agent")
+
+var stopArmed = initHashSet[string]()
+  ## Jobs whose stop cancellation was already (re-)published. A stop request
+  ## is re-armed exactly once per component incarnation — the first time a
+  ## resolveStale sees the job stopping with its runner alive (the original
+  ## publish may have been lost while this component was down). Re-arming on
+  ## every status/wait poll would flood the child's cancel channel.
+
+# --- restart recovery --------------------------------------------------------
+# Non-terminal job records must not lie: after this component restarts (or a
+# harness restart killed a child runner), status/wait resolve the record
+# against the live catalog and the child transcript.
+
+proc runnerAlive(sessionId: string): bool =
+  ## Presence of the child's session runner in the live catalog. Any failure
+  ## reads as absent: resolution prefers an honest terminal record over a
+  ## job stuck "running" forever.
+  try:
+    let snap = comp.request("core", "catalog", %*{"op": "components"}, 10_000)
+    let comps = snap{"components"}
+    if comps == nil: return false
+    return comps{"session-" & sanitizeSessionId(sessionId)} != nil
+  except CatchableError:
+    return false
+
+proc lastTranscript(sessionId: string): tuple[role, content: string] =
+  ## Last persisted message of the child conversation (best effort: any
+  ## store failure returns empty, which reads as "no evidence").
+  try:
+    let lst = comp.request("store", "list",
+      %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000},
+      10_000)
+    let items = lst{"items"}
+    if items == nil: return ("", "")
+    var last: JsonNode = nil
+    for item in items:
+      if item{"id"}.getStr("").startsWith(sessionId & ":"):
+        last = item{"value"}
+    if last != nil:
+      return (last{"role"}.getStr(""), last{"content"}.getStr(""))
+  except CatchableError:
+    discard
+  return ("", "")
+
+proc resolveStale(jobId: string, value: JsonNode): JsonNode =
+  ## Reconcile one non-terminal job record. Rules:
+  ## - runner alive: the turn may still complete (the tap will catch it);
+  ##   only re-publish a lost stop request for "stopping" jobs. No change.
+  ## - runner gone + transcript ends with an assistant reply: the turn
+  ##   completed while this component was down (completion tap missed) —
+  ##   synthesize the terminal record from the transcript.
+  ## - runner gone without a final reply: the turn died with the runner —
+  ##   record it as interrupted (stopping jobs read "stopped", not failed).
+  ## Returns the updated value, or nil when the record was left alone.
+  let status = value{"status"}.getStr("running")
+  if status != "running" and status != "stopping": return nil
+  let child = value{"sessionId"}.getStr("")
+  if child.len == 0: return nil
+  if runnerAlive(child):
+    if status == "stopping" and jobId notin stopArmed:
+      # the original stop may have been lost while this component was down;
+      # re-arm exactly once per incarnation (never per poll)
+      stopArmed.incl(jobId)
+      publishCancel(comp, child)
+    return nil
+  var updated = value
+  let (role, content) = lastTranscript(child)
+  if role == "assistant":
+    updated["status"] = %(if status == "stopping": "stopped" else: "done")
+    updated["reply"] = %content
+  else:
+    updated["status"] = %(if status == "stopping": "stopped" else: "failed")
+    updated["error"] = %"interrupted — child runner gone before completion"
+  updated["endedAt"] = %epochTime()
+  try:
+    discard comp.request("store", "put",
+      %*{"kind": "agentjob", "id": jobId, "value": updated}, 10_000)
+  except CatchableError:
+    return nil  # cannot persist — leave the record alone rather than lie
+  comp.emit("ev.agent.done", %*{"jobId": jobId,
+                                "sessionId": updated{"sessionId"},
+                                "status": updated{"status"}})
+  return updated
+
+proc reconcileAll() =
+  ## Boot-time pass over every non-terminal job (best effort).
+  try:
+    let lst = comp.request("store", "list",
+      %*{"kind": "agentjob", "limit": 1000}, 10_000)
+    let items = lst{"items"}
+    if items == nil: return
+    for item in items:
+      let jobId = item{"id"}.getStr("")
+      if jobId.len == 0: continue
+      discard resolveStale(jobId, item{"value"})
+  except CatchableError:
+    discard
 
 # low-level registration: the handler needs the raw __session injection
 let runSchema = toolSchema(%*{
@@ -220,7 +335,12 @@ discard comp.tool("agent_status", statusSchema,
       let job = c.request("store", "get",
         %*{"kind": "agentjob", "id": jobId}, 10_000)
       if job{"ok"}.getBool(false):
-        return okResult(job{"value"})
+        var value = job{"value"}
+        # lazy restart recovery: a non-terminal record is reconciled against
+        # the live catalog and the child transcript before it is reported
+        let resolved = resolveStale(jobId, value)
+        if resolved != nil: value = resolved
+        return okResult(value)
       return errResult("unknown job '" & jobId & "'", code = "not-found")
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
@@ -251,12 +371,18 @@ discard comp.tool("agent_wait", waitSchema,
         return errResult("cannot read job (store unreachable): " & e.msg)
       if not job{"ok"}.getBool(false):
         return errResult("unknown job '" & jobId & "'", code = "not-found")
-      let value = job{"value"}
+      var value = job{"value"}
+      # lazy restart recovery: same reconciliation as agent_status, so a
+      # wait on a stale record resolves it instead of blocking forever
+      let resolved = resolveStale(jobId, value)
+      if resolved != nil: value = resolved
       let status = value{"status"}.getStr("running")
-      if status != "running":
+      # "stopping" is NOT terminal: keep waiting until the completion tap
+      # (or lazy recovery) lands done/failed/stopped
+      if status != "running" and status != "stopping":
         return okResult(value)
       if epochTime() >= deadline:
-        return errResult("job '" & jobId & "' still running after " &
+        return errResult("job '" & jobId & "' still " & status & " after " &
           $timeoutMs & "ms — poll agent_status instead of waiting again",
           code = "timeout", extra = %*{"jobId": jobId, "status": status})
       sleep(250))
@@ -264,7 +390,7 @@ discard comp.tool("agent_wait", waitSchema,
 let stopSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
-   description = "Mark a running background subagent job for stopping. The child turn is not killed outright — it ends when the model finishes or the turn times out, and the job's terminal record then says \"stopped\" (the reply, if any, is kept). Re-calling is harmless.")
+   description = "Cancel a running background subagent job: aborts its in-flight LLM request and ends the child turn (between tool rounds, promptly after the current tool returns). The job's terminal record says \"stopped\" — the reply, if any, is kept. Re-calling is harmless; stopping an already-terminal job just returns the record.")
 discard comp.tool("agent_stop", stopSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -277,13 +403,16 @@ discard comp.tool("agent_stop", stopSchema,
         return errResult("unknown job '" & jobId & "'", code = "not-found")
       let value = job{"value"}
       let status = value{"status"}.getStr("running")
-      if status != "running":
+      if status != "running" and status != "stopping":
         return okResult(value)
-      value["status"] = %"stopping"
-      discard c.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
-      return okResult(%*{"status": "stopping", "sessionId":
-                          value{"sessionId"}.getStr("")})
+      if status != "stopping":
+        value["status"] = %"stopping"
+        discard c.request("store", "put",
+          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+      let child = value{"sessionId"}.getStr("")
+      if child.len > 0:
+        publishCancel(c, child)
+      return okResult(%*{"status": "stopping", "sessionId": child})
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
@@ -322,7 +451,10 @@ discard comp.tap("_INBOX.agentjob.>",
     else:
       value["reply"] = %r.args{"reply"}.getStr("")
     try:
-      # preserve spawn-time fields and honor a stop request
+      # preserve spawn-time fields and honor a stop request: any terminal
+      # state while a stop was requested reads "stopped" — the turn may end
+      # via llm.cancel (an error) or between rounds (clean), and the reply,
+      # if one was produced, is kept either way
       let job = c.request("store", "get",
         %*{"kind": "agentjob", "id": jobId}, 10_000)
       if job{"ok"}.getBool(false):
@@ -330,7 +462,7 @@ discard comp.tap("_INBOX.agentjob.>",
         value["parent"] = prior{"parent"}
         value["task"] = prior{"task"}
         value["startedAt"] = prior{"startedAt"}
-        if prior{"status"}.getStr("") == "stopping" and status == "done":
+        if prior{"status"}.getStr("") == "stopping":
           value["status"] = %"stopped"
       discard c.request("store", "put",
         %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
@@ -340,4 +472,5 @@ discard comp.tap("_INBOX.agentjob.>",
                                 "sessionId": value{"sessionId"},
                                 "status": value{"status"}}))
 
+reconcileAll()
 comp.run()

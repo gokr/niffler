@@ -43,6 +43,14 @@ comp.tool(%*{"hidden": true}):
       # must report it as a failure, not a successful text reply
       if messages != nil and ($messages).contains("FORCE_LLM_FAILURE"):
         raise newException(CatchableError, "llm exploded")
+      # slow child for the stop test: the stub chat itself sleeps — the
+      # stop must land while this LLM round is in flight (between-rounds
+      # cancel checks at the next round top and at the would-stop point)
+      if messages != nil and ($messages).contains("SLOW_CHILD"):
+        if stage == 0:
+          sleep(3000)
+          return %*{"content": "slow-done"}
+        return %*{"content": "slow-done"}
       case stage
       of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
       of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
@@ -66,6 +74,13 @@ comp.tool(%*{"hidden": true}):
       if stage == 0:
         return toolCall("t1", "agent_spawn",
                         %*{"task": "FORCE_LLM_FAILURE then report"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-stop":
+      if stage == 0:
+        # spawn a child whose turn takes a deliberate tool round: the stop
+        # test cancels it while that round runs (between-rounds cancel)
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_CHILD take your time"})
       return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:
