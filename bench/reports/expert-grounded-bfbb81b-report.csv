@@ -1,0 +1,4 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens
+deepseek-v4-flash,niffler-expert,t01-roman,pass,26.5,26.4,1,81234,18170,2520,60544,0,0.000000,13,1,true,2,2,0,0,0,0,0,4195,0,1833
+deepseek-v4-flash,niffler-expert,t04-csvbugfix,pass,21.6,21.5,1,101238,9969,2181,89088,0,0.000000,3,3,true,2,2,0,0,0,0,0,5316,3328,928
+deepseek-v4-flash,niffler-expert,t06-stackvm,pass,122.5,122.3,1,208518,15283,16531,176704,0,0.000000,158,52,true,2,2,0,0,0,0,0,4186,3520,1199
