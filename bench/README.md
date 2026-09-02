@@ -29,7 +29,7 @@ var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wi
 
 ## Tasks
 
-Five self-contained repos, escalating difficulty, all "make the visible test
+Six self-contained repos, escalating difficulty, all "make the visible test
 suite pass" (like SWE-bench's FAIL_TO_PASS, but lightweight and
 dependency-free so every harness starts equal):
 
@@ -40,6 +40,7 @@ dependency-free so every harness starts equal):
 | t03-ringbuffer | Nim | implement data structure to spec |
 | t04-csvbugfix | Python | debug seeded bugs (mean off-by-one, string min/max) |
 | t05-todostore | Node | implement class from API contract |
+| t06-stackvm | Go | debug + complete a stack VM and two-pass assembler |
 
 Every repo ships its tests + `./test.sh` (exit 0 = green) in the base commit;
 all are red at `base` and verified green with a reference solution. The same
@@ -55,7 +56,7 @@ node bench/run.mjs --harness pi --model deepseek-v4-flash --task t01-roman
 node bench/run.mjs --harness niffler,niffler-expert --model all --task all \
   --jobs 2 --run-id niffler-advisory
 
-# everything (3 harnesses × 2 models × 5 tasks), 2 lanes
+# everything (3 harnesses × 2 models × 6 tasks), 2 lanes
 node bench/run.mjs --all --jobs 2 --run-id pilot1
 
 # report

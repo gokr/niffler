@@ -1,0 +1,2 @@
+{ "id": "t06-stackvm", "title": "Debug and complete a stack VM + assembler (Go)", "language": "go",
+  "protected": ["test.sh", "vm_test.go", "README.md"] }
