@@ -395,16 +395,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`expert` judgment economics tuned from the first bench data** —
-  `EvalCooldownMs` 2000 → 8000 (a flash judge re-judged near-identical frames
-  every 2s: 5–9 calls per short task, all silent) and the policy now pins the
-  judge to harness usage only: task-strategy advice (what to implement, which
-  file to edit, when to run tests) and "read X" nudges must return silent —
-  the cheap synthetic judge steered 12×/10 bench tasks with exactly that
-  generic content, inflating worker tokens for no gain. `expert_follow` also
-  gained a `provider` override (NIF_LLM_PROVIDERS nickname or stored
-  provider) so judgments can run on a cheap flash model off the worker's
-  bill; `expert_status` reports it.
+- **`expert` judgment economics tuned from bench evidence** — the initial
+  pass raised `EvalCooldownMs` 2000 → 8000 and pinned policy to harness usage,
+  but the six-task matrix still spent 32–40 judgments per model lane and
+  emitted 14 mostly generic "read/run tests" steers. The scheduler now waits
+  for an actual tool-call start (completion enriches the same evidence; this
+  preserves time to advise while the tool runs) or ≥80% context pressure,
+  caps each turn at two judgments, and stops after accepted advice; validation requires
+  a non-empty live `tools` array whose exact names appear in backticks in the
+  message. Task-strategy examples are explicitly always-silent.
+  `expert_follow` also gained a `provider` override (`NIF_LLM_PROVIDERS`
+  nickname or stored provider) so judgments can run on a cheap flash model
+  off the worker's bill; `expert_status` reports it.
 
 - **`tool` macro accepts an x-harness argument** — `comp.tool(%*{"approval":
   "always", "timeoutMs": 60000}): proc ...` replaces the ~45

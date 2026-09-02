@@ -178,11 +178,16 @@ unless it survives explicit size and redaction rules.
 
 An expert evaluation may be scheduled after:
 
-- the working turn starts;
-- a working model round produces assistant text or reasoning;
-- a tool call completes or fails;
-- context pressure changes;
+- a tool call starts (tool + arguments are already real usage evidence), with
+  completion enriching the same observation;
+- context pressure crosses 80%;
 - events accumulated while the previous expert inference was running.
+
+The implemented scheduler deliberately does **not** judge at turn start (a
+request alone is not evidence of harness misuse), begins on the first actual
+tool call so advice can arrive while it runs, caps inference at two judgments
+per turn, and stops after accepted advice. This is the token budget,
+not a heuristic about what advice to give.
 
 These are inference scheduling points, not rules about what advice to give. The
 expert model receives the observation and makes that judgment.
@@ -253,9 +258,10 @@ The fixed policy tells the model:
   style preference.
 
 The component validates the response. Unknown actions, malformed JSON,
-oversized messages, non-high-confidence steers, any non-live/non-hidden name in
-the structured `tools` array, model errors, and timeouts all become silence.
-This validation is delivery policy, not a behavioral heuristic.
+oversized messages, non-high-confidence steers, a missing/empty `tools` array,
+any non-live/non-hidden tool, a tool not named verbatim in backticks in the
+message, model errors, and timeouts all become silence. This validation is
+delivery policy, not a behavioral heuristic.
 
 Observations and model judgments are not appended to subsequent expert calls.
 Every call starts again with the identical system prefix and one current
