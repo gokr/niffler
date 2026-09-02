@@ -10,3 +10,5 @@ shipped. Not operating documentation — for that, see
 | [FABRIC.md](FABRIC.md) | Full design of the `fabric` programmable tool calling and `agent` subagents: architecture, threat model, shipped scope, tests, deferred work |
 | [FABRIC_FEEDBACK.md](FABRIC_FEEDBACK.md) | Historical: the external review that reshaped the fabric design before it shipped (its findings are resolved in FABRIC.md) |
 | [MCP.md](MCP.md) | Plan (not shipped): MCP client support — external MCP servers contribute tools as ordinary bus tools |
+| [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md) | Findings: what pi (github.com/earendil-works/pi) does that Niffler lacks on token consumption and wall-clock execution, plus the concurrency deep-dive (NATS fan-out vs. Nim task pools) |
+| [PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) | Plan: ordered improvements (parallel tool fan-out → LLM compaction → retry/cache/accounting → session tree), with wire-spec implications and effort |
