@@ -252,8 +252,9 @@ export class NifflerHarness {
     };
   }
 
-  // Sum token usage over the conversation transcript in the store.
-  async usageFromTranscript(sessionId) {
+  // Export the full persisted conversation so a completed benchmark can be
+  // audited after its private harness and store have stopped.
+  async transcript(sessionId) {
     const cli = path.join(this.binDir, "cli");
     const res = await run(
       cli,
@@ -265,13 +266,17 @@ export class NifflerHarness {
       ],
       { cwd: this.root, env: this.cliEnv(), timeoutMs: 90_000 },
     );
-    const usage = zeroUsage();
-    let items = [];
-    try {
-      items = JSON.parse(res.stdout.trim().split("\n").at(-1))?.items || [];
-    } catch {
-      return usage;
+    if (res.code !== 0) {
+      throw new Error(`niffler transcript export failed (exit ${res.code})`);
     }
+    const parsed = JSON.parse(res.stdout.trim().split("\n").at(-1));
+    return parsed?.items || [];
+  }
+
+  // Sum token usage over the conversation transcript in the store.
+  async usageFromTranscript(sessionId, items = null) {
+    const usage = zeroUsage();
+    if (!items) items = await this.transcript(sessionId);
     for (const it of items) {
       const v = it.value || {};
       if (v.role !== "assistant" || !v.usage) continue;

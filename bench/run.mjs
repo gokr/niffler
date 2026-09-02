@@ -40,6 +40,7 @@ const taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin
 const turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
 const testTimeoutMs = Number(opt("test-timeout-sec", cfg.defaults.testTimeoutSec)) * 1000;
 const JOBS = Number(opt("jobs", cfg.defaults.jobs));
+const KEEP_REPOS = opt("keep-repos", false) === true;
 
 const harnesses =
   harnessArg === "all" ? ["niffler", "pi", "opencode"] : harnessArg.split(",");
@@ -287,14 +288,19 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
 
   const totalTimeS = (Date.now() - t0) / 1000;
 
-  // Token usage per harness source of truth.
+  // Token usage per harness source of truth. Preserve Niffler's complete
+  // persisted transcript while its private store is still online so the run
+  // can be audited after shutdown.
   let usage = zeroUsage();
   let expert = null;
   try {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
-    else if (isNifflerHarness(combo.harness))
-      usage = await shared.niffler.usageFromTranscript(sessionId);
+    else if (isNifflerHarness(combo.harness)) {
+      const transcript = await shared.niffler.transcript(sessionId);
+      writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
+      usage = await shared.niffler.usageFromTranscript(sessionId, transcript);
+    }
   } catch (e) {
     usage.error = String(e);
   }
@@ -345,6 +351,13 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     workdir,
   };
   writeJson(path.join(workdir, "result.json"), result);
+  // The agent needs a real git repo while working, but once patch.diff and
+  // diff stats are captured the nested .git is pure scratch. Strip it by
+  // default so VSCode and other editor scanners do not list every completed
+  // benchmark task as a repository; --keep-repos preserves it for debugging.
+  if (!KEEP_REPOS) {
+    fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
+  }
   console.log(
     `[${combo.harness}/${combo.model}/${taskId}] ${verdict.toUpperCase()} ` +
       `${result.totalTimeS.toFixed(0)}s, ${result.rounds} rounds, ` +
@@ -439,6 +452,7 @@ async function main() {
     roundsMax,
     taskTimeoutMs,
     turnTimeoutMs,
+    keepRepos: KEEP_REPOS,
   });
 
   // Simple worker pool over combos; Niffler boots one harness per combo.

@@ -66,7 +66,9 @@ node bench/report.mjs --latest         # most recent run in var/bench/results
 
 Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
 `--task-timeout-min`, `--test-timeout-sec`, `--harness niffler,pi`,
-`--model a,b`, `--task t01,t03`.
+`--model a,b`, `--task t01,t03`, `--keep-repos` (preserve each completed
+workdir's `.git` for debugging; default strips it after `patch.diff` capture so
+editors do not discover dozens of nested repositories).
 
 ## How each harness is driven
 

@@ -18,9 +18,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `NIF_LLM_PROVIDERS` so the shared llm component reaches a second provider
   without touching the worker's. Raw run output moved from `bench/results/`
   to `var/bench/results/` (disposable runtime state; `make clean` wipes it,
-  the committed record is `bench/reports/`); workspace git scanning ignores
-  `**/var/**`, so the nested task repos stay out of editor Source Control.
-  `report.mjs` also gained a working `--latest`.
+  the committed record is `bench/reports/`); after `patch.diff` capture the
+  runner strips each nested `.git` by default (`--keep-repos` opts back in),
+  and workspace scanning ignores `**/var/**`, so completed tasks stay out of
+  editor Source Control. `report.mjs` also gained a working `--latest`.
 
 - **Harder benchmark task `t06-stackvm`** — a cross-file Go stack VM and
   assembler with missing opcodes plus seeded operand-order, jump,
