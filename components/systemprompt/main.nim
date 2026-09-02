@@ -114,9 +114,11 @@ proc main() =
         except CatchableError:
           discard
 
-      # --- ancestor walk: harness root first, then cwd → / -----------------
-      # One file per directory, and one per PATH: the harness root is both
-      # the global scope and an ancestor of cwd, so dedup by path.
+      # --- ancestor walk: cwd → harness root (inclusive) -----------------
+      # One file per directory, dedup by path. The walk stops AT the harness
+      # root: root is the global scope, and nothing above the deployment
+      # root (the machine's own layout, or the git worktree a bench harness
+      # happens to live in) may leak into the prompt.
       var files: seq[tuple[path, content: string]] = @[]
       var seen: seq[string] = @[]
       var count = 0
@@ -130,7 +132,7 @@ proc main() =
             seen.add(fid)
             files.add(f)
             if count >= maxFiles: break
-        if dir == "/" or dir.len <= 1: break
+        if dir == "/" or dir.len <= 1 or dir == root: break
         dir = parentDir(dir)
 
       # --- compose: product prompt + wrapped context files -----------------
