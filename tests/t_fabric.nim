@@ -280,6 +280,7 @@ proc main() =
   var evCallFail = 0
   var evDone = 0
   var evDoneOk = false
+  var evDoneCalls = -1
   for i in 0 ..< 80:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, evSub, 200)
@@ -291,6 +292,8 @@ proc main() =
     elif p{"status"} != nil:
       inc evDone
       evDoneOk = evDoneOk or p{"status"}.getStr("") == "done"
+      if p{"status"}.getStr("") == "done":
+        evDoneCalls = p{"calls"}.getInt(-1)
     elif p{"seq"} != nil:
       inc evCallDone
       if not p{"ok"}.getBool(false): inc evCallFail
@@ -302,6 +305,8 @@ proc main() =
         "call failures=" & $evCallFail)
   check("ev.fabric.done announces the terminal state",
         evDone >= 1 and evDoneOk, "done=" & $evDone)
+  check("ev.fabric.done reports the real call count", evDoneCalls == 4,
+        "done.calls=" & $evDoneCalls)
 
   # output schema: the wrapper's declared outputSchema types the return
   let outTurn = call(nc, "core", "session",
@@ -318,6 +323,38 @@ proc main() =
   check("typed output schema returns a typed value",
         outTranscript.contains("typed-ok") and
         not outTranscript.contains("Error"), outTranscript)
+
+  # event metadata from the fab-out runs (selected mode, one valid run,
+  # one budget-rejected run that must never announce started)
+  var outStarted = 0
+  var outComponent = ""
+  var outResultBytes = 0
+  var outDoneCalls = -1
+  for i in 0 ..< 40:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, evSub, 300)
+    if st != NATS_OK: break
+    let env = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    let p = env{"payload"}
+    if p{"selected"} != nil:
+      inc outStarted
+    elif p{"status"} != nil:
+      outDoneCalls = p{"calls"}.getInt(-1)
+    elif p{"seq"} != nil:
+      if p{"ok"} != nil:
+        if p{"ok"}.getBool(false):
+          outResultBytes = p{"resultBytes"}.getInt(0)
+      elif p{"component"}.getStr("").len > 0:
+        outComponent = p{"component"}.getStr("")
+  check("rejected program never announces ev.fabric.started",
+        outStarted == 1, "started=" & $outStarted)
+  check("ev.fabric.call.started names the pinned component",
+        outComponent == "ctxtest", outComponent)
+  check("ev.fabric.call.done reports result size", outResultBytes > 0,
+        "resultBytes=" & $outResultBytes)
+  check("ev.fabric.done reports budget usage", outDoneCalls == 1,
+        "done.calls=" & $outDoneCalls)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""

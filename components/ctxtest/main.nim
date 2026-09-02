@@ -235,6 +235,11 @@ comp.tool(%*{"hidden": true}):
           "finish(jesc(s))\n"
         return toolCall("t1", "fabric", %*{
           "tools": ["ctx_out"], "code": prog})
+      if stage == 1:
+        # invalid budget: rejected before admission, so this run must not
+        # announce ev.fabric.started
+        return toolCall("t2", "fabric", %*{
+          "code": "import fabricguest\nfinish(\"x\")\n", "maxCalls": 0})
       return %*{"content": "out-turn-done"}
     if sessionId.startsWith("sp-"):
       # every turn: echo the conversation's system message (messages[0])

@@ -121,6 +121,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## order. Sequential callTool never queues more than one.
   type Pending = object
     id: string
+    tool: string
     sub: ptr natsSubscription
     launchedAt: float
   var inFlight: seq[Pending]
@@ -170,9 +171,12 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         "component": pin{"component"}.getStr(""),
         "version": pin{"version"}.getStr(""),
         "fingerprint": pin{"fingerprint"}.getStr("")}
-    comp.emit("ev.fabric.call.started", %*{"runId": runId,
+    var startedEv = %*{"runId": runId,
               "sessionId": sessionId, "seq": frame{"id"}.getStr(""),
-              "tool": tool})
+              "tool": tool}
+    if selectedMode:
+      startedEv["component"] = %selected[tool]{"component"}.getStr("")
+    comp.emit("ev.fabric.call.started", startedEv)
     let env = callEnvelope(tool, toolArgs, "fabric")
     let data = env.encode()
     let inbox = "_INBOX.fabric." & newId()
@@ -188,7 +192,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       natsSubscription_Destroy(sub)
       raise newException(CatchableError,
         "publish nested request: " & getErrorString(pst))
-    inFlight.add(Pending(id: frame{"id"}.getStr(""), sub: sub,
+    inFlight.add(Pending(id: frame{"id"}.getStr(""), tool: tool, sub: sub,
                          launchedAt: epochTime()))
 
   proc topUp() =
@@ -221,6 +225,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         writeResp(id, resp)
         comp.emit("ev.fabric.call.done", %*{"runId": runId,
                   "sessionId": sessionId, "seq": id, "ok": false,
+                  "tool": frame{"tool"}.getStr(""),
                   "durationMs": 0,
                   "error": resp{"error"}.getStr("")})
       else:
@@ -261,12 +266,15 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           natsMsg_Destroy(msg)
           let id = inFlight[i].id
           let launchedAt = inFlight[i].launchedAt
+          let frameTool = inFlight[i].tool
           natsSubscription_Destroy(inFlight[i].sub)
           inFlight.delete(i)
           var callOk = false
           var callError = ""
+          var resultBytes = 0
           if r.kind == ekResult:
             callOk = true
+            resultBytes = ($r.args).len
             writeResp(id, %*{"t": "resp", "id": id, "ok": true,
                              "result": $r.args})
           else:
@@ -275,8 +283,10 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
                              "error": callError})
           comp.emit("ev.fabric.call.done", %*{"runId": runId,
                     "sessionId": sessionId, "seq": id, "ok": callOk,
+                    "tool": frameTool,
                     "durationMs": ((epochTime() - launchedAt) *
                         1000.0).int,
+                    "resultBytes": resultBytes,
                     "error": callError})
           progressed = true
         else:
@@ -303,8 +313,6 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           break
   except CatchableError as e:
     finishPending()
-    if resultJ != nil:
-      resultJ["_calls"] = %calls
     if resultJ == nil:
       stopChild()
       return diag(e.msg)
@@ -312,6 +320,9 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   if resultJ == nil:
     stopChild()
     return diag("fabric program timed out after " & $timeoutMs & "ms")
+  # every terminal path reports the real call count (lifecycle events and
+  # budget accounting read it)
+  resultJ["_calls"] = %calls
   return resultJ
 
 proc cleanupArtifacts(dir: string, incomingBytes: int64) =
@@ -447,9 +458,6 @@ discard comp.tool("fabric", fabSchema,
     # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
     let selectedJ = if toolArgs{"tools"} != nil: toolArgs{"tools"}
                     else: newJArray()
-    comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
-              "selected": selectedJ,
-              "maxCalls": toolArgs{"maxCalls"}.getInt(200)})
     let maxCalls = toolArgs{"maxCalls"}.getInt(200)
     if maxCalls <= 0 or maxCalls > maxCallsLimit:
       return %*{"error": "maxCalls must be in 1.." & $maxCallsLimit}
@@ -504,14 +512,22 @@ discard comp.tool("fabric", fabSchema,
     let executionMs = (deadline - getMonoTime()).inMilliseconds.int
     if executionMs <= 0:
       return %*{"error": "fabric execution deadline expired"}
+    # started only fires once every admission check passed: a rejected
+    # program never ran, so it must not announce a run (or orphan the
+    # correlated ev.fabric.done)
+    comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
+              "selected": selectedJ,
+              "maxCalls": maxCalls, "timeoutMs": executionMs})
     let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
                         executionMs, runId, sess)
     proc emitDone(status: string, extra: JsonNode = nil) =
-      ## Correlated terminal lifecycle event (bounded metadata).
+      ## Correlated terminal lifecycle event (bounded metadata). Success
+      ## results carry `_calls`; failure diagnostics carry `calls`.
       var ev = %*{"runId": runId, "sessionId": sess, "status": status,
                   "durationMs": ((epochTime() - fabricStart) * 1000.0).int,
-                  "calls": r{"_calls"}.getInt(0)}
+                  "calls": r{"_calls"}.getInt(r{"calls"}.getInt(0)),
+                  "maxCalls": maxCalls}
       if extra != nil:
         for key, val in extra: ev[key] = val
       comp.emit("ev.fabric.done", ev)
