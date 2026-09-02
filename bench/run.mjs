@@ -33,6 +33,7 @@ function opt(name, dflt) {
 const harnessArg = opt("harness", "all");
 const modelArg = opt("model", "all");
 const taskArg = opt("task", "all");
+const TASK_ROOT = path.resolve(BENCH_ROOT, String(opt("task-root", "bench/tasks")));
 const RUN_ID = opt("run-id", new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19));
 const RESULTS = path.join(BENCH_ROOT, "var", "bench", "results", RUN_ID);
 const roundsMax = Number(opt("rounds", cfg.defaults.rounds));
@@ -46,8 +47,14 @@ const harnesses =
   harnessArg === "all" ? ["niffler", "pi", "opencode"] : harnessArg.split(",");
 const models = modelArg === "all" ? Object.keys(cfg.models) : modelArg.split(",");
 const taskDirs = fs
-  .readdirSync(path.join(BENCH_DIR, "tasks"), { withFileTypes: true })
-  .filter((d) => d.isDirectory() && d.name.startsWith("t"))
+  .readdirSync(TASK_ROOT, { withFileTypes: true })
+  .filter(
+    (d) =>
+      d.isDirectory() &&
+      fs.existsSync(path.join(TASK_ROOT, d.name, "meta.json")) &&
+      fs.existsSync(path.join(TASK_ROOT, d.name, "prompt.md")) &&
+      fs.existsSync(path.join(TASK_ROOT, d.name, "repo")),
+  )
   .map((d) => d.name)
   .sort();
 const tasks = taskArg === "all" ? taskDirs : taskArg.split(",");
@@ -74,7 +81,7 @@ function git(repo, args) {
 }
 
 function prepareRepo(taskId, dest) {
-  const src = path.join(BENCH_DIR, "tasks", taskId, "repo");
+  const src = path.join(TASK_ROOT, taskId, "repo");
   fs.cpSync(src, dest, { recursive: true });
   // Task repos ship as plain files; create the pristine base commit here so
   // every run gets an identical history to diff against.
@@ -91,12 +98,12 @@ function prepareRepo(taskId, dest) {
   }
 }
 
-function runTests(repo, meta, taskDir) {
+function runTests(repo, meta, taskId) {
   // Hidden-test mode: meta.verify names a script next to prompt.md (e.g. a
   // SWE-bench verify.sh that applies the test patch only now). Otherwise the
   // repo's own test.sh runs.
   if (meta.verify) {
-    return run("bash", [path.join(BENCH_DIR, "tasks", taskDir, meta.verify)], {
+    return run("bash", [path.join(TASK_ROOT, taskId, meta.verify)], {
       cwd: repo,
       timeoutMs: testTimeoutMs,
     });
@@ -137,12 +144,13 @@ function protectedTouched(repo, meta) {
 }
 
 function feedbackPrompt(meta, testOut) {
+  const verifier = meta.verify ? "The official hidden verifier" : "`./test.sh`";
   return [
-    "Your changes still fail verification. `./test.sh` exits non-zero with this output (tail):",
+    `Your changes still fail verification. ${verifier} exits non-zero with this output (tail):`,
     "",
     tail(testOut, 6000),
     "",
-    `Keep working in the repository until ./test.sh passes. Do not modify: ${(meta.protected || []).join(", ")}.`,
+    `Keep working until verification passes. Do not modify: ${(meta.protected || []).join(", ") || "tests"}.`,
     "When everything passes, reply with a one-line summary.",
   ].join("\n");
 }
@@ -322,9 +330,14 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let diff = { files: [], insertions: 0, deletions: 0 };
   let invalid = null;
   try {
+    // Include untracked files in stats and the submitted patch without truly
+    // staging their contents.
+    try {
+      execFileSync("git", ["-C", repo, "add", "-N", "--", "."], { stdio: "ignore" });
+    } catch {}
     diff = diffStat(repo);
     try {
-      fs.writeFileSync(path.join(workdir, "patch.diff"), git(repo, ["diff", "base"]));
+      fs.writeFileSync(path.join(workdir, "patch.diff"), git(repo, ["diff", "--binary", "base"]));
     } catch {}
     const hit = protectedTouched(repo, taskMeta);
     if (hit) {
@@ -413,8 +426,8 @@ async function runCombo(combo, taskIds) {
 
   try {
     for (const taskId of taskIds) {
-      const meta = readJson(path.join(BENCH_DIR, "tasks", taskId, "meta.json"));
-      let prompt = fs.readFileSync(path.join(BENCH_DIR, "tasks", taskId, "prompt.md"), "utf8");
+      const meta = readJson(path.join(TASK_ROOT, taskId, "meta.json"));
+      let prompt = fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8");
       prompt = prompt.replaceAll("{{REPO}}", path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "repo"));
       await runTask(combo, taskId, meta, prompt, shared);
     }
@@ -452,6 +465,7 @@ async function main() {
     startedAt: nowIso(),
     combos,
     tasks,
+    taskRoot: path.relative(BENCH_ROOT, TASK_ROOT) || ".",
     roundsMax,
     taskTimeoutMs,
     turnTimeoutMs,

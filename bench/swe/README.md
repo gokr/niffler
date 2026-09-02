@@ -1,61 +1,104 @@
-# SWE-bench Verified — status and path forward
+# SWE-bench Verified pilot
 
 [SWE-bench Verified](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified)
-(500 human-validated GitHub issues across 12 real repos) is the credible
-external benchmark for this comparison. As of this first pass we did **not**
-run it end-to-end; here is exactly why and what is missing.
+contains 500 human-validated issues across 12 real repositories. The first
+Niffler pilot is deliberately smaller: the first 10 SymPy cards, one worker
+model, and the three plain harnesses (Niffler, Pi, OpenCode).
 
-## Why not today
+## Current status
 
-The official evaluation stack (`github.com/SWE-bench/SWE-bench`,
-`python -m swebench.harness.run_evaluation`) needs, per task:
+The old blocker is gone: `uv` and Docker are installed. The supported path now
+uses `swebench==4.1.0` and official `swebench/sweb.eval.*` images. Version 5.x
+expects a newer enriched task format and cannot directly evaluate the classic
+Verified rows used here.
 
-- a repo-specific docker image (`swebench/sweb.eval.x86_64.<repo>` —
-  commonly 2–12 GB each; docker is available here and ~970 GB free, so this
-  part is feasible for a subset),
-- a Python env at the repo's pinned versions (the official images bake this
-  in; building them locally needs pip, which this box currently lacks),
-- the `swebench` pip package for orchestration/grading.
+The end-to-end evaluator has been proved on `sympy__sympy-11618`:
 
-So the blocking dependency is a Python package manager (pip/uv), not
-hardware. With pip available, the *lite* path below is a weekend, not a
-project.
+- no-op patch: unresolved (base red);
+- dataset gold patch: resolved (reference green);
+- official image: 3.92 GB; first pull + evaluation took about 9 minutes;
+- cached evaluations take about 25 seconds.
 
-## What exists already
+## Setup and prepare the 10-task pilot
 
-`import.mjs` downloads all 500 Verified task cards via the HF
-datasets-server API (no pip/parquet tooling needed):
+Everything generated or downloaded stays under `var/bench/swe/`.
 
 ```bash
-node bench/swe/import.mjs --out bench/swe/tasks.jsonl
-# starter subset (pure-python repos, lightest envs):
-node bench/swe/import.mjs --out bench/swe/tasks-sympy.jsonl --repos sympy/sympy
+# Install the pinned official harness into var/bench/swe/.venv.
+bench/swe/setup.sh
+
+# Import the first 10 SymPy cards. Gold/test patches remain outside agent repos.
+node bench/swe/import.mjs \
+  --out var/bench/swe/tasks-sympy.jsonl \
+  --repos sympy/sympy --limit 10
+
+# Create base-only task checkouts and pre-pull official images. Image setup is
+# intentionally outside measured agent/verification time.
+node bench/swe/prepare.mjs \
+  --input var/bench/swe/tasks-sympy.jsonl \
+  --out var/bench/swe/tasks \
+  --pull-images --workers 2
 ```
 
-Each card carries `instance_id, repo, base_commit, problem_statement,
-test_patch, FAIL_TO_PASS, PASS_TO_PASS` — everything this runner needs.
+`prepare.mjs` keeps one Git mirror for efficient setup, but each agent checkout
+contains only its shallow `base_commit` plus a local `base` tag. Future commits,
+the gold patch, and the hidden `test_patch` are not exposed in the working repo.
 
-## How it plugs into this runner (hidden-test mode)
+## Run the pilot
 
-Unlike the bench tasks (tests visible in the repo), SWE tasks must hide the
-tests from the agent and apply `test_patch` only at verification time. The
-runner supports this via a task-level `verify` script: put a `verify.sh`
-next to `prompt.md` and reference it from `meta.json` (`"verify":
-"verify.sh"`); the runner executes it with the agent's repo as cwd and
-treats exit 0 as green. A SWE `verify.sh` would:
+Start with one cell after the first image is cached:
 
-1. `git apply` / `git checkout` the card's `test_patch` onto the workdir
-   repo (the agent never sees these files during its turn),
-2. run the repo's pinned test command,
-3. check the FAIL_TO_PASS list went red→green and PASS_TO_PASS stayed green.
+```bash
+node bench/run.mjs \
+  --task-root var/bench/swe/tasks \
+  --task sympy__sympy-11618 \
+  --harness niffler --model deepseek-v4-flash \
+  --rounds 1 --turn-timeout-min 30 --task-timeout-min 45 \
+  --test-timeout-sec 1200 --run-id swe-smoke
+```
 
-## Remaining work, in order
+Then run the described 10 × 3 pilot:
 
-1. Install pip/uv (`python3 -m ensurepip` is disabled on this Ubuntu box;
-   `curl get-pip.py | python3` or a standalone `uv` binary both work).
-2. For a starter repo (sympy is pure-Python), script per-task env setup:
-   clone at `base_commit`, `pip install -e .` + test deps into a venv.
-3. Generate task dirs from `tasks.jsonl` (clone + prompt from
-   `problem_statement` + `verify.sh` from `test_patch`).
-4. Pilot with ~10 sympy tasks × 3 harnesses; then scale via the official
-   docker images for the full 500.
+```bash
+node bench/run.mjs \
+  --task-root var/bench/swe/tasks \
+  --task all \
+  --harness niffler,pi,opencode \
+  --model deepseek-v4-flash \
+  --rounds 1 --jobs 2 \
+  --turn-timeout-min 30 --task-timeout-min 45 \
+  --test-timeout-sec 1200 \
+  --run-id swe-sympy10-$(git rev-parse --short HEAD)
+```
+
+`--rounds 1` preserves canonical SWE-bench one-shot evaluation: the agent never
+sees hidden-test output before its submitted patch is scored. A later
+*time-to-green* experiment may use multiple rounds, but must be reported as a
+separate non-canonical metric because verifier feedback is then returned to the
+agent.
+
+## How hidden verification works
+
+Each generated task has only:
+
+- `repo/` at `base_commit`;
+- `prompt.md` containing `problem_statement`;
+- `meta.json` and a tiny verifier wrapper.
+
+After the turn, `verify.mjs` captures `git diff --binary base` (including
+untracked files), writes an official prediction JSONL, and asks SWE-bench to:
+
+1. start the pinned instance image;
+2. apply the candidate patch to `/testbed`;
+3. apply `test_patch` only inside that evaluator container;
+4. run the repository/version-specific command;
+5. require all `FAIL_TO_PASS` and `PASS_TO_PASS` checks to succeed.
+
+The task's hidden-test files are also listed as protected paths, so modifying a
+corresponding test file makes the benchmark result invalid even if grading
+passes. Raw evaluator logs live under `var/bench/swe/evaluations/`.
+
+This is test hiding, not a hostile-process sandbox: an agent intentionally
+searching outside its assigned repository could inspect host files. The three
+harnesses are instructed to work only in `{{REPO}}`, matching the trust model of
+this local comparison.
