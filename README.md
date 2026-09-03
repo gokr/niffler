@@ -344,9 +344,9 @@ to CI any plugin repo — Niffler testing itself.
       restore on boot (persistence of shape, verified live across restarts)
 - [ ] **code hygiene + store v2** — `feat/code-hygiene` branch
       (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
-      duplication cleanup; store reimplemented in Go (SQLite via
-      modernc.org/sqlite, goose embedded, TiDB backend behind
-      NIF_STORE_BACKEND, barrel migration tool); DuckDB as a bus observer
+      duplication cleanup; three interchangeable store engines behind one
+      contract (barrel stays default; Go SQLite + TiDB engines with goose
+      migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
 - [x] **session runners** — one conversation = one process: the system

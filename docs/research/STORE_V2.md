@@ -1,15 +1,20 @@
-# Store v2 — SQL backends, SDK tightening, DuckDB as observer
+# Store v2 — three stores, one contract, SDK tightening, DuckDB as observer
 
-> Plan for the `feat/code-hygiene` branch. Status: design; nothing shipped yet.
+> Plan for the `feat/code-hygiene` branch. Status: design; SDK additions in
+> progress. Revision 2: SQLite and TiDB stores are **additional** engines —
+> the barrel store stays and remains the default until comparison data says
+> otherwise.
 
 Two entangled goals, one branch:
 
 1. **Code hygiene**: pay down the duplication that has accumulated in
    components and SDKs (the ledger below), and expand both SDKs so
    components shrink.
-2. **Store v2**: reimplement the `store` component in Go on SQL — SQLite by
-   default, TiDB as a network alternative — with goose migrations, and put
-   DuckDB where it actually belongs: observing the bus, not serving it.
+2. **Store v2**: three interchangeable store engines behind one bus
+   contract — the current barrel store (Nim/Bitcask), a new SQLite store
+   (Go, goose migrations), a new TiDB store (Go, same schema, MySQL
+   protocol) — plus DuckDB where it actually belongs: observing the bus,
+   not serving it.
 
 ## What does not change
 
@@ -17,45 +22,99 @@ The store's **bus contract is the artifact** (docs/WIRE.md; the current
 `components/store/main.nim` header says so itself). `put/get/list/del`,
 `expectRev` optimistic concurrency, `rev` per (kind, id), list ordered by
 id, the kinds core depends on (`component`, `conversation`, `message`,
-`approval`, `agentjob`, `slash`, plus the newer `sessionmeta`,
-`fabricprog`, `plugin`) — all unchanged. Consumers (core/conversation.nim,
+`approval`, `agentjob`, `slash`, plus `sessionmeta`, `fabricprog`,
+`plugin`) — all unchanged. Consumers (core/conversation.nim,
 core/dispatch.nim:715, agent, fabric, plugins, cli, UIs) keep speaking
 `svc.store.call`. Storage engine and implementation language are private
-to the component.
+to the component; only the wire answers matter.
 
-Single-writer enforcement stays **at the bus level** (flock on the store
-file, same rationale as the comment in today's main.nim: two stores in the
-`store` queue group would alternate inconsistent views). SQLite's own
-locking is belt-and-suspenders; the flock is the invariant.
+Single-writer enforcement stays **at the bus level**: each local engine
+flocks its own file (barrel: `var/barrel-db.lock`; sqlite:
+`var/store.db.lock`) for the same reason as today's comment — two stores
+in the `store` queue group would alternate inconsistent views. The
+selection mechanism below guarantees only one store boots per harness, so
+the flock remains a last line of defense, not a policy. TiDB needs no
+flock: the DSN is shared network state, and rev-based optimistic
+concurrency (`SELECT … FOR UPDATE` + `expectRev`) is the arbiter — two
+harnesses sharing one TiDB is a *feature*, not a bug.
 
-## Why SQL
+## Three stores, one name
 
-Barrel (Bitcask KV) has served fine, but it buys nothing that SQL doesn't
-and costs real things:
+All three register as component **`store`** with the same hidden tools —
+core, dispatch, agents and UIs never learn which engine is live. Selection
+is a boot-time choice:
 
-- every consumer must do prefix scans client-side through one fixed index;
-- no transactions across documents (put writes doc + rev counter in two
-  steps today — a crash between them leaves a dangling doc);
-- no introspection (`sqlite3 var/store.db 'select …'` beats `strings`
-  carving on the barrel file, the current offline-recovery story);
-- the TiDB variant (below) wants a real schema anyway, and one schema
-  serves both drivers.
+- `make build` produces all three binaries: `var/bin/store` (barrel, as
+  today), `var/bin/store-sqlite`, `var/bin/store-tidb`.
+- The manifest keeps its single `store` entry. Core resolves that entry's
+  binary through `NIF_STORE_BACKEND` (unset/`barrel` → `var/bin/store`;
+  `sqlite` → `var/bin/store-sqlite`; `tidb` → `var/bin/store-tidb`;
+  anything else → refuse to boot with a clear error). One small core
+  change at manifest resolution; the llm-openai comment-out dance stays
+  available as a manual fallback.
+- Trying a store = `NIF_STORE_BACKEND=sqlite make run`. Comparing two
+  stores = boot twice against the same dataset. Nothing else moves.
 
-## Backend 1: SQLite (default) — `store` in Go
+Default remains barrel — the working shape must never change under a
+hygiene branch until the alternatives prove themselves on the same tests
+and the same data.
+
+## Document store vs SQL store — the tradeoffs
+
+The user-facing question, answered honestly. The contract is documents
+either way; the difference is what the bytes sit on.
+
+**Barrel (Bitcask KV + JSON docs) — doc-oriented:**
+
+- schema-free: a new kind or a new field is just a write; no migrations
+  exist, none can break
+- key-ordered prefix scans are the *only* query surface — anything
+  cross-document (how many tool calls yesterday? messages of one role?)
+  is a client-side scan over the bus
+- no multi-key transactions: `put` writes doc + rev counter in two steps
+  today — a crash between them leaves a dangling doc (or a lost rev)
+- introspection = `strings` carving on the file
+- dead simple, zero deps beyond the already-present bitbarrel, fast
+  point reads, append-only writes
+
+**SQLite/TiDB with a JSON column — "document-in-relational":**
+
+- same document flexibility (the `value` column is JSON text), *plus*
+  SQL around it: count/filter/join/aggregate over kinds without moving
+  data over the bus
+- real transactions: `put` becomes one atomic statement, closing the
+  two-step crash window
+- introspection: `sqlite3 var/store.db '…'`; TiDB plugs straight into the
+  chetter ops stack (same driver, same SQL tools)
+- migrations discipline via goose — a new process in the repo, and a
+  schema is a convention people must not quietly break
+- the cost of JSON-in-TEXT: the DB cannot index *inside* documents
+  natively. Mitigations: SQLite JSON1 (extract + expression indexes),
+  TiDB's JSON type + generated columns — and when a field earns an index,
+  promoting it to a real column is a goose migration, not a rewrite
+- TiDB-only extras: network-shared persistence (many harnesses, one
+  store), scale-out, and FTS/vector columns later for retrieval work
+
+Net: for Niffler's current workload the doc store genuinely suffices —
+which is exactly why barrel stays default and SQL is an *additional*
+option. SQL starts paying when we want cross-document questions, real
+transactions, operational visibility, or a shared store. The three-store
+setup is what lets us measure that instead of argue about it.
+
+## Store 2: SQLite — Go
 
 - **Language: Go, one binary.** `llm`, `models`, `provider` are already Go;
   the Go SDK has `Component`, `Tool`, `RequestOK`; the builder has
   first-class Go support (auto `replace niffler.dev/sdk => ../../sdk/go`).
-  Go's `database/sql` + two drivers gives us one binary, two backends,
-  zero Nim SQL-driver friction. This also matches the chetter stack
-  (`../chetter` uses Go + goose + go-sql-driver/mysql against TiDB).
+  `database/sql` + two drivers = one codebase, two SQL engines. Matches
+  the chetter stack (`../chetter`: Go + goose + go-sql-driver/mysql on
+  TiDB).
 - **Driver: `modernc.org/sqlite`** — pure Go, no cgo. Existing Go
   components carry no cgo deps; keep the zero-prereq build story intact.
   (`mattn/go-sqlite3` is faster but cgo — rejected for the builder path.)
 - **Migrations: goose as a library**, embedded via `embed.FS`, applied at
-  startup. Niffler components must be zero-manual-steps (no ops CLI);
-  chetter runs goose as a CLI, but here the component owns its schema.
-  Same migration style, different runner.
+  startup. Niffler components must be zero-manual-steps; chetter runs
+  goose as a CLI, here the component owns its schema.
 
 ### Schema (migration 0001)
 
@@ -77,33 +136,29 @@ CREATE INDEX idx_docs_kind_id ON docs (kind, id);
   row is absent). Kills today's two-step doc+rev-counter write.
 - `get`: row → `{ok, rev, value}`; missing → `not-found`.
 - `list`: `WHERE kind = ? AND id LIKE prefix||'%' ORDER BY id LIMIT ?`
-  (LIKE prefix with `%` is safe here — ids are ours, alphanumeric + `:` +
-  `-`; no `_` wildcards in generated ids, but escape anyway for defense).
-- `del`: `DELETE`; returns ok regardless (idempotent, as today).
-- Envelope shapes identical to today's tool results (tests assert byte-level).
+  (ids are ours — alphanumeric + `:` + `-`; escape LIKE metachars anyway
+  for defense).
+- `del`: `DELETE`; idempotent, as today.
+- Envelope shapes byte-identical to today's tool results — `t_store`
+  asserts the contract, run against all three engines.
 
 ### File + env
 
-`var/store.db` (new; barrel file stays `var/barrel-db` until migration).
-`NIF_STORE_BACKEND=sqlite|tidb` (default sqlite). Flock moves to
-`var/store.db.lock`. The component still registers as **`store`** — core,
-dispatch, agents, and UIs never learn the backend exists.
+`var/store.db` (sqlite) / `NIF_STORE_TIDB_DSN` (tidb). Backend selection
+is the `NIF_STORE_BACKEND` boot switch above, not a runtime flag.
 
-## Backend 2: TiDB — same binary, same schema
+## Store 3: TiDB — same binary, same schema
 
-`NIF_STORE_BACKEND=tidb` + `NIF_STORE_TIDB_DSN` (MySQL protocol,
-`go-sql-driver/mysql` — the exact chetter driver pair). Same goose
+MySQL protocol via `go-sql-driver/mysql` (the chetter pair). Same goose
 migrations (TiDB is MySQL-compatible; the flatout-backend skill's
-TiDB-vs-MySQL notes apply: keep it to tables, indexes, no procedures).
+TiDB-vs-MySQL notes apply: tables/indexes only, no procedures/triggers).
 `put` uses `SELECT … FOR UPDATE` inside the transaction.
 
-What TiDB buys us here: a **shared, network store** — several harnesses
-(dev machine + CI runner + a remote core) can attach to one DSN instead of
-each owning a private barrel file, and later migrations can add FTS/vector
-columns for retrieval work. It is admittedly overkill for one harness —
-that's fine; it's the fan option, and it costs one driver + a DSN because
-the schema is shared. Component behavior must stay byte-identical
-(existing `t_store` runs against both backends via env swap).
+What TiDB buys: a shared network store across harnesses (dev + CI +
+remote), the user's existing TiDB ops stack, and a path to FTS/vector
+columns. Overkill for one harness — fine, that's the point of an
+*additional* engine: it costs one driver + a DSN because the schema and
+the wire answers are shared.
 
 ## DuckDB — the observer, not the store
 
@@ -114,90 +169,92 @@ The intuition to use it as an observer is the right one.
   over accumulated data, not the store's workload (small row-at-a-time
   writes, hot point reads, key-ordered prefix scans, optimistic-concurrency
   upserts). Its multi-process write story is explicitly single-writer; the
-  strong suit is queries, not serving concurrent OLTP-ish callers.
-- As the store it would be strictly worse than SQLite on our workload and
-  would give up every SQLite advantage (WAL concurrency, tiny footprint,
+  strong suit is queries, not serving OLTP-ish callers.
+- As a store it would be strictly worse than SQLite on our workload and
+  give up every SQLite advantage (WAL concurrency, tiny footprint,
   ubiquitous tooling) for nothing we use.
 - As an **observer** it's genuinely interesting: a component (mode of
   `observe`, or a sibling `observe-duckdb` sink) that tails `ev.*` —
-  `ev.session.turn/toolcall/token`, `ev.approval.*`, `ev.log.*`,
-  `ev.catalog.updated` — and materializes them into a local DuckDB file
-  (`var/observe.db` or parquet), never answering `svc.store.call`.
+  turns, tool calls, token deltas, approvals, logs — and materializes them
+  into `var/observe.db` (or parquet), never answering `svc.store.call`.
   Then: session latency percentiles, tool-usage distributions, token-cost
-  rollups, approval-denial rates, catalog churn — real analytics the
-  current in-memory `observe` ring buffer cannot do. `observe` stays the
-  live inspection tool; DuckDB is the offline lab. This also fits the
-  architecture: it's a read-only bus consumer, which is the cheapest
-  possible component shape.
+  rollups, approval-denial rates, catalog churn. `observe` stays the live
+  inspection tool; DuckDB is the offline lab. A read-only bus consumer is
+  the cheapest possible component shape.
 
-If a read-only DuckDB *store* is ever wanted (e.g. clone the store for
-analysis), it attaches to the store's file as a second reader — still not
-a writer.
+If a read-only DuckDB *view* of a store is ever wanted, it attaches to
+the sqlite file as a second reader — still not a writer.
 
-## Migration: barrel → SQLite
+## Moving data between engines
 
-The old store retires (history keeps it). Data to preserve: `component`
-records (spawned plugins!), `plugin`, `conversation`/`message` transcripts,
-`slash` checkpoint, `approval` memories, `fabricprog` library.
-
-Tool: `tools/store-migrate.nim` — a Nim script that links bitbarrel (the
-dep already lives in the old component), reads `var/barrel-db` directly
-(no lock needed: read-only, and the new store has not started), and
-replays every `d:<kind>:<id>` doc as `store put` over the bus to the new
-store. Revs re-derive from the `r:` counter. Then rename
-`var/barrel-db` → `var/barrel-db.migrated` and boot normally.
-No bus-replay tricks, no dual-writer windows, no barrel code in Go.
+No migration lock-in: every engine speaks the same wire contract, so the
+copy tool is bus replay. `tools/store-copy.nim` (a plain SDK client, not
+a core change): `list` every kind from the running store, `put` each doc
+into the target — wait, the target *is* the running store; so the tool
+instead: **export** (`list` all kinds → JSONL file, keyed by kind) and
+**import** (JSONL → `put`). Copy = export from engine A, boot with engine
+B, import. Revs are preserved by carrying them via `expectRev`-less put
+only when the target is empty; the tool refuses to import into a
+non-empty store by default (`--force` to overlay). Reads are direct bus
+calls — no barrel code in Go, no driver code in Nim, nothing engine
+specific anywhere but the engines themselves.
 
 ## SDK expansion (the simplification half)
 
-Ledger of what actually exists today, so the work is concrete:
+Ledger of what actually exists today (surveyed, not guessed):
 
 | Duplication | Where |
 |---|---|
-| `configInt` (env parse + clamp) | `components/logfile/main.nim:31`, `components/observe/main.nim:70` — and ad-hoc env parsing in most others |
-| store call boilerplate: `comp.request("store", "get", …)` + error text + JSON field poking | agent (≈11 call sites), `components/fabric/fabric.nim`, `components/plugins/main.nim`, `core/conversation.nim`, `core/dispatch.nim:715` — each with its own "store unreachable" wording |
+| `configInt` (env parse + clamp) | `components/logfile/main.nim:31`, `components/observe/main.nim:70`; ad-hoc `getEnv` parsing at 16 more call sites across components |
+| store call boilerplate: `comp.request("store", "get", …)` + error text + JSON field poking | 19 call sites: agent (≈11), `components/fabric/fabric.nim`, `components/plugins/main.nim`, `core/dispatch.nim:715`, plus conversation.nim's `dispatchToolCall("get", …)` store ops — each with its own "store unreachable" wording |
 | fresh-`HttpClient`-per-call pattern (the AGENTS.md invariant against stale pooled connections) | fetch, observe, plugins, skills — each hand-rolls user-agent + timeout |
-| subject-string building (`"svc." & name & ".call"`) | scattered across components and core |
+| `"svc." & name & ".call"` subject building | 6 sites across components and core |
+| repeated error-code strings | e.g. `"cannot read job (store unreachable): "` ×3 in agent alone; `"no such probe"` ×4 in observe |
+| JSON defensive-poking chains (`.getStr("").len > 0`, `.getBool(false)`) | 21 sites in core/*.nim alone — typed helpers would read better |
+| Go component boilerplate | llm/main.go (832), provider/main.go (964), models/main.go (285), llm-openai (216) each hand-roll tool schemas + `x-harness` maps + result shaping over the same SDK surface |
 
 SDK additions, both SDKs (Nim and Go, mirrored 1:1 per the wire-spec
 culture):
 
-1. **`storeclient`** (both SDKs): typed `storeGet/storePut/storeList/storeDel`
-   on `Component`, mapping `rev-conflict`/`not-found` to first-class
-   results, with a `storeUnreachable` message defined once. This is the
-   biggest single simplification — most core and agent code that touches
-   the store collapses to one-liners, and the "fail closed" sites
-   (agent lineage, dispatch depth guard) read clearly.
+1. **`storeclient`** (both SDKs): typed `storePut/storeGet/storeList/
+   storeDel` on `Component`, mapping `rev-conflict`/`not-found` to
+   first-class error types (Nim: distinct exceptions; Go: sentinel
+   errors), with "store unreachable" defined once. The biggest single
+   simplification — most core/agent/fabric/plugins store code collapses
+   to one-liners, and the "fail closed" sites (agent lineage, dispatch
+   depth guard) read clearly.
 2. **`config` helpers** (both SDKs): `configInt/configStr/configBool`
    with default + clamp, reading process env — kills the duplicated
    helpers and makes component config uniform.
 3. **`http` helper** (Nim SDK): `fetchText(url, timeout, userAgent)` that
    creates a client per call, encoding the stale-pool invariant once
    instead of four times.
-4. (Candidate, not committed) `serviceSubject(name)` / `toolCall(name)`
-   subject helpers so core and components stop concatenating wire
-   addresses inline.
+4. (Candidate) `serviceSubject(name)` subject helpers so components and
+   core stop concatenating wire addresses inline.
 
 Then the refactor pass: logfile + observe onto `configInt`; agent, fabric,
 plugins, conversation, dispatch onto `storeclient`; fetch/observe/plugins/
 skills onto the http helper. Behavior-neutral — `make test` must stay
-green at every commit, and t_store asserts the store contract is
-untouched.
+green at every commit, and `t_store` runs against all three engines.
 
 ## Milestones
 
-- [ ] **M1** — this doc lands on `feat/code-hygiene` (worktree
+- [x] **M1** — plan on `feat/code-hygiene` (worktree
   `../niffler-code-hygiene`).
 - [ ] **M2** — SDK additions (Nim + Go `storeclient`, config helpers, http
-  helper) with unit tests; refactor the duplication ledger; `make test`
-  green.
-- [ ] **M3** — Go `store` (SQLite, goose embedded, flock, byte-identical
-  results); `t_store` green against it; barrel store removed; migration
-  tool `tools/store-migrate.nim`; run it on a live harness once.
-- [ ] **M4** — `NIF_STORE_BACKEND=tidb` variant; `t_store` green against a
-  TiDB DSN (docker in CI, user's cluster manually).
-- [ ] **M5** — DuckDB observer: `observe` sink mode (or sibling component)
-  materializing `ev.*` into `var/observe.db`; a few stock queries shipped
-  as examples.
-- [ ] **M6** — README milestone table updated; docs/MANUAL.md persistence
-  section rewritten for SQLite/TiDB.
+  helper) with unit tests; refactor the duplication ledger onto them;
+  `make test` green.
+- [ ] **M3** — `store-sqlite` (Go, goose embedded, flock, byte-identical
+  results) as an *additional* engine; `NIF_STORE_BACKEND` boot switch in
+  core; `t_store` green against barrel and sqlite; barrel stays default.
+- [ ] **M4** — `store-tidb` engine; `t_store` green against a TiDB DSN
+  (docker in CI, user's cluster manually).
+- [ ] **M5** — `tools/store-copy.nim` (JSONL export/import) so datasets
+  move between engines; a small comparison script (same synthetic load,
+  wall-clock + file size per engine).
+- [ ] **M6** — DuckDB observer: `observe` sink mode (or sibling component)
+  materializing `ev.*` into `var/observe.db`; stock queries shipped as
+  examples.
+- [ ] **M7** — README milestone table + docs/MANUAL.md persistence
+  section rewritten for the three engines; decide (with data) whether the
+  default flips.
