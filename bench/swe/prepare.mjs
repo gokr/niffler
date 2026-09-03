@@ -3,6 +3,7 @@
 // bench/run.mjs. Repositories are checked out at exactly base_commit with no
 // future refs, while hidden test/gold patches stay outside the agent repo.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import url from "node:url";
 import { execFileSync } from "node:child_process";
@@ -18,7 +19,11 @@ function opt(name, dflt) {
 
 const input = path.resolve(ROOT, String(opt("input", "var/bench/swe/tasks-sympy.jsonl")));
 const out = path.resolve(ROOT, String(opt("out", "var/bench/swe/tasks")));
-const cards = path.resolve(ROOT, String(opt("cards", "var/bench/swe/cards")));
+// Hidden cards (gold + test patches) default OUTSIDE the workspace so agents
+// cannot reach them by grepping the repo tree or an editor scan.
+const cards = path.resolve(
+  String(opt("cards", path.join(os.homedir(), ".cache", "niffler-swe", "cards"))),
+);
 const mirrors = path.resolve(ROOT, String(opt("mirrors", "var/bench/swe/mirrors")));
 const pullImages = opt("pull-images", false) === true;
 const workers = String(opt("workers", "2"));
@@ -104,11 +109,21 @@ for (const row of rows) {
   );
   fs.writeFileSync(
     path.join(taskDir, "prompt.md"),
-    `Work in the repository at {{REPO}}.\n\n` +
-      `Resolve this GitHub issue from SWE-bench Verified:\n\n${row.problem_statement.trim()}\n\n` +
-      `Modify production code only; do not modify tests. The official hidden ` +
-      `verification suite will be run after your turn. When finished, reply ` +
-      `with a concise summary of the fix.\n`,
+    `Work in the repository at {{REPO}}. Resolve this GitHub issue:\n\n${row.problem_statement.trim()}\n\n` +
+      `Work exactly like this:\n` +
+      `1. Read/grep the repository to locate the code involved in the issue.\n` +
+      `2. Implement the minimal correct fix by editing the repository files.\n` +
+      `3. Re-read your edits to check syntax and logic.\n` +
+      `4. Reply with a one-paragraph summary of the change.\n\n` +
+      `Hard rules:\n` +
+      `- Never run the project's tests and never install dependencies; the ` +
+      `hidden verification environment is separate and grades your diff ` +
+      `afterwards. There is nothing to set up.\n` +
+      `- Do not fetch anything from the network; implement from the issue text ` +
+      `and the repository code.\n` +
+      `- Stay inside {{REPO}}: never read other checkouts, caches, task ` +
+      `metadata, or anything else on this machine.\n` +
+      `- Production code only; never modify tests.\n`,
   );
   const wrapper = `#!/usr/bin/env bash\nset -euo pipefail\n` +
     `root=$(cd "$(dirname "\${BASH_SOURCE[0]}")/../../../../.." && pwd)\n` +

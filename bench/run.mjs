@@ -80,6 +80,22 @@ function git(repo, args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
+// Agents on this box may run docker bind-mounts that leave root-owned scratch
+// in a workdir (seen: cpython-39 .pyc from an agent-run container). A plain
+// rm then fails, which would crash the lane; fall back to renaming the
+// poisoned dir aside so the rerun starts clean.
+function resetWorkdir(workdir) {
+  try {
+    fs.rmSync(workdir, { recursive: true, force: true });
+  } catch {
+    try {
+      fs.renameSync(workdir, workdir + ".poisoned-" + Date.now());
+    } catch {}
+    fs.rmSync(workdir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(workdir, { recursive: true });
+}
+
 function prepareRepo(taskId, dest) {
   const src = path.join(TASK_ROOT, taskId, "repo");
   fs.cpSync(src, dest, { recursive: true });
@@ -179,8 +195,7 @@ const isNifflerHarness = (name) => name === "niffler" || name === "niffler-exper
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   const workdir = path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`);
-  fs.rmSync(workdir, { recursive: true, force: true });
-  fs.mkdirSync(workdir, { recursive: true });
+  resetWorkdir(workdir);
   const repo = path.join(workdir, "repo");
   prepareRepo(taskId, repo);
   const sessionId = `bench-${RUN_ID}-${combo.harness}-${taskId}`.replace(
@@ -208,6 +223,17 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let adapterState = {};
   let roundReply = "";
 
+  // Gateway outages must not fail one-shot tasks: transport-level errors
+  // (connection/TLS/timeout, or a Niffler turn whose LLM calls never went
+  // through) are retried in place. Auth/balance failures are not retried.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let prevUsageTotal = 0;
+  const isTransportError = (msg) => {
+    const m = String(msg || "");
+    if (/balance|401|403|unauthorized|invalid.{0,20}key/i.test(m)) return false;
+    return /connection|timed out|tls|fetch failed|socket|network|econn|eai_again|reset by peer/i.test(m);
+  };
+
   try {
     if (setupError) throw setupError;
     for (let r = 1; r <= roundsMax; r++) {
@@ -217,38 +243,70 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
       }
       const prompt =
         r === 1 ? taskPrompt : feedbackPrompt(taskMeta, rounds.at(-1)?.testOutput || "");
-      const r0 = Date.now();
-      let res;
-      if (combo.harness === "pi") {
-        res = await pi.round({
-          repo,
-          prompt,
-          modelCfg: combo.modelCfg.pi,
-          keys,
-          sessionsDir: path.join(workdir, "pi-sessions"),
-          sessionFile: adapterState.sessionFile || null,
-          cfgDir: shared.piCfgDir,
-          turnTimeoutMs,
-        });
-        adapterState.sessionFile = res.sessionFile;
-      } else if (combo.harness === "opencode") {
-        res = await oc.round({
-          repo,
-          prompt,
-          modelCfg: combo.modelCfg.opencode,
-          turnTimeoutMs,
-          sessionId: adapterState.sessionId || null,
-        });
-        adapterState.sessionId = res.sessionId;
-      } else if (isNifflerHarness(combo.harness)) {
-        res = await shared.niffler.round({
-          sessionId,
-          prompt,
-          turnTimeoutMs,
-        });
+      let transportRetries = 0;
+      let res = null;
+      for (;;) {
+        const r0 = Date.now();
+        if (combo.harness === "pi") {
+          res = await pi.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.pi,
+            keys,
+            sessionsDir: path.join(workdir, "pi-sessions"),
+            sessionFile: adapterState.sessionFile || null,
+            cfgDir: shared.piCfgDir,
+            turnTimeoutMs,
+          });
+          adapterState.sessionFile = res.sessionFile;
+        } else if (combo.harness === "opencode") {
+          res = await oc.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.opencode,
+            turnTimeoutMs,
+            sessionId: adapterState.sessionId || null,
+          });
+          adapterState.sessionId = res.sessionId;
+        } else if (isNifflerHarness(combo.harness)) {
+          res = await shared.niffler.round({
+            sessionId,
+            prompt,
+            turnTimeoutMs,
+          });
+        }
+        const agentS = (Date.now() - r0) / 1000;
+        let transportFail = res.error && isTransportError(res.error);
+        if (!res.error && isNifflerHarness(combo.harness) && transportRetries < 2) {
+          // A "successful" turn whose every LLM call hit an outage ends with
+          // zero provider usage; retry rather than record a bogus fail.
+          try {
+            const u = await shared.niffler.usageFromTranscript(sessionId);
+            const total = u.input + u.output + u.cacheRead;
+            if (total === prevUsageTotal && String(res.reply || "").trim().length < 200) {
+              transportFail = true;
+            } else {
+              prevUsageTotal = total;
+            }
+          } catch {}
+        }
+        if (transportFail && transportRetries < 2) {
+          transportRetries += 1;
+          console.log(
+            `  [${combo.harness}/${combo.model}/${taskId}] transport error, retry ${transportRetries}/2 in 5s` +
+              (res.error ? `: ${String(res.error).slice(0, 80)}` : " (zero-usage turn)"),
+          );
+          await sleep(5_000);
+          continue;
+        }
+        res.agentS = agentS;
+        if (transportRetries && !res.error) {
+          // keep the retry count visible on the round that eventually ran
+          res.transportRetries = transportRetries;
+        }
+        agentTimeS += agentS;
+        break;
       }
-      const agentS = (Date.now() - r0) / 1000;
-      agentTimeS += agentS;
       if (res.roundUsage) roundUsages.push(res.roundUsage);
       if (res.raw) {
         fs.writeFileSync(
@@ -267,17 +325,18 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
 
       rounds.push({
         r,
-        agentS: Number(agentS.toFixed(1)),
+        agentS: Number((res.agentS || 0).toFixed(1)),
         testS: Number(testS.toFixed(1)),
         pass,
         error: res.error || null,
+        transportRetries: res.transportRetries || 0,
         replyTail: tail(res.reply, 800),
         testOutputTail: tail(test.stdout + test.stderr, 4000),
       });
       roundReply = res.reply || "";
       console.log(
         `  [${combo.harness}/${combo.model}/${taskId}] round ${r}: ` +
-          `${pass ? "PASS" : "fail"} (agent ${agentS.toFixed(0)}s)` +
+          `${pass ? "PASS" : "fail"} (agent ${(res.agentS || 0).toFixed(0)}s)` +
           (res.error ? ` error=${String(res.error).slice(0, 120)}` : ""),
       );
       if (pass) {

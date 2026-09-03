@@ -46,6 +46,7 @@ export function run(cmd, args, opts = {}) {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.env || {}) },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true, // own process group, so we can kill grandchildren too
     });
     let stdout = "";
     let stderr = "";
@@ -55,7 +56,17 @@ export function run(cmd, args, opts = {}) {
         ? setTimeout(() => {
             timedOut = true;
             try {
+              // Kill the whole group: children that survive the parent keep
+              // the stdio pipes open and would delay 'close' indefinitely.
+              if (child.pid) process.kill(-child.pid, "SIGKILL");
+            } catch {}
+            try {
               child.kill("SIGKILL");
+            } catch {}
+            // Belt and braces: force EOF on the pipes in our process.
+            try {
+              child.stdout.destroy();
+              child.stderr.destroy();
             } catch {}
           }, opts.timeoutMs)
         : null;
