@@ -156,15 +156,8 @@ proc persistMsg*(p: var Persister, value: JsonNode,
     for key, fieldValue in telemetry:
       stored[key] = fieldValue
   try:
-<<<<<<< HEAD
     discard p.ct.storePutRev("message",
-      p.convId & ":" & align($p.seqNo, 6, '0'), value)
-=======
-    discard p.ct.dispatchToolCall("put", %*{
-      "kind": "message",
-      "id": p.convId & ":" & align($p.seqNo, 6, '0'),
-      "value": stored})
->>>>>>> main
+      p.convId & ":" & align($p.seqNo, 6, '0'), stored)
     if p.failing:
       p.failing = false
       echo "core: store reachable again — persistence resumed"
