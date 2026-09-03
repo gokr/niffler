@@ -50,6 +50,7 @@
         <tr><td>store</td><td>nim</td><td data-i18n="comp.store.p">document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
         <tr><td>plugins</td><td>nim</td><td data-i18n-html="comp.plugins.p">component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
         <tr><td>skills</td><td>nim</td><td data-i18n="comp.skills.p">Agent Skills discovery, progressive-disclosure loading, resources, and managed install/remove</td></tr>
+        <tr><td>systemprompt</td><td>nim</td><td data-i18n-html="comp.systemprompt.p">the conversation constitution as a component — session runners ask <code>svc.systemprompt.call</code> once per conversation; replace it to replace the prompt</td></tr>
         <tr><td>fetch</td><td>nim</td><td data-i18n="comp.fetch.p">bounded HTTP(S) retrieval with methods/headers/body, Trafilatura-first HTML extraction, pure-Nim fallback, and large-result file spill</td></tr>
         <tr><td>edit</td><td>nim</td><td data-i18n-html="comp.edit.p">the file tools — pageable <code>read</code>, exact-match <code>edit</code> with a guarded fallback cascade, atomic <code>write</code>, single-level undo; mutations approval-gated</td></tr>
         <tr><td>grep</td><td>nim</td><td data-i18n="comp.grep.p">ripgrep-backed content search and sorted repository file listing, with exact truncation markers</td></tr>
@@ -57,10 +58,11 @@
         <tr><td>observe</td><td>nim</td><td data-i18n="comp.observe.p">live bus introspection — subject discovery, listen probes, request/reply traces, monitoring</td></tr>
         <tr><td>logfile</td><td>nim</td><td data-i18n-html="comp.logfile.p">durable JSONL sink for <code>ev.log.*</code> — rotating logs, bounded search, retention</td></tr>
         <tr><td>models</td><td>go</td><td data-i18n-html="comp.models.p">models.dev provider/model catalog over the bus — offline seed, cached refresh, <code>x-models-source</code> plugin patches</td></tr>
-        <tr><td>provider</td><td>go</td><td data-i18n="comp.provider.p">store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching</td></tr>
+        <tr><td>provider</td><td>go</td><td data-i18n="comp.provider.p">store-backed LLM provider registry — add/list/switch/active/remove/export/import, live backend switching, subscription OAuth logins with transparent token refresh</td></tr>
         <tr><td>llm</td><td>go</td><td data-i18n-html="comp.llm.p">streaming OpenAI-compatible adapter (DeepSeek by default) — live <code>ev.llm.token</code> deltas, reasoning tokens, per-call cancellation</td></tr>
-        <tr><td>fabric</td><td>nim</td><td data-i18n-html="comp.fabric.p">programmable tool calling — the LLM writes a Nim program that owns the intra-turn control flow, run in an embedded VM that can call bus tools (<code>callTool</code>); only the result enters the conversation</td></tr>
-        <tr><td>agent</td><td>nim</td><td data-i18n-html="comp.agent.p">subagent sessions — turn any conversation into a delegated child runner with fresh context; the summary returns to the caller</td></tr>
+        <tr><td>fabric</td><td>nim</td><td data-i18n-html="comp.fabric.p">programmable tool calling — the LLM writes a Nim program that owns the intra-turn control flow; typed wrappers with catalog pinning, a named program library, host-backed <code>batch</code> calls, approval manifests, and correlated <code>ev.fabric.*</code> lifecycle events</td></tr>
+        <tr><td>agent</td><td>nim</td><td data-i18n-html="comp.agent.p">subagent sessions — synchronous <code>agent_run</code> delegates to a child runner with fresh context; durable background jobs (<code>agent_spawn</code>/<code>status</code>/<code>wait</code>/<code>stop</code>/<code>steer</code>) survive restarts; idle runners retire on their own</td></tr>
+        <tr><td>expert</td><td>nim</td><td data-i18n-html="comp.expert.p">the advisory peer — follows one working session, LLM-judges bounded observations, delivers high-confidence steer as a marked message; silent by default, fail-closed</td></tr>
         <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
         <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
         <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">the desktop chat UI — sessions, streaming tokens, tool runs, approvals, model controls · Wails-hosted SPA, architecturally a NATS client</td></tr>
@@ -107,6 +109,17 @@
       <li><span class="check">✓</span> <span data-i18n-html="status.l30">thinking effort — per-conversation <code>reasoning_effort</code> (ctrl+g), streamed reasoning rendering in the TUI</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l31">cancellation — per-call LLM cancel and the TUI's two-stage stop (ESC, ESC)</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.i18n">UI + TUI localization — en/zh/zh-TW locales, CJK-safe truncation and editing</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l32">session_info — the LLM introspects its own conversation: model, effort, context occupancy, message counts</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l33">systemprompt as a component — the conversation constitution is replaceable over the bus</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l34">bundled skills — the repo's skills/ tree ships with the harness as a shadowable, non-removable scope</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l35">mid-turn steer — inject a message into a running turn (<code>svc.session.&lt;id&gt;.steer</code>)</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l36">expert advisory peer — one LLM-judged advisor per session: bounded observations, turn-bound steer, fail-closed silence</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l37">subscription OAuth — ChatGPT Plus/Pro and Claude Pro/Max sign-in with transparent token refresh</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l38">durable agent jobs — <code>agent_spawn</code>/<code>status</code>/<code>wait</code>/<code>stop</code>/<code>steer</code> over store-backed records; real stop cancellation, lazy budgets, stale-job recovery</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l39">fabric typed mode — catalog-pinned typed wrappers, named program library, approval manifests with digest-keyed auto-approval, bounded batch calls</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l40">batch effect declarations — <code>x-harness.effect</code>: reads run concurrently, writes exclusively</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l41">lifecycle events + activity strip — correlated <code>ev.fabric.*</code>/<code>ev.agent.*</code> on the bus, rendered live in the console and the desktop UI; artifact retention sweeps</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l42">SWE-bench Verified pilot — 10 sympy instances graded by the official Docker harness across niffler/pi/opencode; 2.3–2.9× fewer tokens per task</span></li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>

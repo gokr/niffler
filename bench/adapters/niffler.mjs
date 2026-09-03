@@ -39,6 +39,7 @@ export class NifflerHarness {
     this.natsPort = 0;
     this.stopped = false;
     this.expertEnabled = opts.expertEnabled || false;
+    this.maxTurnRounds = opts.maxTurnRounds || 60;
     // Optional judgment provider for niffler-expert runs:
     // {provider, model, baseUrl, apiKey}. Routed via NIF_LLM_PROVIDERS so
     // the shared llm component can reach a second provider (e.g. Synthetic)
@@ -101,6 +102,9 @@ export class NifflerHarness {
       // This is the documented automation bypass; it only affects this
       // private bench harness (isolated NIF_ROOT + bus), never the dev's.
       NIF_AUTO_APPROVE: "1",
+      // Agentic bench tasks need more than the default 20 LLM rounds per
+      // turn; interactive use keeps the default (env only raises it here).
+      NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),
     };
     if (this.expertEnabled && this.expertJudge) {
       env.NIF_LLM_PROVIDERS = JSON.stringify({
@@ -175,7 +179,9 @@ export class NifflerHarness {
     }
     let reply = parsed.reply ?? "";
     if (typeof reply === "object" && reply !== null) reply = reply.content ?? JSON.stringify(reply);
-    const error = parsed.error ? String(parsed.error) : null;
+    const error = parsed.error || parsed.turnError
+      ? String(parsed.error || parsed.turnError)
+      : null;
     return { reply: String(reply), error };
   }
 

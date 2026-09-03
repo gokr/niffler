@@ -595,7 +595,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.steerStream != nil:
     ct.steerStream.cancelRequested = false
   var rounds = 0
-  while rounds < 20:
+  # NIF_MAX_TURN_ROUNDS raises the per-turn LLM-round budget (default 20).
+  # Bench lanes use a higher cap so long agentic tasks (SWE-bench style)
+  # don't get cut off mid-exploration; normal interactive turns rarely
+  # exceed a handful of rounds.
+  let maxRounds =
+    block:
+      var v = 20
+      try:
+        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "20"))
+      except ValueError:
+        discard
+      if v < 1: 20 else: v
+  while rounds < maxRounds:
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
     # flag is raised by pumpSteer from dispatch's idle slots, including
@@ -782,6 +794,18 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                                  "callId": id, "phase": "done",
                                  "tool": name, "args": args,
                                  "error": e.msg})
+
+  # Exited the loop with the round budget spent — the model was still working
+  # (the loop only ends early via a no-tool-call reply or a cancel). Report
+  # this as a turn error so drivers can distinguish "model finished" from
+  # "budget exhausted"; the transcript keeps everything up to here.
+  turnError = "turn round budget exhausted (" & $maxRounds &
+    " LLM rounds; raise with NIF_MAX_TURN_ROUNDS)"
+  if onEvent != nil:
+    onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                       "error": turnError})
+  emitTurnDone(turnError)
+  return ""
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
