@@ -8,6 +8,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **LLM auto-retry (B3)** — the session runner classifies chat failures and
+  retries transient ones (429/5xx/overloaded/timeout/connection drop) with
+  exponential backoff + jitter, `NIF_LLM_MAX_RETRIES` (default 2, 0 disables);
+  auth/quota/bad-request fail fast. Every retry announces
+  `ev.session.retry {attempt, maxRetries, delayMs, error}`. Policy lives in
+  `core/retry.nim`; unit-tested, plus an end-to-end scenario (two mocked 503s
+  then success) in the parallel test suite.
+
 - **Parallel tool waves and process replicas** — session runners fan out
   explicitly `x-harness.parallel` calls over distinct NATS reply inboxes and
   commit results in model order. Stateless logical components can now set

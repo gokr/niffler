@@ -139,6 +139,10 @@ ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?
                        #   usedTokens?}
                        #   resolved turn config and live context occupancy.
                        #   Also emitted by model-only session calls (no inference)
+ev.session.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
+                       #   a transient LLM failure is being retried after delayMs
+                       #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).
+                       #   Auth/quota/bad-request failures never retry
 ev.session.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
 ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,

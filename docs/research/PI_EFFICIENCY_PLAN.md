@@ -76,13 +76,17 @@ serialized unless explicitly registered concurrency-safe.
   replicated. `store` and the current mixed read/mutation `edit` component may
   not be.
 
-### B3. Auto-retry of transient LLM failures
-- **What:** in the session runner's chat call (`core/conversation.nim`), on a
-  transient error (`429`, `5xx`, `overloaded`, connection drop — mirror
-  pi `ai/src/utils/retry.ts` classification), retry with exponential backoff +
-  jitter up to `NIF_LLM_MAX_RETRIES` (default 2–3). Fail fast on quota/billing.
-- **Spec:** none (pure runner policy). Surface retry via an `ev.session.retry`
-  event so the UI can show it.
+### B3. Auto-retry of transient LLM failures ☑
+- **What:** the session runner's chat call retries transient errors (429,
+  5xx, `overloaded`, timeout, connection drop — pi `ai/src/utils/retry.ts`
+  classification) with exponential backoff + jitter, up to
+  `NIF_LLM_MAX_RETRIES` (default 2, 0 disables). Auth/quota/bad-request fail
+  fast. Each retry announces `ev.session.retry {attempt, maxRetries,
+  delayMs, error}` so UIs can show the wait.
+- **Spec:** event documented in docs/WIRE.md. Classification/backoff live in
+  `core/retry.nim` (unit-tested in `tests/t_retry_unit.nim`); the
+  end-to-end recovery path is proven in `tests/t_parallel.nim` (retry
+  scenario: two mocked 503s, then success).
 - **Effort:** small. Saves a human round-trip on every transient provider
   hiccup.
 

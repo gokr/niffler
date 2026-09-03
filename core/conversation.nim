@@ -18,6 +18,7 @@ import ../sdk/envelope
 import catalog
 import dispatch
 import supervisor
+import retry
 
 ## The minimal structural fallback prompt. The real constitution lives in
 ## the systemprompt component (components/systemprompt/): the session
@@ -657,16 +658,34 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if thinkingEffort.len > 0:
       llmArgs["reasoning_effort"] = %thinkingEffort
     var resp: JsonNode
-    try:
-      resp = ct.dispatchToolCall("chat", llmArgs, 300000)
-    except CatchableError as e:
-      let msg = "llm error: " & e.msg
-      turnError = msg
-      if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                           "error": msg})
-      emitTurnDone(msg)
-      return msg
+    var attempt = 0
+    let retryPolicy = retryPolicyFromEnv()
+    while true:
+      try:
+        resp = ct.dispatchToolCall("chat", llmArgs, 300000)
+        break
+      except CatchableError as e:
+        # B3: auto-retry transient LLM failures (rate limits, provider
+        # outages, dropped connections) with exponential backoff. Auth,
+        # quota and bad-request failures fail fast — retrying cannot help.
+        # Each retry is announced so UIs can show the wait.
+        if attempt >= retryPolicy.maxRetries or
+            not isRetryableLlmError(e.msg):
+          let msg = "llm error: " & e.msg
+          turnError = msg
+          if onEvent != nil:
+            onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                               "error": msg})
+          emitTurnDone(msg)
+          return msg
+        let delayMs = retryDelayMs(retryPolicy, attempt)
+        if onEvent != nil:
+          onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                             "attempt": attempt + 1,
+                             "maxRetries": retryPolicy.maxRetries,
+                             "delayMs": delayMs, "error": e.msg})
+        sleep(delayMs)
+        attempt += 1
     ct.cat.pump()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)

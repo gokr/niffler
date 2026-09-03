@@ -15,12 +15,16 @@
 ##   slow        — sa_slow + sb_slow, two 1s-sleeping tools on two separate
 ##                 spawned components: proves cross-component concurrency
 ##                 (the turn finishes in ~1s, not ~2s).
-##   replica     — sr_slow twice on one logical component supervised with two
+##   replica     — sr_slow ×8 on one logical component supervised with four
 ##                 process replicas: proves same-component concurrency without
-##                 adding threads to the Nim SDK.
+##                 adding threads to the Nim SDK (pid + overlap assertions).
+##   retry       — NIF_MOCK_FAIL_FIRST=2: the mock llm fails its first two
+##                 chat calls with a retryable 503; the runner's B3 auto-retry
+##                 must recover the turn and publish ev.session.retry events.
 
 import std/[json, os, osproc, strutils, times]
 import natswrapper
+import envelope
 import helpers
 
 proc compileMock(llmBin, repoRoot, scenario: string) =
@@ -71,6 +75,26 @@ proc waitReplicas(nc: NatsConnection, name: string, count: int,
           return true
     sleep(200)
   return false
+
+proc bootWithExtra(nc: NatsConnection, coreProc: var Process,
+                   sandbox: TestSandbox, url: string, scenario: string,
+                   extra: openArray[(string, string)]) =
+  ## boot() variant that passes extra env to the core (and thus its mock llm
+  ## child). The mock's NIF_MOCK_* scenario vars reach the llm through it.
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = sandbox.root,
+    extra = @[("NIF_AUTO_APPROVE", "1"), ("NIF_MOCK_SCENARIO", scenario)] & @extra,
+    logFile = "/tmp/niffler-t-parallel-" & scenario & ".log")
+  var coreUp = false
+  for i in 0 ..< 100:
+    let r = call(nc, "core", "catalog", %*{"op": "list"}, 3_000)
+    if r{"error"} == nil and r{"tools"} != nil:
+      coreUp = true
+      break
+    sleep(200)
+  check(scenario & ": core up", coreUp)
+  check(scenario & ": store registered", waitComponent(nc, "store"))
+  check(scenario & ": mock llm registered", waitComponent(nc, "llm"))
 
 proc stopHard(p: var Process) =
   if p != nil and p.running():
@@ -406,6 +430,63 @@ proc main() =
         if item{"name"}.getStr("") == "sr": stillSupervised = true
     check("replica: no process remains after group kill", not stillSupervised,
           $afterKill)
+
+  # ---- scenario: retry (B3 auto-retry of transient LLM failures) ---------
+  block:
+    let sandbox = newCoreSandbox("parallel-retry", ["store", "llm"])
+    let root = sandbox.root
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "wave")
+
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    var coreProc: Process
+    # scenario "wave" gives the mock its scripted tool batch + "parallel-done"
+    # final reply; NIF_MOCK_FAIL_FIRST makes the first two chat calls 503.
+    bootWithExtra(nc, coreProc, sandbox, url, "wave",
+                  [("NIF_MOCK_FAIL_FIRST", "2")])
+    defer: stopHard(coreProc)
+    defer: nc.close()
+    defer: stopServer(server)
+    defer: removeDir(root)
+
+    # Count ev.session.retry events for our session.
+    var retrySub: ptr natsSubscription
+    check("retry: subscribe ev.session.retry",
+          checkStatus(natsConnection_SubscribeSync(
+            addr retrySub, nc.conn, "ev.session.retry".cstring)))
+    defer: natsSubscription_Destroy(retrySub)
+
+    let sessionId = "conv-parallel-retry-" & $int(epochTime())
+    let turn = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+    check("retry: turn recovered after transient failures",
+          turn{"error"} == nil, $turn)
+    check("retry: turn reply", turn{"reply"}.getStr("") == "parallel-done",
+          $turn)
+
+    # Two 503s (attempt 0 and 1) must each announce a retry before success.
+    var retryEvents: seq[JsonNode]
+    let deadline = epochTime() + 5.0
+    while epochTime() < deadline and retryEvents.len < 2:
+      var msg: ptr natsMsg
+      let st = natsSubscription_NextMsg(addr msg, retrySub, 200)
+      if st != NATS_OK: continue
+      let env = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if env.payload{"sessionId"}.getStr("") == sessionId:
+        retryEvents.add(env.payload)
+    check("retry: two retry events announced", retryEvents.len == 2,
+          $retryEvents.len)
+    if retryEvents.len == 2:
+      check("retry: first event attempt 1",
+            retryEvents[0]{"attempt"}.getInt(0) == 1 and
+            retryEvents[0]{"maxRetries"}.getInt(0) == 2 and
+            retryEvents[0]{"delayMs"}.getInt(-1) >= 0, $retryEvents[0])
+      check("retry: second event attempt 2",
+            retryEvents[1]{"attempt"}.getInt(0) == 2, $retryEvents[1])
+      check("retry: error message carried",
+            retryEvents[0]{"error"}.getStr("").contains("503"),
+            $retryEvents[0])
 
   report("PARALLEL")
 

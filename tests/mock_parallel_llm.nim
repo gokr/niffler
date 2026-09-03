@@ -15,12 +15,22 @@
 ##                 checks real overlap instead of wall-clock timing)
 ## Every later working round returns the final reply "parallel-done".
 
-import std/[json, os]
+import std/[json, os, strutils]
 import niffler/sdk
 
 let comp = newComponent("llm", "0.1.0-mock")
 var workingRounds = 0
 let scenario = getEnv("NIF_MOCK_SCENARIO", "wave")
+
+## NIF_MOCK_FAIL_FIRST (retry scenario): fail the first N chat calls with a
+## retryable 503 before answering normally — exercises the runner's B3
+## auto-retry. 0 (default) never fails.
+var failFirst = 0
+block:
+  let v = getEnv("NIF_MOCK_FAIL_FIRST", "0")
+  try: failFirst = parseInt(v)
+  except CatchableError: discard
+var chatCalls = 0
 
 discard comp.tool("chat", %*{
   "type": "object",
@@ -34,6 +44,11 @@ discard comp.tool("chat", %*{
   "x-harness": {"hidden": true, "timeoutMs": 120000}
 },
 proc(c: Component, args: JsonNode): JsonNode =
+  inc chatCalls
+  if chatCalls <= failFirst:
+    # Bus-level error envelope → the runner's dispatchToolCall raises with
+    # this message, classified retryable (503).
+    raise newException(ValueError, "llm HTTP 503: mock transient outage")
   workingRounds += 1
   if workingRounds == 1:
     var calls = newJArray()
