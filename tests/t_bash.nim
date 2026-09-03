@@ -67,7 +67,8 @@ proc main() =
   check("bash timeout killed the command tree (no orphan)",
         not processExists("bashmarker-timeout"))
 
-  # output cap: bash keeps head+tail with a truncation marker
+  # output cap: bash keeps head+tail with a truncation marker, and spills
+  # the full capture to a temp file the read tool can page through
   let r4 = call(nc, "bash", "bash",
                 %*{"command": "for i in $(seq 1 20000); do echo line-$i; done",
                    "timeoutMs": 20000}, 30_000)
@@ -75,6 +76,16 @@ proc main() =
   check("bash caps output", out4.len < 300_000 and
         out4.contains("truncated") and out4.contains("line-1") and
         out4.contains("line-20000"), "len=" & $out4.len)
+  let spillPath = r4{"spill"}{"path"}.getStr("")
+  check("bash spills oversized output", spillPath.len > 0 and
+        fileExists(spillPath) and
+        r4{"spill"}{"lines"}.getInt(0) in [20000, 20001],
+        $r4{"spill"})
+  check("spill file holds the middle the transcript lacks",
+        readFile(spillPath).contains("line-10000") and
+        not out4.contains("line-10000"), spillPath)
+  check("spill path is under the toolout dir",
+        spillPath.contains("var/toolout"), spillPath)
 
   # drain: component exits
   drain(nc)

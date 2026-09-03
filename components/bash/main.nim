@@ -3,19 +3,54 @@
 ## The agent's normal path to self-extension: write source files with bash,
 ## compile with builder, spawn with core.
 
-import std/[json, osproc, sequtils, times]
+import std/[json, os, osproc, sequtils, strutils, times]
 import natswrapper
 import niffler/sdk
 
 let comp = newComponent("bash", "0.1.0")
 
-const maxOutputBytes = 200_000
-  ## Generous but bounded: unbounded output risks blowing past NATS/LLM
-  ## context limits with no warning. When output exceeds this, capBytes
-  ## keeps the head and tail (most commands' interesting bits are at one
-  ## end or the other) and says exactly how much was cut, so the model can
-  ## re-run a narrower command (grep/head/tail/wc) instead of silently
-  ## losing data.
+const maxCaptureBytes = 2_000_000
+  ## Hard bound on what one command's output may produce. The capture is
+  ## spilled to a temp file (never an envelope); beyond this even the
+  ## spill is cut (head + tail with a marker).
+const transcriptCapBytes = 12_000
+  ## Transcript cap: what rides the conversation history. When output
+  ## exceeds this, the full capture is spilled to a temp file and the
+  ## transcript gets head+tail plus the spill path — the model can page
+  ## through the full output with the read tool (offset/limit) instead of
+  ## paying for it up front, and the transcript stays append-only.
+
+var spillCounter = 0
+  ## Serialized by the single-threaded poll loop; keeps spill file names
+  ## unique per process.
+
+proc spillOutput(output: string, sessionId: string): string =
+  ## Write the full capture to var/toolout/<session>/ so the model can
+  ## page through it with the read tool. Ephemeral: files older than one
+  ## hour are swept on each spill; var/ is disposable runtime state.
+  let root = getEnv("NIF_ROOT")
+  let base = if root.len > 0: root / "var" else: getTempDir()
+  var safe = ""
+  for c in (if sessionId.len > 0: sessionId else: "direct"):
+    safe.add((if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '_'))
+  let dir = base / "toolout" / safe
+  try:
+    createDir(dir)
+    # sweep: a one-hour TTL keeps the dir bounded across long sessions
+    for kind, path in walkDir(dir):
+      if kind == pcFile:
+        try:
+          if epochTime() - getLastModificationTime(path).toUnixFloat() > 3600.0:
+            removeFile(path)
+        except CatchableError:
+          discard
+    inc spillCounter
+    let path = dir / ($getCurrentProcessId() & "-" & $epochTime().int &
+                      "-" & $spillCounter & ".out")
+    writeFile(path, output)
+    result = path
+  except CatchableError:
+    result = ""
 
 # --- cancellation side-channel ----------------------------------------------
 # When a session turn is cancelled while its bash command runs, the runner
@@ -78,7 +113,7 @@ let bashSchema = toolSchema(%*{
   "cwd": {"type": "string",
           "description": "Working directory (defaults to the active conversation workspace)"}
 }, required = @["command"],
-  description = "Execute a shell command via bash -c — builds, tests, piping, git mutations, process inspection. Returns combined stdout/stderr and the last command's exit code; on timeout the process tree is killed (124), on turn cancel (130). Output over 200KB is capped (head+tail kept, cut marker shown) — re-run a narrower command (grep/head/tail/wc) for the missing part. Prefer dedicated tools for file work and repo state: read/read_many, edit/write, files, grep, git_* (discover on the git component).")
+  description = "Execute a shell command via bash -c — builds, tests, piping, git mutations, process inspection. Returns combined stdout/stderr and the last command's exit code; on timeout the process tree is killed (124), on turn cancel (130). Output over ~12KB is spilled to a temp file (result.spill.path) and the result keeps only head+tail with a marker — page through the full output with read (offset/limit) on that path instead of assuming you saw everything. Prefer dedicated tools for file work and repo state: read/read_many, edit/write, files, grep, git_* (discover on the git component).")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
@@ -96,14 +131,32 @@ discard comp.tool("bash", bashSchema,
                  else: command
     let (code, captured) = runCmd(scoped, timeoutMs,
       proc(): bool = drainCancels(sessionId))
-    var output = captured
+    var full = captured
     if code == 124:
-      output = "[timed out after " & $timeoutMs & "ms]\n" & captured
+      full = "[timed out after " & $timeoutMs & "ms]\n" & captured
     elif code == 130:
-      output = "[cancelled by request]\n" & captured
-    return %*{"exit_code": code,
-              "cancelled": code == 130,
-              "output": capBytes(output, maxOutputBytes,
-                                 "narrow the command (grep/head/tail/wc) for the missing part")})
+      full = "[cancelled by request]\n" & captured
+    # hard capture bound: beyond this even the spill file is cut
+    if full.len > maxCaptureBytes:
+      full = capBytes(full, maxCaptureBytes,
+        "re-run a narrower command (grep/head/tail/wc) for the missing part")
+    var result = %*{"exit_code": code, "cancelled": code == 130}
+    # transcript cap: spill the full capture and keep only head+tail in
+    # the conversation; the model pages the rest with read (offset/limit).
+    if full.len > transcriptCapBytes:
+      let spillPath = spillOutput(full, sessionId)
+      if spillPath.len > 0:
+        result["spill"] = %*{"path": spillPath,
+                              "bytes": full.len,
+                              "lines": full.countLines()}
+        result["output"] = %capBytes(full, transcriptCapBytes,
+          "full output saved to " & spillPath &
+          " — page through it with read (offset/limit)")
+      else:
+        result["output"] = %capBytes(full, transcriptCapBytes,
+          "re-run a narrower command (grep/head/tail/wc) for the missing part")
+    else:
+      result["output"] = %full
+    return result)
 
 comp.run()
