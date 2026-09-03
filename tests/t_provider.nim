@@ -475,7 +475,7 @@ proc main() =
         providerTools == 0, $catalog)
   let discovered = call(nc, "core", "discover", %*{"component": "provider"})
   check("provider administration tools are advertised on demand",
-        discovered{"component"}{"onDemand"}.len == 6 and
+        discovered{"component"}{"onDemand"}.len == 7 and
         not ($discovered).contains("provider_active"), $discovered)
   let snapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
   var providerSnapshot: JsonNode
@@ -483,7 +483,7 @@ proc main() =
     if item{"name"}.getStr("") == "provider":
       providerSnapshot = item
   check("full catalog keeps all provider tools and hides credential access",
-        providerSnapshot != nil and providerSnapshot{"tools"}.len == 14 and
+        providerSnapshot != nil and providerSnapshot{"tools"}.len == 15 and
         ($providerSnapshot).contains("provider_active") and
         ($providerSnapshot).contains("provider_update") and
         ($providerSnapshot).contains("\"hidden\":true"), $providerSnapshot)
