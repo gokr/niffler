@@ -6,6 +6,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **llm: Anthropic cache reads surfaced in the usage breakdown** — the
+  Anthropic adapter normalized `cache_read_input_tokens` into
+  `prompt_tokens` but never set the OpenAI-style
+  `usage.prompt_tokens_details.cached_tokens`, so Claude sessions
+  carried no cached-input breakdown downstream (conversation status
+  events, expert token accounting, bench, clients). Reads now map to
+  `cached_tokens`; cache-creation input is excluded (a write, not a
+  hit).
+
 ### Added
 
 - **Subagent budgets: per-job token and tool-call caps** —
