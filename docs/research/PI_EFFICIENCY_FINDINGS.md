@@ -40,16 +40,17 @@ steering/follow-up message queues (`drainSteer`/`drainAdvisories` in
 > "true OS-level parallelism". That is only true **across** components. For
 > **same-component** concurrency (four `bash` calls, four `edit` reads) the
 > runner fan-out changes nothing — the component still serializes. The three
-> mechanisms below are orthogonal; the plan now splits them (B1a runner
-> fan-out, B1b SDK worker threads, B2 scale-out).
+> mechanisms below are orthogonal. B1a runner fan-out shipped; the B1b SDK
+> worker-thread proposal was rejected against the threadless SDK invariant;
+> B2 process scale-out supplies same-component concurrency.
 
 ### 1.0 The three mechanisms — one mental model
 
 | Mechanism | Where the concurrency is | Gives you | Needs |
 |---|---|---|---|
 | **Runner fan-out** (B1a) | across components: `read` (edit) ∥ `grep` (grep) ∥ `git_status` (git) | cross-component parallelism; removes runner-side serialization | async request/reply in the runner (no threads, no asyncdispatch) |
-| **Worker threads in the component** (B1b) | inside one component: 4 `bash` calls ∥ 4 `edit` reads | same-component parallelism — the real bash/edit win | `--threads:on` + a worker pool in the SDK (your preference) |
-| **Replicas / scale-out** | N copies of the component process, one per call via the NATS queue group | same-component parallelism with **zero threads**, works for Go too | spawn N replicas; queue group already distributes |
+| **Worker threads in the component** (B1b, rejected) | inside one process | technically supplies same-component parallelism | conflicts with the threadless SDK/normal-GC invariant and introduces `{.gcsafe.}` + payload-sharing rules |
+| **Replicas / scale-out** (B2, shipped) | N copies of the logical component process, one call per queue subscriber | same-component parallelism with **zero threads**, works for any language | `replicas: N`; queue group already distributes |
 
 **Why bash cannot "fork and return early" to get concurrency:** the WIRE
 contract is one reply per call. `bash` spawns a child shell process per command
@@ -74,10 +75,10 @@ every event/tap handler it owns.
 next. So even though the model emits 5 independent calls, the wall clock is the
 **sum** of their latencies.
 
-The AGENTS.md invariant ("Nim SDK has no callbacks and no threads … the
-`{.gcsafe.}` dance must not be copied here") is about the SDK's base design —
-it does **not** forbid a component from running handlers on a worker pool. But
-it tells us the default must stay simple and serial.
+The `AGENTS.md` invariant is explicit: the Nim SDK has no callbacks or
+threads, handlers run serialized with normal GC, and the `{.gcsafe.}` dance
+must not be copied in. An SDK worker mode would violate that contract even if
+opt-in; process replicas preserve it.
 
 ### 1.2 B1a — Runner fan-out: cross-component parallelism (no threads)
 
@@ -102,10 +103,10 @@ So fan-out needs a **parallel-safe classification** per tool, exactly pi's
 `executionMode` — and it is **not** a substitute for in-component
 concurrency. Same-component calls still serialize at the component.
 
-### 1.3 B1b — Worker threads in the component: same-component parallelism (your preference)
+### 1.3 B1b — Worker threads investigated, then rejected
 
-For 4 `bash` calls (or 4 `edit` reads) to actually run concurrently, the
-component itself must execute handlers on more than one thread. Design:
+One proposed way for four calls to one process to overlap was a worker pool.
+The evaluated prototype design was:
 - Keep the NATS pump single-threaded (delivery stays serial → no subscription
   races, approvals stay on the main thread).
 - On a call envelope, capture `{tool, args, reply subject}` and hand it to a
@@ -131,22 +132,30 @@ owned by exactly one thread or the whole payload isolated).
 building block (`toTask` + `invoke` + result pointer; the ergonomic
 `await`/`awaitAll`/`awaitAny` layer is newer). Cleaner semantics, more manual.
 
-### 1.4 B2 — Replicas / scale-out (no threads, works for any language)
+**Standalone `taskpools` 0.2.1** builds an ergonomic pool over isolation, but
+that is the wrong ownership shape for a Niffler handler: `spawn` rejects the
+shared long-lived `Component` ref (`expression cannot be isolated: comp`). A
+raw `std/threads` + `std/locks` queue is technically possible, but still
+requires a second `{.gcsafe.}` handler type and shared SDK state. The project
+invariant decides the question: no worker-thread mode. Full details are in
+[PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md).
 
-Because the call subject is a NATS queue group, spawning N copies of a
-component process distributes N concurrent calls one per replica. Zero
-threading; the simplest mechanism for a non-Nim component (Go `store`/`llm` is
-single-writer and can't replicate, but `bash`/`fetch`/`grep` can). Costs: N
-processes, and any per-process state is duplicated.
+### 1.4 B2 — Replicas / scale-out (no threads, works for any language) ☑
+
+Because the call subject is a NATS queue group, spawning N copies of a logical
+component distributes concurrent calls one per replica. This is now supported
+through `replicas: N` in the bootstrap manifest and `core.spawn`, with
+replica-aware catalog presence and group lifecycle. Four stateless `grep`
+replicas ship by default. Costs: N processes and duplicated per-process state;
+single-writer/stateful components cannot opt in blindly.
 
 ### 1.5 Recommendation
 
-Runner fan-out (B1a) **and** SDK worker threads (B1b) together give full
-parallelism: the runner fires across components; parallel-safe components
-(`bash`, `edit`, `grep`, `fetch`) run their own calls on threads. B2
-(replicas) is a fallback for non-Nim components. Build B1a first (small, no
-threads, needed regardless); then B1b opt-in worker pools per component.
-Do not retrofit the whole SDK at once.
+Use B1a runner fan-out plus B2 process replicas. That gives cross-component and
+same-logical-component concurrency while preserving crash isolation, language
+freedom, and the threadless Nim SDK. Split mixed stateful components before
+scaling them — for example, `edit` reads cannot safely replicate alongside its
+mutation and per-process undo state.
 
 ---
 

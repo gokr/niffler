@@ -10,28 +10,24 @@
 
 ## The one architectural principle
 
-**Concurrency lives in two places and both are needed: across components (the
-runner fans out over NATS — no threads) and inside a component (a worker
-thread pool runs its handlers — threads, your preference).** A NATS queue group
-with one component process is strictly serial; the runner fan-out only
-parallelizes calls to *different* components; same-component concurrency needs
-threads in the component (B1b) or N replicas of the process (B2). The
-AGENTS.md "no threads" invariant stays the default for the SDK — worker pools
-are an opt-in mode per component, never a blanket retrofit. No asyncdispatch,
-anywhere: fan-out is a serial poll over N reply subscriptions; in-component
-concurrency is threads.
+**Concurrency stays process-native:** the runner fans calls out over NATS, and
+stateless logical components scale through multiple queue-group subscriber
+processes. A queue group with one process is serial; with N replicas, N calls
+can execute concurrently while every SDK process retains its one-threaded
+polling loop. This obeys the `AGENTS.md` invariants (process isolation, no Nim
+SDK threads, no `{.gcsafe.}` handler split) and uses no `asyncdispatch`.
 
 ---
 
 ## Phase 1 — Concurrency + cheap wins (this branch)
 
-### B1a. Runner fan-out: cross-component parallelism *(no threads)*
+### B1a. Runner fan-out: cross-component parallelism *(no threads)* ☑
 - **What:** replace `for tc in toolCalls:` in `core/conversation.nim` with a
   fan-out: publish all N call envelopes with distinct reply subjects, poll N
   reply subscriptions round-robin (pure event-driven async — no asyncdispatch,
   no threads), reassemble results in original order. Parallelizes calls to
-  *different* components (`read` ∥ `grep` ∥ `git_status`). Same-component calls
-  still serialize at the component — B1b fixes that.
+  *different* components (`read` ∥ `grep` ∥ `git_status`). Calls to one logical
+  component need multiple queue-group replicas (B2) to overlap.
 - **Guard rails (design work, not just async):** per-tool `parallel: bool`
   classification. Default **serial** for: approval-gated tools
   (`core/approval.nim` — human in the loop), session-context tools (`fabric`,
@@ -41,39 +37,29 @@ concurrency is threads.
 - **Spec:** add `"parallel": true` to the catalog's `x-harness` extension
   (`docs/WIRE.md`); core's `dispatch.nim` already carries the tool schema +
   x-harness, so this is a per-tool flag, default-off → no surprise behavior.
-- **Effort:** medium. ~1–2 days. Required regardless of B1b.
+- **Effort:** medium. ~1–2 days. Required regardless of the scale-out mechanism.
 
-### B1b. SDK worker threads: same-component parallelism *(your preference)*
-- **What:** an opt-in worker-pool mode in `sdk/niffler/sdk.nim` so a
-  parallel-safe component runs its handlers on threads. The pump stays
-  single-threaded (delivery serial); on a call envelope it hands `{tool, args,
-  reply}` to a pool worker that runs the handler and publishes the reply
-  (`natsConnection_Publish` is thread-safe). For `bash` each worker blocks on
-  its own child shell process — natural; for `edit` each worker does its own
-  file read — natural; same-file mutations need a per-file queue.
-- **Nim mechanism:** `std/threadpool` (`spawn`/`FlowVar`, mature on 2.2.10,
-  shared heap → `{.gcsafe.}` handlers, isolate payloads) or `std/tasks`
-  (`std/isolation`, explicit ownership, lower-level on 2.2.10).
-- **Spec:** per-tool `x-harness.parallel: true` implies the component serves
-  that tool from its pool; `x-harness.approval` and `sessionContext` force
-  serial regardless.
-- **Cost/risk:** handlers become `{.gcsafe.}`; approval + timeout +
-  cancellation route back to the main thread; the "no threads" invariant
-  erodes for opted-in components only. Do it per component (`bash`, `edit`
-  reads, `grep`, `fetch`) — not a blanket SDK change.
-- **Effort:** large. This is the real same-component win the fan-out alone
-  cannot give.
+### B1b. SDK worker threads: same-component parallelism — rejected
+- **Investigation:** compared `std/threadpool`, `std/tasks`, `taskpools` 0.2.1,
+  and a fixed `std/threads` + `std/locks` pool on Nim 2.2.10. `taskpools`
+  correctly rejects the shared `Component` ref as non-isolated; raw threads
+  are the least awkward technical fit but require a `{.gcsafe.}` handler seam,
+  shared-payload rules, and SDK-owned shutdown coordination.
+- **Decision:** do not implement. `AGENTS.md` explicitly makes the threadless,
+  serialized Nim SDK an architecture invariant. See
+  [PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md).
 
-### B2. Replicas / scale-out *(fallback, no threads, any language)*
+### B2. Replicas / scale-out *(no threads, any language)* ☑
 - **What:** because the call subject is a NATS queue group, spawning N copies
-  of a component process distributes N concurrent calls one per replica. The
-  simplest same-component parallelism for a non-Nim component (Go `store`/`llm`
-  is single-writer and can't replicate, but `bash`/`fetch`/`grep` can). Costs:
-  N processes, duplicated per-process state.
-- **Spec:** optional `replicas: N` in `manifest.yaml` / `core.spawn` for
-  stateless components.
-- **Effort:** small once the supervisor supports it. Only reach for it when
-  threading a component isn't practical.
+  of a component process distributes concurrent calls one per replica while
+  preserving process crash isolation and the serial SDK pump.
+- **Shipped:** optional `replicas: N` (1–16, default 1) in `manifest.yaml` and
+  `core.spawn`; persisted replica count; replica-aware catalog PIDs/status;
+  group lifecycle; four stateless `grep` replicas; same-component timing and
+  ordered-result coverage in `tests/t_parallel.nim`.
+- **Constraint:** only stateless or externally coordinated components may be
+  replicated. `store` and the current mixed read/mutation `edit` component may
+  not be.
 
 ### B3. Auto-retry of transient LLM failures
 - **What:** in the session runner's chat call (`core/conversation.nim`), on a
@@ -195,17 +181,17 @@ concurrency is threads.
 
 | # | Item | Effort | Payoff |
 |---|---|---|---|
-| 1 | **B1a** runner fan-out (cross-component) | medium | concurrent across components; prerequisite for B1b |
-| 2 | **B1b** SDK worker threads (same-component) | large | the real bash/edit parallel win |
+| 1 | **B1a** runner fan-out (cross-component) | medium | concurrent dispatch; prerequisite for useful replicas |
+| 2 | **B2** process replicas (same-component) | small | concurrent stateless calls without weakening SDK/process isolation |
 | 3 | **A1** LLM compaction (basic path) | large | biggest token + capability win on long tasks |
 | 4 | **B3** LLM auto-retry | small | saves human round-trips constantly |
 | 5 | **A2** usage-accurate accounting | small–med | makes compaction reliable |
 | 6 | **A3** cache-waste reporting | small | makes efficiency measurable |
 | 7 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins |
 | 8 | **C1** session tree + branch summaries | large | strategic; reuses A1 machinery |
-| 9 | **B2** replicas | small | fallback scale-out for non-Nim components |
+| 9 | **B1b** SDK worker pool | rejected | conflicts with the threadless SDK invariant |
 
 Start with **B1a** (needs the `x-harness.parallel` spec in `docs/WIRE.md`),
-then **B1b** (threads, your preference — the same-component win), then **A1**
-(needs the compaction message role spec). Wire implications are marked per item
-— nail the `x-harness.parallel` and compaction specs before coding.
+then **B2** replicas for stateless same-component work, then **A1** (needs the
+compaction message role spec). Wire implications are marked per item — nail the
+`x-harness.parallel` and compaction specs before coding.

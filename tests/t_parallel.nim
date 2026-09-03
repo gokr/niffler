@@ -15,10 +15,12 @@
 ##   slow        — sa_slow + sb_slow, two 1s-sleeping tools on two separate
 ##                 spawned components: proves cross-component concurrency
 ##                 (the turn finishes in ~1s, not ~2s).
+##   replica     — sr_slow twice on one logical component supervised with two
+##                 process replicas: proves same-component concurrency without
+##                 adding threads to the Nim SDK.
 
 import std/[json, os, osproc, strutils, times]
 import natswrapper
-import envelope
 import helpers
 
 proc compileMock(llmBin, repoRoot, scenario: string) =
@@ -53,6 +55,20 @@ proc waitComponent(nc: NatsConnection, name: string, secs = 25): bool =
     let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
     if snap{"components"}{name} != nil:
       return true
+    sleep(200)
+  return false
+
+proc waitReplicas(nc: NatsConnection, name: string, count: int,
+                  secs = 25): bool =
+  ## Wait until the catalog has observed every PID in a logical replica group.
+  for i in 0 ..< secs * 5:
+    let snap = call(nc, "core", "catalog", %*{"op": "snapshot"}, 5_000)
+    let components = snap{"components"}
+    if components != nil and components.kind == JArray:
+      for item in components:
+        if item{"name"}.getStr("") == name and
+            item{"pids"} != nil and item{"pids"}.len >= count:
+          return true
     sleep(200)
   return false
 
@@ -269,6 +285,88 @@ proc main() =
       check("slow: c2 sb_slow",
             tools[1]{"tool_call_id"}.getStr("") == "c2" and
             ($tools[1]).contains("sb"), $tools[1])
+
+  # ---- scenario: replica (same logical component concurrency) ------------
+  block:
+    let sandbox = newCoreSandbox("parallel-replica", ["store", "llm"])
+    let root = sandbox.root
+    compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "replica")
+    const replicaSrc = """
+      import std/[os]
+      import niffler/sdk
+      let comp = newComponent("sr", "0.1.0")
+      comp.tool(%*{"parallel": true, "timeoutMs": 30000}):
+        proc sr_slow(label: string): JsonNode =
+          ## Sleep and echo a label
+          sleep(1000)
+          %*{"ok": true, "label": label}
+      comp.run()
+      """.dedent()
+    writeFile(root / "sr.nim", replicaSrc)
+    compileSlow(sandbox.sandboxBin("sr"), root / "sr.nim")
+
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    var coreProc: Process
+    boot(nc, coreProc, sandbox, url, "replica")
+    defer: stopHard(coreProc)
+    defer: nc.close()
+    defer: stopServer(server)
+    defer: removeDir(root)
+
+    let spawned = call(nc, "core", "spawn",
+      %*{"name": "sr", "binary": sandbox.sandboxBin("sr"), "replicas": 2},
+      60_000)
+    check("replica: spawn two sr processes",
+          spawned{"ok"}.getBool(false) and
+          spawned{"replicas"}.getInt(0) == 2, $spawned)
+    check("replica: both processes registered", waitReplicas(nc, "sr", 2))
+
+    let status = call(nc, "core", "status", newJObject(), 10_000)
+    var replicaStatus: JsonNode
+    if status{"components"} != nil:
+      for item in status{"components"}:
+        if item{"name"}.getStr("") == "sr": replicaStatus = item
+    check("replica: status reports one group with two live replicas",
+          replicaStatus != nil and
+          replicaStatus{"replicas"}.getInt(0) == 2 and
+          replicaStatus{"runningReplicas"}.getInt(0) == 2,
+          $replicaStatus)
+
+    let sessionId = "conv-parallel-replica-" & $int(epochTime())
+    let warm = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "model": "mock-model"},
+                    60_000)
+    check("replica: runner warm (model-only)", warm{"ok"}.getBool(false), $warm)
+    let t0 = epochTime()
+    let turn = call(nc, "core", "session",
+                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+    let dt = epochTime() - t0
+    check("replica: turn ok", turn{"error"} == nil, $turn)
+    check("replica: turn reply",
+          turn{"reply"}.getStr("") == "parallel-done", $turn)
+    check("replica: same-component concurrency (turn < 1.8s)",
+          dt < 1.8, "turn took " & $dt & "s")
+    let tools = toolMessages(nc, sessionId)
+    check("replica: two ordered tool results", tools.len == 2, $tools.len)
+    if tools.len == 2:
+      check("replica: c1 first",
+            tools[0]{"tool_call_id"}.getStr("") == "c1" and
+            ($tools[0]).contains("first"), $tools[0])
+      check("replica: c2 second",
+            tools[1]{"tool_call_id"}.getStr("") == "c2" and
+            ($tools[1]).contains("second"), $tools[1])
+
+    let killed = call(nc, "core", "kill", %*{"name": "sr"}, 60_000)
+    check("replica: kill removes the whole supervised group",
+          killed{"ok"}.getBool(false), $killed)
+    let afterKill = call(nc, "core", "status", newJObject(), 10_000)
+    var stillSupervised = false
+    if afterKill{"components"} != nil:
+      for item in afterKill{"components"}:
+        if item{"name"}.getStr("") == "sr": stillSupervised = true
+    check("replica: no process remains after group kill", not stillSupervised,
+          $afterKill)
 
   report("PARALLEL")
 

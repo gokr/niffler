@@ -37,7 +37,8 @@ type
   ComponentReg* = object
     name*: string
     version*: string
-    pid*: int
+    pid*: int            ## primary/compatibility PID (first live replica)
+    pids*: seq[int]      ## all live replicas of this logical component
     client*: bool       ## interactive frontend (UI) — keeps an autostarted core alive
     tools*: seq[ToolReg]
     slash*: seq[SlashCommand]
@@ -60,16 +61,18 @@ proc newCatalog*(nc: NatsConnection): Catalog =
                    slashIndex: initTable[string, string]())
   # Core's tools are handled locally in dispatch. discover/invoke stay direct;
   # lifecycle controls remain in the full catalog as on-demand capabilities.
+  let corePid = getCurrentProcessId()
   var coreReg = ComponentReg(name: "core", version: "0.1.0",
-                             pid: getCurrentProcessId(),
+                             pid: corePid, pids: @[corePid],
                              registeredAt: epochTime())
   coreReg.tools.add(ToolReg(name: "spawn", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Start a compiled component binary; it registers itself and becomes available through discover/invoke. To stop it again: core.kill (restored on next boot) or core.remove (forgotten permanently)",
+      "description": "Start a compiled component binary (optionally as identical stateless process replicas); it registers and becomes available through discover/invoke. To stop the logical group: core.kill (restored on next boot) or core.remove (forgotten permanently)",
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
-        "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"}
+        "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"},
+        "replicas": {"type": "integer", "minimum": 1, "maximum": 16, "description": "Number of identical stateless component processes to run in the NATS queue group (default 1)"}
       },
       "required": ["name", "binary"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -77,7 +80,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "kill", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Stop a running component (drain + terminate). It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
+      "description": "Stop every process replica of a running logical component. It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -85,7 +88,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "remove", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Stop a component and delete its persisted record — it will not be restored on the next boot",
+      "description": "Stop every replica of a logical component and delete its persisted record — it will not be restored on the next boot",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -431,6 +434,19 @@ proc announce(cat: Catalog) =
     except CatchableError:
       discard  # checkpointing is best effort
 
+proc dropRegistration(cat: Catalog, name, reason: string) =
+  ## Remove one logical component and its tool/slash indexes.
+  if not cat.components.hasKey(name): return
+  for t in cat.components[name].tools:
+    if cat.toolIndex.getOrDefault(t.name) == name:
+      cat.toolIndex.del(t.name)
+  for s in cat.components[name].slash:
+    if cat.slashIndex.getOrDefault(s.name) == name:
+      cat.slashIndex.del(s.name)
+  cat.components.del(name)
+  echo "catalog: " & name & " " & reason
+  cat.announce()
+
 proc handle(cat: Catalog, subject, data: string) =
   var node: JsonNode
   try:
@@ -452,6 +468,17 @@ proc handle(cat: Catalog, subject, data: string) =
                            pid: node{"pid"}.getInt(0),
                            client: node{"client"}.getBool(false),
                            registeredAt: epochTime())
+    # Snapshot seeding can carry the whole live replica set; ordinary
+    # reg.publish carries only this process's pid.
+    let announcedPids = node{"pids"}
+    if announcedPids != nil and announcedPids.kind == JArray:
+      for p in announcedPids:
+        let pid = p.getInt(0)
+        if pid > 0 and pid notin reg.pids: reg.pids.add(pid)
+    if reg.pid > 0 and reg.pid notin reg.pids:
+      reg.pids.add(reg.pid)
+    if reg.pid <= 0 and reg.pids.len > 0:
+      reg.pid = reg.pids[0]
     # tool names are unique across the whole catalog (docs/WIRE.md). A clash
     # refuses the ENTIRE registration, before any state changes: a component
     # that joins minus its colliding tool shows up "installed" while silently
@@ -466,7 +493,43 @@ proc handle(cat: Catalog, subject, data: string) =
                "' already provided by " & owner &
                " (refused; use component-prefixed tool names)"
           return
-        reg.tools.add(ToolReg(name: tname, schema: normalizeToolSchema(t{"schema"}), component: name))
+        reg.tools.add(ToolReg(name: tname,
+                              schema: normalizeToolSchema(t{"schema"}),
+                              component: name))
+    # A second process with the same logical name is a NATS queue-group
+    # replica. It must advertise an identical tool contract; then only its
+    # PID joins the existing registration. This keeps global tool identity
+    # singular while the service has N workers.
+    if cat.components.hasKey(name):
+      var current = cat.components[name]
+      var compatible = current.client == reg.client and
+                       current.tools.len == reg.tools.len
+      if compatible:
+        for incoming in reg.tools:
+          var found = false
+          for existing in current.tools:
+            if existing.name == incoming.name and
+                schemaFingerprint(existing.schema) ==
+                  schemaFingerprint(incoming.schema):
+              found = true
+              break
+          if not found:
+            compatible = false
+            break
+      if not compatible:
+        echo "catalog: rejecting replica " & name &
+             " — registration contract differs from the live group"
+        return
+      for pid in reg.pids:
+        if pid notin current.pids: current.pids.add(pid)
+      if current.pid <= 0 and current.pids.len > 0:
+        current.pid = current.pids[0]
+      current.version = reg.version
+      cat.components[name] = current
+      echo "catalog: " & name & " replica registered (" &
+           $current.pids.len & " live)"
+      cat.announce()
+      return
     for t in reg.tools:
       cat.toolIndex[t.name] = name
     # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
@@ -522,18 +585,26 @@ proc handle(cat: Catalog, subject, data: string) =
 
   elif subject == "reg.depart":
     if cat.components.hasKey(name):
-      for t in cat.components[name].tools:
-        if cat.toolIndex.getOrDefault(t.name) == name:
-          cat.toolIndex.del(t.name)
-      for s in cat.components[name].slash:
-        if cat.slashIndex.getOrDefault(s.name) == name:
-          cat.slashIndex.del(s.name)
-      cat.components.del(name)
-      echo "catalog: " & name & " departed"
-      cat.announce()
+      let pid = node{"pid"}.getInt(0)
+      var reg = cat.components[name]
+      if pid > 0 and reg.pids.len > 0:
+        var remaining: seq[int]
+        for livePid in reg.pids:
+          if livePid != pid: remaining.add(livePid)
+        # Ignore a stale/duplicate departure rather than dropping peers.
+        if remaining.len == reg.pids.len: return
+        if remaining.len > 0:
+          reg.pids = remaining
+          reg.pid = remaining[0]
+          cat.components[name] = reg
+          echo "catalog: " & name & " replica departed (" &
+               $remaining.len & " live)"
+          cat.announce()
+          return
+      cat.dropRegistration(name, "departed")
 
 proc applyReg*(cat: Catalog, node: JsonNode) =
-  ## Inject one registration payload ({name, version, pid, tools}) as if it
+  ## Inject one registration payload ({name, version, pid, pids?, tools}) as if it
   ## had arrived on reg.publish — used by session runners to seed their
   ## catalog from the system's snapshot taken at startup.
   handle(cat, "reg.publish", $node)
@@ -544,18 +615,29 @@ proc clientCount*(cat: Catalog): int =
   for comp in cat.components.values:
     if comp.client: inc result
 
+proc dropReplica*(cat: Catalog, name: string, pid: int) =
+  ## Called by the supervisor when one process dies without reg.depart. Keep
+  ## the logical component registered while another queue-group replica lives.
+  if not cat.components.hasKey(name): return
+  var reg = cat.components[name]
+  if pid > 0 and reg.pids.len > 0:
+    var remaining: seq[int]
+    for livePid in reg.pids:
+      if livePid != pid: remaining.add(livePid)
+    if remaining.len == reg.pids.len: return
+    if remaining.len > 0:
+      reg.pids = remaining
+      reg.pid = remaining[0]
+      cat.components[name] = reg
+      echo "catalog: " & name & " replica lost (" & $remaining.len & " live)"
+      cat.announce()
+      return
+  cat.dropRegistration(name, "lost (last process died)")
+
 proc dropComponent*(cat: Catalog, name: string) =
-  ## Called by the supervisor when a child process dies (crash — no reg.depart).
-  if cat.components.hasKey(name):
-    for t in cat.components[name].tools:
-      if cat.toolIndex.getOrDefault(t.name) == name:
-        cat.toolIndex.del(t.name)
-    for s in cat.components[name].slash:
-      if cat.slashIndex.getOrDefault(s.name) == name:
-        cat.slashIndex.del(s.name)
-    cat.components.del(name)
-    echo "catalog: " & name & " lost (process died)"
-    cat.announce()
+  ## Remove an entire logical component (all replicas), used by explicit
+  ## core.kill/core.remove. Crashes use dropReplica instead.
+  cat.dropRegistration(name, "removed")
 
 proc pump*(cat: Catalog) =
   ## Drain pending registration messages; call from event gaps in the loop.

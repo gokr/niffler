@@ -20,8 +20,10 @@ anything structural.
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
   `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
   write source → `builder.build`
-  → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
-  (also deletes the persisted record). The agent does this to itself,
+  → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
+  coordinated components and uses their existing NATS queue group. Removing
+  one logical group = `core.kill` (temporary) or `core.remove` (also deletes
+  the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
 - One conversation = one process: the system harness (`niffler.nim`) is the
   irreducible root; it ensures a **session runner** (`var/bin/session <id>`,
@@ -36,7 +38,9 @@ anything structural.
 - Nim SDK has **no callbacks and no threads**: handlers poll
   `natsSubscription_NextMsg` on the main thread, serialized, with normal GC.
   The `{.gcsafe.}` pragmas dance from the old codebase is not needed and must not
-  be copied here.
+  be copied here. Same-component parallelism uses stateless process replicas,
+  never an SDK worker pool; do not replicate single-writer or process-local
+  mutable state (`store`, current `edit` undo state).
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase

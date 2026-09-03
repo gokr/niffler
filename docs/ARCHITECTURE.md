@@ -30,6 +30,9 @@ definition.
 
 Process lifecycle: start, crash detection, drain ordering, SIGTERM→SIGKILL
 escalation on shutdown. `core.spawn`/`kill`/`remove` are its API surface.
+Stateless logical components may have multiple supervised process replicas;
+their shared NATS queue group distributes calls, and lifecycle operations act
+on the whole replica group.
 
 Two separate reasons it cannot be a component:
 

@@ -41,10 +41,12 @@ Rules:
 ## Subjects
 
 ```
-reg.publish            # component announces itself on connect
+reg.publish            # component process announces itself on connect
                        #   {name, version, pid, tools: [ {name, schema} ], client?,
-                       #    slash?: [SlashCommand]}
-reg.depart             # same shape (name suffices), graceful shutdown
+                       #    slash?: [SlashCommand]}; repeated logical name +
+                       #    identical contract joins its replica group
+reg.depart             # {name, pid, ...}, graceful process departure; the logical
+                       #   component remains while another replica PID is live
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?};
@@ -219,9 +221,14 @@ ends — turns never nest.
 
 1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → select
    the boot profile → spawn children (no ordering; ordering emerges from the
-   bus). Normal mode uses the manifest; `--minimal` filters it to `store`,
-   `bash`, and `llm` and skips restoration of persisted spawned components.
-2. Component connects, publishes `reg.publish` with its tool schemas.
+   bus). A stateless entry may set `replicas: N` (1–16; default 1), producing N
+   queue-group subscribers under one logical component name. Normal mode uses
+   the manifest; `--minimal` filters it to `store`, `bash`, and `llm` and skips
+   restoration of persisted spawned components.
+2. Each component process connects and publishes `reg.publish` with its tool
+   schemas. Core tracks all live PIDs for an identical logical registration;
+   `catalog {op: snapshot}` exposes `pids` and `replicas`, while `core.status`
+   also exposes `runningReplicas`.
 3. Core converges when the selected profile's required set has registered
    (normally the manifest's required entries; `store`, `bash`, and `llm` in
    minimal mode). Every new registration is announced as
@@ -275,10 +282,10 @@ keys:
   Default (absent/`false`) is strictly serial — which is also enforced for
   any tool carrying `approval: "always"` or `sessionContext: true`, whatever
   `parallel` says. `parallel` is a *runner-side* scheduling hint: it does not
-  by itself make a component execute its own calls concurrently (that needs
-  the component to serve from a worker pool or run multiple replicas — the
-  NATS queue group on `svc.<component>.call` distributes one call per
-  subscriber).
+  by itself make one process execute two handlers concurrently. Stateless
+  components opt into multiple process replicas instead; the NATS queue group
+  on `svc.<component>.call` distributes one call per subscriber while each SDK
+  process remains serial.
 
 ## Conventions
 

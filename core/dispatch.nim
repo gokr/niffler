@@ -120,21 +120,29 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## the store component so it survives restarts (persistence of shape).
     let name = args{"name"}.getStr("")
     let binary = args{"binary"}.getStr("")
+    let replicas = args{"replicas"}.getInt(1)
     if name.len == 0 or binary.len == 0:
       return %*{"error": "spawn needs name and binary"}
+    if replicas < 1 or replicas > 16:
+      return %*{"error": "spawn replicas must be between 1 and 16"}
+    for child in ct.sup.children:
+      if child.name == name:
+        return %*{"error": "component already supervised: " & name}
     let abs = if binary.startsWith("/"): binary else: ct.sup.root / binary
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
-    discard ct.sup.addChild(name, abs)
-    ct.sup.startChild(ct.sup.children[^1])
+    for i in 0 ..< replicas:
+      discard ct.sup.addChild(name, abs)
+      ct.sup.startChild(ct.sup.children[^1])
     try:
       discard ct.dispatchToolCall("put", %*{
         "kind": "component", "id": name,
         "value": %*{"name": name, "binary": abs,
-                    "policy": "on-failure", "addedAt": epochTime()}})
+                    "policy": "on-failure", "replicas": replicas,
+                    "addedAt": epochTime()}})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
-    return %*{"ok": true, "name": name}
+    return %*{"ok": true, "name": name, "replicas": replicas}
   of "kill":
     ## Stop a running component: drain, then terminate. It stays persisted
     ## in the store and is restored on the next boot.
@@ -212,6 +220,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         for t in reg.tools:
           tools.add(%*{"name": t.name, "schema": t.schema})
         var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
+                       "pids": reg.pids, "replicas": max(reg.pids.len, 1),
                        "tools": tools, "registeredAt": reg.registeredAt}
         # The interactive-client flag must survive snapshot reseeding: a child
         # session runner (subagent) routes its fallback approvals through
@@ -260,11 +269,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             if cn.len > 0: langTable[cn] = c
     except CatchableError:
       discard
-    var childTable = initTable[string, Child]()
+    var childTable = initTable[string, seq[Child]]()
     var names: seq[string] = @[]
     for child in ct.sup.children:
-      childTable[child.name] = child
-      names.add(child.name)
+      childTable.mgetOrPut(child.name, @[]).add(child)
+      if child.name notin names: names.add(child.name)
     for name in ct.cat.components.keys:
       if name notin names:
         names.add(name)
@@ -272,12 +281,23 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
 
     var comps = newJArray()
     for name in names:
-      let child = childTable.getOrDefault(name)
+      let children = childTable.getOrDefault(name)
       let reg = ct.cat.components.getOrDefault(name)
-      let supervised = child != nil
+      let supervised = children.len > 0
+      var runningReplicas = 0
+      var wantedReplicas = 0
+      var restartTotal = 0
+      for child in children:
+        if child.process != nil and child.process.running():
+          inc runningReplicas
+        if child.wanted: inc wantedReplicas
+        restartTotal += child.restarts
+      let livePids = if reg.pids.len > 0: reg.pids else:
+                       (if reg.pid > 0: @[reg.pid] else: @[])
+      let replicas = if supervised: children.len else: livePids.len
       let running = if name == "core": true
-                    elif supervised: child.process != nil and child.process.running()
-                    else: reg.pid > 0
+                    elif supervised: runningReplicas > 0
+                    else: livePids.len > 0
       var tools = newJArray()
       for t in reg.tools:
         tools.add(%*{"name": t.name, "schema": t.schema})
@@ -285,16 +305,19 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         "name": name,
         "version": reg.version,
         "running": running,
-        "wanted": if supervised: child.wanted else: true,
-        "policy": if supervised: $child.policy
+        "wanted": if supervised: wantedReplicas > 0 else: true,
+        "policy": if supervised: $children[0].policy
                   elif name == "core": "core" else: "external",
-        "restarts": if supervised: child.restarts else: 0,
+        "restarts": restartTotal,
+        "replicas": replicas,
+        "runningReplicas": if supervised: runningReplicas else: livePids.len,
         "pid": reg.pid,
+        "pids": livePids,
         "registeredAt": reg.registeredAt,
         "tools": tools}
       var binary = ""
       if supervised:
-        binary = child.binary
+        binary = children[0].binary
         entry["binary"] = %binary
       let m = langTable.getOrDefault(name)
       if m != nil:
@@ -728,8 +751,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 # fires the whole wave at once (distinct inbox reply subjects), then collects
 # replies by round-robin polling — no threads, no asyncdispatch. This
 # parallelizes calls to *different* components (read ∥ grep ∥ git_status);
-# same-component calls still serialize at the component unless the component
-# serves from a worker pool or runs multiple replicas.
+# same-component calls still serialize in one process, but stateless logical
+# components can run multiple NATS queue-group process replicas.
 
 type
   ToolCallOutcome* = object

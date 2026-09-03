@@ -272,7 +272,13 @@ proc main() =
     if not fileExists(binary):
       echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binary & ")"
       continue
-    discard sup.addChild(name, binary, parsePolicy(c{"restart"}.getStr("on-failure")))
+    let requestedReplicas = c{"replicas"}.getInt(1)
+    let replicas = min(max(requestedReplicas, 1), 16)
+    if requestedReplicas != replicas:
+      echo "core: WARNING replicas for " & name & " clamped to " & $replicas
+    for i in 0 ..< replicas:
+      discard sup.addChild(name, binary,
+        parsePolicy(c{"restart"}.getStr("on-failure")))
     if minimalMode or c{"required"}.getBool(false):
       required.add(name)
   for c in sup.children:
@@ -361,10 +367,13 @@ proc main() =
             if c.name == name: alreadyManifest = true
           if alreadyManifest: continue  # shipped manifest definition wins
           if fileExists(binary):
-            echo "core: restoring " & name & " from store (" & binary & ")"
-            discard sup.addChild(name, binary,
-              parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
-            sup.startChild(sup.children[^1])
+            let replicas = min(max(item{"value"}{"replicas"}.getInt(1), 1), 16)
+            echo "core: restoring " & name & " from store (" & binary &
+                 ", " & $replicas & " replica(s))"
+            for i in 0 ..< replicas:
+              discard sup.addChild(name, binary,
+                parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
+              sup.startChild(sup.children[^1])
           else:
             echo "core: WARNING stored component " & name &
                  " has missing binary: " & binary

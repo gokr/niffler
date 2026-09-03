@@ -8,6 +8,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Parallel tool waves and process replicas** — session runners fan out
+  explicitly `x-harness.parallel` calls over distinct NATS reply inboxes and
+  commit results in model order. Stateless logical components can now set
+  `replicas: N` (1–16) in `manifest.yaml` or `core.spawn`; the supervisor,
+  catalog, persisted shape, status, and group lifecycle are replica-aware.
+  Four `grep` replicas ship by default, and the timing contract proves two
+  one-second same-component calls finish in about one second without adding
+  threads or `{.gcsafe.}` handlers to the Nim SDK.
+
 - **Bench `niffler-expert` variant** — paired measurement of plain Niffler
   vs expert-assisted Niffler: the runner arms `expert_follow` on the exact
   task session before its first turn (setup excluded from time-to-green),

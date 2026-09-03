@@ -26,7 +26,8 @@ proc parsePolicy*(s: string): RestartPolicy =
 
 type
   Child* = ref object
-    name*: string
+    name*: string          ## logical component name (shared by replicas)
+    instance*: int         ## 1-based supervisor instance for logs/status
     binary*: string
     policy*: RestartPolicy
     wanted*: bool          ## false while draining: never restart
@@ -53,6 +54,9 @@ proc logTail(path: string, maxLines: int): string =
   except CatchableError:
     return ""
 
+proc childLabel(c: Child): string =
+  if c.instance <= 1: c.name else: c.name & "#" & $c.instance
+
 proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
@@ -68,7 +72,7 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
     createDir(logDir)
   except CatchableError:
     discard
-  let logPath = logDir / (c.name & ".log")
+  let logPath = logDir / (c.childLabel() & ".log")
   var cmd = "exec " & quoteShell(c.binary)
   for a in args:
     cmd.add(" " & quoteShell(a))
@@ -77,12 +81,17 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # stdout/stderr pipes carry nothing (redirected at exec) and are never read.
   c.process = startProcess("/bin/sh", workingDir = sup.root, args = ["-c", cmd],
                            options = {poUsePath})
-  echo "supervisor: started " & c.name & " (" & c.binary & ")"
+  echo "supervisor: started " & c.childLabel() & " (" & c.binary & ")"
   c.restarts = 0
 
 proc addChild*(sup: Supervisor, name, binary: string,
                policy: RestartPolicy = rpOnFailure): Child =
-  result = Child(name: name, binary: binary, policy: policy, wanted: true)
+  var instance = 1
+  for child in sup.children:
+    if child.name == name:
+      instance = max(instance, child.instance + 1)
+  result = Child(name: name, instance: instance, binary: binary,
+                 policy: policy, wanted: true)
   sup.children.add(result)
 
 proc pump*(sup: Supervisor, cat: Catalog) =
@@ -99,10 +108,11 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     # died — keep c.process until the backoff window passes: a child that
     # dies twice in a row (e.g. refused a lock) must still be restarted when
     # its backoff elapses, never silently dropped
+    let pid = c.process.processID
     if c.policy == rpNever:
       c.process.close()
       c.process = nil
-      cat.dropComponent(c.name)
+      cat.dropReplica(c.name, pid)
       # retire the entry entirely: ensureRunner probes sup.children to tell
       # "spawning" from "dead", and a stale entry would block re-ensure of
       # an intentionally retired (idle-exited) runner forever
@@ -110,14 +120,15 @@ proc pump*(sup: Supervisor, cat: Catalog) =
       continue
     if now < c.nextStart: continue
     let code = c.process.peekExitCode()
-    let tail = logTail(sup.root / "var" / "logs" / (c.name & ".log"), 3)
+    let tail = logTail(sup.root / "var" / "logs" /
+                       (c.childLabel() & ".log"), 3)
     c.process.close()
-    cat.dropComponent(c.name)
+    cat.dropReplica(c.name, pid)
     c.restarts += 1
     let backoff = min(500.0 * float(1 shl min(c.restarts, 5)), 8000.0)
     c.nextStart = now + backoff / 1000.0
-    echo "supervisor: " & c.name & " died (exit " & $code & ", restart #" &
-         $c.restarts & ", backoff " & $backoff.int & "ms)"
+    echo "supervisor: " & c.childLabel() & " died (exit " & $code &
+         ", restart #" & $c.restarts & ", backoff " & $backoff.int & "ms)"
     if tail.len > 0:
       echo "supervisor:   last output: " & tail
     startChild(sup, c)
@@ -126,30 +137,35 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     sup.children.delete(i)
 
 proc removeChild*(sup: Supervisor, name: string): bool =
-  ## Stop one child for good, then drop it from the managed set (no restart,
-  ## no restore on boot). SIGTERM alone is the graceful path for a single
-  ## child — the SDKs treat SIGTERM like ev.sys.drain (depart + exit) —
-  ## whereas ev.sys.drain is a broadcast and would shut down every component.
-  ## Returns false if no such child exists.
-  var idx = -1
+  ## Stop every replica of one logical component for good, then drop them
+  ## from the managed set (no restart, no restore on boot). SIGTERM alone is
+  ## the graceful path for a single component group — ev.sys.drain would shut
+  ## down every component. Returns false when no matching child exists.
+  var indices: seq[int]
   for i, c in sup.children:
     if c.name == name:
-      idx = i
-      break
-  if idx < 0: return false
-  let c = sup.children[idx]
-  c.wanted = false
-  if c.process != nil and c.process.running():
-    c.process.terminate()   # SIGTERM: component departs gracefully
-    sleep(600)
-  if c.process != nil and c.process.running():
-    c.process.kill()        # SIGKILL
-    sleep(50)
-  if c.process != nil and not c.process.running():
-    c.process.close()
-    c.process = nil
-  delete(sup.children, idx)
-  echo "supervisor: removed " & name
+      indices.add(i)
+  if indices.len == 0: return false
+  # Signal the group together so N replicas cost one grace window, not N.
+  for i in indices:
+    let c = sup.children[i]
+    c.wanted = false
+    if c.process != nil and c.process.running():
+      c.process.terminate()
+  sleep(600)
+  for i in indices:
+    let c = sup.children[i]
+    if c.process != nil and c.process.running():
+      c.process.kill()
+  sleep(50)
+  for i in countdown(indices.len - 1, 0):
+    let idx = indices[i]
+    let c = sup.children[idx]
+    if c.process != nil and not c.process.running():
+      c.process.close()
+      c.process = nil
+    delete(sup.children, idx)
+  echo "supervisor: removed " & name & " (" & $indices.len & " replica(s))"
   return true
 
 proc drain*(sup: Supervisor) =
@@ -157,9 +173,10 @@ proc drain*(sup: Supervisor) =
   echo "supervisor: draining " & $sup.children.len & " children"
   for c in sup.children:
     c.wanted = false
-    let env = Envelope(v: 1, id: newId(), kind: ekEvent,
-                       payload: newJObject())
-    sup.nc.publish("ev.sys.drain", env.encode())
+  # One broadcast reaches every process, including every replica.
+  let env = Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: newJObject())
+  sup.nc.publish("ev.sys.drain", env.encode())
   sleep(600)  # grace: components finish current call, depart, exit
   for c in sup.children:
     if c.process == nil: continue
