@@ -282,10 +282,12 @@ keys:
   Default (absent/`false`) is strictly serial — which is also enforced for
   any tool carrying `approval: "always"` or `sessionContext: true`, whatever
   `parallel` says. `parallel` is a *runner-side* scheduling hint: it does not
-  by itself make one process execute two handlers concurrently. Stateless
-  components opt into multiple process replicas instead; the NATS queue group
-  on `svc.<component>.call` distributes one call per subscriber while each SDK
-  process remains serial.
+  by itself make one process execute two handlers concurrently. Server-side
+  execution is an independent, explicit component choice: stateless services
+  can use process replicas; audited Go handlers can register with
+  `ToolConcurrent`; a Nim component may own native workers even though the
+  default SDK pump remains serial. The NATS queue group on
+  `svc.<component>.call` distributes one call per process subscriber.
 
 ## Conventions
 

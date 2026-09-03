@@ -12,4 +12,4 @@ shipped. Not operating documentation — for that, see
 | [MCP.md](MCP.md) | Plan (not shipped): MCP client support — external MCP servers contribute tools as ordinary bus tools |
 | [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md) | Findings: what pi (github.com/earendil-works/pi) does that Niffler lacks on token consumption and wall-clock execution, plus the concurrency deep-dive (NATS fan-out vs. Nim task pools) |
 | [PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) | Plan: ordered improvements (parallel tool fan-out → LLM compaction → retry/cache/accounting → session tree), with wire-spec implications and effort |
-| [PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md) | Decision record: evaluated `threadpool`, `tasks`, `taskpools`, and raw threads for same-component concurrency; rejected SDK threads and shipped NATS process replicas |
+| [PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md) | Decision record: same-component bottleneck, Nim mechanism evaluation (`std/threads` + `std/locks` preferred), deferred worker-aware pump, process replicas, and concurrent-safe Go tools |

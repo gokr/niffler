@@ -359,8 +359,16 @@ The agent adds capabilities at runtime, mid-conversation:
 stateless or externally coordinated components: all replicas share the same
 `svc.<name>.call` NATS queue group, so concurrent requests distribute one per
 process. Never replicate single-writer `store`, or a component such as `edit`
-whose mutation/undo state is process-local. Each process still runs the normal
-serial SDK pump—there are no Nim SDK worker threads.
+whose mutation/undo state is process-local. The default Nim SDK pump remains
+serial. A component may explicitly own native concurrency when replicas do not
+fit: prefer `std/threads` + `std/locks` for long-lived/shared-state Nim workers,
+use `taskpools` for isolated jobs, and never use `asyncdispatch`. In Go,
+ordinary `Tool` handlers remain exclusive; an audited handler can use
+`ToolConcurrent` (bounded to 16 in flight by default, configurable through
+`ConcurrentLimit`). Concurrent handlers must synchronize shared state and must
+not synchronously call a serialized tool on their own component. This
+server-side choice is independent of the runner-facing `x-harness.parallel`
+hint.
 
 **Persistence of shape**: spawned components are recorded in the store
 (kind `component`) and restored on normal boot. `--minimal` leaves those

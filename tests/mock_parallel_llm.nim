@@ -9,8 +9,10 @@
 ##                 (a non-parallel bash call splitting two read waves)
 ##   slow        — sa_slow, sb_slow (two 1s-sleeping tools on two different
 ##                 spawned components — proves cross-component concurrency)
-##   replica     — sr_slow twice (one logical component, two process replicas
-##                 in its NATS queue group — proves same-component concurrency)
+##   replica     — sr_slow ×8 (one logical component, four process replicas in
+##                 its NATS queue group — proves same-component concurrency;
+##                 handlers report pid + start/finish stamps so the assertion
+##                 checks real overlap instead of wall-clock timing)
 ## Every later working round returns the final reply "parallel-done".
 
 import std/[json, os]
@@ -54,8 +56,8 @@ proc(c: Component, args: JsonNode): JsonNode =
       fn("sa_slow", "{}")
       fn("sb_slow", "{}")
     of "replica":
-      fn("sr_slow", """{"label":"first"}""")
-      fn("sr_slow", """{"label":"second"}""")
+      for i in 1 .. 8:
+        fn("sr_slow", "{\"label\":\"call-" & $i & "\"}")
     else:
       return %*{"content": "unknown scenario", "model": "mock-model"}
     return %*{"content": "", "tool_calls": calls, "model": "mock-model"}

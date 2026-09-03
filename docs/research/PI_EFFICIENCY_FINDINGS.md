@@ -39,18 +39,19 @@ steering/follow-up message queues (`drainSteer`/`drainAdvisories` in
 > Correction (2026-08): an earlier draft claimed NATS fan-out alone gives
 > "true OS-level parallelism". That is only true **across** components. For
 > **same-component** concurrency (four `bash` calls, four `edit` reads) the
-> runner fan-out changes nothing — the component still serializes. The three
-> mechanisms below are orthogonal. B1a runner fan-out shipped; the B1b SDK
-> worker-thread proposal was rejected against the threadless SDK invariant;
-> B2 process scale-out supplies same-component concurrency.
+> runner fan-out changes nothing — the component still serializes. The
+> execution mechanisms below are orthogonal. B1a runner fan-out and B2 process scale-out
+> shipped; a generic worker-aware Nim pump is deferred, while audited
+> component-owned threads remain allowed.
 
-### 1.0 The three mechanisms — one mental model
+### 1.0 The execution mechanisms — one mental model
 
 | Mechanism | Where the concurrency is | Gives you | Needs |
 |---|---|---|---|
 | **Runner fan-out** (B1a) | across components: `read` (edit) ∥ `grep` (grep) ∥ `git_status` (git) | cross-component parallelism; removes runner-side serialization | async request/reply in the runner (no threads, no asyncdispatch) |
-| **Worker threads in the component** (B1b, rejected) | inside one process | technically supplies same-component parallelism | conflicts with the threadless SDK/normal-GC invariant and introduces `{.gcsafe.}` + payload-sharing rules |
+| **Worker threads in the component** (B1b, deferred) | inside one process | same-component concurrency for mixed/stateful services | explicit worker lifecycle, `{.gcsafe.}` boundary, payload ownership, serial barriers |
 | **Replicas / scale-out** (B2, shipped) | N copies of the logical component process, one call per queue subscriber | same-component parallelism with **zero threads**, works for any language | `replicas: N`; queue group already distributes |
+| **Concurrent Go tools** (B1c, shipped) | bounded goroutines inside one Go component | removes cross-session head-of-line blocking (notably `llm.chat`) | explicit `ToolConcurrent`; ordinary handlers stay exclusive |
 
 **Why bash cannot "fork and return early" to get concurrency:** the WIRE
 contract is one reply per call. `bash` spawns a child shell process per command
@@ -60,7 +61,7 @@ reply on the reply subject — a protocol change (pi's deferred responses
 `fetchDeferred` are exactly this). So in-process concurrency for a blocking
 handler means threads.
 
-### 1.1 Today Niffler is serial twice over
+### 1.1 Baseline Niffler was serial twice over
 
 **Within a component** (`sdk/niffler/sdk.nim` `run*`): a single main thread
 polls every subscription with `natsSubscription_NextMsg` (1ms timeout) and
@@ -69,16 +70,17 @@ publishes the reply. One call at a time, per process. A long handler (bash with
 a 60s timeout) blocks that component's *entire* pump — every other tool *and*
 every event/tap handler it owns.
 
-**Across components** (`core/conversation.nim`):
-`for tc in toolCalls:` runs each tool call to completion
+**Across components before B1a** (`core/conversation.nim`):
+`for tc in toolCalls:` ran each tool call to completion
 (`ct.dispatchToolCall(name, args)` is a blocking request/reply) before the
-next. So even though the model emits 5 independent calls, the wall clock is the
+next. Even when the model emitted five independent calls, wall clock was the
 **sum** of their latencies.
 
-The `AGENTS.md` invariant is explicit: the Nim SDK has no callbacks or
-threads, handlers run serialized with normal GC, and the `{.gcsafe.}` dance
-must not be copied in. An SDK worker mode would violate that contract even if
-opt-in; process replicas preserve it.
+The default Nim SDK pump deliberately has no callbacks or threads and handlers
+run serialized with normal GC. This does not prohibit component-owned native
+threads: never use `asyncdispatch`; prefer `std/threads` + `std/locks` for a
+long-lived shared-state worker model, and `taskpools` for isolated jobs. Keep
+that boundary opt-in rather than burdening every SDK handler.
 
 ### 1.2 B1a — Runner fan-out: cross-component parallelism (no threads)
 
@@ -103,7 +105,7 @@ So fan-out needs a **parallel-safe classification** per tool, exactly pi's
 `executionMode` — and it is **not** a substitute for in-component
 concurrency. Same-component calls still serialize at the component.
 
-### 1.3 B1b — Worker threads investigated, then rejected
+### 1.3 B1b — Worker-aware Nim pump investigated, then deferred
 
 One proposed way for four calls to one process to overlap was a worker pool.
 The evaluated prototype design was:
@@ -135,9 +137,11 @@ building block (`toTask` + `invoke` + result pointer; the ergonomic
 **Standalone `taskpools` 0.2.1** builds an ergonomic pool over isolation, but
 that is the wrong ownership shape for a Niffler handler: `spawn` rejects the
 shared long-lived `Component` ref (`expression cannot be isolated: comp`). A
-raw `std/threads` + `std/locks` queue is technically possible, but still
-requires a second `{.gcsafe.}` handler type and shared SDK state. The project
-invariant decides the question: no worker-thread mode. Full details are in
+raw `std/threads` + `std/locks` queue is the preferred general shared-context
+model. A generic SDK handoff still needs a second `{.gcsafe.}` handler type,
+encoded/isolated payloads, bounded admission, serial barriers, and coordinated
+shutdown, so it is deferred until a mixed stateful component needs it. Full
+details are in
 [PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md).
 
 ### 1.4 B2 — Replicas / scale-out (no threads, works for any language) ☑
@@ -151,11 +155,12 @@ single-writer/stateful components cannot opt in blindly.
 
 ### 1.5 Recommendation
 
-Use B1a runner fan-out plus B2 process replicas. That gives cross-component and
-same-logical-component concurrency while preserving crash isolation, language
-freedom, and the threadless Nim SDK. Split mixed stateful components before
-scaling them — for example, `edit` reads cannot safely replicate alongside its
-mutation and per-process undo state.
+Use B1a runner fan-out plus B2 process replicas for stateless Nim components.
+Use explicit component-owned `std/threads` + `std/locks` where shared-state
+in-process concurrency is actually needed; add the worker-aware pump when
+parallel `edit` reads justify its scheduler/barrier complexity. In Go, opt
+only audited handlers into `ToolConcurrent`; the LLM adapters are the first
+high-impact use because independent sessions otherwise serialize.
 
 ---
 

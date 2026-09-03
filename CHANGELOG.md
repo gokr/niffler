@@ -15,7 +15,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   catalog, persisted shape, status, and group lifecycle are replica-aware.
   Four `grep` replicas ship by default, and the timing contract proves two
   one-second same-component calls finish in about one second without adding
-  threads or `{.gcsafe.}` handlers to the Nim SDK.
+  threads or `{.gcsafe.}` handlers to the default Nim SDK pump. The Go SDK
+  gained bounded `ToolConcurrent` goroutine dispatch with serialized-handler
+  barriers and graceful waiting; the audited `llm.chat`, `llm_resolve`, and
+  `llm-openai.chat` handlers now overlap across independent sessions.
 
 - **Bench `niffler-expert` variant** — paired measurement of plain Niffler
   vs expert-assisted Niffler: the runner arms `expert_follow` on the exact

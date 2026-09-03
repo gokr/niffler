@@ -10,12 +10,13 @@
 
 ## The one architectural principle
 
-**Concurrency stays process-native:** the runner fans calls out over NATS, and
-stateless logical components scale through multiple queue-group subscriber
-processes. A queue group with one process is serial; with N replicas, N calls
-can execute concurrently while every SDK process retains its one-threaded
-polling loop. This obeys the `AGENTS.md` invariants (process isolation, no Nim
-SDK threads, no `{.gcsafe.}` handler split) and uses no `asyncdispatch`.
+**Concurrency is explicit at each layer:** the session runner fans calls out
+over NATS; stateless logical components can scale through queue-group process
+replicas; and an audited component may own native concurrency. Never use Nim
+`asyncdispatch`. The default Nim SDK pump remains threadless and serial, while
+`std/threads` + `std/locks` is the preferred general model for component-owned
+shared-state workers (`taskpools` fits genuinely isolated jobs). Go tools are
+serialized unless explicitly registered concurrency-safe.
 
 ---
 
@@ -27,7 +28,7 @@ SDK threads, no `{.gcsafe.}` handler split) and uses no `asyncdispatch`.
   reply subscriptions round-robin (pure event-driven async — no asyncdispatch,
   no threads), reassemble results in original order. Parallelizes calls to
   *different* components (`read` ∥ `grep` ∥ `git_status`). Calls to one logical
-  component need multiple queue-group replicas (B2) to overlap.
+  component need queue-group replicas (B2) or a worker-aware component to overlap.
 - **Guard rails (design work, not just async):** per-tool `parallel: bool`
   classification. Default **serial** for: approval-gated tools
   (`core/approval.nim` — human in the loop), session-context tools (`fabric`,
@@ -39,15 +40,29 @@ SDK threads, no `{.gcsafe.}` handler split) and uses no `asyncdispatch`.
   x-harness, so this is a per-tool flag, default-off → no surprise behavior.
 - **Effort:** medium. ~1–2 days. Required regardless of the scale-out mechanism.
 
-### B1b. SDK worker threads: same-component parallelism — rejected
+### B1b. Worker-aware Nim component pump — deferred
 - **Investigation:** compared `std/threadpool`, `std/tasks`, `taskpools` 0.2.1,
   and a fixed `std/threads` + `std/locks` pool on Nim 2.2.10. `taskpools`
-  correctly rejects the shared `Component` ref as non-isolated; raw threads
-  are the least awkward technical fit but require a `{.gcsafe.}` handler seam,
-  shared-payload rules, and SDK-owned shutdown coordination.
-- **Decision:** do not implement. `AGENTS.md` explicitly makes the threadless,
-  serialized Nim SDK an architecture invariant. See
+  correctly rejects an aliased shared `Component` ref, but remains suitable for
+  isolated jobs. A fixed `std/threads` + `std/locks` pool is the preferred
+  general component model.
+- **Decision:** keep `Component.run()` serial for now. A future opt-in pump must
+  define encoded/isolated job ownership, bounded admission, gcsafe handlers,
+  exclusive barriers for serial tools/events, completion publication, and
+  shutdown. This is primarily needed for mixed stateful components such as
+  parallel `read` plus serialized `edit`; it is not a session reply-consumer
+  bottleneck. See
   [PI_EFFICIENCY_B1B_THREADS.md](PI_EFFICIENCY_B1B_THREADS.md).
+
+### B1c. Concurrent-safe Go tool handlers ☑
+- **What:** `ToolConcurrent` hands a call from nats.go's serial subscription
+  callback to a bounded goroutine (default 16; `ConcurrentLimit` configures
+  it). An RW-lock lets concurrent tools overlap while ordinary tools, events,
+  and taps remain exclusive barriers; shutdown waits for detached handlers.
+- **First use:** audited `llm.chat`, `llm_resolve`, and `llm-openai.chat`,
+  removing accidental serialization across independent sessions/subagents.
+- **Verification:** bus-level overlap/exclusion tests and `go test -race` for
+  the SDK and both LLM adapters.
 
 ### B2. Replicas / scale-out *(no threads, any language)* ☑
 - **What:** because the call subject is a NATS queue group, spawning N copies
@@ -181,17 +196,18 @@ SDK threads, no `{.gcsafe.}` handler split) and uses no `asyncdispatch`.
 
 | # | Item | Effort | Payoff |
 |---|---|---|---|
-| 1 | **B1a** runner fan-out (cross-component) | medium | concurrent dispatch; prerequisite for useful replicas |
-| 2 | **B2** process replicas (same-component) | small | concurrent stateless calls without weakening SDK/process isolation |
-| 3 | **A1** LLM compaction (basic path) | large | biggest token + capability win on long tasks |
-| 4 | **B3** LLM auto-retry | small | saves human round-trips constantly |
-| 5 | **A2** usage-accurate accounting | small–med | makes compaction reliable |
-| 6 | **A3** cache-waste reporting | small | makes efficiency measurable |
-| 7 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins |
-| 8 | **C1** session tree + branch summaries | large | strategic; reuses A1 machinery |
-| 9 | **B1b** SDK worker pool | rejected | conflicts with the threadless SDK invariant |
+| 1 | **B1a** runner fan-out (cross-component) | medium | concurrent dispatch; prerequisite for useful replicas/workers |
+| 2 | **B2** process replicas (same-component) | small | concurrent stateless calls without weakening process isolation |
+| 3 | **B1c** concurrent Go handlers | small | independent sessions/subagents no longer queue behind one LLM request |
+| 4 | **A1** LLM compaction (basic path) | large | biggest token + capability win on long tasks |
+| 5 | **B3** LLM auto-retry | small | saves human round-trips constantly |
+| 6 | **A2** usage-accurate accounting | small–med | makes compaction reliable |
+| 7 | **A3** cache-waste reporting | small | makes efficiency measurable |
+| 8 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins |
+| 9 | **C1** session tree + branch summaries | large | strategic; reuses A1 machinery |
+| 10 | **B1b** worker-aware Nim pump | large/deferred | parallel reads in mixed stateful components |
 
-Start with **B1a** (needs the `x-harness.parallel` spec in `docs/WIRE.md`),
-then **B2** replicas for stateless same-component work, then **A1** (needs the
-compaction message role spec). Wire implications are marked per item — nail the
-`x-harness.parallel` and compaction specs before coding.
+B1a, B2, and B1c are shipped. Continue with **A1**; implement B1b when a
+mixed stateful component needs call-level concurrency that replicas cannot
+safely provide. Wire implications are marked per item — nail the compaction
+message role before coding A1.

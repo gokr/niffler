@@ -89,6 +89,23 @@ proc toolMessages(nc: NatsConnection, sessionId: string): seq[JsonNode] =
     if item{"value"}{"role"}.getStr("") == "tool":
       result.add(item{"value"})
 
+proc parseTime(toolMsg: JsonNode, field: string): float =
+  ## Pull a float field out of a tool result's JSON content text (the runner
+  ## stores the component's result as `content: $value`).
+  let content = toolMsg{"content"}.getStr("")
+  let marker = "\"" & field & "\":"
+  let idx = content.find(marker)
+  if idx < 0: return 0.0
+  let rest = content[idx + marker.len .. ^1]
+  var endIdx = 0
+  while endIdx < rest.len and rest[endIdx] in {'0'..'9', '.', '-', 'e', 'E', '+'}:
+    inc endIdx
+  if endIdx == 0: return 0.0
+  try:
+    return parseFloat(rest[0 ..< endIdx])
+  except CatchableError:
+    return 0.0
+
 proc boot(nc: NatsConnection, coreProc: var Process,
           sandbox: TestSandbox, url: string, scenario: string) =
   ## Shared sandbox boot: nats + core (with the scenario env for the mock llm
@@ -292,14 +309,18 @@ proc main() =
     let root = sandbox.root
     compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "replica")
     const replicaSrc = """
-      import std/[os]
+      import std/[json, os, times]
       import niffler/sdk
       let comp = newComponent("sr", "0.1.0")
       comp.tool(%*{"parallel": true, "timeoutMs": 30000}):
         proc sr_slow(label: string): JsonNode =
-          ## Sleep and echo a label
+          ## Sleep, then report which process served this call and when it
+          ## ran, so the test can prove two handlers overlapped across
+          ## process replicas.
+          let started = epochTime()
           sleep(1000)
-          %*{"ok": true, "label": label}
+          %*{"ok": true, "label": label, "pid": getCurrentProcessId(),
+             "started": started, "finished": epochTime()}
       comp.run()
       """.dedent()
     writeFile(root / "sr.nim", replicaSrc)
@@ -338,24 +359,42 @@ proc main() =
                     %*{"sessionId": sessionId, "model": "mock-model"},
                     60_000)
     check("replica: runner warm (model-only)", warm{"ok"}.getBool(false), $warm)
-    let t0 = epochTime()
     let turn = call(nc, "core", "session",
                     %*{"sessionId": sessionId, "content": "go"}, 120_000)
-    let dt = epochTime() - t0
     check("replica: turn ok", turn{"error"} == nil, $turn)
     check("replica: turn reply",
           turn{"reply"}.getStr("") == "parallel-done", $turn)
-    check("replica: same-component concurrency (turn < 1.8s)",
-          dt < 1.8, "turn took " & $dt & "s")
     let tools = toolMessages(nc, sessionId)
-    check("replica: two ordered tool results", tools.len == 2, $tools.len)
-    if tools.len == 2:
-      check("replica: c1 first",
-            tools[0]{"tool_call_id"}.getStr("") == "c1" and
-            ($tools[0]).contains("first"), $tools[0])
-      check("replica: c2 second",
-            tools[1]{"tool_call_id"}.getStr("") == "c2" and
-            ($tools[1]).contains("second"), $tools[1])
+    check("replica: eight ordered tool results", tools.len == 8, $tools.len)
+    if tools.len == 8:
+      for i, expected in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        check("replica: c" & $i & " label " & expected,
+              ($tools[i]).contains("call-" & expected), $tools[i])
+      # Deterministic concurrency proof instead of wall-clock timing (CI load
+      # and NATS queue-group randomness make turn duration flaky). Each
+      # handler reports its pid and start/finish stamps: we require (a) more
+      # than one process served the wave and (b) some pair of handlers from
+      # different processes overlapped. A single serial process can do neither.
+      var pids: seq[int]
+      type Interval = tuple[start, finish: float]
+      var intervals: seq[Interval]
+      for msg in tools:
+        let pid = parseTime(msg, "pid").int
+        let start = parseTime(msg, "started")
+        let finish = parseTime(msg, "finished")
+        if pid > 0 and start > 0:
+          if pid notin pids: pids.add(pid)
+          intervals.add((start, finish))
+      check("replica: more than one process served the wave", pids.len > 1,
+            "pids seen: " & $pids)
+      var overlappedAcrossProcesses = false
+      for a in 0 ..< intervals.len:
+        for b in a + 1 ..< intervals.len:
+          if intervals[a].start < intervals[b].finish and
+             intervals[b].start < intervals[a].finish:
+            overlappedAcrossProcesses = true
+      check("replica: same-component handlers overlapped across replicas",
+            overlappedAcrossProcesses, $intervals)
 
     let killed = call(nc, "core", "kill", %*{"name": "sr"}, 60_000)
     check("replica: kill removes the whole supervised group",

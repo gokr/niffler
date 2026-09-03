@@ -119,7 +119,11 @@ The mechanisms that *are* components, and the capability they carry:
 | `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |
 
 The pattern: state, access, build, and exec are all replaceable peers. If a
-mechanism can be rebuilt by the agent at runtime, it must be one.
+mechanism can be rebuilt by the agent at runtime, it must be one. A process is
+the isolation/lifecycle boundary, not a requirement that its internals be
+single-threaded: audited components may own native workers (`std/threads` +
+`std/locks` is the preferred general Nim model; Go uses goroutines), while the
+default Nim SDK pump stays serial and `asyncdispatch` is never used.
 
 ## Where the boundary shows
 

@@ -424,7 +424,9 @@ to CI any plugin repo — Niffler testing itself.
       explicitly `x-harness.parallel` calls over distinct NATS inboxes and
       commit replies in model order; stateless logical components can declare
       or spawn 1–16 queue-group replicas for same-component concurrency while
-      the Nim SDK remains threadless (four `grep` replicas ship by default)
+      the default Nim SDK pump remains threadless (four `grep` replicas ship by
+      default); audited Go tools can opt into bounded `ToolConcurrent`
+      goroutines, enabled first for both LLM adapters
 - [x] **bus-contract test suite** — `make test`: one script per non-LLM
       component (including models, observe, logfile, edit), each
       booting the real binaries over its own NATS; hermetic plugin installs

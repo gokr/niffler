@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,6 +100,184 @@ func TestSignalShutdownIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestToolConcurrentExecution(t *testing.T) {
+	url := startTestNATS(t)
+	client, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	t.Setenv("NIF_NATS_URL", url)
+
+	tests := []struct {
+		name       string
+		component  string
+		concurrent bool
+		limit      int
+		wantSecond bool
+	}{
+		{name: "ordinary tools stay serialized", component: "go-serial", wantSecond: false},
+		{name: "concurrent tools overlap", component: "go-concurrent", concurrent: true, wantSecond: true},
+		{name: "concurrent limit applies backpressure", component: "go-concurrent-one", concurrent: true, limit: 1, wantSecond: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+			handler := func(_ *Component, _ json.RawMessage) (any, error) {
+				started <- struct{}{}
+				<-release
+				return map[string]bool{"ok": true}, nil
+			}
+
+			component := New(tt.component, "0.1.0")
+			if tt.limit > 0 {
+				component.ConcurrentLimit(tt.limit)
+			}
+			if tt.concurrent {
+				component.ToolConcurrent("wait", map[string]any{
+					"type": "object", "properties": map[string]any{},
+				}, handler)
+			} else {
+				component.Tool("wait", map[string]any{
+					"type": "object", "properties": map[string]any{},
+				}, handler)
+			}
+			if err := component.Connect(); err != nil {
+				t.Fatal(err)
+			}
+			defer component.Close()
+			defer releaseAll()
+
+			errs := make(chan error, 2)
+			request := func(id string) {
+				env := Envelope{V: 1, ID: id, Kind: KindCall,
+					Tool: "wait", Args: json.RawMessage(`{}`)}
+				data, marshalErr := env.Marshal()
+				if marshalErr != nil {
+					errs <- marshalErr
+					return
+				}
+				_, requestErr := client.Request("svc."+tt.component+".call", data,
+					3*time.Second)
+				errs <- requestErr
+			}
+
+			go request("first")
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				releaseAll()
+				t.Fatal("first handler did not start")
+			}
+			go request("second")
+
+			secondStarted := false
+			select {
+			case <-started:
+				secondStarted = true
+			case <-time.After(250 * time.Millisecond):
+			}
+			if secondStarted != tt.wantSecond {
+				t.Errorf("second handler started before release = %v, want %v",
+					secondStarted, tt.wantSecond)
+			}
+
+			releaseAll()
+			if !secondStarted {
+				select {
+				case <-started:
+				case <-time.After(2 * time.Second):
+					t.Fatal("serialized second handler did not start after release")
+				}
+			}
+			for i := 0; i < 2; i++ {
+				select {
+				case requestErr := <-errs:
+					if requestErr != nil {
+						t.Errorf("request failed: %v", requestErr)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("request did not finish")
+				}
+			}
+		})
+	}
+}
+
+func TestSerializedToolExcludesConcurrentHandlers(t *testing.T) {
+	url := startTestNATS(t)
+	client, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	t.Setenv("NIF_NATS_URL", url)
+
+	parallelStarted := make(chan struct{})
+	serialStarted := make(chan struct{})
+	releaseParallel := make(chan struct{})
+	component := New("go-exclusive", "0.1.0").
+		ToolConcurrent("parallel", map[string]any{
+			"type": "object", "properties": map[string]any{},
+		}, func(_ *Component, _ json.RawMessage) (any, error) {
+			close(parallelStarted)
+			<-releaseParallel
+			return map[string]bool{"ok": true}, nil
+		}).
+		Tool("serial", map[string]any{
+			"type": "object", "properties": map[string]any{},
+		}, func(_ *Component, _ json.RawMessage) (any, error) {
+			close(serialStarted)
+			return map[string]bool{"ok": true}, nil
+		})
+	if err := component.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer component.Close()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseParallel) }) }
+	defer release()
+
+	request := func(tool, id string, done chan<- error) {
+		env := Envelope{V: 1, ID: id, Kind: KindCall,
+			Tool: tool, Args: json.RawMessage(`{}`)}
+		data, marshalErr := env.Marshal()
+		if marshalErr != nil {
+			done <- marshalErr
+			return
+		}
+		_, requestErr := client.Request("svc.go-exclusive.call", data, 3*time.Second)
+		done <- requestErr
+	}
+	done := make(chan error, 2)
+	go request("parallel", "parallel", done)
+	select {
+	case <-parallelStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent handler did not start")
+	}
+	go request("serial", "serial", done)
+	select {
+	case <-serialStarted:
+		t.Error("serialized handler overlapped a concurrent handler")
+	case <-time.After(250 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-serialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized handler did not start after concurrent handler")
+	}
+	for i := 0; i < 2; i++ {
+		if requestErr := <-done; requestErr != nil {
+			t.Errorf("request failed: %v", requestErr)
+		}
+	}
+}
+
 func TestCloseWaitsForActiveHandler(t *testing.T) {
 	url := startTestNATS(t)
 	var client *nats.Conn
@@ -155,7 +334,43 @@ func TestCloseWaitsForActiveHandler(t *testing.T) {
 		t.Fatalf("active handler reply was lost during Close: %v", err)
 	}
 
-	closeFromHandler := New("handler-close-test", "0.1.0").Tool("close", map[string]any{
+	concurrentStarted := make(chan struct{})
+	concurrentFinished := make(chan struct{})
+	concurrent := New("slow-concurrent-test", "0.1.0").ToolConcurrent("slow", map[string]any{
+		"type": "object", "properties": map[string]any{},
+	}, func(_ *Component, _ json.RawMessage) (any, error) {
+		close(concurrentStarted)
+		time.Sleep(500 * time.Millisecond)
+		close(concurrentFinished)
+		return map[string]bool{"ok": true}, nil
+	})
+	if err := concurrent.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	request = Envelope{V: 1, ID: NewID(), Kind: KindCall,
+		Tool: "slow", Args: json.RawMessage(`{}`)}
+	data, _ = request.Marshal()
+	replied = make(chan error, 1)
+	go func() {
+		_, requestErr := client.Request("svc.slow-concurrent-test.call", data, 3*time.Second)
+		replied <- requestErr
+	}()
+	select {
+	case <-concurrentStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent handler did not start")
+	}
+	concurrent.Close()
+	select {
+	case <-concurrentFinished:
+	default:
+		t.Fatal("Close returned before the concurrent handler finished")
+	}
+	if err := <-replied; err != nil {
+		t.Fatalf("concurrent handler reply was lost during Close: %v", err)
+	}
+
+	closeFromHandler := New("handler-close-test", "0.1.0").ToolConcurrent("close", map[string]any{
 		"type": "object", "properties": map[string]any{},
 	}, func(c *Component, args json.RawMessage) (any, error) {
 		c.Close()
