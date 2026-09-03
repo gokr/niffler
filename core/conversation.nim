@@ -151,11 +151,10 @@ proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
   result = Persister(ct: ct, convId: "conv-" & newId())
   try:
-    discard ct.dispatchToolCall("put", %*{
-      "kind": "conversation", "id": result.convId,
-      "value": %*{"createdAt": epochTime(),
-                  "model": getEnv("NIF_OPENAI_MODEL", ""),
-                  "modelOverride": "", "title": ""}})
+    discard ct.storePutRev("conversation", result.convId,
+      %*{"createdAt": epochTime(),
+         "model": getEnv("NIF_OPENAI_MODEL", ""),
+         "modelOverride": "", "title": ""})
   except CatchableError:
     discard
 
@@ -172,10 +171,8 @@ proc persistMsg*(p: var Persister, value: JsonNode,
     for key, fieldValue in telemetry:
       stored[key] = fieldValue
   try:
-    discard p.ct.dispatchToolCall("put", %*{
-      "kind": "message",
-      "id": p.convId & ":" & align($p.seqNo, 6, '0'),
-      "value": stored})
+    discard p.ct.storePutRev("message",
+      p.convId & ":" & align($p.seqNo, 6, '0'), stored)
     if p.failing:
       p.failing = false
       echo "core: store reachable again — persistence resumed"
@@ -192,9 +189,9 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
   ## persisted usage so the context meter and guard survive restarts.
   result = @[]
   try:
-    let resp = ct.dispatchToolCall("list", %*{
-      "kind": "message", "idPrefix": convId & ":"})
-    for item in resp{"items"}:
+    # 1000 = the store's list cap: resume must see the full transcript,
+    # not the list tool's default 100 (fixed here; was truncating resumes)
+    for item in ct.storeListItems("message", convId & ":", 1000):
       let v = item{"value"}
       # Turn errors are audit records, not provider message roles.
       if v{"role"}.getStr("") == "error": continue
@@ -225,14 +222,12 @@ proc ensureConversationHeader*(ct: CoreTools, convId: string) =
   ## the sidebar ordering stays stable). Called at runner spawn and on the
   ## first message, so a session shows up as soon as it becomes live.
   try:
-    let resp = ct.dispatchToolCall("get", %*{"kind": "conversation", "id": convId})
-    if resp{"ok"}.getBool(false):
+    if ct.storeGetItem("conversation", convId).value != nil:
       return  # already present — preserve its createdAt
-    discard ct.dispatchToolCall("put", %*{
-      "kind": "conversation", "id": convId,
-      "value": %*{"createdAt": epochTime(),
-                  "model": getEnv("NIF_OPENAI_MODEL", ""),
-                  "modelOverride": "", "title": ""}})
+    discard ct.storePutRev("conversation", convId,
+      %*{"createdAt": epochTime(),
+         "model": getEnv("NIF_OPENAI_MODEL", ""),
+         "modelOverride": "", "title": ""})
   except CatchableError:
     discard
 
@@ -241,9 +236,9 @@ proc loadConversationHeader(ct: CoreTools, convId: string): JsonNode =
   ## unavailable. Callers preserve unrelated fields such as the UI title.
   result = newJObject()
   try:
-    let resp = ct.dispatchToolCall("get", %*{"kind": "conversation", "id": convId})
-    if resp{"ok"}.getBool(false) and resp{"value"}.kind == JObject:
-      result = resp{"value"}
+    let value = ct.storeGetItem("conversation", convId).value
+    if value != nil and value.kind == JObject:
+      result = value
   except CatchableError:
     discard
 
@@ -258,8 +253,7 @@ proc updateConversationHeader(ct: CoreTools, convId: string, fields: JsonNode) =
       value["title"] = %""
     for key, fieldValue in fields:
       value[key] = fieldValue
-    discard ct.dispatchToolCall("put", %*{
-      "kind": "conversation", "id": convId, "value": value})
+    discard ct.storePutRev("conversation", convId, value)
   except CatchableError as e:
     echo "core: WARNING conversation metadata persistence failed: " & e.msg
 
@@ -291,29 +285,25 @@ proc exposureValue(exposure: ToolExposure): JsonNode =
 proc saveToolExposure(ct: CoreTools, sessionId: string,
                       exposure: var ToolExposure) =
   try:
-    let saved = ct.dispatchToolCall("put", %*{
-      "kind": "session", "id": sessionId & ":tools",
-      "value": exposureValue(exposure), "expectRev": exposure.rev})
-    if saved{"ok"}.getBool(false):
-      exposure.rev = saved{"rev"}.getInt(exposure.rev)
+    # a lost optimistic-concurrency race raises and keeps the old rev —
+    # same outcome as the previous ok-flag check, now explicit
+    exposure.rev = ct.storePutRev("session", sessionId & ":tools",
+      exposureValue(exposure), expectRev = exposure.rev)
   except CatchableError:
     discard
 
 proc loadToolExposure*(ct: CoreTools, sessionId: string): ToolExposure =
   ## Load the immutable direct tool snapshot and durable discovery summary.
   try:
-    let stored = ct.dispatchToolCall("get", %*{
-      "kind": "session", "id": sessionId & ":tools"})
-    let value = stored{"value"}
-    if stored{"ok"}.getBool(false) and value != nil and
-        value{"version"}.getInt(0) == 1 and
+    let (value, rev) = ct.storeGetItem("session", sessionId & ":tools")
+    if value != nil and value{"version"}.getInt(0) == 1 and
         value{"direct"} != nil and value{"direct"}.kind == JArray:
       result.direct = value{"direct"}
       result.discovered = value{"discovered"}
       if result.discovered == nil or result.discovered.kind != JArray:
         result.discovered = newJArray()
       result.initializedAt = value{"initializedAt"}.getFloat(epochTime())
-      result.rev = stored{"rev"}.getInt(0)
+      result.rev = rev
       return
   except CatchableError:
     discard

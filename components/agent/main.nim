@@ -65,11 +65,12 @@ proc publishCancel(c: Component, child: string) =
 proc hasParent(sessionId: string): bool =
   ## True when the session was itself spawned as a subagent child. Raises
   ## when the lineage store is unreachable — callers must fail closed.
-  ## A session with no lineage record arrives as a not-found RESULT, not
-  ## an error, so root sessions are unaffected.
-  let meta = comp.request("store", "get",
-    %*{"kind": "sessionmeta", "id": sessionId}, 10_000)
-  return meta{"value"}{"parent"}.getStr("").len > 0
+  ## A session with no lineage record (not-found) is a root session.
+  try:
+    return comp.storeGet("sessionmeta", sessionId, 10_000)
+      .value{"parent"}.getStr("").len > 0
+  except StoreNotFoundError:
+    return false
 
 proc prepareChild(parentSession, task, model: string): tuple[
     ok: bool, error: string, subject: string, child: string] =
@@ -96,9 +97,8 @@ proc prepareChild(parentSession, task, model: string): tuple[
   # lineage before the turn, fail closed: an unrecorded child would pass
   # its own depth guard and could spawn grandchildren
   try:
-    discard comp.request("store", "put",
-      %*{"kind": "sessionmeta", "id": child,
-         "value": %*{"parent": parentSession}}, 10_000)
+    discard comp.storePut("sessionmeta", child,
+                          %*{"parent": parentSession}, timeoutMs = 10_000)
   except CatchableError as e:
     return (false, "cannot record subagent lineage (store unreachable): " &
                     e.msg, "", "")
@@ -175,15 +175,10 @@ proc lastTranscript(sessionId: string): tuple[role, content: string] =
   ## Last persisted message of the child conversation (best effort: any
   ## store failure returns empty, which reads as "no evidence").
   try:
-    let lst = comp.request("store", "list",
-      %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000},
-      10_000)
-    let items = lst{"items"}
-    if items == nil: return ("", "")
     var last: JsonNode = nil
-    for item in items:
-      if item{"id"}.getStr("").startsWith(sessionId & ":"):
-        last = item{"value"}
+    for item in comp.storeList("message", sessionId & ":", 1000, 10_000):
+      if item.id.startsWith(sessionId & ":"):
+        last = item.value
     if last != nil:
       return (last{"role"}.getStr(""), last{"content"}.getStr(""))
   except CatchableError:
@@ -215,8 +210,7 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
       stopArmed.incl(jobId)
       value["status"] = %"stopping"
       try:
-        discard comp.request("store", "put",
-          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+        discard comp.storePut("agentjob", jobId, value, timeoutMs = 10_000)
       except CatchableError:
         return nil
       publishCancel(comp, child)
@@ -237,8 +231,7 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
     updated["error"] = %"interrupted — child runner gone before completion"
   updated["endedAt"] = %epochTime()
   try:
-    discard comp.request("store", "put",
-      %*{"kind": "agentjob", "id": jobId, "value": updated}, 10_000)
+    discard comp.storePut("agentjob", jobId, updated, timeoutMs = 10_000)
   except CatchableError:
     return nil  # cannot persist — leave the record alone rather than lie
   comp.emit("ev.agent.done", %*{"jobId": jobId,
@@ -249,14 +242,10 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
 proc reconcileAll() =
   ## Boot-time pass over every non-terminal job (best effort).
   try:
-    let lst = comp.request("store", "list",
-      %*{"kind": "agentjob", "limit": 1000}, 10_000)
-    let items = lst{"items"}
-    if items == nil: return
-    for item in items:
-      let jobId = item{"id"}.getStr("")
+    for item in comp.storeList("agentjob", "", 1000, 10_000):
+      let jobId = item.id
       if jobId.len == 0: continue
-      discard resolveStale(jobId, item{"value"})
+      discard resolveStale(jobId, item.value)
   except CatchableError:
     discard
 
@@ -357,8 +346,7 @@ discard comp.tool("agent_spawn", spawnSchema,
     if budgetMs > 0:
       record["budgetMs"] = %budgetMs
     try:
-      discard comp.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId, "value": record}, 10_000)
+      discard comp.storePut("agentjob", jobId, record, timeoutMs = 10_000)
     except CatchableError as e:
       return errResult("cannot record job (store unreachable): " & e.msg,
                        extra = %*{"sessionId": prep.child})
@@ -371,12 +359,11 @@ discard comp.tool("agent_spawn", spawnSchema,
     let st = natsConnection_PublishRequest(c.nc.conn, prep.subject.cstring,
       inbox.cstring, data.cstring, data.len.cint)
     if not checkStatus(st):
-      discard c.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId,
-           "value": %*{"sessionId": prep.child, "parent": parentSession,
-                       "status": "failed",
-                       "error": "publish failed: " & getErrorString(st)}},
-        10_000)
+      discard c.storePut("agentjob", jobId,
+        %*{"sessionId": prep.child, "parent": parentSession,
+           "status": "failed",
+           "error": "publish failed: " & getErrorString(st)},
+        timeoutMs = 10_000)
       return errResult("could not start the job: " & getErrorString(st),
                        extra = %*{"jobId": jobId,
                                   "sessionId": prep.child})
@@ -398,15 +385,13 @@ discard comp.tool("agent_status", statusSchema,
     if jobId.len == 0:
       return errResult("agent_status needs jobId")
     try:
-      let job = c.request("store", "get",
-        %*{"kind": "agentjob", "id": jobId}, 10_000)
-      if job{"ok"}.getBool(false):
-        var value = job{"value"}
-        # lazy restart recovery: a non-terminal record is reconciled against
-        # the live catalog and the child transcript before it is reported
-        let resolved = resolveStale(jobId, value)
-        if resolved != nil: value = resolved
-        return okResult(value)
+      var value = c.storeGet("agentjob", jobId, 10_000).value
+      # lazy restart recovery: a non-terminal record is reconciled against
+      # the live catalog and the child transcript before it is reported
+      let resolved = resolveStale(jobId, value)
+      if resolved != nil: value = resolved
+      return okResult(value)
+    except StoreNotFoundError:
       return errResult("unknown job '" & jobId & "'", code = "not-found")
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
@@ -429,15 +414,13 @@ discard comp.tool("agent_wait", waitSchema,
       # the completion tap shares this serialized pump: without pumping it
       # here, a reply arriving during the wait would sit queued forever
       discard c.pumpTaps(100)
-      var job: JsonNode
+      var value: JsonNode
       try:
-        job = c.request("store", "get",
-          %*{"kind": "agentjob", "id": jobId}, 10_000)
+        value = c.storeGet("agentjob", jobId, 10_000).value
+      except StoreNotFoundError:
+        return errResult("unknown job '" & jobId & "'", code = "not-found")
       except CatchableError as e:
         return errResult("cannot read job (store unreachable): " & e.msg)
-      if not job{"ok"}.getBool(false):
-        return errResult("unknown job '" & jobId & "'", code = "not-found")
-      var value = job{"value"}
       # lazy restart recovery: same reconciliation as agent_status, so a
       # wait on a stale record resolves it instead of blocking forever
       let resolved = resolveStale(jobId, value)
@@ -464,22 +447,19 @@ discard comp.tool("agent_stop", stopSchema,
     if jobId.len == 0:
       return errResult("agent_stop needs jobId")
     try:
-      let job = c.request("store", "get",
-        %*{"kind": "agentjob", "id": jobId}, 10_000)
-      if not job{"ok"}.getBool(false):
-        return errResult("unknown job '" & jobId & "'", code = "not-found")
-      let value = job{"value"}
+      let value = c.storeGet("agentjob", jobId, 10_000).value
       let status = value{"status"}.getStr("running")
       if status != "running" and status != "stopping":
         return okResult(value)
       if status != "stopping":
         value["status"] = %"stopping"
-        discard c.request("store", "put",
-          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+        discard c.storePut("agentjob", jobId, value, timeoutMs = 10_000)
       let child = value{"sessionId"}.getStr("")
       if child.len > 0:
         publishCancel(c, child)
       return okResult(%*{"status": "stopping", "sessionId": child})
+    except StoreNotFoundError:
+      return errResult("unknown job '" & jobId & "'", code = "not-found")
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
@@ -522,10 +502,12 @@ discard comp.tap("_INBOX.agentjob.>",
       # state while a stop was requested reads "stopped" — the turn may end
       # via llm.cancel (an error) or between rounds (clean), and the reply,
       # if one was produced, is kept either way
-      let job = c.request("store", "get",
-        %*{"kind": "agentjob", "id": jobId}, 10_000)
-      if job{"ok"}.getBool(false):
-        let prior = job{"value"}
+      var prior: JsonNode = nil
+      try:
+        prior = c.storeGet("agentjob", jobId, 10_000).value
+      except CatchableError:
+        prior = nil
+      if prior != nil:
         value["parent"] = prior{"parent"}
         value["task"] = prior{"task"}
         value["startedAt"] = prior{"startedAt"}
@@ -534,8 +516,7 @@ discard comp.tap("_INBOX.agentjob.>",
           value["budgetMs"] = prior{"budgetMs"}
         if prior{"status"}.getStr("") == "stopping":
           value["status"] = %"stopped"
-      discard c.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+      discard c.storePut("agentjob", jobId, value, timeoutMs = 10_000)
     except CatchableError:
       discard  # the durable record stays "running"; status reports it
     c.emit("ev.agent.done", %*{"jobId": jobId,

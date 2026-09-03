@@ -312,8 +312,7 @@ proc main() =
   cat.onChange = proc (cat: Catalog) =
     try:
       if not cat.components.hasKey("store"): return
-      discard ct.dispatchToolCall("put", %*{
-        "kind": "slash", "id": "slash", "value": cat.slashTable()})
+      discard ct.storePutRev("slash", "slash", cat.slashTable())
     except CatchableError as e:
       echo "core: WARNING slash checkpoint failed (store down?): " & e.msg
   # Components that registered during convergence announced before the hook
@@ -331,28 +330,24 @@ proc main() =
   # dialog is shown at all for auto-approved tools.
   approval.checkAuto = proc(session, tool: string): bool =
     try:
-      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
-        "id": session & ":" & tool})
-      return resp{"ok"}.getBool(false)
+      return ct.storeGetItem("approval", session & ":" & tool).value != nil
     except CatchableError:
       return false
   if cat.components.hasKey("store"):
     if recovering:
       echo "core: recover — wiping stored component records (spawned components will not be restored)"
       try:
-        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
-        for item in resp{"items"}:
+        for item in ct.storeListItems("component"):
           let id = item{"id"}.getStr("")
           if id.len > 0:
-            discard ct.dispatchToolCall("del", %*{"kind": "component", "id": id})
+            ct.storeDel("component", id)
       except CatchableError as e:
         echo "core: WARNING recover wipe failed: " & e.msg
     if minimalMode:
       echo "core: minimal mode — persisted spawned components stay stopped"
     else:
       try:
-        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
-        for item in resp{"items"}:
+        for item in ct.storeListItems("component"):
           let name = item{"id"}.getStr("")
           let binary = item{"value"}{"binary"}.getStr("")
           if name.len == 0 or binary.len == 0: continue

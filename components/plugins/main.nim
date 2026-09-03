@@ -106,23 +106,21 @@ proc defaultBranch(repo: string): string =
 # store records (kind "plugin": id = package name)
 
 proc pluginRecord(pkg: string): JsonNode =
-  ## The stored install record, or nil when not installed.
+  ## The stored install record, or nil when not installed or the store is
+  ## unreachable (callers treat nil as "not installed" — fail closed).
   try:
-    let r = comp.request("store", "get", %*{"kind": "plugin", "id": pkg})
-    if r{"ok"}.getBool(false):
-      return r{"value"}
+    return comp.storeGet("plugin", pkg).value
   except CatchableError:
     discard
   return nil
 
 proc saveRecord(pkg: string, value: JsonNode) =
-  ## requestOk: a refused put is exceptional (never silently dropped) —
-  ## the raise surfaces as an error envelope to the install tool.
-  discard comp.requestOk("store", "put",
-    %*{"kind": "plugin", "id": pkg, "value": value})
+  ## A refused put is exceptional (never silently dropped) — the raise
+  ## surfaces as an error envelope to the install tool.
+  discard comp.storePut("plugin", pkg, value)
 
 proc dropRecord(pkg: string) =
-  discard comp.requestOk("store", "del", %*{"kind": "plugin", "id": pkg})
+  comp.storeDel("plugin", pkg)
 
 # --------------------------------------------------------------------------
 # install / update / remove internals
@@ -441,12 +439,9 @@ comp.tool(%*{"onDemand": true}):
     ## (name, repo, pinned ref and the components each provides). Use this
     ## to answer "what plugins do we have?" and to find the package name
     ## for plugin_update / plugin_remove.
-    let r = comp.request("store", "list", %*{"kind": "plugin"}, 10_000)
     var pkgs = newJArray()
-    let items = r{"items"}
-    if items != nil:
-      for item in items:
-        pkgs.add(item{"value"})
+    for item in comp.storeList("plugin", "", 100, 10_000):
+      pkgs.add(item.value)
     return okResult(%*{"packages": pkgs})
 
 
