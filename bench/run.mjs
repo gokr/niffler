@@ -427,6 +427,7 @@ async function runCombo(combo, taskIds) {
       baseUrl: combo.modelCfg.niffler.baseUrl,
       apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
       model: combo.modelCfg.niffler.model,
+      thinking: combo.modelCfg.niffler.thinking || "",
       expertEnabled: combo.harness === "niffler-expert",
       expertJudge:
         combo.harness === "niffler-expert" && cfg.expertJudge

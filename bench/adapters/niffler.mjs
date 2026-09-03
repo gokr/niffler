@@ -39,6 +39,7 @@ export class NifflerHarness {
     this.natsPort = 0;
     this.stopped = false;
     this.expertEnabled = opts.expertEnabled || false;
+    this.thinking = opts.thinking || "";
     // Optional judgment provider for niffler-expert runs:
     // {provider, model, baseUrl, apiKey}. Routed via NIF_LLM_PROVIDERS so
     // the shared llm component can reach a second provider (e.g. Synthetic)
@@ -180,7 +181,13 @@ export class NifflerHarness {
   async round(opts) {
     const { sessionId, prompt, turnTimeoutMs, cwd } = opts;
     const cli = path.join(this.binDir, "cli");
-    const args = ["call", "session", JSON.stringify({ sessionId, content: prompt, cwd })];
+    const sessArgs = { sessionId, content: prompt, cwd };
+    // Per-model thinking effort from bench config (models.<m>.niffler.thinking).
+    // The provider default for these hybrid models is medium-ish thinking,
+    // which dominates output tokens; pi runs its lanes with thinking=low, so
+    // mirror that for a symmetric comparison.
+    if (this.thinking) sessArgs.thinking = this.thinking;
+    const args = ["call", "session", JSON.stringify(sessArgs)];
     let res = null;
     let parsed = null;
     for (let attempt = 0; attempt <= 2; attempt++) {

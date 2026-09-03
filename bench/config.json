@@ -11,7 +11,8 @@
       "niffler": {
         "baseUrl": "https://api.deepseek.com/v1",
         "model": "deepseek-v4-flash",
-        "apiKeyEnv": "DEEPSEEK_API_KEY"
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "thinking": "low"
       },
       "pi": {
         "provider": "deepseek",
@@ -27,7 +28,8 @@
       "niffler": {
         "baseUrl": "https://api.llmgateway.io/v1",
         "model": "glm-5.3-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY"
+        "apiKeyEnv": "LLMGATEWAY_API_KEY",
+        "thinking": "low"
       },
       "pi": {
         "provider": "llmgateway",
