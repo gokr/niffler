@@ -336,7 +336,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         : await runTests(repo, taskMeta, taskId);
       const testS = (Date.now() - test0) / 1000;
       testTimeS += testS;
-      const pass = !res.error && test.code === 0;
+      // A turn-round-budget exhaustion marker is informational: if the
+      // captured diff still passes, the cell passes (the model was cut off
+      // mid-turn, not mid-edit).
+      const budgetOnly = !!res.error && /round budget exhausted/.test(String(res.error));
+      const pass = (!res.error || budgetOnly) && test.code === 0;
 
       rounds.push({
         r,
