@@ -263,17 +263,20 @@ proc main() =
                     "id": "fab-batch:" & align($i, 6, '0')}, 10_000)
     if m{"error"} != nil: break
     batchTranscript.add(m{"value"}{"content"}.getStr(""))
-  # the guest proved write exclusivity itself: bash (unclassified = write)
-  # started only after both read-classified sleeps had ended. Host-level
-  # read concurrency is proven via the call.started event timestamps: the
-  # two ctx_sleep reads were launched back-to-back (the component then
-  # serializes them internally — it is single-threaded).
-  check("batch writes run exclusively after reads",
-        batchTranscript.contains("\"writeExclusive\":true"), batchTranscript)
+  # The guest measures write exclusivity itself: the two bash writes
+  # (unclassified = write) never overlap each other — write-write stays
+  # globally exclusive because bash is a universal writer. Same-component
+  # reads serialize inside the component (single-threaded), so host-level
+  # read concurrency is proven separately via the call.started event
+  # timestamps below.
+  check("batch writes are mutually exclusive",
+        batchTranscript.contains("\"writesSerialized\":true"),
+        batchTranscript)
   check("batch keeps input order, budgets, and per-item failures",
-        batchTranscript.contains("\"items\":4") and
+        batchTranscript.contains("\"items\":5") and
         batchTranscript.contains("\"nope\":\"no component provides tool") and
-        batchTranscript.contains("\"b3\":true"),
+        batchTranscript.contains("\"b3\":true") and
+        batchTranscript.contains("\"b4\":true"),
         batchTranscript)
 
   # lifecycle events: correlated started/call/done frames on the bus. The
@@ -326,7 +329,7 @@ proc main() =
         "call failures=" & $evCallFail)
   check("ev.fabric.done announces the terminal state",
         evDone >= 1 and evDoneOk, "done=" & $evDone)
-  check("ev.fabric.done reports the real call count", evDoneCalls == 4,
+  check("ev.fabric.done reports the real call count", evDoneCalls == 5,
         "done.calls=" & $evDoneCalls)
 
   # output schema: the wrapper's declared outputSchema types the return

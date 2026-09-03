@@ -273,17 +273,18 @@ comp.tool(%*{"hidden": true}):
           "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r1\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r2\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"nope\")), jpair(\"args\", jobj())),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\")))))))\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b4 && date +%s.%N\")))))))\n" &
           "let outcomes = parseJson(r)\n" &
-          "let s1 = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
-          "let s2 = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
-          "let bashOut = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
-          "let lastReadEnd = max(s1{\"ended\"}.getFloat(), s2{\"ended\"}.getFloat())\n" &
-          "let bashStart = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b3Out = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
+          "let b4Out = parseJson(outcomes[4]{\"result\"}.getStr(\"\"))\n" &
+          "let b3Date = b3Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b4Date = b4Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
           "finish($(%*{\"items\": outcomes.len,\n" &
-          "  \"writeExclusive\": bashStart >= lastReadEnd,\n" &
+          "  \"writesSerialized\": b4Date > b3Date,\n" &
           "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
-          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
+          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false),\n" &
+          "  \"b4\": outcomes[4]{\"ok\"}.getBool(false)}))\n"
         return toolCall("t1", "fabric", %*{"code": batched})
       return %*{"content": "batch-turn-done"}
     if sessionId == "fab-out":

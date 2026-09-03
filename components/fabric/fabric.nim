@@ -223,10 +223,14 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
                          launchedAt: epochTime()))
 
   proc topUp() =
-    ## Launch queued calls within the concurrency cap. Reads may overlap
-    ## each other; a write (or unclassified tool) launches only when
-    ## NOTHING is in flight, and nothing new launches while a write runs —
-    ## concurrent mutations to one target are prevented by construction.
+    ## Launch queued calls within the concurrency cap. Reads (declared
+    ## non-mutating) fill the cap together and may also overlap a write —
+    ## same-component interleaving is the component's own serialization,
+    ## and cross-component read/write races only ever yield a stale or
+    ## partial READ, never corruption. Writes are mutually exclusive with
+    ## other writes GLOBALLY, not per target: bash is a universal writer,
+    ## so two writes to different components can still race the same
+    ## files. Resource-scoped declarations would be needed to relax that.
     while inFlight.len < maxBatchInflight and queued.len > 0:
       var writeInFlight = false
       for pending in inFlight:
@@ -235,10 +239,10 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       for i in 0 ..< queued.len:
         let isWrite = effectOf(queued[i]{"tool"}.getStr("")) == "write"
         if isWrite:
-          if inFlight.len == 0:
+          if not writeInFlight:
             pick = i
             break
-        elif not writeInFlight:
+        else:
           pick = i
           break
       if pick < 0: break
