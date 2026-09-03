@@ -92,6 +92,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   token usage, plus message counts by role. Without a sessionId it
   answers about the current conversation (a session runner injects its
   own id); any other conversation id inspects that conversation.
+- **`dialog` component — a component in pure bash** — the wire
+  contract is the component: `components/dialog/dialog.sh` speaks
+  envelopes with only the nats CLI and jq (no SDK, no compile step —
+  `make build` copies it to `var/bin/dialog`). `dialog_show` pops an
+  info/warning/error dialog on the user's desktop (zenity →
+  notify-send → log fallback), `dialog_ask` asks a yes/no question and
+  returns the answer (`yes`/`no`/`timeout`). Ships with `make build`
+  but is not autostarted — spawn on demand via `core.spawn`
+  (approval-gated). Prerequisites added to `make setup`/`make doctor`:
+  natscli, jq, zenity.
 
 - **Bench `niffler-expert` variant** — paired measurement of plain Niffler
   vs expert-assisted Niffler: the runner arms `expert_follow` on the exact
