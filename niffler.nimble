@@ -40,6 +40,7 @@ task all_internal, "Unlocked internal build — invoke through all (or the Makef
   exec "nim c --hints:off --path:sdk -o:var/bin/expert components/expert/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/fabric components/fabric/fabric.nim"
   exec "nim c --hints:off --path:sdk --path:\"$$(nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / \"compiler\"' 2>/dev/null | tail -1)\" -o:var/bin/fabric-exec components/fabric/executor.nim"
+  exec "cp components/dialog/dialog.sh var/bin/dialog && chmod +x var/bin/dialog"
   exec "cd components/llm-openai && go build -o ../../var/bin/llm-openai ."
   exec "cd components/models && go build -o ../../var/bin/models ."
   exec "cd components/provider && go build -o ../../var/bin/provider ."

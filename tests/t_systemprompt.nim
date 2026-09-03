@@ -152,6 +152,30 @@ proc main() =
   check("product prompt substitutes $ROOT",
         directPrompt.contains("Your home is " & root), directPrompt)
 
+  # --- workspace ancestor walk: inside root only -----------------------------
+  # A context file in an ancestor of cwd is injected while the walk stays
+  # inside the harness root; a file ABOVE the root must never leak in (the
+  # bench relies on this: its harness roots are nested inside a git
+  # worktree whose own AGENTS.md would otherwise ride along).
+  createDir(root / "ws")
+  writeFile(root / "ws" / "AGENTS.md", "workspace rules: mind the boundary\n")
+  let wsPrompt = call(nc, "systemprompt", "systemprompt",
+                      %*{"cwd": root / "ws"}, 10_000){"systemPrompt"}.getStr("")
+  check("workspace ancestor AGENTS.md within the root is injected",
+        wsPrompt.contains("workspace rules: mind the boundary"), wsPrompt)
+  block aboveRoot:
+    let above = parentDir(root) / "AGENTS.md"
+    if fileExists(above):
+      # a stray /tmp AGENTS.md would make the negative check ambiguous
+      check("above-root context file present — skipping leak check", true)
+    else:
+      writeFile(above, "MUST NOT LEAK into any prompt\n")
+      defer: removeFile(above)
+      let leak = call(nc, "systemprompt", "systemprompt",
+                      %*{"cwd": root}, 10_000){"systemPrompt"}.getStr("")
+      check("context file above the harness root never leaks",
+            not leak.contains("MUST NOT LEAK"), leak)
+
   # --- conversation 1: constitution from the component -----------------------
   let sid = "sp-live"
   let echo1 = sysEcho(nc, sid)

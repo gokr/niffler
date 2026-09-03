@@ -8,6 +8,101 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **SWE-bench Verified pilot run end-to-end** — 10 sympy instances, one-shot,
+  official swebench 4.1.0 Docker grading, both bench models × pi/opencode/
+  niffler: deepseek 9/9/6, glm 8/7/5 (resolved counts). Niffler resolves
+  fewer tasks at 2.3–2.9× less total tokens per task. Protocol changes the
+  pilot forced: recipe-style task prompts (flash agents previously burned
+  turns on env archaeology and produced empty diffs), transport-level round
+  retries (2×, never for auth/balance), process-group SIGKILL + stdio EOF on
+  runner timeouts (an orphaned opencode child held the pipe and delayed
+  `close` by ~20 h), and hidden gold/test-patch cards moved to
+  `~/.cache/niffler-swe/cards`. Curated report:
+  `bench/reports/swe-sympy10-pilot-report.md`.
+
+- **fabric reliability pass + typed mode + named library** — the
+  programmable-tool substrate hardened end-to-end (Phase 1.5–4):
+  persistent bounded frame buffering (coalesced frames no longer
+  starve the selector a round-trip late), scoped nested leases (an
+  outer program's tool lease survives an inner `agent_run`), private
+  session context stripped before targets, approvals and events, one
+  monotonic absolute deadline for the whole run (`min(target tool
+  timeout, remaining program time)` per nested call), complete bounded
+  JSON-schema validation at admission, and hard caps on source,
+  `strings` payload, frames, logs, results, artifacts and OS limits.
+  `fabric` gained a **typed mode** (`tools: [...]`): the selected tool
+  schemas are fingerprinted and pinned for the run (a
+  `catalog-changed` error replaces silent drift against a replaced
+  component), `fabricmeta` generates input-typed Nim wrappers
+  (`tools.grep(...)` with compile-checked arguments), and a tool's
+  scalar `outputSchema` types the wrapper's return value. Approvals
+  show a manifest — source digest, viewable source
+  (`var/approval-sources/<digest>.nim`), selected tools and budgets —
+  with digest-keyed auto-approval: the same program runs freely again,
+  any different program asks again. Repeatable programs live in a
+  **named library** (`fabric {name}`, store kind `fabricprog`).
+- **Bounded batch calls + effect declarations** — `batch(...)` runs up
+  to 16 independent calls with 4 on the bus at once (host-backed, no
+  guest async), returns per-item outcomes in input order under one
+  deadline, and a failing item lands in its slot without aborting the
+  rest. Tools declare `x-harness.effect` (`"read"` | `"write"`,
+  default write): batch reads fill the concurrency cap together while
+  writes run exclusively, so concurrent mutations are prevented by
+  construction (per-target write overlap remains the deferred delta).
+- **Durable background agent jobs** — `agent_spawn` starts a subagent
+  and returns `{jobId, sessionId}` immediately; `agent_status` is a
+  non-blocking durable lookup, `agent_wait` blocks until a terminal
+  state, `agent_steer` injects a message into the live turn, and
+  `agent_stop` cancels for real (llm.cancel side-channel plus a
+  `__cancel` control message on the steer channel, honored at round
+  tops; terminal records read `stopped`). Jobs are store-backed, so
+  terminal state survives restarts and a late wait can't miss it,
+  announced as `ev.agent.started`/`done`. Stale records reconcile
+  lazily against the live catalog and the child transcript (missed
+  completions synthesize from the transcript, dead runners record
+  `interrupted`); lost stops re-arm once. Spawn accepts a `budgetMs`
+  job budget (enforced lazily on observation with agent_stop
+  semantics) and passes the subagent's reasoning effort through.
+- **Agent lifecycle semantics** — fail-closed lineage (a lineage-store
+  failure closes spawning instead of orphaning children), the original
+  interactive caller propagates to child approvals, child LLM failures
+  report as failures rather than successful text replies, and idle
+  child runners retire on their own (`NIF_RUNNER_IDLE_S`).
+- **Correlated fabric lifecycle events + UI activity strip** —
+  `ev.fabric.started` / `call.started` / `call.done` / `done` on the
+  bus, correlated by `runId` with bounded metadata; `started` fires
+  only after admission and `done` carries real call counts, budget
+  usage and component/result-byte sizes. The console renders the trace
+  live, and the desktop UI surfaces fabric runs and background jobs as
+  a compact activity strip without leaving the chat. Oversized-result
+  artifacts (`var/fabric-artifacts/`) get retention sweeps at boot and
+  per run.
+- **systemprompt component** — the conversation constitution as a
+  replaceable component: session runners ask `svc.systemprompt.call`
+  once per conversation for the real system prompt (product prompt +
+  the repo's AGENTS.md/CLAUDE.md chain); absent, slow or broken, core
+  falls back to its minimal baked-in prompt. Replace the component to
+  replace the constitution.
+- **Bundled skill scope** — the repo's `skills/` tree ships with
+  Niffler as a bundled scope in `skill_list`/`skill_load`, discovered
+  even when NIF_ROOT differs from the repo, shadowable by
+  project/home scopes and never removable via `skill_remove`.
+- **`session_info` tool** — conversation self-introspection for the
+  LLM: id, title, model selection, thinking effort, context window and
+  token usage, plus message counts by role. Without a sessionId it
+  answers about the current conversation (a session runner injects its
+  own id); any other conversation id inspects that conversation.
+- **`dialog` component — a component in pure bash** — the wire
+  contract is the component: `components/dialog/dialog.sh` speaks
+  envelopes with only the nats CLI and jq (no SDK, no compile step —
+  `make build` copies it to `var/bin/dialog`). `dialog_show` pops an
+  info/warning/error dialog on the user's desktop (zenity →
+  notify-send → log fallback), `dialog_ask` asks a yes/no question and
+  returns the answer (`yes`/`no`/`timeout`). Ships with `make build`
+  but is not autostarted — spawn on demand via `core.spawn`
+  (approval-gated). Prerequisites added to `make setup`/`make doctor`:
+  natscli, jq, zenity.
+
 - **Bench `niffler-expert` variant** — paired measurement of plain Niffler
   vs expert-assisted Niffler: the runner arms `expert_follow` on the exact
   task session before its first turn (setup excluded from time-to-green),
@@ -513,6 +608,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bench conversation carried its standing instructions twice. Dedup via
   `getFileInfo` id; identical content from different paths now counts once.
 
+- **Codex reasoning summaries no longer run together** — the
+  Responses API streams reasoning summaries as one delta per step
+  title with no separator, so consecutive headings glued into one
+  run-on blob in the transcript; llm tracks the summary index and
+  inserts newlines between items (fallback break for backends that
+  keep the index constant).
+
 - **Tool-call reasoning survives the round trip** — core persisted the
   provider-neutral `reasoning` field, but the OpenAI wire expects
   `reasoning_content`, so thinking models (deepseek-reasoner) 400'd the
@@ -522,6 +624,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as one assistant message (content + reasoning + tool_calls) *before*
   its tool results, instead of a contentless call entry persisted after
   them.
+- **Long answers are no longer cut off by the provider's server-side
+  cap** — neither adapter set a max-token budget, so the provider's
+  default cap (often 4K–16K) stopped long answers mid-stream with
+  `finish_reason=length` and the turn ended, making the TUI appear to
+  stop until nudged. llm now resolves the model's `limit.output` from
+  the models catalog (generous 32K fallback) and sends it as
+  `max_completion_tokens` on every call (surfaced via `llm_resolve`);
+  llm-openai sends `max_tokens=32768`.
+- **Vendor-prefixed model ids no longer break gateways** — gateways
+  like devpass route on the canonical id and reject ids like
+  `alibaba/glm-5.2`; providers gain a `stripPrefix` option (set in
+  `provider_add`/`provider_update`) that sends the bare model id.
 - **Truncated tool-call arguments repaired on replay** — a session
   poisoned by a truncated stream 400-bricked every later turn on strict
   backends; core neutralizes garbled assistant tool_calls in the

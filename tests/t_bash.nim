@@ -44,6 +44,14 @@ proc main() =
                 %*{"command": "false; echo done", "timeoutMs": 10000})
   check("bash last-command exit code", r2{"exit_code"}.getInt(-1) == 0, $r2)
 
+  # cwd param: the command runs in the given directory
+  createDir(tmp / "sub")
+  let r2b = call(nc, "bash", "bash",
+                 %*{"command": "pwd", "timeoutMs": 10000, "cwd": tmp / "sub"})
+  check("bash cwd param scopes the command",
+        r2b{"exit_code"}.getInt(-1) == 0 and
+        r2b{"output"}.getStr("").contains("sub"), $r2b)
+
   # timeout: killed, exit 124, marked in output
   let t0 = epochTime()
   let r3 = call(nc, "bash", "bash",

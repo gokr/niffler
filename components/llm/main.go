@@ -417,6 +417,10 @@ type chatArgs struct {
 	// API when set — providers that do not support reasoning_effort
 	// (deepseek-reasoner, most open gateways) never see the field.
 	ReasoningEffort string `json:"reasoning_effort"`
+	// MaxTokens is a per-call output cap (e.g. the expert judge's tiny
+	// JSON verdicts). It only ever lowers the provider/catalog default,
+	// never raises it; 0 = no cap.
+	MaxTokens int `json:"maxTokens"`
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -461,21 +465,26 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if resolved.StripPrefix {
 		model = stripModelPrefix(model)
 	}
+	// Per-call output cap: only ever lowers the resolved default.
+	output := resolved.Output
+	if args.MaxTokens > 0 && (output <= 0 || args.MaxTokens < output) {
+		output = args.MaxTokens
+	}
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
 		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context)
 	case protocolAnthropic:
 		return chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
-			resolved.Context, resolved.Output)
+			resolved.Context, output)
 	case "", protocolOpenAI:
 		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 		cfg.BaseURL = resolved.Provider.BaseURL
 		client := openai.NewClientWithConfig(cfg)
 		if args.Stream {
-			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
 		}
-		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
@@ -821,6 +830,8 @@ func main() {
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
 			"reasoning_effort": map[string]any{"type": "string",
 				"description": "Backend reasoning effort (low/medium/high); omitted when empty = provider default"},
+			"maxTokens": map[string]any{"type": "integer",
+				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
 		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},

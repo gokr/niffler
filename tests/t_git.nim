@@ -73,6 +73,30 @@ proc main() =
   check("git_status path scope includes", so2.contains("?? c.txt"), $s2)
   check("git_status path scope excludes", not so2.contains("a.txt"), $s2)
 
+  # repo param: a second repository inside the root is inspected in place
+  let subrepo = tmp / "subrepo"
+  createDir(subrepo)
+  doAssert sh("git -C " & quoteShell(subrepo) & " init -q").exitCode == 0
+  doAssert sh("git -C " & quoteShell(subrepo) &
+              " config user.email t@example.com").exitCode == 0
+  doAssert sh("git -C " & quoteShell(subrepo) &
+              " config user.name \"Sub User\"").exitCode == 0
+  writeFile(subrepo / "s.txt", "sub\n")
+  doAssert sh("git -C " & quoteShell(subrepo) & " add -A").exitCode == 0
+  doAssert sh("git -C " & quoteShell(subrepo) &
+              " commit -q -m \"sub commit\"").exitCode == 0
+  let s3 = call(nc, "git", "git_status", %*{"repo": "subrepo"})
+  check("git_status repo param scopes the subrepo",
+        s3{"exit_code"}.getInt(-1) == 0 and
+        not s3{"output"}.getStr("").contains("c.txt"), $s3)
+  let s4 = call(nc, "git", "git_status", %*{"repo": "nowhere"})
+  check("git_status refuses a missing repo",
+        s4{"exit_code"}.getInt(-1) == 2 and
+        s4{"output"}.getStr("").contains("existing directory"), $s4)
+  let s5 = call(nc, "git", "git_status", %*{"repo": "../escape"})
+  check("git_status refuses a .. repo",
+        s5{"exit_code"}.getInt(-1) == 2, $s5)
+
   # git_diff: staged+unstaged since HEAD = the a.txt tweak only
   let d1 = call(nc, "git", "git_diff", %*{})
   check("git_diff exit 0", d1{"exit_code"}.getInt(-1) == 0, $d1)

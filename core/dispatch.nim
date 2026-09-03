@@ -91,6 +91,7 @@ type
   NestedState* = ref object
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
+    workspace*: string       ## absolute per-conversation workspace, root by default
     lease*: string           ## current lease; "" = no session-context call in flight
     deadline*: MonoTime      ## monotonic limit for the current lease
     hasDeadline*: bool
@@ -393,7 +394,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       if not header{"ok"}.getBool(false):
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
-                "thinkingEffort", "context", "contextUsed", "promptTokens"]:
+                "thinkingEffort", "cwd", "context", "contextUsed", "promptTokens"]:
         if header{"value"}{f} != nil:
           info[f] = header{"value"}{f}
       # subagent lineage (the agent component records kind sessionmeta)
@@ -696,6 +697,45 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")
 
+proc applyWorkspace(schema, args: JsonNode, workspace: string) =
+  ## Resolve schema-declared path arguments against the active conversation's
+  ## workspace. Core knows no component names: components opt in with
+  ## x-harness.workspace {pathFields, defaultPathFields, cwdField}.
+  if schema == nil or args == nil or args.kind != JObject or workspace.len == 0:
+    return
+  let policy = schema{"x-harness"}{"workspace"}
+  if policy == nil or policy.kind != JObject: return
+
+  proc resolve(raw: string): string =
+    if raw.len == 0 or raw == ".": return workspace
+    if raw.isAbsolute(): return raw
+    workspace / raw
+
+  let pathFields = policy{"pathFields"}
+  if pathFields != nil and pathFields.kind == JArray:
+    for field in pathFields:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JString:
+        args[name] = %resolve(args{name}.getStr(""))
+  let defaults = policy{"defaultPathFields"}
+  if defaults != nil and defaults.kind == JArray:
+    for field in defaults:
+      let name = field.getStr("")
+      if name.len > 0 and (args{name} == nil or args{name}.getStr("") in ["", "."]):
+        args[name] = %workspace
+  let arrays = policy{"pathArrayFields"}
+  if arrays != nil and arrays.kind == JArray:
+    for field in arrays:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JArray:
+        var arr = args{name}  # JsonNode is a ref: iterate and patch in place
+        for item in mitems arr:
+          if item.kind == JString:
+            item = %resolve(item.getStr(""))
+  let cwdField = policy{"cwdField"}.getStr("")
+  if cwdField.len > 0 and args{cwdField} == nil:
+    args[cwdField] = %workspace
+
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode =
@@ -743,6 +783,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 
   let schema = ct.cat.toolSchema(tool)
   let callArgs = if args == nil: newJObject() else: args.copy()
+  if ct.nested != nil:
+    applyWorkspace(schema, callArgs, ct.nested.workspace)
   let hasDeadline = deadlineMs > 0
   let deadline = if hasDeadline:
                    getMonoTime() + initDuration(milliseconds = deadlineMs)
