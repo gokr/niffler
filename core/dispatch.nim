@@ -90,6 +90,59 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode
 
+proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
+                         args: JsonNode, timeoutMs: int, caller = ""): JsonNode
+
+# --- store helpers ----------------------------------------------------------
+# Typed access to the store component for core, mirroring sdk.nim's
+# storeclient. Core deliberately imports only the pure SDK modules
+# (envelope/subjects — never the Component machinery), so this lives here
+# and speaks the store's subject directly: no tool routing, which also
+# makes it safe to call from inside dispatchToolCall's own path (the spawn
+# depth guard). Semantics: not-found reads as nil/empty; refusals and an
+# unreachable store raise.
+
+proc storeGetItem*(ct: CoreTools, kind, id: string,
+                   timeoutMs = 5000): tuple[value: JsonNode, rev: int] =
+  ## Fetch a document from the store; (nil, 0) when not-found. An
+  ## unreachable store (or any refusal other than not-found) raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "get",
+                              %*{"kind": kind, "id": id}, timeoutMs)
+  if r{"ok"}.getBool(false):
+    return (r{"value"}, r{"rev"}.getInt(0))
+  if r{"code"}.getStr("") != "not-found":
+    raise newException(IOError, r{"error"}.getStr("store get failed"))
+
+proc storePutRev*(ct: CoreTools, kind, id: string, value: JsonNode,
+                  expectRev = 0, timeoutMs = 5000): int =
+  ## Upsert a document into the store; returns the new revision. Refusals
+  ## (rev-conflict) and outages raise — callers that tolerate a lost race
+  ## catch CatchableError, same split as the SDK storeclient.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "put",
+    %*{"kind": kind, "id": id, "value": value, "expectRev": expectRev},
+    timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store put failed"))
+  return r{"rev"}.getInt(0)
+
+proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
+                     limit = 100, timeoutMs = 5000): seq[JsonNode] =
+  ## List documents of a kind in id order, returning the raw items
+  ## ({id, rev, value}); empty when none. An unreachable store raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "list",
+    %*{"kind": kind, "idPrefix": idPrefix, "limit": limit}, timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store list failed"))
+  let items = r{"items"}
+  if items != nil and items.kind == JArray:
+    for item in items:
+      result.add(item)
+
+proc storeDel*(ct: CoreTools, kind, id: string, timeoutMs = 5000) =
+  ## Delete a document; idempotent.
+  discard dispatchSubjectCall(ct, "svc.store.call", "del",
+                              %*{"kind": kind, "id": id}, timeoutMs)
+
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
   let target = args{"tool"}.getStr("")
@@ -130,10 +183,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     discard ct.sup.addChild(name, abs)
     ct.sup.startChild(ct.sup.children[^1])
     try:
-      discard ct.dispatchToolCall("put", %*{
-        "kind": "component", "id": name,
-        "value": %*{"name": name, "binary": abs,
-                    "policy": "on-failure", "addedAt": epochTime()}})
+      discard ct.storePutRev("component", name,
+        %*{"name": name, "binary": abs,
+           "policy": "on-failure", "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
     return %*{"ok": true, "name": name}
@@ -156,7 +208,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     discard ct.sup.removeChild(name)
     ct.cat.dropComponent(name)
     try:
-      discard ct.dispatchToolCall("del", %*{"kind": "component", "id": name})
+      ct.storeDel("component", name)
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
@@ -321,31 +373,26 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"error": "session_info needs sessionId (a session runner injects its own id for the current session)"}
     var info = %*{"sessionId": sessionId}
     try:
-      let header = ct.dispatchToolCall("get",
-        %*{"kind": "conversation", "id": sessionId})
-      if not header{"ok"}.getBool(false):
+      let header = ct.storeGetItem("conversation", sessionId)
+      if header.value == nil:
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
                 "thinkingEffort", "context", "contextUsed", "promptTokens"]:
-        if header{"value"}{f} != nil:
-          info[f] = header{"value"}{f}
+        if header.value{f} != nil:
+          info[f] = header.value{f}
       # subagent lineage (the agent component records kind sessionmeta)
-      let meta = ct.dispatchToolCall("get",
-        %*{"kind": "sessionmeta", "id": sessionId})
-      if meta{"ok"}.getBool(false) and meta{"value"}{"parent"} != nil:
-        info["parent"] = meta{"value"}{"parent"}
+      let meta = ct.storeGetItem("sessionmeta", sessionId)
+      if meta.value != nil and meta.value{"parent"} != nil:
+        info["parent"] = meta.value{"parent"}
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
-      let listed = ct.dispatchToolCall("list",
-        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000})
       var byRole = newJObject()
       var total = 0
-      if listed{"items"} != nil:
-        for item in listed{"items"}:
-          inc total
-          let role = item{"value"}{"role"}.getStr("")
-          let key = if role.len > 0: role else: "unknown"
-          byRole[key] = %(byRole{key}.getInt(0) + 1)
+      for item in ct.storeListItems("message", sessionId & ":", 1000):
+        inc total
+        let role = item{"value"}{"role"}.getStr("")
+        let key = if role.len > 0: role else: "unknown"
+        byRole[key] = %(byRole{key}.getInt(0) + 1)
       info["messageCount"] = %total
       info["messagesByRole"] = byRole
       if total >= 1000:
@@ -613,7 +660,6 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
-    pumpTokenStream(ct)
     pumpSteer(ct)
     pumpAdvise(ct)
     pumpNested(ct)
@@ -712,9 +758,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     if schema{"x-harness"}{"noSpawn"}.getBool(false):
       var hasParent = false
       try:
-        let meta = dispatchSubjectCall(ct, "svc.store.call", "get",
-          %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
-        hasParent = meta{"value"}{"parent"}.getStr("").len > 0
+        hasParent = ct.storeGetItem("sessionmeta", ct.nested.session, 5_000)
+          .value{"parent"}.getStr("").len > 0
       except CatchableError:
         # fail closed: a missing sessionmeta record arrives as a result
         # (not-found), so an exception here means the lineage store is

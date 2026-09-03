@@ -52,9 +52,7 @@ proc main() =
   # consults the store so a decision made in any client is honored here too.
   approval.checkAuto = proc(session, tool: string): bool =
     try:
-      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
-        "id": session & ":" & tool})
-      return resp{"ok"}.getBool(false)
+      return ct.storeGetItem("approval", session & ":" & tool).value != nil
     except CatchableError:
       return false
 
