@@ -604,9 +604,26 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       onEvent("token", %*{"sessionId": sid, "turnId": turnId,
                           "content": content, "reasoning": reasoning}))
   defer: stopTokenStream(ct)
+  # A control cancel that arrived while no turn ran is dropped here: only a
+  # cancel published during THIS turn aborts it (agent_stop targets a live
+  # child turn, never a future conversation turn).
+  if ct.steerStream != nil:
+    ct.steerStream.cancelRequested = false
   var rounds = 0
   while rounds < 20:
     rounds += 1
+    # A cancel (agent_stop) ends the turn before the next LLM round: the
+    # flag is raised by pumpSteer from dispatch's idle slots, including
+    # while this loop was blocked inside a tool call. The in-flight LLM
+    # request itself is aborted by the llm.cancel side-channel.
+    if ct.steerStream != nil and ct.steerStream.cancelRequested:
+      let msg = "cancelled by request"
+      turnError = msg
+      if onEvent != nil:
+        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                           "error": msg})
+      emitTurnDone(msg)
+      return ""
     checkContext(p, messages, onEvent, turnId)
     # Fold any steering messages the client injected mid-turn into the running
     # conversation before the next LLM call (Pi-style steering), plus any
@@ -712,6 +729,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         onEvent("assistant", ev)
 
     if not hasToolCalls:
+      # Honor a cancel that arrived while this final LLM round ran: the
+      # turn is about to end anyway, but the caller asked for cancellation
+      # — the record must say "stopped"/"cancelled", not "done".
+      if ct.steerStream != nil and ct.steerStream.cancelRequested and
+          epochTime() - ct.steerStream.cancelAt <= 30.0:
+        let msg = "cancelled by request"
+        turnError = msg
+        ct.steerStream.cancelRequested = false
+        if onEvent != nil:
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": msg})
+        emitTurnDone(msg)
+        return ""
       # No tool calls: the model wants to stop. But if the client injected a
       # steering message while this response was in flight, fold it in and keep
       # going rather than ending the turn early (Pi's continuation-on-nudge).
@@ -994,6 +1024,7 @@ proc sessionSubject*(sessionId: string): string =
 
 func steerSubject*(sessionId: string): string =
   ## Fire-and-forget channel a client publishes to in order to inject a message
+  ## (or a __cancel control message — agent_stop's turn abort; see pumpSteer).
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
 
 func adviseSubject*(sessionId: string): string =
@@ -1025,15 +1056,29 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
           "session runner binary missing: " & bin & " — run `make build`")
       discard ct.sup.addChild(rname, bin, rpNever)
       ct.sup.startChild(ct.sup.children[^1], @[sessionId])
-    let deadline = epochTime() + 10
-    while epochTime() < deadline:
-      # Serve svc.core.call while waiting: the fresh runner seeds its catalog
-      # via catalog {op: snapshot} and would deadlock us without this pump.
-      pumpCoreWhileBusy(ct)
-      ct.cat.pump()
+  let deadline = epochTime() + 10
+  while epochTime() < deadline:
+    # Serve svc.core.call while waiting: the fresh runner seeds its catalog
+    # via catalog {op: snapshot} and would deadlock us without this pump.
+    # Also pump the supervisor: a runner that exited just before we looked
+    # (idle retirement race) leaves a dead "spawning" entry until sup.pump
+    # reaps it — without reaping, this wait would stare at a corpse for
+    # 10s while nobody spawns the replacement.
+    pumpCoreWhileBusy(ct)
+    ct.cat.pump()
+    if ct.sup != nil:
       ct.sup.pump(ct.cat)
-      if ct.cat.components.hasKey(rname): break
-      sleep(100)
+      var spawning = false
+      for c in ct.sup.children:
+        if c.name == rname: spawning = true
+      if not spawning and not ct.cat.components.hasKey(rname):
+        # the entry was reaped mid-wait: spawn the replacement now
+        let bin = ct.root / "var" / "bin" / "session"
+        if fileExists(bin):
+          discard ct.sup.addChild(rname, bin, rpNever)
+          ct.sup.startChild(ct.sup.children[^1], @[sessionId])
+    if ct.cat.components.hasKey(rname): break
+    sleep(100)
   if not ct.cat.components.hasKey(rname):
     raise newException(IOError,
       "session runner for " & sessionId & " did not come up")

@@ -221,13 +221,13 @@ Ambiguous style-insensitive names omit the wrapper and retain allowlisted
 ## Teaching the LLM
 
 Doc comments are the LLM's only window; both tools carry a when-to-use
-matrix (honestly worded — fan-out is sequential until concurrent bridge calls
-exist):
+matrix (honestly worded — plain `callTool` stays sequential; `batch(...)`
+runs independent calls concurrently under a bounded cap):
 
 | Situation | Use |
 | --- | --- |
 | One step, or each result changes the plan | direct loop |
-| Mechanical, known shape: sequential fan-out, search+distill, big data that must never hit context, polling/retry | `fabric` |
+| Mechanical, known shape: fan-out (plain or `batch`), search+distill, big data that must never hit context, polling/retry | `fabric` |
 | Exploratory/fuzzy subtask wanting its own fresh context and loop | `agent_run` |
 | Hybrid: program supervises fuzzy subtasks, does dataflow itself | `fabric` guest calls `callTool("agent", …)` |
 
@@ -251,13 +251,17 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- Effect declarations and conflict detection for batch calls (concurrent
-  mutations to one target are not prevented; reads are the intended use).
-- Job budgets beyond the wait timeout (per-job token/call caps), process-level
-  `agent_stop` cancellation, and agent restart recovery for jobs whose
-  completion tap was missed (they surface as "running"; status shows the
-  child runner's retirement).
-- Live executor event streaming beyond `ev.fabric.log`;
-  `ev.fabric.done` summary events.
+- Per-target conflict detection for batch writes: `x-harness.effect`
+  classifies reads (concurrent) vs writes (exclusive), so a batch never
+  runs two writes at once — but writes to DIFFERENT targets could safely
+  overlap and currently do not.
+- Per-job token/call caps (time budgets and reasoning-effort selection are
+  shipped), and cancellation propagation into already-dispatched nested calls
+  (`agent_stop` cancels the child turn for real; NATS request/reply still has
+  no cancel semantics for in-flight tool calls).
+- Structured-output schemas, tool allowlists, canonical working directories,
+  and isolated git worktrees for spawned subagents.
 - Cancellation propagation into a running guest (request/reply has no cancel
   semantics; kill-on-timeout is the only stop).
+- A Fabric activity card in the desktop UI (lifecycle events are on the bus
+  and the console renders them); durable retention for events/traces.

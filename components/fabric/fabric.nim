@@ -121,10 +121,37 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## order. Sequential callTool never queues more than one.
   type Pending = object
     id: string
+    tool: string
+    isWrite: bool
     sub: ptr natsSubscription
     launchedAt: float
   var inFlight: seq[Pending]
   var queued: seq[JsonNode]   ## admitted req frames waiting for a slot
+  var effectCache = initTable[string, string]()
+    ## tool -> "read" | "write" (x-harness.effect; anything unclassified or
+    ## unresolvable counts as write — conservative by default)
+
+  proc effectOf(tool: string): string =
+    ## Effect classification for batch scheduling. Selected mode reads it
+    ## from the pinned snapshot; raw mode lazily pins the one tool's schema
+    ## from the catalog (once per run; failure counts as write).
+    if effectCache.hasKey(tool): return effectCache[tool]
+    var effect = "write"
+    if selectedMode and selected.hasKey(tool):
+      effect = selected[tool]{"schema"}{"x-harness"}{"effect"}.getStr("write")
+    else:
+      try:
+        let remainingMs = (deadline - getMonoTime()).inMilliseconds.int
+        if remainingMs > 0:
+          let snap = comp.request("core", "catalog",
+            %*{"op": "schemas", "tools": [%tool]}, min(10_000, remainingMs))
+          let tools = snap{"tools"}
+          if tools != nil and tools.kind == JArray and tools.len > 0:
+            effect = tools[0]{"schema"}{"x-harness"}{"effect"}.getStr("write")
+      except CatchableError:
+        effect = "write"
+    effectCache[tool] = effect
+    return effect
 
   proc finishPending() =
     ## Destroy every in-flight inbox subscription (error/timeout paths).
@@ -170,9 +197,12 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         "component": pin{"component"}.getStr(""),
         "version": pin{"version"}.getStr(""),
         "fingerprint": pin{"fingerprint"}.getStr("")}
-    comp.emit("ev.fabric.call.started", %*{"runId": runId,
+    var startedEv = %*{"runId": runId,
               "sessionId": sessionId, "seq": frame{"id"}.getStr(""),
-              "tool": tool})
+              "tool": tool, "at": epochTime()}
+    if selectedMode:
+      startedEv["component"] = %selected[tool]{"component"}.getStr("")
+    comp.emit("ev.fabric.call.started", startedEv)
     let env = callEnvelope(tool, toolArgs, "fabric")
     let data = env.encode()
     let inbox = "_INBOX.fabric." & newId()
@@ -188,13 +218,33 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       natsSubscription_Destroy(sub)
       raise newException(CatchableError,
         "publish nested request: " & getErrorString(pst))
-    inFlight.add(Pending(id: frame{"id"}.getStr(""), sub: sub,
+    inFlight.add(Pending(id: frame{"id"}.getStr(""), tool: tool,
+                         isWrite: effectOf(tool) == "write", sub: sub,
                          launchedAt: epochTime()))
 
   proc topUp() =
+    ## Launch queued calls within the concurrency cap. Reads may overlap
+    ## each other; a write (or unclassified tool) launches only when
+    ## NOTHING is in flight, and nothing new launches while a write runs —
+    ## concurrent mutations to one target are prevented by construction.
     while inFlight.len < maxBatchInflight and queued.len > 0:
-      launch(queued[0])
-      queued.delete(0)
+      var writeInFlight = false
+      for pending in inFlight:
+        if pending.isWrite: writeInFlight = true
+      var pick = -1
+      for i in 0 ..< queued.len:
+        let isWrite = effectOf(queued[i]{"tool"}.getStr("")) == "write"
+        if isWrite:
+          if inFlight.len == 0:
+            pick = i
+            break
+        elif not writeInFlight:
+          pick = i
+          break
+      if pick < 0: break
+      let frame = queued[pick]
+      queued.delete(pick)
+      launch(frame)
 
   proc writeResp(id: string, resp: JsonNode) =
     let line = $resp
@@ -221,6 +271,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         writeResp(id, resp)
         comp.emit("ev.fabric.call.done", %*{"runId": runId,
                   "sessionId": sessionId, "seq": id, "ok": false,
+                  "tool": frame{"tool"}.getStr(""),
                   "durationMs": 0,
                   "error": resp{"error"}.getStr("")})
       else:
@@ -237,12 +288,16 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## Harvest bytes that are ready right now and handle their complete
     ## frames: a batch guest emits follow-up requests while earlier calls
     ## are still on the bus, and they must launch as slots free up.
+    ## Serve the reader's buffer BEFORE consulting the selector: a coalesced
+    ## burst read by readFrame leaves complete frames buffered with no new
+    ## bytes arriving, and selector-gated draining would starve them until
+    ## an unrelated reply happened to wake the pump.
     while resultJ == nil:
-      if not reader.readReady(p.outputHandle.cint, sel): break
-      while resultJ == nil:
-        let buffered = reader.takeFrame()
-        if not buffered.available: break
+      let buffered = reader.takeFrame()
+      if buffered.available:
         if handleFrame(parseJson(buffered.line)): break
+        continue
+      if not reader.readReady(p.outputHandle.cint, sel): break
 
   proc pumpInFlight() =
     ## Collect replies from in-flight nested calls, writing resp frames
@@ -261,12 +316,15 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           natsMsg_Destroy(msg)
           let id = inFlight[i].id
           let launchedAt = inFlight[i].launchedAt
+          let frameTool = inFlight[i].tool
           natsSubscription_Destroy(inFlight[i].sub)
           inFlight.delete(i)
           var callOk = false
           var callError = ""
+          var resultBytes = 0
           if r.kind == ekResult:
             callOk = true
+            resultBytes = ($r.args).len
             writeResp(id, %*{"t": "resp", "id": id, "ok": true,
                              "result": $r.args})
           else:
@@ -275,8 +333,10 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
                              "error": callError})
           comp.emit("ev.fabric.call.done", %*{"runId": runId,
                     "sessionId": sessionId, "seq": id, "ok": callOk,
+                    "tool": frameTool, "at": epochTime(),
                     "durationMs": ((epochTime() - launchedAt) *
                         1000.0).int,
+                    "resultBytes": resultBytes,
                     "error": callError})
           progressed = true
         else:
@@ -303,8 +363,6 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
           break
   except CatchableError as e:
     finishPending()
-    if resultJ != nil:
-      resultJ["_calls"] = %calls
     if resultJ == nil:
       stopChild()
       return diag(e.msg)
@@ -312,6 +370,9 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   if resultJ == nil:
     stopChild()
     return diag("fabric program timed out after " & $timeoutMs & "ms")
+  # every terminal path reports the real call count (lifecycle events and
+  # budget accounting read it)
+  resultJ["_calls"] = %calls
   return resultJ
 
 proc cleanupArtifacts(dir: string, incomingBytes: int64) =
@@ -447,9 +508,6 @@ discard comp.tool("fabric", fabSchema,
     # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
     let selectedJ = if toolArgs{"tools"} != nil: toolArgs{"tools"}
                     else: newJArray()
-    comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
-              "selected": selectedJ,
-              "maxCalls": toolArgs{"maxCalls"}.getInt(200)})
     let maxCalls = toolArgs{"maxCalls"}.getInt(200)
     if maxCalls <= 0 or maxCalls > maxCallsLimit:
       return %*{"error": "maxCalls must be in 1.." & $maxCallsLimit}
@@ -504,14 +562,29 @@ discard comp.tool("fabric", fabSchema,
     let executionMs = (deadline - getMonoTime()).inMilliseconds.int
     if executionMs <= 0:
       return %*{"error": "fabric execution deadline expired"}
+    # started only fires once every admission check passed: a rejected
+    # program never ran, so it must not announce a run (or orphan the
+    # correlated ev.fabric.done)
+    comp.emit("ev.fabric.started", %*{"runId": runId, "sessionId": sess,
+              "selected": selectedJ,
+              "maxCalls": maxCalls, "timeoutMs": executionMs})
+    # opportunistic retention sweep: expired artifacts are normally reaped
+    # when another oversized result is stored; running the expiry pass at
+    # the start of every run keeps the directory bounded even when no
+    # oversized result ever lands again
+    try:
+      cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+    except CatchableError: discard
     let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
                         executionMs, runId, sess)
     proc emitDone(status: string, extra: JsonNode = nil) =
-      ## Correlated terminal lifecycle event (bounded metadata).
+      ## Correlated terminal lifecycle event (bounded metadata). Success
+      ## results carry `_calls`; failure diagnostics carry `calls`.
       var ev = %*{"runId": runId, "sessionId": sess, "status": status,
                   "durationMs": ((epochTime() - fabricStart) * 1000.0).int,
-                  "calls": r{"_calls"}.getInt(0)}
+                  "calls": r{"_calls"}.getInt(r{"calls"}.getInt(0)),
+                  "maxCalls": maxCalls}
       if extra != nil:
         for key, val in extra: ev[key] = val
       comp.emit("ev.fabric.done", ev)
@@ -546,4 +619,11 @@ discard comp.tool("fabric", fabSchema,
     emitDone("failed")
     return %*{"ok": false, "diagnostics": r{"diagnostics"}.getStr("failed")})
 
+# boot-time retention sweep: artifacts expire after artifactMaxAgeSeconds,
+# but the expiry pass used to run only when another oversized result was
+# stored — a quiet system never cleaned up. Sweep once at boot too (the
+# per-run sweep below keeps it bounded afterwards).
+try:
+  cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+except CatchableError: discard
 comp.run()

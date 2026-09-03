@@ -30,3 +30,6 @@ ui/frontend/package.json.md5
 nimble.develop
 nimble.paths
 nimbledeps
+
+# swebench 4.x scratch (relative logs/ dir; tasks should run under var/)
+logs/

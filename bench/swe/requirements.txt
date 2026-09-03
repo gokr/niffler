@@ -1,0 +1,4 @@
+# 4.x is the classic SWE-bench harness with repo/version test specs and
+# prebuilt swebench/sweb.eval.* images. 5.x expects the newer enriched task
+# format and cannot directly evaluate SWE-bench_Verified's classic rows.
+swebench==4.1.0

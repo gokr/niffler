@@ -30,6 +30,42 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its end-to-end labeled loop exercises the runner's feedback rounds when
   an agent fixes only part of the contract.
 
+- **Bench harness comparison framework** — `bench/run.mjs` orchestrates
+  niffler/pi/opencode × model combos (deepseek-v4-flash, glm-5.3-flash):
+  per combo it copies the pristine task repo, loops [agent turn →
+  `test.sh` verify → feed failure back] and records time-to-green,
+  provider-reported token usage and diff stats, with a protected-file
+  guard marking test tampering invalid. The pi adapter isolates
+  `PI_CODING_AGENT_DIR` (+ JSON mode, session JSONL usage), opencode runs
+  `--format json --pure` (step_finish tokens), niffler gets a private
+  NATS + isolated `NIF_ROOT` per model (blocking session calls,
+  transcript usage). Five tasks (go/python/nim/node) are red at base and
+  verified green with reference impls. SWE-bench Verified importer
+  (`bench/swe/import.mjs`) downloads all 500 Verified task cards via the
+  HF datasets-server API (no pip/parquet needed), and a task-level
+  `verify` script gives the runner hidden-test mode: `test_patch` is
+  applied only at verification time, so the agent never sees the tests.
+- **SWE-bench Verified pilot** — the official evaluation path is wired
+  into the bench runner end-to-end and proved on `sympy__sympy-11618`
+  (no-op patch unresolved, dataset gold patch resolved; 3.92 GB official
+  image, ~9 min first pull + evaluation, ~25 s cached):
+  `bench/swe/setup.sh` bootstraps a Python 3.12 uv venv under
+  `var/bench/swe/.venv` with the `swebench` harness pinned to 4.1.0 (the
+  classic release with repo/version test specs and prebuilt
+  `sweb.eval.*` images; 5.x cannot evaluate Verified's classic rows);
+  `import.mjs` pulls task cards from the HF datasets-server API
+  (`--repos`/`--limit` for subsets, gold patch + environment metadata
+  included but kept outside generated agent repos); `prepare.mjs` turns
+  cards into a `run.mjs` task root — per-task checkouts at exactly
+  `base_commit` with no future refs (one shared git mirror, hidden
+  gold/`test_patch` never exposed), official images pre-pulled;
+  `verify.mjs` grades a candidate patch with the official Docker harness,
+  applying `test_patch` only inside the disposable evaluator container.
+  `run.mjs` gained `--task-root` for generated/custom task roots, a
+  hidden-verifier feedback message, and `git add -N` so untracked files
+  count in diff stats and the submitted patch. First pilot: 10 SymPy
+  cards × niffler/pi/opencode, one-shot submissions (`--rounds 1`).
+
 - **Expert advisory peer (`expert`)** — one expert follows one working
   session: a bounded current-turn observation built from `ev.session.*`
   events, a stateless LLM judgment over a cache-stable knowledge prefix
@@ -406,7 +442,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   message. Task-strategy examples are explicitly always-silent.
   `expert_follow` also gained a `provider` override (`NIF_LLM_PROVIDERS`
   nickname or stored provider) so judgments can run on a cheap flash model
-  off the worker's bill; `expert_status` reports it.
+  off the worker's bill; `expert_status` reports it. A focused DeepSeek
+  confirmation run (report `expert-grounded-bfbb81b`) then verified the
+  retune on t01/t04/t06: 3/3 pass in one round with exactly two judgments
+  per task and 6/6 silence, zero steers — direct expert usage fell from
+  75,081 tokens (17 judgments on the same tasks in the earlier matrix) to
+  17,657, a 76.5% reduction, while preserving the correct silence
+  behavior.
 
 - **`tool` macro accepts an x-harness argument** — `comp.tool(%*{"approval":
   "always", "timeoutMs": 60000}): proc ...` replaces the ~45

@@ -15,11 +15,18 @@
 ## - agent_status: non-blocking durable lookup.
 ## - agent_wait: poll the durable record until terminal (for workflows
 ##   that need the result; blocks this component's pump, like agent_run).
-## - agent_stop: mark a running job "stopping"; the terminal record says
-##   "stopped" when the child turn ends (the process itself is not killed —
-##   kill-on-timeout still bounds a runaway turn).
+## - agent_stop: cancel a running job for real — publish llm.cancel.<child>
+##   (aborts an in-flight streaming LLM request) and the runner's
+##   svc.session.<child>.cancel channel (ends the turn between rounds).
+##   The terminal record says "stopped" (the reply, if any, is kept).
 ## - agent_steer: fire-and-forget injection into a live child turn
 ##   (meaningful only for spawned jobs — agent_run blocks the caller).
+##
+## Restart recovery: non-terminal job records are reconciled lazily — on
+## boot and on every status/wait — against the live catalog and the child
+## transcript: a completed turn whose completion tap was missed synthesizes
+## the terminal record from the transcript; a turn whose runner died is
+## recorded as interrupted.
 ##
 ## Depth rule: a session spawned as a child (sessionmeta.parent set) cannot
 ## spawn children itself. Lineage persistence and reads fail closed. Child
@@ -27,7 +34,7 @@
 ## the original interactive caller. Idle child runners retire themselves
 ## (NIF_RUNNER_IDLE_S) and re-ensure on demand.
 
-import std/[json, os, strutils, tables, times]
+import std/[json, os, sets, strutils, tables, times]
 import natswrapper
 import niffler/sdk
 
@@ -43,6 +50,17 @@ proc sanitizeSessionId(s: string): string =
   ## session ids become NATS subject tokens, keep alnum/-/_.
   for c in s:
     result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
+
+proc publishCancel(c: Component, child: string) =
+  ## Two-channel turn cancellation: the llm side-channel aborts an in-flight
+  ## streaming request; a __cancel control message on the proven steer
+  ## channel ends the turn between rounds (the runner's pumpSteer raises the
+  ## flag runTurn checks before the next LLM round — riding the steer
+  ## subscription rather than a dedicated one keeps the connection's pump
+  ## surface unchanged).
+  c.emit("llm.cancel." & sanitizeSessionId(child), %*{"sessionId": child})
+  c.emit("svc.session." & sanitizeSessionId(child) & ".steer",
+         %*{"__cancel": true})
 
 proc hasParent(sessionId: string): bool =
   ## True when the session was itself spawned as a subagent child. Raises
@@ -86,10 +104,11 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
-proc childSessArgs(child, task, model: string): JsonNode =
-  ## The child session call: task preamble, optional model override, and
-  ## the conversation's pluggable constitution (systemprompt component,
-  ## best effort — the runner's own fallback covers a missing component).
+proc childSessArgs(child, task, model, thinking: string): JsonNode =
+  ## The child session call: task preamble, optional model override and
+  ## reasoning effort, and the conversation's pluggable constitution
+  ## (systemprompt component, best effort — the runner's own fallback covers
+  ## a missing component).
   result = %*{"sessionId": child, "content": taskPreamble & task}
   try:
     let sp = comp.request("systemprompt", "systemprompt",
@@ -102,6 +121,8 @@ proc childSessArgs(child, task, model: string): JsonNode =
     discard
   if model.len > 0:
     result["model"] = %model
+  if thinking.len > 0:
+    result["thinking"] = %thinking
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -109,12 +130,127 @@ proc originalCaller(toolArgs: JsonNode): string =
   ## component — which may be blocked in a handler and could not answer.
   toolArgs{"__session"}{"caller"}.getStr("agent")
 
+var stopArmed = initHashSet[string]()
+  ## Jobs whose stop cancellation was already (re-)published. A stop request
+  ## is re-armed exactly once per component incarnation — the first time a
+  ## resolveStale sees the job stopping with its runner alive (the original
+  ## publish may have been lost while this component was down). Re-arming on
+  ## every status/wait poll would flood the child's cancel channel.
+
+# --- restart recovery --------------------------------------------------------
+# Non-terminal job records must not lie: after this component restarts (or a
+# harness restart killed a child runner), status/wait resolve the record
+# against the live catalog and the child transcript.
+
+proc runnerAlive(sessionId: string): bool =
+  ## Presence of the child's session runner in the live catalog. Any failure
+  ## reads as absent: resolution prefers an honest terminal record over a
+  ## job stuck "running" forever.
+  try:
+    let snap = comp.request("core", "catalog", %*{"op": "components"}, 10_000)
+    let comps = snap{"components"}
+    if comps == nil: return false
+    return comps{"session-" & sanitizeSessionId(sessionId)} != nil
+  except CatchableError:
+    return false
+
+proc lastTranscript(sessionId: string): tuple[role, content: string] =
+  ## Last persisted message of the child conversation (best effort: any
+  ## store failure returns empty, which reads as "no evidence").
+  try:
+    let lst = comp.request("store", "list",
+      %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000},
+      10_000)
+    let items = lst{"items"}
+    if items == nil: return ("", "")
+    var last: JsonNode = nil
+    for item in items:
+      if item{"id"}.getStr("").startsWith(sessionId & ":"):
+        last = item{"value"}
+    if last != nil:
+      return (last{"role"}.getStr(""), last{"content"}.getStr(""))
+  except CatchableError:
+    discard
+  return ("", "")
+
+proc resolveStale(jobId: string, value: JsonNode): JsonNode =
+  ## Reconcile one non-terminal job record. Rules:
+  ## - runner alive: the turn may still complete (the tap will catch it);
+  ##   only re-publish a lost stop request for "stopping" jobs. No change.
+  ## - runner gone + transcript ends with an assistant reply: the turn
+  ##   completed while this component was down (completion tap missed) —
+  ##   synthesize the terminal record from the transcript.
+  ## - runner gone without a final reply: the turn died with the runner —
+  ##   record it as interrupted (stopping jobs read "stopped", not failed).
+  ## Returns the updated value, or nil when the record was left alone.
+  let status = value{"status"}.getStr("running")
+  if status != "running" and status != "stopping": return nil
+  let child = value{"sessionId"}.getStr("")
+  if child.len == 0: return nil
+  if runnerAlive(child):
+    if status == "running" and jobId notin stopArmed and
+        value{"budgetMs"}.getInt(0) > 0 and
+        (epochTime() - value{"startedAt"}.getFloat(0)) * 1000.0 >
+            value{"budgetMs"}.getFloat(0):
+      # Time budget exhausted (enforced lazily on observation): cancel the
+      # turn with agent_stop semantics; the completion tap — or a later
+      # poll after the child dies — terminalizes the record as "stopped".
+      stopArmed.incl(jobId)
+      value["status"] = %"stopping"
+      try:
+        discard comp.request("store", "put",
+          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+      except CatchableError:
+        return nil
+      publishCancel(comp, child)
+      return value
+    if status == "stopping" and jobId notin stopArmed:
+      # the original stop may have been lost while this component was down;
+      # re-arm exactly once per incarnation (never per poll)
+      stopArmed.incl(jobId)
+      publishCancel(comp, child)
+    return nil
+  var updated = value
+  let (role, content) = lastTranscript(child)
+  if role == "assistant":
+    updated["status"] = %(if status == "stopping": "stopped" else: "done")
+    updated["reply"] = %content
+  else:
+    updated["status"] = %(if status == "stopping": "stopped" else: "failed")
+    updated["error"] = %"interrupted — child runner gone before completion"
+  updated["endedAt"] = %epochTime()
+  try:
+    discard comp.request("store", "put",
+      %*{"kind": "agentjob", "id": jobId, "value": updated}, 10_000)
+  except CatchableError:
+    return nil  # cannot persist — leave the record alone rather than lie
+  comp.emit("ev.agent.done", %*{"jobId": jobId,
+                                "sessionId": updated{"sessionId"},
+                                "status": updated{"status"}})
+  return updated
+
+proc reconcileAll() =
+  ## Boot-time pass over every non-terminal job (best effort).
+  try:
+    let lst = comp.request("store", "list",
+      %*{"kind": "agentjob", "limit": 1000}, 10_000)
+    let items = lst{"items"}
+    if items == nil: return
+    for item in items:
+      let jobId = item{"id"}.getStr("")
+      if jobId.len == 0: continue
+      discard resolveStale(jobId, item{"value"})
+  except CatchableError:
+    discard
+
 # low-level registration: the handler needs the raw __session injection
 let runSchema = toolSchema(%*{
   "task": {"type": "string",
            "description": "Self-contained task for the subagent. It starts with a fresh context — include everything it needs (paths, goals, constraints), not a continuation of this conversation."},
   "model": {"type": "string",
             "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
+  "thinking": {"type": "string",
+               "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"}
 }, required = @["task"],
@@ -136,7 +272,8 @@ discard comp.tool("agent_run", runSchema,
       return errResult(prep.error)
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr("")),
+      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr("")),
       originalCaller(toolArgs))
     let resp = comp.requestEnvelope(prep.subject, env, timeoutMs)
     if resp.kind == ekError:
@@ -154,9 +291,13 @@ let spawnSchema = toolSchema(%*{
   "task": {"type": "string",
            "description": "Self-contained task for the subagent (same contract as agent_run)"},
   "model": {"type": "string",
-            "description": "Optional model override for the subagent"}
+            "description": "Optional model override for the subagent"},
+  "thinking": {"type": "string",
+               "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "timeoutMs": {"type": "integer",
+                "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
 }, required = @["task"],
-   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop marks it for stopping. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
+   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop cancels it for real. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                               "sessionContext": true, "noSpawn": true,
                               "onDemand": true}
@@ -175,18 +316,22 @@ discard comp.tool("agent_spawn", spawnSchema,
     let jobId = "job-" & newId()
     # durable record BEFORE the fire-and-forget publish, so a completion
     # that races the spawn cannot arrive at an unknown job
+    var record = %*{"sessionId": prep.child, "parent": parentSession,
+                    "status": "running",
+                    "task": task[0 ..< min(task.len, 200)],
+                    "startedAt": epochTime()}
+    let budgetMs = toolArgs{"timeoutMs"}.getInt(0)
+    if budgetMs > 0:
+      record["budgetMs"] = %budgetMs
     try:
       discard comp.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId,
-           "value": %*{"sessionId": prep.child, "parent": parentSession,
-                       "status": "running",
-                       "task": task[0 ..< min(task.len, 200)],
-                       "startedAt": epochTime()}}, 10_000)
+        %*{"kind": "agentjob", "id": jobId, "value": record}, 10_000)
     except CatchableError as e:
       return errResult("cannot record job (store unreachable): " & e.msg,
                        extra = %*{"sessionId": prep.child})
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr("")),
+      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr("")),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId
@@ -223,7 +368,12 @@ discard comp.tool("agent_status", statusSchema,
       let job = c.request("store", "get",
         %*{"kind": "agentjob", "id": jobId}, 10_000)
       if job{"ok"}.getBool(false):
-        return okResult(job{"value"})
+        var value = job{"value"}
+        # lazy restart recovery: a non-terminal record is reconciled against
+        # the live catalog and the child transcript before it is reported
+        let resolved = resolveStale(jobId, value)
+        if resolved != nil: value = resolved
+        return okResult(value)
       return errResult("unknown job '" & jobId & "'", code = "not-found")
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
@@ -254,12 +404,18 @@ discard comp.tool("agent_wait", waitSchema,
         return errResult("cannot read job (store unreachable): " & e.msg)
       if not job{"ok"}.getBool(false):
         return errResult("unknown job '" & jobId & "'", code = "not-found")
-      let value = job{"value"}
+      var value = job{"value"}
+      # lazy restart recovery: same reconciliation as agent_status, so a
+      # wait on a stale record resolves it instead of blocking forever
+      let resolved = resolveStale(jobId, value)
+      if resolved != nil: value = resolved
       let status = value{"status"}.getStr("running")
-      if status != "running":
+      # "stopping" is NOT terminal: keep waiting until the completion tap
+      # (or lazy recovery) lands done/failed/stopped
+      if status != "running" and status != "stopping":
         return okResult(value)
       if epochTime() >= deadline:
-        return errResult("job '" & jobId & "' still running after " &
+        return errResult("job '" & jobId & "' still " & status & " after " &
           $timeoutMs & "ms — poll agent_status instead of waiting again",
           code = "timeout", extra = %*{"jobId": jobId, "status": status})
       sleep(250))
@@ -267,7 +423,7 @@ discard comp.tool("agent_wait", waitSchema,
 let stopSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
-   description = "Mark a running background subagent job for stopping. The child turn is not killed outright — it ends when the model finishes or the turn times out, and the job's terminal record then says \"stopped\" (the reply, if any, is kept). Re-calling is harmless.")
+   description = "Cancel a running background subagent job: aborts its in-flight LLM request and ends the child turn (between tool rounds, promptly after the current tool returns). The job's terminal record says \"stopped\" — the reply, if any, is kept. Re-calling is harmless; stopping an already-terminal job just returns the record.")
 stopSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("agent_stop", stopSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
@@ -281,13 +437,16 @@ discard comp.tool("agent_stop", stopSchema,
         return errResult("unknown job '" & jobId & "'", code = "not-found")
       let value = job{"value"}
       let status = value{"status"}.getStr("running")
-      if status != "running":
+      if status != "running" and status != "stopping":
         return okResult(value)
-      value["status"] = %"stopping"
-      discard c.request("store", "put",
-        %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
-      return okResult(%*{"status": "stopping", "sessionId":
-                          value{"sessionId"}.getStr("")})
+      if status != "stopping":
+        value["status"] = %"stopping"
+        discard c.request("store", "put",
+          %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
+      let child = value{"sessionId"}.getStr("")
+      if child.len > 0:
+        publishCancel(c, child)
+      return okResult(%*{"status": "stopping", "sessionId": child})
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
@@ -326,7 +485,10 @@ discard comp.tap("_INBOX.agentjob.>",
     else:
       value["reply"] = %r.args{"reply"}.getStr("")
     try:
-      # preserve spawn-time fields and honor a stop request
+      # preserve spawn-time fields and honor a stop request: any terminal
+      # state while a stop was requested reads "stopped" — the turn may end
+      # via llm.cancel (an error) or between rounds (clean), and the reply,
+      # if one was produced, is kept either way
       let job = c.request("store", "get",
         %*{"kind": "agentjob", "id": jobId}, 10_000)
       if job{"ok"}.getBool(false):
@@ -334,7 +496,10 @@ discard comp.tap("_INBOX.agentjob.>",
         value["parent"] = prior{"parent"}
         value["task"] = prior{"task"}
         value["startedAt"] = prior{"startedAt"}
-        if prior{"status"}.getStr("") == "stopping" and status == "done":
+        # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+        if prior{"budgetMs"} != nil:
+          value["budgetMs"] = prior{"budgetMs"}
+        if prior{"status"}.getStr("") == "stopping":
           value["status"] = %"stopped"
       discard c.request("store", "put",
         %*{"kind": "agentjob", "id": jobId, "value": value}, 10_000)
@@ -344,4 +509,5 @@ discard comp.tap("_INBOX.agentjob.>",
                                 "sessionId": value{"sessionId"},
                                 "status": value{"status"}}))
 
+reconcileAll()
 comp.run()

@@ -1208,7 +1208,7 @@ guide with nudge phrasing and worked examples:
 
 | Tool | What it does |
 |---|---|
-| `fabric {code, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
+| `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
 | `agent_run {task, model?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. |
 | `agent_spawn {task, model?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
@@ -1233,9 +1233,10 @@ guide with nudge phrasing and worked examples:
   oversized `finish()` values spill to `var/fabric-artifacts/<run>.json`
   (mode 0600) and the tool result points at the path.
 - **Guest API**: `fabricguest.nim` provides the raw bridge (`callTool`,
-  `finish`, `logg`, `stringArg`, and import-free `j*` helpers).
-  `fabricmeta.nim` turns pinned runtime schemas into input-typed wrappers with
-  `JsonNode` results. Worked examples: `components/fabric/examples/`.
+  `batch`, `finish`, `logg`, `stringArg`, and import-free `j*` helpers).
+  `fabricmeta.nim` turns pinned runtime schemas into input-typed wrappers;
+  results are `JsonNode` unless the tool declares a scalar `outputSchema`.
+  Worked examples: `components/fabric/examples/`.
 - **When to use what**: direct loop for judgment-per-step work; `fabric` for
   mechanical known-shape orchestration; `agent_run` for exploratory subtasks
   that need their own context; hybrid programs may call `agent_run`.

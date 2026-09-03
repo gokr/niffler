@@ -55,6 +55,8 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+    cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
+    cancelAt*: float         # when it arrived (stale cancels self-expire)
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -416,6 +418,9 @@ proc pumpSteer*(ct: CoreTools) =
   ## from the client, so there is no reply; the queue is drained by runTurn at
   ## the top of every LLM round and again before it would emit "done" (giving a
   ## queued steer the chance to keep the agent working — the Pi pattern).
+  ## A payload carrying __cancel: true is a CONTROL message (agent_stop's
+  ## turn abort), not user content: it raises the cancel flag runTurn checks
+  ## between rounds instead of being folded into the conversation.
   if ct.steerStream == nil or ct.steerStream.sub == nil: return
   while true:
     var msg: ptr natsMsg
@@ -426,6 +431,10 @@ proc pumpSteer*(ct: CoreTools) =
     natsMsg_Destroy(msg)
     let env = decode(data)
     if env.kind != ekEvent or env.payload == nil: continue
+    if env.payload{"__cancel"}.getBool(false):
+      ct.steerStream.cancelRequested = true
+      ct.steerStream.cancelAt = epochTime()
+      continue
     let content = env.payload{"content"}.getStr("")
     if content.len > 0:
       ct.steerStream.queue.add(content)
