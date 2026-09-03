@@ -47,7 +47,7 @@ reference chapters for the shipped components. Design rationale lives in
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
 | `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency) |
-| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
+| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130, `cancelled: true`) — no orphaned children |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
@@ -317,11 +317,20 @@ reports:
   model, catalog and context provenance for interactive clients. See
   [Model catalog](#model-catalog-models).
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?}` accepts a
+- `session {sessionId, content?, model?, thinking?, title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped model override. A model-only call persists and resolves
   the selection without inference; presence with an empty value clears it.
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
+- The per-session controls freeze on the first call and persist in the
+  header: `tools` (a tool allowlist the child may dispatch), `maxRounds`
+  (LLM rounds per turn, 1-20, overriding `NIF_MAX_TURN_ROUNDS`),
+  `maxCalls` (total tool dispatches per turn, 1-500 — every dispatch
+  attempt counts, success or error), and `maxTokens` (cumulative
+  provider-reported tokens per turn, checked before each new round).
+  Budget exhaustion ends the turn as a budget-exhausted error — subagent
+  drivers (`agent_run`/`agent_spawn`) surface it as a failure, never a
+  text reply.
 - `cwd` pins the conversation's **workspace**: an existing directory inside
   `NIF_ROOT` (relative paths resolve against the root), immutable after
   creation and persisted in the header so resumed runners resolve context
