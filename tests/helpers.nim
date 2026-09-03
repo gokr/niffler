@@ -225,6 +225,17 @@ proc drain*(nc: NatsConnection) =
   let env = Envelope(v: 1, id: newId(), kind: ekEvent, payload: newJObject())
   nc.publish("ev.sys.drain", env.encode())
 
+proc processExists*(pattern: string): bool =
+  ## True when a live process whose full command line matches `pattern`
+  ## exists (pgrep -f). Used to prove cancellation/timeout kills the whole
+  ## command tree instead of orphaning grandchildren.
+  ## startProcess (not execCmdEx): a shell wrapper would put the pattern in
+  ## its own cmdline and pgrep would match that shell.
+  let p = startProcess("pgrep", args = ["-f", pattern],
+                       options = {poUsePath, poStdErrToStdOut})
+  defer: p.close()
+  waitForExit(p, 5000) == 0
+
 proc tempRoot*(tag: string): string =
   ## A unique scratch NIF_ROOT safe across agents and stale PID reuse.
   result = createTempDir("niffler-test-" & tag & "-", "")

@@ -733,10 +733,22 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)
-    # and stale flags are unaffected; the callee keeps running regardless.
+    # and stale flags are unaffected. The callee would keep running (NATS
+    # request/reply has no cancel semantics), so also ask it to abandon the
+    # in-flight work: components opt in by subscribing their own
+    # cancel.<component> subject and matching the session id (bash kills
+    # the command's process group; components without a subscription drop
+    # the message).
     if ct.steerStream != nil and ct.steerStream.cancelRequested and
         ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
         epochTime() - ct.steerStream.cancelAt <= 30.0:
+      if subject.startsWith("svc.") and subject.endsWith(".call"):
+        let comp = subject["svc.".len ..< subject.len - ".call".len]
+        if comp.len > 0:
+          ct.nc.publish("cancel." & comp,
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"sessionId": ct.activeTurn.session,
+                                 "tool": tool, "ts": epochTime()}).encode())
       raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
@@ -855,6 +867,16 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       (deadline - getMonoTime()).inMilliseconds.int)
     if timeoutMs <= 0:
       raise newException(IOError, "tool '" & tool & "' deadline expired")
+
+  # Cancel-aware tools (x-harness.sessionId): inject the live session id
+  # as private context so the component can match cancel.<component>
+  # messages (published by the runner when a turn is cancelled mid-dispatch)
+  # against its in-flight work. Advisory only — unlike sessionContext it
+  # carries no lease, admits non-session callers (cli scripting sees ""),
+  # and does not fail closed without a live turn.
+  if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
+    callArgs["__session"] = %*{"session":
+      (if ct.nested != nil: ct.nested.session else: "")}
 
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Nested session-context calls temporarily

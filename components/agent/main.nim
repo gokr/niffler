@@ -132,6 +132,14 @@ proc childSessArgs(child, task, model, thinking: string,
     let mr = toolArgs{"maxRounds"}.getInt(0)
     if mr >= 1 and mr <= 20:
       result["maxRounds"] = %mr
+    # per-job budgets (frozen per-session controls enforced by core): total
+    # tool dispatches and cumulative tokens for the child's whole turn
+    let mc = toolArgs{"maxCalls"}.getInt(0)
+    if mc >= 1 and mc <= 500:
+      result["maxCalls"] = %mc
+    let mt = toolArgs{"maxTokens"}.getInt(0)
+    if mt >= 1:
+      result["maxTokens"] = %mt
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -253,6 +261,10 @@ let runSchema = toolSchema(%*{
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
                 "description": "Optional tool-round budget per child turn (1-20, default 20)"},
+  "maxCalls": {"type": "integer",
+               "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
+  "maxTokens": {"type": "integer",
+                "description": "Optional cumulative token budget for the child's turn (provider-reported tokens across LLM rounds); the turn ends as budget-exhausted once it is spent"},
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"}
 }, required = @["task"],
@@ -300,6 +312,10 @@ let spawnSchema = toolSchema(%*{
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
                 "description": "Optional tool-round budget per child turn (1-20, default 20)"},
+  "maxCalls": {"type": "integer",
+               "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
+  "maxTokens": {"type": "integer",
+                "description": "Optional cumulative token budget for the child's turn (provider-reported tokens across LLM rounds); the turn ends as budget-exhausted once it is spent"},
   "timeoutMs": {"type": "integer",
                 "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
 }, required = @["task"],

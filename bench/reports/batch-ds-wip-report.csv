@@ -1,0 +1,13 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens
+deepseek-v4-flash,niffler,t01-roman,pass,8,7.5,1,26414,6557,657,19200,0,0.000000,13,1,5590,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t02-jsonrepair,pass,112,111.8,1,615938,159136,8418,448384,0,0.000000,105,1,5642,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t03-ringbuffer,pass,13.5,12.4,1,32883,5397,606,26880,0,0.000000,16,4,5609,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t04-csvbugfix,pass,7,6.8,1,33309,5708,465,27136,0,0.000000,3,3,5568,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t05-todostore,pass,10.2,9.9,1,39118,6783,1231,31104,0,0.000000,22,4,5552,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t06-stackvm,pass,49.4,48.3,1,87553,11117,7316,69120,0,0.000000,167,42,5594,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler-expert,t01-roman,pass,9.8,9.2,1,30095,7014,681,22400,0,0.000000,13,1,5596,true,1,1,0,0,0,0,0,3504,3200,21
+deepseek-v4-flash,niffler-expert,t02-jsonrepair,pass,19.1,19,1,53800,9245,1931,42624,0,0.000000,69,1,5648,true,2,1,0,0,0,0,1,8187,6400,62
+deepseek-v4-flash,niffler-expert,t03-ringbuffer,pass,19.1,17.9,1,44187,7623,1108,35456,0,0.000000,15,4,5615,true,2,2,0,0,0,0,0,8020,6400,47
+deepseek-v4-flash,niffler-expert,t04-csvbugfix,pass,14.4,13.3,1,49174,7294,920,40960,0,0.000000,3,3,5574,true,2,2,0,0,0,0,0,8185,6784,52
+deepseek-v4-flash,niffler-expert,t05-todostore,pass,11.5,11.1,1,38000,6544,864,30592,0,0.000000,16,4,5558,true,1,0,0,0,0,0,1,3961,3200,54
+deepseek-v4-flash,niffler-expert,t06-stackvm,pass,61,60.4,1,120301,13208,8533,98560,0,0.000000,93,13,5600,true,2,2,0,0,0,0,0,8230,6400,73

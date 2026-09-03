@@ -234,12 +234,19 @@ ends — turns never nest.
 
 ## Cancellation
 
-No transport-native cancellation in NATS. Today the only implemented cancel
-path is the LLM side-channel: publishing to `llm.cancel.<sessionId>` aborts
-that session's in-flight provider request (see `components/llm/main.go`).
-Everything else runs to completion or deadline — request/reply callers that
-stop waiting only abandon the reply; the target work is not stopped. A
-generic `ev.cancel.<call-id>` subject remains a possible future addition.
+No transport-native cancellation in NATS. Two implemented cancel paths:
+
+- `llm.cancel.<sessionId>` — aborts that session's in-flight provider
+  request (see `components/llm/main.go`).
+- `cancel.<component>` — published by a session runner when a turn cancel
+  lands while a tool dispatch is in flight (event envelope
+  `{sessionId, tool, ts}`). Components opt in by subscribing their own
+  subject and matching `sessionId` against the injected `__session.session`
+  private context (`x-harness.sessionId`); bash kills the running command's
+  process group (exit 130). Components without a subscription drop the
+  message and run to completion or deadline — request/reply callers that
+  stop waiting only abandon the reply; the target work is not stopped. A
+  generic `ev.cancel.<call-id>` subject remains a possible future addition.
 
 ## Approvals
 
