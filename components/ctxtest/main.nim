@@ -27,7 +27,8 @@ proc toolCall(id, name: string, args: JsonNode): JsonNode =
 
 comp.tool(%*{"hidden": true}):
   proc chat(messages: JsonNode = nil, tools: JsonNode = nil,
-            sessionId: string = "", stream: bool = false): JsonNode =
+            sessionId: string = "", stream: bool = false,
+            reasoning_effort: string = ""): JsonNode =
     ## Stub LLM surface for the session runner. Scripted per session kind:
     ## - agent-* sessions (real subagent children): depth-guard attempt,
     ##   then bash work, then final reply.
@@ -43,10 +44,47 @@ comp.tool(%*{"hidden": true}):
       # must report it as a failure, not a successful text reply
       if messages != nil and ($messages).contains("FORCE_LLM_FAILURE"):
         raise newException(CatchableError, "llm exploded")
+      # reasoning-effort passthrough: echo what the runner forwarded
+      if messages != nil and ($messages).contains("ECHO_THINKING"):
+        return %*{"content": "thinking:" & reasoning_effort}
+      # token-budget scripting: every reply reports 10100 total tokens, so
+      # a maxTokens 15000 cap allows exactly two rounds (10100 < 15000,
+      # 20200 >= 15000) and the third round must be refused before the LLM
+      # call — proving the budget is enforced on provider-reported usage
+      let bigTokens = messages != nil and ($messages).contains("BIG_TOKENS")
+      proc withUsage(r: JsonNode): JsonNode =
+        if bigTokens:
+          r["usage"] = %*{"prompt_tokens": 10000,
+                           "completion_tokens": 100,
+                           "total_tokens": 10100}
+        r
+      # slow child for the stop test: the stub chat itself sleeps — the
+      # stop must land while this LLM round is in flight (between-rounds
+      # cancel checks at the next round top and at the would-stop point)
+      if messages != nil and ($messages).contains("SLOW_CHILD"):
+        if stage == 0:
+          sleep(8000)
+          return %*{"content": "slow-done"}
+        return %*{"content": "slow-done"}
+      # slow child whose delay is a TOOL call (bash sleep 30 + a marker
+      # touch): the stop must abandon the in-flight dispatch immediately
+      # AND the bash side-channel must kill the command's process group —
+      # an orphaned sleep would still touch the marker and still be found
+      # by pgrep long after the job terminalized
+      if messages != nil and ($messages).contains("SLOW_BASH"):
+        if stage == 0:
+          let marker = getEnv("NIF_ROOT", getCurrentDir()) / "var" /
+                       "slowbash-marker"
+          return toolCall("t1", "bash",
+                          %*{"command": "sleep 30 && touch " &
+                              quoteShell(marker)})
+        return withUsage(%*{"content": "slow-bash-done"})
       case stage
-      of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
-      of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
-      else: return %*{"content": "subagent-done"}
+      of 0: return withUsage(toolCall("t1", "agent_run",
+                                    %*{"task": "try to spawn"}))
+      of 1: return withUsage(toolCall("t2", "bash",
+                                    %*{"command": "echo agent-ok"}))
+      else: return withUsage(%*{"content": "subagent-done"})
     if sessionId == "agt-parent":
       if stage == 0:
         return toolCall("t1", "agent_run",
@@ -67,12 +105,77 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "FORCE_LLM_FAILURE then report"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-stop":
+      if stage == 0:
+        # spawn a child whose turn takes a deliberate tool round: the stop
+        # test cancels it while that round runs (between-rounds cancel)
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_CHILD take your time"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-think":
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "ECHO_THINKING and report",
+                           "thinking": "high"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-budget":
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_CHILD take your time",
+                           "timeoutMs": 2000})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-midtool":
+      if stage == 0:
+        # spawn a child whose turn is blocked in a long bash command when
+        # the stop lands: the runner must stop WAITING for the tool
+        # (TurnCancelled) instead of running out the tool's duration
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_BASH take your time"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-allow":
+      if stage == 0:
+        # allowlist scoping: the child may dispatch only session_info, so
+        # its scripted bash call must be rejected at the dispatch gate
+        return toolCall("t1", "agent_run",
+                        %*{"task": "try bash then report",
+                           "tools": ["session_info"]})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-rounds":
+      if stage == 0:
+        # round budget: the child's scripted loop wants 3 rounds; with
+        # maxRounds 2 the third round never happens
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent",
+                           "maxRounds": 2})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-calls":
+      if stage == 0:
+        # call budget: the child's scripted loop wants 2 dispatches (depth
+        # guard, bash); with maxCalls 1 the bash dispatch must be refused
+        return toolCall("t1", "agent_run",
+                        %*{"task": "run bash then report",
+                           "maxCalls": 1})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-tokens":
+      if stage == 0:
+        # token budget: the stub reports 10100 total tokens per round;
+        # maxTokens 15000 allows two rounds, the third must be refused
+        return toolCall("t1", "agent_run",
+                        %*{"task": "BIG_TOKENS report",
+                           "maxTokens": 15000})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must
         # inject its own id (t_core asserts the tool result carries it)
         return toolCall("t1", "session_info", %*{})
       return %*{"content": "introspect-done"}
+    if sessionId == "ws-test":
+      if stage == 0:
+        # workspace injection: bash gets cwd=<conversation workspace>
+        # injected by the runner (t_core asserts the tool ran there)
+        return toolCall("t1", "bash", %*{"command": "pwd"})
+      return %*{"content": "workspace-done"}
     if sessionId == "fab-test":
       case stage
       of 0:
@@ -200,30 +303,28 @@ comp.tool(%*{"hidden": true}):
       return %*{"content": "lib-turn-done"}
     if sessionId == "fab-batch":
       if stage == 0:
-        # bounded batch: the two slow items run in DIFFERENT components
-        # (bash and ctxtest). The guest itself proves overlap: item 1 ends
-        # with `date` while item 2 (ctx_sleep) reports its start/end wall
-        # clock — if bash's timestamp falls inside the sleep window, the
-        # two calls were on the bus at the same time. Components are
-        # single-threaded, so same-component items would serialize there.
+        # bounded batch with effect declarations: the two ctx_sleep items
+        # are declared reads and overlap; the two bash items are writes
+        # (unclassified = conservative) and run exclusively — never
+        # overlapping anything. The guest measures the wall clocks itself.
         let batched = "import fabricguest\n" &
           "import std/json\nimport std/strutils\n" &
           "let r = batch(jarr(\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"sleep 1 && echo b1 && date +%s.%N\"))))),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1000)), jpair(\"say\", jesc(\"b2\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r1\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r2\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"nope\")), jpair(\"args\", jobj())),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3\")))))))\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b4 && date +%s.%N\")))))))\n" &
           "let outcomes = parseJson(r)\n" &
-          "let bashOut = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
-          "let sleepOut = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
-          "let bashEnd = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
-          "let sleepStart = sleepOut{\"started\"}.getFloat()\n" &
-          "let sleepEnd = sleepOut{\"ended\"}.getFloat()\n" &
-          "finish($(%*{\"concurrent\": bashEnd < sleepEnd + 0.3,\n" &
-          "  \"bashEnd\": bashEnd, \"sleepStart\": sleepStart,\n" &
-          "  \"sleepEnd\": sleepEnd, \"items\": outcomes.len,\n" &
+          "let b3Out = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
+          "let b4Out = parseJson(outcomes[4]{\"result\"}.getStr(\"\"))\n" &
+          "let b3Date = b3Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b4Date = b4Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "finish($(%*{\"items\": outcomes.len,\n" &
+          "  \"writesSerialized\": b4Date > b3Date,\n" &
           "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
-          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
+          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false),\n" &
+          "  \"b4\": outcomes[4]{\"ok\"}.getBool(false)}))\n"
         return toolCall("t1", "fabric", %*{"code": batched})
       return %*{"content": "batch-turn-done"}
     if sessionId == "fab-out":
@@ -235,6 +336,11 @@ comp.tool(%*{"hidden": true}):
           "finish(jesc(s))\n"
         return toolCall("t1", "fabric", %*{
           "tools": ["ctx_out"], "code": prog})
+      if stage == 1:
+        # invalid budget: rejected before admission, so this run must not
+        # announce ev.fabric.started
+        return toolCall("t2", "fabric", %*{
+          "code": "import fabricguest\nfinish(\"x\")\n", "maxCalls": 0})
       return %*{"content": "out-turn-done"}
     if sessionId.startsWith("sp-"):
       # every turn: echo the conversation's system message (messages[0])
@@ -291,6 +397,7 @@ let sleepSchema = toolSchema(%*{
   "ms": {"type": "integer", "minimum": 0},
   "say": {"type": "string"}
 }, required = @["ms"])
+sleepSchema["x-harness"] = %*{"effect": "read"}
 discard comp.tool("ctx_sleep", sleepSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let started = epochTime()
@@ -304,6 +411,7 @@ let echoOutSchema = toolSchema(%*{
   "say": {"type": "string"}
 }, required = @["say"])
 echoOutSchema["outputSchema"] = %*{"type": "string"}
+echoOutSchema["x-harness"] = %*{"effect": "read"}
 discard comp.tool("ctx_out", echoOutSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     %toolArgs{"say"}.getStr(""))

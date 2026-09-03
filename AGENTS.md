@@ -58,7 +58,18 @@ anything structural.
   `x-harness.approval` (**enforced**: terminal y/N prompt; session-driven
   requests route to the caller's private UI approval subject with broadcast
   fallback; deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),
-  `x-harness.timeoutMs` (see `components/builder/main.nim`).
+  `x-harness.timeoutMs` (see `components/builder/main.nim`),
+  `x-harness.effect` (`"read"` | `"write"`, default write — how the fabric
+  batch host schedules items: reads fill the concurrency cap together,
+  writes run exclusively),
+  `x-harness.sessionId` (runner injects `__session.session` as private
+  context so the component can match `cancel.<component>` messages against
+  its in-flight call — bash kills the command's process group; docs/WIRE.md
+  "Cancellation"), `x-harness.sessionContext` (fabric/agent: injects
+  `__session` with the live session + a lease for the nested-call proxy),
+  `x-harness.noSpawn` (subagents cannot spawn subagents, checked at dispatch
+  time), `x-harness.workspace` (path-shaped arguments resolved against the
+  conversation workspace).
 - Tool doc comments are the LLM's only window into a tool: all prose lines of
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM

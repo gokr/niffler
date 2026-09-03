@@ -1,0 +1,13 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens
+deepseek-v4-flash,niffler,t01-roman,pass,12.6,12,1,25226,6270,652,18304,0,0.000000,13,1,5474,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t02-jsonrepair,pass,47.7,47.6,1,48568,7318,5282,35968,0,0.000000,95,1,5526,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t03-ringbuffer,pass,14.1,13,1,33819,5461,966,27392,0,0.000000,17,4,5493,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t04-csvbugfix,pass,13.5,13.4,1,40501,5565,1144,33792,0,0.000000,3,3,5452,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t05-todostore,pass,9.7,9.4,1,40412,6150,726,33536,0,0.000000,21,4,5436,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,t06-stackvm,pass,58.1,57.6,1,187484,12192,8124,167168,0,0.000000,149,65,5478,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t01-roman,pass,22.4,21.9,1,16263,5609,286,10368,0,0.000000,13,1,5165,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t02-jsonrepair,pass,470.4,470.1,2,271683,25649,7698,238336,0,0.000000,58,11,5207,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t03-ringbuffer,pass,23.6,22.5,1,17040,6206,402,10432,0,0.000000,14,4,5181,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t04-csvbugfix,pass,21.1,21,1,23510,1349,209,21952,0,0.000000,3,3,5140,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t05-todostore,pass,20,19.8,1,17196,6397,431,10368,0,0.000000,17,4,5125,false,0,0,0,0,0,0,0,0,0,0
+glm-5.3-flash,niffler,t06-stackvm,pass,66.3,65.9,1,59673,5185,2136,52352,0,0.000000,132,44,5164,false,0,0,0,0,0,0,0,0,0,0

@@ -17,6 +17,7 @@ when defined(posix):
 import natswrapper
 import ../sdk/dotenv
 import ../sdk/envelope
+import ../sdk/subjects
 import approval
 import catalog
 import conversation
@@ -47,14 +48,13 @@ proc main() =
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
-                     activeTurn: new(ActiveTurn))
+                     activeTurn: new(ActiveTurn),
+                     sessionAllowlist: new(seq[string]))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
   # consults the store so a decision made in any client is honored here too.
   approval.checkAuto = proc(session, tool: string): bool =
     try:
-      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
-        "id": session & ":" & tool})
-      return resp{"ok"}.getBool(false)
+      return ct.storeGetItem("approval", session & ":" & tool).value != nil
     except CatchableError:
       return false
 
@@ -68,7 +68,7 @@ proc main() =
   except CatchableError as e:
     echo "session: WARNING cannot seed catalog: " & e.msg
 
-  let name = runnerName(sessionId)
+  let name = subjects.runnerName(sessionId)
   let subject = sessionSubject(sessionId)
   var sub: ptr natsSubscription
   let st = natsConnection_QueueSubscribeSync(addr sub, nc.conn, subject.cstring,
@@ -172,6 +172,10 @@ proc main() =
     except CatchableError as e:
       resp = errorEnvelope(env.id, "boom", e.msg)
     nc.publish(reply, resp.encode())
+    # Stamp the idle clock at turn END, not message receipt: a long turn
+    # (many LLM rounds, approval waits) is activity, and a runner that
+    # retires right after finishing one surprises the next call.
+    lastActivity = epochTime()
 
   # Depart like any component: deregister, close.
   echo "session: shutting down (" & sessionId & ")"

@@ -116,7 +116,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "session_info", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Summarize a conversation: its id, title, model selection, thinking effort, context window and token usage, plus message counts by role (user, assistant, tool, system). Called without sessionId (or with an empty one) it answers about the CURRENT session — your own conversation. Pass another conversation's id to inspect that conversation instead; enumerate stored conversations with the store list tool (kind \"conversation\").",
+      "description": "Summarize a conversation: id, title, model, thinking effort, context window and token usage, message counts by role. Without sessionId: the current conversation. With an id: that conversation (enumerate stored ones with store list, kind \"conversation\").",
       "properties": {
         "sessionId": {"type": "string",
                       "description": "Conversation id (conv-*). Omit or leave empty to summarize the current session"}
@@ -125,7 +125,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. Use query for concise hints, or pass component plus up to 16 tool names for their full schemas. Call returned tools through invoke. When a task needs a capability your direct tools lack (weather, third-party APIs, file formats, ...), check the plugins component first: it exposes plugin_search/plugin_installed/plugin_install/plugin_update/plugin_remove for the niffler-component package ecosystem, and the skills component exposes skill_list/skill_load/skill_search/skill_install for Agent Skills.",
+      "description": "Find live components and tools outside the fixed direct toolset. query returns concise hints; component plus up to 16 tool names returns full schemas. Call returned tools through invoke. The plugins component (packages) and skills component (workflow guides) live behind this too.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
@@ -153,7 +153,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},
         "thinking": {"type": "string", "enum": ["low", "medium", "high"],
-                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"}
+                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"},
+        "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

@@ -44,14 +44,28 @@ proc main() =
                 %*{"command": "false; echo done", "timeoutMs": 10000})
   check("bash last-command exit code", r2{"exit_code"}.getInt(-1) == 0, $r2)
 
-  # timeout: killed, exit 124, marked in output
+  # cwd param: the command runs in the given directory
+  createDir(tmp / "sub")
+  let r2b = call(nc, "bash", "bash",
+                 %*{"command": "pwd", "timeoutMs": 10000, "cwd": tmp / "sub"})
+  check("bash cwd param scopes the command",
+        r2b{"exit_code"}.getInt(-1) == 0 and
+        r2b{"output"}.getStr("").contains("sub"), $r2b)
+
+  # timeout: killed, exit 124, marked in output — and the WHOLE command
+  # tree dies (a bare wrapper kill would orphan the sleep 30; the group
+  # kill must reach it, proven by pgrep finding no process)
   let t0 = epochTime()
   let r3 = call(nc, "bash", "bash",
-                %*{"command": "sleep 30", "timeoutMs": 500}, 15_000)
+                %*{"command": "sleep 30 && echo bashmarker-timeout",
+                   "timeoutMs": 500}, 15_000)
   check("bash timeout exit 124", r3{"exit_code"}.getInt(-1) == 124, $r3)
   check("bash timeout marks output",
         r3{"output"}.getStr("").contains("timed out after"), $r3)
   check("bash timeout kills quickly", epochTime() - t0 < 10, $r3)
+  sleep(400)  # an orphaned sleep would still be alive now
+  check("bash timeout killed the command tree (no orphan)",
+        not processExists("bashmarker-timeout"))
 
   # output cap: bash keeps head+tail with a truncation marker
   let r4 = call(nc, "bash", "bash",

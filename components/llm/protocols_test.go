@@ -191,6 +191,12 @@ func TestChatAnthropicUsesClaudeOAuthIdentity(t *testing.T) {
 	if usage["prompt_tokens"] != 15 || usage["completion_tokens"] != 6 || usage["total_tokens"] != 21 {
 		t.Fatalf("usage = %#v", usage)
 	}
+	// Cache reads surface in the OpenAI-style breakdown (cache-creation
+	// input is a write, not a hit, so only reads map to cached_tokens).
+	details := usage["prompt_tokens_details"].(map[string]any)
+	if details["cached_tokens"] != 3 {
+		t.Fatalf("cached_tokens = %v, want 3", details["cached_tokens"])
+	}
 	calls := got["tool_calls"].([]map[string]any)
 	if len(calls) != 1 || calls[0]["id"] != "toolu_1" {
 		t.Fatalf("tool calls = %#v", calls)

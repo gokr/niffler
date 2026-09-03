@@ -346,6 +346,11 @@ to CI any plugin repo — Niffler testing itself.
       (put/get/list/del, rev-based optimistic concurrency); core persists
       conversations, messages and spawned components; spawned components
       restore on boot (persistence of shape, verified live across restarts)
+- [ ] **code hygiene + store v2** — `feat/code-hygiene` branch
+      (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
+      duplication cleanup; three interchangeable store engines behind one
+      contract (barrel stays default; Go SQLite + TiDB engines with goose
+      migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
 - [x] **session runners** — one conversation = one process: the system
@@ -476,12 +481,16 @@ to CI any plugin repo — Niffler testing itself.
       framed-data limits, and scoped lease restoration keep nested execution
       predictable; selected-tool mode pins canonical catalog fingerprints and
       generates input-typed `tools.<name>(...)` Nim wrappers at guest compile
-      time; compile errors return as real Nim diagnostics; only the
-      program's `finish()` value enters the conversation (oversized results
-      spill to quota-managed 0600 artifacts); the `agent` tool turns sessions into
-      subagents (delegated child runners, synchronous run + steer, dispatch-
-      time depth guard); guests stay stdlib-free (import-free j* JSON
-      helpers, ~ms cold eval); worked examples in `components/fabric/examples/`
+      time (scalar `outputSchema` types wrapper returns); compile errors
+      return as real Nim diagnostics; only the program's `finish()` value
+      enters the conversation (oversized results spill to quota-managed 0600
+      artifacts); the `agent` tool turns sessions into subagents (delegated
+      child runners; synchronous `agent_run` + steer, durable background
+      jobs via `agent_spawn`/`agent_status`/`agent_wait`/`agent_stop` with
+      `ev.agent.*` events, dispatch-time depth guard); guests are lint-banned
+      from IO/network/FFI and the VM refuses FFI magics (import-free j* JSON
+      helpers, ~ms cold eval); correlated `ev.fabric.*` lifecycle events;
+      worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
       `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [x] **expert advisory peer** (EXPERT.md) — one expert follows one working

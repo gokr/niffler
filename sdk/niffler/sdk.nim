@@ -218,6 +218,113 @@ proc requestOk*(c: Component, componentName, toolName: string, args: JsonNode,
     raise newException(IOError,
       result{"error"}.getStr("tool call failed"))
 
+# --- config helpers ---------------------------------------------------------
+
+proc configStr*(name: string, default = ""): string =
+  ## Environment config with a default. Component configuration comes from
+  ## the process env (docs/MANUAL.md); one helper per SDK keeps parsing
+  ## uniform instead of every component hand-rolling getEnv + clamps.
+  let v = getEnv(name)
+  if v.len == 0: return default
+  return v
+
+proc configBool*(name: string, default = false): bool =
+  ## Boolean env config: 1/true/yes/on (case-insensitive) read true,
+  ## 0/false/no/off read false; anything else (including unset) reads as
+  ## the default.
+  case getEnv(name).toLowerAscii()
+  of "1", "true", "yes", "on": return true
+  of "0", "false", "no", "off": return false
+  else: return default
+
+proc configInt*(name: string, default, minimum, maximum: int): int =
+  ## Integer env config. Unparsable or outside [minimum, maximum] raises
+  ## ValueError — a misconfigured component should fail loudly at boot
+  ## (the convention every component's local copy followed); unset reads
+  ## as the default.
+  let raw = getEnv(name, $default)
+  try:
+    result = raw.parseInt()
+  except ValueError:
+    raise newException(ValueError,
+      name & " must be an integer, got '" & raw & "'")
+  if result < minimum or result > maximum:
+    raise newException(ValueError, name & " must be in " & $minimum & ".." &
+      $maximum & ", got " & $result)
+
+# --- store client -----------------------------------------------------------
+#
+# Typed access to the store component's document contract (put/get/list/del,
+# docs/WIRE.md). One layer instead of per-component "store unreachable"
+# boilerplate; error codes become first-class error types so call sites
+# read as intent (fail closed vs best effort) rather than JSON poking.
+
+type
+  StoreConflictError* = object of CatchableError
+    ## put with expectRev lost an optimistic-concurrency race.
+  StoreNotFoundError* = object of CatchableError
+    ## get target does not exist.
+  StoreItem* = object
+    id*: string
+    rev*: int
+    value*: JsonNode
+
+proc storeErr(tool, kind, id: string, r: JsonNode) =
+  ## Turn the store tool's {ok:false, code, ...} result into a typed error.
+  ## An unreachable store arrives as an IOError from request() itself.
+  let what = tool & " " & kind & ":" & id
+  case r{"code"}.getStr("")
+  of "rev-conflict":
+    raise newException(StoreConflictError,
+      what & ": revision conflict (current rev " &
+      $r{"currentRev"}.getInt(-1) & ")")
+  of "not-found":
+    raise newException(StoreNotFoundError, what & ": not found")
+  else:
+    raise newException(IOError, what & ": " &
+      r{"error"}.getStr("store call failed"))
+
+proc storeCall(c: Component, tool, kind, id: string, args: JsonNode,
+               timeoutMs: int): JsonNode =
+  ## request() plus the store's ok-check with typed error mapping.
+  result = c.request("store", tool, args, timeoutMs)
+  if result.hasKey("ok") and not result{"ok"}.getBool(false):
+    storeErr(tool, kind, id, result)
+
+proc storePut*(c: Component, kind, id: string, value: JsonNode,
+               expectRev = 0, timeoutMs = 5000): int =
+  ## Upsert a document (kind/id) into the store, returning its new revision.
+  ## expectRev > 0 → StoreConflictError when the current revision differs
+  ## (optimistic concurrency); an unreachable store raises IOError.
+  let r = storeCall(c, "put", kind, id, %*{"kind": kind, "id": id,
+                    "value": value, "expectRev": expectRev}, timeoutMs)
+  return r{"rev"}.getInt(-1)
+
+proc storeGet*(c: Component, kind, id: string,
+               timeoutMs = 5000): StoreItem =
+  ## Fetch a document by kind and id; StoreNotFoundError when absent.
+  let r = storeCall(c, "get", kind, id,
+                    %*{"kind": kind, "id": id}, timeoutMs)
+  result = StoreItem(id: id, rev: r{"rev"}.getInt(0), value: r{"value"})
+
+proc storeList*(c: Component, kind: string, idPrefix = "", limit = 100,
+                timeoutMs = 5000): seq[StoreItem] =
+  ## List documents of a kind, ordered by id, optionally filtered by an id
+  ## prefix. limit is capped by the store itself.
+  let r = storeCall(c, "list", kind, idPrefix, %*{"kind": kind,
+                    "idPrefix": idPrefix, "limit": limit}, timeoutMs)
+  let items = r{"items"}
+  if items != nil and items.kind == JArray:
+    for item in items:
+      result.add(StoreItem(id: item{"id"}.getStr(""),
+                           rev: item{"rev"}.getInt(0),
+                           value: item{"value"}))
+
+proc storeDel*(c: Component, kind, id: string, timeoutMs = 5000) =
+  ## Delete a document; idempotent (missing target is not an error).
+  discard storeCall(c, "del", kind, id,
+                    %*{"kind": kind, "id": id}, timeoutMs)
+
 proc onDrain*(c: Component, handler: DrainHandler): Component =
   ## Register a cleanup callback (e.g. close a database) invoked when the
   ## component receives ev.sys.drain — its authorized orderly shutdown

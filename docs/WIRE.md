@@ -49,13 +49,20 @@ reg.depart             # {name, pid, ...}, graceful process departure; the logic
                        #   component remains while another replica PID is live
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
-                       #   tool "session" {sessionId, content?, model?, thinking?};
+                       #   tool "session" {sessionId, content?, model?, thinking?,
+                       #   title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. thinking (low|medium|high,
                        #   empty clears) persists a per-conversation thinking-effort
                        #   selection forwarded to the LLM as reasoning_effort
-                       #   (provider-dependent; providers without support never see it)
+                       #   (provider-dependent; providers without support never see it).
+                       #   tools/maxRounds/maxCalls/maxTokens are frozen per-session
+                       #   controls (first call wins, then the conversation header
+                       #   carries them across runner resumes): a tool allowlist,
+                       #   LLM rounds per turn (1-20), total tool dispatches per
+                       #   turn (1-500), and cumulative tokens per turn — budget
+                       #   exhaustion ends the turn as a budget-exhausted error
 svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)
@@ -64,6 +71,11 @@ svc.session.<id>.advise # turn-bound advisory request/reply (the expert peer,
                         #   answered {accepted, reason?} — accepted only while
                         #   that exact turn is live (stale-turn, no-active-turn,
                         #   advisory-limit, duplicate, ...); never queued past it
+cancel.<component>     # turn-cancel side-channel (see "Cancellation"): a runner
+                        #   publishes an event envelope {sessionId, tool, ts} when
+                        #   it abandons an in-flight dispatch; components opt in
+                        #   by subscribing and matching sessionId (bash kills the
+                        #   command's process group; others drop it)
 ev.<topic>             # session.*, catalog.updated, sys.drain, sys.shutdown, log.*
                        # models.updated reports effective model-catalog refreshes
                        # provider.switch selects the global backend; provider.changed
@@ -251,9 +263,19 @@ ends — turns never nest.
 
 ## Cancellation
 
-No transport-native cancellation in NATS. Components that care subscribe to
-`ev.cancel.<call-id>` on call start and check it between output chunks.
-Core publishes it on user cancel. ~10 lines in the SDK.
+No transport-native cancellation in NATS. Two implemented cancel paths:
+
+- `llm.cancel.<sessionId>` — aborts that session's in-flight provider
+  request (see `components/llm/main.go`).
+- `cancel.<component>` — published by a session runner when a turn cancel
+  lands while a tool dispatch is in flight (event envelope
+  `{sessionId, tool, ts}`). Components opt in by subscribing their own
+  subject and matching `sessionId` against the injected `__session.session`
+  private context (`x-harness.sessionId`); bash kills the running command's
+  process group (exit 130). Components without a subscription drop the
+  message and run to completion or deadline — request/reply callers that
+  stop waiting only abandon the reply; the target work is not stopped. A
+  generic `ev.cancel.<call-id>` subject remains a possible future addition.
 
 ## Approvals
 

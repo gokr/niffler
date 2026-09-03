@@ -179,6 +179,20 @@ proc main() =
   let rr1 = call(nc, "edit", "read", %*{"path": "r.txt"})
   check("read returns verbatim content",
         rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
+
+  # read_many: several files in one call, per-item errors, bounds
+  writeFile(tmp / "m1.txt", "alpha\n")
+  writeFile(tmp / "m2.txt", "beta\n")
+  let rm1 = call(nc, "edit", "read_many",
+                 %*{"paths": ["m1.txt", "missing.txt", "m2.txt"]})
+  check("read_many returns files in order with per-item errors",
+        rm1{"count"}.getInt(0) == 3 and
+        rm1{"items"}[0]{"content"}.getStr("") == "alpha\n" and
+        rm1{"items"}[1]{"error"} != nil and
+        rm1{"items"}[2]{"content"}.getStr("") == "beta\n", $rm1)
+  let rm2 = call(nc, "edit", "read_many", %*{"paths": []})
+  check("read_many refuses empty paths",
+        rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..8"), $rm2)
   let rr2 = call(nc, "edit", "read",
                  %*{"path": "r.txt", "offset": 2, "limit": 1})
   check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)

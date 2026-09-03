@@ -318,8 +318,7 @@ proc main() =
   cat.onChange = proc (cat: Catalog) =
     try:
       if not cat.components.hasKey("store"): return
-      discard ct.dispatchToolCall("put", %*{
-        "kind": "slash", "id": "slash", "value": cat.slashTable()})
+      discard ct.storePutRev("slash", "slash", cat.slashTable())
     except CatchableError as e:
       echo "core: WARNING slash checkpoint failed (store down?): " & e.msg
   # Components that registered during convergence announced before the hook
@@ -337,28 +336,24 @@ proc main() =
   # dialog is shown at all for auto-approved tools.
   approval.checkAuto = proc(session, tool: string): bool =
     try:
-      let resp = ct.dispatchToolCall("get", %*{"kind": "approval",
-        "id": session & ":" & tool})
-      return resp{"ok"}.getBool(false)
+      return ct.storeGetItem("approval", session & ":" & tool).value != nil
     except CatchableError:
       return false
   if cat.components.hasKey("store"):
     if recovering:
       echo "core: recover — wiping stored component records (spawned components will not be restored)"
       try:
-        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
-        for item in resp{"items"}:
+        for item in ct.storeListItems("component"):
           let id = item{"id"}.getStr("")
           if id.len > 0:
-            discard ct.dispatchToolCall("del", %*{"kind": "component", "id": id})
+            ct.storeDel("component", id)
       except CatchableError as e:
         echo "core: WARNING recover wipe failed: " & e.msg
     if minimalMode:
       echo "core: minimal mode — persisted spawned components stay stopped"
     else:
       try:
-        let resp = ct.dispatchToolCall("list", %*{"kind": "component"})
-        for item in resp{"items"}:
+        for item in ct.storeListItems("component"):
           let name = item{"id"}.getStr("")
           let binary = item{"value"}{"binary"}.getStr("")
           if name.len == 0 or binary.len == 0: continue
@@ -387,6 +382,15 @@ proc main() =
   # this core is UI-owned service — it exits when the last interactive client
   # (reg.publish client:true) departs, or if none ever arrives. A manually
   # started core (no marker) never self-terminates on client churn.
+  # Child-log retention (var/logs): age + size capped, tunable via env.
+  let logRetentionDays = block:
+    try: parseFloat(getEnv("NIF_LOG_RETENTION_DAYS", "7"))
+    except CatchableError: 7.0
+  let logMaxMb = block:
+    try: parseFloat(getEnv("NIF_LOG_MAX_MB", "200"))
+    except CatchableError: 200.0
+  sup.sweepLogs(logRetentionDays, logMaxMb)
+  var lastLogSweep = epochTime()
   let autostart = getEnv("NIF_AUTOSTART") == "1"
   let idleAfter = parseFloat(getEnv("NIF_AUTOSTART_IDLE_S", "10"))
   let bootGrace = parseFloat(getEnv("NIF_AUTOSTART_BOOT_S", "60"))
@@ -419,6 +423,9 @@ proc main() =
       pumpCoreCalls(ct, coreSub)
       cat.pump()
       sup.pump(cat)
+      if epochTime() - lastLogSweep >= 3600.0:
+        sup.sweepLogs(logRetentionDays, logMaxMb)
+        lastLogSweep = epochTime()
       if autostart:
         let clients = cat.clientCount()
         if clients > 0:

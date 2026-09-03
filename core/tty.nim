@@ -187,9 +187,8 @@ proc showTools(ct: CoreTools) =
 proc showSessions(ct: CoreTools) =
   echo ""
   try:
-    let resp = ct.dispatchToolCall("list", %*{"kind": "conversation"})
-    let items = resp{"items"}
-    if items == nil or items.len == 0:
+    let items = ct.storeListItems("conversation")
+    if items.len == 0:
       echo "no conversations yet"
     else:
       echo "id                                        title                          age"

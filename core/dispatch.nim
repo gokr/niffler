@@ -9,6 +9,7 @@ import std/[algorithm, json, monotimes, os, osproc, strutils, tables, times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
+import ../sdk/subjects
 import approval
 import catalog
 import schema_validation
@@ -33,6 +34,10 @@ type
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
+    sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
+                                       ## (empty/nil = unrestricted; set once
+                                       ## by handleSessionCall, enforced at
+                                       ## this gate for every dispatch)
     nested*: NestedState               ## nested-call proxy (session runners only)
     prepareSession*: proc(sessionId: string): JsonNode {.closure.}
       ## Delegated child-runner preparation (set by the system harness after
@@ -55,6 +60,14 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+    cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
+    cancelAt*: float         # when it arrived (stale cancels self-expire)
+  # Raised from a dispatch's idle slot when a turn cancellation arrives
+  # while that dispatch is in flight: the caller stops waiting for the
+  # reply immediately. The callee keeps running (NATS request/reply has no
+  # cancel semantics — its own timeout bounds it); the turn ends now
+  # instead of after the tool finishes.
+  TurnCancelled* = object of CatchableError
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -78,6 +91,7 @@ type
   NestedState* = ref object
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
+    workspace*: string       ## absolute per-conversation workspace, root by default
     lease*: string           ## current lease; "" = no session-context call in flight
     deadline*: MonoTime      ## monotonic limit for the current lease
     hasDeadline*: bool
@@ -87,6 +101,59 @@ type
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode
+
+proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
+                         args: JsonNode, timeoutMs: int, caller = ""): JsonNode
+
+# --- store helpers ----------------------------------------------------------
+# Typed access to the store component for core, mirroring sdk.nim's
+# storeclient. Core deliberately imports only the pure SDK modules
+# (envelope/subjects — never the Component machinery), so this lives here
+# and speaks the store's subject directly: no tool routing, which also
+# makes it safe to call from inside dispatchToolCall's own path (the spawn
+# depth guard). Semantics: not-found reads as nil/empty; refusals and an
+# unreachable store raise.
+
+proc storeGetItem*(ct: CoreTools, kind, id: string,
+                   timeoutMs = 5000): tuple[value: JsonNode, rev: int] =
+  ## Fetch a document from the store; (nil, 0) when not-found. An
+  ## unreachable store (or any refusal other than not-found) raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "get",
+                              %*{"kind": kind, "id": id}, timeoutMs)
+  if r{"ok"}.getBool(false):
+    return (r{"value"}, r{"rev"}.getInt(0))
+  if r{"code"}.getStr("") != "not-found":
+    raise newException(IOError, r{"error"}.getStr("store get failed"))
+
+proc storePutRev*(ct: CoreTools, kind, id: string, value: JsonNode,
+                  expectRev = 0, timeoutMs = 5000): int =
+  ## Upsert a document into the store; returns the new revision. Refusals
+  ## (rev-conflict) and outages raise — callers that tolerate a lost race
+  ## catch CatchableError, same split as the SDK storeclient.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "put",
+    %*{"kind": kind, "id": id, "value": value, "expectRev": expectRev},
+    timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store put failed"))
+  return r{"rev"}.getInt(0)
+
+proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
+                     limit = 100, timeoutMs = 5000): seq[JsonNode] =
+  ## List documents of a kind in id order, returning the raw items
+  ## ({id, rev, value}); empty when none. An unreachable store raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "list",
+    %*{"kind": kind, "idPrefix": idPrefix, "limit": limit}, timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store list failed"))
+  let items = r{"items"}
+  if items != nil and items.kind == JArray:
+    for item in items:
+      result.add(item)
+
+proc storeDel*(ct: CoreTools, kind, id: string, timeoutMs = 5000) =
+  ## Delete a document; idempotent.
+  discard dispatchSubjectCall(ct, "svc.store.call", "del",
+                              %*{"kind": kind, "id": id}, timeoutMs)
 
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
@@ -109,8 +176,9 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
   return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
-  # the self-extension tools change the harness itself — human gate first
-  if tool in ["spawn", "kill", "remove"] and ct.approval != nil:
+  # the self-extension / destructive tools change the harness — human gate first
+  if tool in ["spawn", "kill", "remove", "conversation_delete"] and
+      ct.approval != nil:
     if not ct.approval.ask(tool, args):
       return %*{"error": "approval denied for " & tool}
   case tool
@@ -135,11 +203,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       discard ct.sup.addChild(name, abs)
       ct.sup.startChild(ct.sup.children[^1])
     try:
-      discard ct.dispatchToolCall("put", %*{
-        "kind": "component", "id": name,
-        "value": %*{"name": name, "binary": abs,
-                    "policy": "on-failure", "replicas": replicas,
-                    "addedAt": epochTime()}})
+      discard ct.storePutRev("component", name,
+        %*{"name": name, "binary": abs, "policy": "on-failure",
+           "replicas": replicas, "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "replicas": replicas}
@@ -162,10 +228,65 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     discard ct.sup.removeChild(name)
     ct.cat.dropComponent(name)
     try:
-      discard ct.dispatchToolCall("del", %*{"kind": "component", "id": name})
+      ct.storeDel("component", name)
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
+  of "conversation_delete":
+    ## Delete a conversation and everything hanging off it: the runner
+    ## (killed first — a live turn would resurrect records), the header,
+    ## every message, the frozen toolset snapshot, subagent lineage, and
+    ## any durable agent jobs pointing at this session. This is the
+    ## conversation-deletion surface agent lineage cleanup waited on.
+    let sessionId = args{"sessionId"}.getStr("")
+    if sessionId.len == 0:
+      return %*{"error": "conversation_delete needs sessionId"}
+    var deleted = 0
+    if ct.sup != nil:
+      discard ct.sup.removeChild(subjects.runnerName(sessionId))
+      ct.cat.dropComponent(subjects.runnerName(sessionId))
+    try:
+      discard ct.dispatchToolCall("del",
+        %*{"kind": "conversation", "id": sessionId})
+      inc deleted
+    except CatchableError as e:
+      echo "core: warning — conversation header not deleted: " & e.msg
+    try:
+      let msgs = ct.dispatchToolCall("list",
+        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 10_000})
+      for item in msgs{"items"}:
+        try:
+          discard ct.dispatchToolCall("del",
+            %*{"kind": "message", "id": item{"id"}.getStr("")})
+          inc deleted
+        except CatchableError:
+          discard
+    except CatchableError as e:
+      echo "core: warning — conversation messages not deleted: " & e.msg
+    for rec in [("session", sessionId & ":tools"),
+                ("sessionmeta", sessionId)]:
+      try:
+        discard ct.dispatchToolCall("del",
+          %*{"kind": rec[0], "id": rec[1]})
+        inc deleted
+      except CatchableError:
+        discard
+    try:
+      let jobs = ct.dispatchToolCall("list",
+        %*{"kind": "agentjob", "limit": 10_000})
+      let items = jobs{"items"}
+      if items != nil:
+        for item in items:
+          if item{"value"}{"sessionId"}.getStr("") == sessionId:
+            try:
+              discard ct.dispatchToolCall("del",
+                %*{"kind": "agentjob", "id": item{"id"}.getStr("")})
+              inc deleted
+            except CatchableError:
+              discard
+    except CatchableError:
+      discard
+    return %*{"ok": true, "sessionId": sessionId, "deleted": deleted}
   of "session_prepare":
     ## Delegated child-runner preparation for components (agent): returns the
     ## runner's direct subject WITHOUT running a turn — the session tool would
@@ -342,32 +463,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"error": "session_info needs sessionId (a session runner injects its own id for the current session)"}
     var info = %*{"sessionId": sessionId}
     try:
-      let header = ct.dispatchToolCall("get",
-        %*{"kind": "conversation", "id": sessionId})
-      if not header{"ok"}.getBool(false):
+      let header = ct.storeGetItem("conversation", sessionId)
+      if header.value == nil:
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
-                "thinkingEffort", "context", "contextUsed", "promptTokens",
-                "cachePrompt", "cacheRead", "cacheHitRate"]:
-        if header{"value"}{f} != nil:
-          info[f] = header{"value"}{f}
+                "thinkingEffort", "cwd", "context", "contextUsed",
+                "promptTokens", "cachePrompt", "cacheRead", "cacheHitRate"]:
+        if header.value{f} != nil:
+          info[f] = header.value{f}
       # subagent lineage (the agent component records kind sessionmeta)
-      let meta = ct.dispatchToolCall("get",
-        %*{"kind": "sessionmeta", "id": sessionId})
-      if meta{"ok"}.getBool(false) and meta{"value"}{"parent"} != nil:
-        info["parent"] = meta{"value"}{"parent"}
+      let meta = ct.storeGetItem("sessionmeta", sessionId)
+      if meta.value != nil and meta.value{"parent"} != nil:
+        info["parent"] = meta.value{"parent"}
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
-      let listed = ct.dispatchToolCall("list",
-        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000})
       var byRole = newJObject()
       var total = 0
-      if listed{"items"} != nil:
-        for item in listed{"items"}:
-          inc total
-          let role = item{"value"}{"role"}.getStr("")
-          let key = if role.len > 0: role else: "unknown"
-          byRole[key] = %(byRole{key}.getInt(0) + 1)
+      for item in ct.storeListItems("message", sessionId & ":", 1000):
+        inc total
+        let role = item{"value"}{"role"}.getStr("")
+        let key = if role.len > 0: role else: "unknown"
+        byRole[key] = %(byRole{key}.getInt(0) + 1)
       info["messageCount"] = %total
       info["messagesByRole"] = byRole
       if total >= 1000:
@@ -439,6 +555,9 @@ proc pumpSteer*(ct: CoreTools) =
   ## from the client, so there is no reply; the queue is drained by runTurn at
   ## the top of every LLM round and again before it would emit "done" (giving a
   ## queued steer the chance to keep the agent working — the Pi pattern).
+  ## A payload carrying __cancel: true is a CONTROL message (agent_stop's
+  ## turn abort), not user content: it raises the cancel flag runTurn checks
+  ## between rounds instead of being folded into the conversation.
   if ct.steerStream == nil or ct.steerStream.sub == nil: return
   while true:
     var msg: ptr natsMsg
@@ -449,6 +568,10 @@ proc pumpSteer*(ct: CoreTools) =
     natsMsg_Destroy(msg)
     let env = decode(data)
     if env.kind != ekEvent or env.payload == nil: continue
+    if env.payload{"__cancel"}.getBool(false):
+      ct.steerStream.cancelRequested = true
+      ct.steerStream.cancelAt = epochTime()
+      continue
     let content = env.payload{"content"}.getStr("")
     if content.len > 0:
       ct.steerStream.queue.add(content)
@@ -628,19 +751,91 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
-    pumpTokenStream(ct)
     pumpSteer(ct)
+    # Turn cancellation while THIS dispatch is in flight: stop waiting for
+    # the reply (TurnCancelled). Only during a live turn, and only for a
+    # fresh cancel — non-turn dispatches (model selection, session_prepare)
+    # and stale flags are unaffected. The callee would keep running (NATS
+    # request/reply has no cancel semantics), so also ask it to abandon the
+    # in-flight work: components opt in by subscribing their own
+    # cancel.<component> subject and matching the session id (bash kills
+    # the command's process group; components without a subscription drop
+    # the message).
+    if ct.steerStream != nil and ct.steerStream.cancelRequested and
+        ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
+        epochTime() - ct.steerStream.cancelAt <= 30.0:
+      if subject.startsWith("svc.") and subject.endsWith(".call"):
+        let comp = subject["svc.".len ..< subject.len - ".call".len]
+        if comp.len > 0:
+          ct.nc.publish("cancel." & comp,
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"sessionId": ct.activeTurn.session,
+                                 "tool": tool, "ts": epochTime()}).encode())
+      raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")
 
+proc applyWorkspace(schema, args: JsonNode, workspace: string) =
+  ## Resolve schema-declared path arguments against the active conversation's
+  ## workspace. Core knows no component names: components opt in with
+  ## x-harness.workspace {pathFields, defaultPathFields, cwdField}.
+  if schema == nil or args == nil or args.kind != JObject or workspace.len == 0:
+    return
+  let policy = schema{"x-harness"}{"workspace"}
+  if policy == nil or policy.kind != JObject: return
+
+  proc resolve(raw: string): string =
+    if raw.len == 0 or raw == ".": return workspace
+    if raw.isAbsolute(): return raw
+    workspace / raw
+
+  let pathFields = policy{"pathFields"}
+  if pathFields != nil and pathFields.kind == JArray:
+    for field in pathFields:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JString:
+        args[name] = %resolve(args{name}.getStr(""))
+  let defaults = policy{"defaultPathFields"}
+  if defaults != nil and defaults.kind == JArray:
+    for field in defaults:
+      let name = field.getStr("")
+      if name.len > 0 and (args{name} == nil or args{name}.getStr("") in ["", "."]):
+        args[name] = %workspace
+  let arrays = policy{"pathArrayFields"}
+  if arrays != nil and arrays.kind == JArray:
+    for field in arrays:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JArray:
+        var arr = args{name}  # JsonNode is a ref: iterate and patch in place
+        for item in mitems arr:
+          if item.kind == JString:
+            item = %resolve(item.getStr(""))
+  let cwdField = policy{"cwdField"}.getStr("")
+  if cwdField.len > 0 and args{cwdField} == nil:
+    args[cwdField] = %workspace
+
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode =
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
+
+  # Per-session tool allowlist (subagent scoping): a conversation frozen
+  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
+  # machinery) and the store quartet the runner itself persists through
+  # (transcript, headers, exposure) — without them an allowlisted session
+  # would silently lose its own history. Trade-off: a model in an
+  # allowlisted session can still read/write the shared KV store directly;
+  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
+  # transcript store the session needs to exist.
+  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
+      tool notin ["chat", "put", "get", "list", "del"] and
+      tool notin ct.sessionAllowlist[]:
+    raise newException(ValueError,
+      "tool '" & tool & "' is not in this session's tool allowlist")
 
   # session_info with no sessionId means "my own conversation": while a turn
   # is live (ct.nested.session is set only inside runTurn) the runner injects
@@ -655,7 +850,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info"] and
+              "session_info", "conversation_delete"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
@@ -669,6 +864,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 
   let schema = ct.cat.toolSchema(tool)
   let callArgs = if args == nil: newJObject() else: args.copy()
+  if ct.nested != nil:
+    applyWorkspace(schema, callArgs, ct.nested.workspace)
   let hasDeadline = deadlineMs > 0
   let deadline = if hasDeadline:
                    getMonoTime() + initDuration(milliseconds = deadlineMs)
@@ -692,6 +889,16 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       (deadline - getMonoTime()).inMilliseconds.int)
     if timeoutMs <= 0:
       raise newException(IOError, "tool '" & tool & "' deadline expired")
+
+  # Cancel-aware tools (x-harness.sessionId): inject the live session id
+  # as private context so the component can match cancel.<component>
+  # messages (published by the runner when a turn is cancelled mid-dispatch)
+  # against its in-flight work. Advisory only — unlike sessionContext it
+  # carries no lease, admits non-session callers (cli scripting sees ""),
+  # and does not fail closed without a live turn.
+  if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
+    callArgs["__session"] = %*{"session":
+      (if ct.nested != nil: ct.nested.session else: "")}
 
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Nested session-context calls temporarily
@@ -727,9 +934,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     if schema{"x-harness"}{"noSpawn"}.getBool(false):
       var hasParent = false
       try:
-        let meta = dispatchSubjectCall(ct, "svc.store.call", "get",
-          %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
-        hasParent = meta{"value"}{"parent"}.getStr("").len > 0
+        hasParent = ct.storeGetItem("sessionmeta", ct.nested.session, 5_000)
+          .value{"parent"}.getStr("").len > 0
       except CatchableError:
         # fail closed: a missing sessionmeta record arrives as a result
         # (not-found), so an exception here means the lineage store is

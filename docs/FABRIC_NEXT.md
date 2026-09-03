@@ -1,7 +1,9 @@
 # Fabric Reliability and Typed Wrappers Plan
 
-Status: in progress as a follow-up to the shipped Fabric implementation in
-`docs/research/FABRIC.md`.
+Status: complete. Every item in the progress checklist below is implemented,
+tested, and merged to main. What remains is a short list of explicitly
+deferred follow-ups (see "Deferred follow-ups" at the bottom) — none of them
+block the shipped mechanism.
 
 This plan keeps Fabric's current architecture: a disposable Nim guest owns
 deterministic intra-turn control flow, while every declared effect crosses the
@@ -33,20 +35,25 @@ Implementation progress on `feat/fabric-reliability`:
   tools and budgets at the gate; digest-keyed persisted auto-approval;
 - [x] agent lifecycle: fail-closed lineage, interactive-caller propagation
   to child approvals, child LLM failures reported as failures, idle runner
-  retirement. Lineage-record cleanup lands with a conversation deletion
-  surface (none exists yet);
+  retirement, and lineage cleanup through the `conversation_delete` surface
+  (runner, header, messages, frozen toolset snapshot, subagent lineage, and
+  durable agent jobs removed together);
 - [x] bounded batch calls: `batch(...)` runs up to 16 independent calls with
   4 on the bus at once, per-item outcomes in input order, one deadline for
-  all branches (Phase 4 of this plan);
+  all branches (Phase 4 of this plan); scheduling is effect-aware via
+  `x-harness.effect` — reads fill the concurrency cap together (and may
+  overlap one write), writes run globally exclusive;
 - [x] durable agent jobs: `agent_spawn`/`agent_status`/`agent_wait`/
   `agent_stop` over store-backed records with `ev.agent.done` terminal
   events, plus usable `agent_steer` for live spawned children (Phase 5
-  core; per-job budgets, process-level stop cancellation, and restart
-  recovery are future work);
+  core; process-level stop cancellation via llm.cancel + `__cancel` steer,
+  lazy restart recovery, lazily enforced per-job time budgets,
+  reasoning-effort selection, per-session tool allowlists, and per-turn
+  round budgets all shipped);
 - [x] structured lifecycle events: ev.fabric.started/call.started/call.done/
   done correlated by runId with bounded metadata, ev.agent.started/done for
-  jobs; the console renders them live (UI activity cards remain future
-  work);
+  jobs; the console renders them live and the desktop UI shows an activity
+  strip;
 - [x] optional output schemas: a tool's scalar outputSchema types the
   generated wrapper's return value; everything else stays JsonNode.
 
@@ -62,7 +69,7 @@ replacement for the normal agent loop.
 | Large intermediate results that should not enter model context | Fabric |
 | Per-step interpretation or uncertain exploration | `agent_run` |
 | Deterministic evidence collection followed by judgment | Fabric with a final `agent_run` |
-| Independent parallel research or a multi-agent council | Later Fabric concurrency and durable agents |
+| Independent parallel research or a multi-agent council | `batch(...)` in one program, or durable `agent_spawn` jobs |
 
 Programs should:
 
@@ -374,8 +381,10 @@ String enums remain `string` initially, with allowed values in generated API
 documentation. Host validation enforces the enum. Nim enums can be added later
 when sanitization and exact string round-tripping are specified.
 
-Wrappers return `JsonNode` in this phase because Niffler's registration
-contract currently publishes input schemas only.
+Wrappers return `JsonNode` unless the tool declares a scalar `outputSchema`,
+in which case the return value is Nim-typed (`string`, `int`, `float`,
+`bool`, `seq[T]`). Objects and unsupported shapes stay `JsonNode`; host
+validation remains authoritative either way.
 
 ### Names and collisions
 
@@ -468,15 +477,12 @@ language. Nim, Go, and TypeScript components all register the same schema, so
 their input wrappers are equally straightforward. Manually weak schemas simply
 produce weaker or `JsonNode` arguments.
 
-Output typing is separate and language-sensitive because the catalog currently
-has no output schema. Add it later as an optional registration field:
-
-1. Keep all initial wrapper results as `JsonNode`.
-2. Extend registration with optional `outputSchema`.
-3. Let the Nim macro derive scalar and explicitly typed return schemas where
-   possible.
-4. Let Go and TypeScript SDKs accept explicit output schemas.
-5. Generate typed guest results only when a trustworthy output schema exists.
+Output typing is shipped for Nim guests: a component may add a scalar
+`outputSchema` to its registered schema (it flows through catalog
+normalization untouched), and `fabricmeta` then types the wrapper's return
+value (`string`, `int`, `float`, `bool`, `seq[T]`) via `json.to`. Without a
+supported scalar `outputSchema`, results remain `JsonNode`. Go and TypeScript
+SDKs may accept explicit output schemas later.
 
 ## Phase 3: model teaching and examples
 
@@ -526,6 +532,14 @@ duplicated as similar strings in test-only components.
 
 ## Phase 4: bounded concurrent calls
 
+Shipped as the host-backed `batch(...)` primitive (see progress checklist)
+with effect-aware scheduling: `x-harness.effect: "read"` tools fill the
+concurrency cap together (and may overlap one write); writes are mutually
+exclusive globally. Deferred delta: per-target conflict detection — relaxing
+global write exclusion needs resource-scoped effect declarations (bash is a
+universal writer, so component identity does not imply resource
+disjointness).
+
 Independent reads benefit from parallelism, but guest-level async is not
 required initially. Add a host-backed batch primitive:
 
@@ -557,6 +571,14 @@ required for a useful read-only batch primitive.
 
 ## Phase 5: durable agent jobs
 
+Shipped as `agent_spawn`/`agent_status`/`agent_wait`/`agent_stop`/
+`agent_steer` over store-backed records with terminal events, plus
+process-level stop cancellation (llm.cancel + `__cancel` steer), lazy restart
+recovery, lazily enforced per-job time budgets, reasoning-effort selection,
+per-session tool allowlists, and per-turn round budgets. Deferred delta:
+per-job token/call caps beyond the round cap, structured output, canonical
+working directories, and worktree isolation (see "Deferred follow-ups").
+
 Synchronous `agent_run` remains useful for one bounded judgment task, but
 background work and steering require worker processes plus durable state.
 
@@ -585,6 +607,12 @@ Fabric can then implement bounded councils, map/reduce research, and verifier
 workflows without making those special core primitives.
 
 ## Phase 6: observability and retention
+
+Shipped: the correlated events below are emitted with bounded metadata, the
+console renders them live, the desktop UI shows an activity strip, artifact
+sweeps run at boot and per run, and child logs are retained age- and
+size-capped. Deferred delta: durable retention/cleanup for traces and
+events.
 
 Emit correlated lifecycle events:
 
@@ -686,3 +714,47 @@ This order first makes the shipped mechanism dependable, then exploits Nim's
 runtime metaprogramming for a small and natural typed API, and only afterward
 adds the concurrency and durable orchestration features that increase the
 system's operational complexity.
+
+## Deferred follow-ups
+
+The consolidated backlog of explicitly deferred work. `docs/research/FABRIC.md`
+§ "Not shipped" mirrors this list.
+
+1. **Cancellation.** Shipped: `agent_stop` aborts the child turn for real
+   (llm.cancel side-channel + a `__cancel` control message on the steer
+   channel), a cancel landing while a tool call is in flight raises
+   TurnCancelled — the runner stops waiting and the turn ends promptly —
+   and the runner publishes `cancel.<component>` so the callee can abandon
+   its in-flight work too. The bash component opts in: commands run as
+   the leader of their own process group, so a cancel (or the tool's own
+   timeout) kills the whole command tree promptly (exit 130, orphan-proof;
+   timeouts now reach descendants too, not just the bash wrapper).
+   Inherent limit: components that do not opt in (fetch, builder, plugins)
+   still run to their own timeout — NATS request/reply has no cancel
+   semantics; the tool's own timeout bounds them.
+2. **Durable-agent hardening.** Shipped: lazy restart recovery, lazily
+   enforced time budgets, reasoning-effort selection, per-session tool
+   allowlists, per-turn round budgets (per-session `maxRounds`
+   overriding `NIF_MAX_TURN_ROUNDS`), and per-job token/call budgets —
+   `agent_run`/`agent_spawn` accept `maxCalls` (total tool dispatches per
+   child turn, 1-500; every dispatch attempt counts, success or error) and
+   `maxTokens` (cumulative provider-reported tokens across the child's LLM
+   rounds, checked before each new round). Both freeze into the child
+   conversation header like maxRounds and end the turn as
+   budget-exhausted. Still open:
+   structured-output schemas, canonical working directories, and optional
+   isolated git worktrees — all need deeper core session-surface design.
+3. **Batch effect declarations.** Shipped: `x-harness.effect: "read"`
+   tools run concurrently (and may overlap a write); writes are mutually
+   exclusive GLOBALLY. Per-target write overlap is a documented
+   non-goal: bash is a universal writer, so component identity does not
+   imply resource disjointness — relaxing it needs resource-scoped
+   effect declarations.
+4. **Observability and retention.** Shipped: the desktop UI activity
+   strip for fabric/agent events, artifact sweeps (boot + per run),
+   child-log retention (age + size capped), and `conversation_delete`
+   for lineage cleanup. Still open: durable trace retention backed by
+   the store (today's events/logs are diagnostic, not an audit trail).
+5. **Sandboxing.** A separate milestone if and when untrusted guests are
+   required (restricted VM, WASM, or OS isolation). Today the guest is
+   trusted code in `bash`'s trust class and approval is the boundary.

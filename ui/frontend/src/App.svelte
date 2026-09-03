@@ -46,6 +46,14 @@
   let autoApproved = $state<Record<string, string[]>>({});
   let chatRef: Chat | undefined = $state();
 
+  // Live background-agent / fabric activity, newest first. Fire-and-forget
+  // awareness only: real interaction happens via the agent chat channels.
+  type ActivityEntry = { id: string; kind: string; text: string; at: string };
+  let activity = $state<ActivityEntry[]>([]);
+  function pushActivity(kind: string, text: string) {
+    activity = [{ id: crypto.randomUUID(), kind, text, at: new Date().toLocaleTimeString() }, ...activity].slice(0, 6);
+  }
+
   // Provider/model state
   let providers = $state<ProviderSummary[]>([]);
   let effective = $state<ResolvedConfig | null>(null);
@@ -288,6 +296,26 @@
   );
 
   onMount(() => {
+    // Fabric/agent lifecycle events surface as a compact activity strip:
+    // runs and background jobs are visible without leaving the chat.
+    const cap = (s: unknown, n: number) => String(s ?? "").slice(0, n);
+    on("ev.fabric.started", (ev) => {
+      const p = ev.payload ?? {};
+      pushActivity("fabric", `run started · ${cap(p.selected?.length, 2)} tools · ${cap(p.maxCalls, 3)} calls max`);
+    });
+    on("ev.fabric.done", (ev) => {
+      const p = ev.payload ?? {};
+      pushActivity("fabric", `run ${p.status ?? "?"} · ${cap(p.durationMs, 6)}ms · ${cap(p.calls, 3)}/${cap(p.maxCalls, 3)} calls`);
+    });
+    on("ev.agent.started", (ev) => {
+      pushActivity("agent", `job started · ${cap(ev.payload?.sessionId, 10)}`);
+    });
+    on("ev.agent.done", (ev) => {
+      pushActivity("agent", `job ${ev.payload?.status ?? "?"} · ${cap(ev.payload?.sessionId, 10)}`);
+    });
+  });
+
+  onMount(() => {
     loadProviders();
     loadEffective();
   });
@@ -432,6 +460,18 @@
       ></span>
     </div>
     <Sessions {selectSession} {sessionId} {refreshKey} onDelete={handleDelete} />
+    {#if activity.length > 0}
+      <div class="px-3 py-2 border-t border-ink-700 overflow-y-auto max-h-40 shrink-0">
+        <div class="text-xs font-medium text-ink-500 uppercase tracking-wide mb-1">Activity</div>
+        {#each activity as a (a.id)}
+          <div class="text-xs text-ink-400 py-0.5 flex gap-1.5">
+            <span class={a.kind === "agent" ? "text-accent" : "text-ink-500"}>{a.kind}</span>
+            <span class="truncate" title={a.text}>{a.text}</span>
+            <span class="text-ink-600 ml-auto shrink-0">{a.at}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <div class="p-3 border-t border-ink-700">
       <button
         class="w-full rounded-md bg-accent-dim/15 text-accent px-3 py-2 text-sm font-medium hover:bg-accent-dim/25"

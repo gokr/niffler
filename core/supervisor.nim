@@ -4,7 +4,7 @@
 ## Restart policy per child: never | on-failure (with backoff). Drain order:
 ## ev.sys.drain event → grace period → SIGTERM → SIGKILL.
 
-import std/[json, os, osproc, strutils, times]
+import std/[algorithm, json, os, osproc, strutils, times]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -42,6 +42,38 @@ type
 
 proc newSupervisor*(root: string, nc: NatsConnection): Supervisor =
   Supervisor(root: root, nc: nc)
+
+proc sweepLogs*(sup: Supervisor, maxAgeDays: float, maxTotalMb: float) =
+  ## Retention for child logs (var/logs/<name>.log): delete files older
+  ## than maxAgeDays, then evict oldest-first until the directory fits
+  ## maxTotalMb. Diagnostic records, not an audit trail — unbounded growth
+  ## served nobody. Called at boot and hourly from the service loop.
+  let dir = sup.root / "var" / "logs"
+  if not dirExists(dir): return
+  type LogFile = tuple[path: string, modified: times.Time, size: int64]
+  var files: seq[LogFile]
+  var total = 0'i64
+  let cutoff = getTime() - initDuration(days = maxAgeDays.int)
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    try:
+      let modified = getLastModificationTime(path)
+      if modified < cutoff:
+        removeFile(path)
+      else:
+        total += getFileSize(path)
+        files.add((path, modified, getFileSize(path)))
+    except CatchableError:
+      discard
+  if total.float > maxTotalMb * 1_000_000.0:
+    files.sort(proc (a, b: LogFile): int = cmp(a.modified, b.modified))
+    for f in files:
+      if total.float <= maxTotalMb * 1_000_000.0: break
+      try:
+        total -= f.size
+        removeFile(f.path)
+      except CatchableError:
+        discard
 
 proc logTail(path: string, maxLines: int): string =
   ## Last lines of a child's log file, for the death report. Missing or
@@ -132,9 +164,9 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     if tail.len > 0:
       echo "supervisor:   last output: " & tail
     startChild(sup, c)
-  # delete retired entries descending so earlier indices stay valid
+  # delete the recorded indices descending so earlier indices stay valid
   for i in countdown(retired.len - 1, 0):
-    sup.children.delete(i)
+    sup.children.delete(retired[i])
 
 proc removeChild*(sup: Supervisor, name: string): bool =
   ## Stop every replica of one logical component for good, then drop them

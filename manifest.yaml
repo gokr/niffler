@@ -123,7 +123,8 @@ components:
     required: false
     restart: on-failure
 
-  # Subagent sessions (fabric Phase 1, docs/research/FABRIC.md): agent_run/agent_steer.
+  # Subagent sessions (docs/research/FABRIC.md): synchronous agent_run + steer,
+  # durable background jobs (spawn/status/wait/stop) with ev.agent.* events.
   - name: agent
     build: {lang: nim, src: components/agent/main.nim}
     binary: var/bin/agent

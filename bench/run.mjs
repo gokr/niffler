@@ -80,9 +80,32 @@ function git(repo, args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
+// Agents on this box may run docker bind-mounts that leave root-owned scratch
+// in a workdir (seen: cpython-39 .pyc from an agent-run container). A plain
+// rm then fails, which would crash the lane; fall back to renaming the
+// poisoned dir aside so the rerun starts clean.
+function resetWorkdir(workdir) {
+  try {
+    fs.rmSync(workdir, { recursive: true, force: true });
+  } catch {
+    try {
+      fs.renameSync(workdir, workdir + ".poisoned-" + Date.now());
+    } catch {}
+    fs.rmSync(workdir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(workdir, { recursive: true });
+}
+
 function prepareRepo(taskId, dest) {
   const src = path.join(TASK_ROOT, taskId, "repo");
   fs.cpSync(src, dest, { recursive: true });
+  // Test runs litter the repo with derived artifacts (Python __pycache__,
+  // compiled test binaries). Ignore them so a model's normal `git add -A`
+  // doesn't stage test-run byproducts into the diff.
+  const gi = path.join(dest, ".gitignore");
+  if (!fs.existsSync(gi)) {
+    fs.writeFileSync(gi, "__pycache__/\n*.pyc\n");
+  }
   // Task repos ship as plain files; create the pristine base commit here so
   // every run gets an identical history to diff against.
   if (!fs.existsSync(path.join(dest, ".git"))) {
@@ -133,11 +156,32 @@ function diffStat(repo) {
   return { files, insertions, deletions };
 }
 
+const SOURCE_EXT =
+  /\.(py|nim|nimble|js|ts|mjs|cjs|sh|bash|cfg|ini|toml|yaml|yml|json|c|h|cpp|hpp|rs|go)$/;
+
 function protectedTouched(repo, meta) {
-  const changed = new Set(diffStat(repo).files);
+  let tracked = null;
+  try {
+    tracked = new Set(
+      git(repo, ["ls-tree", "-r", "--name-only", "base"])
+        .split("\n")
+        .filter(Boolean),
+    );
+  } catch {}
+  const changed = new Set(
+    diffStat(repo).files.filter(
+      (f) => !f.includes("__pycache__/") && !f.endsWith(".pyc"),
+    ),
+  );
   for (const pat of meta.protected || []) {
     for (const f of changed) {
-      if (pat.endsWith("/**") ? f.startsWith(pat.slice(0, -2)) : f === pat) return f;
+      if (!(pat.endsWith("/**") ? f.startsWith(pat.slice(0, -2)) : f === pat))
+        continue;
+      // Files new to base only violate when they look like source: compiled
+      // test binaries and other build artifacts under tests/ are byproducts
+      // of RUNNING the tests, not tampering (a planted conftest.py would be).
+      if (tracked && !tracked.has(f) && !SOURCE_EXT.test(f)) continue;
+      return f;
     }
   }
   return null;
@@ -153,6 +197,17 @@ function feedbackPrompt(meta, testOut) {
     `Keep working until verification passes. Do not modify: ${(meta.protected || []).join(", ") || "tests"}.`,
     "When everything passes, reply with a one-line summary.",
   ].join("\n");
+}
+
+// Fill the {{REPO}} placeholder per harness. Pi/OpenCode run the agent with
+// cwd = the repo; Niffler sessions get the repo as their workspace (cwd), so
+// the prompt points at the working directory instead of an absolute path —
+// relative paths keep every tool inside the workspace by construction.
+function fillPrompt(template, combo, repo) {
+  if (isNifflerHarness(combo.harness)) {
+    return template.replaceAll("{{REPO}}", "your current working directory");
+  }
+  return template.replaceAll("{{REPO}}", repo);
 }
 
 // ---------- adapters registry ----------
@@ -179,8 +234,7 @@ const isNifflerHarness = (name) => name === "niffler" || name === "niffler-exper
 // ---------- one task run ----------
 async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   const workdir = path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`);
-  fs.rmSync(workdir, { recursive: true, force: true });
-  fs.mkdirSync(workdir, { recursive: true });
+  resetWorkdir(workdir);
   const repo = path.join(workdir, "repo");
   prepareRepo(taskId, repo);
   const sessionId = `bench-${RUN_ID}-${combo.harness}-${taskId}`.replace(
@@ -208,6 +262,17 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let adapterState = {};
   let roundReply = "";
 
+  // Gateway outages must not fail one-shot tasks: transport-level errors
+  // (connection/TLS/timeout, or a Niffler turn whose LLM calls never went
+  // through) are retried in place. Auth/balance failures are not retried.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let prevUsageTotal = 0;
+  const isTransportError = (msg) => {
+    const m = String(msg || "");
+    if (/balance|401|403|unauthorized|invalid.{0,20}key/i.test(m)) return false;
+    return /connection|timed out|tls|fetch failed|socket|network|econn|eai_again|reset by peer/i.test(m);
+  };
+
   try {
     if (setupError) throw setupError;
     for (let r = 1; r <= roundsMax; r++) {
@@ -216,39 +281,75 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         break;
       }
       const prompt =
-        r === 1 ? taskPrompt : feedbackPrompt(taskMeta, rounds.at(-1)?.testOutput || "");
-      const r0 = Date.now();
-      let res;
-      if (combo.harness === "pi") {
-        res = await pi.round({
-          repo,
-          prompt,
-          modelCfg: combo.modelCfg.pi,
-          keys,
-          sessionsDir: path.join(workdir, "pi-sessions"),
-          sessionFile: adapterState.sessionFile || null,
-          cfgDir: shared.piCfgDir,
-          turnTimeoutMs,
-        });
-        adapterState.sessionFile = res.sessionFile;
-      } else if (combo.harness === "opencode") {
-        res = await oc.round({
-          repo,
-          prompt,
-          modelCfg: combo.modelCfg.opencode,
-          turnTimeoutMs,
-          sessionId: adapterState.sessionId || null,
-        });
-        adapterState.sessionId = res.sessionId;
-      } else if (isNifflerHarness(combo.harness)) {
-        res = await shared.niffler.round({
-          sessionId,
-          prompt,
-          turnTimeoutMs,
-        });
+        r === 1
+          ? fillPrompt(taskPrompt, combo, repo)
+          : feedbackPrompt(taskMeta, rounds.at(-1)?.testOutputTail || "");
+      let transportRetries = 0;
+      let res = null;
+      for (;;) {
+        const r0 = Date.now();
+        if (combo.harness === "pi") {
+          res = await pi.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.pi,
+            keys,
+            sessionsDir: path.join(workdir, "pi-sessions"),
+            sessionFile: adapterState.sessionFile || null,
+            cfgDir: shared.piCfgDir,
+            turnTimeoutMs,
+          });
+          adapterState.sessionFile = res.sessionFile;
+        } else if (combo.harness === "opencode") {
+          res = await oc.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.opencode,
+            turnTimeoutMs,
+            sessionId: adapterState.sessionId || null,
+          });
+          adapterState.sessionId = res.sessionId;
+        } else if (isNifflerHarness(combo.harness)) {
+          res = await shared.niffler.round({
+            sessionId,
+            prompt,
+            turnTimeoutMs,
+            cwd: shared.niffler.workspaceFor(repo),
+          });
+        }
+        const agentS = (Date.now() - r0) / 1000;
+        let transportFail = res.error && isTransportError(res.error);
+        if (!res.error && isNifflerHarness(combo.harness) && transportRetries < 2) {
+          // A "successful" turn whose every LLM call hit an outage ends with
+          // zero provider usage; retry rather than record a bogus fail.
+          try {
+            const u = await shared.niffler.usageFromTranscript(sessionId);
+            const total = u.input + u.output + u.cacheRead;
+            if (total === prevUsageTotal && String(res.reply || "").trim().length < 200) {
+              transportFail = true;
+            } else {
+              prevUsageTotal = total;
+            }
+          } catch {}
+        }
+        if (transportFail && transportRetries < 2) {
+          transportRetries += 1;
+          console.log(
+            `  [${combo.harness}/${combo.model}/${taskId}] transport error, retry ${transportRetries}/2 in 5s` +
+              (res.error ? `: ${String(res.error).slice(0, 80)}` : " (zero-usage turn)"),
+          );
+          await sleep(5_000);
+          continue;
+        }
+        res.agentS = agentS;
+        if (transportRetries && !res.error) {
+          // keep the retry count visible on the round that eventually ran
+          res.transportRetries = transportRetries;
+        }
+        agentTimeS += agentS;
+        break;
+
       }
-      const agentS = (Date.now() - r0) / 1000;
-      agentTimeS += agentS;
       if (res.roundUsage) roundUsages.push(res.roundUsage);
       if (res.raw) {
         fs.writeFileSync(
@@ -263,21 +364,26 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         : await runTests(repo, taskMeta, taskId);
       const testS = (Date.now() - test0) / 1000;
       testTimeS += testS;
-      const pass = !res.error && test.code === 0;
+      // A turn-round-budget exhaustion marker is informational: if the
+      // captured diff still passes, the cell passes (the model was cut off
+      // mid-turn, not mid-edit).
+      const budgetOnly = !!res.error && /round budget exhausted/.test(String(res.error));
+      const pass = (!res.error || budgetOnly) && test.code === 0;
 
       rounds.push({
         r,
-        agentS: Number(agentS.toFixed(1)),
+        agentS: Number((res.agentS || 0).toFixed(1)),
         testS: Number(testS.toFixed(1)),
         pass,
         error: res.error || null,
+        transportRetries: res.transportRetries || 0,
         replyTail: tail(res.reply, 800),
         testOutputTail: tail(test.stdout + test.stderr, 4000),
       });
       roundReply = res.reply || "";
       console.log(
         `  [${combo.harness}/${combo.model}/${taskId}] round ${r}: ` +
-          `${pass ? "PASS" : "fail"} (agent ${agentS.toFixed(0)}s)` +
+          `${pass ? "PASS" : "fail"} (agent ${(res.agentS || 0).toFixed(0)}s)` +
           (res.error ? ` error=${String(res.error).slice(0, 120)}` : ""),
       );
       if (pass) {
@@ -301,16 +407,40 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   // can be audited after shutdown.
   let usage = zeroUsage();
   let expert = null;
+  let transcript = null;
   try {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
-      const transcript = await shared.niffler.transcript(sessionId);
+      transcript = await shared.niffler.transcript(sessionId);
       writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
       usage = await shared.niffler.usageFromTranscript(sessionId, transcript);
     }
   } catch (e) {
     usage.error = String(e);
+  }
+  // Prompt-size telemetry: the first assistant answer's prompt_tokens is
+  // the cheapest cross-run proxy for system prompt + toolset bloat (see
+  // bench/README.md — keep an eye on the first-call footprint).
+  let firstPromptTokens = null;
+  if (transcript) {
+    const first = transcript.find(
+      (it) => it.value?.role === "assistant" && it.value?.usage,
+    );
+    firstPromptTokens = first?.value?.usage?.prompt_tokens ?? null;
+  }
+  // Footprint guard: the direct toolset + baseprompt must stay small (see
+  // bench/README.md). Exceeding the budget is a warning, not a failure —
+  // but it should trigger a prompt-diet before the next full run.
+  let footprintOver = false;
+  const budget = cfg.defaults?.firstPromptBudget ?? null;
+  if (firstPromptTokens && budget && firstPromptTokens > budget) {
+    footprintOver = true;
+    console.warn(
+      `[footprint] ${combo.harness}/${combo.model}/${taskId}: first prompt ` +
+        `${firstPromptTokens} tokens exceeds budget ${budget} — trim the ` +
+        "direct toolset / baseprompt",
+    );
   }
   if (combo.harness === "niffler-expert") {
     try {
@@ -349,6 +479,10 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   const result = {
     runId: RUN_ID,
     startedAt,
+    sessionId,
+    workspace: isNifflerHarness(combo.harness)
+      ? shared.niffler.workspaceFor(repo)
+      : null,
     harness: combo.harness,
     model: combo.model,
     modelLabel: combo.modelCfg.label || combo.model,
@@ -360,6 +494,8 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     testTimeS: Number(testTimeS.toFixed(1)),
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
+    firstPromptTokens,
+    footprintOver,
     expert,
     diff,
     roundsDetail: rounds,
@@ -396,6 +532,7 @@ async function runCombo(combo, taskIds) {
       baseUrl: combo.modelCfg.niffler.baseUrl,
       apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
       model: combo.modelCfg.niffler.model,
+      thinking: combo.modelCfg.niffler.thinking || "",
       expertEnabled: combo.harness === "niffler-expert",
       expertJudge:
         combo.harness === "niffler-expert" && cfg.expertJudge
@@ -427,9 +564,8 @@ async function runCombo(combo, taskIds) {
   try {
     for (const taskId of taskIds) {
       const meta = readJson(path.join(TASK_ROOT, taskId, "meta.json"));
-      let prompt = fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8");
-      prompt = prompt.replaceAll("{{REPO}}", path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "repo"));
-      await runTask(combo, taskId, meta, prompt, shared);
+      const template = fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8");
+      await runTask(combo, taskId, meta, template, shared);
     }
   } finally {
     if (shared.niffler) {
