@@ -263,23 +263,32 @@ proc main() =
                     "id": "fab-batch:" & align($i, 6, '0')}, 10_000)
     if m{"error"} != nil: break
     batchTranscript.add(m{"value"}{"content"}.getStr(""))
-  # the guest measured the overlap itself: bash's end timestamp falls
-  # inside ctx_sleep's wall-clock window only if both were on the bus
-  # at the same time (serialized would place it a second past the end)
-  check("batch items ran concurrently",
-        batchTranscript.contains("\"concurrent\":true"), batchTranscript)
+  # the guest proved write exclusivity itself: bash (unclassified = write)
+  # started only after both read-classified sleeps had ended. Host-level
+  # read concurrency is proven via the call.started event timestamps: the
+  # two ctx_sleep reads were launched back-to-back (the component then
+  # serializes them internally — it is single-threaded).
+  check("batch writes run exclusively after reads",
+        batchTranscript.contains("\"writeExclusive\":true"), batchTranscript)
   check("batch keeps input order, budgets, and per-item failures",
         batchTranscript.contains("\"items\":4") and
         batchTranscript.contains("\"nope\":\"no component provides tool") and
         batchTranscript.contains("\"b3\":true"),
         batchTranscript)
 
-  # lifecycle events: correlated started/call/done frames on the bus
+  # lifecycle events: correlated started/call/done frames on the bus. The
+  # same drain proves host-level read concurrency: the two ctx_sleep
+  # call.started frames carry launch timestamps — back-to-back means the
+  # host launched both reads at once (the component then serializes them
+  # internally; it is single-threaded).
   var evStarted = 0
   var evCallDone = 0
   var evCallFail = 0
   var evDone = 0
   var evDoneOk = false
+  var evDoneCalls = -1
+  var sleepStarts: seq[float] = @[]
+  var sleepDones: seq[float] = @[]
   for i in 0 ..< 80:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, evSub, 200)
@@ -291,9 +300,24 @@ proc main() =
     elif p{"status"} != nil:
       inc evDone
       evDoneOk = evDoneOk or p{"status"}.getStr("") == "done"
+      if p{"status"}.getStr("") == "done":
+        evDoneCalls = p{"calls"}.getInt(-1)
     elif p{"seq"} != nil:
       inc evCallDone
       if not p{"ok"}.getBool(false): inc evCallFail
+      if p{"tool"}.getStr("") == "ctx_sleep":
+        if p{"ok"} == nil:
+          sleepStarts.add(p{"at"}.getFloat(0.0))
+        else:
+          sleepDones.add(p{"at"}.getFloat(0.0))
+  # Host-level read concurrency, load-immune: the second read must have
+  # been launched while the first was still in flight (r2.started <
+  # r1.done). Serialized scheduling would put r2's launch after r1's
+  # completion; launch jitter cannot invert these two events.
+  let readsConcurrent = sleepStarts.len == 2 and sleepDones.len == 2 and
+    sleepStarts[1] < sleepDones[0]
+  check("batch reads are launched concurrently by the host", readsConcurrent,
+        "starts=" & $sleepStarts & " dones=" & $sleepDones)
   check("ev.fabric.started announces each run", evStarted >= 1,
         "started=" & $evStarted)
   check("ev.fabric.call.done covers every nested call", evCallDone >= 4,
@@ -302,6 +326,8 @@ proc main() =
         "call failures=" & $evCallFail)
   check("ev.fabric.done announces the terminal state",
         evDone >= 1 and evDoneOk, "done=" & $evDone)
+  check("ev.fabric.done reports the real call count", evDoneCalls == 4,
+        "done.calls=" & $evDoneCalls)
 
   # output schema: the wrapper's declared outputSchema types the return
   let outTurn = call(nc, "core", "session",
@@ -318,6 +344,38 @@ proc main() =
   check("typed output schema returns a typed value",
         outTranscript.contains("typed-ok") and
         not outTranscript.contains("Error"), outTranscript)
+
+  # event metadata from the fab-out runs (selected mode, one valid run,
+  # one budget-rejected run that must never announce started)
+  var outStarted = 0
+  var outComponent = ""
+  var outResultBytes = 0
+  var outDoneCalls = -1
+  for i in 0 ..< 40:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, evSub, 300)
+    if st != NATS_OK: break
+    let env = parseJson($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    let p = env{"payload"}
+    if p{"selected"} != nil:
+      inc outStarted
+    elif p{"status"} != nil:
+      outDoneCalls = p{"calls"}.getInt(-1)
+    elif p{"seq"} != nil:
+      if p{"ok"} != nil:
+        if p{"ok"}.getBool(false):
+          outResultBytes = p{"resultBytes"}.getInt(0)
+      elif p{"component"}.getStr("").len > 0:
+        outComponent = p{"component"}.getStr("")
+  check("rejected program never announces ev.fabric.started",
+        outStarted == 1, "started=" & $outStarted)
+  check("ev.fabric.call.started names the pinned component",
+        outComponent == "ctxtest", outComponent)
+  check("ev.fabric.call.done reports result size", outResultBytes > 0,
+        "resultBytes=" & $outResultBytes)
+  check("ev.fabric.done reports budget usage", outDoneCalls == 1,
+        "done.calls=" & $outDoneCalls)
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""

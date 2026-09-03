@@ -49,7 +49,10 @@ anything structural.
   `x-harness.approval` (**enforced**: terminal y/N prompt; session-driven
   requests route to the caller's private UI approval subject with broadcast
   fallback; deny when no human is reachable — `NIF_AUTO_APPROVE=1` bypasses),
-  `x-harness.timeoutMs` (see `components/builder/main.nim`).
+  `x-harness.timeoutMs` (see `components/builder/main.nim`),
+  `x-harness.effect` (`"read"` | `"write"`, default write — how the fabric
+  batch host schedules items: reads fill the concurrency cap together,
+  writes run exclusively).
 - Tool doc comments are the LLM's only window into a tool: all prose lines of
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM

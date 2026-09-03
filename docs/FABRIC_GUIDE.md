@@ -209,9 +209,10 @@ finish($(%*{"edit": edit, "tests": t,
             "ok": t{"exit_code"}.getInt(0) == 0}))
 ```
 
-The edit and its verification are atomic from your perspective: one approval,
-one result. If the tests fail, the program can even call `edit` again to
-revert before finishing — the chat only learns the outcome.
+One approval, one result: the chat only learns the outcome. Note this is
+compensation, not a transaction — the edit and the verification both have
+real effects, and the fallback edit can go stale. If the tests fail, the
+program can call `edit` again to revert before finishing.
 
 ### 6. Hybrid: mechanical program + judgment subagent
 
@@ -266,8 +267,10 @@ When the model passes a tool list, three things change:
    of calling a component that no longer matches what it was compiled for.
 3. **Typed wrappers** — the guest gets `tools.<name>(...)` procedures
    generated from the pinned schemas: required arguments are Nim-typed,
-   optional arguments may be omitted, results are JSON. Wrong argument types
-   are **compile errors** with normal Nim diagnostics, not runtime surprises.
+   optional arguments may be omitted, and results are `JsonNode` — typed
+   to `string`/`int`/`float`/`bool`/`seq[T]` when the tool declares a
+   scalar `outputSchema`. Wrong argument types are **compile errors**
+   with normal Nim diagnostics, not runtime surprises.
 
 Raw access stays available inside the allowlist:
 
@@ -317,9 +320,10 @@ whole run, and a call cannot outlive it.
   result, but the guest still runs out its deadline.
 - **The guest is trusted, not sandboxed.** It is in `bash`'s trust class —
   approved once, by you, with its source readable at approval time. It has no
-  NATS connection and no credentials; every effect crosses the audited
-  bridge. But it shares your filesystem and user — that is governance, not a
-  security boundary.
+  NATS connection and no credentials; every declared tool effect crosses the
+  audited bridge. But it shares your filesystem and user — reaching past the
+  bridge is a policy violation the lint discourages, not a technical
+  impossibility. That is governance, not a security boundary.
 
 ## After a run: where to look
 
@@ -327,6 +331,8 @@ whole run, and a call cannot outlive it.
 | --- | --- |
 | Live activity (logg lines, all bus traffic) | `./var/bin/console` |
 | Progress events | `ev.fabric.log` on the bus |
+| Run/call lifecycle | `ev.fabric.started` / `call.started` / `call.done` / `done`, correlated by `runId` (console renders them) |
+| Background job lifecycle | `ev.agent.started` / `ev.agent.done` |
 | Oversized results | `var/fabric-artifacts/<run>.json` |
 | Approved program source | `var/approval-sources/<digest>.nim` |
 | What the chat saw | the one tool result in the transcript |

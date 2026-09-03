@@ -234,9 +234,12 @@ ends — turns never nest.
 
 ## Cancellation
 
-No transport-native cancellation in NATS. Components that care subscribe to
-`ev.cancel.<call-id>` on call start and check it between output chunks.
-Core publishes it on user cancel. ~10 lines in the SDK.
+No transport-native cancellation in NATS. Today the only implemented cancel
+path is the LLM side-channel: publishing to `llm.cancel.<sessionId>` aborts
+that session's in-flight provider request (see `components/llm/main.go`).
+Everything else runs to completion or deadline — request/reply callers that
+stop waiting only abandon the reply; the target work is not stopped. A
+generic `ev.cancel.<call-id>` subject remains a possible future addition.
 
 ## Approvals
 

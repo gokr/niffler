@@ -8,7 +8,7 @@
 ## child-runner prep, lineage metadata, synchronous reply, depth guard,
 ## child LLM failure surfaced as a failure, and idle runner retirement.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, times]
 import natswrapper
 import helpers
 
@@ -171,13 +171,18 @@ proc main() =
 
   # --- idle retirement: quiet runners self-exit (NIF_RUNNER_IDLE_S=2) -------
   # The parent runner still exists right after the turn; after the idle
-  # window it is gone. A probe returns {"error": "timeout"} (no responder);
-  # the runner is re-ensured on the next real session call.
-  sleep(4000)
-  let retired = call(nc, "session." & childId, "session",
-                     %*{"sessionId": childId, "model": ""}, 2_000)
-  check("idle child runner retired",
-        retired{"error"}.getStr("") != "", $retired)
+  # window it departs (reg.depart → dropped from the catalog). Watch the
+  # catalog rather than probing the runner: a direct session call would
+  # refresh its idle clock. Poll because turn starts are delayed by the
+  # 5s systemprompt fallback window, so the retire clock starts late.
+  var retired = false
+  for i in 0 ..< 30:
+    sleep(1000)
+    let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+    if snap{"components"}{"session-" & childId} == nil:
+      retired = true
+      break
+  check("idle child runner retired", retired)
   let reensured = call(nc, "core", "session",
                        %*{"sessionId": childId, "model": ""}, 30_000)
   check("retired runner re-ensured on demand",
@@ -276,6 +281,89 @@ proc main() =
   let stopped = call(nc, "agent", "agent_stop", %*{"jobId": jobId}, 10_000)
   check("agent_stop on a finished job returns the record",
         stopped{"status"}.getStr("") == "done", $stopped)
+
+  # --- real cancellation: agent_stop ends a running job's child turn --------
+  # The stub child takes one deliberate bash round (sleep 4); the stop
+  # lands while it runs — the runner's between-rounds cancel flag ends the
+  # turn, and the terminal record reads "stopped".
+  let stopParent = "agt-stop"
+  discard call(nc, "core", "session",
+               %*{"sessionId": stopParent, "content": "go"}, 120_000)
+  let stopJob = fetchJobId(stopParent)
+  check("stop spawn returned a jobId", stopJob.startsWith("job-"), stopJob)
+  sleep(600)
+  let stopping = call(nc, "agent", "agent_stop", %*{"jobId": stopJob}, 10_000)
+  check("agent_stop arms the stop",
+        stopping{"status"}.getStr("") == "stopping", $stopping)
+  let stopWait = call(nc, "agent", "agent_wait",
+                      %*{"jobId": stopJob, "timeoutMs": 30_000}, 60_000)
+  check("cancelled job terminates as stopped",
+        stopWait{"status"}.getStr("") == "stopped", $stopWait)
+
+  # --- restart recovery: stale non-terminal records resolve honestly -------
+  # (a) a completed turn whose completion tap was missed (agent was down):
+  #     the transcript's final assistant reply synthesizes "done"
+  let staleChild = "agent-stale-done"
+  discard call(nc, "store", "put",
+    %*{"kind": "message", "id": staleChild & ":000001",
+       "value": %*{"role": "assistant", "content": "stale reply",
+                   "conversationId": staleChild}}, 10_000)
+  let staleJob = "job-staledone"
+  discard call(nc, "store", "put",
+    %*{"kind": "agentjob", "id": staleJob,
+       "value": %*{"sessionId": staleChild, "parent": "agt-parent",
+                   "status": "running", "task": "stale",
+                   "startedAt": epochTime()}}, 10_000)
+  let staleStatus = call(nc, "agent", "agent_status",
+                         %*{"jobId": staleJob}, 15_000)
+  check("stale running job with a final reply resolves done",
+        staleStatus{"status"}.getStr("") == "done" and
+        staleStatus{"reply"}.getStr("") == "stale reply", $staleStatus)
+  # (b) a turn whose runner died without a final reply: "failed — interrupted"
+  let deadJob = "job-deadchild"
+  discard call(nc, "store", "put",
+    %*{"kind": "agentjob", "id": deadJob,
+       "value": %*{"sessionId": "agent-deadchild", "parent": "agt-parent",
+                   "status": "running", "task": "dead",
+                   "startedAt": epochTime()}}, 10_000)
+  let deadStatus = call(nc, "agent", "agent_status",
+                        %*{"jobId": deadJob}, 15_000)
+  check("stale running job with a dead runner resolves failed",
+        deadStatus{"status"}.getStr("") == "failed" and
+        deadStatus{"error"}.getStr("").contains("interrupted"), $deadStatus)
+
+  # --- reasoning-effort passthrough: the child's LLM sees what was sent ----
+  let thinkParent = "agt-think"
+  discard call(nc, "core", "session",
+               %*{"sessionId": thinkParent, "content": "go"}, 120_000)
+  var thinkReply = ""
+  for i in 1 .. 6:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": thinkParent & ":" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    let content = m{"value"}{"content"}.getStr("")
+    if content.contains("thinking:"): thinkReply = content
+  check("thinking effort reaches the child's LLM",
+        thinkReply.contains("thinking:high"), thinkReply)
+
+  # --- job time budget: exceeded budgets cancel with agent_stop semantics --
+  let budgetParent = "agt-budget"
+  discard call(nc, "core", "session",
+               %*{"sessionId": budgetParent, "content": "go"}, 120_000)
+  let budgetJob = fetchJobId(budgetParent)
+  check("budget spawn returned a jobId", budgetJob.startsWith("job-"),
+        budgetJob)
+  # budget is 2000ms; observe lazily at ~3.5s, then wait out the child turn
+  sleep(3500)
+  let budgetStatus = call(nc, "agent", "agent_status",
+                          %*{"jobId": budgetJob}, 15_000)
+  check("exceeded budget flips the job to stopping",
+        budgetStatus{"status"}.getStr("") == "stopping", $budgetStatus)
+  let budgetWait = call(nc, "agent", "agent_wait",
+                        %*{"jobId": budgetJob, "timeoutMs": 30_000}, 60_000)
+  check("budget-cancelled job terminates as stopped",
+        budgetWait{"status"}.getStr("") == "stopped", $budgetWait)
 
   report("agent")
 
