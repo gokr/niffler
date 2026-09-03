@@ -8,6 +8,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Subagent budgets: per-job token and tool-call caps** —
+  `agent_run`/`agent_spawn` accept `maxCalls` (total tool dispatches per
+  child turn, 1-500 — every dispatch attempt counts, success or error) and
+  `maxTokens` (cumulative provider-reported tokens across the child's LLM
+  rounds, checked before each new round). Both freeze into the child
+  conversation header like `maxRounds` and end the turn as
+  budget-exhausted instead of spending more.
+
+- **Real command cancellation for bash** — a cancelled turn now kills the
+  running command's whole process tree: the runner publishes
+  `cancel.<component>` when it abandons an in-flight dispatch, and the bash
+  component kills the command's process group promptly (exit 130). Commands
+  run as the leader of their own process group (fork + setpgid + execvp), so
+  the tool's own timeout now reaches descendants too instead of orphaning
+  them (`sleep 100 &` no longer survives). Components opt in by subscribing
+  their cancel subject and matching the injected session id.
+
 - **SWE-bench Verified pilot run end-to-end** — 10 sympy instances, one-shot,
   official swebench 4.1.0 Docker grading, both bench models × pi/opencode/
   niffler: deepseek 9/9/6, glm 8/7/5 (resolved counts). Niffler resolves

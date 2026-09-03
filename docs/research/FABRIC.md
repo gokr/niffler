@@ -121,14 +121,18 @@ explicit policy:
 The SDK serializes handlers on one thread, so long-running work is split
 into a synchronous surface and durable background jobs:
 
-- **`agent_run {task, model?, thinking?, tools?, maxRounds?, timeoutMs?}`** —
+- **`agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}`** —
   synchronous: prepare a child runner via `session_prepare`, call the child
   runner's subject directly with the framed task, return its final reply with
   `{reply, sessionId}`. The child session call is a plain request/reply whose
   result carries the final reply. `thinking` sets the child's reasoning
-  effort, `tools` freezes a tool allowlist for the child conversation, and
-  `maxRounds` caps tool rounds per child turn (1-20).
-- **`agent_spawn {task, model?, thinking?, tools?, maxRounds?, timeoutMs?}`** —
+  effort, `tools` freezes a tool allowlist for the child conversation,
+  `maxRounds` caps tool rounds per child turn (1-20), and `maxCalls`/
+  `maxTokens` are per-job budgets: total tool dispatches (every attempt
+  counts, success or error) and cumulative provider-reported tokens across
+  the child's LLM rounds. Budget exhaustion ends the child turn as a
+  budget-exhausted failure, not a text reply.
+- **`agent_spawn {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}`** —
   background: same preparation, then the child turn is published
   fire-and-forget with a reply inbox the component taps; the handler returns
   `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once
@@ -147,9 +151,12 @@ into a synchronous surface and durable background jobs:
 - **`agent_stop {jobId}`** — cancels the job for real: an `llm.cancel.<child>`
   side-channel plus a `__cancel` control message on the steer channel abort
   the child turn; a cancel landing while a tool call is in flight raises
-  TurnCancelled and the runner stops waiting promptly. An already-running
-  command (e.g. a `bash sleep`) still runs to its own timeout — NATS
-  request/reply has no cancel semantics (see "Not shipped").
+  TurnCancelled and the runner stops waiting promptly, publishing
+  `cancel.<component>` so the callee can abandon the in-flight work — the
+  bash component kills the running command's whole process group (exit 130;
+  commands run as their own group leader, so timeouts reach descendants
+  too). Components that do not subscribe their cancel subject (fetch,
+  builder, plugins) run to their own timeout (see "Not shipped").
 - **`agent_steer {session_id, message}`** — fire-and-forget injection into a
   live child turn; meaningful for spawned jobs, whose child runs while the
   caller continues.
@@ -268,12 +275,15 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- Aborting an already-running command: cancellation stops the WAIT (a
-  cancelled turn ends promptly) but a running bash sleep still runs to
-  its own timeout — NATS request/reply has no cancel semantics.
-- Per-job token/call caps beyond the round budget, structured-output
-  schemas for subagent replies, canonical working directories, and
-  isolated git worktrees for spawned children (session-surface design).
+- Aborting an already-running command in a component that has not opted
+  into the `cancel.<component>` side-channel (fetch, builder, plugins):
+  cancellation stops the WAIT (a cancelled turn ends promptly) but the
+  component's work still runs to its own timeout — NATS request/reply has
+  no cancel semantics. (bash opted in: its command tree dies with the
+  cancel.)
+- Structured-output schemas for subagent replies, canonical working
+  directories, and isolated git worktrees for spawned children
+  (session-surface design).
 - Per-target batch write overlap: writes are mutually exclusive globally
   because bash is a universal writer — needs resource-scoped effect
   declarations to relax safely.

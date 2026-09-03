@@ -136,6 +136,8 @@ type
     thinkingEffort*: string  ## "" (provider default) | low | medium | high
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
     maxRounds*: int          ## per-turn tool-round budget (0 = default 20)
+    maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
+    maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -531,7 +533,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
               thinkingEffort = "", turnContent = "", workspace = "",
-              maxRounds = 0, allowlist: seq[string] = @[],
+              maxRounds = 0, maxCalls = 0, maxTokens = 0,
+              allowlist: seq[string] = @[],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -619,6 +622,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.steerStream != nil:
     ct.steerStream.cancelRequested = false
   var rounds = 0
+  var toolCallsMade = 0
+    ## Dispatches this turn, across all rounds: a per-turn call budget is
+    ## distinct from the round budget because one LLM round may emit several
+    ## tool_calls.
+  var turnTokens = 0
+    ## Cumulative tokens this turn (total_tokens per round when the provider
+    ## reports usage) — the per-job token budget checks this before each new
+    ## LLM round, so overshoot is bounded by one round.
   # Effective round budget: a per-session maxRounds (subagent budgets,
   # 1-20) overrides the NIF_MAX_TURN_ROUNDS env default (default 20 —
   # bench lanes raise it so long agentic tasks are not cut off).
@@ -639,6 +650,18 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # request itself is aborted by the llm.cancel side-channel.
     if ct.steerStream != nil and ct.steerStream.cancelRequested:
       let msg = "cancelled by request"
+      turnError = msg
+      if onEvent != nil:
+        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                           "error": msg})
+      emitTurnDone(msg)
+      return ""
+    # Per-turn token budget (subagent jobs): once the cumulative usage of
+    # the completed rounds reaches the cap, no further LLM round starts —
+    # the turn ends as budget-exhausted instead of spending more tokens.
+    if maxTokens > 0 and turnTokens >= maxTokens:
+      let msg = "turn token budget exhausted (" & $turnTokens &
+        " tokens; capped at " & $maxTokens & ")"
       turnError = msg
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
@@ -719,6 +742,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       p.contextUsed = totalTokens
     elif p.promptTokens > 0:
       p.contextUsed = p.promptTokens + completionTokens
+    if p.contextUsed > 0:
+      turnTokens += p.contextUsed
     if ctxSize > 0:
       p.ctxSize = ctxSize
     p.persistConversationRuntime(modelOverride, usedProvider, usedModel)
@@ -788,6 +813,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       return content
 
     for tc in toolCalls:
+      # Per-turn call budget (subagent jobs): stop BEFORE dispatching past
+      # the cap, so a batch of tool_calls never overshoots it. The turn
+      # ends as budget-exhausted; the transcript keeps everything up to
+      # here so the caller can see exactly where the budget ran out.
+      if maxCalls > 0 and toolCallsMade >= maxCalls:
+        let msg = "turn tool-call budget exhausted (" & $maxCalls &
+          " tool calls)"
+        turnError = msg
+        if onEvent != nil:
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": msg})
+        emitTurnDone(msg)
+        return ""
+      inc toolCallsMade  # every dispatch attempt counts, success or error
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
       let rawArgs = tc{"function"}{"arguments"}.getStr("{}")
@@ -968,6 +1007,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       for t in headerAllow:
         if t.getStr("").len > 0: entry.allowlist.add(t.getStr(""))
     entry.maxRounds = header{"maxRounds"}.getInt(0)
+    entry.maxCalls = header{"maxCalls"}.getInt(0)
+    entry.maxTokens = header{"maxTokens"}.getInt(0)
     if args.kind == JObject and args.hasKey("tools") and
         args{"tools"}.kind == JArray and entry.allowlist.len == 0:
       for t in args{"tools"}:
@@ -984,6 +1025,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       if mr >= 1 and mr <= 20:
         entry.maxRounds = mr
         ct.updateConversationHeader(sessionId, %*{"maxRounds": %mr})
+    # Per-job budgets (subagent scoping), frozen the same way: first call
+    # wins while the header is unset, then the header carries them across
+    # runner resumes.
+    if args.kind == JObject and args.hasKey("maxCalls") and
+        entry.maxCalls == 0:
+      let mc = args{"maxCalls"}.getInt(0)
+      if mc >= 1 and mc <= 500:
+        entry.maxCalls = mc
+        ct.updateConversationHeader(sessionId, %*{"maxCalls": %mc})
+    if args.kind == JObject and args.hasKey("maxTokens") and
+        entry.maxTokens == 0:
+      let mt = args{"maxTokens"}.getInt(0)
+      if mt >= 1:
+        entry.maxTokens = mt
+        ct.updateConversationHeader(sessionId, %*{"maxTokens": %mt})
     if entry.allowlist.len > 0:
       # the runner allocated the ref at startup; mutating through it makes
       # the frozen allowlist visible to every dispatch on this session
@@ -1068,7 +1124,8 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
                       entry.thinkingEffort, content, entry.workspace,
-                      entry.maxRounds, entry.allowlist, turnError)
+                      entry.maxRounds, entry.maxCalls, entry.maxTokens,
+                      entry.allowlist, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.

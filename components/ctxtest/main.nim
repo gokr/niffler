@@ -47,6 +47,17 @@ comp.tool(%*{"hidden": true}):
       # reasoning-effort passthrough: echo what the runner forwarded
       if messages != nil and ($messages).contains("ECHO_THINKING"):
         return %*{"content": "thinking:" & reasoning_effort}
+      # token-budget scripting: every reply reports 10100 total tokens, so
+      # a maxTokens 15000 cap allows exactly two rounds (10100 < 15000,
+      # 20200 >= 15000) and the third round must be refused before the LLM
+      # call — proving the budget is enforced on provider-reported usage
+      let bigTokens = messages != nil and ($messages).contains("BIG_TOKENS")
+      proc withUsage(r: JsonNode): JsonNode =
+        if bigTokens:
+          r["usage"] = %*{"prompt_tokens": 10000,
+                           "completion_tokens": 100,
+                           "total_tokens": 10100}
+        r
       # slow child for the stop test: the stub chat itself sleeps — the
       # stop must land while this LLM round is in flight (between-rounds
       # cancel checks at the next round top and at the would-stop point)
@@ -55,18 +66,25 @@ comp.tool(%*{"hidden": true}):
           sleep(8000)
           return %*{"content": "slow-done"}
         return %*{"content": "slow-done"}
-      # slow child whose delay is a TOOL call (bash sleep 8): the stop
-      # must abandon the in-flight dispatch immediately instead of
-      # waiting out the tool's full runtime
+      # slow child whose delay is a TOOL call (bash sleep 30 + a marker
+      # touch): the stop must abandon the in-flight dispatch immediately
+      # AND the bash side-channel must kill the command's process group —
+      # an orphaned sleep would still touch the marker and still be found
+      # by pgrep long after the job terminalized
       if messages != nil and ($messages).contains("SLOW_BASH"):
         if stage == 0:
+          let marker = getEnv("NIF_ROOT", getCurrentDir()) / "var" /
+                       "slowbash-marker"
           return toolCall("t1", "bash",
-                          %*{"command": "sleep 8 && echo slow-bash"})
-        return %*{"content": "slow-bash-done"}
+                          %*{"command": "sleep 30 && touch " &
+                              quoteShell(marker)})
+        return withUsage(%*{"content": "slow-bash-done"})
       case stage
-      of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
-      of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
-      else: return %*{"content": "subagent-done"}
+      of 0: return withUsage(toolCall("t1", "agent_run",
+                                    %*{"task": "try to spawn"}))
+      of 1: return withUsage(toolCall("t2", "bash",
+                                    %*{"command": "echo agent-ok"}))
+      else: return withUsage(%*{"content": "subagent-done"})
     if sessionId == "agt-parent":
       if stage == 0:
         return toolCall("t1", "agent_run",
@@ -129,6 +147,22 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_run",
                         %*{"task": "echo agent-ok via a subagent",
                            "maxRounds": 2})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-calls":
+      if stage == 0:
+        # call budget: the child's scripted loop wants 2 dispatches (depth
+        # guard, bash); with maxCalls 1 the bash dispatch must be refused
+        return toolCall("t1", "agent_run",
+                        %*{"task": "run bash then report",
+                           "maxCalls": 1})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-tokens":
+      if stage == 0:
+        # token budget: the stub reports 10100 total tokens per round;
+        # maxTokens 15000 allows two rounds, the third must be refused
+        return toolCall("t1", "agent_run",
+                        %*{"task": "BIG_TOKENS report",
+                           "maxTokens": 15000})
       return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:

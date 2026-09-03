@@ -382,9 +382,14 @@ proc main() =
         budgetWait{"status"}.getStr("") == "stopped", $budgetWait)
 
   # --- mid-tool cancellation: the runner stops waiting for the tool --------
-  # The child's turn is blocked in bash sleep 20 when the stop lands; the
+  # The child's turn is blocked in bash sleep 30 when the stop lands; the
   # dispatch raises TurnCancelled and the job terminalizes well under the
-  # tool's runtime (waiting the tool out would take >= 20s).
+  # tool's runtime (waiting the tool out would take >= 30s). The runner
+  # also publishes cancel.bash, so the bash component kills the command's
+  # process group — an orphaned sleep would survive for 30s and still
+  # touch the marker file (proven absent, and pgrep finds nothing).
+  let slowMarker = root / "var" / "slowbash-marker"
+  if fileExists(slowMarker): removeFile(slowMarker)
   let midParent = "agt-midtool"
   discard call(nc, "core", "session",
                %*{"sessionId": midParent, "content": "go"}, 120_000)
@@ -400,6 +405,11 @@ proc main() =
   check("mid-tool stop terminalizes promptly",
         midWait{"status"}.getStr("") == "stopped" and midSecs < 10.0,
         $midWait & " secs=" & $midSecs.int)
+  sleep(400)  # give an orphaned command the chance to show itself
+  check("mid-tool stop killed the bash command tree (no orphan)",
+        not processExists("slowbash-marker"))
+  check("cancelled command never finished (marker untouched)",
+        not fileExists(slowMarker))
 
   # --- tool allowlist: the child may dispatch only the frozen set -----------
   # The evidence lives in the CHILD's transcript (its bash call is rejected
@@ -438,7 +448,7 @@ proc main() =
 
   # --- round budget: maxRounds caps the child's tool rounds -----------------
   # Two rounds run (depth-guard attempt, bash) and the scripted final round
-  # never happens; the turn ends with an empty reply.
+  # never happens; the turn ends as budget-exhausted (turnError, no reply).
   let roundsParent = "agt-rounds"
   discard call(nc, "core", "session",
                %*{"sessionId": roundsParent, "content": "go"}, 120_000)
@@ -447,6 +457,41 @@ proc main() =
         roundsChild.text.contains("agent-ok"), roundsChild.text)
   check("round-budget child stopped before its final round",
         not roundsChild.text.contains("subagent-done"), roundsChild.text)
+
+  # --- call budget: maxCalls caps the child's total tool dispatches --------
+  # The depth-guard attempt spends the budget of 1; the scripted bash round
+  # must be refused and the budget error must reach the parent as a failure.
+  proc parentTranscriptOf(parent: string): string =
+    for i in 1 .. 12:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      result.add(m{"value"}{"content"}.getStr(""))
+  let callsParent = "agt-calls"
+  discard call(nc, "core", "session",
+               %*{"sessionId": callsParent, "content": "go"}, 120_000)
+  let callsChild = childTranscriptOf(callsParent)
+  check("call-budget child ran only the budgeted dispatch",
+        callsChild.text.contains("subagents cannot spawn subagents") and
+        not callsChild.text.contains("agent-ok"), callsChild.text)
+  check("call-budget failure reached the parent",
+        parentTranscriptOf(callsParent).contains(
+          "tool-call budget exhausted"), callsChild.id)
+
+  # --- token budget: maxTokens caps cumulative provider-reported usage ------
+  # The stub reports 10100 total tokens per round; with a 15000 cap two
+  # rounds run and the third is refused before its LLM call.
+  let tokensParent = "agt-tokens"
+  discard call(nc, "core", "session",
+               %*{"sessionId": tokensParent, "content": "go"}, 120_000)
+  let tokensChild = childTranscriptOf(tokensParent)
+  check("token-budget child ran its rounds under the cap",
+        tokensChild.text.contains("agent-ok") and
+        not tokensChild.text.contains("subagent-done"), tokensChild.text)
+  check("token-budget failure reached the parent",
+        parentTranscriptOf(tokensParent).contains(
+          "token budget exhausted"), tokensChild.id)
 
   # --- conversation_delete: the deletion surface lineage cleanup waited on --
   # The agent_run child's header, messages, tools snapshot, and lineage all

@@ -722,18 +722,28 @@ The consolidated backlog of explicitly deferred work. `docs/research/FABRIC.md`
 
 1. **Cancellation.** Shipped: `agent_stop` aborts the child turn for real
    (llm.cancel side-channel + a `__cancel` control message on the steer
-   channel), and a cancel landing while a tool call is in flight raises
-   TurnCancelled — the runner stops waiting and the turn ends promptly.
-   Inherent limit: an already-running command (a bash sleep) cannot be
-   aborted — NATS request/reply has no cancel semantics; the tool's own
-   timeout bounds it.
+   channel), a cancel landing while a tool call is in flight raises
+   TurnCancelled — the runner stops waiting and the turn ends promptly —
+   and the runner publishes `cancel.<component>` so the callee can abandon
+   its in-flight work too. The bash component opts in: commands run as
+   the leader of their own process group, so a cancel (or the tool's own
+   timeout) kills the whole command tree promptly (exit 130, orphan-proof;
+   timeouts now reach descendants too, not just the bash wrapper).
+   Inherent limit: components that do not opt in (fetch, builder, plugins)
+   still run to their own timeout — NATS request/reply has no cancel
+   semantics; the tool's own timeout bounds them.
 2. **Durable-agent hardening.** Shipped: lazy restart recovery, lazily
    enforced time budgets, reasoning-effort selection, per-session tool
-   allowlists, and per-turn round budgets (per-session `maxRounds`
-   overriding `NIF_MAX_TURN_ROUNDS`). Still open:
-   per-job token/call budgets beyond the round cap, structured-output
-   schemas, canonical working directories, and optional isolated git
-   worktrees — all need deeper core session-surface design.
+   allowlists, per-turn round budgets (per-session `maxRounds`
+   overriding `NIF_MAX_TURN_ROUNDS`), and per-job token/call budgets —
+   `agent_run`/`agent_spawn` accept `maxCalls` (total tool dispatches per
+   child turn, 1-500; every dispatch attempt counts, success or error) and
+   `maxTokens` (cumulative provider-reported tokens across the child's LLM
+   rounds, checked before each new round). Both freeze into the child
+   conversation header like maxRounds and end the turn as
+   budget-exhausted. Still open:
+   structured-output schemas, canonical working directories, and optional
+   isolated git worktrees — all need deeper core session-surface design.
 3. **Batch effect declarations.** Shipped: `x-harness.effect: "read"`
    tools run concurrently (and may overlap a write); writes are mutually
    exclusive GLOBALLY. Per-target write overlap is a documented
