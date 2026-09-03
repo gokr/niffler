@@ -45,6 +45,7 @@ export interface SessionStatus {
     read: number;
     hitRate: number;
   };
+  reason?: string;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;

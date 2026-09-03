@@ -28,6 +28,30 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **CodeWhale borrows — quick-win batch** (docs/research/CODEWHALE.md):
+  techniques adopted from the CodeWhale coding agent (Rust, gemini-cli
+  fork). New `hooks` component: operator shell commands on selected bus
+  events (`ev.session.turn`, `ev.log.>`), payload as JSON on stdin,
+  observe-only (no approval steering — that stays core's gate),
+  env-configured, off by default, worked examples in
+  `components/hooks/README.md` (`tests/t_hooks.nim`). New core tools:
+  `prompt_preview` (composed-request provenance: prompt source/bytes,
+  project context files, frozen direct vs discovered tools — read-only,
+  never sends) and `doctor` (one-shot machine-readable health report:
+  store/llm/provider/systemprompt/catalog, read-only probes). `git` gains
+  `review_receipt` — local diff-fingerprint write/check pair under
+  `var/review-receipts/` for pre-push review handoff, never calls a model.
+  `skills` gains `skill_audit` — unmerged on-disk inventory making skill
+  shadowing visible. Cache economics surfaced: `ev.session.status` carries
+  `cacheHitTokens`/`cacheHitRatio` (frozen-prefix hit rate),
+  `ev.session.context` names its reason (`reset:trim`, `warn:threshold`),
+  the web UI shows `⚡ NN% cached` per message and a trim-resets-cache note;
+  the niffler-tui plugin shows a `⚡ NN% cached` status-line chip
+  (niffler-tui `feat/cache-stats`). `sdk/dotenv` hardened: 1 MiB cap,
+  symlinks/hardlinks refused, no variable expansion. AGENTS.md documents
+  the prompt-cache contributor rule (frozen prefix vs append-only history).
+
+### Added
 - **LLM auto-retry (B3)** — the session runner classifies chat failures and
   retries transient ones (429/5xx/overloaded/timeout/connection drop) with
   exponential backoff + jitter, `NIF_LLM_MAX_RETRIES` (default 2, 0 disables);
@@ -87,7 +111,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the tool's own timeout now reaches descendants too instead of orphaning
   them (`sleep 100 &` no longer survives). Components opt in by subscribing
   their cancel subject and matching the injected session id.
-
 - **SWE-bench Verified pilot run end-to-end** — 10 sympy instances, one-shot,
   official swebench 4.1.0 Docker grading, both bench models × pi/opencode/
   niffler: deepseek 9/9/6, glm 8/7/5 (resolved counts). Niffler resolves

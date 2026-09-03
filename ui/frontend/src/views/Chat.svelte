@@ -25,6 +25,7 @@
     total_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
   }
+  }
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "meta" | "error";
@@ -630,6 +631,12 @@
         } else if (p.warning) {
           const pct = p.context ? Math.round((p.promptTokens / p.context) * 100) : 0;
           l.ctxNote = t("chat.contextAt", { pct: String(pct) });
+        }
+        if (p.reason === "reset:trim") {
+          // History reset: the provider's prompt cache is dead past the
+          // remaining prefix — the next request pays full prompt price.
+          l.ctxNote = (l.ctxNote ? l.ctxNote + " · " : "") +
+            t("chat.cacheReset");
         }
       }
     });

@@ -123,6 +123,17 @@ components:
     required: false
     restart: on-failure
 
+  # Event hooks (components/hooks/README.md): run operator shell commands on
+  # selected bus events (ev.session.turn, ev.log.>) — observe-only, JSON on
+  # stdin. Disabled by default: enable via NIF_HOOKS_* env + autostart, or
+  # spawn after boot.
+  - name: hooks
+    build: {lang: nim, src: components/hooks/main.nim}
+    binary: var/bin/hooks
+    autostart: false
+    required: false
+    restart: on-failure
+
   # Subagent sessions (docs/research/FABRIC.md): synchronous agent_run + steer,
   # durable background jobs (spawn/status/wait/stop) with ev.agent.* events.
   - name: agent

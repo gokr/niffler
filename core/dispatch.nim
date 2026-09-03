@@ -5,7 +5,8 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, monotimes, os, osproc, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, sequtils, strutils, tables,
+            times]
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
@@ -491,6 +492,114 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       info["warning"] = %("store unavailable: " & e.msg)
     return info
+  of "prompt_preview":
+    ## Read-only provenance for the composed request context (CodeWhale's
+    ## /preview-request, bounded to what Niffler durably knows): the system
+    ## prompt's source and the frozen direct/ discovered tool split, without
+    ## sending anything or printing full prompt bytes (they can contain
+    ## project instructions). Follows session_info: the session runner
+    ## injects its own id when the arg is absent.
+    let sessionId = args{"sessionId"}.getStr("").strip()
+    if sessionId.len == 0:
+      return %*{"error": "prompt_preview needs sessionId (a session runner injects its own id for the current session)"}
+    var info = %*{"sessionId": sessionId}
+    try:
+      let header = ct.dispatchToolCall("get",
+        %*{"kind": "conversation", "id": sessionId})
+      if not header{"ok"}.getBool(false):
+        return %*{"error": "no conversation '" & sessionId & "'"}
+      let sp = header{"value"}{"systemPrompt"}.getStr("")
+      if sp.len > 0:
+        info["promptSource"] = %"frozen in conversation header"
+        info["promptBytes"] = %sp.len
+        info["usesFallbackPrompt"] = %sp.contains("fallback prompt")
+        info["projectContextFiles"] = %count(sp, "<project_instructions path=")
+      else:
+        info["promptSource"] = %"not resolved yet (no turn has run)"
+      let exposure = ct.dispatchToolCall("get",
+        %*{"kind": "session", "id": sessionId & ":tools"})
+      if exposure{"ok"}.getBool(false) and exposure{"value"} != nil:
+        var direct, discovered: seq[string] = @[]
+        for t in exposure{"value"}{"direct"}:
+          direct.add(t{"name"}.getStr(""))
+        for t in exposure{"value"}{"discovered"}:
+          discovered.add(t{"name"}.getStr(""))
+        info["directTools"] = %direct
+        info["discoveredTools"] = %discovered
+      for f in ["model", "modelOverride", "provider", "thinkingEffort"]:
+        if header{"value"}{f} != nil:
+          info[f] = header{"value"}{f}
+      # message/token accounting, same source as session_info
+      let listed = ct.dispatchToolCall("list",
+        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000})
+      var total = 0
+      if listed{"items"} != nil:
+        for item in listed{"items"}: inc total
+      info["messageCount"] = %total
+      if total >= 1000: info["truncated"] = %true
+      for f in ["context", "contextUsed", "promptTokens"]:
+        if header{"value"}{f} != nil:
+          info[f] = header{"value"}{f}
+    except CatchableError as e:
+      info["warning"] = %("store unavailable: " & e.msg)
+    return info
+  of "doctor":
+    ## One-shot machine-readable health report (CodeWhale borrow):
+    ## everything core can probe read-only from its seat — bus (implicitly
+    ## alive, we answered), store, llm provider/model, systemprompt,
+    ## catalog size, conversations. Each probe reports ok plus a short
+    ## detail string; the whole report never executes anything.
+    var doc = %*{"at": epochTime(), "checks": newJArray()}
+    proc check(name: string, ok: bool, detail: string) =
+      doc{"checks"}.add(%*{"name": name, "ok": ok, "detail": detail})
+    # store: echo a roundtrip + count conversations
+    try:
+      let listed = ct.dispatchToolCall("list",
+        %*{"kind": "conversation", "limit": 1000})
+      if listed{"ok"}.getBool(false):
+        var n = 0
+        if listed{"items"} != nil:
+          for item in listed{"items"}: inc n
+        check("store", true, "reachable, " & $n & " conversation(s)")
+        doc["conversations"] = %n
+      else:
+        check("store", false, "list returned an error")
+    except CatchableError as e:
+      check("store", false, e.msg)
+    # systemprompt component: registered?
+    ct.cat.pump()
+    if ct.cat.components.hasKey("systemprompt"):
+      check("systemprompt", true, "registered")
+    else:
+      check("systemprompt", false,
+            "not registered — conversations degrade to the minimal fallback prompt")
+    # llm: component registered + active provider from the store
+    var llmOk = ct.cat.components.hasKey("llm")
+    if llmOk:
+      check("llm", true, "registered")
+      try:
+        let active = ct.dispatchToolCall("get",
+          %*{"kind": "provider", "id": "active"})
+        if active{"ok"}.getBool(false) and active{"value"}{"nickname"}.getStr("").len > 0:
+          doc["activeProvider"] = active{"value"}{"nickname"}
+          check("provider", true, "active provider set: " &
+            active{"value"}{"nickname"}.getStr(""))
+        else:
+          check("provider", false,
+                "no active provider — llm falls back to NIF_OPENAI_*")
+      except CatchableError:
+        check("provider", false, "provider component/store unreachable — llm falls back to NIF_OPENAI_*")
+    else:
+      check("llm", false, "not registered — sessions cannot run turns")
+    # catalog size
+    var nTools = 0
+    for _, reg in ct.cat.components:
+      nTools += reg.tools.len
+    doc["components"] = %ct.cat.components.len
+    doc["tools"] = %nTools
+    check("catalog", true, $ct.cat.components.len & " component(s), " &
+      $nTools & " tool(s)")
+    return doc
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
@@ -837,20 +946,22 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     raise newException(ValueError,
       "tool '" & tool & "' is not in this session's tool allowlist")
 
-  # session_info with no sessionId means "my own conversation": while a turn
-  # is live (ct.nested.session is set only inside runTurn) the runner injects
-  # its own session id before the call reaches the system, so the model's
-  # introspection always answers about the conversation it is running in.
-  # Direct (non-session) callers have no live nested session and get the
-  # tool's clear "needs sessionId" error instead.
-  if tool == "session_info" and ct.nested != nil and
+  # session_info / prompt_preview with no sessionId mean "my own
+  # conversation": while a turn is live (ct.nested.session is set only
+  # inside runTurn) the runner injects its own session id before the call
+  # reaches the system, so the model's introspection always answers about
+  # the conversation it is running in. Direct (non-session) callers have no
+  # live nested session and get the tool's clear "needs sessionId" error
+  # instead.
+  if tool in ["session_info", "prompt_preview"] and ct.nested != nil and
       ct.nested.session.len > 0 and args{"sessionId"}.getStr("").len == 0:
     args["sessionId"] = %ct.nested.session
 
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info", "conversation_delete"] and
+              "session_info", "prompt_preview", "doctor",
+              "conversation_delete"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:

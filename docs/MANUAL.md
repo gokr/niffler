@@ -56,8 +56,8 @@ reference chapters for the shipped components. Design rationale lives in
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
-| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
-| `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt) |
+| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small || `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
@@ -66,8 +66,8 @@ reference chapters for the shipped components. Design rationale lives in
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) |
+| `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `core.spawn {name: "dialog", binary: ".../var/bin/dialog"}`. Prereqs: natscli, jq, zenity — `make setup` installs all three |
-
 ### Minimal boot profile (`--minimal`)
 
 The normal manifest is the full, self-extending harness. For the smallest
@@ -348,16 +348,23 @@ reports:
   loading the entire transcript.
 - Core emits `ev.session.status` with the resolved provider/model/context and
   current `usedTokens`; clients render `usedTokens / context` directly.
+  When the provider reports cached input (`prompt_tokens_details.cached_tokens`),
+  the status event also carries `cacheHitTokens` and `cacheHitRatio` — with
+  the frozen prompt prefix most prompt tokens should be cached after the
+  first request, so a low ratio is a signal worth noticing (the web UI shows
+  `⚡ NN% cached` per message; the TUI status line shows a `⚡ NN% cached`
+  chip).
 - Persisted messages carry audit metadata that never reaches the LLM:
   `createdAt` on every message, `turnId` everywhere, and `startedAt` /
   `durationMs` on assistant, tool and error records (an `error` record is
-  persisted when the LLM call itself fails, and replay skips error roles).
-- At **75%** of the window, core warns once (terminal log; the UI shows a
-  note) — `ev.session.context {warning: true}`.
+  persisted when the LLM call itself fails, and replay skips error roles).- At **75%** of the window, core warns once (terminal log; the UI shows a
+  note) — `ev.session.context {warning: true, reason: "warn:threshold"}`.
 - At **90%**, core trims: whole turns are dropped from the front of the
   conversation (system prompt stays; never below 2 user turns; a note
   message tells the model history was cut). Whole-turn drops keep
-  `tool_call_id` pairs intact. `ev.session.context {trimmed: n}`.
+  `tool_call_id` pairs intact. `ev.session.context {trimmed: n, reason:
+  "reset:trim"}` — a trim is the one ordinary full prompt-cache miss, and
+  the reason names it.
 - Before the model has reported usage (fresh or resumed session), a
   rough chars/4 estimate stands in.
 - The **store keeps the full history** — trimming is in-memory per
@@ -477,6 +484,7 @@ dropping a same-named skill into a project or home directory.
 | `skill_load {name}` | full SKILL.md instructions + resource list into the conversation (the load mechanism) |
 | `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files |
 | `skill_resource {name, path}` | read one resource on demand |
+| `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk: marks the active winner per name and every shadowed/invalid copy (discoveries merge in `skill_list`; shadowing is only visible here) |
 | `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
 | `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
 
@@ -582,6 +590,31 @@ output as a secret.
 - The `active` marker is a plain store doc — remove or overwrite it with
   `store` tools if you need manual surgery.
 
+## Hooks
+
+The `hooks` component (off by default) runs operator shell commands when
+selected bus events fire — the observe-only subset of CodeWhale's hooks
+(docs/research/CODEWHALE.md). A hook is a plain process: the decoded event
+payload is piped to the command's stdin as pretty JSON, the command itself
+is never interpolated with event data, failures and timeouts (default 10s,
+max 60s) are logged and never fatal. There is deliberately no steering/veto:
+approval decisions live in core's dispatch gate.
+
+Configuration is env-based, read at boot (config change = `core.kill` +
+`core.spawn`):
+
+```bash
+NIF_HOOKS_EVENTS="ev.session.turn,ev.log.error"   # subjects to watch
+NIF_HOOKS_EV_SESSION_TURN='notify-send Niffler "turn finished"'
+NIF_HOOKS_EV_LOG_ERROR='jq -r .payload.msg | mail -s Niffler you@example.com'
+NIF_HOOKS_TIMEOUT_MS=10000
+```
+
+Subject → env name: dots and `>` become `_`, uppercased
+(`ev.session.turn` → `NIF_HOOKS_EV_SESSION_TURN`). Worked examples —
+desktop notification, sound alert, email, webhook, error tail — live in
+`components/hooks/README.md`.
+
 ## Fetch
 
 The `fetch` component is the web access tool (a port of the old niffler
@@ -653,6 +686,14 @@ hidden tools directly over NATS.
 ### Core tools
 
 `discover` and `invoke` are direct core tools in every new conversation.
+`session_info` (onDemand) summarizes a conversation; `prompt_preview`
+(onDemand) shows composed-request provenance — where the system prompt came
+from, how many project context files feed it, the frozen direct tool names
+vs. schemas discovered so far, message/token counts — without sending
+anything. `doctor` (onDemand) is a one-shot machine-readable health report:
+store reachability, llm registration, active provider, systemprompt
+presence, catalog size, conversation count — all read-only probes, useful
+as a CI liveness gate or a first diagnostics step.
 
 #### Hints
 

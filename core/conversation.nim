@@ -468,7 +468,9 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
                               "usedTokens": used, "context": p.ctxSize,
                               "trimAt": trimAt,
                               "reserveTokens": outputReserve(),
-                              "trimmed": dropped})
+                              "trimmed": dropped,
+                              "reason": "reset:trim",
+                              "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
     echo "core: WARNING context at " & $pct & "% — will trim at " &
@@ -477,7 +479,8 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "promptTokens": p.promptTokens,
                             "usedTokens": used, "context": p.ctxSize,
-                            "warning": true})
+                            "warning": true,
+                            "reason": "warn:threshold"})
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -887,6 +890,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
+      # Cache economics (A3/CodeWhale borrow): the frozen prefix means most
+      # prompt tokens should be cached after the first request; surface the
+      # provider's cached split so a low hit ratio is visible and attributable
+      # (ev.session.context carries the reset reason when we know one).
       if p.cachePrompt > 0:
         statusEv["cache"] = %*{"prompt": p.cachePrompt, "read": p.cacheRead,
                                "hitRate": round(float(p.cacheRead) * 100.0 /
