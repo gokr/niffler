@@ -8,6 +8,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **SWE-bench Verified pilot run end-to-end** — 10 sympy instances, one-shot,
+  official swebench 4.1.0 Docker grading, both bench models × pi/opencode/
+  niffler: deepseek 9/9/6, glm 8/7/5 (resolved counts). Niffler resolves
+  fewer tasks at 2.3–2.9× less total tokens per task. Protocol changes the
+  pilot forced: recipe-style task prompts (flash agents previously burned
+  turns on env archaeology and produced empty diffs), transport-level round
+  retries (2×, never for auth/balance), process-group SIGKILL + stdio EOF on
+  runner timeouts (an orphaned opencode child held the pipe and delayed
+  `close` by ~20 h), and hidden gold/test-patch cards moved to
+  `~/.cache/niffler-swe/cards`. Curated report:
+  `bench/reports/swe-sympy10-pilot-report.md`.
+
 - **Bench `niffler-expert` variant** — paired measurement of plain Niffler
   vs expert-assisted Niffler: the runner arms `expert_follow` on the exact
   task session before its first turn (setup excluded from time-to-green),
