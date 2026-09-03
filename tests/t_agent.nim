@@ -36,6 +36,11 @@ proc main() =
   let coreBin = sandbox.sandboxBin("niffler")
   copyFileWithPermissions(repoRoot / "var" / "bin" / "agent",
                           sandbox.sandboxBin("agent"))
+  # stale log for the retention sweep: core's boot pass must delete it
+  createDir(root / "var" / "logs")
+  let staleLog = root / "var" / "logs" / "stale-child.log"
+  writeFile(staleLog, "old child output\n")
+  staleLog.setLastModificationTime(getTime() - initDuration(days = 30))
   # NOTE: sandbox intentionally kept on failure for post-mortem (cleaned by OS)
 
   # compile the test-only stub component into the sandbox
@@ -76,6 +81,7 @@ proc main() =
       break
     sleep(200)
   check("core up", coreUp)
+  check("stale child log swept at boot", not fileExists(staleLog))
 
   let ctxProc = startComponent(ctxBin, url, root = root,
                                logFile = "/tmp/opencode/ctxtest.log")
@@ -432,6 +438,30 @@ proc main() =
         roundsChild.text.contains("agent-ok"), roundsChild.text)
   check("round-budget child stopped before its final round",
         not roundsChild.text.contains("subagent-done"), roundsChild.text)
+
+  # --- conversation_delete: the deletion surface lineage cleanup waited on --
+  # The agent_run child's header, messages, tools snapshot, and lineage all
+  # disappear, and its (retired) runner slot is cleaned up.
+  let delChild = childId
+  let del = call(nc, "core", "conversation_delete",
+                 %*{"sessionId": delChild}, 30_000)
+  check("conversation_delete succeeds",
+        del{"ok"}.getBool(false) and del{"deleted"}.getInt(0) > 0, $del)
+  let hdr = call(nc, "store", "get",
+                 %*{"kind": "conversation", "id": delChild}, 10_000)
+  check("conversation header deleted", hdr{"ok"}.getBool(false) == false,
+        $hdr)
+  let msg = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": delChild & ":000001"}, 10_000)
+  check("conversation messages deleted", msg{"ok"}.getBool(false) == false,
+        $msg)
+  let lin = call(nc, "store", "get",
+                 %*{"kind": "sessionmeta", "id": delChild}, 10_000)
+  check("subagent lineage deleted", lin{"ok"}.getBool(false) == false, $lin)
+  let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+  check("deleted runner left the catalog",
+        snap{"components"}{"session-" & delChild} == nil, $snap)
 
   report("agent")
 

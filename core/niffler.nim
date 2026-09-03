@@ -378,6 +378,15 @@ proc main() =
   # this core is UI-owned service — it exits when the last interactive client
   # (reg.publish client:true) departs, or if none ever arrives. A manually
   # started core (no marker) never self-terminates on client churn.
+  # Child-log retention (var/logs): age + size capped, tunable via env.
+  let logRetentionDays = block:
+    try: parseFloat(getEnv("NIF_LOG_RETENTION_DAYS", "7"))
+    except CatchableError: 7.0
+  let logMaxMb = block:
+    try: parseFloat(getEnv("NIF_LOG_MAX_MB", "200"))
+    except CatchableError: 200.0
+  sup.sweepLogs(logRetentionDays, logMaxMb)
+  var lastLogSweep = epochTime()
   let autostart = getEnv("NIF_AUTOSTART") == "1"
   let idleAfter = parseFloat(getEnv("NIF_AUTOSTART_IDLE_S", "10"))
   let bootGrace = parseFloat(getEnv("NIF_AUTOSTART_BOOT_S", "60"))
@@ -410,6 +419,9 @@ proc main() =
       pumpCoreCalls(ct, coreSub)
       cat.pump()
       sup.pump(cat)
+      if epochTime() - lastLogSweep >= 3600.0:
+        sup.sweepLogs(logRetentionDays, logMaxMb)
+        lastLogSweep = epochTime()
       if autostart:
         let clients = cat.clientCount()
         if clients > 0:

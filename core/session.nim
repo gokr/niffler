@@ -17,6 +17,7 @@ when defined(posix):
 import natswrapper
 import ../sdk/dotenv
 import ../sdk/envelope
+import ../sdk/subjects
 import approval
 import catalog
 import conversation
@@ -69,7 +70,7 @@ proc main() =
   except CatchableError as e:
     echo "session: WARNING cannot seed catalog: " & e.msg
 
-  let name = runnerName(sessionId)
+  let name = subjects.runnerName(sessionId)
   let subject = sessionSubject(sessionId)
   var sub: ptr natsSubscription
   let st = natsConnection_QueueSubscribeSync(addr sub, nc.conn, subject.cstring,

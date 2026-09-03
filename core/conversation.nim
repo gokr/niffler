@@ -993,9 +993,6 @@ proc sanitizeSessionId*(s: string): string =
   ## catalog component name; keep alnum/-/_ and replace everything else.
   subjects.sanitizeSessionId(s)
 
-proc runnerName*(sessionId: string): string =
-  "session-" & sanitizeSessionId(sessionId)
-
 proc sessionSubject*(sessionId: string): string =
   "svc.session." & sanitizeSessionId(sessionId) & ".call"
 
@@ -1111,7 +1108,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
       of "spawn", "catalog", "kill", "remove", "status", "discover",
-          "session_prepare", "session_info":
+          "session_prepare", "session_info", "conversation_delete":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))
