@@ -5,8 +5,9 @@
 //   node bench/swe/import.mjs --out bench/swe/tasks.jsonl [--repos sympy,sphinx] [--limit 50]
 //
 // Produces one JSON object per line with the fields the runner needs:
-//   instance_id, repo, base_commit, problem_statement, hints_text,
-//   test_patch, FAIL_TO_PASS, PASS_TO_PASS, created_at, version
+//   instance_id, repo, base_commit, problem_statement, hints_text, patch,
+//   test_patch, FAIL_TO_PASS, PASS_TO_PASS, created_at, version, plus optional
+//   environment metadata. The gold patch is kept outside generated agent repos.
 import fs from "node:fs";
 
 const argv = process.argv.slice(2);
@@ -53,9 +54,12 @@ for (const r of rows) {
       created_at: r.created_at,
       problem_statement: r.problem_statement,
       hints_text: r.hints_text,
+      patch: r.patch,
       test_patch: r.test_patch,
       FAIL_TO_PASS: r.FAIL_TO_PASS,
       PASS_TO_PASS: r.PASS_TO_PASS,
+      environment_setup_commit: r.environment_setup_commit,
+      difficulty: r.difficulty,
     }) + "\n",
   );
 }

@@ -66,7 +66,8 @@ node bench/report.mjs --latest         # most recent run in var/bench/results
 
 Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
 `--task-timeout-min`, `--test-timeout-sec`, `--harness niffler,pi`,
-`--model a,b`, `--task t01,t03`, `--keep-repos` (preserve each completed
+`--model a,b`, `--task t01,t03`, `--task-root path` (generated/custom tasks),
+`--keep-repos` (preserve each completed
 workdir's `.git` for debugging; default strips it after `patch.diff` capture so
 editors do not discover dozens of nested repositories).
 
@@ -140,8 +141,8 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
 
 ## SWE-bench Verified
 
-See `swe/README.md`: why the full official harness (huge per-repo docker
-images + conda/pip envs) is out of scope for a first comparison, and how the
-importer pulls the 500 Verified tasks via the HF datasets-server API so task
-cards (problem_statement, base_commit, test_patch, FAIL_TO_PASS) can feed this
-runner later (hidden-test mode: apply `test_patch` only at verification time).
+See `swe/README.md` for the active 10-task SymPy pilot. `uv` installs the
+pinned official SWE-bench 4.1 harness, `prepare.mjs` creates base-only checkouts
+under `var/`, and official Docker images apply `test_patch` only at verification
+time. `run.mjs --task-root var/bench/swe/tasks --rounds 1` runs canonical
+one-shot submissions across Niffler, Pi, and OpenCode.
