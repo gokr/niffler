@@ -709,11 +709,13 @@ system's operational complexity.
 The consolidated backlog of explicitly deferred work (in priority order).
 `docs/research/FABRIC.md` § "Not shipped" mirrors this list.
 
-1. **Cancellation.** `agent_stop` only marks a job `stopping`; it neither
-   kills the child runner nor aborts its LLM request. A Fabric turn that is
-   abandoned still runs its guest to the deadline, and already-dispatched
-   nested calls are not cancelled (NATS request/reply has no cancel
-   semantics; kill-on-timeout is the only stop today).
+1. **Cancellation.** Shipped: `agent_stop` aborts the child turn for real
+   (llm.cancel side-channel + a `__cancel` control message on the steer
+   channel, honored between rounds). Still open: cancelling
+   already-dispatched nested tool calls (a running bash command or a
+   mid-flight component call cannot be aborted — NATS request/reply has no
+   cancel semantics; the tool's own timeout still bounds it), and an
+   abandoned Fabric turn's guest still runs to its deadline.
 2. **Durable-agent hardening.** Restart recovery (shipped: lazy
    reconciliation of stale records against the live catalog and the child
    transcript), per-job time budgets (shipped: enforced lazily on
