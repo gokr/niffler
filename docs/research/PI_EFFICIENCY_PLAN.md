@@ -104,41 +104,50 @@ serialized unless explicitly registered concurrency-safe.
   `var/tools/`, before falling back to bash `grep -rn`.
 - **Effort:** small. Removes the slow fallback path entirely.
 
-### A3. Cache-waste reporting
-- **What:** from the existing per-assistant `usage` (`components/llm/main.go`
-  already returns `cached_tokens`), compute per-turn cache misses
-  (`promptTokens − cacheRead` vs previous request, model-change flag — mirror
-  `cache-stats.ts`), emit on the session `status` event and persist in the
-  conversation header. Also set a no-cache policy on one-off calls (none exist
-  yet in Niffler — this becomes meaningful once compaction lands).
-- **Effort:** small. Makes efficiency *measurable*, which is the precondition
-  for trusting every later change.
+### A3. Cache-waste reporting ☑
+- **What:** the runner accumulates each response's reported
+  `prompt_tokens` and `prompt_tokens_details.cached_tokens` into
+  conversation-lifetime counters and reports `cache {prompt, read,
+  hitRate}` on `ev.session.status`, plus `cachePrompt`/`cacheRead`/
+  `cacheHitRate` in the conversation header and `session_info`. The hit
+  rate makes cache hostility measurable: a healthy session stays well
+  above 50% after the first turns; a collapsed rate flags request churn
+  (schema churn, reordering, model swaps).
+- **Effort:** small. Makes efficiency *measurable*.
 
-### A2. Usage-accurate context accounting
-- **What:** in `core/conversation.nim`, drive the trim/compact decision off the
-  persisted model-reported usage (`input+output+cacheRead+cacheWrite`) instead
-  of the chars/4 fallback; add a token **reserve** for output (e.g. compact at
-  `window − 16K`, pi's default) rather than a single 90% ratio; include
-  thinking + tool-call args + tool-result bulk in the estimate.
-- **Effort:** small–medium. Prerequisite for A1's compaction trigger to be
-  reliable.
+### A2. Usage-accurate context accounting ☑
+- **What:** the trim decision is driven by model-reported usage (already
+  persisted and restored across resumes). Two upgrades beyond the old
+  bare-ratio guard:
+  1. **Output reserve** — the trim level is `min(90% ratio, window −
+     NIF_CTX_RESERVE)` (default 16,384; clamped to ≥ half the window for
+     tiny contexts), mirroring pi's compact-at-window-minus-reserve, so
+     the model's next reply still fits after trimming.
+  2. **Fuller estimate** — until usage is reported, the chars/4 fallback
+     now counts reasoning, tool-call names/arguments and per-message
+     overhead instead of text content only.
+- **Effort:** small–medium. Prerequisite for A1's trigger to be reliable.
 
 ---
 
 ## Phase 2 — Token-efficiency core (the big one)
 
-### A1. LLM-backed compaction
-- **What:** replace `trimContext`'s silent drop with a `compact` pass that:
-  1. cuts at the newest whole-turn boundary that fits the keep budget,
-  2. calls the llm component with a **serialized conversation + structured
-     checkpoint prompt** (`## Goal / Progress / Key Decisions / Next Steps /
-     Critical Context` — port pi `compaction.ts` + `utils.ts`
-     `serializeConversation`, truncated tool results to 2K chars),
-  3. **iteratively updates** the previous summary instead of regenerating
-     (feeds prior summary back),
-  4. appends `<read-files>/<modified-files>` tracked from tool calls,
-  5. injects a `compactionSummary`-style system message in place of the dropped
-     turns (new message role per `docs/WIRE.md`).
+### A1. LLM-backed compaction — as a separate component
+- **Decision (2026-08):** compaction techniques live in their own component(s),
+  not wired into the conversation loop. Compaction is a wide field —
+  checkpoint summaries, mid-turn splits, semantic clustering, retrieval
+  repair — and the harness's own discipline says replaceable capabilities are
+  components (docs/ARCHITECTURE.md). The runner keeps only a thin seam: ask
+  the component for a compacted message list when the usage guard triggers;
+  absent/broken component → current trim behavior as fallback.
+- **What:** a `compaction` component receiving the serialized conversation and
+  returning a structured checkpoint (`## Goal / Progress / Key Decisions /
+  Next Steps / Critical Context` — port pi `compaction.ts` + `utils.ts`
+  `serializeConversation`, truncated tool results to 2K chars), iteratively
+  updating the previous summary instead of regenerating, appending
+  `<read-files>/<modified-files>` tracked from tool calls, and injecting a
+  compaction system message in place of the dropped turns (new message role
+  per `docs/WIRE.md`).
 - **Spec:** new role/kind in the store (`kind=compaction` entry), a
   `compaction` tool or a runner-internal LLM call (reuse `svc.llm` `chat` with
   a small model — cheap), and the summarization prompt living where prompts
@@ -203,10 +212,10 @@ serialized unless explicitly registered concurrency-safe.
 | 1 | **B1a** runner fan-out (cross-component) | medium | concurrent dispatch; prerequisite for useful replicas/workers |
 | 2 | **B2** process replicas (same-component) | small | concurrent stateless calls without weakening process isolation |
 | 3 | **B1c** concurrent Go handlers | small | independent sessions/subagents no longer queue behind one LLM request |
-| 4 | **A1** LLM compaction (basic path) | large | biggest token + capability win on long tasks |
-| 5 | **B3** LLM auto-retry | small | saves human round-trips constantly |
-| 6 | **A2** usage-accurate accounting | small–med | makes compaction reliable |
-| 7 | **A3** cache-waste reporting | small | makes efficiency measurable |
+| 4 | **A1** LLM compaction (component, basic path) | large | biggest token + capability win on long tasks |
+| 5 | **B3** LLM auto-retry | small ☑ | saves human round-trips constantly |
+| 6 | **A2** usage-accurate accounting | small–med ☑ | makes compaction reliable |
+| 7 | **A3** cache-waste reporting | small ☑ | makes efficiency measurable |
 | 8 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins |
 | 9 | **C1** session tree + branch summaries | large | strategic; reuses A1 machinery |
 | 10 | **B1b** worker-aware Nim pump | large/deferred | parallel reads in mixed stateful components |

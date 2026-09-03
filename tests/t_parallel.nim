@@ -457,12 +457,31 @@ proc main() =
     defer: natsSubscription_Destroy(retrySub)
 
     let sessionId = "conv-parallel-retry-" & $int(epochTime())
+    # Watch status events for the A3 cache block (mock reports cached_tokens).
+    var statusSub: ptr natsSubscription
+    check("retry: subscribe ev.session.status",
+          checkStatus(natsConnection_SubscribeSync(
+            addr statusSub, nc.conn, "ev.session.status".cstring)))
+    defer: natsSubscription_Destroy(statusSub)
+    var cacheSeen = false
     let turn = call(nc, "core", "session",
                     %*{"sessionId": sessionId, "content": "go"}, 120_000)
-    check("retry: turn recovered after transient failures",
+    # status events arrive during the turn; drain what we can
+    let statusDeadline = epochTime() + 3.0
+    while epochTime() < statusDeadline:
+      var msg: ptr natsMsg
+      let st = natsSubscription_NextMsg(addr msg, statusSub, 100)
+      if st != NATS_OK: break
+      let env = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if env.payload{"sessionId"}.getStr("") == sessionId and
+          env.payload{"cache"}{"hitRate"}.getFloat(0) > 0:
+        cacheSeen = true
+        break
+    check("turn recovered after transient failures",
           turn{"error"} == nil, $turn)
-    check("retry: turn reply", turn{"reply"}.getStr("") == "parallel-done",
-          $turn)
+    check("turn reply", turn{"reply"}.getStr("") == "parallel-done", $turn)
+    check("status event carries cache hit-rate block (A3)", cacheSeen)
 
     # Two 503s (attempt 0 and 1) must each announce a retry before success.
     var retryEvents: seq[JsonNode]

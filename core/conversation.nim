@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
+import std/[algorithm, json, math, os, sequtils, strutils, tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -112,6 +112,12 @@ type
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## effective model context window
     ctxWarned*: bool     ## warned once per session until the next trim
+    ## A3 cache economics: cumulative prompt tokens across the conversation,
+    ## split by what the provider served from its prompt cache. The miss
+    ## ratio (cacheMiss / cachePrompt) is the measurable waste signal —
+    ## a healthy session stays well under 50% after the first turns.
+    cachePrompt*: int    ## Σ prompt_tokens over responses reporting usage
+    cacheRead*: int      ## Σ cached_tokens (provider-served prefix hits)
     failing: bool
 
   ToolExposure* = object
@@ -242,8 +248,13 @@ proc persistConversationRuntime(p: Persister, modelOverride, provider,
     "model": model,
     "context": p.ctxSize,
     "contextUsed": p.contextUsed,
-    "promptTokens": p.promptTokens
+    "promptTokens": p.promptTokens,
+    "cachePrompt": p.cachePrompt,
+    "cacheRead": p.cacheRead
   }
+  if p.cachePrompt > 0:
+    fields["cacheHitRate"] = %round(float(p.cacheRead) * 100.0 /
+                                     float(p.cachePrompt), 1)
   p.ct.updateConversationHeader(p.convId, fields)
 
 proc directToolSnapshot(ct: CoreTools): JsonNode =
@@ -343,11 +354,46 @@ const
   ctxWarnRatio = 0.75  ## warn once when this fraction of the window is used
   ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
   minKeepTurns = 2     ## never trim below this many user turns
+  ctxOutputReserve = 16_384  ## tokens held back for the model's next reply
+                             ## (pi compacts at window − reserve); env
+                             ## NIF_CTX_RESERVE overrides, 0 disables
+
+proc outputReserve*(): int =
+  ## Tokens held back for the model's next reply (NIF_CTX_RESERVE override,
+  ## 0 disables). Exported for tests.
+  let v = getEnv("NIF_CTX_RESERVE", "").strip()
+  if v.len == 0: return ctxOutputReserve
+  try:
+    let n = parseInt(v)
+    return max(n, 0)
+  except CatchableError:
+    return ctxOutputReserve
 
 proc estimateTokens*(messages: seq[JsonNode]): int =
-  ## Rough token proxy (chars/4) used until the model reports real usage.
+  ## Rough token proxy used until the model reports real usage (chars/4).
+  ## Counts everything the next request will carry: text content, reasoning,
+  ## tool-call arguments, and tool-call ids/names — not just `content` —
+  ## so a thinking- or tool-heavy conversation is not badly underestimated.
+  const overheadPerMessage = 8  ## role/formatting tokens, conservatively
   for m in messages:
+    inc result, overheadPerMessage
     result += m{"content"}.getStr("").len div 4
+    result += m{"reasoning"}.getStr("").len div 4
+    let toolCalls = m{"tool_calls"}
+    if toolCalls != nil:  # iterating a nil JArray SIGSEGVs (json.nim trap)
+      for tc in toolCalls:
+        result += tc{"function"}{"name"}.getStr("").len div 4
+        result += tc{"function"}{"arguments"}.getStr("").len div 4 + 4
+
+proc trimThreshold*(p: Persister): int =
+  ## The usage level that triggers trimming: the ratio bound, minus an
+  ## output reserve so the model's next reply still fits after compaction
+  ## (pi compacts at window − reserveTokens rather than a bare ratio).
+  let ratioBound = int(p.ctxSize.float * ctxTrimRatio)
+  # window − reserve, but never below half the window: a tiny context
+  # (window < reserve) would otherwise go negative and never trim
+  let reserved = max(p.ctxSize - outputReserve(), p.ctxSize div 2)
+  return min(ratioBound, reserved)
 
 proc trimContext*(messages: var seq[JsonNode]): int =
   ## Drop whole turns from the front, keeping the system prompt. A turn is
@@ -386,18 +432,22 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
     elif p.promptTokens > 0: p.promptTokens
     else: estimateTokens(messages)
   let pct = int(used.float * 100.0 / p.ctxSize.float)
-  if used.float >= p.ctxSize.float * ctxTrimRatio:
+  let trimAt = trimThreshold(p)
+  if used >= trimAt:
     let dropped = trimContext(messages)
     if dropped > 0:
       messages.insert(%*{"role": "system", "content":
         "[context trimmed: dropped " & $dropped &
         " earlier messages to fit the model window]"}, 1)
       p.ctxWarned = false
-      echo "core: context at " & $pct & "% — trimmed " & $dropped & " messages"
+      echo "core: context at " & $pct & "% — trimmed " & $dropped &
+           " messages (trim level " & $trimAt & ")"
       if onEvent != nil:
         onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                               "promptTokens": p.promptTokens,
                               "usedTokens": used, "context": p.ctxSize,
+                              "trimAt": trimAt,
+                              "reserveTokens": outputReserve(),
                               "trimmed": dropped})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
@@ -706,6 +756,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+      # A3 cache economics: accumulate the cache-read split when the
+      # provider reports it (prompt_tokens_details.cached_tokens). A
+      # request with a stable prefix should show most of its prompt served
+      # from cache; a high miss ratio flags cache-hostile request churn.
+      let cached = usageObj{"prompt_tokens_details"}{"cached_tokens"}
+      if cached != nil and cached.kind == JInt:
+        p.cachePrompt += p.promptTokens
+        p.cacheRead += cached.getInt(0)
     let totalTokens = usageObj{"total_tokens"}.getInt(0)
     let completionTokens = usageObj{"completion_tokens"}.getInt(0)
     if totalTokens > 0:
@@ -727,6 +785,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
+      if p.cachePrompt > 0:
+        statusEv["cache"] = %*{"prompt": p.cachePrompt, "read": p.cacheRead,
+                               "hitRate": round(float(p.cacheRead) * 100.0 /
+                                                float(p.cachePrompt), 1)}
       onEvent("status", statusEv)
     let toolCalls = resp{"tool_calls"}
     let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and
@@ -905,8 +967,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     let stored = loadStoredMessages(ct, sessionId, pt, used, cs)
     for m in stored:
       entry.messages.add(m)
-    entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
-                                promptTokens: pt, contextUsed: used, ctxSize: cs)
+    # A2/A3: usage and cumulative cache counters persist in the header
+    # (written by persistConversationRuntime), so the context meter and
+    # cache metrics survive a runner restart.
+    entry.persister = Persister(
+      ct: ct, convId: sessionId, seqNo: stored.len,
+      promptTokens: pt, contextUsed: used, ctxSize: cs,
+      cachePrompt: header{"cachePrompt"}.getInt(0),
+      cacheRead: header{"cacheRead"}.getInt(0))
     entry.exposure = loadToolExposure(ct, sessionId)
 
   # Presence of the key means "set/clear the override"; omission preserves

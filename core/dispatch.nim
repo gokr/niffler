@@ -347,7 +347,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       if not header{"ok"}.getBool(false):
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
-                "thinkingEffort", "context", "contextUsed", "promptTokens"]:
+                "thinkingEffort", "context", "contextUsed", "promptTokens",
+                "cachePrompt", "cacheRead", "cacheHitRate"]:
         if header{"value"}{f} != nil:
           info[f] = header{"value"}{f}
       # subagent lineage (the agent component records kind sessionmeta)

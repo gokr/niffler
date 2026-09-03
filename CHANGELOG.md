@@ -16,6 +16,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `core/retry.nim`; unit-tested, plus an end-to-end scenario (two mocked 503s
   then success) in the parallel test suite.
 
+- **Usage-accurate context accounting (A2) + cache reporting (A3)** — the
+  context guard trims at min(90% of window, window − 16K output reserve;
+  `NIF_CTX_RESERVE`) instead of a bare ratio, and the pre-usage chars/4
+  estimate now counts reasoning, tool-call arguments and per-message
+  overhead. Per-conversation prompt-cache counters (from the provider's
+  `cached_tokens`) surface as `cache {prompt, read, hitRate}` on session
+  status events, in the conversation header and in `session_info` —
+  making cache hostility measurable before compaction lands.
+
 - **Parallel tool waves and process replicas** — session runners fan out
   explicitly `x-harness.parallel` calls over distinct NATS reply inboxes and
   commit results in model order. Stateless logical components can now set

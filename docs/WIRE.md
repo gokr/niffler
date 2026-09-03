@@ -136,9 +136,15 @@ ev.session.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   complete model text + actual backend metadata per LLM round
 ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?,
                        #   catalog?, context?, contextSource?, promptTokens?,
-                       #   usedTokens?}
+                       #   usedTokens?, cache?: {prompt, read, hitRate}}
                        #   resolved turn config and live context occupancy.
-                       #   Also emitted by model-only session calls (no inference)
+                       #   cache reports cumulative provider-reported
+                       #   prompt-cache reads (A3; present when the provider
+                       #   sends prompt_tokens_details). Also emitted by
+                       #   model-only session calls (no inference)
+ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
+                       #   warning?|trimmed?}; context-window pressure
+                       #   (75% warn, 90% trim)
 ev.session.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
                        #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).

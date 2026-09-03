@@ -78,7 +78,8 @@ proc(c: Component, args: JsonNode): JsonNode =
     return %*{"content": "", "tool_calls": calls, "model": "mock-model"}
   return %*{"content": "parallel-done", "model": "mock-model",
             "usage": {"prompt_tokens": 100, "completion_tokens": 10,
-                      "total_tokens": 110}})
+                      "total_tokens": 110,
+                      "prompt_tokens_details": {"cached_tokens": 80}}})
 
 discard comp.tool("llm_resolve", %*{
   "type": "object",
