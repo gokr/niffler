@@ -153,9 +153,9 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     if tail.len > 0:
       echo "supervisor:   last output: " & tail
     startChild(sup, c)
-  # delete retired entries descending so earlier indices stay valid
+  # delete the recorded indices descending so earlier indices stay valid
   for i in countdown(retired.len - 1, 0):
-    sup.children.delete(i)
+    sup.children.delete(retired[i])
 
 proc removeChild*(sup: Supervisor, name: string): bool =
   ## Stop one child for good, then drop it from the managed set (no restart,

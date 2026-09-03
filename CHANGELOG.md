@@ -8,6 +8,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **supervisor: a retired session runner could brick its conversation** —
+  the rpNever retirement reap deleted `children[i]` instead of the
+  recorded index, leaving a stale process-nil entry that `ensureRunner`
+  read as "spawning" forever; the next turn then failed with
+  "session runner for <id> did not come up", while unrelated supervised
+  children (store, bash) silently dropped out of the supervisor. The reap
+  now removes the retired child's own entry, and the runner idle clock
+  stamps at turn end so a long turn is not counted as idle.
+
 - **llm: Anthropic cache reads surfaced in the usage breakdown** — the
   Anthropic adapter normalized `cache_read_input_tokens` into
   `prompt_tokens` but never set the OpenAI-style

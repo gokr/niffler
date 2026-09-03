@@ -174,6 +174,10 @@ proc main() =
     except CatchableError as e:
       resp = errorEnvelope(env.id, "boom", e.msg)
     nc.publish(reply, resp.encode())
+    # Stamp the idle clock at turn END, not message receipt: a long turn
+    # (many LLM rounds, approval waits) is activity, and a runner that
+    # retires right after finishing one surprises the next call.
+    lastActivity = epochTime()
 
   # Depart like any component: deregister, close.
   echo "session: shutting down (" & sessionId & ")"

@@ -193,16 +193,27 @@ proc main() =
                        %*{"sessionId": childId, "model": ""}, 30_000)
   check("retired runner re-ensured on demand",
         reensured{"error"} == nil, $reensured)
-  block probe:
-    let st = call(nc, "core", "status", %*{}, 10_000)
-    var comps = st{"components"}
-    echo "PROBE status components:"
-    if comps != nil:
-      for c in comps:
-        echo "  ", c{"name"}.getStr(""), " pid=", c{"pid"}.getInt(-1),
-             " running=", c{"running"}.getBool(false),
-             " policy=", c{"policy"}.getStr(""), " wanted=", c{"wanted"}.getBool(false)
 
+  # Regression guard (supervisor retirement reap): reaping a retired
+  # rpNever child must remove that child's own supervisor entry. An earlier
+  # bug deleted a wrong index (children[0] — the first manifest child) and
+  # left a stale process=nil entry that blocked re-ensure of the retired
+  # runner for the full wait window ("did not come up"). With this bug, the
+  # reaps above would have dropped store and bash from the supervisor, and
+  # the status tool would report them as "external" instead of on-failure.
+  block:
+    let st = call(nc, "core", "status", %*{}, 10_000)
+    var storeSupervised = false
+    var bashSupervised = false
+    if st{"components"} != nil:
+      for c in st{"components"}:
+        let nm = c{"name"}.getStr("")
+        if nm == "store" and c{"policy"}.getStr("") == "on-failure":
+          storeSupervised = true
+        if nm == "bash" and c{"policy"}.getStr("") == "on-failure":
+          bashSupervised = true
+    check("retirement reap keeps other supervised children",
+          storeSupervised and bashSupervised, $st)
 
   # --- background jobs: spawn, status, wait, steer, stop, failure -----------
   var doneSub: ptr natsSubscription
