@@ -57,6 +57,12 @@ type
     queue*: seq[string]      # injected user messages (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
+  # Raised from a dispatch's idle slot when a turn cancellation arrives
+  # while that dispatch is in flight: the caller stops waiting for the
+  # reply immediately. The callee keeps running (NATS request/reply has no
+  # cancel semantics — its own timeout bounds it); the turn ends now
+  # instead of after the tool finishes.
+  TurnCancelled* = object of CatchableError
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -615,6 +621,14 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     pumpTokenStream(ct)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    # Turn cancellation while THIS dispatch is in flight: stop waiting for
+    # the reply (TurnCancelled). Only during a live turn, and only for a
+    # fresh cancel — non-turn dispatches (model selection, session_prepare)
+    # and stale flags are unaffected; the callee keeps running regardless.
+    if ct.steerStream != nil and ct.steerStream.cancelRequested and
+        ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
+        epochTime() - ct.steerStream.cancelAt <= 30.0:
+      raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
   raise newException(IOError,

@@ -631,7 +631,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
     except CatchableError as e:
-      let msg = "llm error: " & e.msg
+      # a cancel that landed while the LLM request was in flight reads as
+      # cancellation, not an LLM failure
+      let msg = if e of TurnCancelled: "cancelled by request"
+                else: "llm error: " & e.msg
       turnError = msg
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,

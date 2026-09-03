@@ -55,6 +55,14 @@ comp.tool(%*{"hidden": true}):
           sleep(8000)
           return %*{"content": "slow-done"}
         return %*{"content": "slow-done"}
+      # slow child whose delay is a TOOL call (bash sleep 8): the stop
+      # must abandon the in-flight dispatch immediately instead of
+      # waiting out the tool's full runtime
+      if messages != nil and ($messages).contains("SLOW_BASH"):
+        if stage == 0:
+          return toolCall("t1", "bash",
+                          %*{"command": "sleep 8 && echo slow-bash"})
+        return %*{"content": "slow-bash-done"}
       case stage
       of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
       of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
@@ -97,6 +105,14 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "SLOW_CHILD take your time",
                            "timeoutMs": 2000})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-midtool":
+      if stage == 0:
+        # spawn a child whose turn is blocked in a long bash command when
+        # the stop lands: the runner must stop WAITING for the tool
+        # (TurnCancelled) instead of running out the tool's duration
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_BASH take your time"})
       return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:

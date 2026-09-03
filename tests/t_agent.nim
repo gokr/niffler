@@ -365,6 +365,26 @@ proc main() =
   check("budget-cancelled job terminates as stopped",
         budgetWait{"status"}.getStr("") == "stopped", $budgetWait)
 
+  # --- mid-tool cancellation: the runner stops waiting for the tool --------
+  # The child's turn is blocked in bash sleep 20 when the stop lands; the
+  # dispatch raises TurnCancelled and the job terminalizes well under the
+  # tool's runtime (waiting the tool out would take >= 20s).
+  let midParent = "agt-midtool"
+  discard call(nc, "core", "session",
+               %*{"sessionId": midParent, "content": "go"}, 120_000)
+  let midJob = fetchJobId(midParent)
+  check("mid-tool spawn returned a jobId", midJob.startsWith("job-"),
+        midJob)
+  sleep(800)  # let the child enter its bash round
+  let midStart = epochTime()
+  discard call(nc, "agent", "agent_stop", %*{"jobId": midJob}, 10_000)
+  let midWait = call(nc, "agent", "agent_wait",
+                     %*{"jobId": midJob, "timeoutMs": 20_000}, 40_000)
+  let midSecs = epochTime() - midStart
+  check("mid-tool stop terminalizes promptly",
+        midWait{"status"}.getStr("") == "stopped" and midSecs < 10.0,
+        $midWait & " secs=" & $midSecs.int)
+
   report("agent")
 
 main()
