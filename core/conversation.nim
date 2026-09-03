@@ -102,12 +102,19 @@ proc formatToolsForLlm(tools: JsonNode): JsonNode =
     # Inert until a component tags its tools; default is "write".
     if schema{"x-harness"}{"effect"}.getStr("") == "read":
       description &= " — batches safely with other read-only calls"
+    # The LLM gets a pure JSON Schema: strip harness-only extensions so
+    # approval/timeout/effect metadata never weighs the prompt (the
+    # catalog keeps the full schema for gates and validation).
+    var parameters = newJObject()
+    for key, value in schema:
+      if key != "x-harness":
+        parameters[key] = value
     result.add(%*{
       "type": "function",
       "function": {
         "name": t{"name"},
         "description": description,
-        "parameters": schema
+        "parameters": parameters
       }
     })
 

@@ -202,11 +202,14 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
 
 comp.tool(%*{"onDemand": true}):
   proc info(): JsonNode =
-    ## Info about the builder and SDK locations
+    ## Info about the builder and the exact component source patterns
     let root = rootDir()
     return %*{"langs": ["nim", "go", "ts"], "sdk": root / "sdk",
               "sdkGo": root / "sdk" / "go", "sdkTs": root / "sdk" / "ts",
               "naming": "tool names are globally unique — prefix plugin tools with the component name (stocks_quote); bare semantic names are reserved for shipped core components",
-              "note": "Nim: import niffler/sdk; Go: import sdk \"niffler.dev/sdk\"; TS: import sdk from \"niffler-sdk\" — then discover and invoke core.spawn {name, binary}"}
+              "flow": "builder.build {lang, name, source} → core.spawn {name, binary} → discover the new component → invoke its tools. The conversation's direct toolset stays fixed; new tools are always reached via discover + invoke.",
+              "nim": "import niffler/sdk\nlet comp = newComponent(\"greet\", \"0.1.0\")\ncomp.tool:\n  proc greet(name: string): JsonNode =\n    ## Greet someone\n    ## - name: the name to greet\n    %*{\"greeting\": \"Hello, \" & name}\ncomp.run()",
+              "go": "package main\nimport sdk \"niffler.dev/sdk\" // module path; import as `sdk`\nfunc main() {\n  comp := sdk.New(\"greet\", \"0.1.0\")\n  comp.Tool(\"greet\", map[string]any{\"type\": \"object\", \"properties\": map[string]any{\"name\": map[string]any{\"type\": \"string\"}}, \"required\": []string{\"name\"}},\n    func(c *sdk.Component, args json.RawMessage) (any, error) {\n      var a struct { Name string `json:\"name\"` }\n      json.Unmarshal(args, &a)\n      return map[string]any{\"greeting\": \"Hello, \" + a.Name}, nil\n    })\n  comp.Run()\n}",
+              "ts": "import sdk from \"niffler-sdk\"; // file: dependency wired by the builder\nconst comp = sdk.newComponent(\"greet\", \"0.1.0\");\ncomp.tool(\"greet\", {\n  type: \"object\",\n  description: \"Greet someone\",\n  properties: { name: { type: \"string\" } },\n  required: [\"name\"],\n}, async (_c, args: any) => {\n  return { greeting: \"Hello, \" + (args?.name ?? \"world\") };\n});\ncomp.run();"}
 
 comp.run()
