@@ -122,10 +122,36 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   type Pending = object
     id: string
     tool: string
+    isWrite: bool
     sub: ptr natsSubscription
     launchedAt: float
   var inFlight: seq[Pending]
   var queued: seq[JsonNode]   ## admitted req frames waiting for a slot
+  var effectCache = initTable[string, string]()
+    ## tool -> "read" | "write" (x-harness.effect; anything unclassified or
+    ## unresolvable counts as write — conservative by default)
+
+  proc effectOf(tool: string): string =
+    ## Effect classification for batch scheduling. Selected mode reads it
+    ## from the pinned snapshot; raw mode lazily pins the one tool's schema
+    ## from the catalog (once per run; failure counts as write).
+    if effectCache.hasKey(tool): return effectCache[tool]
+    var effect = "write"
+    if selectedMode and selected.hasKey(tool):
+      effect = selected[tool]{"schema"}{"x-harness"}{"effect"}.getStr("write")
+    else:
+      try:
+        let remainingMs = (deadline - getMonoTime()).inMilliseconds.int
+        if remainingMs > 0:
+          let snap = comp.request("core", "catalog",
+            %*{"op": "schemas", "tools": [%tool]}, min(10_000, remainingMs))
+          let tools = snap{"tools"}
+          if tools != nil and tools.kind == JArray and tools.len > 0:
+            effect = tools[0]{"schema"}{"x-harness"}{"effect"}.getStr("write")
+      except CatchableError:
+        effect = "write"
+    effectCache[tool] = effect
+    return effect
 
   proc finishPending() =
     ## Destroy every in-flight inbox subscription (error/timeout paths).
@@ -173,7 +199,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         "fingerprint": pin{"fingerprint"}.getStr("")}
     var startedEv = %*{"runId": runId,
               "sessionId": sessionId, "seq": frame{"id"}.getStr(""),
-              "tool": tool}
+              "tool": tool, "at": epochTime()}
     if selectedMode:
       startedEv["component"] = %selected[tool]{"component"}.getStr("")
     comp.emit("ev.fabric.call.started", startedEv)
@@ -192,13 +218,33 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       natsSubscription_Destroy(sub)
       raise newException(CatchableError,
         "publish nested request: " & getErrorString(pst))
-    inFlight.add(Pending(id: frame{"id"}.getStr(""), tool: tool, sub: sub,
+    inFlight.add(Pending(id: frame{"id"}.getStr(""), tool: tool,
+                         isWrite: effectOf(tool) == "write", sub: sub,
                          launchedAt: epochTime()))
 
   proc topUp() =
+    ## Launch queued calls within the concurrency cap. Reads may overlap
+    ## each other; a write (or unclassified tool) launches only when
+    ## NOTHING is in flight, and nothing new launches while a write runs —
+    ## concurrent mutations to one target are prevented by construction.
     while inFlight.len < maxBatchInflight and queued.len > 0:
-      launch(queued[0])
-      queued.delete(0)
+      var writeInFlight = false
+      for pending in inFlight:
+        if pending.isWrite: writeInFlight = true
+      var pick = -1
+      for i in 0 ..< queued.len:
+        let isWrite = effectOf(queued[i]{"tool"}.getStr("")) == "write"
+        if isWrite:
+          if inFlight.len == 0:
+            pick = i
+            break
+        elif not writeInFlight:
+          pick = i
+          break
+      if pick < 0: break
+      let frame = queued[pick]
+      queued.delete(pick)
+      launch(frame)
 
   proc writeResp(id: string, resp: JsonNode) =
     let line = $resp
@@ -242,12 +288,16 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## Harvest bytes that are ready right now and handle their complete
     ## frames: a batch guest emits follow-up requests while earlier calls
     ## are still on the bus, and they must launch as slots free up.
+    ## Serve the reader's buffer BEFORE consulting the selector: a coalesced
+    ## burst read by readFrame leaves complete frames buffered with no new
+    ## bytes arriving, and selector-gated draining would starve them until
+    ## an unrelated reply happened to wake the pump.
     while resultJ == nil:
-      if not reader.readReady(p.outputHandle.cint, sel): break
-      while resultJ == nil:
-        let buffered = reader.takeFrame()
-        if not buffered.available: break
+      let buffered = reader.takeFrame()
+      if buffered.available:
         if handleFrame(parseJson(buffered.line)): break
+        continue
+      if not reader.readReady(p.outputHandle.cint, sel): break
 
   proc pumpInFlight() =
     ## Collect replies from in-flight nested calls, writing resp frames
@@ -283,7 +333,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
                              "error": callError})
           comp.emit("ev.fabric.call.done", %*{"runId": runId,
                     "sessionId": sessionId, "seq": id, "ok": callOk,
-                    "tool": frameTool,
+                    "tool": frameTool, "at": epochTime(),
                     "durationMs": ((epochTime() - launchedAt) *
                         1000.0).int,
                     "resultBytes": resultBytes,

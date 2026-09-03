@@ -263,24 +263,32 @@ proc main() =
                     "id": "fab-batch:" & align($i, 6, '0')}, 10_000)
     if m{"error"} != nil: break
     batchTranscript.add(m{"value"}{"content"}.getStr(""))
-  # the guest measured the overlap itself: bash's end timestamp falls
-  # inside ctx_sleep's wall-clock window only if both were on the bus
-  # at the same time (serialized would place it a second past the end)
-  check("batch items ran concurrently",
-        batchTranscript.contains("\"concurrent\":true"), batchTranscript)
+  # the guest proved write exclusivity itself: bash (unclassified = write)
+  # started only after both read-classified sleeps had ended. Host-level
+  # read concurrency is proven via the call.started event timestamps: the
+  # two ctx_sleep reads were launched back-to-back (the component then
+  # serializes them internally — it is single-threaded).
+  check("batch writes run exclusively after reads",
+        batchTranscript.contains("\"writeExclusive\":true"), batchTranscript)
   check("batch keeps input order, budgets, and per-item failures",
         batchTranscript.contains("\"items\":4") and
         batchTranscript.contains("\"nope\":\"no component provides tool") and
         batchTranscript.contains("\"b3\":true"),
         batchTranscript)
 
-  # lifecycle events: correlated started/call/done frames on the bus
+  # lifecycle events: correlated started/call/done frames on the bus. The
+  # same drain proves host-level read concurrency: the two ctx_sleep
+  # call.started frames carry launch timestamps — back-to-back means the
+  # host launched both reads at once (the component then serializes them
+  # internally; it is single-threaded).
   var evStarted = 0
   var evCallDone = 0
   var evCallFail = 0
   var evDone = 0
   var evDoneOk = false
   var evDoneCalls = -1
+  var sleepStarts: seq[float] = @[]
+  var sleepDones: seq[float] = @[]
   for i in 0 ..< 80:
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, evSub, 200)
@@ -297,6 +305,19 @@ proc main() =
     elif p{"seq"} != nil:
       inc evCallDone
       if not p{"ok"}.getBool(false): inc evCallFail
+      if p{"tool"}.getStr("") == "ctx_sleep":
+        if p{"ok"} == nil:
+          sleepStarts.add(p{"at"}.getFloat(0.0))
+        else:
+          sleepDones.add(p{"at"}.getFloat(0.0))
+  # Host-level read concurrency, load-immune: the second read must have
+  # been launched while the first was still in flight (r2.started <
+  # r1.done). Serialized scheduling would put r2's launch after r1's
+  # completion; launch jitter cannot invert these two events.
+  let readsConcurrent = sleepStarts.len == 2 and sleepDones.len == 2 and
+    sleepStarts[1] < sleepDones[0]
+  check("batch reads are launched concurrently by the host", readsConcurrent,
+        "starts=" & $sleepStarts & " dones=" & $sleepDones)
   check("ev.fabric.started announces each run", evStarted >= 1,
         "started=" & $evStarted)
   check("ev.fabric.call.done covers every nested call", evCallDone >= 4,

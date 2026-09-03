@@ -231,28 +231,25 @@ comp.tool(%*{"hidden": true}):
       return %*{"content": "lib-turn-done"}
     if sessionId == "fab-batch":
       if stage == 0:
-        # bounded batch: the two slow items run in DIFFERENT components
-        # (bash and ctxtest). The guest itself proves overlap: item 1 ends
-        # with `date` while item 2 (ctx_sleep) reports its start/end wall
-        # clock — if bash's timestamp falls inside the sleep window, the
-        # two calls were on the bus at the same time. Components are
-        # single-threaded, so same-component items would serialize there.
+        # bounded batch with effect declarations: the two ctx_sleep items
+        # are declared reads and overlap; the two bash items are writes
+        # (unclassified = conservative) and run exclusively — never
+        # overlapping anything. The guest measures the wall clocks itself.
         let batched = "import fabricguest\n" &
           "import std/json\nimport std/strutils\n" &
           "let r = batch(jarr(\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"sleep 1 && echo b1 && date +%s.%N\"))))),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1000)), jpair(\"say\", jesc(\"b2\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r1\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r2\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"nope\")), jpair(\"args\", jobj())),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3\")))))))\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\")))))))\n" &
           "let outcomes = parseJson(r)\n" &
-          "let bashOut = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
-          "let sleepOut = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
-          "let bashEnd = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
-          "let sleepStart = sleepOut{\"started\"}.getFloat()\n" &
-          "let sleepEnd = sleepOut{\"ended\"}.getFloat()\n" &
-          "finish($(%*{\"concurrent\": bashEnd < sleepEnd + 0.3,\n" &
-          "  \"bashEnd\": bashEnd, \"sleepStart\": sleepStart,\n" &
-          "  \"sleepEnd\": sleepEnd, \"items\": outcomes.len,\n" &
+          "let s1 = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
+          "let s2 = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
+          "let bashOut = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
+          "let lastReadEnd = max(s1{\"ended\"}.getFloat(), s2{\"ended\"}.getFloat())\n" &
+          "let bashStart = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "finish($(%*{\"items\": outcomes.len,\n" &
+          "  \"writeExclusive\": bashStart >= lastReadEnd,\n" &
           "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
           "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
         return toolCall("t1", "fabric", %*{"code": batched})
@@ -327,6 +324,7 @@ let sleepSchema = toolSchema(%*{
   "ms": {"type": "integer", "minimum": 0},
   "say": {"type": "string"}
 }, required = @["ms"])
+sleepSchema["x-harness"] = %*{"effect": "read"}
 discard comp.tool("ctx_sleep", sleepSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let started = epochTime()
@@ -340,6 +338,7 @@ let echoOutSchema = toolSchema(%*{
   "say": {"type": "string"}
 }, required = @["say"])
 echoOutSchema["outputSchema"] = %*{"type": "string"}
+echoOutSchema["x-harness"] = %*{"effect": "read"}
 discard comp.tool("ctx_out", echoOutSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     %toolArgs{"say"}.getStr(""))
