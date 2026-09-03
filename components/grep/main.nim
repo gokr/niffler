@@ -43,7 +43,7 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
                 maxOutputBytes,
                 hint = "narrow pattern/path/glob for the missing part")}
 
-comp.tool(%*{"timeoutMs": 60000,
+comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc grep(pattern: string, path: string = ".", glob: string = "",

@@ -329,6 +329,19 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     );
     firstPromptTokens = first?.value?.usage?.prompt_tokens ?? null;
   }
+  // Footprint guard: the direct toolset + baseprompt must stay small (see
+  // bench/README.md). Exceeding the budget is a warning, not a failure —
+  // but it should trigger a prompt-diet before the next full run.
+  let footprintOver = false;
+  const budget = cfg.defaults?.firstPromptBudget ?? null;
+  if (firstPromptTokens && budget && firstPromptTokens > budget) {
+    footprintOver = true;
+    console.warn(
+      `[footprint] ${combo.harness}/${combo.model}/${taskId}: first prompt ` +
+        `${firstPromptTokens} tokens exceeds budget ${budget} — trim the ` +
+        "direct toolset / baseprompt",
+    );
+  }
   if (combo.harness === "niffler-expert") {
     try {
       expert = await shared.niffler.expertMetricsSince(sessionId);
@@ -377,6 +390,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
     firstPromptTokens,
+    footprintOver,
     expert,
     diff,
     roundsDetail: rounds,

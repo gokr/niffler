@@ -120,7 +120,8 @@ let runSchema = toolSchema(%*{
 }, required = @["task"],
    description = "Run a task in a fresh subagent session (its own context, own tool loop) and return only its final reply. Use when a subtask needs exploratory judgment per step — search, debugging, reading code — and its intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool instead. For background work use agent_spawn instead. The subagent cannot spawn further subagents.")
 runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
-                            "sessionContext": true, "noSpawn": true}
+                            "sessionContext": true, "noSpawn": true,
+                            "onDemand": true}
 discard comp.tool("agent_run", runSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
@@ -157,7 +158,8 @@ let spawnSchema = toolSchema(%*{
 }, required = @["task"],
    description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop marks it for stopping. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
-                              "sessionContext": true, "noSpawn": true}
+                              "sessionContext": true, "noSpawn": true,
+                              "onDemand": true}
 discard comp.tool("agent_spawn", spawnSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
@@ -211,6 +213,7 @@ let statusSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Non-blocking lookup of a background subagent job: returns its durable status (running/done/failed/stopped/stopping), session id, and — when terminal — the final reply or error. Does not wait; use agent_wait for that.")
+statusSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("agent_status", statusSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -231,7 +234,7 @@ let waitSchema = toolSchema(%*{
                 "description": "Give up waiting after this many ms (default 600000)"}
 }, required = @["jobId"],
    description = "Block until a background subagent job reaches a terminal state (done/failed/stopped) and return its durable result — including for jobs that finished long ago (late waits read the store). Terminal states carry the child's final reply, or the failure reason for failed jobs.")
-waitSchema["x-harness"] = %*{"timeoutMs": 900_000}
+waitSchema["x-harness"] = %*{"timeoutMs": 900_000, "onDemand": true}
 discard comp.tool("agent_wait", waitSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -265,6 +268,7 @@ let stopSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Mark a running background subagent job for stopping. The child turn is not killed outright — it ends when the model finishes or the turn times out, and the job's terminal record then says \"stopped\" (the reply, if any, is kept). Re-calling is harmless.")
+stopSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("agent_stop", stopSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -287,7 +291,7 @@ discard comp.tool("agent_stop", stopSchema,
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc agent_steer(session_id: string, message: string): JsonNode =
     ## Inject a message into a RUNNING background subagent turn (folded in
     ## between LLM rounds). Fire-and-forget: success means published, not

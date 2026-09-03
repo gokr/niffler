@@ -45,7 +45,9 @@
     "taskTimeoutMin": 25,
     "turnTimeoutMin": 10,
     "testTimeoutSec": 180,
-    "jobs": 2
+    "jobs": 2,
+    "$comment": "firstPromptBudget: warn (never fail) when a niffler first assistant prompt exceeds this many tokens — the direct-toolset + baseprompt footprint guard",
+    "firstPromptBudget": 7000
   },
   "expertJudge": {
     "$comment": [

@@ -111,7 +111,8 @@ var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/skills/main.nim
 
-var/bin/systemprompt: components/systemprompt/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/systemprompt: components/systemprompt/main.nim \
+    components/systemprompt/baseprompt.txt $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/systemprompt/main.nim
 
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin

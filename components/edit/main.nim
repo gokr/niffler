@@ -903,23 +903,16 @@ discard comp.tool("edit", toolSchema(%*{
   }
 }, @["path", "edits"],
   "Replace exact text in an existing file — the primary surgical editing " &
-  "tool. Each edits[].old_string must occur EXACTLY ONCE in the file: if it " &
-  "matches several locations the edit is refused with the occurrence count " &
-  "(or pass replace_all to replace every occurrence), so include one or two " &
-  "surrounding lines to disambiguate. Match the file bytes verbatim " &
-  "(whitespace matters). When the exact text is not found, common " &
-  "transcription slips are rescued by a guarded fallback: trailing " &
-  "whitespace, indentation drift, unicode punctuation (smart quotes and " &
-  "dashes), double-escaped \\n/\\t, and block anchors with fuzzy middle " &
-  "lines — but only when the fallback matches exactly one location and the " &
-  "matched span is not wildly larger than old_string; the matched original " &
-  "bytes are what gets replaced. Read the file or grep it first so " &
-  "old_string reflects the real content. Several edits per call are fine " &
-  "and must not overlap — merge changes to the same block into one edit. " &
-  "Use \"\" as new_string to delete text. For NEW files or wholesale " &
-  "rewrites use write; for deleting or moving large blocks you do not want " &
-  "to retype, install the niffler-hashline plugin and discover its " &
-  "anchored replace. Every edit is " &
+  "tool. Each edits[].old_string must occur EXACTLY ONCE: several matches " &
+  "refuse the edit with the occurrence count (pass replace_all for every " &
+  "occurrence); include one or two surrounding lines to disambiguate. " &
+  "Match file bytes verbatim — whitespace matters. A guarded fallback " &
+  "rescues transcription slips (trailing whitespace, indentation drift, " &
+  "smart quotes, escaped \\n, fuzzy anchors) only when it matches exactly " &
+  "one location of similar size. Read the file first so old_string " &
+  "reflects real content. Several non-overlapping edits per call are " &
+  "fine; merge changes to the same block into one. new_string \"\" " &
+  "deletes. For NEW files or wholesale rewrites use write. Every edit is " &
   "approval-gated and revertible with undo_last_edit."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000,
      "workspace": {"pathFields": ["path"]}})

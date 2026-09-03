@@ -141,7 +141,10 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
   thing being measured (harness overhead included). pi's default system prompt
   is ~1.5k tokens, opencode's ~14k, Niffler's sits in between; expect that to
   show up directly in per-round input tokens. `firstPromptTokens` in each
-  Niffler result tracks the first-call footprint over time.
+  Niffler result tracks the first-call footprint over time. When it exceeds
+  `defaults.firstPromptBudget` (config.json), run.mjs prints a `[footprint]`
+  warning and sets `footprintOver: true` — trim the direct toolset or
+  baseprompt before the next run; the budget never fails a task.
 - Reasoning/thinking is left at each harness's default (config knobs exist in
   `config.json` / the pi adapter for `--thinking`).
 - Token totals are provider-reported sums over all LLM calls of all rounds.

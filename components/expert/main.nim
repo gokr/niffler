@@ -72,19 +72,25 @@ Policy (fixed):
   tests", "implement/fix X", algorithm suggestions, and restatements of the
   task — even when they would be sensible next steps.
 - A valid steer identifies observed misuse or omission of a Niffler-specific
-  mechanism, for example repeated shell grep while `grep` is live, building
-  an integration before `plugin_search`, or bulk exploration in the main
+  mechanism, for example shell `git status`/`git diff` when the git
+  component's git_status/git_diff tools are a discover away, shell
+  `grep -rn` when the ripgrep-backed `grep` tool fits, building an
+  integration before `plugin_search`, or bulk exploration in the main
   context when `agent_run` fits. Every tool named in `tools` MUST appear
   verbatim in backticks in `message`.
 - Never recommend hidden, absent or incompatible tools; only tools listed
-  under Live tools below are callable.
-- Niffler knowledge you may draw on: progressive discovery (discover + invoke
-  reach non-direct tools), plugins (plugin_search before building anything),
-  skills (skill_list/skill_load), self-extension (write source -> builder.build
-  -> core.spawn -> discover), file tools (grep/files, read/edit/write,
-  read-only git_* tools; bash remains right for builds, tests, pipelines and
-  git mutations), context economy (agent_run subagents and fabric programs keep
-  bulk work out of the transcript; oversized outputs are spilled to files).
+  under Live tools or On-demand tools below are steerable. A steer toward
+  an on-demand tool must tell the worker to `discover` it (name the
+  component) and `invoke` it.
+- Niffler knowledge you may draw on: progressive discovery (discover +
+  invoke reach non-direct tools), plugins (plugin_search before building
+  anything), skills (skill_list/skill_load), self-extension (write source
+  -> builder.build -> core.spawn -> discover), file tools (read/read_many/
+  edit/write/files are direct; grep and the read-only git_* tools are
+  on-demand; bash remains right for builds, tests, pipelines and git
+  mutations), context economy (agent_run subagents and fabric programs
+  keep bulk work out of the transcript; oversized outputs are spilled to
+  files).
 - fabric is for mechanical, known-shape orchestration and context isolation;
   its fan-out is sequential, not a parallel-speed mechanism. agent_run is for
   exploratory subtasks needing a fresh context. The direct loop is right when
@@ -126,6 +132,7 @@ var
   gKnowledge = ""          # cache-stable prefix (policy + live tool hints)
   gKnowledgeVersion = ""
   gLiveTools: seq[string] = @[]
+  gDiscoverable: seq[string] = @[]
   gModel = ""              # optional model override for judgments
   gProvider = ""           # optional provider override for judgments
   gEvaluating = false
@@ -174,6 +181,9 @@ proc buildKnowledge(comp: Component): string =
   ## The cache-stable prefix: fixed policy + a snapshot of the live non-hidden
   ## tool hints. Captured at follow/reload time and held constant until the
   ## next explicit reload (new cache epoch). Hidden tools never enter it.
+  ## Direct tools come from the LLM toolset; on-demand tools (reachable via
+  ## discover + invoke) are the expert's steering targets when the worker
+  ## hand-rolls their job in bash.
   gLiveTools = @[]
   var toolLines = ""
   try:
@@ -187,7 +197,23 @@ proc buildKnowledge(comp: Component): string =
         toolLines.add("- " & name & ": " & clip(desc, 160) & "\n")
   except CatchableError as e:
     toolLines = "(catalog unavailable: " & clip(e.msg, 120) & ")\n"
-  result = expertPolicy & "\n## Live tools\n" & toolLines
+  var odLines = ""
+  try:
+    let disc = comp.request("core", "discover", %*{}, 10_000)
+    if disc{"components"} != nil:
+      for c in disc{"components"}:
+        if c{"onDemand"} == nil: continue
+        for t in c{"onDemand"}:
+          let name = t{"name"}.getStr("")
+          if name.len == 0: continue
+          odLines.add("- " & name & " (" & c{"name"}.getStr("") &
+                      "): " & clip(t{"description"}.getStr(""), 140) & "\n")
+          if name notin gDiscoverable: gDiscoverable.add(name)
+  except CatchableError as e:
+    odLines = "(discover unavailable: " & clip(e.msg, 120) & ")\n"
+  result = expertPolicy &
+    "\n## Live tools (worker sees these directly)\n" & toolLines &
+    "\n## On-demand tools (worker must discover + invoke; steer when these fit better)\n" & odLines
   gKnowledgeVersion = "md5:" & getMD5(result)
 
 proc extractJson(s: string): JsonNode =
@@ -302,7 +328,7 @@ proc evaluate(comp: Component) =
     return
   for t in tools:
     let tool = t.getStr("")
-    if tool notin gLiveTools:
+    if tool notin gLiveTools and tool notin gDiscoverable:
       gErrors += 1
       comp.log("warn", "steer suppressed: unknown tool", %*{"tool": tool})
       return
