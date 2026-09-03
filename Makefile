@@ -53,6 +53,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test test-bash test-store test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-core test-discover test-cli \
         test-systemprompt test-grep test-git test-edit test-expert \
+        test-retry-unit test-ctx-accounting \
         test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps \
@@ -265,6 +266,10 @@ var/bin/test_t_schema_validation: core/schema_validation.nim
 
 var/bin/test_t_approval_manifest: core/approval.nim core/catalog.nim
 
+var/bin/test_t_retry_unit: core/retry.nim
+
+var/bin/test_t_ctx_accounting: core/conversation.nim
+
 test: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
@@ -290,20 +295,25 @@ test-grep:    build var/bin/test_t_grep    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_git
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
+test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel
 test-smoke:   build var/bin/test_smoke     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_smoke
 test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_autostart
 test-fabric: build var/bin/test_t_fabric var/bin/test_t_fabric_frames ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_frames && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric
 test-nested: build var/bin/test_t_nested var/bin/test_t_schema_validation ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_schema_validation && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_nested
 test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_approval_manifest
+test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
+test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
 
 smoke: test-smoke  # legacy alias
 
-# Go unit tests (models, provider, llm, sdk) — no shared runtime state, part of `make test`.
+# Go unit tests (models, provider, both llm adapters, sdk) — no shared runtime
+# state, part of `make test`.
 gotest:
 	cd sdk/go && go test ./... && go vet ./...
 	cd components/models && go test ./... && go vet ./...
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
+	cd components/llm-openai && go test ./... && go vet ./...
 
 # recover: back to factory shape. The repo is the snapshot; var/ is
 # disposable build output. Core's --recover rebuilds binaries from source

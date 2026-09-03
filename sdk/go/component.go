@@ -36,9 +36,10 @@ type TapHandler func(c *Component, subject string, data []byte)
 
 // Tool is a registered tool: LLM-facing schema plus its handler.
 type Tool struct {
-	Name    string         `json:"name"`
-	Schema  map[string]any `json:"schema"`
-	handler ToolHandler
+	Name       string         `json:"name"`
+	Schema     map[string]any `json:"schema"`
+	handler    ToolHandler
+	concurrent bool
 }
 
 // SlashSource describes where a slash-command parameter gets its value
@@ -103,7 +104,9 @@ type Component struct {
 	taps          []tapBinding
 	drainHandlers []func(*Component)
 	subs          []*nats.Subscription
-	mu            sync.Mutex // serializes handlers (mirrors Nim SDK's single thread)
+	handlerMu     sync.RWMutex // serial handlers are exclusive; concurrent tools share
+	concurrentWG  sync.WaitGroup
+	concurrentSem chan struct{}
 	closeMu       sync.Mutex
 	shutdown      chan struct{}
 	shutdownOnce  sync.Once
@@ -111,9 +114,16 @@ type Component struct {
 	inHandler     bool
 }
 
+const defaultConcurrentLimit = 16
+
 // New creates a component with the given bus identity.
 func New(name, version string) *Component {
-	c := &Component{Name: name, Version: version, shutdown: make(chan struct{})}
+	c := &Component{
+		Name:          name,
+		Version:       version,
+		shutdown:      make(chan struct{}),
+		concurrentSem: make(chan struct{}, defaultConcurrentLimit),
+	}
 	c.owner = c
 	return c
 }
@@ -123,13 +133,40 @@ func (c *Component) handlerView() *Component {
 		Name: c.Name, Version: c.Version, nc: c.nc, tools: c.tools,
 		events: c.events, taps: c.taps, subs: c.subs, shutdown: c.shutdown,
 		drainHandlers: c.drainHandlers,
-		owner: c, inHandler: true,
+		owner:         c, inHandler: true,
 	}
 }
 
-// Tool registers a tool. Chainable: New("x","1").Tool(...).Tool(...).Run()
+// Tool registers a serialized tool. It runs exclusively with respect to all
+// other tool, event, and tap handlers in this component. Chainable:
+// New("x", "1").Tool(...).Tool(...).Run().
 func (c *Component) Tool(name string, schema map[string]any, h ToolHandler) *Component {
 	c.tools = append(c.tools, Tool{Name: name, Schema: schema, handler: h})
+	return c
+}
+
+// ToolConcurrent registers an explicitly concurrency-safe tool. Calls to
+// concurrent tools may overlap each other, but never overlap serialized tools,
+// event handlers, or taps. The component author must synchronize any mutable
+// state shared by concurrent handlers. It must not synchronously request a
+// serialized tool on the same component, which would wait on its own shared
+// lock. This server-side execution choice is independent of the runner-side
+// x-harness.parallel scheduling hint.
+func (c *Component) ToolConcurrent(name string, schema map[string]any, h ToolHandler) *Component {
+	c.tools = append(c.tools, Tool{
+		Name: name, Schema: schema, handler: h, concurrent: true,
+	})
+	return c
+}
+
+// ConcurrentLimit sets the maximum number of ToolConcurrent handlers in
+// flight. It must be called before Connect or Run; values below one become one.
+// The default is 16.
+func (c *Component) ConcurrentLimit(limit int) *Component {
+	if limit < 1 {
+		limit = 1
+	}
+	c.concurrentSem = make(chan struct{}, limit)
 	return c
 }
 
@@ -354,6 +391,9 @@ func (c *Component) Connect() error {
 	if c.shutdown == nil {
 		c.shutdown = make(chan struct{})
 	}
+	if c.concurrentSem == nil {
+		c.concurrentSem = make(chan struct{}, defaultConcurrentLimit)
+	}
 
 	// queue-grouped call subject: N replicas, one gets each call
 	callSubject := "svc." + c.Name + ".call"
@@ -381,8 +421,8 @@ func (c *Component) Connect() error {
 	for _, e := range c.events {
 		e := e
 		s, err := nc.Subscribe(e.pattern, func(m *nats.Msg) {
-			c.mu.Lock()
-			defer c.mu.Unlock()
+			c.handlerMu.Lock()
+			defer c.handlerMu.Unlock()
 			env := ParseEnvelope(m.Data)
 			e.handler(c.handlerView(), m.Subject, env.Payload)
 		})
@@ -396,8 +436,8 @@ func (c *Component) Connect() error {
 	for _, t := range c.taps {
 		t := t
 		s, err := nc.Subscribe(t.pattern, func(m *nats.Msg) {
-			c.mu.Lock()
-			defer c.mu.Unlock()
+			c.handlerMu.Lock()
+			defer c.handlerMu.Unlock()
 			t.handler(c.handlerView(), m.Subject, m.Data)
 		})
 		if err != nil {
@@ -443,6 +483,10 @@ func (c *Component) Close() {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	// Concurrent callbacks return immediately after handing work to a
+	// goroutine, so subscription Drain alone cannot observe those handlers.
+	// Wait before closing the shared NATS connection to preserve their replies.
+	c.concurrentWG.Wait()
 	_ = c.nc.FlushTimeout(time.Second)
 	c.nc.Close()
 	c.nc = nil
@@ -496,38 +540,76 @@ func (c *Component) announce(subject string) error {
 }
 
 func (c *Component) handleCall(m *nats.Msg) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	env := ParseEnvelope(m.Data)
-	var resp Envelope
 	if env.Kind != KindCall {
-		resp = Envelope{V: 1, ID: env.ID, Kind: KindError,
-			Error: &ErrorInfo{Code: "bad-envelope", Message: "expected call envelope"}}
-	} else {
-		var found bool
-		for _, t := range c.tools {
-			if t.Name == env.Tool {
-				found = true
-				res, err := t.handler(c.handlerView(), env.Args)
-				if err != nil {
-					resp = Envelope{V: 1, ID: env.ID, Kind: KindError,
-						Error: &ErrorInfo{Code: "boom", Message: err.Error()}}
-				} else {
-					raw, _ := json.Marshal(res)
-					resp = Envelope{V: 1, ID: env.ID, Kind: KindResult, Args: raw}
-				}
-				break
-			}
-		}
-		if !found {
-			resp = Envelope{V: 1, ID: env.ID, Kind: KindError,
-				Error: &ErrorInfo{Code: "no-tool",
-					Message: fmt.Sprintf("component %s has no tool %q", c.Name, env.Tool)}}
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "bad-envelope", Message: "expected call envelope"}})
+		return
+	}
+
+	var tool *Tool
+	for i := range c.tools {
+		if c.tools[i].Name == env.Tool {
+			tool = &c.tools[i]
+			break
 		}
 	}
+	if tool == nil {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "no-tool",
+				Message: fmt.Sprintf("component %s has no tool %q", c.Name, env.Tool)}})
+		return
+	}
+
+	if !tool.concurrent {
+		c.handlerMu.Lock()
+		defer c.handlerMu.Unlock()
+		c.invokeTool(m, env, tool)
+		return
+	}
+
+	// nats.go invokes one subscription's callbacks serially. Reserve both a
+	// bounded slot and the shared/read side of the handler barrier before
+	// returning from this callback, then execute asynchronously. Acquiring the
+	// RLock here preserves delivery order around a later serialized tool: that
+	// writer cannot leapfrog this accepted call, and later calls cannot leapfrog
+	// the waiting writer because this subscription callback is blocked there.
+	sem := c.concurrentSem
+	sem <- struct{}{}
+	c.handlerMu.RLock()
+	c.concurrentWG.Add(1)
+	go func() {
+		defer c.concurrentWG.Done()
+		defer c.handlerMu.RUnlock()
+		defer func() { <-sem }()
+		c.invokeTool(m, env, tool)
+	}()
+}
+
+func (c *Component) invokeTool(m *nats.Msg, env *Envelope, tool *Tool) {
+	res, err := tool.handler(c.handlerView(), env.Args)
+	if err != nil {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "boom", Message: err.Error()}})
+		return
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "boom", Message: err.Error()}})
+		return
+	}
+	c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindResult, Args: raw})
+}
+
+func (c *Component) respond(m *nats.Msg, resp Envelope) {
 	data, err := resp.Marshal()
-	if err == nil {
-		_ = m.Respond(data)
+	if err != nil {
+		slog.Error("marshal tool reply", "component", c.Name, "error", err)
+		return
+	}
+	if err := m.Respond(data); err != nil {
+		// A caller timing out/cancelling before a long handler finishes is normal.
+		slog.Debug("publish tool reply", "component", c.Name, "error", err)
 	}
 }

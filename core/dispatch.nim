@@ -188,20 +188,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## the store component so it survives restarts (persistence of shape).
     let name = args{"name"}.getStr("")
     let binary = args{"binary"}.getStr("")
+    let replicas = args{"replicas"}.getInt(1)
     if name.len == 0 or binary.len == 0:
       return %*{"error": "spawn needs name and binary"}
+    if replicas < 1 or replicas > 16:
+      return %*{"error": "spawn replicas must be between 1 and 16"}
+    for child in ct.sup.children:
+      if child.name == name:
+        return %*{"error": "component already supervised: " & name}
     let abs = if binary.startsWith("/"): binary else: ct.sup.root / binary
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
-    discard ct.sup.addChild(name, abs)
-    ct.sup.startChild(ct.sup.children[^1])
+    for i in 0 ..< replicas:
+      discard ct.sup.addChild(name, abs)
+      ct.sup.startChild(ct.sup.children[^1])
     try:
       discard ct.storePutRev("component", name,
-        %*{"name": name, "binary": abs,
-           "policy": "on-failure", "addedAt": epochTime()})
+        %*{"name": name, "binary": abs, "policy": "on-failure",
+           "replicas": replicas, "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
-    return %*{"ok": true, "name": name}
+    return %*{"ok": true, "name": name, "replicas": replicas}
   of "kill":
     ## Stop a running component: drain, then terminate. It stays persisted
     ## in the store and is restored on the next boot.
@@ -334,6 +341,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         for t in reg.tools:
           tools.add(%*{"name": t.name, "schema": t.schema})
         var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
+                       "pids": reg.pids, "replicas": max(reg.pids.len, 1),
                        "tools": tools, "registeredAt": reg.registeredAt}
         # The interactive-client flag must survive snapshot reseeding: a child
         # session runner (subagent) routes its fallback approvals through
@@ -382,11 +390,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             if cn.len > 0: langTable[cn] = c
     except CatchableError:
       discard
-    var childTable = initTable[string, Child]()
+    var childTable = initTable[string, seq[Child]]()
     var names: seq[string] = @[]
     for child in ct.sup.children:
-      childTable[child.name] = child
-      names.add(child.name)
+      childTable.mgetOrPut(child.name, @[]).add(child)
+      if child.name notin names: names.add(child.name)
     for name in ct.cat.components.keys:
       if name notin names:
         names.add(name)
@@ -394,12 +402,23 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
 
     var comps = newJArray()
     for name in names:
-      let child = childTable.getOrDefault(name)
+      let children = childTable.getOrDefault(name)
       let reg = ct.cat.components.getOrDefault(name)
-      let supervised = child != nil
+      let supervised = children.len > 0
+      var runningReplicas = 0
+      var wantedReplicas = 0
+      var restartTotal = 0
+      for child in children:
+        if child.process != nil and child.process.running():
+          inc runningReplicas
+        if child.wanted: inc wantedReplicas
+        restartTotal += child.restarts
+      let livePids = if reg.pids.len > 0: reg.pids else:
+                       (if reg.pid > 0: @[reg.pid] else: @[])
+      let replicas = if supervised: children.len else: livePids.len
       let running = if name == "core": true
-                    elif supervised: child.process != nil and child.process.running()
-                    else: reg.pid > 0
+                    elif supervised: runningReplicas > 0
+                    else: livePids.len > 0
       var tools = newJArray()
       for t in reg.tools:
         tools.add(%*{"name": t.name, "schema": t.schema})
@@ -407,16 +426,19 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         "name": name,
         "version": reg.version,
         "running": running,
-        "wanted": if supervised: child.wanted else: true,
-        "policy": if supervised: $child.policy
+        "wanted": if supervised: wantedReplicas > 0 else: true,
+        "policy": if supervised: $children[0].policy
                   elif name == "core": "core" else: "external",
-        "restarts": if supervised: child.restarts else: 0,
+        "restarts": restartTotal,
+        "replicas": replicas,
+        "runningReplicas": if supervised: runningReplicas else: livePids.len,
         "pid": reg.pid,
+        "pids": livePids,
         "registeredAt": reg.registeredAt,
         "tools": tools}
       var binary = ""
       if supervised:
-        binary = child.binary
+        binary = children[0].binary
         entry["binary"] = %binary
       let m = langTable.getOrDefault(name)
       if m != nil:
@@ -446,7 +468,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
                 "thinkingEffort", "cwd", "context", "contextUsed",
-                "promptTokens"]:
+                "promptTokens", "cachePrompt", "cacheRead", "cacheHitRate"]:
         if header.value{f} != nil:
           info[f] = header.value{f}
       # subagent lineage (the agent component records kind sessionmeta)
@@ -926,3 +948,141 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                                callArgs, timeoutMs)
 
   dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+
+# ---------------------------------------------------------------------------
+# Parallel dispatch — fan out a wave of tool calls over the bus
+# ---------------------------------------------------------------------------
+#
+# x-harness.parallel (docs/WIRE.md) marks a tool safe to dispatch concurrently
+# with other parallel-safe tools in the same assistant message. The runner
+# fires the whole wave at once (distinct inbox reply subjects), then collects
+# replies by round-robin polling — no threads, no asyncdispatch. This
+# parallelizes calls to *different* components (read ∥ grep ∥ git_status);
+# same-component calls still serialize in one process, but stateless logical
+# components can run multiple NATS queue-group process replicas.
+
+type
+  ToolCallOutcome* = object
+    ok*: bool
+    value*: JsonNode   ## result payload when ok
+    error*: string     ## human error text when not ok
+
+proc isParallelSafeTool*(ct: CoreTools, tool: string): bool =
+  ## True when the session runner may dispatch this tool concurrently with
+  ## other parallel-safe tools in the same assistant message. Opt-in via
+  ## x-harness.parallel; approval-gated, session-context, core and unknown
+  ## tools are never parallel (they are the serial spine of a turn).
+  let schema = ct.cat.toolSchema(tool)
+  if schema == nil: return false
+  let x = schema{"x-harness"}
+  if x == nil or x.kind != JObject: return false
+  if x{"approval"}.getStr("") == "always": return false
+  if x{"sessionContext"}.getBool(false): return false
+  x{"parallel"}.getBool(false)
+
+proc dispatchToolCalls*(ct: CoreTools,
+                        calls: openArray[tuple[tool: string, args: JsonNode]],
+                        defaultTimeoutMs: int = 120000): seq[ToolCallOutcome] =
+  ## Fan out N tool calls to their component processes concurrently (distinct
+  ## inbox reply subjects, published in one pass, replies collected by
+  ## round-robin polling). Results are returned in input order regardless of
+  ## completion order, so the transcript keeps tool_calls / tool_result
+  ## pairing intact for strict backends.
+  ##
+  ## Callers must only pass parallel-safe component tools (isParallelSafeTool);
+  ## per-call errors are reported in the outcome, never raised — one slow or
+  ## failing call must not fail the whole wave.
+  result = newSeq[ToolCallOutcome](calls.len)
+  type
+    Pending = object
+      sub: ptr natsSubscription
+      tool: string
+      timeoutMs: int
+      deadline: float
+      done: bool
+      ok: bool
+      value: JsonNode
+      error: string
+  var pending = newSeq[Pending](calls.len)
+  # Resolve every target and fire every request before waiting on any reply,
+  # so all components start working at once.
+  for i, call in calls:
+    let comp = ct.cat.toolIndex.getOrDefault(call.tool)
+    if comp.len == 0:
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "no component provides tool '" & call.tool &
+               "' — is it registered?")
+      continue
+    let schema = ct.cat.toolSchema(call.tool)
+    var timeoutMs = defaultTimeoutMs
+    if schema != nil:
+      timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+    let env = callEnvelope(call.tool,
+      (if call.args == nil: newJObject() else: call.args))
+    let data = env.encode()
+    let inbox = "_INBOX." & newId()
+    var sub: ptr natsSubscription
+    let st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
+    if not checkStatus(st):
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "subscribe inbox for '" & call.tool & "': " & getErrorString(st))
+      continue
+    pending[i] = Pending(sub: sub, tool: call.tool, timeoutMs: timeoutMs,
+                         deadline: epochTime() + timeoutMs.float / 1000.0)
+    let ps = natsConnection_PublishRequest(ct.nc.conn,
+      ("svc." & comp & ".call").cstring, inbox.cstring, data.cstring,
+      data.len.cint)
+    if not checkStatus(ps):
+      natsSubscription_Destroy(pending[i].sub)
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "publish request '" & call.tool & "': " & getErrorString(ps))
+  # Make sure every request is on the wire before we start polling replies.
+  let flush = natsConnection_FlushTimeout(ct.nc.conn,
+    min(defaultTimeoutMs, 1000).int64)
+  if not checkStatus(flush):
+    discard  # polling still converges; flush is only a liveness hint
+  defer:
+    for i in 0 ..< calls.len:
+      if pending[i].sub != nil:
+        natsSubscription_Destroy(pending[i].sub)
+  # Collect replies. Round-robin polling keeps core's service surface alive (a
+  # component calling back into core mid-wave cannot deadlock) and streams LLM
+  # tokens / steering while the wave is in flight.
+  while true:
+    var allDone = true
+    let now = epochTime()
+    for i in 0 ..< calls.len:
+      if pending[i].done: continue
+      allDone = false
+      if now >= pending[i].deadline:
+        pending[i].done = true
+        pending[i].error = "tool '" & pending[i].tool & "' timed out after " &
+          $pending[i].timeoutMs & "ms"
+        continue
+      var msg: ptr natsMsg
+      let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, 25)
+      if ns == NATS_OK:
+        let resp = decode($natsMsg_GetData(msg))
+        natsMsg_Destroy(msg)
+        pending[i].done = true
+        if resp.kind == ekError:
+          pending[i].error = resp.error{"message"}.getStr("component error")
+        else:
+          pending[i].ok = true
+          pending[i].value = resp.args
+    if allDone: break
+    # idle slot (same set as dispatchSubjectCall): keep core's own tools, the
+    # catalog, the supervisor, the live LLM token stream, steering, advice and
+    # nested-call surfaces serviced while we wait.
+    pumpCoreWhileBusy(ct)
+    ct.cat.pump()
+    if ct.sup != nil:
+      ct.sup.pump(ct.cat)
+    pumpTokenStream(ct)
+    pumpSteer(ct)
+    pumpAdvise(ct)
+    pumpNested(ct)
+  for i in 0 ..< calls.len:
+    result[i] = ToolCallOutcome(ok: pending[i].ok,
+                                value: pending[i].value,
+                                error: pending[i].error)

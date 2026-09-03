@@ -12,13 +12,14 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, monotimes, os, sequtils, strutils, tables, times,
-    unicode]
+import std/[algorithm, json, math, monotimes, os, sequtils, strutils,
+    tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
 import dispatch
 import supervisor
+import retry
 
 ## The minimal structural fallback prompt. The real constitution lives in
 ## the systemprompt component (components/systemprompt/): the session
@@ -127,6 +128,12 @@ type
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## effective model context window
     ctxWarned*: bool     ## warned once per session until the next trim
+    ## A3 cache economics: cumulative prompt tokens across the conversation,
+    ## split by what the provider served from its prompt cache. The miss
+    ## ratio (cacheMiss / cachePrompt) is the measurable waste signal —
+    ## a healthy session stays well under 50% after the first turns.
+    cachePrompt*: int    ## Σ prompt_tokens over responses reporting usage
+    cacheRead*: int      ## Σ cached_tokens (provider-served prefix hits)
     failing: bool
 
   ToolExposure* = object
@@ -265,8 +272,13 @@ proc persistConversationRuntime(p: Persister, modelOverride, provider,
     "model": model,
     "context": p.ctxSize,
     "contextUsed": p.contextUsed,
-    "promptTokens": p.promptTokens
+    "promptTokens": p.promptTokens,
+    "cachePrompt": p.cachePrompt,
+    "cacheRead": p.cacheRead
   }
+  if p.cachePrompt > 0:
+    fields["cacheHitRate"] = %round(float(p.cacheRead) * 100.0 /
+                                     float(p.cachePrompt), 1)
   p.ct.updateConversationHeader(p.convId, fields)
 
 proc directToolSnapshot(ct: CoreTools): JsonNode =
@@ -362,11 +374,46 @@ const
   ctxWarnRatio = 0.75  ## warn once when this fraction of the window is used
   ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
   minKeepTurns = 2     ## never trim below this many user turns
+  ctxOutputReserve = 16_384  ## tokens held back for the model's next reply
+                             ## (pi compacts at window − reserve); env
+                             ## NIF_CTX_RESERVE overrides, 0 disables
+
+proc outputReserve*(): int =
+  ## Tokens held back for the model's next reply (NIF_CTX_RESERVE override,
+  ## 0 disables). Exported for tests.
+  let v = getEnv("NIF_CTX_RESERVE", "").strip()
+  if v.len == 0: return ctxOutputReserve
+  try:
+    let n = parseInt(v)
+    return max(n, 0)
+  except CatchableError:
+    return ctxOutputReserve
 
 proc estimateTokens*(messages: seq[JsonNode]): int =
-  ## Rough token proxy (chars/4) used until the model reports real usage.
+  ## Rough token proxy used until the model reports real usage (chars/4).
+  ## Counts everything the next request will carry: text content, reasoning,
+  ## tool-call arguments, and tool-call ids/names — not just `content` —
+  ## so a thinking- or tool-heavy conversation is not badly underestimated.
+  const overheadPerMessage = 8  ## role/formatting tokens, conservatively
   for m in messages:
+    inc result, overheadPerMessage
     result += m{"content"}.getStr("").len div 4
+    result += m{"reasoning"}.getStr("").len div 4
+    let toolCalls = m{"tool_calls"}
+    if toolCalls != nil:  # iterating a nil JArray SIGSEGVs (json.nim trap)
+      for tc in toolCalls:
+        result += tc{"function"}{"name"}.getStr("").len div 4
+        result += tc{"function"}{"arguments"}.getStr("").len div 4 + 4
+
+proc trimThreshold*(p: Persister): int =
+  ## The usage level that triggers trimming: the ratio bound, minus an
+  ## output reserve so the model's next reply still fits after compaction
+  ## (pi compacts at window − reserveTokens rather than a bare ratio).
+  let ratioBound = int(p.ctxSize.float * ctxTrimRatio)
+  # window − reserve, but never below half the window: a tiny context
+  # (window < reserve) would otherwise go negative and never trim
+  let reserved = max(p.ctxSize - outputReserve(), p.ctxSize div 2)
+  return min(ratioBound, reserved)
 
 proc trimContext*(messages: var seq[JsonNode]): int =
   ## Drop whole turns from the front, keeping the system prompt. A turn is
@@ -405,18 +452,22 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
     elif p.promptTokens > 0: p.promptTokens
     else: estimateTokens(messages)
   let pct = int(used.float * 100.0 / p.ctxSize.float)
-  if used.float >= p.ctxSize.float * ctxTrimRatio:
+  let trimAt = trimThreshold(p)
+  if used >= trimAt:
     let dropped = trimContext(messages)
     if dropped > 0:
       messages.insert(%*{"role": "system", "content":
         "[context trimmed: dropped " & $dropped &
         " earlier messages to fit the model window]"}, 1)
       p.ctxWarned = false
-      echo "core: context at " & $pct & "% — trimmed " & $dropped & " messages"
+      echo "core: context at " & $pct & "% — trimmed " & $dropped &
+           " messages (trim level " & $trimAt & ")"
       if onEvent != nil:
         onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                               "promptTokens": p.promptTokens,
                               "usedTokens": used, "context": p.ctxSize,
+                              "trimAt": trimAt,
+                              "reserveTokens": outputReserve(),
                               "trimmed": dropped})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
@@ -524,6 +575,59 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
                            "reason": adv{"reason"}.getStr("")})
     result += 1
   ct.adviseStream.queue.setLen(0)
+
+# A parsed tool call from an assistant message, ready for the wave scheduler.
+# parseFailed calls were garbled/truncated at the source and are neutralized
+# (never dispatched) — their history entry carries valid {} args for strict
+# backends that re-validate assistant tool_calls on every request.
+type
+  ToolCallItem = tuple
+    id, name: string
+    args: JsonNode
+    parseFailed: bool
+    rawArgs: string
+
+proc commitToolItem(ct: CoreTools, p: var Persister,
+                    messages: var seq[JsonNode],
+                    exposure: var ToolExposure,
+                    onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                    sessionId, turnId: string,
+                    it: ToolCallItem, oc: ToolCallOutcome,
+                    toolStartedAt: float, toolDurationMs: int) =
+  ## Shared post-processing for one executed tool call (serial or from a
+  ## parallel wave): catalog pump, discovery recording, transcript append,
+  ## persistence (with lifecycle telemetry), and the "done" toolcall event.
+  ct.cat.pump()
+  if ct.sup != nil:
+    ct.sup.pump(ct.cat)
+  if oc.ok and it.name == "discover":
+    recordDiscovery(ct, sessionId, exposure, oc.value)
+  let toolMsg =
+    if oc.ok:
+      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+         "content": $oc.value}
+    else:
+      %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
+         "content": "ERROR: " & oc.error}
+  messages.add(toolMsg)
+  p.persistMsg(toolMsg,
+    %*{"turnId": turnId, "startedAt": toolStartedAt,
+       "durationMs": toolDurationMs})
+  if onEvent != nil:
+    if oc.ok:
+      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                             "callId": it.id, "phase": "done",
+                             "tool": it.name, "args": it.args,
+                             "result": oc.value,
+                             "durationMs": toolDurationMs,
+                             "at": epochTime()})
+    else:
+      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
+                             "callId": it.id, "phase": "done",
+                             "tool": it.name, "args": it.args,
+                             "error": oc.error,
+                             "durationMs": toolDurationMs,
+                             "at": epochTime()})
 
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
@@ -695,24 +799,43 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     var resp: JsonNode
     let llmStartedAt = epochTime()
     let llmStarted = getMonoTime()
-    try:
-      resp = ct.dispatchToolCall("chat", llmArgs, 300000)
-    except CatchableError as e:
-      # a cancel that landed while the LLM request was in flight reads as
-      # cancellation, not an LLM failure
-      let msg = if e of TurnCancelled: "cancelled by request"
-                else: "llm error: " & e.msg
-      let durationMs = (getMonoTime() - llmStarted).inMilliseconds
-      p.persistMsg(%*{"role": "error", "content": msg,
-                      "error": "llm", "turnId": turnId},
-                   %*{"startedAt": llmStartedAt,
-                      "durationMs": durationMs})
-      turnError = msg
-      if onEvent != nil:
-        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                           "error": msg})
-      emitTurnDone(msg)
-      return msg
+    var attempt = 0
+    let retryPolicy = retryPolicyFromEnv()
+    while true:
+      try:
+        resp = ct.dispatchToolCall("chat", llmArgs, 300000)
+        break
+      except CatchableError as e:
+        # B3: auto-retry transient LLM failures (rate limits, provider
+        # outages, dropped connections) with exponential backoff. Auth,
+        # quota and bad-request failures fail fast — retrying cannot help.
+        # A cancel that landed while the LLM request was in flight reads as
+        # cancellation, not an LLM failure, and is never retryable. Each
+        # retry is announced so UIs can show the wait.
+        let cancelled = e of TurnCancelled
+        if cancelled or attempt >= retryPolicy.maxRetries or
+            not isRetryableLlmError(e.msg):
+          let msg = if cancelled: "cancelled by request"
+                    else: "llm error: " & e.msg
+          let durationMs = (getMonoTime() - llmStarted).inMilliseconds
+          p.persistMsg(%*{"role": "error", "content": msg,
+                          "error": "llm", "turnId": turnId},
+                       %*{"startedAt": llmStartedAt,
+                          "durationMs": durationMs})
+          turnError = msg
+          if onEvent != nil:
+            onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                               "error": msg})
+          emitTurnDone(msg)
+          return msg
+        let delayMs = retryDelayMs(retryPolicy, attempt)
+        if onEvent != nil:
+          onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                             "attempt": attempt + 1,
+                             "maxRetries": retryPolicy.maxRetries,
+                             "delayMs": delayMs, "error": e.msg})
+        sleep(delayMs)
+        attempt += 1
     ct.cat.pump()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
@@ -733,6 +856,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+      # A3 cache economics: accumulate the cache-read split when the
+      # provider reports it (prompt_tokens_details.cached_tokens). A
+      # request with a stable prefix should show most of its prompt served
+      # from cache; a high miss ratio flags cache-hostile request churn.
+      let cached = usageObj{"prompt_tokens_details"}{"cached_tokens"}
+      if cached != nil and cached.kind == JInt:
+        p.cachePrompt += p.promptTokens
+        p.cacheRead += cached.getInt(0)
     let totalTokens = usageObj{"total_tokens"}.getInt(0)
     let completionTokens = usageObj{"completion_tokens"}.getInt(0)
     if totalTokens > 0:
@@ -756,6 +887,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
+      if p.cachePrompt > 0:
+        statusEv["cache"] = %*{"prompt": p.cachePrompt, "read": p.cacheRead,
+                               "hitRate": round(float(p.cacheRead) * 100.0 /
+                                                float(p.cachePrompt), 1)}
       onEvent("status", statusEv)
     let toolCalls = resp{"tool_calls"}
     let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and
@@ -809,6 +944,11 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       emitTurnDone()
       return content
 
+    # --- Tool-call execution: parallel-safe calls (x-harness.parallel) fan
+    # out over the bus; the rest (approval-gated, session-context, parse
+    # failures, unmarked tools) run one at a time, in order. Results always
+    # land in tool_calls order so strict backends keep call/result pairing.
+    var items: seq[ToolCallItem] = @[]
     for tc in toolCalls:
       # Per-turn call budget (subagent jobs): stop BEFORE dispatching past
       # the cap, so a batch of tool_calls never overshoots it. The turn
@@ -839,67 +979,62 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
-      let toolStartedAt = epochTime()
-      let toolStarted = getMonoTime()
+      items.add((id: id, name: name, args: args,
+                 parseFailed: parseFailed, rawArgs: rawArgs))
       if onEvent != nil:
         onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                "callId": id, "phase": "start",
                                "tool": name, "args": args,
-                               "at": toolStartedAt})
-      try:
-        let toolResult =
-          if parseFailed:
-            %*{"ok": false,
-               "error": "tool call arguments were not valid JSON (truncated or garbled stream): " &
-                        rawArgs[0 ..< min(rawArgs.len, 200)]}
-          else:
-            ct.dispatchToolCall(name, args)
-        ct.cat.pump()
-        if ct.sup != nil:
-          ct.sup.pump(ct.cat)
-        if name == "discover":
-          recordDiscovery(ct, sessionId, exposure, toolResult)
-        let toolMsg = %*{"role": "tool", "tool_call_id": id,
-                         "name": name, "content": $toolResult}
-        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
-        messages.add(toolMsg)
-        p.persistMsg(toolMsg,
-          %*{"turnId": turnId, "startedAt": toolStartedAt,
-             "durationMs": toolDurationMs})
-        if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                                 "callId": id, "phase": "done",
-                                 "tool": name, "args": args,
-                                 "result": toolResult,
-                                 "durationMs": toolDurationMs,
-                                 "at": epochTime()})
-      except CatchableError as e:
-        let toolMsg = %*{"role": "tool", "tool_call_id": id,
-                         "name": name, "content": "ERROR: " & e.msg}
-        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
-        messages.add(toolMsg)
-        p.persistMsg(toolMsg,
-          %*{"turnId": turnId, "startedAt": toolStartedAt,
-             "durationMs": toolDurationMs})
-        if onEvent != nil:
-          onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                                 "callId": id, "phase": "done",
-                                 "tool": name, "args": args,
-                                 "error": e.msg,
-                                 "durationMs": toolDurationMs,
-                                 "at": epochTime()})
+                               "at": epochTime()})
 
-  # Exited the loop with the round budget spent — the model was still working
-  # (the loop only ends early via a no-tool-call reply or a cancel). Report
-  # this as a turn error so drivers can distinguish "model finished" from
-  # "budget exhausted"; the transcript keeps everything up to here.
-  turnError = "turn round budget exhausted (" & $effMaxRounds &
-    " LLM rounds; raise with NIF_MAX_TURN_ROUNDS)"
-  if onEvent != nil:
-    onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                       "error": turnError})
-  emitTurnDone(turnError)
-  return ""
+    var idx = 0
+    while idx < items.len:
+      # A wave is a maximal run of consecutive parallel-safe calls. Waves fan
+      # out; serial calls (or a parse failure) run alone, in order.
+      var wave: seq[tuple[id, name: string, args: JsonNode]] = @[]
+      while idx < items.len and isParallelSafeTool(ct, items[idx].name) and
+          not items[idx].parseFailed:
+        wave.add((items[idx].id, items[idx].name, items[idx].args))
+        inc idx
+      if wave.len > 0:
+        let waveStartedAt = epochTime()
+        let waveStarted = getMonoTime()
+        var calls: seq[tuple[tool: string, args: JsonNode]] = @[]
+        for w in wave: calls.add((w.name, w.args))
+        var outcomes: seq[ToolCallOutcome] = @[]
+        try:
+          outcomes = ct.dispatchToolCalls(calls)
+        except CatchableError as e:
+          for w in wave:
+            outcomes.add(ToolCallOutcome(error: e.msg))
+        let waveDurationMs = (getMonoTime() - waveStarted).inMilliseconds
+        for k, w in wave:
+          commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
+                         turnId,
+                         (id: w.id, name: w.name, args: w.args,
+                          parseFailed: false, rawArgs: ""),
+                         (if k < outcomes.len: outcomes[k]
+                          else: ToolCallOutcome(error: "no outcome")),
+                         waveStartedAt, waveDurationMs)
+        continue
+      let it = items[idx]
+      inc idx
+      let toolStartedAt = epochTime()
+      let toolStarted = getMonoTime()
+      var oc: ToolCallOutcome
+      if it.parseFailed:
+        oc = ToolCallOutcome(error:
+          "tool call arguments were not valid JSON (truncated or garbled stream): " &
+          it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
+      else:
+        try:
+          oc = ToolCallOutcome(ok: true,
+                               value: ct.dispatchToolCall(it.name, it.args))
+        except CatchableError as e:
+          oc = ToolCallOutcome(error: e.msg)
+      let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
+      commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
+                     it, oc, toolStartedAt, toolDurationMs)
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
@@ -1047,8 +1182,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     let stored = loadStoredMessages(ct, sessionId, pt, used, cs)
     for m in stored:
       entry.messages.add(m)
-    entry.persister = Persister(ct: ct, convId: sessionId, seqNo: stored.len,
-                                promptTokens: pt, contextUsed: used, ctxSize: cs)
+    # A2/A3: usage and cumulative cache counters persist in the header
+    # (written by persistConversationRuntime), so the context meter and
+    # cache metrics survive a runner restart.
+    entry.persister = Persister(
+      ct: ct, convId: sessionId, seqNo: stored.len,
+      promptTokens: pt, contextUsed: used, ctxSize: cs,
+      cachePrompt: header{"cachePrompt"}.getInt(0),
+      cacheRead: header{"cacheRead"}.getInt(0))
     entry.exposure = loadToolExposure(ct, sessionId)
 
   # Presence of the key means "set/clear the override"; omission preserves

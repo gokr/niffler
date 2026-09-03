@@ -28,6 +28,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **LLM auto-retry (B3)** — the session runner classifies chat failures and
+  retries transient ones (429/5xx/overloaded/timeout/connection drop) with
+  exponential backoff + jitter, `NIF_LLM_MAX_RETRIES` (default 2, 0 disables);
+  auth/quota/bad-request fail fast. Every retry announces
+  `ev.session.retry {attempt, maxRetries, delayMs, error}`. Policy lives in
+  `core/retry.nim`; unit-tested, plus an end-to-end scenario (two mocked 503s
+  then success) in the parallel test suite.
+
+- **Usage-accurate context accounting (A2) + cache reporting (A3)** — the
+  context guard trims at min(90% of window, window − 16K output reserve;
+  `NIF_CTX_RESERVE`) instead of a bare ratio, and the pre-usage chars/4
+  estimate now counts reasoning, tool-call arguments and per-message
+  overhead. Per-conversation prompt-cache counters (from the provider's
+  `cached_tokens`) surface as `cache {prompt, read, hitRate}` on session
+  status events, in the conversation header and in `session_info` —
+  making cache hostility measurable before compaction lands.
+
+- **Parallel tool waves and process replicas** — session runners fan out
+  explicitly `x-harness.parallel` calls over distinct NATS reply inboxes and
+  commit results in model order. Stateless logical components can now set
+  `replicas: N` (1–16) in `manifest.yaml` or `core.spawn`; the supervisor,
+  catalog, persisted shape, status, and group lifecycle are replica-aware.
+  Four `grep` replicas ship by default, and the timing contract proves two
+  one-second same-component calls finish in about one second without adding
+  threads or `{.gcsafe.}` handlers to the default Nim SDK pump. The Go SDK
+  gained bounded `ToolConcurrent` goroutine dispatch with serialized-handler
+  barriers and graceful waiting; the audited `llm.chat`, `llm_resolve`, and
+  `llm-openai.chat` handlers now overlap across independent sessions.
+
 - **Live model ids from the provider's own /models endpoint** — two
   complementary surfaces over models.dev (metadata authority: limits,
   pricing) with the provider itself as id authority:

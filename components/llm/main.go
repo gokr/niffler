@@ -810,7 +810,12 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 
 func main() {
 	comp := sdk.New("llm", "0.4.0")
-	comp.Tool("llm_resolve", map[string]any{
+	// Both handlers are request-local: provider/model lookup uses thread-safe
+	// NATS requests, each chat owns its HTTP client, cancellation subscription,
+	// stream accumulators, and result. The only package maps are read-only.
+	// Opting in here prevents independent sessions/subagents from serializing
+	// behind one long model request.
+	comp.ToolConcurrent("llm_resolve", map[string]any{
 		"type":        "object",
 		"description": "Resolve the effective provider, model and context window without exposing credentials or making an inference request.",
 		"properties": map[string]any{
@@ -833,7 +838,11 @@ func main() {
 		"x-harness":       map[string]any{"hidden": true},
 		"x-models-source": map[string]any{"version": modelsSourceVersion, "priority": 150},
 	}, modelsSourceHandler)
-	comp.Tool("chat", map[string]any{
+	// Both handlers are request-local: each chat owns its HTTP client,
+	// cancellation subscription, stream accumulators, and result. The only
+	// package maps are read-only. Opting in prevents independent sessions
+	// and subagents from serializing behind one long model request.
+	comp.ToolConcurrent("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"messages": map[string]any{"type": "array",

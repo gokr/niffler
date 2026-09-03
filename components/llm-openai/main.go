@@ -127,7 +127,7 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 				Content   *string `json:"content"`
 				ToolCalls []struct {
 					ID        string `json:"id"`
-					Name      string `json:"name"`     // DeepSeek flat variant
+					Name      string `json:"name"`      // DeepSeek flat variant
 					Arguments string `json:"arguments"` // DeepSeek flat variant
 					Function  struct {
 						Name      string `json:"name"`
@@ -198,7 +198,9 @@ func tail(s string, n int) string {
 
 func main() {
 	comp := sdk.New("llm-openai", "0.1.0")
-	comp.Tool("chat", map[string]any{
+	// Every request owns its HTTP client and result state; the context table is
+	// immutable after startup, so independent chat calls may overlap safely.
+	comp.ToolConcurrent("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"messages": map[string]any{"type": "array",
@@ -206,7 +208,7 @@ func main() {
 			"tools": map[string]any{"type": "array"},
 			"model": map[string]any{"type": "string"},
 		},
-		"required": []string{"messages"},
+		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},
 	}, chatHandler)
 	if err := comp.Run(); err != nil {

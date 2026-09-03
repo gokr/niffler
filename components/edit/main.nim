@@ -862,7 +862,7 @@ discard comp.tool("read", toolSchema(%*{
             "description": "Maximum number of lines to read (default 2000)"}
 }, @["path"],
   "Read a text file — the standard way to inspect content before editing. Verbatim lines, no line numbers: copy text exactly into edit's old_string. Pageable (offset/limit; the hint reports the range shown). Binary/UTF-16/32 and >100MB files are refused, empty files reported, huge lines elided with a bash hint. Use grep to search across files, read_many to survey several."), hRead,
-  %*{"timeoutMs": 60000,
+  %*{"timeoutMs": 60000, "parallel": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("read_many", toolSchema(%*{
@@ -873,7 +873,7 @@ discard comp.tool("read_many", toolSchema(%*{
             "description": "Maximum lines per file (default 2000)"}
 }, @["paths"],
   "Read up to 8 named text files in one call — an initial repository survey instead of bash cat or many read calls. Returns [{path, content}|{path, error}] in request order; one bad file doesn't hide the others. Max 512KB total."),
-  hReadMany, %*{"timeoutMs": 60000,
+  hReadMany, %*{"timeoutMs": 60000, "parallel": true,
                 "workspace": {"pathArrayFields": ["paths"]}})
 
 discard comp.tool("edit", toolSchema(%*{

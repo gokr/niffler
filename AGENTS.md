@@ -20,8 +20,10 @@ anything structural.
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
   `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
   write source → `builder.build`
-  → `core.spawn`; removing one = `core.kill` (temporary) or `core.remove`
-  (also deletes the persisted record). The agent does this to itself,
+  → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
+  coordinated components and uses their existing NATS queue group. Removing
+  one logical group = `core.kill` (temporary) or `core.remove` (also deletes
+  the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.
 - One conversation = one process: the system harness (`niffler.nim`) is the
   irreducible root; it ensures a **session runner** (`var/bin/session <id>`,
@@ -33,10 +35,17 @@ anything structural.
   commands only (help/status/catalog/tools/sessions) — the LLM chat lives in
   the web UI and the niffler-tui plugin; scripting goes through the `cli`
   component.
-- Nim SDK has **no callbacks and no threads**: handlers poll
+- The default Nim SDK pump has **no callbacks and no threads**: handlers poll
   `natsSubscription_NextMsg` on the main thread, serialized, with normal GC.
-  The `{.gcsafe.}` pragmas dance from the old codebase is not needed and must not
-  be copied here.
+  Never use `asyncdispatch`. Components that explicitly need internal
+  concurrency may own threads; prefer `std/threads` + `std/locks` for
+  long-lived/shared-state component workers, and `taskpools` for isolated
+  input/output jobs. Keep the concurrency boundary component-local and make
+  shared state explicit rather than adding `{.gcsafe.}` ceremony to every SDK
+  handler. Stateless process replicas are the other same-component option; do
+  not replicate single-writer or process-local mutable state (`store`, current
+  `edit` undo state). Go tools serialize by default but may explicitly use the
+  SDK's `ToolConcurrent` after a shared-state audit.
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
@@ -84,8 +93,8 @@ make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_systemprompt, t_agent, t_fabric, t_nested — each
                       # owns a private NATS server + temporary NIF_ROOT, so
                       # component targets can overlap a live harness
-make gotest           # Go unit tests + vet: sdk/go, components/models, llm
-                      # (also part of `make test`)
+make gotest           # Go unit tests + vet: sdk/go, components/models,
+                      # provider, llm and llm-openai (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make down             # stop stray harnesses/components + nats-server (e.g. a

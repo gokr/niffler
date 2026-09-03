@@ -31,7 +31,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `agent`, `fabric`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec, the core-boundary rationale and `research/` (design history) |
-| `manifest.yaml` | bootstrap manifest: which components core spawns, in what order, and with what restart policy; `--minimal` filters it to `store`, `bash`, and `llm` |
+| `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, and `llm` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
 | `var/barrel-db` | the store's embedded KV file — **single-writer**: exactly one `store` process may open it |
@@ -60,7 +60,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
-| `grep` | Nim | optional | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed |
+| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -164,6 +164,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
+| `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.retry`. Auth/quota/bad-request errors always fail fast | `2` |
+| `NIF_CTX_RESERVE` | output tokens held back when deciding to trim context: the trim level is min(90% of window, window − reserve); `0` disables the reserve | `16384` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
 | `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message | `65536` |
@@ -371,11 +373,26 @@ The agent adds capabilities at runtime, mid-conversation:
 1. writes a component source (Nim: `import niffler/sdk`, typed tool
    pattern; Go: `import sdk "niffler.dev/sdk"` — see the system prompt)
 2. `builder.build {lang, name, source}` compiles it into `var/bin/`
-3. `core.spawn {name, binary}` starts it; it registers itself; new
+3. `core.spawn {name, binary, replicas?}` starts it; it registers itself; new
    conversations expose its tools directly (when not on demand), existing
    ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery))
-4. `core.kill {name}` stops it temporarily (restored on next boot);
-   `core.remove {name}` stops it and deletes its persisted record
+4. `core.kill {name}` stops every replica temporarily (restored on next boot);
+   `core.remove {name}` stops the group and deletes its persisted record
+
+`replicas` is optional (1–16, default 1) and is persisted. Use it only for
+stateless or externally coordinated components: all replicas share the same
+`svc.<name>.call` NATS queue group, so concurrent requests distribute one per
+process. Never replicate single-writer `store`, or a component such as `edit`
+whose mutation/undo state is process-local. The default Nim SDK pump remains
+serial. A component may explicitly own native concurrency when replicas do not
+fit: prefer `std/threads` + `std/locks` for long-lived/shared-state Nim workers,
+use `taskpools` for isolated jobs, and never use `asyncdispatch`. In Go,
+ordinary `Tool` handlers remain exclusive; an audited handler can use
+`ToolConcurrent` (bounded to 16 in flight by default, configurable through
+`ConcurrentLimit`). Concurrent handlers must synchronize shared state and must
+not synchronously call a serialized tool on their own component. This
+server-side choice is independent of the runner-facing `x-harness.parallel`
+hint.
 
 **Persistence of shape**: spawned components are recorded in the store
 (kind `component`) and restored on normal boot. `--minimal` leaves those

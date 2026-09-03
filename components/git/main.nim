@@ -125,7 +125,7 @@ proc validAuthor(author: string): bool =
   author.len < 200 and not author.startsWith("-") and
     not author.contains('\n') and not author.contains('\r')
 
-comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
               "workspace": {"cwdField": "repo"}}):
   proc git_status(repo: string = "", path: string = ""): JsonNode =
     ## Cheap repo state check — run it whenever you are unsure what
@@ -155,7 +155,7 @@ comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, 200)
 
-comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
               "workspace": {"cwdField": "repo"}}):
   proc git_diff(repo: string = "", path: string = "", unified: int = 3,
                 stat: bool = false): JsonNode =
@@ -193,7 +193,7 @@ comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
       return %*{"exit_code": 0, "output": "[no changes since HEAD]"}
     return finish(code, output, if stat: 500 else: 10_000)
 
-comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
               "workspace": {"cwdField": "repo"}}):
   proc git_log(repo: string = "", path: string = "", max_count: int = 20,
                author: string = ""): JsonNode =
@@ -230,7 +230,7 @@ comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
       return %*{"exit_code": 0, "output": "[no commits matched]"}
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
-comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
               "workspace": {"cwdField": "repo"}}):
   proc git_show(repo: string = "", rev: string, path: string = ""): JsonNode =
     ## Show one commit in full: metadata, message, and the complete diff
@@ -259,7 +259,7 @@ comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
     let (code, output) = runGit(args, 20_000)
     return finish(code, output)
 
-comp.tool(%*{"timeoutMs": 45000, "onDemand": true,
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
               "workspace": {"cwdField": "repo"}}):
   proc git_blame(repo: string = "", path: string, start_line: int = 1,
                  max_lines: int = 200): JsonNode =

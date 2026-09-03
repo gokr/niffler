@@ -41,10 +41,12 @@ Rules:
 ## Subjects
 
 ```
-reg.publish            # component announces itself on connect
+reg.publish            # component process announces itself on connect
                        #   {name, version, pid, tools: [ {name, schema} ], client?,
-                       #    slash?: [SlashCommand]}
-reg.depart             # same shape (name suffices), graceful shutdown
+                       #    slash?: [SlashCommand]}; repeated logical name +
+                       #    identical contract joins its replica group
+reg.depart             # {name, pid, ...}, graceful process departure; the logical
+                       #   component remains while another replica PID is live
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?,
@@ -146,9 +148,19 @@ ev.session.assistant   # {sessionId, turnId?, content, provider?, model?,
                        #   complete model text + actual backend metadata per LLM round
 ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?,
                        #   catalog?, context?, contextSource?, promptTokens?,
-                       #   usedTokens?}
+                       #   usedTokens?, cache?: {prompt, read, hitRate}}
                        #   resolved turn config and live context occupancy.
-                       #   Also emitted by model-only session calls (no inference)
+                       #   cache reports cumulative provider-reported
+                       #   prompt-cache reads (A3; present when the provider
+                       #   sends prompt_tokens_details). Also emitted by
+                       #   model-only session calls (no inference)
+ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
+                       #   warning?|trimmed?}; context-window pressure
+                       #   (75% warn, 90% trim)
+ev.session.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
+                       #   a transient LLM failure is being retried after delayMs
+                       #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).
+                       #   Auth/quota/bad-request failures never retry
 ev.session.token       # {sessionId, turnId?, content, reasoning} live token deltas
                        #   (streamed while the model generates)
 ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
@@ -231,9 +243,14 @@ ends — turns never nest.
 
 1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → select
    the boot profile → spawn children (no ordering; ordering emerges from the
-   bus). Normal mode uses the manifest; `--minimal` filters it to `store`,
-   `bash`, and `llm` and skips restoration of persisted spawned components.
-2. Component connects, publishes `reg.publish` with its tool schemas.
+   bus). A stateless entry may set `replicas: N` (1–16; default 1), producing N
+   queue-group subscribers under one logical component name. Normal mode uses
+   the manifest; `--minimal` filters it to `store`, `bash`, and `llm` and skips
+   restoration of persisted spawned components.
+2. Each component process connects and publishes `reg.publish` with its tool
+   schemas. Core tracks all live PIDs for an identical logical registration;
+   `catalog {op: snapshot}` exposes `pids` and `replicas`, while `core.status`
+   also exposes `runningReplicas`.
 3. Core converges when the selected profile's required set has registered
    (normally the manifest's required entries; `store`, `bash`, and `llm` in
    minimal mode). Every new registration is announced as
@@ -275,6 +292,34 @@ so any attached interactive client can step in; direct (non-session) calls
 broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
 denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+
+## x-harness schema extensions
+
+Tool schemas may carry an `x-harness` object (docs/research/REBOOT.md,
+"policy rides the schema") that the session runner honors at dispatch. Known
+keys:
+
+- `approval`: `"always"` gates the call on a human (see Approvals).
+- `timeoutMs`: per-tool request timeout (default 120s).
+- `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
+- `onDemand`: kept out of a conversation's frozen direct toolset; reachable
+  via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
+- `sessionContext`: the call runs in the live conversation (fabric, agent);
+  the runner injects `__session` context and a nested-call lease.
+- `noSpawn`: a subagent (a session with a parent lineage record) may not call
+  this tool (depth guard enforced at dispatch).
+- `parallel`: `true` marks the tool safe to dispatch **concurrently** with
+  other `parallel`-marked tools in the same assistant message. The runner
+  fans out the batch over the bus and reassembles results in call order.
+  Default (absent/`false`) is strictly serial — which is also enforced for
+  any tool carrying `approval: "always"` or `sessionContext: true`, whatever
+  `parallel` says. `parallel` is a *runner-side* scheduling hint: it does not
+  by itself make one process execute two handlers concurrently. Server-side
+  execution is an independent, explicit component choice: stateless services
+  can use process replicas; audited Go handlers can register with
+  `ToolConcurrent`; a Nim component may own native workers even though the
+  default SDK pump remains serial. The NATS queue group on
+  `svc.<component>.call` distributes one call per process subscriber.
 
 ## Conventions
 
