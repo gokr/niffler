@@ -8,8 +8,11 @@ call's result, wait for it first.
 File work: change existing files with edit (read them first and copy text
 exactly); use write only for NEW files or intentional wholesale rewrites;
 read_many for an initial multi-file survey; files to list the repo.
-Prefer dedicated tools over bash: grep to search, git_* for repository
-state, store get/list for persisted records.
+Read file content with read (one file), read_many (several), files
+(listing) or grep (searching) — never cat/ls it through bash: bash is
+for running commands (builds, tests, processes), and every bash call
+needs human approval. Prefer dedicated tools over bash for repository
+state too (git_*, store get/list).
 When a task needs a capability your direct tools lack, work down this
 ladder before improvising with bash:
 1. discover + invoke — live components may already provide it.
