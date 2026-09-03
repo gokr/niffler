@@ -385,6 +385,54 @@ proc main() =
         midWait{"status"}.getStr("") == "stopped" and midSecs < 10.0,
         $midWait & " secs=" & $midSecs.int)
 
+  # --- tool allowlist: the child may dispatch only the frozen set -----------
+  # The evidence lives in the CHILD's transcript (its bash call is rejected
+  # at the dispatch gate), so resolve the child id from the agent_run result
+  # first, like the depth-guard test does.
+  proc childTranscriptOf(parent: string): tuple[id, text: string] =
+    for i in 1 .. 12:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      let content = m{"value"}{"content"}.getStr("")
+      # only a SUCCESSFUL agent_run result names the child; error results
+      # carry sessionId in their extra too
+      if content.contains("\"reply\""):
+        let marker = content.find("\"sessionId\":\"agent-")
+        if marker >= 0:
+          let start = marker + "\"sessionId\":\"".len
+          var stop = start
+          while stop < content.len and content[stop] != '"': inc stop
+          result.id = content[start ..< stop]
+    if result.id.len > 0:
+      for i in 1 .. 10:
+        let m = call(nc, "store", "get",
+                     %*{"kind": "message",
+                        "id": result.id & ":" & align($i, 6, '0')}, 10_000)
+        if m{"error"} != nil: break
+        result.text.add(m{"value"}{"content"}.getStr(""))
+
+  let allowParent = "agt-allow"
+  discard call(nc, "core", "session",
+               %*{"sessionId": allowParent, "content": "go"}, 120_000)
+  let allowChild = childTranscriptOf(allowParent)
+  check("allowlisted subagent rejects a non-listed tool",
+        allowChild.text.contains("not in this session's tool allowlist"),
+        "id=" & allowChild.id & " text=" & allowChild.text)
+
+  # --- round budget: maxRounds caps the child's tool rounds -----------------
+  # Two rounds run (depth-guard attempt, bash) and the scripted final round
+  # never happens; the turn ends with an empty reply.
+  let roundsParent = "agt-rounds"
+  discard call(nc, "core", "session",
+               %*{"sessionId": roundsParent, "content": "go"}, 120_000)
+  let roundsChild = childTranscriptOf(roundsParent)
+  check("round-budget child ran its tool rounds",
+        roundsChild.text.contains("agent-ok"), roundsChild.text)
+  check("round-budget child stopped before its final round",
+        not roundsChild.text.contains("subagent-done"), roundsChild.text)
+
   report("agent")
 
 main()

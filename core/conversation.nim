@@ -124,6 +124,8 @@ type
     persister*: Persister
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high
+    allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
+    maxRounds*: int          ## per-turn tool-round budget (0 = default 20)
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -510,6 +512,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
               thinkingEffort = "", turnContent = "",
+              maxRounds = 20, allowlist: seq[string] = @[],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -595,7 +598,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.steerStream != nil:
     ct.steerStream.cancelRequested = false
   var rounds = 0
-  while rounds < 20:
+  while rounds < max(maxRounds, 1):
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
     # flag is raised by pumpSteer from dispatch's idle slots, including
@@ -617,8 +620,17 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
+    # An allowlisted conversation sees only its frozen tools in the prompt;
+    # the dispatch gate (sessionAllowlist) enforces the same set.
+    var promptToolsJson = exposure.promptTools()
+    if allowlist.len > 0:
+      var filtered = newJArray()
+      for tool in promptToolsJson:
+        if tool{"name"}.getStr("") in allowlist:
+          filtered.add(tool)
+      promptToolsJson = filtered
     let llmArgs = %*{"messages": messages,
-                     "tools": exposure.promptTools().formatToolsForLlm(),
+                     "tools": promptToolsJson.formatToolsForLlm(),
                      "sessionId": sessionId,
                      "stream": true}
     if selectedModel.len > 0:
@@ -850,6 +862,35 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.messages = @[%*{"role": "system", "content": sp}]
     entry.modelOverride = header{"modelOverride"}.getStr("")
     entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
+    # Frozen per-session controls (subagent scoping): the header carries
+    # them across runner resumes; the first session call's args win while
+    # the header is unset. The allowlist is enforced at the dispatch gate
+    # (ct.sessionAllowlist), the round budget at runTurn's loop bound.
+    let headerAllow = header{"toolAllowlist"}
+    if headerAllow != nil:
+      for t in headerAllow:
+        if t.getStr("").len > 0: entry.allowlist.add(t.getStr(""))
+    entry.maxRounds = header{"maxRounds"}.getInt(0)
+    if args.kind == JObject and args.hasKey("tools") and
+        args{"tools"}.kind == JArray and entry.allowlist.len == 0:
+      for t in args{"tools"}:
+        let name = t.getStr("")
+        if name.len > 0 and entry.allowlist.len < 32:
+          entry.allowlist.add(name)
+      if entry.allowlist.len > 0:
+        var arr = newJArray()
+        for name in entry.allowlist: arr.add(%name)
+        ct.updateConversationHeader(sessionId, %*{"toolAllowlist": arr})
+    if args.kind == JObject and args.hasKey("maxRounds") and
+        entry.maxRounds == 0:
+      let mr = args{"maxRounds"}.getInt(0)
+      if mr >= 1 and mr <= 20:
+        entry.maxRounds = mr
+        ct.updateConversationHeader(sessionId, %*{"maxRounds": %mr})
+    if entry.allowlist.len > 0:
+      # the runner allocated the ref at startup; mutating through it makes
+      # the frozen allowlist visible to every dispatch on this session
+      ct.sessionAllowlist[] = entry.allowlist
     var pt = 0
     var used = 0
     var cs = 0
@@ -928,7 +969,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort, content, turnError)
+                      entry.thinkingEffort, content,
+                      (if entry.maxRounds > 0: entry.maxRounds else: 20),
+                      entry.allowlist, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.

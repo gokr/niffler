@@ -33,6 +33,10 @@ type
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
+    sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
+                                       ## (empty/nil = unrestricted; set once
+                                       ## by handleSessionCall, enforced at
+                                       ## this gate for every dispatch)
     nested*: NestedState               ## nested-call proxy (session runners only)
     prepareSession*: proc(sessionId: string): JsonNode {.closure.}
       ## Delegated child-runner preparation (set by the system harness after
@@ -640,6 +644,20 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        deadlineMs: int = 0): JsonNode =
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
+
+  # Per-session tool allowlist (subagent scoping): a conversation frozen
+  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
+  # machinery) and the store quartet the runner itself persists through
+  # (transcript, headers, exposure) — without them an allowlisted session
+  # would silently lose its own history. Trade-off: a model in an
+  # allowlisted session can still read/write the shared KV store directly;
+  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
+  # transcript store the session needs to exist.
+  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
+      tool notin ["chat", "put", "get", "list", "del"] and
+      tool notin ct.sessionAllowlist[]:
+    raise newException(ValueError,
+      "tool '" & tool & "' is not in this session's tool allowlist")
 
   # session_info with no sessionId means "my own conversation": while a turn
   # is live (ct.nested.session is set only inside runTurn) the runner injects

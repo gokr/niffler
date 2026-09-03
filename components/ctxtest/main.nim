@@ -114,6 +114,22 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "SLOW_BASH take your time"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-allow":
+      if stage == 0:
+        # allowlist scoping: the child may dispatch only session_info, so
+        # its scripted bash call must be rejected at the dispatch gate
+        return toolCall("t1", "agent_run",
+                        %*{"task": "try bash then report",
+                           "tools": ["session_info"]})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-rounds":
+      if stage == 0:
+        # round budget: the child's scripted loop wants 3 rounds; with
+        # maxRounds 2 the third round never happens
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent",
+                           "maxRounds": 2})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must

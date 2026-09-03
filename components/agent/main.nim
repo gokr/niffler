@@ -104,11 +104,13 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
-proc childSessArgs(child, task, model, thinking: string): JsonNode =
+proc childSessArgs(child, task, model, thinking: string,
+                   toolArgs: JsonNode = nil): JsonNode =
   ## The child session call: task preamble, optional model override and
-  ## reasoning effort, and the conversation's pluggable constitution
-  ## (systemprompt component, best effort — the runner's own fallback covers
-  ## a missing component).
+  ## reasoning effort, optional tool allowlist and round budget (frozen
+  ## per-session controls enforced by core), and the conversation's
+  ## pluggable constitution (systemprompt component, best effort — the
+  ## runner's own fallback covers a missing component).
   result = %*{"sessionId": child, "content": taskPreamble & task}
   try:
     let sp = comp.request("systemprompt", "systemprompt",
@@ -123,6 +125,13 @@ proc childSessArgs(child, task, model, thinking: string): JsonNode =
     result["model"] = %model
   if thinking.len > 0:
     result["thinking"] = %thinking
+  if toolArgs != nil:
+    # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+    if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
+      result["tools"] = toolArgs{"tools"}
+    let mr = toolArgs{"maxRounds"}.getInt(0)
+    if mr >= 1 and mr <= 20:
+      result["maxRounds"] = %mr
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -251,6 +260,10 @@ let runSchema = toolSchema(%*{
             "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "tools": {"type": "array",
+            "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
+  "maxRounds": {"type": "integer",
+                "description": "Optional tool-round budget per child turn (1-20, default 20)"},
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"}
 }, required = @["task"],
@@ -272,7 +285,7 @@ discard comp.tool("agent_run", runSchema,
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
       childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr("")),
+                    toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let resp = comp.requestEnvelope(prep.subject, env, timeoutMs)
     if resp.kind == ekError:
@@ -293,6 +306,10 @@ let spawnSchema = toolSchema(%*{
             "description": "Optional model override for the subagent"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "tools": {"type": "array",
+            "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
+  "maxRounds": {"type": "integer",
+                "description": "Optional tool-round budget per child turn (1-20, default 20)"},
   "timeoutMs": {"type": "integer",
                 "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
 }, required = @["task"],
@@ -329,7 +346,7 @@ discard comp.tool("agent_spawn", spawnSchema,
                        extra = %*{"sessionId": prep.child})
     let env = callEnvelope("session",
       childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr("")),
+                    toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId

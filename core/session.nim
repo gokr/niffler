@@ -47,7 +47,8 @@ proc main() =
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
-                     activeTurn: new(ActiveTurn))
+                     activeTurn: new(ActiveTurn),
+                     sessionAllowlist: new(seq[string]))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
   # consults the store so a decision made in any client is honored here too.
   approval.checkAuto = proc(session, tool: string): bool =
