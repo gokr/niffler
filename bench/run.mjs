@@ -99,6 +99,13 @@ function resetWorkdir(workdir) {
 function prepareRepo(taskId, dest) {
   const src = path.join(TASK_ROOT, taskId, "repo");
   fs.cpSync(src, dest, { recursive: true });
+  // Test runs litter the repo with derived artifacts (Python __pycache__,
+  // compiled test binaries). Ignore them so a model's normal `git add -A`
+  // doesn't stage test-run byproducts into the diff.
+  const gi = path.join(dest, ".gitignore");
+  if (!fs.existsSync(gi)) {
+    fs.writeFileSync(gi, "__pycache__/\n*.pyc\n");
+  }
   // Task repos ship as plain files; create the pristine base commit here so
   // every run gets an identical history to diff against.
   if (!fs.existsSync(path.join(dest, ".git"))) {
@@ -149,11 +156,32 @@ function diffStat(repo) {
   return { files, insertions, deletions };
 }
 
+const SOURCE_EXT =
+  /\.(py|nim|nimble|js|ts|mjs|cjs|sh|bash|cfg|ini|toml|yaml|yml|json|c|h|cpp|hpp|rs|go)$/;
+
 function protectedTouched(repo, meta) {
-  const changed = new Set(diffStat(repo).files);
+  let tracked = null;
+  try {
+    tracked = new Set(
+      git(repo, ["ls-tree", "-r", "--name-only", "base"])
+        .split("\n")
+        .filter(Boolean),
+    );
+  } catch {}
+  const changed = new Set(
+    diffStat(repo).files.filter(
+      (f) => !f.includes("__pycache__/") && !f.endsWith(".pyc"),
+    ),
+  );
   for (const pat of meta.protected || []) {
     for (const f of changed) {
-      if (pat.endsWith("/**") ? f.startsWith(pat.slice(0, -2)) : f === pat) return f;
+      if (!(pat.endsWith("/**") ? f.startsWith(pat.slice(0, -2)) : f === pat))
+        continue;
+      // Files new to base only violate when they look like source: compiled
+      // test binaries and other build artifacts under tests/ are byproducts
+      // of RUNNING the tests, not tampering (a planted conftest.py would be).
+      if (tracked && !tracked.has(f) && !SOURCE_EXT.test(f)) continue;
+      return f;
     }
   }
   return null;
