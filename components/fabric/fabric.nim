@@ -480,24 +480,23 @@ discard comp.tool("fabric", fabSchema,
         return %*{"error": "fabric needs code or name"}
       # program library: fetch the stored source (the model curates it
       # via the store's put/get/list — fabric only runs it)
-      var stored: JsonNode
+      var stored: StoreItem
       try:
-        stored = comp.request("store", "get",
-          %*{"kind": "fabricprog", "id": name}, 10_000)
+        stored = comp.storeGet("fabricprog", name, 10_000)
+      except StoreNotFoundError:
+        discard  # falls through to the not-found path below
       except CatchableError:
-        stored = nil
-      if stored == nil or stored{"value"}{"code"}.getStr("").len == 0:
+        discard  # store unreachable — degrade as before
+      if stored.value == nil or stored.value{"code"}.getStr("").len == 0:
         var known: seq[string] = @[]
         try:
-          let lst = comp.request("store", "list",
-            %*{"kind": "fabricprog", "limit": 50}, 10_000)
-          for it in lst{"items"}:
-            known.add(it{"id"}.getStr(""))
+          for it in comp.storeList("fabricprog", "", 50, 10_000):
+            known.add(it.id)
         except CatchableError: discard
         var hint = ""
         if known.len > 0: hint = " Known programs: " & known.join(", ")
         return %*{"error": "no stored program named '" & name & "'." & hint}
-      code = stored{"value"}{"code"}.getStr("")
+      code = stored.value{"code"}.getStr("")
     if code.len > maxCodeBytes:
       return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
     let lintMsg = lint(code)
