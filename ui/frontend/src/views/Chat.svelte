@@ -23,6 +23,7 @@
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
   }
 
   interface Msg {
@@ -347,6 +348,14 @@
         const used = conv?.value?.contextUsed ?? 0;
         const pct = runtime.context > 0 ? Math.round((used / runtime.context) * 100) : 0;
         lines.push(t("status.detailUsed", { used: fmtK(used), pct: String(pct) }));
+        const cp = conv?.value?.cachePrompt ?? 0;
+        const cr = conv?.value?.cacheRead ?? 0;
+        if (cp > 0) {
+          const rate = typeof conv?.value?.cacheHitRate === "number"
+            ? conv.value.cacheHitRate
+            : Math.round((cr / cp) * 1000) / 10;
+          lines.push(t("status.detailCache", { read: fmtK(cr), prompt: fmtK(cp), rate: String(rate) }));
+        }
       }
       const v = conv?.value ?? {};
       if (v.modelOverride) lines.push(t("status.detailOverride", { model: v.modelOverride }));
@@ -681,6 +690,11 @@
               {#if g.m.usage?.prompt_tokens != null || g.m.usage?.completion_tokens != null}
                 <span class="msg-meta-item">
                   ⤴ {g.m.usage?.prompt_tokens ?? 0} · ⤵ {g.m.usage?.completion_tokens ?? 0}
+                </span>
+              {/if}
+              {#if (g.m.usage?.prompt_tokens_details?.cached_tokens ?? 0) > 0}
+                <span class="msg-meta-item" title="provider prompt-cache hits (A3)">
+                  ⚡ {g.m.usage?.prompt_tokens_details?.cached_tokens}/{g.m.usage?.prompt_tokens} cached
                 </span>
               {/if}
               {#if g.m.usage?.total_tokens != null}
