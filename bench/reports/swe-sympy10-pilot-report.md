@@ -91,18 +91,22 @@ have been cut off. Expert judge overhead for the whole 10-cell lane was
 
 **Expert behavior (cap 60)**: active on all 10 cells, ≤2 judgments each,
 ZERO steer noise (9 cells fully silent), one accepted steer — on 13031:
-"Use `files` to locate the Matrix class source" — and that cell passed on
-the expert lane (55 rounds) while the plain lane exhausted its 60-round
-budget on it. **Fabric was never invoked** on any lane: sympy fixes are
-single-file edits; there was no fanout/pipeline shape for the expert to
-point at.
+"Use `files` to locate the Matrix class source". That steered cell still
+**failed** on the expert lane (60-round budget exhausted, 3.07 M tokens)
+while the plain lane passed it (55 rounds) — so the single steer did not
+produce a net win on this run; the expert lane matched plain at 8/10 with
+a different failure composition (lost 13031, won 11618). **Fabric was
+never invoked** on any lane: sympy fixes are single-file edits; there was
+no fanout/pipeline shape for the expert to point at.
 
-**Remaining failure modes at cap 60** (13091 both lanes, 11618/13031 one
-lane each): 13091 is a confident wrong fix — the agent ended its turn
+**Remaining failure modes at cap 60** (13091 both lanes, 11618-plain,
+13031-expert): 13091 is a confident wrong fix — the agent ended its turn
 declaring success with a plausible `Basic.__eq__` patch that fails the
-hidden tests (no round-budget issue, 8–11 rounds). 13031-plain exhausted
-even 60 rounds (3.07 M tokens); 11618-expert stopped early with an
-insufficient edit. These are model-reasoning failures, not harness limits.
+hidden tests (no round-budget issue, 8–11 rounds); only pi solved it.
+13031-expert exhausted even 60 rounds (3.07 M tokens). 11618-plain is
+single-run variance (passed at cap 20 and in a discarded 30-min-timeout
+attempt, failed here at 14 rounds with an insufficient edit). These are
+model-reasoning failures, not harness limits.
 
 ## Raw data
 
