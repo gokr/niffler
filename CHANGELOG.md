@@ -28,6 +28,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Live model ids from the provider's own /models endpoint** — two
+  complementary surfaces over models.dev (metadata authority: limits,
+  pricing) with the provider itself as id authority:
+  - `provider` component: new `provider_models` tool probes
+    `{base}/models` — by stored `nickname`, or explicit `baseUrl`+`apiKey`
+    for the connect form before the credential is saved. Disk-cached
+    5 min per endpoint under `var/models-served/`; a failing probe serves
+    the last-known-good cache; OAuth credentials are honored.
+  - `llm` component: registers an `x-models-source` plugin (priority 150)
+    whose JSON Merge Patch adds the ids each provider was observed serving.
+    Probes run in the background after chats (10-minute TTL, never blocking
+    or failing a chat); the models component merges the patch on its normal
+    refresh cycle so every bus client sees served ids.
+
 - **Subagent budgets: per-job token and tool-call caps** —
   `agent_run`/`agent_spawn` accept `maxCalls` (total tool dispatches per
   child turn, 1-500 — every dispatch attempt counts, success or error) and

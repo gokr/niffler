@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -386,5 +387,82 @@ func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
 	u2 := plain.(map[string]any)["usage"].(map[string]any)
 	if _, present := u2["prompt_tokens_details"]; present {
 		t.Fatalf("prompt_tokens_details should be omitted without details: %#v", u2)
+	}
+}
+
+func TestModelsSourceHandlerPatchShape(t *testing.T) {
+	liveModels.mu.Lock()
+	liveModels.models = map[string][]string{
+		"synthetic|https://api.synthetic.new/openai/v1": {"hf:zai-org/GLM-5.3-Flash", "hf:moonshotai/Kimi-K3"},
+		"deepseek|https://api.deepseek.com":             {"deepseek-chat", "deepseek-reasoner"},
+	}
+	liveModels.mu.Unlock()
+	t.Cleanup(func() {
+		liveModels.mu.Lock()
+		liveModels.models = map[string][]string{}
+		liveModels.mu.Unlock()
+	})
+
+	result, err := modelsSourceHandler(nil, []byte(`{"version": 1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := result.(map[string]any)["patch"].(map[string]any)
+	synthetic := patch["synthetic"].(map[string]any)["models"].(map[string]any)
+	if _, ok := synthetic["hf:zai-org/GLM-5.3-Flash"]; !ok {
+		t.Fatalf("patch missing synthetic model: %#v", synthetic)
+	}
+	if len(patch["deepseek"].(map[string]any)["models"].(map[string]any)) != 2 {
+		t.Fatal("deepseek models missing")
+	}
+	// Entries are minimal add-only descriptors.
+	entry := synthetic["hf:zai-org/GLM-5.3-Flash"].(map[string]any)
+	if len(entry) != 1 || entry["id"] != "hf:zai-org/GLM-5.3-Flash" {
+		t.Fatalf("descriptor not minimal: %#v", entry)
+	}
+
+	// Wrong version is rejected (the models component probes with v1).
+	if _, err := modelsSourceHandler(nil, []byte(`{"version": 99}`)); err == nil {
+		t.Fatal("wrong version accepted")
+	}
+}
+
+func TestProbeLiveModelIDs(t *testing.T) {
+	var gotPath, gotAuth, gotAPIKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth, gotAPIKey = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("x-api-key")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "hf:zai-org/GLM-5.3-Flash"}, {"id": ""}, {"id": "hf:moonshotai/Kimi-K3"}},
+		})
+	}))
+	defer server.Close()
+
+	ids, err := probeLiveModelIDs(context.Background(), provider{
+		BaseURL: server.URL + "/openai/v1", APIKey: "sk-test", Protocol: protocolOpenAI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/openai/v1/models" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotAuth != "Bearer sk-test" || gotAPIKey != "" {
+		t.Fatalf("openai auth headers = %q / %q", gotAuth, gotAPIKey)
+	}
+	if len(ids) != 2 || ids[0] != "hf:zai-org/GLM-5.3-Flash" {
+		t.Fatalf("ids = %#v (empty id must be skipped)", ids)
+	}
+}
+
+func TestMaybeProbeLiveModelsSkipsCodexAndCaches(t *testing.T) {
+	// Codex has no /models route: never probed, never cached.
+	maybeProbeLiveModels(context.Background(), nil, resolvedConfig{
+		Provider: provider{BaseURL: "https://chatgpt.com/backend-api", Protocol: protocolCodex},
+	})
+	liveModels.mu.Lock()
+	count := len(liveModels.fetchedAt)
+	liveModels.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("codex probed: %d cache entries", count)
 	}
 }

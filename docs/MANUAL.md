@@ -497,6 +497,7 @@ the `active` marker doc) and exposes them to the agent and to `llm`:
 | `provider_status` | hidden, redacted effective provider including environment fallback and `hasKey` |
 | `provider_active` | hidden internal read of the effective provider's full config, credential included |
 | `provider_get {nickname}` | hidden internal full-config read used to pin an explicit stored provider across a turn |
+| `provider_models {nickname?\|baseUrl?, apiKey?, refresh?}` | model ids the provider's `/models` endpoint currently serves — a stored provider by nickname, or an explicit endpoint+key (the connect form, before the credential is saved). Disk-cached 5 min per endpoint (stale cache served when the probe fails); errors are returned to the caller so clients can fall back to the catalog |
 | `provider_switch {nickname}` | make another stored provider active; live-updates the LLM backend |
 | `provider_use_environment` | hidden client API that clears the stored marker and returns to `NIF_OPENAI_*` |
 | `provider_remove {nickname}` | delete a provider; if it was active, another one takes over or environment fallback resumes |
@@ -861,6 +862,16 @@ errors instead of timing out on the wire. Descriptor metadata is recursively
 redacted: secret-like keys (api keys, tokens, passwords, credentials,
 authorization headers, private keys, cookies) never reach a caller, at
 provider or model level.
+
+Live sources: models.dev is the metadata authority (limits, pricing), but the
+ids a provider actually serves come from the provider itself. Two
+complementary surfaces exist — the `provider` component's `provider_models`
+tool probes an endpoint on demand with a stored or explicit credential (the
+connect form), and the `llm` component registers an `x-models-source` plugin
+(priority 150) whose patch adds the ids each provider was observed serving
+(probed in the background after chats, 10-minute TTL) so the whole catalog
+converges on what endpoints really list. Both are best-effort: failures never
+affect chat or the catalog baseline.
 
 `llm` asks `models_get` for the selected model's context window. Explicit
 provider `context` and `NIF_OPENAI_CONTEXT` still win, and the existing small
