@@ -158,12 +158,16 @@ proc main() =
       quit(1)
 
   # ---- scenario: wave (4 parallel-safe calls) -----------------------------
+  # The files live in a subdir passed as the conversation workspace: the
+  # wave path must resolve the relative paths against it (a regression
+  # dispatched waves to the harness root, silently missing workspace files).
   block:
     let sandbox = newCoreSandbox("parallel-wave", ["store", "edit", "grep",
                                                    "llm"])
     let root = sandbox.root
-    writeFile(root / "a.txt", "AAA line one\n")
-    writeFile(root / "b.txt", "needle hit\n")
+    createDir(root / "sub")
+    writeFile(root / "sub" / "a.txt", "AAA line one\n")
+    writeFile(root / "sub" / "b.txt", "needle hit\n")
     compileMock(sandbox.sandboxBin("llm"), sandbox.repoRoot, "wave")
 
     let (server, url) = startNats()
@@ -180,7 +184,8 @@ proc main() =
 
     let sessionId = "conv-parallel-wave-" & $int(epochTime())
     let turn = call(nc, "core", "session",
-                    %*{"sessionId": sessionId, "content": "go"}, 120_000)
+                    %*{"sessionId": sessionId, "cwd": "sub",
+                       "content": "go"}, 120_000)
     check("wave: turn ok", turn{"error"} == nil, $turn)
     check("wave: turn reply", turn{"reply"}.getStr("") == "parallel-done",
           $turn)

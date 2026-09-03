@@ -1128,8 +1128,14 @@ proc dispatchToolCalls*(ct: CoreTools,
     var timeoutMs = defaultTimeoutMs
     if schema != nil:
       timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
-    let env = callEnvelope(call.tool,
-      (if call.args == nil: newJObject() else: call.args))
+    # Workspace resolution happens here exactly like the serial path:
+    # parallel-safe tools (read, read_many, files, grep, git_*) resolve
+    # relative paths against the conversation workspace, never the harness
+    # root.
+    let callArgs = if call.args == nil: newJObject() else: call.args.copy()
+    if ct.nested != nil:
+      applyWorkspace(schema, callArgs, ct.nested.workspace)
+    let env = callEnvelope(call.tool, callArgs)
     let data = env.encode()
     let inbox = "_INBOX." & newId()
     var sub: ptr natsSubscription
