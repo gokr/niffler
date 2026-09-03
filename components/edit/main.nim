@@ -779,6 +779,41 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
       $total & ".]")
   result = %text
 
+proc hReadMany(c: Component, args: JsonNode): JsonNode =
+  ## Read up to eight independent text files in one structured call. Each
+  ## item reports its own error so one missing/binary file does not hide the
+  ## others; the aggregate stays below the bus-friendly 512KB bound.
+  if args == nil or args.kind != JObject or args{"paths"} == nil or
+      args{"paths"}.kind != JArray:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read_many requires a paths array.")
+  let paths = args{"paths"}
+  if paths.len == 0 or paths.len > 8:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read_many paths must contain 1..8 files.")
+  let limit = args{"limit"}.getInt(MAX_READ_LINES)
+  if limit < 1:
+    raise newException(ValueError, "[E_BAD_SHAPE] limit must be positive.")
+  var items = newJArray()
+  var used = 0
+  for item in paths:
+    if item.kind != JString or item.getStr("").len == 0:
+      items.add(%*{"path": "", "error": "path must be a non-empty string"})
+      continue
+    let path = item.getStr()
+    try:
+      let content = hRead(c, %*{"path": path, "limit": limit})
+      let encoded = $content
+      if used + encoded.len > 512_000:
+        items.add(%*{"path": path,
+                     "error": "aggregate read_many output exceeds 512000 bytes; read remaining files separately"})
+        break
+      used += encoded.len
+      items.add(%*{"path": path, "content": content})
+    except CatchableError as e:
+      items.add(%*{"path": path, "error": e.msg})
+  %*{"items": items, "count": items.len}
+
 # ---------------------------------------------------------------------------
 # write handler
 
@@ -833,7 +868,22 @@ discard comp.tool("read", toolSchema(%*{
   "offset. Binary files (NUL bytes), UTF-16/32 text and files over 100MB " &
   "are refused; an empty file reports so; lines over 200KB are elided with " &
   "a bash inspection hint. For searching across files use grep instead."), hRead,
-  %*{"timeoutMs": 60000})
+  %*{"timeoutMs": 60000,
+     "workspace": {"pathFields": ["path"]}})
+
+discard comp.tool("read_many", toolSchema(%*{
+  "paths": {"type": "array", "minItems": 1, "maxItems": 8,
+            "items": {"type": "string"},
+            "description": "Text files to read in order"},
+  "limit": {"type": "integer", "minimum": 1,
+            "description": "Maximum lines per file (default 2000)"}
+}, @["paths"],
+  "Read several named text files in one call — use this for an initial " &
+  "repository survey instead of bash cat or many separate read calls. " &
+  "Returns items [{path, content}|{path, error}] in request order; one bad " &
+  "file does not hide the others. Maximum eight files and 512KB total."),
+  hReadMany, %*{"timeoutMs": 60000,
+                "workspace": {"pathArrayFields": ["paths"]}})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
@@ -853,25 +903,19 @@ discard comp.tool("edit", toolSchema(%*{
   }
 }, @["path", "edits"],
   "Replace exact text in an existing file — the primary surgical editing " &
-  "tool. Each edits[].old_string must occur EXACTLY ONCE in the file: if it " &
-  "matches several locations the edit is refused with the occurrence count " &
-  "(or pass replace_all to replace every occurrence), so include one or two " &
-  "surrounding lines to disambiguate. Match the file bytes verbatim " &
-  "(whitespace matters). When the exact text is not found, common " &
-  "transcription slips are rescued by a guarded fallback: trailing " &
-  "whitespace, indentation drift, unicode punctuation (smart quotes and " &
-  "dashes), double-escaped \\n/\\t, and block anchors with fuzzy middle " &
-  "lines — but only when the fallback matches exactly one location and the " &
-  "matched span is not wildly larger than old_string; the matched original " &
-  "bytes are what gets replaced. Read the file or grep it first so " &
-  "old_string reflects the real content. Several edits per call are fine " &
-  "and must not overlap — merge changes to the same block into one edit. " &
-  "Use \"\" as new_string to delete text. For NEW files or wholesale " &
-  "rewrites use write; for deleting or moving large blocks you do not want " &
-  "to retype, install the niffler-hashline plugin and discover its " &
-  "anchored replace. Every edit is " &
+  "tool. Each edits[].old_string must occur EXACTLY ONCE: several matches " &
+  "refuse the edit with the occurrence count (pass replace_all for every " &
+  "occurrence); include one or two surrounding lines to disambiguate. " &
+  "Match file bytes verbatim — whitespace matters. A guarded fallback " &
+  "rescues transcription slips (trailing whitespace, indentation drift, " &
+  "smart quotes, escaped \\n, fuzzy anchors) only when it matches exactly " &
+  "one location of similar size. Read the file first so old_string " &
+  "reflects real content. Several non-overlapping edits per call are " &
+  "fine; merge changes to the same block into one. new_string \"\" " &
+  "deletes. For NEW files or wholesale rewrites use write. Every edit is " &
   "approval-gated and revertible with undo_last_edit."), hEdit,
-  %*{"approval": "always", "timeoutMs": 300000})
+  %*{"approval": "always", "timeoutMs": 300000,
+     "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
   "path": {"type": "string",
@@ -883,7 +927,8 @@ discard comp.tool("undo_last_edit", toolSchema(%*{
   "restarts; the undo is refused with E_UNDO_STALE when the file was " &
   "modified or deleted after the edit — re-read and edit forward instead. " &
   "The result shows the diff of the revert."), hUndoLastEdit,
-  %*{"approval": "always", "timeoutMs": 120000})
+  %*{"approval": "always", "timeoutMs": 120000, "onDemand": true,
+     "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("write", toolSchema(%*{
   "path": {"type": "string",
@@ -891,7 +936,7 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "The full new file content (\"\" truncates the file)"}
 }, @["path", "content"],
-  "Create or overwrite a whole file atomically — temp file + rename, so a " &
+  "Create a NEW file or intentionally replace a whole small file atomically — temp file + rename, so a " &
   "crash never leaves a partial file; existing permissions are preserved " &
   "and parent directories are created automatically. Use this for NEW " &
   "files (new components, configs, scripts, generated artifacts) and " &
@@ -900,6 +945,7 @@ discard comp.tool("write", toolSchema(%*{
   "read. Empty content truncates the file. Content is capped (default " &
   "900KB — the bus itself cannot carry more); for larger files use bash " &
   "(heredoc or base64). Approval is required for every write."), hWrite,
-  %*{"approval": "always", "timeoutMs": 60000})
+  %*{"approval": "always", "timeoutMs": 60000,
+     "workspace": {"pathFields": ["path"]}})
 
 comp.run()

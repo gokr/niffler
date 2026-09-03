@@ -137,7 +137,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
+const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
 for (const r of results) {
   csv.push(
     [
@@ -156,6 +156,7 @@ for (const r of results) {
       (r.tokens?.cost || 0).toFixed(6),
       r.diff?.insertions || 0,
       r.diff?.deletions || 0,
+      r.firstPromptTokens ?? "",
       r.expert?.active || false,
       r.expert?.judgments || 0,
       r.expert?.silences || 0,

@@ -55,7 +55,8 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test-systemprompt test-grep test-git test-edit test-expert \
         test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
-        install-node install-wails install-ui-deps
+        install-node install-wails install-ui-deps \
+        install-natscli install-jq install-zenity
 
 help:
 	@echo 'make all       build core + components + desktop UI (default)'
@@ -111,7 +112,8 @@ var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/skills/main.nim
 
-var/bin/systemprompt: components/systemprompt/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/systemprompt: components/systemprompt/main.nim \
+    components/systemprompt/baseprompt.txt $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/systemprompt/main.nim
 
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -160,6 +162,11 @@ var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricgues
 var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fabric/fabric.nim
 
+# dialog is a component written entirely in bash (nats CLI + jq — no SDK,
+# no compile step). Copy it, don't compile it.
+var/bin/dialog: components/dialog/dialog.sh | var/bin
+	cp $< $@ && chmod +x $@
+
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
@@ -168,7 +175,8 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
-	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt
+	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
+	var/bin/dialog
 
 build: components
 
@@ -314,7 +322,8 @@ clean:
 # ---------------------------------------------------------------------------
 # prerequisites
 
-setup: install-go install-nim install-nats install-node install-wails install-ui-deps
+setup: install-go install-nim install-nats install-node install-wails install-ui-deps \
+       install-natscli install-jq install-zenity
 	@echo "setup done — verify with 'make doctor', then 'make'"
 
 define check_tool
@@ -332,6 +341,18 @@ doctor:
 	$(call check_tool,nats-server,install-nats)
 	$(call check_tool,node,install-node)
 	$(call check_tool,npm,install-node)
+	@echo "Optional (bash-written dialog component):"
+	$(call check_tool,jq,install-jq)
+	@if command -v nats >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/nats" ]; then \
+		echo "  nats CLI: OK"; \
+	else \
+		echo "  nats CLI: MISSING — run 'make install-natscli'"; \
+	fi
+	@if command -v zenity >/dev/null 2>&1 || command -v notify-send >/dev/null 2>&1; then \
+		echo "  dialog display (zenity/notify-send): OK"; \
+	else \
+		echo "  dialog display: MISSING — run 'make install-zenity'"; \
+	fi
 	@if command -v wails >/dev/null 2>&1 || [ -x "$(WAILS)" ]; then \
 		echo "  wails: OK"; \
 	else \
@@ -362,6 +383,24 @@ install-nats:
 	@if command -v nats-server >/dev/null 2>&1; then echo "nats-server: already installed"; \
 	else echo "Installing nats-server via go install ..."; \
 		go install github.com/nats-io/nats-server/v2@latest; fi
+
+# nats CLI + jq + zenity back the bash-written `dialog` component
+# (components/dialog/dialog.sh — optional demo, not autostarted).
+install-natscli:
+	@if command -v nats >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/nats" ]; then \
+		echo "nats CLI: already installed"; \
+	else echo "Installing natscli via go install ..."; \
+		go install github.com/nats-io/natscli/nats@latest; fi
+
+install-jq:
+	@if command -v jq >/dev/null 2>&1; then echo "jq: already installed"; \
+	elif [ -n "$(IS_MAC)" ]; then brew install jq; \
+	else $(SUDO) apt-get install -y jq; fi
+
+install-zenity:
+	@if command -v zenity >/dev/null 2>&1; then echo "zenity: already installed"; \
+	elif [ -n "$(IS_MAC)" ]; then echo "zenity: macOS — dialog falls back to notify-send/osascript"; \
+	else $(SUDO) apt-get install -y zenity; fi
 
 install-node:
 	@if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then \

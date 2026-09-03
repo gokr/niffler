@@ -12,7 +12,8 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
+import std/[algorithm, json, monotimes, os, sequtils, strutils, tables, times,
+    unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -58,16 +59,17 @@ const systemPromptTimeoutMs = 8_000
   ## Generous: the component only reads a few files, but a first-call compile
   ## hiccup on a loaded machine should not degrade every conversation.
 
-proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId: string): string =
+proc askSystemPrompt(ct: CoreTools, waitMs: int, sessionId, cwd: string): string =
   ## One request/reply attempt; "" on timeout or any failure.
   try:
     let r = dispatchSubjectCall(ct, "svc.systemprompt.call", "systemprompt",
-      %*{"cwd": ct.root, "sessionId": sessionId}, waitMs)
+      %*{"cwd": cwd, "sessionId": sessionId}, waitMs)
     result = r{"systemPrompt"}.getStr("")
   except CatchableError:
     result = ""
 
-proc resolveSystemPrompt*(ct: CoreTools, sessionId: string): string =
+proc resolveSystemPrompt*(ct: CoreTools, sessionId: string,
+                          cwd = ""): string =
   ## The conversation's system prompt: ask the systemprompt component once
   ## per conversation and freeze the answer for the conversation's lifetime
   ## (the prompt prefix must stay stable so providers reuse it). Falls back
@@ -78,9 +80,10 @@ proc resolveSystemPrompt*(ct: CoreTools, sessionId: string): string =
   # Quick probe first: an absent component costs 500ms, not the full
   # timeout. Only when the catalog says the component IS registered do we
   # grant the full budget (covers a boot race or a slow first call).
-  result = askSystemPrompt(ct, 500, sessionId)
+  let promptCwd = if cwd.len > 0: cwd else: ct.root
+  result = askSystemPrompt(ct, 500, sessionId, promptCwd)
   if result.len == 0 and ct.cat.components.hasKey("systemprompt"):
-    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId)
+    result = askSystemPrompt(ct, systemPromptTimeoutMs, sessionId, promptCwd)
   if result.len > 200_000:
     result = result[0 ..< 200_000] &
       "\n\n[system prompt truncated at 200000 bytes]\n"
@@ -122,8 +125,11 @@ type
   Session* = object
     messages*: seq[JsonNode]
     persister*: Persister
+    workspace*: string       ## absolute, immutable after conversation creation
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high
+    allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
+    maxRounds*: int          ## per-turn tool-round budget (0 = default 20)
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -137,14 +143,28 @@ proc newPersister*(ct: CoreTools): Persister =
   except CatchableError:
     discard
 
-proc persistMsg*(p: var Persister, value: JsonNode) =
+proc persistMsg*(p: var Persister, value: JsonNode,
+                 telemetry: JsonNode = nil) =
   ## Persist one message; warn once on failure and once on recovery.
-  ## Ids are zero-padded so store key order == message order.
+  ## Ids are zero-padded so store key order == message order. Storage-only
+  ## telemetry is copied onto the persisted value, never into LLM history.
   inc p.seqNo
-  value["conversationId"] = %p.convId
+  let stored = value.copy()
+  stored["conversationId"] = %p.convId
+  stored["createdAt"] = %epochTime()
+  if telemetry != nil and telemetry.kind == JObject:
+    for key, fieldValue in telemetry:
+      stored[key] = fieldValue
   try:
+<<<<<<< HEAD
     discard p.ct.storePutRev("message",
       p.convId & ":" & align($p.seqNo, 6, '0'), value)
+=======
+    discard p.ct.dispatchToolCall("put", %*{
+      "kind": "message",
+      "id": p.convId & ":" & align($p.seqNo, 6, '0'),
+      "value": stored})
+>>>>>>> main
     if p.failing:
       p.failing = false
       echo "core: store reachable again — persistence resumed"
@@ -165,6 +185,8 @@ proc loadStoredMessages*(ct: CoreTools, convId: string,
     # not the list tool's default 100 (fixed here; was truncating resumes)
     for item in ct.storeListItems("message", convId & ":", 1000):
       let v = item{"value"}
+      # Turn errors are audit records, not provider message roles.
+      if v{"role"}.getStr("") == "error": continue
       var msg = newJObject()
       msg["role"] = v{"role"}
       msg["content"] = v{"content"}
@@ -499,7 +521,8 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-              thinkingEffort = "", turnContent = "",
+              thinkingEffort = "", turnContent = "", workspace = "",
+              maxRounds = 0, allowlist: seq[string] = @[],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
   ## Returns the final assistant text. onEvent receives
@@ -562,10 +585,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # Cleared when the turn ends — a stale lease is worthless.
   if ct.nested != nil:
     ct.nested.session = sessionId
+    ct.nested.workspace = workspace
     ct.nested.lease = ""
   defer:
     if ct.nested != nil:
       ct.nested.session = ""
+      ct.nested.workspace = ""
       ct.nested.lease = ""
   defer:
     emitTurnDone("aborted")
@@ -585,7 +610,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.steerStream != nil:
     ct.steerStream.cancelRequested = false
   var rounds = 0
-  while rounds < 20:
+  # Effective round budget: a per-session maxRounds (subagent budgets,
+  # 1-20) overrides the NIF_MAX_TURN_ROUNDS env default (default 20 —
+  # bench lanes raise it so long agentic tasks are not cut off).
+  let envMaxRounds =
+    block:
+      var v = 20
+      try:
+        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "20"))
+      except ValueError:
+        discard
+      if v < 1: 20 else: v
+  let effMaxRounds = if maxRounds > 0: maxRounds else: envMaxRounds
+  while rounds < max(effMaxRounds, 1):
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
     # flag is raised by pumpSteer from dispatch's idle slots, including
@@ -607,8 +644,17 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
+    # An allowlisted conversation sees only its frozen tools in the prompt;
+    # the dispatch gate (sessionAllowlist) enforces the same set.
+    var promptToolsJson = exposure.promptTools()
+    if allowlist.len > 0:
+      var filtered = newJArray()
+      for tool in promptToolsJson:
+        if tool{"name"}.getStr("") in allowlist:
+          filtered.add(tool)
+      promptToolsJson = filtered
     let llmArgs = %*{"messages": messages,
-                     "tools": exposure.promptTools().formatToolsForLlm(),
+                     "tools": promptToolsJson.formatToolsForLlm(),
                      "sessionId": sessionId,
                      "stream": true}
     if selectedModel.len > 0:
@@ -618,10 +664,20 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     if thinkingEffort.len > 0:
       llmArgs["reasoning_effort"] = %thinkingEffort
     var resp: JsonNode
+    let llmStartedAt = epochTime()
+    let llmStarted = getMonoTime()
     try:
       resp = ct.dispatchToolCall("chat", llmArgs, 300000)
     except CatchableError as e:
-      let msg = "llm error: " & e.msg
+      # a cancel that landed while the LLM request was in flight reads as
+      # cancellation, not an LLM failure
+      let msg = if e of TurnCancelled: "cancelled by request"
+                else: "llm error: " & e.msg
+      let durationMs = (getMonoTime() - llmStarted).inMilliseconds
+      p.persistMsg(%*{"role": "error", "content": msg,
+                      "error": "llm", "turnId": turnId},
+                   %*{"startedAt": llmStartedAt,
+                      "durationMs": durationMs})
       turnError = msg
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
@@ -683,7 +739,9 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       if ctxSize > 0: assistantMsg["context"] = %ctxSize
       if usageObj.len > 0: assistantMsg["usage"] = usageObj
       messages.add(assistantMsg)
-      p.persistMsg(assistantMsg)
+      p.persistMsg(assistantMsg,
+        %*{"turnId": turnId, "startedAt": llmStartedAt,
+           "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
       if content.len > 0 and onEvent != nil:
         var ev = %*{"sessionId": sessionId, "turnId": turnId,
                     "content": content}
@@ -736,10 +794,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # happened instead of dispatching an empty args object.
         parseFailed = true
         tc{"function"}["arguments"] = %"{}"
+      let toolStartedAt = epochTime()
+      let toolStarted = getMonoTime()
       if onEvent != nil:
         onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                "callId": id, "phase": "start",
-                               "tool": name, "args": args})
+                               "tool": name, "args": args,
+                               "at": toolStartedAt})
       try:
         let toolResult =
           if parseFailed:
@@ -755,23 +816,45 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           recordDiscovery(ct, sessionId, exposure, toolResult)
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": $toolResult}
+        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
         messages.add(toolMsg)
-        p.persistMsg(toolMsg)
+        p.persistMsg(toolMsg,
+          %*{"turnId": turnId, "startedAt": toolStartedAt,
+             "durationMs": toolDurationMs})
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                  "callId": id, "phase": "done",
                                  "tool": name, "args": args,
-                                 "result": toolResult})
+                                 "result": toolResult,
+                                 "durationMs": toolDurationMs,
+                                 "at": epochTime()})
       except CatchableError as e:
         let toolMsg = %*{"role": "tool", "tool_call_id": id,
                          "name": name, "content": "ERROR: " & e.msg}
+        let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
         messages.add(toolMsg)
-        p.persistMsg(toolMsg)
+        p.persistMsg(toolMsg,
+          %*{"turnId": turnId, "startedAt": toolStartedAt,
+             "durationMs": toolDurationMs})
         if onEvent != nil:
           onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                                  "callId": id, "phase": "done",
                                  "tool": name, "args": args,
-                                 "error": e.msg})
+                                 "error": e.msg,
+                                 "durationMs": toolDurationMs,
+                                 "at": epochTime()})
+
+  # Exited the loop with the round budget spent — the model was still working
+  # (the loop only ends early via a no-tool-call reply or a cancel). Report
+  # this as a turn error so drivers can distinguish "model finished" from
+  # "budget exhausted"; the transcript keeps everything up to here.
+  turnError = "turn round budget exhausted (" & $maxRounds &
+    " LLM rounds; raise with NIF_MAX_TURN_ROUNDS)"
+  if onEvent != nil:
+    onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                       "error": turnError})
+  emitTurnDone(turnError)
+  return ""
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")
@@ -793,6 +876,21 @@ proc deriveTitle(content: string): string =
       return shortTitle(s)
   ""
 
+proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: string] =
+  ## A conversation workspace is immutable and confined to NIF_ROOT. Keeping
+  ## it in the header makes resumed runners resolve context and paths exactly
+  ## as the original turn did.
+  if requested.strip().len == 0:
+    return (true, root, "")
+  let candidate = normalizedPath(
+    if requested.isAbsolute(): requested else: root / requested)
+  let cleanRoot = normalizedPath(root)
+  if candidate != cleanRoot and not candidate.startsWith(cleanRoot & DirSep):
+    return (false, "", "cwd must stay inside the harness root")
+  if not dirExists(candidate):
+    return (false, "", "cwd is not a directory: " & requested)
+  (true, candidate, "")
+
 proc handleSessionCall*(ct: CoreTools, args: JsonNode,
                          sessions: var Table[string, Session],
                          caller = ""): JsonNode =
@@ -806,13 +904,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasModel = args.kind == JObject and args.hasKey("model")
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
   let hasTitle = args.kind == JObject and args.hasKey("title")
+  let hasCwd = args.kind == JObject and args.hasKey("cwd")
   if sessionId.len == 0 or
-      (content.len == 0 and not hasModel and not hasThinking and not hasTitle):
-    return %*{"error": "session needs sessionId and content, model, thinking or title"}
+      (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
+       not hasCwd):
+    return %*{"error": "session needs sessionId and content, model, thinking, title or cwd"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
     entry = sessions[sessionId]
+    if hasCwd:
+      let requested = resolveWorkspace(ct.root, args{"cwd"}.getStr(""))
+      if not requested.ok: return %*{"error": requested.error}
+      if requested.path != entry.workspace:
+        return %*{"error": "conversation cwd is immutable (currently " &
+                              entry.workspace & ")"}
   else:
     # The runner normally creates this at startup; keep the call idempotent
     # for direct/unit paths and load the persisted model selection from it.
@@ -825,18 +931,54 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     # value verbatim: the prompt prefix must stay stable so providers reuse
     # it, and a component that dies or changes mid-conversation must not
     # rewrite a running conversation's instructions.
+    let requestedCwd = if header{"cwd"}.getStr("").len > 0:
+                         header{"cwd"}.getStr("")
+                       else: args{"cwd"}.getStr("")
+    let workspace = resolveWorkspace(ct.root, requestedCwd)
+    if not workspace.ok: return %*{"error": workspace.error}
+    entry.workspace = workspace.path
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")
     if sp.len == 0:
-      sp = resolveSystemPrompt(ct, sessionId)
+      sp = resolveSystemPrompt(ct, sessionId, entry.workspace)
     try:
-      ct.updateConversationHeader(sessionId, %*{"systemPrompt": sp})
+      ct.updateConversationHeader(sessionId,
+        %*{"systemPrompt": sp, "cwd": entry.workspace})
     except CatchableError as e:
       echo "core: WARNING cannot persist system prompt (store down?): " & e.msg
     entry.messages = @[%*{"role": "system", "content": sp}]
     entry.modelOverride = header{"modelOverride"}.getStr("")
     entry.thinkingEffort = header{"thinkingEffort"}.getStr("")
+    # Frozen per-session controls (subagent scoping): the header carries
+    # them across runner resumes; the first session call's args win while
+    # the header is unset. The allowlist is enforced at the dispatch gate
+    # (ct.sessionAllowlist), the round budget at runTurn's loop bound.
+    let headerAllow = header{"toolAllowlist"}
+    if headerAllow != nil:
+      for t in headerAllow:
+        if t.getStr("").len > 0: entry.allowlist.add(t.getStr(""))
+    entry.maxRounds = header{"maxRounds"}.getInt(0)
+    if args.kind == JObject and args.hasKey("tools") and
+        args{"tools"}.kind == JArray and entry.allowlist.len == 0:
+      for t in args{"tools"}:
+        let name = t.getStr("")
+        if name.len > 0 and entry.allowlist.len < 32:
+          entry.allowlist.add(name)
+      if entry.allowlist.len > 0:
+        var arr = newJArray()
+        for name in entry.allowlist: arr.add(%name)
+        ct.updateConversationHeader(sessionId, %*{"toolAllowlist": arr})
+    if args.kind == JObject and args.hasKey("maxRounds") and
+        entry.maxRounds == 0:
+      let mr = args{"maxRounds"}.getInt(0)
+      if mr >= 1 and mr <= 20:
+        entry.maxRounds = mr
+        ct.updateConversationHeader(sessionId, %*{"maxRounds": %mr})
+    if entry.allowlist.len > 0:
+      # the runner allocated the ref at startup; mutating through it makes
+      # the frozen allowlist visible to every dispatch on this session
+      ct.sessionAllowlist[] = entry.allowlist
     var pt = 0
     var used = 0
     var cs = 0
@@ -873,6 +1015,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "sessionId": sessionId,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
+      "cwd": entry.workspace,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
       "usedTokens": entry.persister.contextUsed
@@ -915,13 +1058,15 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort, content, turnError)
+                      entry.thinkingEffort, content, entry.workspace,
+                      entry.maxRounds, entry.allowlist, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
   # drivers (agent_run) report child LLM failures as failures, not text.
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
                   "modelOverride": entry.modelOverride,
-                  "thinkingEffort": entry.thinkingEffort}
+                  "thinkingEffort": entry.thinkingEffort,
+                  "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError
   return sessionResult
@@ -936,9 +1081,6 @@ proc sanitizeSessionId*(s: string): string =
   ## Session ids become a NATS subject token (svc.session.<id>.call) and a
   ## catalog component name; keep alnum/-/_ and replace everything else.
   subjects.sanitizeSessionId(s)
-
-proc runnerName*(sessionId: string): string =
-  "session-" & sanitizeSessionId(sessionId)
 
 proc sessionSubject*(sessionId: string): string =
   "svc.session." & sanitizeSessionId(sessionId) & ".call"
@@ -1055,7 +1197,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
       of "spawn", "catalog", "kill", "remove", "status", "discover",
-          "session_prepare", "session_info":
+          "session_prepare", "session_info", "conversation_delete":
         let r = ct.handleCoreTool(env.tool, env.args)
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("core tool error"))

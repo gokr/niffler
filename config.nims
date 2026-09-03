@@ -19,6 +19,15 @@ if dirExists(pkgsDir):
 # (macOS) — `make setup` installs it.
 switch("define", "ssl")
 
+# Per-repo nim cache. Nim's default is ~/.cache/nim/<project>_d — every
+# repo's main.nim maps to the SAME main_d, so two concurrent builds anywhere
+# (this repo's worktrees, agent-built components, other projects) overwrite
+# each other's objects and links fail with "hidden symbol ... isn't defined".
+# Pinning the cache under var/ (gitignored) scopes it to this checkout:
+# worktrees and bench harness roots (which copy this config.nims) each get
+# their own cache; test sandboxes keep overriding it per-sandbox.
+switch("nimcache", thisDir() / "var" / "nimcache")
+
 # futhark (via natswrapper) emits a bogus FILE-size warning for the C header
 switch("warning", "User:off")
 

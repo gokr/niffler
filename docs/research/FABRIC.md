@@ -121,37 +121,53 @@ explicit policy:
 The SDK serializes handlers on one thread, so long-running work is split
 into a synchronous surface and durable background jobs:
 
-- **`agent_run {task, model?, timeoutMs?}`** — synchronous: prepare a child
-  runner via `session_prepare`, call the child runner's subject directly with
-  the framed task, return its final reply with `{reply, sessionId}`. The
-  child session call is a plain request/reply whose result carries the final
-  reply.
-- **`agent_spawn {task, model?}`** — background: same preparation, then the
-  child turn is published fire-and-forget with a reply inbox the component
-  taps; the handler returns `{jobId, sessionId}` immediately. The tap records
-  the terminal state durably (store kind `agentjob`) and emits
-  `ev.agent.done` — a late status lookup or wait can never miss it.
-- **`agent_status {jobId}`** — non-blocking durable lookup.
+- **`agent_run {task, model?, thinking?, tools?, maxRounds?, timeoutMs?}`** —
+  synchronous: prepare a child runner via `session_prepare`, call the child
+  runner's subject directly with the framed task, return its final reply with
+  `{reply, sessionId}`. The child session call is a plain request/reply whose
+  result carries the final reply. `thinking` sets the child's reasoning
+  effort, `tools` freezes a tool allowlist for the child conversation, and
+  `maxRounds` caps tool rounds per child turn (1-20).
+- **`agent_spawn {task, model?, thinking?, tools?, maxRounds?, timeoutMs?}`** —
+  background: same preparation, then the child turn is published
+  fire-and-forget with a reply inbox the component taps; the handler returns
+  `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once
+  exceeded, the job is cancelled (agent_stop semantics) the next time it is
+  observed via `agent_status`/`agent_wait`. The tap records the terminal
+  state durably (store kind `agentjob`) and emits `ev.agent.done` — a late
+  status lookup or wait can never miss it.
+- **`agent_status {jobId}`** — non-blocking durable lookup. Non-terminal
+  records are reconciled against the live bus (lazy restart recovery): a job
+  whose runner died with a harness restart resolves to failed, never a lying
+  "running".
 - **`agent_wait {jobId, timeoutMs?}`** — blocks until the job reaches a
   terminal state, reading the durable record (works for jobs that finished
   long ago). While waiting it pumps the component's taps, since the
   completion tap shares the same serialized pump.
-- **`agent_stop {jobId}`** — marks a running job "stopping"; the terminal
-  record says "stopped" when the child turn ends. The process is not killed
-  outright (kill-on-timeout still bounds a runaway turn).
+- **`agent_stop {jobId}`** — cancels the job for real: an `llm.cancel.<child>`
+  side-channel plus a `__cancel` control message on the steer channel abort
+  the child turn; a cancel landing while a tool call is in flight raises
+  TurnCancelled and the runner stops waiting promptly. An already-running
+  command (e.g. a `bash sleep`) still runs to its own timeout — NATS
+  request/reply has no cancel semantics (see "Not shipped").
 - **`agent_steer {session_id, message}`** — fire-and-forget injection into a
   live child turn; meaningful for spawned jobs, whose child runs while the
   caller continues.
 - Fixed task preamble ("You are a subagent. Work autonomously, report a
-  concise result."). The subagent gets the full normal toolset and loop, and
-  the conversation's pluggable constitution (systemprompt) like any session.
+  concise result."). The subagent gets the full normal toolset and loop
+  (optionally frozen to a `tools` allowlist with a per-turn `maxRounds`
+  budget), and the conversation's pluggable constitution (systemprompt) like
+  any session.
 - Approvals inside the subagent route to the original interactive caller
   (dispatch injects it as private `__session.caller`; the child's
   `approval.caller` becomes the driving client) — the human still sees every
   gate. With no reachable human they are denied.
 - Lineage fails closed: the depth-guard `sessionmeta` read/write treats a
   store outage as "cannot verify → deny", for both the dispatch-time guard
-  and the component's own guard.
+  and the component's own guard. Lineage records are cleaned up with the
+  conversation they hang off: core's `conversation_delete` removes the
+  runner, header, messages, frozen toolset snapshot, subagent lineage, and
+  any durable agent jobs for a session together.
 - Child LLM failures surface as failures (`{"error": ...}`, durable job
   status "failed"), never as successful text.
 - Idle child runners retire themselves (`NIF_RUNNER_IDLE_S`, default 600 s)
@@ -172,7 +188,8 @@ into a synchronous surface and durable background jobs:
   all have explicit byte/count limits.
 - Oversized `finish()` values spill to mode-0600 files under
   `var/fabric-artifacts/`; artifacts expire after seven days and the directory
-  is capped at 100 files / 100 MB.
+  is capped at 100 files / 100 MB (an opportunistic sweep reaps expired
+  artifacts at boot and per run).
 - Emits `ev.fabric.log` per guest `logg()` call within the log budget.
 - `tools` selects up to 16 exact non-hidden tools. Core returns a canonical
   owner/version/schema fingerprint snapshot; every selected bridge call checks
@@ -202,7 +219,7 @@ stdlib-free (no imports; cold eval ~ms):
 | Proc | Purpose |
 | --- | --- |
 | `callTool(tool, argsJson): string` | call a bus tool through the proxy; returns the result JSON |
-| `batch(callsJson): string` | run up to 16 independent calls CONCURRENTLY on the host (max 4 on the bus at once); callsJson is a JSON array of `{tool, args}`; returns a JSON array of per-item outcomes in input order — a failing item never aborts the others; every call still crosses the proxy (approval, budget, deadline) |
+| `batch(callsJson): string` | run up to 16 independent calls CONCURRENTLY on the host (max 4 on the bus at once); callsJson is a JSON array of `{tool, args}`; returns a JSON array of per-item outcomes in input order — a failing item never aborts the others; every call still crosses the proxy (approval, budget, deadline). Effect-aware scheduling via `x-harness.effect`: reads fill the concurrency cap together (and may overlap one write); writes run globally exclusive |
 | `finish(valueJson)` | end the program with a result (control exception) |
 | `logg(message)` | emit an `ev.fabric.log` event |
 | `stringArg(key): string` | read a `strings` argument |
@@ -251,17 +268,14 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- Per-target conflict detection for batch writes: `x-harness.effect`
-  classifies reads (concurrent) vs writes (exclusive), so a batch never
-  runs two writes at once — but writes to DIFFERENT targets could safely
-  overlap and currently do not.
-- Per-job token/call caps (time budgets and reasoning-effort selection are
-  shipped), and cancellation propagation into already-dispatched nested calls
-  (`agent_stop` cancels the child turn for real; NATS request/reply still has
-  no cancel semantics for in-flight tool calls).
-- Structured-output schemas, tool allowlists, canonical working directories,
-  and isolated git worktrees for spawned subagents.
-- Cancellation propagation into a running guest (request/reply has no cancel
-  semantics; kill-on-timeout is the only stop).
-- A Fabric activity card in the desktop UI (lifecycle events are on the bus
-  and the console renders them); durable retention for events/traces.
+- Aborting an already-running command: cancellation stops the WAIT (a
+  cancelled turn ends promptly) but a running bash sleep still runs to
+  its own timeout — NATS request/reply has no cancel semantics.
+- Per-job token/call caps beyond the round budget, structured-output
+  schemas for subagent replies, canonical working directories, and
+  isolated git worktrees for spawned children (session-surface design).
+- Per-target batch write overlap: writes are mutually exclusive globally
+  because bash is a universal writer — needs resource-scoped effect
+  declarations to relax safely.
+- Durable trace retention backed by the store (events/logs are
+  diagnostic, not an audit trail).

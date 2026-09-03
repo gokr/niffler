@@ -55,6 +55,14 @@ comp.tool(%*{"hidden": true}):
           sleep(8000)
           return %*{"content": "slow-done"}
         return %*{"content": "slow-done"}
+      # slow child whose delay is a TOOL call (bash sleep 8): the stop
+      # must abandon the in-flight dispatch immediately instead of
+      # waiting out the tool's full runtime
+      if messages != nil and ($messages).contains("SLOW_BASH"):
+        if stage == 0:
+          return toolCall("t1", "bash",
+                          %*{"command": "sleep 8 && echo slow-bash"})
+        return %*{"content": "slow-bash-done"}
       case stage
       of 0: return toolCall("t1", "agent_run", %*{"task": "try to spawn"})
       of 1: return toolCall("t2", "bash", %*{"command": "echo agent-ok"})
@@ -98,12 +106,42 @@ comp.tool(%*{"hidden": true}):
                         %*{"task": "SLOW_CHILD take your time",
                            "timeoutMs": 2000})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-midtool":
+      if stage == 0:
+        # spawn a child whose turn is blocked in a long bash command when
+        # the stop lands: the runner must stop WAITING for the tool
+        # (TurnCancelled) instead of running out the tool's duration
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "SLOW_BASH take your time"})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-allow":
+      if stage == 0:
+        # allowlist scoping: the child may dispatch only session_info, so
+        # its scripted bash call must be rejected at the dispatch gate
+        return toolCall("t1", "agent_run",
+                        %*{"task": "try bash then report",
+                           "tools": ["session_info"]})
+      return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-rounds":
+      if stage == 0:
+        # round budget: the child's scripted loop wants 3 rounds; with
+        # maxRounds 2 the third round never happens
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent",
+                           "maxRounds": 2})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must
         # inject its own id (t_core asserts the tool result carries it)
         return toolCall("t1", "session_info", %*{})
       return %*{"content": "introspect-done"}
+    if sessionId == "ws-test":
+      if stage == 0:
+        # workspace injection: bash gets cwd=<conversation workspace>
+        # injected by the runner (t_core asserts the tool ran there)
+        return toolCall("t1", "bash", %*{"command": "pwd"})
+      return %*{"content": "workspace-done"}
     if sessionId == "fab-test":
       case stage
       of 0:
@@ -241,17 +279,18 @@ comp.tool(%*{"hidden": true}):
           "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r1\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"ctx_sleep\")), jpair(\"args\", jobj(jpair(\"ms\", jnum(1200)), jpair(\"say\", jesc(\"r2\"))))),\n" &
           "  jobj(jpair(\"tool\", jesc(\"nope\")), jpair(\"args\", jobj())),\n" &
-          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\")))))))\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b3 && date +%s.%N\"))))),\n" &
+          "  jobj(jpair(\"tool\", jesc(\"bash\")), jpair(\"args\", jobj(jpair(\"command\", jesc(\"echo b4 && date +%s.%N\")))))))\n" &
           "let outcomes = parseJson(r)\n" &
-          "let s1 = parseJson(outcomes[0]{\"result\"}.getStr(\"\"))\n" &
-          "let s2 = parseJson(outcomes[1]{\"result\"}.getStr(\"\"))\n" &
-          "let bashOut = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
-          "let lastReadEnd = max(s1{\"ended\"}.getFloat(), s2{\"ended\"}.getFloat())\n" &
-          "let bashStart = bashOut{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b3Out = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
+          "let b4Out = parseJson(outcomes[4]{\"result\"}.getStr(\"\"))\n" &
+          "let b3Date = b3Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b4Date = b4Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
           "finish($(%*{\"items\": outcomes.len,\n" &
-          "  \"writeExclusive\": bashStart >= lastReadEnd,\n" &
+          "  \"writesSerialized\": b4Date > b3Date,\n" &
           "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
-          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false)}))\n"
+          "  \"b3\": outcomes[3]{\"ok\"}.getBool(false),\n" &
+          "  \"b4\": outcomes[4]{\"ok\"}.getBool(false)}))\n"
         return toolCall("t1", "fabric", %*{"code": batched})
       return %*{"content": "batch-turn-done"}
     if sessionId == "fab-out":

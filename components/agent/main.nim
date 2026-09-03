@@ -104,11 +104,13 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
-proc childSessArgs(child, task, model, thinking: string): JsonNode =
+proc childSessArgs(child, task, model, thinking: string,
+                   toolArgs: JsonNode = nil): JsonNode =
   ## The child session call: task preamble, optional model override and
-  ## reasoning effort, and the conversation's pluggable constitution
-  ## (systemprompt component, best effort — the runner's own fallback covers
-  ## a missing component).
+  ## reasoning effort, optional tool allowlist and round budget (frozen
+  ## per-session controls enforced by core), and the conversation's
+  ## pluggable constitution (systemprompt component, best effort — the
+  ## runner's own fallback covers a missing component).
   result = %*{"sessionId": child, "content": taskPreamble & task}
   try:
     let sp = comp.request("systemprompt", "systemprompt",
@@ -123,6 +125,13 @@ proc childSessArgs(child, task, model, thinking: string): JsonNode =
     result["model"] = %model
   if thinking.len > 0:
     result["thinking"] = %thinking
+  if toolArgs != nil:
+    # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+    if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
+      result["tools"] = toolArgs{"tools"}
+    let mr = toolArgs{"maxRounds"}.getInt(0)
+    if mr >= 1 and mr <= 20:
+      result["maxRounds"] = %mr
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -240,12 +249,17 @@ let runSchema = toolSchema(%*{
             "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "tools": {"type": "array",
+            "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
+  "maxRounds": {"type": "integer",
+                "description": "Optional tool-round budget per child turn (1-20, default 20)"},
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"}
 }, required = @["task"],
    description = "Run a task in a fresh subagent session (its own context, own tool loop) and return only its final reply. Use when a subtask needs exploratory judgment per step — search, debugging, reading code — and its intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool instead. For background work use agent_spawn instead. The subagent cannot spawn further subagents.")
 runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
-                            "sessionContext": true, "noSpawn": true}
+                            "sessionContext": true, "noSpawn": true,
+                            "onDemand": true}
 discard comp.tool("agent_run", runSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
@@ -261,7 +275,7 @@ discard comp.tool("agent_run", runSchema,
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
       childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr("")),
+                    toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let resp = comp.requestEnvelope(prep.subject, env, timeoutMs)
     if resp.kind == ekError:
@@ -282,12 +296,17 @@ let spawnSchema = toolSchema(%*{
             "description": "Optional model override for the subagent"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
+  "tools": {"type": "array",
+            "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
+  "maxRounds": {"type": "integer",
+                "description": "Optional tool-round budget per child turn (1-20, default 20)"},
   "timeoutMs": {"type": "integer",
                 "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
 }, required = @["task"],
    description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop cancels it for real. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
-                              "sessionContext": true, "noSpawn": true}
+                              "sessionContext": true, "noSpawn": true,
+                              "onDemand": true}
 discard comp.tool("agent_spawn", spawnSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let parentSession = toolArgs{"__session"}{"session"}.getStr("")
@@ -317,7 +336,7 @@ discard comp.tool("agent_spawn", spawnSchema,
                        extra = %*{"sessionId": prep.child})
     let env = callEnvelope("session",
       childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr("")),
+                    toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId
@@ -343,6 +362,7 @@ let statusSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Non-blocking lookup of a background subagent job: returns its durable status (running/done/failed/stopped/stopping), session id, and — when terminal — the final reply or error. Does not wait; use agent_wait for that.")
+statusSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("agent_status", statusSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -366,7 +386,7 @@ let waitSchema = toolSchema(%*{
                 "description": "Give up waiting after this many ms (default 600000)"}
 }, required = @["jobId"],
    description = "Block until a background subagent job reaches a terminal state (done/failed/stopped) and return its durable result — including for jobs that finished long ago (late waits read the store). Terminal states carry the child's final reply, or the failure reason for failed jobs.")
-waitSchema["x-harness"] = %*{"timeoutMs": 900_000}
+waitSchema["x-harness"] = %*{"timeoutMs": 900_000, "onDemand": true}
 discard comp.tool("agent_wait", waitSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -404,6 +424,7 @@ let stopSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
 }, required = @["jobId"],
    description = "Cancel a running background subagent job: aborts its in-flight LLM request and ends the child turn (between tool rounds, promptly after the current tool returns). The job's terminal record says \"stopped\" — the reply, if any, is kept. Re-calling is harmless; stopping an already-terminal job just returns the record.")
+stopSchema["x-harness"] = %*{"onDemand": true}
 discard comp.tool("agent_stop", stopSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let jobId = toolArgs{"jobId"}.getStr("")
@@ -426,7 +447,7 @@ discard comp.tool("agent_stop", stopSchema,
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc agent_steer(session_id: string, message: string): JsonNode =
     ## Inject a message into a RUNNING background subagent turn (folded in
     ## between LLM rounds). Fire-and-forget: success means published, not

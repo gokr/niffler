@@ -39,6 +39,8 @@ export class NifflerHarness {
     this.natsPort = 0;
     this.stopped = false;
     this.expertEnabled = opts.expertEnabled || false;
+    this.thinking = opts.thinking || "";
+    this.maxTurnRounds = opts.maxTurnRounds || 60;
     // Optional judgment provider for niffler-expert runs:
     // {provider, model, baseUrl, apiKey}. Routed via NIF_LLM_PROVIDERS so
     // the shared llm component can reach a second provider (e.g. Synthetic)
@@ -55,7 +57,12 @@ export class NifflerHarness {
     fs.mkdirSync(this.root, { recursive: true });
     // Symlink farm: everything from the worktree except git/, runtime state,
     // bench outputs and secrets; then a real var/ and a real .env.
-    const skip = new Set([".git", "var", "bench", "results", ".env", ".niffler-build.lock"]);
+    // AGENTS.md is Niffler's own contributor guide — injecting it into bench
+    // sessions would be prompt-context no other harness gets (fairness).
+    const skip = new Set([
+      ".git", "var", "bench", "results", ".env", ".niffler-build.lock",
+      "AGENTS.md",
+    ]);
     for (const entry of fs.readdirSync(this.benchRoot)) {
       if (skip.has(entry)) continue;
       const target = path.join(this.benchRoot, entry);
@@ -70,6 +77,19 @@ export class NifflerHarness {
     // Component binaries live in the bench worktree's var/bin.
     try {
       fs.symlinkSync(path.join(this.binDir), path.join(this.root, "var", "bin"));
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    // Task workdirs live under the bench worktree's var/bench (outside this
+    // NIF_ROOT); mirroring the subtree here gives every task repo a path
+    // that is lexically inside the harness root, so it can be handed to a
+    // session as its immutable workspace (cwd) and pass core's confinement
+    // check while the bytes stay shared with the results tree.
+    try {
+      fs.symlinkSync(
+        path.join(this.benchRoot, "var", "bench"),
+        path.join(this.root, "var", "bench"),
+      );
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
@@ -101,6 +121,9 @@ export class NifflerHarness {
       // This is the documented automation bypass; it only affects this
       // private bench harness (isolated NIF_ROOT + bus), never the dev's.
       NIF_AUTO_APPROVE: "1",
+      // Agentic bench tasks need more than the default 20 LLM rounds per
+      // turn; interactive use keeps the default (env only raises it here).
+      NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),
     };
     if (this.expertEnabled && this.expertJudge) {
       env.NIF_LLM_PROVIDERS = JSON.stringify({
@@ -144,28 +167,51 @@ export class NifflerHarness {
     }
   }
 
+  // Map a path under <benchRoot>/var/bench to the same location inside the
+  // harness root (via the var/bench mirror), so it can serve as a session
+  // workspace. Returns null for paths outside the mirrored subtree.
+  workspaceFor(workdir) {
+    const benchVar = path.join(this.benchRoot, "var", "bench");
+    const rel = path.relative(benchVar, workdir);
+    if (!rel || rel.startsWith("..")) return null;
+    return path.join(this.root, "var", "bench", rel);
+  }
+
   // One round = one blocking session tool call. Returns {reply, error}.
+  // Transport failures (the cli could not reach the bus / got no JSON) are
+  // retried with backoff — they are the harness's problem, not the model's;
+  // a parsed turnError or timeout is a genuine round result and never
+  // retried.
   async round(opts) {
-    const { sessionId, prompt, turnTimeoutMs } = opts;
+    const { sessionId, prompt, turnTimeoutMs, cwd } = opts;
     const cli = path.join(this.binDir, "cli");
-    const res = await run(
-      cli,
-      [
-        `--timeout:${Math.ceil(turnTimeoutMs / 1000) + 30}`,
-        "call",
-        "session",
-        JSON.stringify({ sessionId, content: prompt }),
-      ],
-      { cwd: this.root, env: this.cliEnv(), timeoutMs: turnTimeoutMs + 60_000 },
-    );
+    const sessArgs = { sessionId, content: prompt, cwd };
+    // Per-model thinking effort from bench config (models.<m>.niffler.thinking).
+    // The provider default for these hybrid models is medium-ish thinking,
+    // which dominates output tokens; pi runs its lanes with thinking=low, so
+    // mirror that for a symmetric comparison.
+    if (this.thinking) sessArgs.thinking = this.thinking;
+    const args = ["call", "session", JSON.stringify(sessArgs)];
+    let res = null;
+    let parsed = null;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, attempt * 3000));
+      res = await run(
+        cli,
+        [`--timeout:${Math.ceil(turnTimeoutMs / 1000) + 30}`, ...args],
+        { cwd: this.root, env: this.cliEnv(), timeoutMs: turnTimeoutMs + 60_000 },
+      );
+      try {
+        parsed = JSON.parse(res.stdout.trim().split("\n").at(-1));
+      } catch {}
+      if (parsed) break; // got a session result (ok, turnError or error)
+      if (res.timedOut) break; // genuine turn timeout — do not extend the budget
+      if (attempt === 2) break;
+    }
     if (res.timedOut) {
       return { reply: "", error: `niffler round timed out after ${turnTimeoutMs}ms` };
     }
-    let parsed = null;
-    try {
-      parsed = JSON.parse(res.stdout.trim().split("\n").at(-1));
-    } catch {}
-    if (res.code !== 0 || !parsed) {
+    if (!parsed) {
       return {
         reply: "",
         error: `niffler session call failed (exit ${res.code}): ${(
@@ -175,7 +221,9 @@ export class NifflerHarness {
     }
     let reply = parsed.reply ?? "";
     if (typeof reply === "object" && reply !== null) reply = reply.content ?? JSON.stringify(reply);
-    const error = parsed.error ? String(parsed.error) : null;
+    const error = parsed.error || parsed.turnError
+      ? String(parsed.error || parsed.turnError)
+      : null;
     return { reply: String(reply), error };
   }
 
