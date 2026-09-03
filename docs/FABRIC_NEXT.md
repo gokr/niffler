@@ -721,10 +721,12 @@ The consolidated backlog of explicitly deferred work (in priority order).
    (shipped). Still open: per-job token/call budgets, tool allowlists,
    structured-output schemas, canonical working directories, and optional
    isolated git worktrees — all need core session-surface design.
-3. **Batch effect declarations.** Concurrent mutations to one target are
-   not prevented; reads are the intended use. Effect declarations
-   (`x-harness.effect`) plus per-target serialization would make mutation
-   batches safe by construction.
+3. **Batch effect declarations.** Shipped: tools declare
+   `x-harness.effect: "read"`; unclassified tools count as writes. Batch
+   reads fill the concurrency cap together, writes run exclusively (never
+   overlapping anything), so concurrent mutations are prevented by
+   construction. Still open: per-target (rather than global) write
+   serialization, which would let independent write targets overlap.
 4. **Observability and retention.** A Fabric/agent activity card in the
    desktop UI (events are on the bus; the console renders them); retention
    limits and cleanup for logs and traces; lineage-record cleanup once a

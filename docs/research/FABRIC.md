@@ -251,8 +251,10 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- Effect declarations and conflict detection for batch calls (concurrent
-  mutations to one target are not prevented; reads are the intended use).
+- Per-target conflict detection for batch writes: `x-harness.effect`
+  classifies reads (concurrent) vs writes (exclusive), so a batch never
+  runs two writes at once — but writes to DIFFERENT targets could safely
+  overlap and currently do not.
 - Per-job token/call caps (time budgets and reasoning-effort selection are
   shipped), and cancellation propagation into already-dispatched nested calls
   (`agent_stop` cancels the child turn for real; NATS request/reply still has
