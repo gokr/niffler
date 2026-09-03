@@ -861,13 +861,7 @@ discard comp.tool("read", toolSchema(%*{
   "limit": {"type": "integer", "minimum": 1,
             "description": "Maximum number of lines to read (default 2000)"}
 }, @["path"],
-  "Read a text file — the standard way to inspect file content before " &
-  "editing it. Returns the raw lines verbatim, with NO line numbers: copy " &
-  "text exactly into edit's old_string. Pageable with offset/limit; the " &
-  "pagination hint at the end reports the line range shown and the next " &
-  "offset. Binary files (NUL bytes), UTF-16/32 text and files over 100MB " &
-  "are refused; an empty file reports so; lines over 200KB are elided with " &
-  "a bash inspection hint. For searching across files use grep instead."), hRead,
+  "Read a text file — the standard way to inspect content before editing. Verbatim lines, no line numbers: copy text exactly into edit's old_string. Pageable (offset/limit; the hint reports the range shown). Binary/UTF-16/32 and >100MB files are refused, empty files reported, huge lines elided with a bash hint. Use grep to search across files, read_many to survey several."), hRead,
   %*{"timeoutMs": 60000,
      "workspace": {"pathFields": ["path"]}})
 
@@ -878,10 +872,7 @@ discard comp.tool("read_many", toolSchema(%*{
   "limit": {"type": "integer", "minimum": 1,
             "description": "Maximum lines per file (default 2000)"}
 }, @["paths"],
-  "Read several named text files in one call — use this for an initial " &
-  "repository survey instead of bash cat or many separate read calls. " &
-  "Returns items [{path, content}|{path, error}] in request order; one bad " &
-  "file does not hide the others. Maximum eight files and 512KB total."),
+  "Read up to 8 named text files in one call — an initial repository survey instead of bash cat or many read calls. Returns [{path, content}|{path, error}] in request order; one bad file doesn't hide the others. Max 512KB total."),
   hReadMany, %*{"timeoutMs": 60000,
                 "workspace": {"pathArrayFields": ["paths"]}})
 
@@ -902,18 +893,7 @@ discard comp.tool("edit", toolSchema(%*{
       "required": ["old_string", "new_string"]}
   }
 }, @["path", "edits"],
-  "Replace exact text in an existing file — the primary surgical editing " &
-  "tool. Each edits[].old_string must occur EXACTLY ONCE: several matches " &
-  "refuse the edit with the occurrence count (pass replace_all for every " &
-  "occurrence); include one or two surrounding lines to disambiguate. " &
-  "Match file bytes verbatim — whitespace matters. A guarded fallback " &
-  "rescues transcription slips (trailing whitespace, indentation drift, " &
-  "smart quotes, escaped \\n, fuzzy anchors) only when it matches exactly " &
-  "one location of similar size. Read the file first so old_string " &
-  "reflects real content. Several non-overlapping edits per call are " &
-  "fine; merge changes to the same block into one. new_string \"\" " &
-  "deletes. For NEW files or wholesale rewrites use write. Every edit is " &
-  "approval-gated and revertible with undo_last_edit."), hEdit,
+  "Surgically replace exact text in an existing file. Each edits[].old_string must occur EXACTLY ONCE (add surrounding lines to disambiguate; replace_all for every occurrence); whitespace matters — read the file first and copy verbatim. Several non-overlapping edits per call are fine; merge changes to the same block. new_string \"\" deletes. For NEW files or wholesale rewrites use write. Revertible with undo_last_edit."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000,
      "workspace": {"pathFields": ["path"]}})
 
@@ -936,15 +916,7 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "The full new file content (\"\" truncates the file)"}
 }, @["path", "content"],
-  "Create a NEW file or intentionally replace a whole small file atomically — temp file + rename, so a " &
-  "crash never leaves a partial file; existing permissions are preserved " &
-  "and parent directories are created automatically. Use this for NEW " &
-  "files (new components, configs, scripts, generated artifacts) and " &
-  "wholesale rewrites of small files. For surgical changes to an existing " &
-  "file prefer the edit tool: exact text match against content you have " &
-  "read. Empty content truncates the file. Content is capped (default " &
-  "900KB — the bus itself cannot carry more); for larger files use bash " &
-  "(heredoc or base64). Approval is required for every write."), hWrite,
+  "Create a NEW file or replace a whole small file atomically (temp+rename; parent dirs created, permissions preserved). Use for new components, configs, scripts, generated artifacts. For surgical changes to existing files prefer edit. \"\" truncates. Cap 900KB — use bash for larger files."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000,
      "workspace": {"pathFields": ["path"]}})
 

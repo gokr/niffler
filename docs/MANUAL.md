@@ -47,7 +47,7 @@ reference chapters for the shipped components. Design rationale lives in
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
 | `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency) |
-| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap |
+| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130, `cancelled: true`) — no orphaned children |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
@@ -317,11 +317,20 @@ reports:
   model, catalog and context provenance for interactive clients. See
   [Model catalog](#model-catalog-models).
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?}` accepts a
+- `session {sessionId, content?, model?, thinking?, title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped model override. A model-only call persists and resolves
   the selection without inference; presence with an empty value clears it.
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
+- The per-session controls freeze on the first call and persist in the
+  header: `tools` (a tool allowlist the child may dispatch), `maxRounds`
+  (LLM rounds per turn, 1-20, overriding `NIF_MAX_TURN_ROUNDS`),
+  `maxCalls` (total tool dispatches per turn, 1-500 — every dispatch
+  attempt counts, success or error), and `maxTokens` (cumulative
+  provider-reported tokens per turn, checked before each new round).
+  Budget exhaustion ends the turn as a budget-exhausted error — subagent
+  drivers (`agent_run`/`agent_spawn`) surface it as a failure, never a
+  text reply.
 - `cwd` pins the conversation's **workspace**: an existing directory inside
   `NIF_ROOT` (relative paths resolve against the root), immutable after
   creation and persisted in the header so resumed runners resolve context
@@ -488,6 +497,7 @@ the `active` marker doc) and exposes them to the agent and to `llm`:
 | `provider_status` | hidden, redacted effective provider including environment fallback and `hasKey` |
 | `provider_active` | hidden internal read of the effective provider's full config, credential included |
 | `provider_get {nickname}` | hidden internal full-config read used to pin an explicit stored provider across a turn |
+| `provider_models {nickname?\|baseUrl?, apiKey?, refresh?}` | model ids the provider's `/models` endpoint currently serves — a stored provider by nickname, or an explicit endpoint+key (the connect form, before the credential is saved). Disk-cached 5 min per endpoint (stale cache served when the probe fails); errors are returned to the caller so clients can fall back to the catalog |
 | `provider_switch {nickname}` | make another stored provider active; live-updates the LLM backend |
 | `provider_use_environment` | hidden client API that clears the stored marker and returns to `NIF_OPENAI_*` |
 | `provider_remove {nickname}` | delete a provider; if it was active, another one takes over or environment fallback resumes |
@@ -852,6 +862,16 @@ errors instead of timing out on the wire. Descriptor metadata is recursively
 redacted: secret-like keys (api keys, tokens, passwords, credentials,
 authorization headers, private keys, cookies) never reach a caller, at
 provider or model level.
+
+Live sources: models.dev is the metadata authority (limits, pricing), but the
+ids a provider actually serves come from the provider itself. Two
+complementary surfaces exist — the `provider` component's `provider_models`
+tool probes an endpoint on demand with a stored or explicit credential (the
+connect form), and the `llm` component registers an `x-models-source` plugin
+(priority 150) whose patch adds the ids each provider was observed serving
+(probed in the background after chats, 10-minute TTL) so the whole catalog
+converges on what endpoints really list. Both are best-effort: failures never
+affect chat or the catalog baseline.
 
 `llm` asks `models_get` for the selected model's context window. Explicit
 provider `context` and `NIF_OPENAI_CONTEXT` still win, and the existing small

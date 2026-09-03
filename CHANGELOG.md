@@ -6,7 +6,41 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **supervisor: a retired session runner could brick its conversation** —
+  the rpNever retirement reap deleted `children[i]` instead of the
+  recorded index, leaving a stale process-nil entry that `ensureRunner`
+  read as "spawning" forever; the next turn then failed with
+  "session runner for <id> did not come up", while unrelated supervised
+  children (store, bash) silently dropped out of the supervisor. The reap
+  now removes the retired child's own entry, and the runner idle clock
+  stamps at turn end so a long turn is not counted as idle.
+
+- **llm: Anthropic cache reads surfaced in the usage breakdown** — the
+  Anthropic adapter normalized `cache_read_input_tokens` into
+  `prompt_tokens` but never set the OpenAI-style
+  `usage.prompt_tokens_details.cached_tokens`, so Claude sessions
+  carried no cached-input breakdown downstream (conversation status
+  events, expert token accounting, bench, clients). Reads now map to
+  `cached_tokens`; cache-creation input is excluded (a write, not a
+  hit).
+
 ### Added
+
+- **Live model ids from the provider's own /models endpoint** — two
+  complementary surfaces over models.dev (metadata authority: limits,
+  pricing) with the provider itself as id authority:
+  - `provider` component: new `provider_models` tool probes
+    `{base}/models` — by stored `nickname`, or explicit `baseUrl`+`apiKey`
+    for the connect form before the credential is saved. Disk-cached
+    5 min per endpoint under `var/models-served/`; a failing probe serves
+    the last-known-good cache; OAuth credentials are honored.
+  - `llm` component: registers an `x-models-source` plugin (priority 150)
+    whose JSON Merge Patch adds the ids each provider was observed serving.
+    Probes run in the background after chats (10-minute TTL, never blocking
+    or failing a chat); the models component merges the patch on its normal
+    refresh cycle so every bus client sees served ids.
 
 - **Subagent budgets: per-job token and tool-call caps** —
   `agent_run`/`agent_spawn` accept `maxCalls` (total tool dispatches per

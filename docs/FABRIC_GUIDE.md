@@ -243,6 +243,13 @@ finish($(%*{"files": $files, "verdict": verdict{"reply"}, "at": $stamp}))
 per-step judgment". The subagent's whole working context stays out of your
 chat; you get its verdict in the program's final value.
 
+Subagents take **per-job budgets** — `maxRounds` (LLM rounds), `maxCalls`
+(total tool dispatches) and `maxTokens` (cumulative tokens) — and their
+exhaustion ends the child turn as a failure, never a silent reply. `agent_stop`
+cancellation is real end-to-end: the child turn ends promptly and a bash
+command running inside it is killed (whole process tree), so stopped work
+stops spending. Same controls apply to `agent_spawn`'s background jobs.
+
 ### 7. Big payloads go through `strings`
 
 If the model needs a large input (a file, a long prompt) it passes it via the

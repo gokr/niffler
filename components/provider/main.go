@@ -737,6 +737,77 @@ func main() {
 		return map[string]any{"ok": true, "source": "store", "provider": p}, nil
 	})
 
+	// ------------------------------------------------------------- models
+	// Live model ids from the provider's own /models endpoint (option A in
+	// the catalog discussion): models.dev metadata is authoritative for
+	// limits/pricing, but only the provider serves the exact ids it accepts
+	// (e.g. Synthetic's "hf:zai-org/GLM-5.3-Flash"). The credential stays
+	// inside this component: callers name a stored provider (nickname), or
+	// pass an explicit key for the connect form before it is saved.
+	comp.Tool("provider_models", map[string]any{
+		"type":        "object",
+		"description": "List model ids a provider currently serves, from its /models endpoint. Use providerListModel (stored credential, default) or providerExplicitModel (explicit base URL + key, e.g. while connecting a new provider). Falls back to the models.dev catalog ids when the endpoint fails or the provider has none.",
+		"properties": map[string]any{
+			"nickname": map[string]any{"type": "string", "description": "Stored provider nickname (providerListModel)"},
+			"baseUrl":  map[string]any{"type": "string", "description": "Explicit endpoint base URL (providerExplicitModel)"},
+			"apiKey":   map[string]any{"type": "string", "description": "Explicit API key (providerExplicitModel)"},
+			"refresh":  map[string]any{"type": "boolean", "description": "Bypass the 5-minute cache"},
+		},
+		"x-harness": map[string]any{"onDemand": true, "timeoutMs": 20000},
+	}, func(_ *sdk.Component, raw json.RawMessage) (any, error) {
+		var args struct {
+			Nickname string `json:"nickname"`
+			BaseURL  string `json:"baseUrl"`
+			APIKey   string `json:"apiKey"`
+			Refresh  bool   `json:"refresh"`
+		}
+		if err := decodeArgs(raw, &args); err != nil {
+			return nil, err
+		}
+		var p Provider
+		switch {
+		case strings.TrimSpace(args.Nickname) != "":
+			nickname := strings.TrimSpace(args.Nickname)
+			if nickname == activeID {
+				return nil, errors.New("reserved nickname")
+			}
+			rawProvider, rev, err := sc.get(kindProvider, nickname)
+			if err != nil {
+				return nil, err
+			}
+			if rawProvider == nil || rev == nil {
+				return nil, fmt.Errorf("provider %q not found", nickname)
+			}
+			if err := json.Unmarshal(rawProvider, &p); err != nil {
+				return nil, fmt.Errorf("corrupt provider %q: %w", nickname, err)
+			}
+			p, err = oauth.ensureFresh(p.withDefaults(), *rev)
+			if err != nil {
+				return nil, err
+			}
+		case strings.TrimSpace(args.BaseURL) != "":
+			// Explicit endpoint: the connect form's use case, where the key
+			// exists only in the client and must not be persisted yet.
+			p = Provider{
+				Nickname: "explicit",
+				AuthType: authAPIKey,
+				Protocol: protocolOpenAI,
+				BaseURL:  strings.TrimSpace(args.BaseURL),
+				APIKey:   args.APIKey,
+			}
+		default:
+			return nil, errors.New("nickname or baseUrl required")
+		}
+		models, endpoint, cached, err := listProviderModels(p, args.Refresh)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"ok": true, "models": models, "count": len(models),
+			"endpoint": endpoint, "cached": cached,
+		}, nil
+	})
+
 	// ------------------------------------------------------------- export
 	comp.Tool("provider_export", map[string]any{
 		"type":        "object",

@@ -94,11 +94,9 @@ comp.tool(%*{"timeoutMs": 60000,
                            "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
              max_results: int = 500, timeoutMs: int = 30000): JsonNode =
-    ## List repository files, sorted, one path per line — the fastest way
-    ## to survey a codebase before searching or editing. Respects
-    ## .gitignore and skips hidden files unless hidden: true. Prefer this
-    ## over bash ls/find for anything inside the harness root; use bash
-    ## when you need metadata (sizes, mtimes) or paths outside the root.
+    ## List repository files, sorted, one path per line — the fastest survey
+    ## before searching or editing. Respects .gitignore; hidden files only
+    ## with hidden: true. Prefer over bash ls/find inside the harness root.
     ## - path: Directory to list (default: the active conversation
     ##   workspace, else the harness root)
     ## - glob: Only files matching this glob (e.g. "*.nim")

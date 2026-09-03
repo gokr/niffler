@@ -470,6 +470,10 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if args.MaxTokens > 0 && (output <= 0 || args.MaxTokens < output) {
 		output = args.MaxTokens
 	}
+	// Best-effort live model discovery (option B): remember this provider's
+	// endpoint and, when its id cache is stale, probe /models in the
+	// background so the models component can publish served ids catalog-wide.
+	maybeProbeLiveModels(streamCtx, c, resolved)
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
 		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
@@ -815,6 +819,20 @@ func main() {
 		},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 10000},
 	}, resolveHandler)
+	// Live model discovery (option B): the models component discovers this
+	// hidden tool via reg.publish and calls it on its refresh cycle. The
+	// patch adds ids each provider actually serves (probed after chats) to
+	// the catalog; models.dev metadata stays authoritative for everything
+	// else.
+	comp.Tool("llm_models_source", map[string]any{
+		"type":        "object",
+		"description": "Live model ids observed per provider; x-models-source v1 patch.",
+		"properties": map[string]any{
+			"version": map[string]any{"type": "integer"},
+		},
+		"x-harness":       map[string]any{"hidden": true},
+		"x-models-source": map[string]any{"version": modelsSourceVersion, "priority": 150},
+	}, modelsSourceHandler)
 	comp.Tool("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
