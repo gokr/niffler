@@ -6,26 +6,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- **supervisor: a retired session runner could brick its conversation** —
-  the rpNever retirement reap deleted `children[i]` instead of the
-  recorded index, leaving a stale process-nil entry that `ensureRunner`
-  read as "spawning" forever; the next turn then failed with
-  "session runner for <id> did not come up", while unrelated supervised
-  children (store, bash) silently dropped out of the supervisor. The reap
-  now removes the retired child's own entry, and the runner idle clock
-  stamps at turn end so a long turn is not counted as idle.
-
-- **llm: Anthropic cache reads surfaced in the usage breakdown** — the
-  Anthropic adapter normalized `cache_read_input_tokens` into
-  `prompt_tokens` but never set the OpenAI-style
-  `usage.prompt_tokens_details.cached_tokens`, so Claude sessions
-  carried no cached-input breakdown downstream (conversation status
-  events, expert token accounting, bench, clients). Reads now map to
-  `cached_tokens`; cache-creation input is excluded (a write, not a
-  hit).
-
 ### Added
 
 - **CodeWhale borrows — quick-win batch** (docs/research/CODEWHALE.md):
@@ -51,7 +31,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   symlinks/hardlinks refused, no variable expansion. AGENTS.md documents
   the prompt-cache contributor rule (frozen prefix vs append-only history).
 
-### Added
+- **bash: oversized output spills to a temp file, paged with `read`** — the
+  transcript keeps a 12KB cap: when a command's output exceeds it, the full
+  capture (bounded at 2MB) is written to `var/toolout/<session>/<id>.out`
+  and the transcript keeps head + tail with a marker carrying
+  `result.spill {path, bytes, lines}`. The model pages the rest with the
+  existing `read` tool (offset/limit), so no new tool and no prompt weight;
+  spill files are swept after an hour, and paged slices arrive as ordinary
+  new tool results, so the frozen prompt prefix stays cache-valid.
+
 - **LLM auto-retry (B3)** — the session runner classifies chat failures and
   retries transient ones (429/5xx/overloaded/timeout/connection drop) with
   exponential backoff + jitter, `NIF_LLM_MAX_RETRIES` (default 2, 0 disables);
@@ -629,6 +617,34 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Prompt diet** — lean baseprompt + tool descriptions, pure JSON Schema
+  to the LLM: the baseprompt shrinks 1320 → ~460 tokens (the
+  component-authoring tutorial moves to `builder.info`'s result, where a
+  self-extension task discovers it; the ladder/ecosystem guidance
+  compresses to one-liners), descriptions are trimmed across the 13
+  direct tools (bash 206→90, edit 199→75, write 159→70, ...), and
+  `formatToolsForLlm` strips `x-harness.*` from the parameters object —
+  the LLM gets a pure JSON Schema; the catalog keeps the full schema for
+  gates and validation. Bench-verified: firstPrompt 5154→3543 tokens,
+  cache reads −35% (GLM 6/6 pass).
+
+- **Batched tool calls invited** — the baseprompt tells models to batch
+  independent calls (read-only calls always batch safely), `llm` sends
+  `parallel_tool_calls: true` explicitly on both streaming and one-shot
+  paths so gateway defaults don't vary, and read-effect tool descriptions
+  get a batch hint. Measured on both bench lanes the invitation is
+  harmless (calls per round stayed ~1); it stays as the prompt-side
+  counterpart of the host-backed `batch` tool.
+
+- **Typed store client in the SDK** — `sdk/niffler` gains a typed store
+  client and config helpers (mirrored in the Go SDK); agent, fabric,
+  plugins, logfile and observe drop their local store/config boilerplate
+  and every core call site moves onto typed get/putRev/list/del with
+  preserved conflict/not-found semantics. Two deliberate behavior fixes
+  rode along: session resume lists with the store's full 1000-record cap
+  (was silently truncating at 100) and `dispatchSubjectCall` raises on
+  timeout. Plus the store v2 (rev 2) plan as a forward-looking doc.
+
 - **`expert` judgment economics tuned from bench evidence** — the initial
   pass raised `EvalCooldownMs` 2000 → 8000 and pinned policy to harness usage,
   but the six-task matrix still spent 32–40 judgments per model lane and
@@ -696,6 +712,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **supervisor: a retired session runner could brick its conversation** —
+  the rpNever retirement reap deleted `children[i]` instead of the
+  recorded index, leaving a stale process-nil entry that `ensureRunner`
+  read as "spawning" forever; the next turn then failed with
+  "session runner for <id> did not come up", while unrelated supervised
+  children (store, bash) silently dropped out of the supervisor. The reap
+  now removes the retired child's own entry, and the runner idle clock
+  stamps at turn end so a long turn is not counted as idle.
+
+- **llm: Anthropic cache reads surfaced in the usage breakdown** — the
+  Anthropic adapter normalized `cache_read_input_tokens` into
+  `prompt_tokens` but never set the OpenAI-style
+  `usage.prompt_tokens_details.cached_tokens`, so Claude sessions
+  carried no cached-input breakdown downstream (conversation status
+  events, expert token accounting, bench, clients). Reads now map to
+  `cached_tokens`; cache-creation input is excluded (a write, not a
+  hit).
+
+- **persistMsg conflict resolution preserves the stored copy** — the typed
+  `storePutRev` helper persisted the caller's raw value, so a
+  rev-conflict retry dropped `conversationId`/`createdAt`/`telemetry`;
+  it now persists the stored copy with the updated fields merged.
 
 - **Benchmark token accounting and Pi/GLM wiring** — Niffler now reads
   OpenAI-compatible `prompt_tokens_details.cached_tokens` and normalizes
