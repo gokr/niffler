@@ -706,34 +706,33 @@ system's operational complexity.
 
 ## Deferred follow-ups
 
-The consolidated backlog of explicitly deferred work (in priority order).
-`docs/research/FABRIC.md` § "Not shipped" mirrors this list.
+The consolidated backlog of explicitly deferred work. `docs/research/FABRIC.md`
+§ "Not shipped" mirrors this list.
 
 1. **Cancellation.** Shipped: `agent_stop` aborts the child turn for real
    (llm.cancel side-channel + a `__cancel` control message on the steer
-   channel, honored between rounds). Still open: cancelling
-   already-dispatched nested tool calls (a running bash command or a
-   mid-flight component call cannot be aborted — NATS request/reply has no
-   cancel semantics; the tool's own timeout still bounds it), and an
-   abandoned Fabric turn's guest still runs to its deadline.
-2. **Durable-agent hardening.** Restart recovery (shipped: lazy
-   reconciliation of stale records against the live catalog and the child
-   transcript), per-job time budgets (shipped: enforced lazily on
-   observation with agent_stop semantics) and reasoning-effort selection
-   (shipped). Still open: per-job token/call budgets, tool allowlists,
-   structured-output schemas, canonical working directories, and optional
-   isolated git worktrees — all need core session-surface design.
-3. **Batch effect declarations.** Shipped: tools declare
-   `x-harness.effect: "read"`; unclassified tools count as writes. Batch
-   reads fill the concurrency cap together, writes run exclusively (never
-   overlapping anything), so concurrent mutations are prevented by
-   construction. Still open: per-target (rather than global) write
-   serialization, which would let independent write targets overlap.
-4. **Observability and retention.** A Fabric/agent activity card in the
-   desktop UI (events are on the bus; the console renders them); retention
-   limits and cleanup for logs and traces; lineage-record cleanup once a
-   conversation deletion surface exists. Artifact expiry is currently lazy
-   (enforced when another oversized artifact is stored, not on a timer).
+   channel), and a cancel landing while a tool call is in flight raises
+   TurnCancelled — the runner stops waiting and the turn ends promptly.
+   Inherent limit: an already-running command (a bash sleep) cannot be
+   aborted — NATS request/reply has no cancel semantics; the tool's own
+   timeout bounds it.
+2. **Durable-agent hardening.** Shipped: lazy restart recovery, lazily
+   enforced time budgets, reasoning-effort selection, per-session tool
+   allowlists, and per-turn round budgets (maxRounds). Still open:
+   per-job token/call budgets beyond the round cap, structured-output
+   schemas, canonical working directories, and optional isolated git
+   worktrees — all need deeper core session-surface design.
+3. **Batch effect declarations.** Shipped: `x-harness.effect: "read"`
+   tools run concurrently (and may overlap a write); writes are mutually
+   exclusive GLOBALLY. Per-target write overlap is a documented
+   non-goal: bash is a universal writer, so component identity does not
+   imply resource disjointness — relaxing it needs resource-scoped
+   effect declarations.
+4. **Observability and retention.** Shipped: the desktop UI activity
+   strip for fabric/agent events, artifact sweeps (boot + per run),
+   child-log retention (age + size capped), and `conversation_delete`
+   for lineage cleanup. Still open: durable trace retention backed by
+   the store (today's events/logs are diagnostic, not an audit trail).
 5. **Sandboxing.** A separate milestone if and when untrusted guests are
    required (restricted VM, WASM, or OS isolation). Today the guest is
    trusted code in `bash`'s trust class and approval is the boundary.

@@ -251,17 +251,14 @@ aggregate), `hybrid.nim` (fabric calling agent).
 
 ## Not shipped (deliberately later)
 
-- Per-target conflict detection for batch writes: `x-harness.effect`
-  classifies reads (concurrent) vs writes (exclusive), so a batch never
-  runs two writes at once — but writes to DIFFERENT targets could safely
-  overlap and currently do not.
-- Per-job token/call caps (time budgets and reasoning-effort selection are
-  shipped), and cancellation propagation into already-dispatched nested calls
-  (`agent_stop` cancels the child turn for real; NATS request/reply still has
-  no cancel semantics for in-flight tool calls).
-- Structured-output schemas, tool allowlists, canonical working directories,
-  and isolated git worktrees for spawned subagents.
-- Cancellation propagation into a running guest (request/reply has no cancel
-  semantics; kill-on-timeout is the only stop).
-- A Fabric activity card in the desktop UI (lifecycle events are on the bus
-  and the console renders them); durable retention for events/traces.
+- Aborting an already-running command: cancellation stops the WAIT (a
+  cancelled turn ends promptly) but a running bash sleep still runs to
+  its own timeout — NATS request/reply has no cancel semantics.
+- Per-job token/call caps beyond the round budget, structured-output
+  schemas for subagent replies, canonical working directories, and
+  isolated git worktrees for spawned children (session-surface design).
+- Per-target batch write overlap: writes are mutually exclusive globally
+  because bash is a universal writer — needs resource-scoped effect
+  declarations to relax safely.
+- Durable trace retention backed by the store (events/logs are
+  diagnostic, not an audit trail).
