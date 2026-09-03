@@ -40,10 +40,16 @@ export interface SessionStatus {
   contextSource?: string;
   promptTokens?: number;
   usedTokens?: number;
+  cacheHitTokens?: number;
+  cacheHitRatio?: number;
+  reason?: string;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    prompt_tokens_details?: {
+      cached_tokens?: number;
+    };
   };
 }
 

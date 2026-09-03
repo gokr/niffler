@@ -110,6 +110,23 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {},
       "x-harness": {"onDemand": true}
     }))
+  coreReg.tools.add(ToolReg(name: "doctor", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count. All probes are read-only and never execute anything. Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
+      "properties": {},
+      "x-harness": {"onDemand": true}
+    }))
+  coreReg.tools.add(ToolReg(name: "prompt_preview", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Inspect the composed request context of a conversation without sending anything: where the system prompt came from (component vs minimal fallback), which project context files feed it, the frozen direct tool names, schemas discovered so far, and message/token counts. Read-only provenance for debugging prompt or tool-selection problems. Called without sessionId (or with an empty one) it answers about the CURRENT session. Never sends a request and never mutates anything.",
+      "properties": {
+        "sessionId": {"type": "string",
+                      "description": "Conversation id (conv-*). Omit or leave empty to preview the current session"}
+      },
+      "x-harness": {"onDemand": true}
+    }))
   coreReg.tools.add(ToolReg(name: "session_info", component: "core",
     schema: %*{
       "type": "object",

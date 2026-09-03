@@ -1,5 +1,7 @@
 ## git component — read-only git inspection as first-class tools:
-## `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`.
+## `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`, plus the
+## local `review_receipt` write/check pair (diff fingerprint handoff,
+## never calls a model).
 ##
 ## Git mutations stay in bash (approval-gated, arbitrary git); these five
 ## cover the 90% inspection traffic the LLM actually needs — repo state,
@@ -14,8 +16,61 @@
 ## missing; "not a git repository" is flagged so the LLM knows the
 ## harness root is not inside a repo. Read-only, so approval-free.
 
-import std/[json, os, sequtils, strutils]
+import std/[json, os, sequtils, strutils, times]
 import niffler/sdk
+
+proc toSHA256(s: string): string =
+  ## Minimal SHA-256 for diff fingerprints (std/sha1 covers SHA-1 only).
+  ## FIPS-180-4 over the raw bytes; hex output.
+  let msg = s
+  var bitLen = uint64(msg.len) * 8
+  var data = msg
+  data.add('\x80')
+  while data.len mod 64 != 56:
+    data.add('\x00')
+  for i in countdown(7, 0):
+    data.add(chr(uint8((bitLen shr (i * 8)) and 0xFF)))
+  var h: array[8, uint32] = [0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32,
+    0xa54ff53a'u32, 0x510e527f'u32, 0x9b05688c'u32, 0x1f83d9ab'u32, 0x5be0cd19'u32]
+  const k: array[64, uint32] = [
+    0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32, 0x3956c25b'u32,
+    0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32, 0xd807aa98'u32, 0x12835b01'u32,
+    0x243185be'u32, 0x550c7dc3'u32, 0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32,
+    0xc19bf174'u32, 0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32,
+    0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32, 0x983e5152'u32,
+    0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32, 0xc6e00bf3'u32, 0xd5a79147'u32,
+    0x06ca6351'u32, 0x14292967'u32, 0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32,
+    0x53380d13'u32, 0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
+    0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32, 0xd192e819'u32,
+    0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32, 0x19a4c116'u32, 0x1e376c08'u32,
+    0x2748774c'u32, 0x34b0bcb5'u32, 0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32,
+    0x682e6ff3'u32, 0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32,
+    0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
+  var w: array[64, uint32]
+  for chunk in 0 ..< data.len div 64:
+    let base = chunk * 64
+    for i in 0 ..< 16:
+      w[i] = uint32(data[base + i*4]) shl 24 or uint32(data[base + i*4 + 1]) shl 16 or
+             uint32(data[base + i*4 + 2]) shl 8 or uint32(data[base + i*4 + 3])
+    for i in 16 ..< 64:
+      let s0 = (w[i-15] shr 7 or w[i-15] shl 25) xor
+               (w[i-15] shr 18 or w[i-15] shl 14) xor (w[i-15] shr 3)
+      let s1 = (w[i-2] shr 17 or w[i-2] shl 15) xor
+               (w[i-2] shr 19 or w[i-2] shl 13) xor (w[i-2] shr 10)
+      w[i] = w[i-16] + s0 + w[i-7] + s1
+    var (a, b, c, d, e, f, g, hh) = (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7])
+    for i in 0 ..< 64:
+      let s1 = (e shr 6 or e shl 26) xor (e shr 11 or e shl 21) xor (e shr 25 or e shl 7)
+      let ch = (e and f) xor ((not e) and g)
+      let t1 = hh + s1 + ch + k[i] + w[i]
+      let s0 = (a shr 2 or a shl 30) xor (a shr 13 or a shl 19) xor (a shr 22 or a shl 10)
+      let maj = (a and b) xor (a and c) xor (b and c)
+      let t2 = s0 + maj
+      hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh
+  for v in h:
+    result.add(toHex(v, 8))
 
 let comp = newComponent("git", "0.1.0")
 
@@ -225,6 +280,97 @@ comp.tool(%*{"timeoutMs": 45000}):
                            "--", path]
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, min(max(max_lines, 1), 500) + 1)
+
+proc receiptsDir(): string =
+  ## Review receipts live under var/ (disposable runtime state): they are
+  ## local pre-push handoff artifacts, not durable records.
+  rootDir() / "var" / "review-receipts"
+
+proc diffFingerprint(): tuple[fp, diffText: string, empty: bool] =
+  ## SHA-256 of the full working-tree diff (git diff HEAD). The fingerprint
+  ## is the whole receipt idea: a check against a stale diff must fail.
+  let (code, output) = runGit(gitBase & @["diff", "HEAD"], 40_000)
+  if code != 0:
+    return ("", "", true)
+  let d = output
+  if d.strip().len == 0:
+    return ("", d, true)
+  result.fp = toLowerAscii($toSHA256(d))
+  result.diffText = d
+
+comp.tool(%*{"timeoutMs": 45000}):
+  proc review_receipt(op: string = "write", findings: string = "", model: string = ""): JsonNode =
+    ## Local review receipt for pre-push handoff (CodeWhale borrow,
+    ## docs/research/CODEWHALE.md docs/RECEIPTS.md): records WHAT was
+    ## reviewed (SHA-256 fingerprint of the working-tree diff) and what the
+    ## review reported, never the diff body itself. op="write" stores a
+    ## receipt under var/review-receipts/ and returns it; op="check"
+    ## compares the CURRENT diff's fingerprint against the latest receipt —
+    ## fails when the diff changed since the review (re-run review first).
+    ## Never calls a model: the review judgment is yours (or an agent
+    ## turn's); this only makes the handoff honest about its staleness.
+    ## - op: "write" to record, "check" to gate on staleness
+    ## - findings: free-text review summary recorded in the receipt (write)
+    ## - model: reviewer model id, when a model produced the findings (write)
+    if op == "write":
+      let (fp, _, empty) = diffFingerprint()
+      if empty:
+        return refused("no working-tree diff to review (git diff HEAD is empty or failed)")
+      let dir = receiptsDir()
+      try:
+        createDir(dir)
+      except CatchableError as e:
+        return refused("cannot create " & dir & ": " & e.msg)
+      let id = "rr-" & $int(toUnixFloat(now().toTime())) & "-" & fp[0 ..< 8]
+      let receipt = %*{
+        "schema_id": "niffler.review-receipt/v1",
+        "id": id,
+        "created_at": $now(),
+        "diff_fingerprint": fp,
+        "model": model,
+        "findings": findings,
+        "note": "re-run write after changing the diff; check fails on fingerprint mismatch"}
+      try:
+        writeFile(dir / (id & ".json"), receipt.pretty)
+      except CatchableError as e:
+        return refused("cannot write receipt: " & e.msg)
+      return receipt
+    elif op == "check":
+      let dir = receiptsDir()
+      if not dirExists(dir):
+        return %*{"exit_code": 1, "ok": false,
+                  "detail": "no review receipts exist yet — review the diff, then write a receipt"}
+      var newest = ("", 0.0)
+      for f in walkDirRec(dir):
+        if f.extractFilename.endsWith(".json"):
+          try:
+            let t = toUnixFloat(getLastModificationTime(f))
+            if t > newest[1]: newest = (f, t)
+          except CatchableError:
+            discard
+      if newest[0].len == 0:
+        return %*{"exit_code": 1, "ok": false, "detail": "no parseable receipts"}
+      let (fp, _, empty) = diffFingerprint()
+      if empty:
+        return %*{"exit_code": 1, "ok": false,
+                  "detail": "working-tree diff is empty or failed — nothing matches the receipt"}
+      var receipt: JsonNode
+      try:
+        receipt = parseJson(readFile(newest[0]))
+      except CatchableError as e:
+        return %*{"exit_code": 1, "ok": false, "detail": "unreadable receipt: " & e.msg}
+      let stored = receipt{"diff_fingerprint"}.getStr("")
+      if stored == fp:
+        return %*{"exit_code": 0, "ok": true,
+                  "receipt": receipt{"id"}.getStr(""),
+                  "detail": "diff matches the latest review receipt"}
+      return %*{"exit_code": 1, "ok": false,
+                "receipt": receipt{"id"}.getStr(""),
+                "receipt_fingerprint": stored,
+                "current_fingerprint": fp,
+                "detail": "diff changed since the latest review — re-review and write a fresh receipt"}
+    else:
+      refused("op must be \"write\" or \"check\"")
 
 resolveGit()
 comp.run()

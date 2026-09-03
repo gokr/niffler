@@ -23,6 +23,19 @@
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    prompt_tokens_details?: {
+      cached_tokens?: number;
+    };
+  }
+
+  // Share of the prompt served from the provider's cache, as a percent
+  // string ("87"). Null when the provider does not report cached tokens
+  // (e.g. Anthropic without cache headers) or the prompt is empty.
+  function cachedShare(u?: Usage): string | null {
+    const cached = u?.prompt_tokens_details?.cached_tokens;
+    const prompt = u?.prompt_tokens;
+    if (!cached || !prompt || prompt <= 0) return null;
+    return String(Math.round((cached / prompt) * 100));
   }
 
   interface Msg {
@@ -622,6 +635,12 @@
           const pct = p.context ? Math.round((p.promptTokens / p.context) * 100) : 0;
           l.ctxNote = t("chat.contextAt", { pct: String(pct) });
         }
+        if (p.reason === "reset:trim") {
+          // History reset: the provider's prompt cache is dead past the
+          // remaining prefix — the next request pays full prompt price.
+          l.ctxNote = (l.ctxNote ? l.ctxNote + " · " : "") +
+            t("chat.cacheReset");
+        }
       }
     });
     const l = ensureLive(sessionId);
@@ -682,6 +701,9 @@
                 <span class="msg-meta-item">
                   ⤴ {g.m.usage?.prompt_tokens ?? 0} · ⤵ {g.m.usage?.completion_tokens ?? 0}
                 </span>
+              {/if}
+              {#if cachedShare(g.m.usage) != null}
+                <span class="msg-meta-item" title="prompt tokens served from the provider's cache">⚡ {cachedShare(g.m.usage)}% cached</span>
               {/if}
               {#if g.m.usage?.total_tokens != null}
                 <span class="msg-meta-item">Σ {g.m.usage.total_tokens}</span>

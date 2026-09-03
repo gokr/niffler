@@ -12,7 +12,7 @@
 ## Conversations and messages persist via the store component (document
 ## store over the bus); persistence failures degrade gracefully.
 
-import std/[algorithm, json, os, sequtils, strutils, tables, times, unicode]
+import std/[algorithm, json, math, os, sequtils, strutils, tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
 import catalog
@@ -397,7 +397,9 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
         onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                               "promptTokens": p.promptTokens,
                               "usedTokens": used, "context": p.ctxSize,
-                              "trimmed": dropped})
+                              "trimmed": dropped,
+                              "reason": "reset:trim",
+                              "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
   elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
     echo "core: WARNING context at " & $pct & "% — will trim at " &
@@ -406,7 +408,8 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "promptTokens": p.promptTokens,
                             "usedTokens": used, "context": p.ctxSize,
-                            "warning": true})
+                            "warning": true,
+                            "reason": "warn:threshold"})
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -679,6 +682,15 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         "thinkingEffort": thinkingEffort
       }
       if usageObj.len > 0: statusEv["usage"] = usageObj
+      # Cache economics (CodeWhale borrow): the frozen prefix means most
+      # prompt tokens should be cached after the first request; surface the
+      # provider's cached split so a low hit ratio is visible and attributable
+      # (ev.session.context carries the reset reason when we know one).
+      let cached = usageObj{"prompt_tokens_details"}{"cached_tokens"}.getInt(0)
+      if cached > 0:
+        statusEv["cacheHitTokens"] = %cached
+        statusEv["cacheHitRatio"] = %
+          (cached.float * 100.0 / p.promptTokens.float).round(2)
       onEvent("status", statusEv)
     let toolCalls = resp{"tool_calls"}
     let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and

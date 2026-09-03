@@ -219,6 +219,45 @@ comp.tool:
       items.add(skillJson(s))
     %*{"ok": true, "count": items.len, "skills": items}
 
+comp.tool(%*{"onDemand": true}):
+  proc skill_audit(): JsonNode =
+    ## Read-only audit of every SKILL.md on disk, WITHOUT merging (CodeWhale
+    ## borrow, docs/research/CODEWHALE.md): discoverSkills dedups by name so
+    ## shadowing is invisible there; this lists every on-disk copy, marks
+    ## which one wins for the runtime, and flags the shadowed duplicates and
+    ## invalid skill dirs. Use it when a skill seems ignored or two copies
+    ## disagree — the winner is always the first entry in skillSearchPaths.
+    let root = rootDir()
+    let home = getHomeDir()
+    let config = getConfigDir()
+    var winners = initTable[string, bool]()
+    for s in discoverSkills():
+      winners[s.name] = true
+    var entries = newJArray()
+    var shadowed = 0
+    var invalid = 0
+    for (source, dir) in skillSearchPaths(root, home, config):
+      if not dirExists(dir):
+        continue
+      for path in walkDirRec(dir):
+        if path.extractFilename != "SKILL.md":
+          continue
+        let s = parseSkillDir(path.parentDir)
+        if s.isNone:
+          inc invalid
+          entries.add(%*{"dir": path.parentDir, "source": source,
+                          "status": "invalid",
+                          "detail": "SKILL.md exists but is unreadable or missing name/description"})
+          continue
+        let active = not winners.hasKey(s.get.name) or
+                     findSkill(s.get.name).get.rootDir == s.get.rootDir
+        if not active: inc shadowed
+        entries.add(%*{"name": s.get.name, "dir": s.get.rootDir,
+                        "source": source, "status": (if active: "active" else: "shadowed"),
+                        "description": s.get.description})
+    %*{"skills": entries, "shadowedCount": shadowed, "invalidCount": invalid,
+        "note": "runtime discovery merges to one winner per name; this audit shows every on-disk copy"}
+
 comp.tool:
   proc skill_load(name: string): JsonNode =
     ## Load a skill's instructions into this conversation. Returns the

@@ -34,6 +34,7 @@ task all_internal, "Unlocked internal build — invoke through all (or the Makef
   exec "nim c --hints:off --path:sdk -o:var/bin/git components/git/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/observe components/observe/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/logfile components/logfile/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/hooks components/hooks/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/console components/console/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/cli components/cli/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/agent components/agent/main.nim"
