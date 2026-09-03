@@ -193,6 +193,16 @@ proc main() =
                        %*{"sessionId": childId, "model": ""}, 30_000)
   check("retired runner re-ensured on demand",
         reensured{"error"} == nil, $reensured)
+  block probe:
+    let st = call(nc, "core", "status", %*{}, 10_000)
+    var comps = st{"components"}
+    echo "PROBE status components:"
+    if comps != nil:
+      for c in comps:
+        echo "  ", c{"name"}.getStr(""), " pid=", c{"pid"}.getInt(-1),
+             " running=", c{"running"}.getBool(false),
+             " policy=", c{"policy"}.getStr(""), " wanted=", c{"wanted"}.getBool(false)
+
 
   # --- background jobs: spawn, status, wait, steer, stop, failure -----------
   var doneSub: ptr natsSubscription
@@ -402,15 +412,14 @@ proc main() =
                       "id": parent & ":" & align($i, 6, '0')}, 10_000)
       if m{"error"} != nil: break
       let content = m{"value"}{"content"}.getStr("")
-      # only a SUCCESSFUL agent_run result names the child; error results
-      # carry sessionId in their extra too
-      if content.contains("\"reply\""):
-        let marker = content.find("\"sessionId\":\"agent-")
-        if marker >= 0:
-          let start = marker + "\"sessionId\":\"".len
-          var stop = start
-          while stop < content.len and content[stop] != '"': inc stop
-          result.id = content[start ..< stop]
+      # both successful and error results name the child in sessionId
+      # (budget-exhausted children end in errResult, not a text reply)
+      let marker = content.find("\"sessionId\":\"agent-")
+      if marker >= 0:
+        let start = marker + "\"sessionId\":\"".len
+        var stop = start
+        while stop < content.len and content[stop] != '"': inc stop
+        result.id = content[start ..< stop]
     if result.id.len > 0:
       for i in 1 .. 10:
         let m = call(nc, "store", "get",

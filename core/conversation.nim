@@ -96,11 +96,17 @@ proc formatToolsForLlm(tools: JsonNode): JsonNode =
   for t in tools:
     # the catalog already normalized schemas at registration
     let schema = t{"schema"}
+    var description = schema{"description"}.getStr(t{"name"}.getStr())
+    # Read-only tools (x-harness.effect = "read") get an explicit batch
+    # hint so models group them without waiting on a per-call prompt rule.
+    # Inert until a component tags its tools; default is "write".
+    if schema{"x-harness"}{"effect"}.getStr("") == "read":
+      description &= " — batches safely with other read-only calls"
     result.add(%*{
       "type": "function",
       "function": {
         "name": t{"name"},
-        "description": schema{"description"}.getStr(t{"name"}.getStr()),
+        "description": description,
         "parameters": schema
       }
     })
@@ -851,7 +857,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   # (the loop only ends early via a no-tool-call reply or a cancel). Report
   # this as a turn error so drivers can distinguish "model finished" from
   # "budget exhausted"; the transcript keeps everything up to here.
-  turnError = "turn round budget exhausted (" & $maxRounds &
+  turnError = "turn round budget exhausted (" & $effMaxRounds &
     " LLM rounds; raise with NIF_MAX_TURN_ROUNDS)"
   if onEvent != nil:
     onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
