@@ -93,10 +93,9 @@ comp.tool(%*{"hidden": true}):
 
 comp.tool:
   proc get(kind: string, id: string): JsonNode =
-    ## Fetch a document by kind and id. Read-only; use it to inspect
-    ## persisted state. Kinds in use: conversation (id conv-*), message
-    ## (id <convId>:<n>), component (id <name>). Returns ok, rev and value,
-    ## or ok:false with code not-found.
+    ## Fetch a stored document by kind and id. Read-only. Kinds in use:
+    ## conversation (id conv-*), message (id <convId>:<n>), component
+    ## (id <name>). Returns {ok, rev, value} or ok:false not-found.
     ## - kind: Document kind
     ## - id: Document id within the kind
     let rev = getRev(kind, id)
@@ -106,10 +105,10 @@ comp.tool:
 
 comp.tool:
   proc list(kind: string, idPrefix: string = "", limit: int = 100): JsonNode =
-    ## List documents of a kind, ordered by id, optionally filtered by an
-    ## id prefix. Read-only; use it to enumerate conversations (kind
-    ## conversation) or the messages of one conversation (kind message,
-    ## idPrefix <convId>:). Returns ok and items [{id, rev, value}].
+    ## List stored documents of a kind, ordered by id, optionally
+    ## id-prefix filtered. Read-only. Enumerate conversations (kind
+    ## conversation) or one conversation's messages (kind message,
+    ## idPrefix <convId>:). Returns {ok, items: [{id, rev, value}]}.
     ## - kind: Document kind
     ## - idPrefix: Only items whose id starts with this
     ## - limit: Max items (default 100, cap 1000)

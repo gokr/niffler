@@ -223,10 +223,14 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
                          launchedAt: epochTime()))
 
   proc topUp() =
-    ## Launch queued calls within the concurrency cap. Reads may overlap
-    ## each other; a write (or unclassified tool) launches only when
-    ## NOTHING is in flight, and nothing new launches while a write runs —
-    ## concurrent mutations to one target are prevented by construction.
+    ## Launch queued calls within the concurrency cap. Reads (declared
+    ## non-mutating) fill the cap together and may also overlap a write —
+    ## same-component interleaving is the component's own serialization,
+    ## and cross-component read/write races only ever yield a stale or
+    ## partial READ, never corruption. Writes are mutually exclusive with
+    ## other writes GLOBALLY, not per target: bash is a universal writer,
+    ## so two writes to different components can still race the same
+    ## files. Resource-scoped declarations would be needed to relax that.
     while inFlight.len < maxBatchInflight and queued.len > 0:
       var writeInFlight = false
       for pending in inFlight:
@@ -235,10 +239,10 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       for i in 0 ..< queued.len:
         let isWrite = effectOf(queued[i]{"tool"}.getStr("")) == "write"
         if isWrite:
-          if inFlight.len == 0:
+          if not writeInFlight:
             pick = i
             break
-        elif not writeInFlight:
+        else:
           pick = i
           break
       if pick < 0: break
@@ -480,24 +484,23 @@ discard comp.tool("fabric", fabSchema,
         return %*{"error": "fabric needs code or name"}
       # program library: fetch the stored source (the model curates it
       # via the store's put/get/list — fabric only runs it)
-      var stored: JsonNode
+      var stored: StoreItem
       try:
-        stored = comp.request("store", "get",
-          %*{"kind": "fabricprog", "id": name}, 10_000)
+        stored = comp.storeGet("fabricprog", name, 10_000)
+      except StoreNotFoundError:
+        discard  # falls through to the not-found path below
       except CatchableError:
-        stored = nil
-      if stored == nil or stored{"value"}{"code"}.getStr("").len == 0:
+        discard  # store unreachable — degrade as before
+      if stored.value == nil or stored.value{"code"}.getStr("").len == 0:
         var known: seq[string] = @[]
         try:
-          let lst = comp.request("store", "list",
-            %*{"kind": "fabricprog", "limit": 50}, 10_000)
-          for it in lst{"items"}:
-            known.add(it{"id"}.getStr(""))
+          for it in comp.storeList("fabricprog", "", 50, 10_000):
+            known.add(it.id)
         except CatchableError: discard
         var hint = ""
         if known.len > 0: hint = " Known programs: " & known.join(", ")
         return %*{"error": "no stored program named '" & name & "'." & hint}
-      code = stored{"value"}{"code"}.getStr("")
+      code = stored.value{"code"}.getStr("")
     if code.len > maxCodeBytes:
       return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
     let lintMsg = lint(code)

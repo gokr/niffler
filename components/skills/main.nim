@@ -197,13 +197,12 @@ proc skillJson(s: Skill): JsonNode =
 
 comp.tool:
   proc skill_list(query: string = "", source: string = ""): JsonNode =
-    ## List the skills available on this harness. Skills are reusable
-    ## strategy/workflow guides (SKILL.md files) discovered from the
-    ## standard agent directories (.agents/skills, .claude/skills,
-    ## .opencode/skills — project and home) plus ~/.niffler/skills and
-    ## the XDG opencode/skills dir. Call this when the user asks for help
-    ## with a class of work (code review, refactoring, a language, a
-    ## workflow) to find a relevant skill, then skill_load it.
+    ## List the skills available on this harness — reusable workflow/
+    ## strategy guides (SKILL.md files) from the standard agent skill
+    ## directories (.agents/skills, .claude/skills, .opencode/skills —
+    ## project and home) plus ~/.niffler/skills and the XDG
+    ## opencode/skills dir. Use before a class of work (review,
+    ## refactoring, a language, a workflow); then skill_load the match.
     ## - query: substring filter over name, description and tags
     ## - source: "project", "home" or "config"; empty = all
     var skills = discoverSkills()
@@ -260,11 +259,9 @@ comp.tool(%*{"onDemand": true}):
 
 comp.tool:
   proc skill_load(name: string): JsonNode =
-    ## Load a skill's instructions into this conversation. Returns the
-    ## full SKILL.md content plus its resource list; the content becomes
-    ## part of this conversation — follow it for the current task. Skills
-    ## add workflow strategy, not tools. Find the right one with
-    ## skill_list first.
+    ## Load a skill's instructions into this conversation and follow it
+    ## for the current task. Skills add workflow strategy, not tools. Find
+    ## the name with skill_list first.
     ## - name: skill name (see skill_list)
     let s = findSkill(name)
     if s.isNone:

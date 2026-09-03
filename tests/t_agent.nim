@@ -36,6 +36,11 @@ proc main() =
   let coreBin = sandbox.sandboxBin("niffler")
   copyFileWithPermissions(repoRoot / "var" / "bin" / "agent",
                           sandbox.sandboxBin("agent"))
+  # stale log for the retention sweep: core's boot pass must delete it
+  createDir(root / "var" / "logs")
+  let staleLog = root / "var" / "logs" / "stale-child.log"
+  writeFile(staleLog, "old child output\n")
+  staleLog.setLastModificationTime(getTime() - initDuration(days = 30))
   # NOTE: sandbox intentionally kept on failure for post-mortem (cleaned by OS)
 
   # compile the test-only stub component into the sandbox
@@ -76,6 +81,7 @@ proc main() =
       break
     sleep(200)
   check("core up", coreUp)
+  check("stale child log swept at boot", not fileExists(staleLog))
 
   let ctxProc = startComponent(ctxBin, url, root = root,
                                logFile = "/tmp/opencode/ctxtest.log")
@@ -187,6 +193,27 @@ proc main() =
                        %*{"sessionId": childId, "model": ""}, 30_000)
   check("retired runner re-ensured on demand",
         reensured{"error"} == nil, $reensured)
+
+  # Regression guard (supervisor retirement reap): reaping a retired
+  # rpNever child must remove that child's own supervisor entry. An earlier
+  # bug deleted a wrong index (children[0] — the first manifest child) and
+  # left a stale process=nil entry that blocked re-ensure of the retired
+  # runner for the full wait window ("did not come up"). With this bug, the
+  # reaps above would have dropped store and bash from the supervisor, and
+  # the status tool would report them as "external" instead of on-failure.
+  block:
+    let st = call(nc, "core", "status", %*{}, 10_000)
+    var storeSupervised = false
+    var bashSupervised = false
+    if st{"components"} != nil:
+      for c in st{"components"}:
+        let nm = c{"name"}.getStr("")
+        if nm == "store" and c{"policy"}.getStr("") == "on-failure":
+          storeSupervised = true
+        if nm == "bash" and c{"policy"}.getStr("") == "on-failure":
+          bashSupervised = true
+    check("retirement reap keeps other supervised children",
+          storeSupervised and bashSupervised, $st)
 
   # --- background jobs: spawn, status, wait, steer, stop, failure -----------
   var doneSub: ptr natsSubscription
@@ -364,6 +391,142 @@ proc main() =
                         %*{"jobId": budgetJob, "timeoutMs": 30_000}, 60_000)
   check("budget-cancelled job terminates as stopped",
         budgetWait{"status"}.getStr("") == "stopped", $budgetWait)
+
+  # --- mid-tool cancellation: the runner stops waiting for the tool --------
+  # The child's turn is blocked in bash sleep 30 when the stop lands; the
+  # dispatch raises TurnCancelled and the job terminalizes well under the
+  # tool's runtime (waiting the tool out would take >= 30s). The runner
+  # also publishes cancel.bash, so the bash component kills the command's
+  # process group — an orphaned sleep would survive for 30s and still
+  # touch the marker file (proven absent, and pgrep finds nothing).
+  let slowMarker = root / "var" / "slowbash-marker"
+  if fileExists(slowMarker): removeFile(slowMarker)
+  let midParent = "agt-midtool"
+  discard call(nc, "core", "session",
+               %*{"sessionId": midParent, "content": "go"}, 120_000)
+  let midJob = fetchJobId(midParent)
+  check("mid-tool spawn returned a jobId", midJob.startsWith("job-"),
+        midJob)
+  sleep(800)  # let the child enter its bash round
+  let midStart = epochTime()
+  discard call(nc, "agent", "agent_stop", %*{"jobId": midJob}, 10_000)
+  let midWait = call(nc, "agent", "agent_wait",
+                     %*{"jobId": midJob, "timeoutMs": 20_000}, 40_000)
+  let midSecs = epochTime() - midStart
+  check("mid-tool stop terminalizes promptly",
+        midWait{"status"}.getStr("") == "stopped" and midSecs < 10.0,
+        $midWait & " secs=" & $midSecs.int)
+  sleep(400)  # give an orphaned command the chance to show itself
+  check("mid-tool stop killed the bash command tree (no orphan)",
+        not processExists("slowbash-marker"))
+  check("cancelled command never finished (marker untouched)",
+        not fileExists(slowMarker))
+
+  # --- tool allowlist: the child may dispatch only the frozen set -----------
+  # The evidence lives in the CHILD's transcript (its bash call is rejected
+  # at the dispatch gate), so resolve the child id from the agent_run result
+  # first, like the depth-guard test does.
+  proc childTranscriptOf(parent: string): tuple[id, text: string] =
+    for i in 1 .. 12:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      let content = m{"value"}{"content"}.getStr("")
+      # both successful and error results name the child in sessionId
+      # (budget-exhausted children end in errResult, not a text reply)
+      let marker = content.find("\"sessionId\":\"agent-")
+      if marker >= 0:
+        let start = marker + "\"sessionId\":\"".len
+        var stop = start
+        while stop < content.len and content[stop] != '"': inc stop
+        result.id = content[start ..< stop]
+    if result.id.len > 0:
+      for i in 1 .. 10:
+        let m = call(nc, "store", "get",
+                     %*{"kind": "message",
+                        "id": result.id & ":" & align($i, 6, '0')}, 10_000)
+        if m{"error"} != nil: break
+        result.text.add(m{"value"}{"content"}.getStr(""))
+
+  let allowParent = "agt-allow"
+  discard call(nc, "core", "session",
+               %*{"sessionId": allowParent, "content": "go"}, 120_000)
+  let allowChild = childTranscriptOf(allowParent)
+  check("allowlisted subagent rejects a non-listed tool",
+        allowChild.text.contains("not in this session's tool allowlist"),
+        "id=" & allowChild.id & " text=" & allowChild.text)
+
+  # --- round budget: maxRounds caps the child's tool rounds -----------------
+  # Two rounds run (depth-guard attempt, bash) and the scripted final round
+  # never happens; the turn ends as budget-exhausted (turnError, no reply).
+  let roundsParent = "agt-rounds"
+  discard call(nc, "core", "session",
+               %*{"sessionId": roundsParent, "content": "go"}, 120_000)
+  let roundsChild = childTranscriptOf(roundsParent)
+  check("round-budget child ran its tool rounds",
+        roundsChild.text.contains("agent-ok"), roundsChild.text)
+  check("round-budget child stopped before its final round",
+        not roundsChild.text.contains("subagent-done"), roundsChild.text)
+
+  # --- call budget: maxCalls caps the child's total tool dispatches --------
+  # The depth-guard attempt spends the budget of 1; the scripted bash round
+  # must be refused and the budget error must reach the parent as a failure.
+  proc parentTranscriptOf(parent: string): string =
+    for i in 1 .. 12:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      result.add(m{"value"}{"content"}.getStr(""))
+  let callsParent = "agt-calls"
+  discard call(nc, "core", "session",
+               %*{"sessionId": callsParent, "content": "go"}, 120_000)
+  let callsChild = childTranscriptOf(callsParent)
+  check("call-budget child ran only the budgeted dispatch",
+        callsChild.text.contains("subagents cannot spawn subagents") and
+        not callsChild.text.contains("agent-ok"), callsChild.text)
+  check("call-budget failure reached the parent",
+        parentTranscriptOf(callsParent).contains(
+          "tool-call budget exhausted"), callsChild.id)
+
+  # --- token budget: maxTokens caps cumulative provider-reported usage ------
+  # The stub reports 10100 total tokens per round; with a 15000 cap two
+  # rounds run and the third is refused before its LLM call.
+  let tokensParent = "agt-tokens"
+  discard call(nc, "core", "session",
+               %*{"sessionId": tokensParent, "content": "go"}, 120_000)
+  let tokensChild = childTranscriptOf(tokensParent)
+  check("token-budget child ran its rounds under the cap",
+        tokensChild.text.contains("agent-ok") and
+        not tokensChild.text.contains("subagent-done"), tokensChild.text)
+  check("token-budget failure reached the parent",
+        parentTranscriptOf(tokensParent).contains(
+          "token budget exhausted"), tokensChild.id)
+
+  # --- conversation_delete: the deletion surface lineage cleanup waited on --
+  # The agent_run child's header, messages, tools snapshot, and lineage all
+  # disappear, and its (retired) runner slot is cleaned up.
+  let delChild = childId
+  let del = call(nc, "core", "conversation_delete",
+                 %*{"sessionId": delChild}, 30_000)
+  check("conversation_delete succeeds",
+        del{"ok"}.getBool(false) and del{"deleted"}.getInt(0) > 0, $del)
+  let hdr = call(nc, "store", "get",
+                 %*{"kind": "conversation", "id": delChild}, 10_000)
+  check("conversation header deleted", hdr{"ok"}.getBool(false) == false,
+        $hdr)
+  let msg = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": delChild & ":000001"}, 10_000)
+  check("conversation messages deleted", msg{"ok"}.getBool(false) == false,
+        $msg)
+  let lin = call(nc, "store", "get",
+                 %*{"kind": "sessionmeta", "id": delChild}, 10_000)
+  check("subagent lineage deleted", lin{"ok"}.getBool(false) == false, $lin)
+  let snap = call(nc, "core", "catalog", %*{"op": "components"}, 5_000)
+  check("deleted runner left the catalog",
+        snap{"components"}{"session-" & delChild} == nil, $snap)
 
   report("agent")
 

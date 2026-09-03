@@ -166,11 +166,12 @@ proc showStatus(ct: CoreTools) =
 
 proc showCatalog(ct: CoreTools) =
   echo ""
-  echo "name                version    pid  tools"
-  echo fmt("{repeat('-', 18)} {repeat('-', 10)} {repeat('-', 6)}  -----")
+  echo "name                version    pid  repl  tools"
+  echo fmt("{repeat('-', 18)} {repeat('-', 10)} {repeat('-', 6)}  {repeat('-', 4)}  -----")
   for name in ct.cat.components.keys.toSeq.sorted:
     let reg = ct.cat.components[name]
-    echo fmt("{name:<18} {reg.version:<10} {reg.pid:>6}  {reg.tools.len}")
+    let replicas = max(reg.pids.len, 1)
+    echo fmt("{name:<18} {reg.version:<10} {reg.pid:>6}  {replicas:>4}  {reg.tools.len}")
 
 proc showTools(ct: CoreTools) =
   echo ""
@@ -186,9 +187,8 @@ proc showTools(ct: CoreTools) =
 proc showSessions(ct: CoreTools) =
   echo ""
   try:
-    let resp = ct.dispatchToolCall("list", %*{"kind": "conversation"})
-    let items = resp{"items"}
-    if items == nil or items.len == 0:
+    let items = ct.storeListItems("conversation")
+    if items.len == 0:
       echo "no conversations yet"
     else:
       echo "id                                        title                          age"

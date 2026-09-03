@@ -10,6 +10,7 @@ import std/[algorithm, json, monotimes, os, osproc, sequtils, strutils, tables,
 import yaml/tojson
 import natswrapper
 import ../sdk/envelope
+import ../sdk/subjects
 import approval
 import catalog
 import schema_validation
@@ -34,6 +35,10 @@ type
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
+    sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
+                                       ## (empty/nil = unrestricted; set once
+                                       ## by handleSessionCall, enforced at
+                                       ## this gate for every dispatch)
     nested*: NestedState               ## nested-call proxy (session runners only)
     prepareSession*: proc(sessionId: string): JsonNode {.closure.}
       ## Delegated child-runner preparation (set by the system harness after
@@ -58,6 +63,12 @@ type
     queue*: seq[string]      # injected user messages (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
+  # Raised from a dispatch's idle slot when a turn cancellation arrives
+  # while that dispatch is in flight: the caller stops waiting for the
+  # reply immediately. The callee keeps running (NATS request/reply has no
+  # cancel semantics — its own timeout bounds it); the turn ends now
+  # instead of after the tool finishes.
+  TurnCancelled* = object of CatchableError
   # Turn-bound advisory channel (svc.session.<id>.advise): the expert peer's
   # request/reply surface. pumpAdvise answers each request immediately —
   # accepted only while the named turn is still live — and queues accepted
@@ -81,6 +92,7 @@ type
   NestedState* = ref object
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
+    workspace*: string       ## absolute per-conversation workspace, root by default
     lease*: string           ## current lease; "" = no session-context call in flight
     deadline*: MonoTime      ## monotonic limit for the current lease
     hasDeadline*: bool
@@ -90,6 +102,59 @@ type
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode
+
+proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
+                         args: JsonNode, timeoutMs: int, caller = ""): JsonNode
+
+# --- store helpers ----------------------------------------------------------
+# Typed access to the store component for core, mirroring sdk.nim's
+# storeclient. Core deliberately imports only the pure SDK modules
+# (envelope/subjects — never the Component machinery), so this lives here
+# and speaks the store's subject directly: no tool routing, which also
+# makes it safe to call from inside dispatchToolCall's own path (the spawn
+# depth guard). Semantics: not-found reads as nil/empty; refusals and an
+# unreachable store raise.
+
+proc storeGetItem*(ct: CoreTools, kind, id: string,
+                   timeoutMs = 5000): tuple[value: JsonNode, rev: int] =
+  ## Fetch a document from the store; (nil, 0) when not-found. An
+  ## unreachable store (or any refusal other than not-found) raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "get",
+                              %*{"kind": kind, "id": id}, timeoutMs)
+  if r{"ok"}.getBool(false):
+    return (r{"value"}, r{"rev"}.getInt(0))
+  if r{"code"}.getStr("") != "not-found":
+    raise newException(IOError, r{"error"}.getStr("store get failed"))
+
+proc storePutRev*(ct: CoreTools, kind, id: string, value: JsonNode,
+                  expectRev = 0, timeoutMs = 5000): int =
+  ## Upsert a document into the store; returns the new revision. Refusals
+  ## (rev-conflict) and outages raise — callers that tolerate a lost race
+  ## catch CatchableError, same split as the SDK storeclient.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "put",
+    %*{"kind": kind, "id": id, "value": value, "expectRev": expectRev},
+    timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store put failed"))
+  return r{"rev"}.getInt(0)
+
+proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
+                     limit = 100, timeoutMs = 5000): seq[JsonNode] =
+  ## List documents of a kind in id order, returning the raw items
+  ## ({id, rev, value}); empty when none. An unreachable store raises.
+  let r = dispatchSubjectCall(ct, "svc.store.call", "list",
+    %*{"kind": kind, "idPrefix": idPrefix, "limit": limit}, timeoutMs)
+  if not r{"ok"}.getBool(false):
+    raise newException(IOError, r{"error"}.getStr("store list failed"))
+  let items = r{"items"}
+  if items != nil and items.kind == JArray:
+    for item in items:
+      result.add(item)
+
+proc storeDel*(ct: CoreTools, kind, id: string, timeoutMs = 5000) =
+  ## Delete a document; idempotent.
+  discard dispatchSubjectCall(ct, "svc.store.call", "del",
+                              %*{"kind": kind, "id": id}, timeoutMs)
 
 proc invokeTool(ct: CoreTools, args: JsonNode,
                 defaultTimeoutMs: int): JsonNode =
@@ -112,8 +177,9 @@ proc invokeTool(ct: CoreTools, args: JsonNode,
   return ct.dispatchToolCall(target, arguments, defaultTimeoutMs)
 
 proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
-  # the self-extension tools change the harness itself — human gate first
-  if tool in ["spawn", "kill", "remove"] and ct.approval != nil:
+  # the self-extension / destructive tools change the harness — human gate first
+  if tool in ["spawn", "kill", "remove", "conversation_delete"] and
+      ct.approval != nil:
     if not ct.approval.ask(tool, args):
       return %*{"error": "approval denied for " & tool}
   case tool
@@ -123,21 +189,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## the store component so it survives restarts (persistence of shape).
     let name = args{"name"}.getStr("")
     let binary = args{"binary"}.getStr("")
+    let replicas = args{"replicas"}.getInt(1)
     if name.len == 0 or binary.len == 0:
       return %*{"error": "spawn needs name and binary"}
+    if replicas < 1 or replicas > 16:
+      return %*{"error": "spawn replicas must be between 1 and 16"}
+    for child in ct.sup.children:
+      if child.name == name:
+        return %*{"error": "component already supervised: " & name}
     let abs = if binary.startsWith("/"): binary else: ct.sup.root / binary
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
-    discard ct.sup.addChild(name, abs)
-    ct.sup.startChild(ct.sup.children[^1])
+    for i in 0 ..< replicas:
+      discard ct.sup.addChild(name, abs)
+      ct.sup.startChild(ct.sup.children[^1])
     try:
-      discard ct.dispatchToolCall("put", %*{
-        "kind": "component", "id": name,
-        "value": %*{"name": name, "binary": abs,
-                    "policy": "on-failure", "addedAt": epochTime()}})
+      discard ct.storePutRev("component", name,
+        %*{"name": name, "binary": abs, "policy": "on-failure",
+           "replicas": replicas, "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
-    return %*{"ok": true, "name": name}
+    return %*{"ok": true, "name": name, "replicas": replicas}
   of "kill":
     ## Stop a running component: drain, then terminate. It stays persisted
     ## in the store and is restored on the next boot.
@@ -157,10 +229,65 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     discard ct.sup.removeChild(name)
     ct.cat.dropComponent(name)
     try:
-      discard ct.dispatchToolCall("del", %*{"kind": "component", "id": name})
+      ct.storeDel("component", name)
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
+  of "conversation_delete":
+    ## Delete a conversation and everything hanging off it: the runner
+    ## (killed first — a live turn would resurrect records), the header,
+    ## every message, the frozen toolset snapshot, subagent lineage, and
+    ## any durable agent jobs pointing at this session. This is the
+    ## conversation-deletion surface agent lineage cleanup waited on.
+    let sessionId = args{"sessionId"}.getStr("")
+    if sessionId.len == 0:
+      return %*{"error": "conversation_delete needs sessionId"}
+    var deleted = 0
+    if ct.sup != nil:
+      discard ct.sup.removeChild(subjects.runnerName(sessionId))
+      ct.cat.dropComponent(subjects.runnerName(sessionId))
+    try:
+      discard ct.dispatchToolCall("del",
+        %*{"kind": "conversation", "id": sessionId})
+      inc deleted
+    except CatchableError as e:
+      echo "core: warning — conversation header not deleted: " & e.msg
+    try:
+      let msgs = ct.dispatchToolCall("list",
+        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 10_000})
+      for item in msgs{"items"}:
+        try:
+          discard ct.dispatchToolCall("del",
+            %*{"kind": "message", "id": item{"id"}.getStr("")})
+          inc deleted
+        except CatchableError:
+          discard
+    except CatchableError as e:
+      echo "core: warning — conversation messages not deleted: " & e.msg
+    for rec in [("session", sessionId & ":tools"),
+                ("sessionmeta", sessionId)]:
+      try:
+        discard ct.dispatchToolCall("del",
+          %*{"kind": rec[0], "id": rec[1]})
+        inc deleted
+      except CatchableError:
+        discard
+    try:
+      let jobs = ct.dispatchToolCall("list",
+        %*{"kind": "agentjob", "limit": 10_000})
+      let items = jobs{"items"}
+      if items != nil:
+        for item in items:
+          if item{"value"}{"sessionId"}.getStr("") == sessionId:
+            try:
+              discard ct.dispatchToolCall("del",
+                %*{"kind": "agentjob", "id": item{"id"}.getStr("")})
+              inc deleted
+            except CatchableError:
+              discard
+    except CatchableError:
+      discard
+    return %*{"ok": true, "sessionId": sessionId, "deleted": deleted}
   of "session_prepare":
     ## Delegated child-runner preparation for components (agent): returns the
     ## runner's direct subject WITHOUT running a turn — the session tool would
@@ -215,6 +342,7 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         for t in reg.tools:
           tools.add(%*{"name": t.name, "schema": t.schema})
         var entry = %*{"name": name, "version": reg.version, "pid": reg.pid,
+                       "pids": reg.pids, "replicas": max(reg.pids.len, 1),
                        "tools": tools, "registeredAt": reg.registeredAt}
         # The interactive-client flag must survive snapshot reseeding: a child
         # session runner (subagent) routes its fallback approvals through
@@ -263,11 +391,11 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
             if cn.len > 0: langTable[cn] = c
     except CatchableError:
       discard
-    var childTable = initTable[string, Child]()
+    var childTable = initTable[string, seq[Child]]()
     var names: seq[string] = @[]
     for child in ct.sup.children:
-      childTable[child.name] = child
-      names.add(child.name)
+      childTable.mgetOrPut(child.name, @[]).add(child)
+      if child.name notin names: names.add(child.name)
     for name in ct.cat.components.keys:
       if name notin names:
         names.add(name)
@@ -275,12 +403,23 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
 
     var comps = newJArray()
     for name in names:
-      let child = childTable.getOrDefault(name)
+      let children = childTable.getOrDefault(name)
       let reg = ct.cat.components.getOrDefault(name)
-      let supervised = child != nil
+      let supervised = children.len > 0
+      var runningReplicas = 0
+      var wantedReplicas = 0
+      var restartTotal = 0
+      for child in children:
+        if child.process != nil and child.process.running():
+          inc runningReplicas
+        if child.wanted: inc wantedReplicas
+        restartTotal += child.restarts
+      let livePids = if reg.pids.len > 0: reg.pids else:
+                       (if reg.pid > 0: @[reg.pid] else: @[])
+      let replicas = if supervised: children.len else: livePids.len
       let running = if name == "core": true
-                    elif supervised: child.process != nil and child.process.running()
-                    else: reg.pid > 0
+                    elif supervised: runningReplicas > 0
+                    else: livePids.len > 0
       var tools = newJArray()
       for t in reg.tools:
         tools.add(%*{"name": t.name, "schema": t.schema})
@@ -288,16 +427,19 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         "name": name,
         "version": reg.version,
         "running": running,
-        "wanted": if supervised: child.wanted else: true,
-        "policy": if supervised: $child.policy
+        "wanted": if supervised: wantedReplicas > 0 else: true,
+        "policy": if supervised: $children[0].policy
                   elif name == "core": "core" else: "external",
-        "restarts": if supervised: child.restarts else: 0,
+        "restarts": restartTotal,
+        "replicas": replicas,
+        "runningReplicas": if supervised: runningReplicas else: livePids.len,
         "pid": reg.pid,
+        "pids": livePids,
         "registeredAt": reg.registeredAt,
         "tools": tools}
       var binary = ""
       if supervised:
-        binary = child.binary
+        binary = children[0].binary
         entry["binary"] = %binary
       let m = langTable.getOrDefault(name)
       if m != nil:
@@ -322,31 +464,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"error": "session_info needs sessionId (a session runner injects its own id for the current session)"}
     var info = %*{"sessionId": sessionId}
     try:
-      let header = ct.dispatchToolCall("get",
-        %*{"kind": "conversation", "id": sessionId})
-      if not header{"ok"}.getBool(false):
+      let header = ct.storeGetItem("conversation", sessionId)
+      if header.value == nil:
         return %*{"error": "no conversation '" & sessionId & "'"}
       for f in ["title", "createdAt", "model", "modelOverride", "provider",
-                "thinkingEffort", "context", "contextUsed", "promptTokens"]:
-        if header{"value"}{f} != nil:
-          info[f] = header{"value"}{f}
+                "thinkingEffort", "cwd", "context", "contextUsed",
+                "promptTokens", "cachePrompt", "cacheRead", "cacheHitRate"]:
+        if header.value{f} != nil:
+          info[f] = header.value{f}
       # subagent lineage (the agent component records kind sessionmeta)
-      let meta = ct.dispatchToolCall("get",
-        %*{"kind": "sessionmeta", "id": sessionId})
-      if meta{"ok"}.getBool(false) and meta{"value"}{"parent"} != nil:
-        info["parent"] = meta{"value"}{"parent"}
+      let meta = ct.storeGetItem("sessionmeta", sessionId)
+      if meta.value != nil and meta.value{"parent"} != nil:
+        info["parent"] = meta.value{"parent"}
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
-      let listed = ct.dispatchToolCall("list",
-        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 1000})
       var byRole = newJObject()
       var total = 0
-      if listed{"items"} != nil:
-        for item in listed{"items"}:
-          inc total
-          let role = item{"value"}{"role"}.getStr("")
-          let key = if role.len > 0: role else: "unknown"
-          byRole[key] = %(byRole{key}.getInt(0) + 1)
+      for item in ct.storeListItems("message", sessionId & ":", 1000):
+        inc total
+        let role = item{"value"}{"role"}.getStr("")
+        let key = if role.len > 0: role else: "unknown"
+        byRole[key] = %(byRole{key}.getInt(0) + 1)
       info["messageCount"] = %total
       info["messagesByRole"] = byRole
       if total >= 1000:
@@ -722,19 +860,91 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
-    pumpTokenStream(ct)
     pumpSteer(ct)
+    # Turn cancellation while THIS dispatch is in flight: stop waiting for
+    # the reply (TurnCancelled). Only during a live turn, and only for a
+    # fresh cancel — non-turn dispatches (model selection, session_prepare)
+    # and stale flags are unaffected. The callee would keep running (NATS
+    # request/reply has no cancel semantics), so also ask it to abandon the
+    # in-flight work: components opt in by subscribing their own
+    # cancel.<component> subject and matching the session id (bash kills
+    # the command's process group; components without a subscription drop
+    # the message).
+    if ct.steerStream != nil and ct.steerStream.cancelRequested and
+        ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
+        epochTime() - ct.steerStream.cancelAt <= 30.0:
+      if subject.startsWith("svc.") and subject.endsWith(".call"):
+        let comp = subject["svc.".len ..< subject.len - ".call".len]
+        if comp.len > 0:
+          ct.nc.publish("cancel." & comp,
+            Envelope(v: 1, id: newId(), kind: ekEvent,
+                     payload: %*{"sessionId": ct.activeTurn.session,
+                                 "tool": tool, "ts": epochTime()}).encode())
+      raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")
 
+proc applyWorkspace(schema, args: JsonNode, workspace: string) =
+  ## Resolve schema-declared path arguments against the active conversation's
+  ## workspace. Core knows no component names: components opt in with
+  ## x-harness.workspace {pathFields, defaultPathFields, cwdField}.
+  if schema == nil or args == nil or args.kind != JObject or workspace.len == 0:
+    return
+  let policy = schema{"x-harness"}{"workspace"}
+  if policy == nil or policy.kind != JObject: return
+
+  proc resolve(raw: string): string =
+    if raw.len == 0 or raw == ".": return workspace
+    if raw.isAbsolute(): return raw
+    workspace / raw
+
+  let pathFields = policy{"pathFields"}
+  if pathFields != nil and pathFields.kind == JArray:
+    for field in pathFields:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JString:
+        args[name] = %resolve(args{name}.getStr(""))
+  let defaults = policy{"defaultPathFields"}
+  if defaults != nil and defaults.kind == JArray:
+    for field in defaults:
+      let name = field.getStr("")
+      if name.len > 0 and (args{name} == nil or args{name}.getStr("") in ["", "."]):
+        args[name] = %workspace
+  let arrays = policy{"pathArrayFields"}
+  if arrays != nil and arrays.kind == JArray:
+    for field in arrays:
+      let name = field.getStr("")
+      if name.len > 0 and args{name} != nil and args{name}.kind == JArray:
+        var arr = args{name}  # JsonNode is a ref: iterate and patch in place
+        for item in mitems arr:
+          if item.kind == JString:
+            item = %resolve(item.getStr(""))
+  let cwdField = policy{"cwdField"}.getStr("")
+  if cwdField.len > 0 and args{cwdField} == nil:
+    args[cwdField] = %workspace
+
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
                        deadlineMs: int = 0): JsonNode =
   if tool == "invoke":
     return invokeTool(ct, args, defaultTimeoutMs)
+
+  # Per-session tool allowlist (subagent scoping): a conversation frozen
+  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
+  # machinery) and the store quartet the runner itself persists through
+  # (transcript, headers, exposure) — without them an allowlisted session
+  # would silently lose its own history. Trade-off: a model in an
+  # allowlisted session can still read/write the shared KV store directly;
+  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
+  # transcript store the session needs to exist.
+  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
+      tool notin ["chat", "put", "get", "list", "del"] and
+      tool notin ct.sessionAllowlist[]:
+    raise newException(ValueError,
+      "tool '" & tool & "' is not in this session's tool allowlist")
 
   # session_info / prompt_preview with no sessionId mean "my own
   # conversation": while a turn is live (ct.nested.session is set only
@@ -750,7 +960,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info", "prompt_preview", "doctor"] and
+              "session_info", "prompt_preview", "doctor",
+              "conversation_delete"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
@@ -764,6 +975,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 
   let schema = ct.cat.toolSchema(tool)
   let callArgs = if args == nil: newJObject() else: args.copy()
+  if ct.nested != nil:
+    applyWorkspace(schema, callArgs, ct.nested.workspace)
   let hasDeadline = deadlineMs > 0
   let deadline = if hasDeadline:
                    getMonoTime() + initDuration(milliseconds = deadlineMs)
@@ -787,6 +1000,16 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       (deadline - getMonoTime()).inMilliseconds.int)
     if timeoutMs <= 0:
       raise newException(IOError, "tool '" & tool & "' deadline expired")
+
+  # Cancel-aware tools (x-harness.sessionId): inject the live session id
+  # as private context so the component can match cancel.<component>
+  # messages (published by the runner when a turn is cancelled mid-dispatch)
+  # against its in-flight work. Advisory only — unlike sessionContext it
+  # carries no lease, admits non-session callers (cli scripting sees ""),
+  # and does not fail closed without a live turn.
+  if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
+    callArgs["__session"] = %*{"session":
+      (if ct.nested != nil: ct.nested.session else: "")}
 
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Nested session-context calls temporarily
@@ -822,9 +1045,8 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     if schema{"x-harness"}{"noSpawn"}.getBool(false):
       var hasParent = false
       try:
-        let meta = dispatchSubjectCall(ct, "svc.store.call", "get",
-          %*{"kind": "sessionmeta", "id": ct.nested.session}, 5_000)
-        hasParent = meta{"value"}{"parent"}.getStr("").len > 0
+        hasParent = ct.storeGetItem("sessionmeta", ct.nested.session, 5_000)
+          .value{"parent"}.getStr("").len > 0
       except CatchableError:
         # fail closed: a missing sessionmeta record arrives as a result
         # (not-found), so an exception here means the lineage store is
@@ -837,3 +1059,141 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                                callArgs, timeoutMs)
 
   dispatchSubjectCall(ct, "svc." & comp & ".call", tool, callArgs, timeoutMs)
+
+# ---------------------------------------------------------------------------
+# Parallel dispatch — fan out a wave of tool calls over the bus
+# ---------------------------------------------------------------------------
+#
+# x-harness.parallel (docs/WIRE.md) marks a tool safe to dispatch concurrently
+# with other parallel-safe tools in the same assistant message. The runner
+# fires the whole wave at once (distinct inbox reply subjects), then collects
+# replies by round-robin polling — no threads, no asyncdispatch. This
+# parallelizes calls to *different* components (read ∥ grep ∥ git_status);
+# same-component calls still serialize in one process, but stateless logical
+# components can run multiple NATS queue-group process replicas.
+
+type
+  ToolCallOutcome* = object
+    ok*: bool
+    value*: JsonNode   ## result payload when ok
+    error*: string     ## human error text when not ok
+
+proc isParallelSafeTool*(ct: CoreTools, tool: string): bool =
+  ## True when the session runner may dispatch this tool concurrently with
+  ## other parallel-safe tools in the same assistant message. Opt-in via
+  ## x-harness.parallel; approval-gated, session-context, core and unknown
+  ## tools are never parallel (they are the serial spine of a turn).
+  let schema = ct.cat.toolSchema(tool)
+  if schema == nil: return false
+  let x = schema{"x-harness"}
+  if x == nil or x.kind != JObject: return false
+  if x{"approval"}.getStr("") == "always": return false
+  if x{"sessionContext"}.getBool(false): return false
+  x{"parallel"}.getBool(false)
+
+proc dispatchToolCalls*(ct: CoreTools,
+                        calls: openArray[tuple[tool: string, args: JsonNode]],
+                        defaultTimeoutMs: int = 120000): seq[ToolCallOutcome] =
+  ## Fan out N tool calls to their component processes concurrently (distinct
+  ## inbox reply subjects, published in one pass, replies collected by
+  ## round-robin polling). Results are returned in input order regardless of
+  ## completion order, so the transcript keeps tool_calls / tool_result
+  ## pairing intact for strict backends.
+  ##
+  ## Callers must only pass parallel-safe component tools (isParallelSafeTool);
+  ## per-call errors are reported in the outcome, never raised — one slow or
+  ## failing call must not fail the whole wave.
+  result = newSeq[ToolCallOutcome](calls.len)
+  type
+    Pending = object
+      sub: ptr natsSubscription
+      tool: string
+      timeoutMs: int
+      deadline: float
+      done: bool
+      ok: bool
+      value: JsonNode
+      error: string
+  var pending = newSeq[Pending](calls.len)
+  # Resolve every target and fire every request before waiting on any reply,
+  # so all components start working at once.
+  for i, call in calls:
+    let comp = ct.cat.toolIndex.getOrDefault(call.tool)
+    if comp.len == 0:
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "no component provides tool '" & call.tool &
+               "' — is it registered?")
+      continue
+    let schema = ct.cat.toolSchema(call.tool)
+    var timeoutMs = defaultTimeoutMs
+    if schema != nil:
+      timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
+    let env = callEnvelope(call.tool,
+      (if call.args == nil: newJObject() else: call.args))
+    let data = env.encode()
+    let inbox = "_INBOX." & newId()
+    var sub: ptr natsSubscription
+    let st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
+    if not checkStatus(st):
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "subscribe inbox for '" & call.tool & "': " & getErrorString(st))
+      continue
+    pending[i] = Pending(sub: sub, tool: call.tool, timeoutMs: timeoutMs,
+                         deadline: epochTime() + timeoutMs.float / 1000.0)
+    let ps = natsConnection_PublishRequest(ct.nc.conn,
+      ("svc." & comp & ".call").cstring, inbox.cstring, data.cstring,
+      data.len.cint)
+    if not checkStatus(ps):
+      natsSubscription_Destroy(pending[i].sub)
+      pending[i] = Pending(done: true, tool: call.tool,
+        error: "publish request '" & call.tool & "': " & getErrorString(ps))
+  # Make sure every request is on the wire before we start polling replies.
+  let flush = natsConnection_FlushTimeout(ct.nc.conn,
+    min(defaultTimeoutMs, 1000).int64)
+  if not checkStatus(flush):
+    discard  # polling still converges; flush is only a liveness hint
+  defer:
+    for i in 0 ..< calls.len:
+      if pending[i].sub != nil:
+        natsSubscription_Destroy(pending[i].sub)
+  # Collect replies. Round-robin polling keeps core's service surface alive (a
+  # component calling back into core mid-wave cannot deadlock) and streams LLM
+  # tokens / steering while the wave is in flight.
+  while true:
+    var allDone = true
+    let now = epochTime()
+    for i in 0 ..< calls.len:
+      if pending[i].done: continue
+      allDone = false
+      if now >= pending[i].deadline:
+        pending[i].done = true
+        pending[i].error = "tool '" & pending[i].tool & "' timed out after " &
+          $pending[i].timeoutMs & "ms"
+        continue
+      var msg: ptr natsMsg
+      let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, 25)
+      if ns == NATS_OK:
+        let resp = decode($natsMsg_GetData(msg))
+        natsMsg_Destroy(msg)
+        pending[i].done = true
+        if resp.kind == ekError:
+          pending[i].error = resp.error{"message"}.getStr("component error")
+        else:
+          pending[i].ok = true
+          pending[i].value = resp.args
+    if allDone: break
+    # idle slot (same set as dispatchSubjectCall): keep core's own tools, the
+    # catalog, the supervisor, the live LLM token stream, steering, advice and
+    # nested-call surfaces serviced while we wait.
+    pumpCoreWhileBusy(ct)
+    ct.cat.pump()
+    if ct.sup != nil:
+      ct.sup.pump(ct.cat)
+    pumpTokenStream(ct)
+    pumpSteer(ct)
+    pumpAdvise(ct)
+    pumpNested(ct)
+  for i in 0 ..< calls.len:
+    result[i] = ToolCallOutcome(ok: pending[i].ok,
+                                value: pending[i].value,
+                                error: pending[i].error)

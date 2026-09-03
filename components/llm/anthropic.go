@@ -181,6 +181,16 @@ func chatAnthropic(ctx context.Context, c *sdk.Component, p provider, model, pro
 		PromptTokens:     usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens,
 		CompletionTokens: usage.OutputTokens,
 	}
+	// Cache economics (EXPERT.md §8): Anthropic reports cached input as
+	// cache_read_input_tokens; map it into the OpenAI-style breakdown so
+	// callers (conversation.nim, bench, clients) see cache hits the same
+	// way they do for OpenAI-compatible providers. Cache-creation input is
+	// billed at write rates, not hit rates, so only reads count here.
+	if usage.CacheReadInputTokens > 0 {
+		openAIUsage.PromptTokensDetails = &openai.PromptTokensDetails{
+			CachedTokens: usage.CacheReadInputTokens,
+		}
+	}
 	openAIUsage.TotalTokens = openAIUsage.PromptTokens + openAIUsage.CompletionTokens
 	usageSeen := openAIUsage.PromptTokens > 0 || openAIUsage.CompletionTokens > 0
 	return resultJSON(providerName, usedModel, contextSize, content.String(), reasoning.String(),

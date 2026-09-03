@@ -85,6 +85,9 @@ components:
     autostart: true
     required: false
     restart: on-failure
+    # Stateless: queue-group replicas let parallel grep/files calls execute
+    # concurrently while every SDK process remains simple and serial.
+    replicas: 4
 
   # File tools: read (plain, pageable) / edit (exact old_string match with
   # a guarded fallback cascade) / write (atomic whole-file) / undo_last_edit.

@@ -8,13 +8,14 @@
 ## diffs, history, and attribution — without a human prompt on every call
 ## and without the bash failure class (wrong flags, pager dumps, quotepath
 ## escapes, 200KB output caps). Every subcommand runs with fixed flags as
-## an argv (never through an unquoted shell), scoped to the harness root:
-## paths must be relative and stay inside it, refs are validated, output
-## is capped (~40KB, plus per-tool line caps) with narrowing hints.
+## an argv (never through an unquoted shell), scoped to the harness root
+## or — core-injected — the conversation's workspace repo: paths must be
+## relative and stay inside it, refs are validated, output is capped
+## (~40KB, plus per-tool line caps) with narrowing hints.
 ##
 ## Exit codes follow git (0/1/2, 128 fatal), 124 = timeout, 127 = git
-## missing; "not a git repository" is flagged so the LLM knows the
-## harness root is not inside a repo. Read-only, so approval-free.
+## missing; "not a git repository" is flagged so the LLM knows the target
+## directory is not inside a repo. Read-only, so approval-free.
 
 import std/[json, os, sequtils, strutils, times]
 import niffler/sdk
@@ -122,7 +123,7 @@ proc finish(code: int, output: string, maxLines = 10_000): JsonNode =
   if code == 124:
     o = "[timed out]\n" & o
   if code == 128 and o.contains("not a git repository"):
-    o = "[no git repository at the harness root]\n" & o
+    o = "[no git repository at the target directory]\n" & o
   result = %*{"exit_code": code,
               "output": capBytes(
                 capLines(o, maxLines, label = "lines",
@@ -144,6 +145,29 @@ proc validPath(path: string): bool =
     if part == "..": return false
   return true
 
+proc repoDir(repo: string): string =
+  ## Directory every subcommand runs in via -C. Empty = the component's own
+  ## cwd (the harness root); core injects the conversation workspace so
+  ## secondary repos need no path juggling.
+  if repo.len == 0: return getCurrentDir()
+  if repo.isAbsolute(): return repo
+  getCurrentDir() / repo
+
+proc repoArgs(repo: string): seq[string] =
+  ## -C prefix scoping every subcommand at the chosen repo dir; omitted =
+  ## the component's own cwd (the harness root).
+  if repo.len > 0: @["-C", repoDir(repo)] else: @[]
+
+proc validRepo(repo: string): bool =
+  ## repo must be an existing directory, relative to the harness root or
+  ## absolute inside it (core injects the workspace as an absolute path); no
+  ## `..` escapes.
+  if repo.len == 0: return true
+  if not dirExists(repoDir(repo)): return false
+  for part in repo.split({'/', '\\'}):
+    if part == "..": return false
+  return true
+
 proc validRef(rev: string): bool =
   ## No option-looking revs (git would interpret them as flags), no
   ## whitespace (one argv, and a revision can never contain it).
@@ -156,8 +180,9 @@ proc validAuthor(author: string): bool =
   author.len < 200 and not author.startsWith("-") and
     not author.contains('\n') and not author.contains('\r')
 
-comp.tool(%*{"timeoutMs": 45000}):
-  proc git_status(path: string = ""): JsonNode =
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "workspace": {"cwdField": "repo"}}):
+  proc git_status(repo: string = "", path: string = ""): JsonNode =
     ## Cheap repo state check — run it whenever you are unsure what
     ## changed: before starting work, after your own edits, or to detect
     ## whether someone else edited files while you worked. Shows the
@@ -169,18 +194,26 @@ comp.tool(%*{"timeoutMs": 45000}):
     ## bash (same information, no prompt, no pager). Untracked files are
     ## listed here but never appear in git_diff. Output is capped; scope
     ## with path to narrow.
-    ## - path: File or directory to scope the status to (default "" = whole repo)
+    ## - repo: Repository directory (defaults to the active conversation
+    ##   workspace; relative paths resolve against the harness root)
+    ## - path: File or directory to scope the status to, relative to the
+    ##   repo (default "" = whole repo)
+    if not validRepo(repo):
+      return refused("repo must be an existing directory inside the " &
+        "harness root (no `..` escapes)")
     if not validPath(path):
-      return refused("path must stay inside the harness root: no absolute " &
-        "paths, no `..` — scope with a relative path instead")
-    var args = gitBase & @["status", "--porcelain=v1", "-b"]
+      return refused("path must stay inside the repo: a relative path, no " &
+        "absolute paths, no `..` — scope with a relative path instead")
+    var args = gitBase & repoArgs(repo) & @["status", "--porcelain=v1", "-b"]
     if path.len > 0:
       args.add(["--", path])
     let (code, output) = runGit(args, 30_000)
     return finish(code, output, 200)
 
-comp.tool(%*{"timeoutMs": 45000}):
-  proc git_diff(path: string = "", unified: int = 3, stat: bool = false): JsonNode =
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "workspace": {"cwdField": "repo"}}):
+  proc git_diff(repo: string = "", path: string = "", unified: int = 3,
+                stat: bool = false): JsonNode =
     ## Diff of everything changed since the last commit (staged AND
     ## unstaged — `git diff HEAD`) with context lines. Use it to review
     ## your own edits before reporting done, or to see exactly what
@@ -190,13 +223,19 @@ comp.tool(%*{"timeoutMs": 45000}):
     ## when you only need the shape of a change. Read-only and
     ## approval-free; prefer over `git diff` in bash (fixed flags, no
     ## pager, capped output). When truncated, scope with path.
-    ## - path: File or directory to limit the diff to (default "" = whole repo)
+    ## - repo: Repository directory (defaults to the active conversation
+    ##   workspace; relative paths resolve against the harness root)
+    ## - path: File or directory to limit the diff to, relative to the
+    ##   repo (default "" = whole repo)
     ## - unified: Context lines around each hunk (default 3, 0..50)
     ## - stat: Compact per-file summary instead of the full diff
+    if not validRepo(repo):
+      return refused("repo must be an existing directory inside the " &
+        "harness root (no `..` escapes)")
     if not validPath(path):
-      return refused("path must stay inside the harness root: no absolute " &
-        "paths, no `..` — scope with a relative path instead")
-    var args = gitBase & @["diff"]
+      return refused("path must stay inside the repo: a relative path, no " &
+        "absolute paths, no `..` — scope with a relative path instead")
+    var args = gitBase & repoArgs(repo) & @["diff"]
     if stat:
       args.add("--stat")
     else:
@@ -209,8 +248,10 @@ comp.tool(%*{"timeoutMs": 45000}):
       return %*{"exit_code": 0, "output": "[no changes since HEAD]"}
     return finish(code, output, if stat: 500 else: 10_000)
 
-comp.tool(%*{"timeoutMs": 45000}):
-  proc git_log(path: string = "", max_count: int = 20, author: string = ""): JsonNode =
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "workspace": {"cwdField": "repo"}}):
+  proc git_log(repo: string = "", path: string = "", max_count: int = 20,
+               author: string = ""): JsonNode =
     ## Recent commit history, one line per commit: short hash, subject,
     ## and branch/tag decorations. Use it to see what changed recently,
     ## find when something landed, or pick a ref for git_show. Filter by
@@ -218,16 +259,22 @@ comp.tool(%*{"timeoutMs": 45000}):
     ## (substring match against the author name, e.g. "krampe").
     ## Read-only and approval-free; prefer over `git log` in bash —
     ## max_count caps lines so the history can never page-dump.
-    ## - path: Only commits touching this file or directory (default "" = all)
+    ## - path: Only commits touching this file or directory, relative to
+    ##   the repo (default "" = all)
     ## - max_count: Number of commits to list (default 20, max 200)
     ## - author: Only commits whose author name contains this substring
+    ## - repo: Repository directory (defaults to the active conversation
+    ##   workspace; relative paths resolve against the harness root)
+    if not validRepo(repo):
+      return refused("repo must be an existing directory inside the " &
+        "harness root (no `..` escapes)")
     if not validPath(path):
-      return refused("path must stay inside the harness root: no absolute " &
-        "paths, no `..` — scope with a relative path instead")
+      return refused("path must stay inside the repo: a relative path, no " &
+        "absolute paths, no `..` — scope with a relative path instead")
     if not validAuthor(author):
       return refused("author must be a plain substring (no leading -, no " &
         "newlines, under 200 chars)")
-    var args = gitBase & @["log", "--oneline", "--decorate", "-n",
+    var args = gitBase & repoArgs(repo) & @["log", "--oneline", "--decorate", "-n",
                            $min(max(max_count, 1), 200)]
     if author.len > 0:
       args.add("--author=" & author)
@@ -238,8 +285,9 @@ comp.tool(%*{"timeoutMs": 45000}):
       return %*{"exit_code": 0, "output": "[no commits matched]"}
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
-comp.tool(%*{"timeoutMs": 45000}):
-  proc git_show(rev: string, path: string = ""): JsonNode =
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "workspace": {"cwdField": "repo"}}):
+  proc git_show(repo: string = "", rev: string, path: string = ""): JsonNode =
     ## Show one commit in full: metadata, message, and the complete diff
     ## (optionally limited to one path). Use it after git_log to see what
     ## a commit actually did, or with a hash from git_blame to understand
@@ -247,34 +295,47 @@ comp.tool(%*{"timeoutMs": 45000}):
     ## for very large commits scope with path.
     ## - rev: Commit to show — hash (short ok), branch, tag, or revision
     ##   expression like HEAD or HEAD~2
-    ## - path: Limit the shown diff to this file or directory (default "" = whole commit)
+    ## - repo: Repository directory (defaults to the active conversation
+    ##   workspace; relative paths resolve against the harness root)
+    ## - path: Limit the shown diff to this file or directory, relative to
+    ##   the repo (default "" = whole commit)
+    if not validRepo(repo):
+      return refused("repo must be an existing directory inside the " &
+        "harness root (no `..` escapes)")
     if not validRef(rev):
       return refused("rev must be a plain revision (hash, branch, tag, " &
         "HEAD~N) — no leading -, no spaces, under 256 chars")
     if not validPath(path):
-      return refused("path must stay inside the harness root: no absolute " &
-        "paths, no `..` — scope with a relative path instead")
-    var args = gitBase & @["show", rev]
+      return refused("path must stay inside the repo: a relative path, no " &
+        "absolute paths, no `..` — scope with a relative path instead")
+    var args = gitBase & repoArgs(repo) & @["show", rev]
     if path.len > 0:
       args.add(["--", path])
     let (code, output) = runGit(args, 20_000)
     return finish(code, output)
 
-comp.tool(%*{"timeoutMs": 45000}):
-  proc git_blame(path: string, start_line: int = 1, max_lines: int = 200): JsonNode =
+comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "workspace": {"cwdField": "repo"}}):
+  proc git_blame(repo: string = "", path: string, start_line: int = 1,
+                 max_lines: int = 200): JsonNode =
     ## Line-by-line attribution for one file: for each line, the commit
     ## that last touched it, its author, and the line content. Use it to
     ## find out why a line exists (then git_show the hash), or who last
     ## edited a section. Lines changed but not yet committed show
     ## "Not Committed Yet". Read-only and approval-free; output is line-
     ## capped — page through large files with start_line/max_lines.
-    ## - path: File to blame (relative to the harness root)
+    ## - repo: Repository directory (defaults to the active conversation
+    ##   workspace; relative paths resolve against the harness root)
+    ## - path: File to blame, relative to the repo
     ## - start_line: First line to show (1-based, default 1)
     ## - max_lines: How many lines to show (default 200, max 500)
+    if not validRepo(repo):
+      return refused("repo must be an existing directory inside the " &
+        "harness root (no `..` escapes)")
     if not validPath(path) or path.len == 0:
-      return refused("path is required and must stay inside the harness " &
-        "root: a relative file path, no absolute paths, no `..`")
-    var args = gitBase & @["blame", "--abbrev", "-L",
+      return refused("path is required and must stay inside the repo: a " &
+        "relative file path, no absolute paths, no `..`")
+    var args = gitBase & repoArgs(repo) & @["blame", "--abbrev", "-L",
                            $min(max(start_line, 1), 1_000_000) & ",+" &
                            $min(max(max_lines, 1), 500),
                            "--", path]

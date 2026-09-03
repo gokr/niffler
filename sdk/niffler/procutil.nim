@@ -13,7 +13,7 @@
 ##   and byte tails snapped to UTF-8 boundaries so a multi-byte character
 ##   (CJK in compiler output, etc.) never poisons the JSON envelope.
 
-import std/[os, osproc, sequtils, strutils, times]
+import std/[os, osproc, posix, sequtils, strutils, times]
 
 type
   RunResult* = tuple[code: int, output: string]
@@ -31,32 +31,69 @@ proc readCapture(tmpPath: string): string =
       try: removeFile(tmpPath)
       except CatchableError: discard
 
-proc runCmd*(cmd: string, timeoutMs: int = 120_000): RunResult =
+proc killGroup(pid: Pid, sig: cint) =
+  ## Signal the command's whole process group. The forked child made itself
+  ## the group leader via setpgid(0, 0), so a negative-pid kill reaches the
+  ## bash wrapper AND every descendant (a bare kill(pid) would orphan
+  ## grandchildren — `sleep 100 &` keeps running after bash dies).
+  discard posix.kill(-pid, sig)
+
+proc runCmd*(cmd: string, timeoutMs: int = 120_000,
+             cancelled: proc(): bool = nil): RunResult =
   ## Run `cmd` via bash -c and return its exit code plus the combined
   ## stdout+stderr, captured through a temp file (pipes deadlock chatty
-  ## children). On timeout the child is killed and the exit code is 124;
-  ## output is whatever it produced before dying.
+  ## children). The command runs as the leader of its own process group, so
+  ## a timeout or cancellation kills the whole tree, not just the bash
+  ## wrapper. On timeout the exit code is 124; when the optional `cancelled`
+  ## probe turns true (checked every 50ms) it is 130. Output is whatever the
+  ## command produced before dying.
   inc callCounter
   let tmpPath = getTempDir() /
     ("niffler-run-" & $getCurrentProcessId() & "-" & $callCounter & ".out")
   # Wrapped in a subshell so the redirection covers the whole command
   # (incl. `;`/`&&`-chains), not just its last statement.
   let wrapped = "( " & cmd & " ) > " & quoteShell(tmpPath) & " 2>&1"
-  var p = startProcess("bash", args = ["-c", wrapped], options = {poUsePath})
-  # NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
-  # returns 137 — poll peekExitCode and own the kill instead.
+  let argv = allocCStringArray(["bash", "-c", wrapped])
+  defer: deallocCStringArray(argv)
+  let pid = posix.fork()
+  if pid == 0:
+    # Child: become a process-group leader BEFORE exec (no race with the
+    # parent's kill), then exec the command. execvp resolves bash via PATH;
+    # exitnow is _exit — no Nim teardown in the forked child.
+    discard posix.setpgid(0, 0)
+    discard posix.execvp("bash", argv)
+    posix.exitnow(127)
+  if pid < 0:
+    raise newException(IOError,
+      "fork failed for: " & cmd[0 ..< min(cmd.len, 80)])
   result.code = -1
   let deadline = epochTime() + timeoutMs.float / 1000.0
+  var status: cint = 0
+  var killedByCancel = false
   while epochTime() < deadline:
-    result.code = p.peekExitCode()
-    if result.code != -1: break
+    # NOTE: osproc's waitForExit(timeout) SIGKILLs the child itself and
+    # returns 137 — poll waitpid(WNOHANG) and own the kill instead.
+    let r = posix.waitpid(pid, status, WNOHANG)
+    if r == pid:
+      result.code =
+        if WIFEXITED(status): WEXITSTATUS(status).int
+        else: 128 + WTERMSIG(status).int  # died by signal, on its own
+      break
+    if cancelled != nil and cancelled():
+      killedByCancel = true
+      break
     sleep(50)
   if result.code == -1:
-    p.terminate()
-    sleep(200)
-    if p.running(): p.kill()
-    result.code = 124
-  p.close()
+    killGroup(pid, SIGTERM)
+    var reaped = false
+    for i in 0 ..< 20:  # up to ~1s of grace for SIGTERM
+      let r = posix.waitpid(pid, status, WNOHANG)
+      if r == pid: reaped = true; break
+      sleep(50)
+    if not reaped:
+      killGroup(pid, SIGKILL)
+      discard posix.waitpid(pid, status, 0)
+    result.code = if killedByCancel: 130 else: 124
   result.output = readCapture(tmpPath)
 
 proc runArgv*(exe: string, args: seq[string], timeoutMs: int = 120_000): RunResult =

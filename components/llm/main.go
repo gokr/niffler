@@ -417,6 +417,10 @@ type chatArgs struct {
 	// API when set — providers that do not support reasoning_effort
 	// (deepseek-reasoner, most open gateways) never see the field.
 	ReasoningEffort string `json:"reasoning_effort"`
+	// MaxTokens is a per-call output cap (e.g. the expert judge's tiny
+	// JSON verdicts). It only ever lowers the provider/catalog default,
+	// never raises it; 0 = no cap.
+	MaxTokens int `json:"maxTokens"`
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -461,21 +465,30 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if resolved.StripPrefix {
 		model = stripModelPrefix(model)
 	}
+	// Per-call output cap: only ever lowers the resolved default.
+	output := resolved.Output
+	if args.MaxTokens > 0 && (output <= 0 || args.MaxTokens < output) {
+		output = args.MaxTokens
+	}
+	// Best-effort live model discovery (option B): remember this provider's
+	// endpoint and, when its id cache is stale, probe /models in the
+	// background so the models component can publish served ids catalog-wide.
+	maybeProbeLiveModels(streamCtx, c, resolved)
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
 		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context)
 	case protocolAnthropic:
 		return chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
-			resolved.Context, resolved.Output)
+			resolved.Context, output)
 	case "", protocolOpenAI:
 		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 		cfg.BaseURL = resolved.Provider.BaseURL
 		client := openai.NewClientWithConfig(cfg)
 		if args.Stream {
-			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
 		}
-		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, resolved.Output)
+		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
@@ -580,6 +593,7 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
+		ParallelToolCalls:   true,
 		MaxCompletionTokens: outputSize,
 		ReasoningEffort:     args.ReasoningEffort,
 	})
@@ -640,6 +654,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
+		ParallelToolCalls:   true,
 		MaxCompletionTokens: outputSize,
 		ReasoningEffort:     args.ReasoningEffort,
 		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
@@ -795,7 +810,12 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 
 func main() {
 	comp := sdk.New("llm", "0.4.0")
-	comp.Tool("llm_resolve", map[string]any{
+	// Both handlers are request-local: provider/model lookup uses thread-safe
+	// NATS requests, each chat owns its HTTP client, cancellation subscription,
+	// stream accumulators, and result. The only package maps are read-only.
+	// Opting in here prevents independent sessions/subagents from serializing
+	// behind one long model request.
+	comp.ToolConcurrent("llm_resolve", map[string]any{
 		"type":        "object",
 		"description": "Resolve the effective provider, model and context window without exposing credentials or making an inference request.",
 		"properties": map[string]any{
@@ -804,7 +824,25 @@ func main() {
 		},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 10000},
 	}, resolveHandler)
-	comp.Tool("chat", map[string]any{
+	// Live model discovery (option B): the models component discovers this
+	// hidden tool via reg.publish and calls it on its refresh cycle. The
+	// patch adds ids each provider actually serves (probed after chats) to
+	// the catalog; models.dev metadata stays authoritative for everything
+	// else.
+	comp.Tool("llm_models_source", map[string]any{
+		"type":        "object",
+		"description": "Live model ids observed per provider; x-models-source v1 patch.",
+		"properties": map[string]any{
+			"version": map[string]any{"type": "integer"},
+		},
+		"x-harness":       map[string]any{"hidden": true},
+		"x-models-source": map[string]any{"version": modelsSourceVersion, "priority": 150},
+	}, modelsSourceHandler)
+	// Both handlers are request-local: each chat owns its HTTP client,
+	// cancellation subscription, stream accumulators, and result. The only
+	// package maps are read-only. Opting in prevents independent sessions
+	// and subagents from serializing behind one long model request.
+	comp.ToolConcurrent("chat", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"messages": map[string]any{"type": "array",
@@ -821,6 +859,8 @@ func main() {
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
 			"reasoning_effort": map[string]any{"type": "string",
 				"description": "Backend reasoning effort (low/medium/high); omitted when empty = provider default"},
+			"maxTokens": map[string]any{"type": "integer",
+				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
 		"required":  []string{"messages"},
 		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},

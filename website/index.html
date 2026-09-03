@@ -92,7 +92,7 @@
       <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
       <p class="dim" data-i18n="term.l1">→ spawning nats-server on 127.0.0.1:4222</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: store, bash, builder, plugins, skills, fetch, models, provider, llm, edit, grep, git, observe, logfile, agent, fabric</p>
+      <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, fetch, models, provider, llm, grep, edit, git, observe, logfile, agent, expert, fabric</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
       <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-ui and niffler-tui</p>
     </div>
@@ -157,6 +157,7 @@
       <div class="box">store<br><span class="box-lang">nim sdk</span></div>
       <div class="box">plugins<br><span class="box-lang">nim sdk</span></div>
       <div class="box">skills<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">systemprompt<br><span class="box-lang">nim sdk</span></div>
       <div class="box">fetch<br><span class="box-lang">nim sdk</span></div>
       <div class="box">models<br><span class="box-lang">go sdk</span></div>
       <div class="box">provider<br><span class="box-lang">go sdk</span></div>
@@ -167,6 +168,7 @@
       <div class="box">observe<br><span class="box-lang">nim sdk</span></div>
       <div class="box">logfile<br><span class="box-lang">nim sdk</span></div>
       <div class="box">agent<br><span class="box-lang">nim sdk</span></div>
+      <div class="box">expert<br><span class="box-lang">nim sdk</span></div>
       <div class="box">fabric<br><span class="box-lang">nim sdk</span></div>
       <div class="box box-your"><span data-i18n="arch.yourtool">your tool</span><br><span class="box-lang" data-i18n="arch.anylang">any language</span></div>
     </div>
@@ -208,6 +210,29 @@
   </div>
 </section>
 
+<!-- ============ VERIFIED ============ -->
+<section class="section" id="verified">
+  <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="bench.title">measured, not claimed</span></h2>
+  <div class="cards">
+    <article class="card">
+      <h3 data-i18n-html="bench.1h"><span class="num">01</span> SWE-bench Verified pilot</h3>
+      <p data-i18n-html="bench.1p">10 sympy instances, one-shot, graded by the official
+        <code>swebench</code> 4.1.0 Docker harness — niffler, pi and opencode
+        side by side over two models. Niffler resolves comparable counts at
+        2.3–2.9× less total tokens per task. Full report:
+        <code>bench/reports/swe-sympy10-pilot-report.md</code>.</p>
+    </article>
+    <article class="card">
+      <h3 data-i18n-html="bench.2h"><span class="num">02</span> harness bench</h3>
+      <p data-i18n-html="bench.2p">A harness-comparison framework with five red-at-base tasks
+        verified green by reference implementations, per-turn feedback
+        loops, protected-file guards and provider token accounting —
+        niffler / pi / opencode × two models, plus a paired
+        niffler-expert variant that measures the advisory peer.</p>
+    </article>
+  </div>
+</section>
+
 <!-- ============ QUICKSTART ============ -->
 <section class="section" id="quickstart">
   <h2 class="sec-title"><span class="comment">#</span> <span data-i18n="qs.title">quickstart</span></h2>
@@ -223,7 +248,7 @@
         <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
         <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># the desktop UI — autostarts the harness</span></p>
         <p><span class="p">$</span> make ui-install    <span class="dim" data-i18n="qs.uiinstall"># optional: puts niffler-ui on PATH + launcher/app icon (Linux)</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 21 contract tests + smoke + go tests</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 26 contract tests + smoke + go tests</span></p>
         <p class="dim">│</p>
         <p class="dim" data-i18n="qs.see">└─ make run / recover / down / dev · see docs/MANUAL.md</p>
       </div>

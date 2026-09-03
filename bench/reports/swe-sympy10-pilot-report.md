@@ -71,11 +71,50 @@ no cache, so its "uncached" is the whole prompt.)
   fixed tooling also failed (730 s, 29.1 k in / 115 out, empty diff). FAIL
   kept; the re-run dir was discarded after the decision.
 
+## Turn-budget study (cap 20 → 60, deepseek, run `swe-sympy10-ds-r60`)
+
+The cap-20 failures were largely structural: failing cells ended at exactly
+20 LLM rounds mid-exploration (all-bash, zero edits). Raising the per-turn
+round budget to 60 (`NIF_MAX_TURN_ROUNDS`, bench adapter default) flips two
+cells to pass and costs ~50% more total tokens (cache rate unchanged ~95%,
+uncached input actually dropped): 
+
+| harness | cap | resolved | avg agent time | avg tok total | avg uncached in |
+|---|---|---:|---:|---:|---:|
+| niffler | 20 | 6/10 | 165 s | 513 k | 16.3 k |
+| niffler | 60 | **8/10** | 255 s | 784 k | 14.6 k |
+| niffler-expert | 60 | **8/10** | 276 s | 913 k | 20.2 k |
+
+Passing cells now use up to 55 rounds — without the raise they would all
+have been cut off. Expert judge overhead for the whole 10-cell lane was
+~73 k tokens (35 k prompt / 20 k completion), i.e. negligible.
+
+**Expert behavior (cap 60)**: active on all 10 cells, ≤2 judgments each,
+ZERO steer noise (9 cells fully silent), one accepted steer — on 13031:
+"Use `files` to locate the Matrix class source". That steered cell still
+**failed** on the expert lane (60-round budget exhausted, 3.07 M tokens)
+while the plain lane passed it (55 rounds) — so the single steer did not
+produce a net win on this run; the expert lane matched plain at 8/10 with
+a different failure composition (lost 13031, won 11618). **Fabric was
+never invoked** on any lane: sympy fixes are single-file edits; there was
+no fanout/pipeline shape for the expert to point at.
+
+**Remaining failure modes at cap 60** (13091 both lanes, 11618-plain,
+13031-expert): 13091 is a confident wrong fix — the agent ended its turn
+declaring success with a plausible `Basic.__eq__` patch that fails the
+hidden tests (no round-budget issue, 8–11 rounds); only pi solved it.
+13031-expert exhausted even 60 rounds (3.07 M tokens). 11618-plain is
+single-run variance (passed at cap 20 and in a discarded 30-min-timeout
+attempt, failed here at 14 rounds with an insufficient edit). These are
+model-reasoning failures, not harness limits.
+
 ## Raw data
 
 - `var/bench/results/swe-sympy10-glm/` — report.md/csv, 30 result dirs with
   transcripts, patches, harness logs.
 - `var/bench/results/swe-sympy10-ds/` — same shape.
+- `var/bench/results/swe-sympy10-ds-r60/` — cap-60 rerun (niffler +
+  niffler-expert lanes, deepseek).
 - Discarded intermediates: `swe-sympy10-45ba045`, `swe-sympy10-r2`,
   `swe-sympy10-r3` (deepseek balance ran out mid-run), `swe-glm-c13551`
   (re-run, superseded), plus pre-fix smoke runs.

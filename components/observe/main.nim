@@ -67,16 +67,6 @@ type
     message: JsonNode
     bytes: int
 
-proc configInt(name: string, default, minimum, maximum: int): int =
-  let raw = getEnv(name, $default)
-  try:
-    result = parseInt(raw)
-  except ValueError:
-    raise newException(ValueError, name & " must be an integer, got '" & raw & "'")
-  if result < minimum or result > maximum:
-    raise newException(ValueError, name & " must be in " & $minimum & ".." &
-      $maximum & ", got " & $result)
-
 let root = rootDir()
 let ringCap = configInt("NIF_OBSERVE_RING", DefaultRingMessages, 1, 10_000)
 let ringByteCap = configInt("NIF_OBSERVE_RING_BYTES", DefaultRingBytes, 65_536,

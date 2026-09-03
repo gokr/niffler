@@ -1,8 +1,9 @@
 // Package sdk is the Niffler component SDK (Go).
 //
 // Mirrors sdk/niffler.nim 1:1 — the envelope (docs/WIRE.md) is the artifact.
-// The Go port uses nats.go callbacks (goroutines) serialized with a mutex,
-// where the Nim port polls subscriptions on the main thread.
+// The Go port uses nats.go callbacks: tools serialize by default, while an
+// explicitly ToolConcurrent-registered handler runs in a bounded goroutine.
+// The Nim port polls subscriptions on the main thread.
 package sdk
 
 import (

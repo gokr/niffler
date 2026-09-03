@@ -46,7 +46,8 @@ component with its own language's SDK, not code compiled into core.
 
 On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
 `plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `edit`,
-`grep`, `git`, `observe`, `logfile`, `agent` and `fabric`. The Nim SDK
+`grep` (four stateless queue-group replicas), `git`, `observe`, `logfile`,
+`agent` and `fabric`. The Nim SDK
 powers all of those except Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
 clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
 as a swap-in example. The TypeScript SDK (`sdk/ts`) means the agent can also
@@ -299,8 +300,11 @@ comp.run();
 
 Other languages: port the SDK — the envelope is the artifact (~200 lines).
 
-Then: `builder.build {lang, name, source}` → `core.spawn {name, binary}` →
-the tool is live. Retire it with `core.remove {name}` (kill it temporarily
+Then: `builder.build {lang, name, source}` →
+`core.spawn {name, binary, replicas?}` → the tool is live. `replicas` (1–16)
+is only for stateless/externally coordinated components; NATS distributes
+calls across their identical processes. Retire the group with
+`core.remove {name}` (kill it temporarily
 with `core.kill {name}`). The agent does this itself, mid-conversation —
 that is the architecture's validation criterion.
 
@@ -342,6 +346,11 @@ to CI any plugin repo — Niffler testing itself.
       (put/get/list/del, rev-based optimistic concurrency); core persists
       conversations, messages and spawned components; spawned components
       restore on boot (persistence of shape, verified live across restarts)
+- [ ] **code hygiene + store v2** — `feat/code-hygiene` branch
+      (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
+      duplication cleanup; three interchangeable store engines behind one
+      contract (barrel stays default; Go SQLite + TiDB engines with goose
+      migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
 - [x] **session runners** — one conversation = one process: the system
@@ -416,6 +425,13 @@ to CI any plugin repo — Niffler testing itself.
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
       concurrent session requests are stashed, never nested
+- [x] **parallel tool waves + process replicas** — session runners fan out
+      explicitly `x-harness.parallel` calls over distinct NATS inboxes and
+      commit replies in model order; stateless logical components can declare
+      or spawn 1–16 queue-group replicas for same-component concurrency while
+      the default Nim SDK pump remains threadless (four `grep` replicas ship by
+      default); audited Go tools can opt into bounded `ToolConcurrent`
+      goroutines, enabled first for both LLM adapters
 - [x] **bus-contract test suite** — `make test`: one script per non-LLM
       component (including models, observe, logfile, edit), each
       booting the real binaries over its own NATS; hermetic plugin installs

@@ -28,16 +28,6 @@ const
   DefaultDirectoryEntries = 10_000
   LogLevels = ["debug", "info", "warn", "error"]
 
-proc configInt(name: string, default, minimum, maximum: int): int =
-  let raw = getEnv(name, $default)
-  try:
-    result = parseInt(raw)
-  except ValueError:
-    raise newException(ValueError, name & " must be an integer, got '" & raw & "'")
-  if result < minimum or result > maximum:
-    raise newException(ValueError, name & " must be in " & $minimum & ".." &
-      $maximum & ", got " & $result)
-
 let root = rootDir()
 let configuredDir = getEnv("NIF_LOGFILE_DIR")
 let logDir =
