@@ -102,3 +102,11 @@ This is test hiding, not a hostile-process sandbox: an agent intentionally
 searching outside its assigned repository could inspect host files. The three
 harnesses are instructed to work only in `{{REPO}}`, matching the trust model of
 this local comparison.
+
+## Pilot status
+
+The 10-task sympy pilot has run end-to-end for both bench models (one-shot,
+three harnesses): deepseek-v4-flash 9/9/6 (pi/opencode/niffler), glm-5.3-flash
+8/7/5. Numbers and protocol notes:
+[bench/reports/swe-sympy10-pilot-report.md](../reports/swe-sympy10-pilot-report.md).
+Raw result dirs live under `var/bench/results/swe-sympy10-*`.
