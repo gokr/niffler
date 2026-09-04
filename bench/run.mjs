@@ -16,6 +16,7 @@ import { run, readJson, writeJson, tail, nowIso, zeroUsage } from "./lib/util.mj
 import { resolveKeys } from "./lib/keys.mjs";
 import * as pi from "./adapters/pi.mjs";
 import * as oc from "./adapters/opencode.mjs";
+import * as cw from "./adapters/codewhale.mjs";
 import * as niffler from "./adapters/niffler.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
@@ -44,7 +45,9 @@ const JOBS = Number(opt("jobs", cfg.defaults.jobs));
 const KEEP_REPOS = opt("keep-repos", false) === true;
 
 const harnesses =
-  harnessArg === "all" ? ["niffler", "pi", "opencode"] : harnessArg.split(",");
+  harnessArg === "all"
+    ? ["niffler", "pi", "opencode", "codewhale"]
+    : harnessArg.split(",");
 const models = modelArg === "all" ? Object.keys(cfg.models) : modelArg.split(",");
 const taskDirs = fs
   .readdirSync(TASK_ROOT, { withFileTypes: true })
@@ -262,6 +265,10 @@ const ADAPTERS = {
     needsKeys: ["DEEPSEEK_API_KEY", "LLMGATEWAY_API_KEY"],
   },
   opencode: { mod: oc, needsKeys: [] },
+  codewhale: {
+    mod: cw,
+    needsKeys: ["DEEPSEEK_API_KEY", "LLMGATEWAY_API_KEY"],
+  },
   niffler: {
     mod: niffler,
     needsKeys: [],
@@ -363,6 +370,14 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             sessionId: adapterState.sessionId || null,
           });
           adapterState.sessionId = res.sessionId;
+        } else if (combo.harness === "codewhale") {
+          res = await cw.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.codewhale,
+            keys,
+            turnTimeoutMs,
+          });
         } else if (isNifflerHarness(combo.harness)) {
           res = await shared.niffler.round({
             sessionId,
@@ -474,6 +489,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   try {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
+    else if (combo.harness === "codewhale") usage = cw.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
       transcript = await shared.niffler.transcript(sessionId);
       writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
@@ -643,6 +659,12 @@ async function main() {
     for (const harness of harnesses) {
       if (!ADAPTERS[harness]) {
         console.error(`bench: unknown harness '${harness}'`);
+        process.exit(1);
+      }
+      if (harness === "codewhale" && !cfg.models[model].codewhale) {
+        console.error(
+          `bench: model '${model}' has no codewhale section in config.json`,
+        );
         process.exit(1);
       }
       combos.push({ harness, model, modelCfg: cfg.models[model] });

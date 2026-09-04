@@ -22,6 +22,11 @@
       },
       "opencode": {
         "model": "deepseek/deepseek-v4-flash"
+      },
+      "codewhale": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "apiKeyEnv": "DEEPSEEK_API_KEY"
       }
     },
     "glm-5.3-flash": {
@@ -40,6 +45,19 @@
       },
       "opencode": {
         "model": "llmgateway/glm-5.3-flash"
+      },
+      "codewhale": {
+        "provider": "llmgateway",
+        "model": "glm-5.3-flash",
+        "apiKeyEnv": "LLMGATEWAY_API_KEY",
+        "providers": {
+          "llmgateway": {
+            "kind": "openai-compatible",
+            "base_url": "https://api.llmgateway.io/v1",
+            "api_key_env": "LLMGATEWAY_API_KEY",
+            "model": "glm-5.3-flash"
+          }
+        }
       }
     }
   },

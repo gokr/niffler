@@ -1,7 +1,7 @@
 # bench — harness comparison framework
 
-Compares coding-agent **harnesses** (Niffler, pi, opencode) on the same set of
-coding tasks with the same models, and measures:
+Compares coding-agent **harnesses** (Niffler, pi, opencode, codewhale) on the
+same set of coding tasks with the same models, and measures:
 
 - **time to green** — wall clock from the first agent turn until `./test.sh`
   exits 0 (multi-round: failing test output is fed back to the agent, exactly
@@ -20,7 +20,7 @@ bench/
   run.mjs              # orchestrator: combos → [turn → verify] loops → results
   report.mjs           # aggregates a run dir into report.md + report.csv
   lib/                 # util + key resolution (keys never stored/logged)
-  adapters/            # pi.mjs, opencode.mjs, niffler.mjs
+  adapters/            # pi.mjs, opencode.mjs, niffler.mjs, codewhale.mjs
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
   reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)
@@ -103,6 +103,16 @@ patch instead of burning the remaining feedback rounds.
 - **opencode** — `opencode run --format json --pure --auto -m <provider/model>
   --dir <repo>` per round, `--session <id>` to continue. Usage = sum of
   `step_finish` token counters (provider-reported).
+- **codewhale** — `codewhale --provider <p> --model <m> exec --auto
+  --output-format stream-json <prompt>` per round in the repo dir; round 2+
+  add `--continue` (session ids are redacted in stream output, so the
+  workspace-scoped continue flag is the supported continuation path).
+  `CODEWHALE_HOME` is a per-run temp dir holding the custom-provider config
+  (llmgateway is not native; deepseek is), and `<workspace>/.codewhale` is
+  removed between rounds — sessions live in the home, the workspace dir only
+  holds startup locks that would otherwise pollute the diff. Usage = sum of
+  `turn_usage` events (provider-reported, incl. reasoning + cache hit/miss);
+  exit code 75 (EX_TEMPFAIL) maps to a retryable transport failure.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a
