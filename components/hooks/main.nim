@@ -26,7 +26,7 @@
 ## line. Worked examples (desktop notification, sound, email, webhook)
 ## live in components/hooks/README.md.
 
-import std/[envvars, json, os, osproc, sequtils, strutils, times]
+import std/[envvars, json, os, osproc, sequtils, strutils]
 import natswrapper
 import niffler/sdk
   # re-exports sdk/procutil: runCmd (temp-file capture, timeout kill)

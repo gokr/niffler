@@ -19,9 +19,9 @@
 ## Build: needs the compiler sources on the Nim search path (see Makefile):
 ##   nim c --path:sdk --path:<toolchain>/compiler -o:var/bin/fabric-exec executor.nim
 
-import std/[json, os, posix, strutils, streams, tables]
+import std/[json, os, posix, tables]
 import
-  nimeval, llstream, vmdef, vm, options
+  nimeval, llstream, vmdef, vm
 
 const guestDir = currentSourcePath().parentDir() / "fabricguest"
   ## resolved at compile time; the executor is built in place (same

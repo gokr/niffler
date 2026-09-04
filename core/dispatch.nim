@@ -5,7 +5,7 @@
 ## The approval interceptor (x-harness.approval, see approval.nim) gates
 ## both paths: core tools here, component tools below.
 
-import std/[algorithm, json, monotimes, os, osproc, sequtils, strutils, tables,
+import std/[algorithm, json, monotimes, os, osproc, strutils, tables,
             times]
 import yaml/tojson
 import natswrapper

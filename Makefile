@@ -30,6 +30,15 @@ CORE_NIM := $(wildcard core/*.nim)
 SDK_GO   := $(filter-out %_test.go,$(wildcard sdk/go/*.go)) sdk/go/go.mod sdk/go/go.sum
 NIM_CONF := config.nims niffler.nimble
 
+# Build mode: `make build` compiles debug (fast, runtime checks on) — right
+# for development and CI. `make release` rebuilds into var/bin with
+# -d:release (optimized) for benching and production; `make build` swaps
+# the debug binaries back. Go components are unaffected (I/O-bound).
+# make tracks timestamps, not build modes — a mode flip is stamped in
+# var/bin/.mode and wipes var/bin so nothing stale survives the switch.
+NIMFLAGS ?=
+MODE := var/bin/.mode
+
 # UI sources, excluding generated/installed trees (wailsjs, dist, build, deps)
 UI_INPUTS := $(shell find ui \( -path ui/build -o -path ui/frontend/node_modules \
              -o -path ui/frontend/dist -o -path ui/frontend/wailsjs \
@@ -84,53 +93,53 @@ var/bin:
 	@mkdir -p var/bin
 
 var/bin/niffler: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off -o:$@ core/niffler.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ core/niffler.nim
 
 var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off -o:$@ core/session.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) -o:$@ core/session.nim
 
 var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/store/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/store/main.nim
 
 var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/bash/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/bash/main.nim
 
 var/bin/edit: components/edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/edit/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/edit/main.nim
 
 var/bin/grep: components/grep/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/grep/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/grep/main.nim
 
 var/bin/git: components/git/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/git/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/git/main.nim
 
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/builder/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/builder/main.nim
 
 var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/plugins/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/plugins/main.nim
 
 var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/skills/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/skills/main.nim
 
 var/bin/systemprompt: components/systemprompt/main.nim \
     components/systemprompt/baseprompt.txt $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/systemprompt/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/systemprompt/main.nim
 
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fetch/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fetch/main.nim
 
 var/bin/observe: components/observe/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/observe/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/observe/main.nim
 
 var/bin/logfile: components/logfile/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/logfile/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/logfile/main.nim
 
 var/bin/console: components/console/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/console/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/console/main.nim
 
 var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/cli/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/cli/main.nim
 
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm-openai && go build -o ../../var/bin/llm-openai .'
@@ -145,17 +154,17 @@ var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthr
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/agent/main.nim
 
 # hooks — operator shell commands on selected bus events (off by default in
 # the runtime manifest, but built and tested: t_hooks needs the binary).
 var/bin/hooks: components/hooks/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/hooks/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/hooks/main.nim
 
 # expert — advisory peer (docs/research/EXPERT.md): follows one session, LLM-judged,
 # turn-bound steer. Inert until expert_follow names a target.
 var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/expert/main.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/expert/main.nim
 
 # fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
 # on the search path, resolved via the real toolchain (choosenim shims are
@@ -163,10 +172,10 @@ var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
 
 var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
 
 var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/fabric/fabric.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fabric/fabric.nim
 
 # dialog is a component written entirely in bash (nats CLI + jq — no SDK,
 # no compile step). Copy it, don't compile it.
@@ -184,7 +193,18 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
 	var/bin/hooks var/bin/dialog
 
-build: components
+build:
+	@mkdir -p var/bin; if [ "$$(cat $(MODE) 2>/dev/null)" = "release" ]; then \
+		echo debug > $(MODE); rm -f var/bin/*; \
+		echo "release binaries detected — wiped var/bin for a debug rebuild"; fi
+	@$(MAKE) --no-print-directory components
+
+release:
+	@mkdir -p var/bin; if [ "$$(cat $(MODE) 2>/dev/null)" != "release" ]; then \
+		echo release > $(MODE); rm -f var/bin/*; \
+		echo "debug binaries detected — wiped var/bin for a release rebuild"; fi
+	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory NIMFLAGS=-d:release components-inner
+	@echo "release binaries in var/bin (-d:release) — 'make build' swaps debug back"
 
 # ---------------------------------------------------------------------------
 # desktop UI
@@ -249,7 +269,7 @@ down:
 	 sleep 1; echo "down: harnesses, components and nats-server stopped"
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/smoke.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
 # ---------------------------------------------------------------------------
 # tests: one binary per tests/*.nim; `make test` runs the whole suite
@@ -265,7 +285,7 @@ TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
 
 var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ tests/$*.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/$*.nim
 
 var/bin/test_t_schema_validation: core/schema_validation.nim
 

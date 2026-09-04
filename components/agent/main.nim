@@ -34,7 +34,7 @@
 ## the original interactive caller. Idle child runners retire themselves
 ## (NIF_RUNNER_IDLE_S) and re-ensure on demand.
 
-import std/[json, os, sets, strutils, tables, times]
+import std/[json, os, sets, strutils, times]
 import natswrapper
 import niffler/sdk
 
