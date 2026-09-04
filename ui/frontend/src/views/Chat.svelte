@@ -12,6 +12,7 @@
     parseSlashArgs,
     slashCompletion,
     fetchCompletionValues,
+    formatSlashResult,
     suggestSlash,
     type SlashCommand,
     type CompletionState,
@@ -288,21 +289,14 @@
         addMeta(l, t("chat.slashExec", { name: cmd.name, args: arg.trim() }));
         try {
           const result = await send(cmd.component!, cmd.tool!, parsed.args);
-          addMeta(l, t("chat.slashResult", { name: cmd.name, result: compactJSON(result) }));
+          // The exec meta line above already names the command — the result
+          // block carries only the formatted payload (summary or pretty JSON).
+          addMeta(l, formatSlashResult(result));
         } catch (e) {
           addError(l, t("chat.slashFailed", { name: cmd.name, err: String(e) }));
         }
         return true;
       }
-    }
-  }
-
-  function compactJSON(v: unknown): string {
-    try {
-      const s = JSON.stringify(v);
-      return s.length > 400 ? s.slice(0, 400) + "…" : s;
-    } catch {
-      return "";
     }
   }
 

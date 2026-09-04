@@ -312,6 +312,27 @@ export async function fetchCompletionValues(source: SlashSource): Promise<string
   return extractCompletionValues(raw, source.field);
 }
 
+// ---- result rendering -------------------------------------------------------
+
+/** Human-first rendering of a registered command's tool result: a string
+ * passes through, an object's `summary` field (the plugins' crafted one-line
+ * summary, e.g. synthetic_usage) is shown verbatim, anything else
+ * pretty-prints as JSON. Raw compact dumps stay only as the fallback —
+ * result rendering is the UI's business (docs/WIRE.md). */
+export function formatSlashResult(result: unknown): string {
+  if (typeof result === "string" && result !== "") return result;
+  if (result && typeof result === "object") {
+    const s = (result as Record<string, unknown>)["summary"];
+    if (typeof s === "string" && s !== "") return s;
+  }
+  try {
+    const s = JSON.stringify(result, null, 2);
+    return s.length > 2000 ? s.slice(0, 2000) + "…" : s;
+  } catch {
+    return "";
+  }
+}
+
 // ---- suggestions ------------------------------------------------------------
 
 /** A "did you mean" hint for an unknown command: prefix matches first, then
