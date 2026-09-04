@@ -161,6 +161,29 @@ proc clip(s: string, max: int): string =
   while cut > 0 and (s[cut].uint8 and 0xC0) == 0x80: dec cut
   result = s[0 ..< cut] & "..."
 
+proc isAlwaysSilentAdvice(msgLower: string): bool =
+  ## Matches the expert policy's ALWAYS-silent classes in judge output:
+  ## "run the tests", "read the file", "inspect the tests" — advice any
+  ## competent agent follows unprompted, so it is task-strategy content,
+  ## not a harness steer. An always-silent phrase that ALSO names a specific
+  ## harness mechanism ("verify via `fabric`", "inspect with `grep`") may be
+  ## a real steer and survives; only pure task-strategy phrasing suppresses.
+  const alwaysSilent = ["run the test", "run tests", "run ./test",
+                        "execute the test", "run the suite",
+                        "read the file", "inspect the test", "read the source",
+                        "open the file", "look at the test"]
+  var matched = false
+  for p in alwaysSilent:
+    if p in msgLower:
+      matched = true
+      break
+  if not matched: return false
+  const mechanisms = ["grep", "git_", "discover", "invoke", "agent_run",
+                      "fabric", "skill", "plugin", "builder", "spawn"]
+  for m in mechanisms:
+    if m in msgLower: return false
+  return true
+
 proc resetFrame(turnId, content: string) =
   gTurnId = turnId
   gUserRequest = clip(content, MaxField)
@@ -266,7 +289,13 @@ proc evaluate(comp: Component) =
     var ja = %*{"tool": a.tool}
     if a.argsSummary.len > 0: ja["args"] = %a.argsSummary
     if a.resultSummary.len > 0: ja["result"] = %a.resultSummary
-    if a.error.len > 0: ja["error"] = %a.error
+    elif a.error.len > 0: ja["error"] = %a.error
+    else:
+      # In-flight call: judge in this window (that is the point of judging on
+      # toolcall start), but make the pending state unmistakable — t03's
+      # glm judge steered "run the test suite" while ./test.sh was literally
+      # executing because an activity without a result read as "not done".
+      ja["status"] = %"RUNNING — result not yet available"
     activities.add(ja)
   var obs = %*{
     "sessionId": gTarget, "turnId": turnId,
@@ -311,8 +340,26 @@ proc evaluate(comp: Component) =
     comp.log("warn", "judgment parse failed", %*{"error": clip(e.msg, 120)})
     return
   let action = judgment{"action"}.getStr("")
+  # Audit trail: every parsed judgment lands in ev.log.expert (action,
+  # reason, message for steers) — silence reasons were previously discarded,
+  # making post-run inspection of WHY the expert stayed quiet impossible.
+  comp.log("info", "judgment", %*{"action": action,
+      "reason": clip(judgment{"reason"}.getStr(""), 200),
+      "message": clip(judgment{"message"}.getStr(""), 200),
+      "confidence": judgment{"confidence"}.getStr("")})
   if action != "steer":
     gSilences += 1
+    return
+  # Content backstop for the policy's ALWAYS-silent classes: judges
+  # occasionally emit high-confidence "run the tests" / "read the file"
+  # steers (seen on glm t03) that name a live tool and pass the format
+  # gates. Task-strategy phrasing of that shape is never a valid steer —
+  # drop it here rather than trusting judge compliance.
+  let msgLower = judgment{"message"}.getStr("").toLowerAscii()
+  if isAlwaysSilentAdvice(msgLower):
+    gSilences += 1
+    comp.log("info", "steer suppressed: always-silent class",
+             %*{"message": clip(judgment{"message"}.getStr(""), 160)})
     return
   # Delivery policy: high confidence, bounded message, live non-hidden tools.
   if judgment{"confidence"}.getStr("") != "high":
