@@ -1,0 +1,3 @@
+{ "id": "t10-iniparse", "title": "Fix seeded INI-parser bugs (Nim)", "language": "nim",
+  "kind": "general",
+  "protected": ["test.sh", "tests/**", "README.md"] }

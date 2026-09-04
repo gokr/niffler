@@ -1,0 +1,3 @@
+{ "id": "t16-apisum", "title": "Fetch a local JSON API and aggregate it (Python)", "language": "python",
+  "kind": "expert",
+  "protected": ["test.sh", "check.py", "server.py", "README.md"] }

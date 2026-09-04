@@ -1,0 +1,3 @@
+{ "id": "t13-batchrename", "title": "Rename a function across 26 files (Go)", "language": "go",
+  "kind": "fabric",
+  "protected": ["test.sh", "rename_test.go", "go.mod", "README.md"] }

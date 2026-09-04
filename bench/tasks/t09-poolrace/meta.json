@@ -1,0 +1,3 @@
+{ "id": "t09-poolrace", "title": "Fix a racy worker pool (Go, -race)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "pool_test.go", "go.mod", "README.md"] }

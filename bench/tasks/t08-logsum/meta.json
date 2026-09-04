@@ -1,0 +1,3 @@
+{ "id": "t08-logsum", "title": "Implement a log-summary CLI from spec (Python)", "language": "python",
+  "kind": "general",
+  "protected": ["test.sh", "tests/**", "examples/**", "README.md"] }

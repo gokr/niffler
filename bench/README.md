@@ -29,9 +29,12 @@ var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wi
 
 ## Tasks
 
-Six self-contained repos, escalating difficulty, all "make the visible test
-suite pass" (like SWE-bench's FAIL_TO_PASS, but lightweight and
-dependency-free so every harness starts equal):
+Seventeen self-contained repos, all "make the visible test suite pass"
+(like SWE-bench's FAIL_TO_PASS, but lightweight and dependency-free so
+every harness starts equal). `meta.json` tags each with a `kind`:
+`general` (bug fixes, implementations, refactors), `fabric` (mechanical
+fan-out work a guest program excels at), `expert` (tasks with Niffler-
+specific tool-selection traps) and `selfextend` (build your own tool).
 
 | task | language | kind |
 |------|----------|------|
@@ -41,6 +44,17 @@ dependency-free so every harness starts equal):
 | t04-csvbugfix | Python | debug seeded bugs (mean off-by-one, string min/max) |
 | t05-todostore | Node | implement class from API contract |
 | t06-stackvm | Go | debug + complete a stack VM and two-pass assembler |
+| t07-validate | Python | debug seeded email/date validation bugs |
+| t08-logsum | Python | implement a log-summary CLI from spec |
+| t09-poolrace | Go | fix a racy worker pool (go test -race) |
+| t10-iniparse | Nim | debug seeded INI-parser bugs |
+| t11-asyncbugs | Node | debug seeded async bugs (ordering, retry, await) |
+| t12-refactor | Go | repair what a bad refactor broke |
+| t13-batchrename | Go | rename a function across 26 files |
+| t14-todosweep | mixed | sweep TODO/FIXME comments into an exact report |
+| t15-pollstats | Python | poll a generator 12 times, compute stats |
+| t16-apisum | Python | fetch a local JSON API and aggregate |
+| t17-doccheck | Go | build a checker tool and fix invariant violations |
 
 Every repo ships its tests + `./test.sh` (exit 0 = green) in the base commit;
 all are red at `base` and verified green with a reference solution. The same

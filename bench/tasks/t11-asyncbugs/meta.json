@@ -1,0 +1,3 @@
+{ "id": "t11-asyncbugs", "title": "Fix seeded async bugs (Node.js)", "language": "node",
+  "kind": "general",
+  "protected": ["test.sh", "tests/**", "README.md"] }

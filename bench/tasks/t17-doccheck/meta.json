@@ -1,0 +1,3 @@
+{ "id": "t17-doccheck", "title": "Build a checker tool and fix every invariant violation (Go)", "language": "go",
+  "kind": "selfextend",
+  "protected": ["test.sh", "go.mod", "README.md"] }

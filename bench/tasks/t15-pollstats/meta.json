@@ -1,0 +1,3 @@
+{ "id": "t15-pollstats", "title": "Poll a generator 12 times and compute stats (Python)", "language": "python",
+  "kind": "fabric",
+  "protected": ["test.sh", "check.py", "generator.py", "README.md"] }

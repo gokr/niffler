@@ -1,0 +1,3 @@
+{ "id": "t07-validate", "title": "Fix seeded email/date validation bugs (Python)", "language": "python",
+  "kind": "general",
+  "protected": ["test.sh", "tests/**", "README.md"] }

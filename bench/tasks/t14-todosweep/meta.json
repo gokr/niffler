@@ -1,0 +1,3 @@
+{ "id": "t14-todosweep", "title": "Sweep all TODO/FIXME comments into an exact report (mixed)", "language": "multi",
+  "kind": "fabric",
+  "protected": ["test.sh", "check.py", "src/**", "notes.txt", "README.md"] }

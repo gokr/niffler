@@ -1,0 +1,3 @@
+{ "id": "t12-refactor", "title": "Repair what a bad refactor broke (Go)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "report_test.go", "go.mod", "README.md"] }
