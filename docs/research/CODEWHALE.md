@@ -1,13 +1,20 @@
 # CodeWhale — prior-art analysis
 
-> Research note — external codebase analysis, not a plan. Status: nothing
-> shipped from this; each item below is a candidate to become its own plan
-> (or a line in the README quests).
+> Research note — external codebase analysis, not a plan. Status: mostly
+> unshipped; review receipts (item 10) and an observe-only `hooks` component
+> (item 9) have since shipped — see the Delta scan at the end. Each item
+> below is a candidate to become its own plan (or a line in the README
+> quests).
 >
 > Source: a checkout of [CodeWhale](https://github.com/Hmbown/CodeWhale)
 > (Rust, a fork of gemini-cli) at `../CodeWhale`, analyzed at
 > `72587359f` (2026-09-03, v0.9.11-681). All citations are
 > `../CodeWhale/<path>` relative to this repo's root.
+>
+> A second pass (2026-09) re-swept the same tree — the **Delta scan** section
+> near the end covers areas this first analysis did not open (RFCs,
+> `integrations/`, `plugins/`, several crates) and re-grades two items
+> against what Niffler shipped since.
 
 ## What CodeWhale is
 
@@ -285,6 +292,10 @@ component that subscribes and runs configured commands would be idiomatic —
 the interesting part to copy is the steering fold and the fail-closed
 semantics, not the mechanism.
 
+> Status 2026-09: Niffler shipped an observe-only `hooks` component
+> (`components/hooks/`); the remaining borrow is the steering fold and
+> fail-closed semantics — see the Delta scan.
+
 ### 10. Review receipts → `git`/review tooling
 
 `../CodeWhale/docs/RECEIPTS.md`. `review --write-receipt` writes a local
@@ -294,6 +305,9 @@ is a pre-push gate that calls no model and exits nonzero on fingerprint
 mismatch or unresolved risk. A cheap, high-trust artifact pattern for any
 Niffler review flow; the fingerprint-based staleness check is the reusable
 idea.
+
+> Status 2026-09: shipped in Niffler — `git`'s `review_receipt` write/check
+> pair (`components/git/main.nim`).
 
 ---
 
@@ -365,6 +379,194 @@ Checked so as not to re-borrow what shipped here:
   useful *patterns* (Tier 2.7); as a product layer they duplicate what
   Niffler's sessions + plugins already express.
 
+## Delta scan (2026-09 re-sweep)
+
+Second pass over the same tree (`git pull` returned "already up to date" at
+`72587359f`), covering what the analysis above never opened — the `rfcs/` and
+`architecture/` subdirectories, `integrations/`, `plugins/`, the
+telemetry-ingest service, and crates outside the first pass — plus a re-grade
+of earlier items against what Niffler has shipped since this note was written
+(observe-only `hooks`, `review_receipt` in `git`, `expert`, `bench/`, store v2
+in progress). D-numbers are independent of the item numbering above.
+
+### D1. Sub-agent git worktrees with a write-claim protocol → `fabric`/`agent`
+
+`docs/SUBAGENTS.md` ("For parallel edit lanes, launch the child with
+`worktree: true`"). A child spawn can request a fresh git worktree + branch
+under `.codewhale-worktrees/` (parent checkout stays clean), with
+`worktree_branch` / `worktree_base` / `worktree_path` parameters. The borrow
+is the claim semantics: the child *declares* `worktree_write` plus normalized
+repo-relative `write_roots`; **claims fail before mutation** when no real
+isolated worktree backs them, and "a real isolated worktree may proceed in
+parallel". Concrete prior art for the deferred fabric item "optional isolated
+git worktrees for subagents" (docs/PLAN.md) — Niffler has nothing here today.
+
+### D2. External eval-harness contract → `bench/`, headless runs
+
+`integrations/verifiers-codewhale/README.md`. CodeWhale is drivable as a
+harness under an external eval framework (Prime Intellect Verifiers):
+isolated `CODEWHALE_HOME` per rollout, model traffic pinned to the harness's
+interception endpoint with per-rollout secrets (never in argv), toolsets
+delivered as a rollout-local MCP config, telemetry off, and success defined as
+the exact `codewhale.exec-stream` v1 terminal receipt — malformed streams fail
+closed. Niffler's `bench/tasks/` is in-house; the borrow is the *contract*:
+hermetic per-run home, interceptable model traffic, versioned terminal receipt
+as pass criterion (cf. `turn_usage` in `docs/AGENT_RUNTIME.md`). Pairs with
+pi's evals package (PI_FEATURE_SCAN.md §3.6).
+
+### D3. External-memory layer cutline → design constraints for any memory plan
+
+`docs/rfcs/WORKFLOW_EXTERNAL_MEMORY.md` (principle-only cutline). A layer
+table separating user memory / repo search / in-session memo (ARMH/RLM) /
+TraceStore replay / a "cached-main overlay" of promoted lessons (inspectable,
+reversible, never mutates main) / external memory (explicit node or plugin
+only). Rules worth adopting verbatim: visibility requirements (when active,
+owning node, storage location, readable scope, replay/export status,
+inspect/clear/pin/export), strictest-scope inheritance ("project-local config
+must not silently enable broad external-memory reads"), and "if a run cannot
+explain why a fact came from external memory, the feature is not ready for
+default use."
+
+### D4. RLM sessions — kernel-backed context querying → candidate memory/context component
+
+`crates/tui/src/rlm/{session,turn}.rs`. A deferred `rlm` tool family over a
+persistent Python kernel (`PythonRuntime`) that *holds* the large context
+(`context_path`, `context_meta`) so the model queries its own context
+programmatically instead of re-reading it, with hit/miss telemetry
+(`rpc_count`, `peak_var_count`). The Aleph/RLM pattern — context management
+beyond compaction. Niffler shape: a component wrapping a persistent kernel
+(the `fabricguest` bridge pattern) exposing query tools, with the memo layer
+explicitly non-durable per D3.
+
+### D5. Aux-model policy ("Fin") → `models`/`llm` + `expert`
+
+`docs/MODEL_LAB.md`. A designated fast, thinking-off model for
+harness-internal calls: routing, summaries, cheap checks, RLM child calls,
+"wakeup verification", binary-completion checks; plus `--model auto` per-turn
+routing to a concrete model + thinking level. Niffler's `expert` judgment
+calls and a future compaction component (Phase-2 A1) both want this lane;
+make it an `auxModel` policy in `models`/`llm` rather than per-component
+ad-hoc choices.
+
+### D6. Modes and postures → core session policy + fabric product design
+
+`docs/MODES.md`.
+
+- **Plan is enforced by the runtime** ("the runtime centrally refuses file
+  mutation and shell execution") while tool names stay visible — a
+  session-level read-only posture, i.e. the subagent clamping mechanism
+  (item 3 above) applied to the parent session.
+- **Operate** turns a prompt into a session goal with continuation;
+  "dispatch is not completion — write-capable children must return real
+  verification evidence" (VERDICT PASS/FAIL with evidence); best-of-N runs N
+  worktrees + a reviewer and applies only on PASS; lifecycle claims are exact
+  ("dispatched ≠ settled ≠ verified"). Product-level prior art for fabric's
+  deferred councils/map-reduce work — the evidence-verdict contract is the
+  specific steal.
+- **Auto-Review posture** sits between Ask and Full Access: an LLM review
+  floor that can tighten but not unblock (`docs/AUTHORIZATION_ORDER.md:81`).
+
+### D7. Declarative plugin bundles + ecosystem compat → `plugins`/`skills`
+
+`docs/PLUGIN_BUNDLES.md`, `docs/CLAUDE_PLUGIN_COMPAT.md`. A bundle
+contributes Skills, MCP configuration, Commands, Agent profiles, and Hooks
+*declaratively* through existing engines — no compiled runtime; "discovery
+alone never executes, enables, trusts, downloads, updates, or installs
+anything"; unsupported declarations stay inventoried instead of disabling a
+mixed bundle; multi-format manifest precedence (`plugin.json` → Kimi subset →
+legacy toml). `.claude/skills/*/SKILL.md` folders are read as instruction
+bundles, with an `/import-claude` path. Niffler: `niffler.json` could grow
+declarative sections, and `skills` could read `.claude/skills/` +
+`.agents/skills/` for instant ecosystem import.
+
+### D8. Skills routing metadata + catalog fixture matrix → `skills`
+
+`docs/SKILLS.md`. `invocation: explicit-only` (loadable by name, omitted from
+the ambient catalogue — zero prompt budget), `aliases-for` (lookup names,
+never duplicate catalogue entries), a tiered bundled catalogue ("core
+agentic" vs "format & tooling"), and an authored **catalog fixture matrix**
+(`crates/tui/assets/skills-catalog-matrix.json`) with a bijection test — "the
+shipped pack cannot change without an explicit fixture update" — plus the
+doctrine that the pack never advertises capabilities the runtime lacks
+(asserted: no image-gen skill without an image tool). Niffler `skills` has
+none of these; the fixture pattern also generalizes to pinning the
+systemprompt and direct-toolset surfaces.
+
+### D9. Lifecycle event outbox → `logfile`/`hooks` extension
+
+`docs/changelog-lifecycle-outbox.md`, `crates/hooks/src/lifecycle_outbox.rs`.
+Opt-in JSONL outbox of runtime events with monotonic `seq` recovered from a
+bounded tail scan on open (torn trailing line ignored), optional webhook +
+bearer token. Unlike Niffler's rotation/diagnostic `logfile`, this is a
+durable, sequence-complete sink external integrations can rely on.
+
+### D10. Runtime API surfaces → `observe` + client components
+
+`docs/RUNTIME_API.md`. `doctor --json` machine-readable health; an **ACP
+(Agent Client Protocol) stdio adapter** (`serve --acp`) so editors (Zed) embed
+the agent; HTTP/SSE + mobile page on one `app-server`. Niffler: a
+doctor-style health projection (component liveness, store writability,
+provider reachability — `observe` partially covers it), and an ACP adapter
+component (stdio JSON-RPC ↔ `svc.session.<id>.call`) would make Niffler
+embeddable in editors cheaply.
+
+### D11. Cloud dispatch, proposal-first → pattern for remote execution
+
+`docs/DAYTONA_CLOUD_DISPATCH.md`. Offloading a task to a cloud sandbox writes
+a proposal first; nothing is created or pushed until explicit `--confirm`;
+"spend and push never happen silently." Consistent with the approval
+doctrine; recorded for any future remote-execution capability.
+
+### D12. Presentation-filter boundary → store/UI invariant
+
+`docs/rfcs/4468-output-presentation-filters.md`. "Never run an arbitrary
+script between a model response and the canonical session record":
+filtering/compression belongs to labeled, derived *views* that retain a
+canonical reference. Applies directly to the Level-1/2 UI-dynamism work
+(renderers reformat, never mutate the store record) and to compaction (A1
+must add entries, never rewrite history).
+
+### D13. Small steals
+
+- **Motion contract** (`docs/MOTION_CONTRACT.md`): provider SSE deltas are
+  input, never animation timing — coalesce on a display clock; a better
+  web-UI streaming rule than render-on-delta.
+- **OS keyring secrets** (`crates/secrets`): a `secrets` component instead of
+  `.env`-only storage for provider keys.
+- **`read_media`** (`docs/READ_MEDIA.md`): the vision tool is registered as a
+  *deferred* tool to protect context budgets, plus a stable attachment store
+  for pasted/screenshot paths — the CodeWhale-specific additions on top of
+  pi's resize-on-read (PI_FEATURE_SCAN.md A6).
+
+### Re-graded prior items
+
+- **Item 10 (review receipts): shipped in Niffler**
+  (`components/git/main.nim` `review_receipt`) — closed.
+- **Item 9 (hooks): partially shipped** — observe-only
+  (`components/hooks/`); the remaining borrow is the steering verdict fold
+  and fail-closed-on-strict-hook semantics.
+- **Memory (item 1) remains open** — D3 + D4 are the design constraints to
+  write into its plan.
+- Everything else in the tiers above stands unchanged.
+
+### Still not worth borrowing (additions)
+
+- `plugins/computer-use` — product-scale; interesting boundary, no current
+  need.
+- Chat bridges (`integrations/feishu|telegram|wecom|weixin`) — a product
+  surface; `bridge-core`'s adapter shape is the template if ever.
+- Model Lab as a product — the aux-model policy (D5) is the extract.
+- Cloud dispatch as a product — the proposal-first pattern (D11) is the
+  extract.
+- TUI craft (motion/settings-picker/accessibility) beyond D13's streaming
+  rule — wrong layer for a Wails UI.
+
+### Order (delta items)
+
+D5 → D1 → D8 → D7 → D2 → D6 (Plan posture) → D12/D13 riding UI work →
+D9/D10 as integrations demand. D3/D4 feed the memory plan rather than
+shipping alone.
+
 ## Open questions
 
 1. Where does the pinned-prefix hash live — `systemprompt` (single composer)
@@ -381,3 +583,8 @@ Checked so as not to re-borrow what shipped here:
    (per-call wrapping) or `observe` (capability report)? CodeWhale wraps in
    the execution path and reports in status; both need the same
    probe result, so a shared probe in `sdk` or a small status tool.
+5. D1: where do worktree write-claims live — fabric program IR, the `agent`
+   tool schema, or a store record the `git` component validates against?
+6. D5: does the aux model belong to `models` (a catalog-level "fast" tag) or
+   `llm` (a second route per session)? `expert` is the first consumer either
+   way.
