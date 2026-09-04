@@ -653,7 +653,6 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
     else: ""
   result = %*{"summary": "Successfully applied " & $planned.len & " " & noun &
                        " to " & path & "." & lineSummary,
-              "diff": d.diff,
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
               "added_lines": addedTotal,
@@ -692,7 +691,6 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
   let d = compactDiff(entry.resultContent, entry.content)
   result = %*{"summary": "Undid the last edit on " & path &
               ". File reverted to its previous state; re-read it before further edits.",
-              "diff": d.diff,
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine}
 

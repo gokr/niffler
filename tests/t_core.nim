@@ -168,9 +168,14 @@ proc main() =
   discard call(nc, "core", "remove", %*{"name": "rogue"}, 60_000)
 
   # --- session_info: conversation introspection -----------------------------
-  # The direct toolset includes the tool — self-introspection is a core tool.
-  check("session_info is in the direct LLM toolset",
-        coreCat.output.contains("\"session_info\""), coreCat.output)
+  # Self-introspection is a core tool, but an on-demand one: the direct
+  # toolset stays small, so session_info rides discover + invoke.
+  check("session_info is not in the direct LLM toolset",
+        not coreCat.output.contains("\"session_info\""), coreCat.output)
+  let siDiscover = runCli(cliBin, url,
+    @["call", "discover", """{"component":"core"}"""], root = root)
+  check("session_info is discoverable on demand",
+        siDiscover.output.contains("\"session_info\""), siDiscover.output)
 
   # The system-side handler needs no LLM: a content-less session call spins up
   # the conversation's runner and returns its status (header created).

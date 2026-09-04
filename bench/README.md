@@ -83,7 +83,16 @@ Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
 `--model a,b`, `--task t01,t03`, `--task-root path` (generated/custom tasks),
 `--keep-repos` (preserve each completed
 workdir's `.git` for debugging; default strips it after `patch.diff` capture so
-editors do not discover dozens of nested repositories).
+editors do not discover dozens of nested repositories), and
+`--skip-preflight` (bypass the pre-run provider probe that aborts on
+HTTP 401/402/403 — dead key or exhausted balance — before any cell runs).
+
+Scheduling is task-major: cells are (combo, task) pairs emitted task by
+task with the harness order rotated per task index, so no harness lane
+systematically runs first. Niffler harnesses boot lazily on their first
+cell and stay up until the run ends; fatal provider errors (401/402/403,
+balance) stop a cell immediately after one verification of the partial
+patch instead of burning the remaining feedback rounds.
 
 ## How each harness is driven
 

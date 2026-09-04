@@ -75,6 +75,51 @@ if (
   process.exit(1);
 }
 
+// ---------- provider preflight ----------
+// A dead provider (out of balance, revoked key) used to surface as N failed
+// cells × 6 feedback rounds before anyone noticed. Probe every selected
+// endpoint once up front; a 401/402/403 aborts the whole run before any
+// cell burns tokens. --skip-preflight bypasses (mocked/offline providers).
+const SKIP_PREFLIGHT = argv.includes("--skip-preflight");
+async function preflight() {
+  const endpoints = new Map(); // "baseUrl|apiKeyEnv" -> {baseUrl, apiKeyEnv}
+  const add = (baseUrl, apiKeyEnv) => {
+    if (baseUrl && apiKeyEnv) endpoints.set(`${baseUrl}|${apiKeyEnv}`, { baseUrl, apiKeyEnv });
+  };
+  for (const model of models) {
+    const mc = cfg.models[model];
+    if (mc?.niffler) add(mc.niffler.baseUrl, mc.niffler.apiKeyEnv);
+  }
+  if (harnessArg.split(",").includes("niffler-expert") && cfg.expertJudge) {
+    add(cfg.expertJudge.baseUrl, cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY");
+  }
+  const dead = [];
+  for (const { baseUrl, apiKeyEnv } of endpoints.values()) {
+    const key = keys[apiKeyEnv];
+    if (!key) continue; // missing keys already failed resolution above
+    const url = baseUrl.replace(/\/+$/, "") + "/models";
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if ([401, 402, 403].includes(res.status)) {
+        dead.push(`${baseUrl} → HTTP ${res.status} (${apiKeyEnv})`);
+      }
+    } catch (e) {
+      // Transport trouble here is a warning only: the run itself retries
+      // transient outages, but a hard auth/balance refusal is fatal.
+      console.warn(`bench: preflight could not reach ${url}: ${e.message}`);
+    }
+  }
+  if (dead.length) {
+    console.error("bench: provider preflight failed — aborting before any run:");
+    for (const d of dead) console.error(`  ${d}`);
+    process.exit(1);
+  }
+}
+if (!SKIP_PREFLIGHT) await preflight();
+
 // ---------- helpers ----------
 function git(repo, args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
@@ -261,6 +306,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let testTimeS = 0;
   let adapterState = {};
   let roundReply = "";
+  let fatalProviderError = null;
 
   // Gateway outages must not fail one-shot tasks: transport-level errors
   // (connection/TLS/timeout, or a Niffler turn whose LLM calls never went
@@ -272,6 +318,14 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     if (/balance|401|403|unauthorized|invalid.{0,20}key/i.test(m)) return false;
     return /connection|timed out|tls|fetch failed|socket|network|econn|eai_again|reset by peer/i.test(m);
   };
+  // Auth/balance/permission refusals cannot heal within a run: every further
+  // round would burn the same failure. Fatal errors stop the cell after one
+  // verification of the partial patch (which may already pass — seen: a
+  // DeepSeek 402 killed t17 mid-turn while its patch was complete).
+  const isFatalProviderError = (msg) =>
+    /\b(401|402|403)\b|insufficient.{0,20}balance|balance.{0,20}insufficient|unauthorized|invalid.{0,20}key|quota.{0,20}exceeded|permission.{0,20}denied/i.test(
+      String(msg || ""),
+    );
 
   try {
     if (setupError) throw setupError;
@@ -359,15 +413,18 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
       }
 
       const test0 = Date.now();
-      const test = res.error
-        ? { code: -1, stdout: "", stderr: res.error }
-        : await runTests(repo, taskMeta, taskId);
-      const testS = (Date.now() - test0) / 1000;
-      testTimeS += testS;
+      const fatal = !!res.error && isFatalProviderError(res.error);
       // A turn-round-budget exhaustion marker is informational: if the
       // captured diff still passes, the cell passes (the model was cut off
-      // mid-turn, not mid-edit).
+      // mid-turn, not mid-edit). Fatal provider errors also verify once —
+      // the partial patch may already be complete.
       const budgetOnly = !!res.error && /round budget exhausted/.test(String(res.error));
+      const test =
+        !res.error || fatal || budgetOnly
+          ? await runTests(repo, taskMeta, taskId)
+          : { code: -1, stdout: "", stderr: res.error };
+      const testS = (Date.now() - test0) / 1000;
+      testTimeS += testS;
       const pass = (!res.error || budgetOnly) && test.code === 0;
 
       rounds.push({
@@ -376,6 +433,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         testS: Number(testS.toFixed(1)),
         pass,
         error: res.error || null,
+        fatal: fatal ? res.error : null,
         transportRetries: res.transportRetries || 0,
         replyTail: tail(res.reply, 800),
         testOutputTail: tail(test.stdout + test.stderr, 4000),
@@ -388,6 +446,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
       );
       if (pass) {
         verdict = "pass";
+        break;
+      }
+      if (fatal) {
+        verdict = "error";
+        fatalProviderError = res.error;
         break;
       }
       if (Date.now() - t0 > taskTimeoutMs) {
@@ -489,6 +552,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     task: taskId,
     verdict,
     invalid,
+    fatal: fatalProviderError,
     rounds: rounds.length,
     agentTimeS: Number(agentTimeS.toFixed(1)),
     testTimeS: Number(testTimeS.toFixed(1)),
@@ -514,65 +578,57 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     `[${combo.harness}/${combo.model}/${taskId}] ${verdict.toUpperCase()} ` +
       `${result.totalTimeS.toFixed(0)}s, ${result.rounds} rounds, ` +
       `tok in/out ${usage.input}/${usage.output}` +
-      (invalid ? ` (${invalid})` : ""),
+      (invalid ? ` (${invalid})` : "") +
+      (fatalProviderError ? ` [fatal: ${String(fatalProviderError).slice(0, 80)}]` : ""),
   );
   return result;
 }
 
-// ---------- combo runner ----------
-async function runCombo(combo, taskIds) {
-  const comboRoot = path.join(RESULTS, `_combo-${combo.harness}__${combo.model}`);
-  fs.mkdirSync(comboRoot, { recursive: true });
-  const shared = { piCfgDir: pi.setupPiConfig(comboRoot, cfg) };
-
-  if (isNifflerHarness(combo.harness)) {
-    shared.niffler = new niffler.NifflerHarness({
-      benchRoot: BENCH_ROOT,
-      runRoot: comboRoot,
-      baseUrl: combo.modelCfg.niffler.baseUrl,
-      apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
-      model: combo.modelCfg.niffler.model,
-      thinking: combo.modelCfg.niffler.thinking || "",
-      expertEnabled: combo.harness === "niffler-expert",
-      expertJudge:
-        combo.harness === "niffler-expert" && cfg.expertJudge
-          ? {
-              ...cfg.expertJudge,
-              apiKey: keys[cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY"] || "",
-            }
-          : null,
-    });
-    console.log(`booting niffler harness (${combo.model}) on a private bus…`);
-    try {
-      await shared.niffler.start();
-    } catch (e) {
-      console.error(`bench: niffler harness failed to start: ${e.message}`);
-      for (const taskId of taskIds) {
-        writeJson(path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "result.json"), {
-          runId: RUN_ID,
-          harness: combo.harness,
-          model: combo.model,
-          task: taskId,
-          verdict: "error",
-          error: `harness start failed: ${e.message}`,
+// ---------- combo state (lazy boot, task-major sharing) ----------
+// Niffler harnesses boot lazily on their first cell and stay up until the
+// whole run ends; pi/opencode combos need only per-combo scratch dirs.
+const comboStates = new Map(); // "harness|model" -> {combo, shared, error, booting}
+async function ensureCombo(combo) {
+  const key = `${combo.harness}|${combo.model}`;
+  let st = comboStates.get(key);
+  if (!st) {
+    st = { combo, shared: null, error: null, booting: null };
+    comboStates.set(key, st);
+  }
+  if (!st.booting) {
+    st.booting = (async () => {
+      const comboRoot = path.join(RESULTS, `_combo-${combo.harness}__${combo.model}`);
+      fs.mkdirSync(comboRoot, { recursive: true });
+      const shared = { piCfgDir: pi.setupPiConfig(comboRoot, cfg) };
+      if (isNifflerHarness(combo.harness)) {
+        shared.niffler = new niffler.NifflerHarness({
+          benchRoot: BENCH_ROOT,
+          runRoot: comboRoot,
+          baseUrl: combo.modelCfg.niffler.baseUrl,
+          apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
+          model: combo.modelCfg.niffler.model,
+          thinking: combo.modelCfg.niffler.thinking || "",
+          expertEnabled: combo.harness === "niffler-expert",
+          expertJudge:
+            combo.harness === "niffler-expert" && cfg.expertJudge
+              ? {
+                  ...cfg.expertJudge,
+                  apiKey: keys[cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY"] || "",
+                }
+              : null,
         });
+        console.log(`booting niffler harness (${combo.model}) on a private bus…`);
+        try {
+          await shared.niffler.start();
+        } catch (e) {
+          st.error = `harness start failed: ${e.message}`;
+        }
       }
-      return;
-    }
+      st.shared = shared;
+    })();
   }
-
-  try {
-    for (const taskId of taskIds) {
-      const meta = readJson(path.join(TASK_ROOT, taskId, "meta.json"));
-      const template = fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8");
-      await runTask(combo, taskId, meta, template, shared);
-    }
-  } finally {
-    if (shared.niffler) {
-      console.log(`stopping niffler harness (${combo.model})…`);
-      await shared.niffler.stop();
-    }
-  }
+  await st.booting;
+  return st;
 }
 
 // ---------- main ----------
@@ -608,15 +664,62 @@ async function main() {
     keepRepos: KEEP_REPOS,
   });
 
-  // Simple worker pool over combos; Niffler boots one harness per combo.
-  let idx = 0;
-  async function worker() {
-    while (idx < combos.length) {
-      const combo = combos[idx++];
-      await runCombo(combo, tasks);
+  // Task-major scheduling: one cell = (combo, task). Cells are emitted task
+  // by task with the harness order rotated per task index, so no harness
+  // lane systematically runs first (temporal bias seen in full17: one
+  // provider died mid-run and only the early lanes survived it).
+  const cells = [];
+  for (let t = 0; t < tasks.length; t++) {
+    for (let i = 0; i < combos.length; i++) {
+      cells.push({ combo: combos[(i + t) % combos.length], taskId: tasks[t] });
     }
   }
-  await Promise.all(Array.from({ length: Math.min(JOBS, combos.length) }, worker));
+  const taskMetaOf = new Map(
+    tasks.map((taskId) => [taskId, readJson(path.join(TASK_ROOT, taskId, "meta.json"))]),
+  );
+  const taskPromptOf = new Map(
+    tasks.map((taskId) => [taskId, fs.readFileSync(path.join(TASK_ROOT, taskId, "prompt.md"), "utf8")]),
+  );
+  let cellIdx = 0;
+  async function worker() {
+    while (cellIdx < cells.length) {
+      const { combo, taskId } = cells[cellIdx++];
+      try {
+        const st = await ensureCombo(combo);
+        if (st.error) {
+          // Harness boot failed once: record the error for every remaining
+          // cell of this combo instead of retrying the boot per cell.
+          writeJson(
+            path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "result.json"),
+            {
+              runId: RUN_ID,
+              harness: combo.harness,
+              model: combo.model,
+              task: taskId,
+              verdict: "error",
+              error: st.error,
+            },
+          );
+          console.log(`[${combo.harness}/${combo.model}/${taskId}] ERROR ${st.error}`);
+          continue;
+        }
+        await runTask(combo, taskId, taskMetaOf.get(taskId), taskPromptOf.get(taskId), st.shared);
+      } catch (err) {
+        console.error(`[${combo.harness}/${combo.model}/${taskId}] crashed: ${err?.stack || err}`);
+        writeJson(
+          path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "result.json"),
+          { runId: RUN_ID, harness: combo.harness, model: combo.model, task: taskId, verdict: "error", error: String(err?.stack || err) },
+        );
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(JOBS, cells.length) }, worker));
+  for (const st of comboStates.values()) {
+    if (st.shared?.niffler) {
+      console.log(`stopping niffler harness (${st.combo.model})…`);
+      await st.shared.niffler.stop();
+    }
+  }
   console.log(`bench: done — results in ${RESULTS}`);
   console.log(`bench: report with  node bench/report.mjs --run ${RUN_ID}`);
 }

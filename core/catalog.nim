@@ -137,7 +137,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {
         "sessionId": {"type": "string",
                       "description": "Conversation id (conv-*). Omit or leave empty to summarize the current session"}
-      }
+      },
+      "x-harness": {"onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{

@@ -34,9 +34,13 @@ proc(c: Component, args: JsonNode): JsonNode =
   if messages != nil and messages.kind == JArray and messages.len > 0:
     last = messages[^1]{"content"}.getStr("")
   if last.contains("expert-observation"):
+    # The tools value is markdown-decorated on purpose ("`git_diff`"):
+    # judges habitually wrap names in backticks and the expert must
+    # normalize before validating against the catalog (bench finding:
+    # decorated names silenced good steers).
     return %*{"content":
       "{\"action\":\"steer\",\"message\":\"Use `git_diff` for the next " &
-      "comparison instead of shell git.\",\"tools\":[\"git_diff\"]," &
+      "comparison instead of shell git.\",\"tools\":[\"`git_diff`\"]," &
       "\"confidence\":\"high\",\"reason\":\"dedicated tool exists\"}",
       "model": "mock-model",
       # cached-input breakdown (docs/research/EXPERT.md §8): lets t_expert assert the

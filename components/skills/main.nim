@@ -195,7 +195,7 @@ proc skillJson(s: Skill): JsonNode =
 # --------------------------------------------------------------------------
 # discovery tools
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc skill_list(query: string = "", source: string = ""): JsonNode =
     ## List the skills available on this harness — reusable workflow/
     ## strategy guides (SKILL.md files) from the standard agent skill
@@ -257,7 +257,7 @@ comp.tool(%*{"onDemand": true}):
     %*{"skills": entries, "shadowedCount": shadowed, "invalidCount": invalid,
         "note": "runtime discovery merges to one winner per name; this audit shows every on-disk copy"}
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc skill_load(name: string): JsonNode =
     ## Load a skill's instructions into this conversation and follow it
     ## for the current task. Skills add workflow strategy, not tools. Find

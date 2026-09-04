@@ -17,7 +17,8 @@
       "pi": {
         "provider": "deepseek",
         "model": "deepseek-v4-flash",
-        "apiKeyEnv": "DEEPSEEK_API_KEY"
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "thinking": "low"
       },
       "opencode": {
         "model": "deepseek/deepseek-v4-flash"

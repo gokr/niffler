@@ -359,7 +359,7 @@ proc diffFingerprint(): tuple[fp, diffText: string, empty: bool] =
   result.fp = toLowerAscii($toSHA256(d))
   result.diffText = d
 
-comp.tool(%*{"timeoutMs": 45000}):
+comp.tool(%*{"timeoutMs": 45000, "onDemand": true}):
   proc review_receipt(op: string = "write", findings: string = "", model: string = ""): JsonNode =
     ## Local review receipt for pre-push handoff (CodeWhale borrow,
     ## docs/research/CODEWHALE.md docs/RECEIPTS.md): records WHAT was

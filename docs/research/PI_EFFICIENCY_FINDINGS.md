@@ -311,3 +311,32 @@ per-phase routing policy.
 | Session tree | `core/session-manager.ts`, `core/compaction/branch-summarization.ts` | store: linear `kind=message` sequence |
 | Scoped models / thinking | `core/model-resolver.ts` | `components/llm/main.go` `reasoning_effort` |
 | Serial SDK pump | — | `sdk/niffler/sdk.nim` `run*`/`handleMsg` |
+
+## 7. Bench evidence addendum (2026-09, run full17-2830c91, DeepSeek V4 Flash)
+
+Measured on 17 matched tasks, both harnesses on the same model:
+
+- **First-request prefix (re-measured correctly).** Pi's first request of
+  *every* task hit 640 cached tokens (total ~1150–1260, uncached ~510–620);
+  Niffler hit at most 512 of ~4200 (uncached ~3700). The ~512-token hit =
+  the byte-identical head up to Niffler's runtime-injected
+  `Active workspace: <abs cwd>` line; Pi's head is identical across tasks
+  because only its *tail* (`Current working directory: …`) varies. Fix
+  shipped: baseprompt/systemprompt are now path-free (prompt stays
+  byte-identical across conversations and machines), so the expected next-run
+  divergence point is the user message itself — first-request uncached
+  should drop from ~3700 to ~1200, matching Pi. Watch `cached_tokens` on
+  first assistant messages in the next bench run.
+- **Prompt composition.** Pi's system prompt = 1-sentence identity +
+  one-line tool snippets (24–149 chars each, `dist/core/tools/*.js`) +
+  dynamic guidelines + docs pointers + tail cwd. Niffler's direct toolset
+  carried ~8.9 KB of multi-paragraph schemas for 14 tools. Shipped: 6 tools
+  moved onDemand (8 direct now); the doc-comment-as-description design is
+  kept deliberately (tool-choice prose is Niffler's steering surface) but
+  the *count* is the lever.
+- **Tool-result weight.** Pi's edit ack averages 168 chars; Niffler's
+  averaged 1292 (diff body). Shipped: diff dropped from edit/undo results.
+- **Batching.** Execution-side parity already shipped (waves + bus fan-out,
+  `core/conversation.nim`); the remaining gap is model emission: Pi batched
+  27/85 assistant messages, Niffler 7/83 on the same model. Baseprompt
+  already nudges; no mechanism work pending.

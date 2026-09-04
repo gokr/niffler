@@ -136,17 +136,23 @@ proc main() =
         dir = parentDir(dir)
 
       # --- compose: product prompt + wrapped context files -----------------
-      var prompt = basePrompt.replace("$ROOT", root)
+      # Byte-stability: the composed prompt must not embed machine-specific
+      # absolute paths ($ROOT, cwd) — the prompt is persisted in the
+      # conversation header and its head should stay byte-identical across
+      # conversations for provider prompt-cache reuse. Paths are discoverable
+      # at runtime (pwd, tool results); the file attribute below is
+      # root-relative for the same reason.
+      var prompt = basePrompt
       if cwd != root:
-        prompt &= "\n\n<workspace>\nActive workspace: " & cwd &
-          "\nWorkspace-aware tools resolve relative paths from this directory. " &
-          "Keep all task work inside it.\n</workspace>\n"
+        prompt &= "\n\n<workspace>\nActive workspace: the conversation's working " &
+          "directory — relative paths in tool calls resolve from it (`pwd` " &
+          "prints the absolute path). Keep all task work inside it.\n</workspace>\n"
 
       if files.len > 0:
         prompt &= "\n\n<project_context>\n\n"
         prompt &= "Project-specific instructions and guidelines:\n\n"
         for f in files:
-          prompt &= "<project_instructions path=\"" & f.path & "\">\n"
+          prompt &= "<project_instructions path=\"" & relativePath(f.path, root) & "\">\n"
           prompt &= f.content
           prompt &= "\n</project_instructions>\n\n"
         prompt &= "</project_context>\n"

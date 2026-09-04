@@ -114,7 +114,7 @@ discard comp.tool("put", putSchema,
     discard db.set(revKey(kind, id), $(cur + 1))
     return okResult(%*{"rev": cur + 1}))
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc get(kind: string, id: string): JsonNode =
     ## Fetch a stored document by kind and id. Read-only. Kinds in use:
     ## conversation (id conv-*), message (id <convId>:<n>), component
@@ -126,7 +126,7 @@ comp.tool:
       return errResult("not found", "not-found")
     return okResult(%*{"rev": rev, "value": parseJson(db.get(docKey(kind, id)))})
 
-comp.tool:
+comp.tool(%*{"onDemand": true}):
   proc list(kind: string, idPrefix: string = "", limit: int = 100): JsonNode =
     ## List stored documents of a kind, ordered by id, optionally
     ## id-prefix filtered. Read-only. Enumerate conversations (kind

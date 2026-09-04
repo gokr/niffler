@@ -147,6 +147,11 @@ var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthr
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
 
+# hooks — operator shell commands on selected bus events (off by default in
+# the runtime manifest, but built and tested: t_hooks needs the binary).
+var/bin/hooks: components/hooks/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/hooks/main.nim
+
 # expert — advisory peer (docs/research/EXPERT.md): follows one session, LLM-judged,
 # turn-bound steer. Inert until expert_follow names a target.
 var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -177,7 +182,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
-	var/bin/dialog
+	var/bin/hooks var/bin/dialog
 
 build: components
 

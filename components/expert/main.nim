@@ -327,12 +327,23 @@ proc evaluate(comp: Component) =
     gSilences += 1
     return
   for t in tools:
-    let tool = t.getStr("")
+    # Judges habitually wrap tool names in markdown ("`discover`" as the
+    # JSON string value). Normalize to the bare name before validating
+    # against the catalog — a decorated name must not silence good advice.
+    var tool = t.getStr("").replace("`", "").strip()
+    if tool.contains('.'):
+      # tolerate "component.tool" spellings, like invoke does
+      tool = tool.split('.')[^1]
+    if tool.len == 0:
+      gErrors += 1
+      comp.log("warn", "steer suppressed: empty tool name",
+               %*{"raw": t.getStr("")})
+      return
     if tool notin gLiveTools and tool notin gDiscoverable:
       gErrors += 1
       comp.log("warn", "steer suppressed: unknown tool", %*{"tool": tool})
       return
-    if not message.contains("`" & tool & "`"):
+    if not message.contains("`" & tool & "`") and not message.contains(tool):
       gErrors += 1
       comp.log("warn", "steer suppressed: tool absent from message",
                %*{"tool": tool})

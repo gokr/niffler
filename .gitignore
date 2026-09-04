@@ -33,3 +33,6 @@ nimbledeps
 
 # swebench 4.x scratch (relative logs/ dir; tasks should run under var/)
 logs/
+
+# codewhale agent state (npm package, not repo content)
+.codewhale/

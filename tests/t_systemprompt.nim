@@ -142,15 +142,18 @@ proc main() =
   let directPrompt = direct{"systemPrompt"}.getStr("")
   check("systemprompt answers direct calls",
         directPrompt.contains("self-extending agent harness"), $direct)
-  check("global AGENTS.md wraps into project_context",
+  check("global AGENTS.md wraps into project_context with a root-relative path",
         directPrompt.contains(
-          "<project_instructions path=\"" & root / "AGENTS.md" & "\">"),
+          "<project_instructions path=\"AGENTS.md\">"),
         directPrompt)
   check("AGENTS.md shadows CLAUDE.md in the same directory",
         directPrompt.contains("sandbox agents rules") and
         not directPrompt.contains("stale claude rules"), directPrompt)
-  check("product prompt substitutes $ROOT",
-        directPrompt.contains("Your home is " & root), directPrompt)
+  # Byte-stability: no machine-specific absolute paths in the prompt —
+  # the persisted constitution must stay byte-identical across roots.
+  check("product prompt is path-free (no $ROOT substitution)",
+        directPrompt.contains("harness root") and
+        not directPrompt.contains(root), directPrompt)
 
   # --- workspace ancestor walk: inside root only -----------------------------
   # A context file in an ancestor of cwd is injected while the walk stays
