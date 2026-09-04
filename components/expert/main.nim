@@ -263,8 +263,14 @@ proc sessionVisibleTools(comp: Component, sessionId: string):
       for t in pp{"toolAllowlist"}: result.allowlist.add(t.getStr(""))
     result.allowlisted = result.allowlist.len > 0
   except CatchableError as e:
-    comp.log("warn", "session tool view unavailable",
-             %*{"error": clip(e.msg, 120)})
+    # An armed-before-first-turn follow meets a session that has no
+    # exposure yet: core answers "no conversation" and the SDK raises.
+    # That is the designed fallback path (global direct set until the
+    # first turn start), not an outage — stay quiet. Real failures still
+    # warn.
+    if "no conversation" notin e.msg:
+      comp.log("warn", "session tool view unavailable",
+               %*{"error": clip(e.msg, 120)})
 
 proc skillKnowledge(comp: Component): tuple[text: string, loaded: seq[string]] =
   ## Load the reviewed skill set from the bundled skills component into the

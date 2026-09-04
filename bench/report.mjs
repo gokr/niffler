@@ -68,7 +68,8 @@ results.sort(
     a.task.localeCompare(b.task),
 );
 
-const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+const fmtTok = (n) =>
+  n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(Math.round(n));
 const totalTokens = (r) =>
   (r.tokens?.input || 0) +
   (r.tokens?.output || 0) +
