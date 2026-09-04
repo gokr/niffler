@@ -617,6 +617,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Two-part tool results** — text for the LLM, structure for the bus.
+  Text-oriented tools (bash, git_*, grep, files, edit, write,
+  undo_last_edit, read_many) return a JSON object whose string `text`
+  field is the LLM-facing rendering — session runners put `text`
+  verbatim into the tool message, so transcripts stay lean (`(exit N)`
+  status line + output; `### path` blocks for read_many) — while every
+  other field (`exit_code`, `cancelled`, `spill`, `edits_applied`,
+  `items`, ...) stays machine-readable for fabric programs, tests, UIs
+  and plugins; string-parse coupling to prose is gone. Convention
+  documented in docs/WIRE.md ("Tool results"); UI slash rendering shows
+  `text` first. Bench full17-flat2: −10% tokens deepseek, −34% glm vs
+  5aa8c97.
+
 - **Prompt diet** — lean baseprompt + tool descriptions, pure JSON Schema
   to the LLM: the baseprompt shrinks 1320 → ~460 tokens (the
   component-authoring tutorial moves to `builder.info`'s result, where a

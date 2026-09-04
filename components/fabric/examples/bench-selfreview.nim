@@ -121,9 +121,13 @@ for d in sorted(glob.glob(os.path.join(base, "*__*__*")))[start:end]:
 # ---------------------------------------------------------------- transport
 
 proc textOf(n: JsonNode): string =
-  ## bash results carry an "output" member; tolerate a bare string too.
+  ## LLM-facing rendering of a bash result (WIRE.md "Tool results"): the
+  ## `text` field is what the transcript showed; tolerate a bare string
+  ## result and older shapes too.
   if n == nil: return ""
   if n.kind == JString: return n.str
+  let txt = n{"text"}
+  if txt != nil and txt.kind == JString: return txt.getStr
   let outp = n{"output"}
   if outp != nil and outp.kind == JString: return outp.getStr
   let cont = n{"content"}

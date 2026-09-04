@@ -315,14 +315,18 @@ export async function fetchCompletionValues(source: SlashSource): Promise<string
 // ---- result rendering -------------------------------------------------------
 
 /** Human-first rendering of a registered command's tool result: a string
- * passes through, an object's `summary` field (the plugins' crafted one-line
+ * passes through, an object's `text` (the LLM-facing rendering, WIRE.md
+ * "Tool results") or `summary` field (the plugins' crafted one-line
  * summary, e.g. synthetic_usage) is shown verbatim, anything else
  * pretty-prints as JSON. Raw compact dumps stay only as the fallback —
  * result rendering is the UI's business (docs/WIRE.md). */
 export function formatSlashResult(result: unknown): string {
   if (typeof result === "string" && result !== "") return result;
   if (result && typeof result === "object") {
-    const s = (result as Record<string, unknown>)["summary"];
+    const r = result as Record<string, unknown>;
+    const t = r["text"];
+    if (typeof t === "string" && t !== "") return t;
+    const s = r["summary"];
     if (typeof s === "string" && s !== "") return s;
   }
   try {

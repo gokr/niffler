@@ -118,13 +118,13 @@ let hits = tools.grep(pattern = stringArg("symbol"), path = "core",
 # inspect results as JSON inside the program — the model only
 # sees what `finish` returns
 var files: seq[string] = @[]
-for line in hits{"output"}.getStr().splitLines():
+for line in hits{"text"}.getStr().splitLines():
   let path = line.split(':')[0]
   if path.len > 0 and path notin files: files.add(path)
 
 logg("found " & $files.len & " files")
 
-finish($(%*{"files": files, "matchCount": hits{"output"}.getStr().len}))
+finish($(%*{"files": files, "matchCount": hits{"text"}.getStr().len}))
 ```
 
 What enters the chat: a few file names and a count — not 50 grep lines.

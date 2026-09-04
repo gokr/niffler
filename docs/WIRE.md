@@ -325,6 +325,16 @@ keys:
 
 - Component names: lowercase, hyphens (`hashline-edit`). Tool names: lowercase,
   letters/digits/underscore (LLM function-calling grammar).
+- Tool results are JSON values. A result object carrying a string `text`
+  field is the LLM-facing rendering: session runners put `text` verbatim
+  into the tool message (`role: "tool"`), and nothing else from the result
+  reaches the transcript. Every other field is machine data for bus
+  consumers — fabric programs, tests, UIs, plugins — and must stay stable
+  even when the `text` wording changes. Text-oriented tools follow the
+  `(exit N)` status-line convention as the first line of `text` (non-zero =
+  failure) and repeat the same facts in structured fields (`exit_code`,
+  `cancelled`, `spill`, ...). A bare-string result is rendered as-is; a
+  result without `text` is serialized into the transcript unchanged.
 - Big payloads (tool output > ~64KB): reference, never inline —
   `{"ref": "store://bucket/key"}`; JetStream Object Store later, filesystem
   under `var/store/` for milestone 1.
