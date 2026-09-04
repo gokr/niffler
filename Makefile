@@ -144,6 +144,12 @@ var/bin/cli: components/cli/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod components/llm-openai/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm-openai && go build -o ../../var/bin/llm-openai .'
 
+# nats-server — the bus itself as a first-class component: a faithful rebuild
+# of the official binary (in-process server library), so `make build` alone
+# satisfies the NATS dependency (core prefers it over PATH, core/niffler.nim).
+var/bin/nats-server: components/nats/main.go components/nats/go.mod components/nats/go.sum | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/nats && go build -o ../../var/bin/nats-server .'
+
 var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/models && go build -o ../../var/bin/models .'
 
@@ -191,7 +197,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
-	var/bin/hooks var/bin/dialog
+	var/bin/hooks var/bin/dialog var/bin/nats-server
 
 build:
 	@mkdir -p var/bin; if [ "$$(cat $(MODE) 2>/dev/null)" = "release" ]; then \
@@ -340,6 +346,7 @@ gotest:
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 	cd components/llm-openai && go test ./... && go vet ./...
+	cd components/nats && go test ./... && go vet ./...
 
 # recover: back to factory shape. The repo is the snapshot; var/ is
 # disposable build output. Core's --recover rebuilds binaries from source
@@ -358,7 +365,7 @@ clean:
 # ---------------------------------------------------------------------------
 # prerequisites
 
-setup: install-go install-nim install-nats install-node install-wails install-ui-deps \
+setup: install-go install-nim install-node install-wails install-ui-deps \
        install-natscli install-jq install-zenity
 	@echo "setup done — verify with 'make doctor', then 'make'"
 
@@ -374,7 +381,11 @@ doctor:
 	@echo "Prerequisites:"
 	$(call check_tool,nim,install-nim)
 	$(call check_tool,go,install-go)
-	$(call check_tool,nats-server,install-nats)
+	@if [ -x var/bin/nats-server ] || command -v nats-server >/dev/null 2>&1; then \
+		echo "  nats-server: OK"; \
+	else \
+		echo "  nats-server: built from source by 'make build' (components/nats)"; \
+	fi
 	$(call check_tool,node,install-node)
 	$(call check_tool,npm,install-node)
 	@echo "Optional (bash-written dialog component):"
@@ -416,9 +427,7 @@ install-nim:
 		curl -sSf https://nim-lang.org/choosenim/init.sh | sh; fi
 
 install-nats:
-	@if command -v nats-server >/dev/null 2>&1; then echo "nats-server: already installed"; \
-	else echo "Installing nats-server via go install ..."; \
-		go install github.com/nats-io/nats-server/v2@latest; fi
+	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
 
 # nats CLI + jq + zenity back the bash-written `dialog` component
 # (components/dialog/dialog.sh — optional demo, not autostarted).
