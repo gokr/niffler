@@ -8,6 +8,70 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bench: full17 task set, thinking profiles, CodeWhale lane** — the
+  comparison bench grows to 17 tasks tagged by kind (general / fabric /
+  expert / selfextend; six seeded-bug repairs, a racy worker pool under
+  `-race`, INI/async/log-summary CLI tasks, batch rename, TODO sweep,
+  JSON API fetch, build-a-checker self-extension). A 4th adapter drives
+  CodeWhale headless (`exec --auto`, per-run CODEWHALE_HOME with a
+  provider table rewritten per combo — union, not first-boot freeze);
+  SWE-bench Verified runs as its own subset. A `thinking` config section
+  maps one CLI flag across harnesses — niffler forwards
+  `reasoning_effort`, pi needs `thinkingLevelMap` to send a real "max",
+  opencode uses `--variant`, codewhale writes its config — so `--thinking
+  low|max` multiplies the matrix cleanly.
+
+- **Expert: tool-selection mission, judgment audit** — the expert's job
+  is now keeping the working session on the correct Niffler tool. Its
+  prefix snapshots the observed session's frozen direct exposure and
+  allowlist via `core.prompt_preview` (an allowlisted session is never
+  told about tools it cannot call), is backed by two bundled skills
+  (`niffler-tools`, `niffler-fabric`) loaded from the skills component
+  behind a reviewed allowlist, and demands steers that name component +
+  exact tool + argument shape (or a fabric sketch). Every parsed judgment
+  lands in `ev.log.expert` (silence reasons included), in-flight tool
+  calls read as "RUNNING", and session runners now serve `prompt_preview`
+  / `doctor` (they share `svc.core.call`, so the expert's probes used to
+  land on a runner and fail 5/17 follows).
+
+- **fabric: curated program writes + bench self-review** — the store's
+  `put` is reachable from sessions (onDemand, sessionId-injected,
+  kind-scoped: sessions may write only `fabricprog`; harness-managed
+  kinds are rejected), so the documented curation flow works from a
+  conversation. `bench-selfreview` v2 distills a whole run (136 cells)
+  with an embedded python walker into ~11 calls and reports per-kind
+  aggregates, invalid/missing cells and bash file-inspection/prompt-mass
+  drift flags.
+
+- **`make release`** — `make build` stays debug (fast, runtime checks
+  on); `make release` rebuilds `var/bin` with `-d:release` for benching
+  and production. The mode is stamped in `var/bin/.mode` and a flip
+  wipes the binaries, so nothing stale survives the switch.
+
+- **CI: PR gate** — `pull_request` to main runs the full bus-contract
+  suite on GitHub Actions (hermetic: private NATS + temp NIF_ROOT per
+  test, stub LLM, no API keys), 45-minute job timeout, doc-only PRs
+  skip via paths-ignore.
+
+- **LLM per-request timing telemetry** — one INFO stderr line per chat
+  request: time to first token, total duration, prompt/completion
+  tokens, effective tok/s, reasoning effort and reasoning length,
+  aborted status on stream errors. The supervisor captures it into
+  `var/logs/llm.log` so bench runs can separate provider routing from
+  request shape.
+
+- **UI: human-first slash results, thinking effort "max"** — slash
+  command results render the payload itself (crafted `summary` verbatim,
+  now `text` first after the tool-result change, pretty JSON as
+  fallback), and the per-conversation effort selector cycles
+  auto/low/medium/high/max end to end (session tool → llm
+  `reasoning_effort`).
+
+- **SDK: `jsonx` nil-safe JsonNode helpers** — `jkind`/`isStr`/`isObj`/
+  `isArr`/`listOf`/`jdump` cover the nil-unsafe half of std/json (pure
+  std/json, unit-tested in `t_jsonx`); born from a SIGSEGV on a missing
+  text field.
+
 - **CodeWhale borrows — quick-win batch** (docs/research/CODEWHALE.md):
   techniques adopted from the CodeWhale coding agent (Rust, gemini-cli
   fork). New `hooks` component: operator shell commands on selected bus
@@ -617,6 +681,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Bash discipline in the constitution** — two explicit rules after the
+  SWE-bench tool-use audit (~15% of bash calls were redundant navigation:
+  `cd` into the repo the tool already runs in, `pwd` re-verification,
+  phantom `cd /workspace`) and heavy `cat`/`sed -n` viewing: the bash
+  tool's cwd IS the current workspace (no cd/pwd), and file
+  viewing/searching goes through read/read_many/files/grep, never bash.
+
+- **First-request prefix diet** — the first assistant prompt drops to a
+  path-free baseprompt and an 8-tool direct set (read-only tools stay
+  discoverable); bench-validated on both lanes with zero task losses.
+
 - **Two-part tool results** — text for the LLM, structure for the bus.
   Text-oriented tools (bash, git_*, grep, files, edit, write,
   undo_last_edit, read_many) return a JSON object whose string `text`
@@ -725,6 +800,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **Round-budget exhaustion ends the turn loudly** — a turn hitting
+  `NIF_MAX_TURN_ROUNDS` used to fall off the round loop with no done
+  event, no persisted message and an empty reply: from the outside
+  indistinguishable from a hang (the "runner wedges" during the fabric
+  authoring session). It now mirrors the token/call budget endings:
+  turnError set, error item persisted (the model sees the cutoff on
+  resume), done event emitted.
+
+- **CLOEXEC sweep before every spawn** — the supervisor's /bin/sh spawn
+  pipes were never close-on-exec, so every child inherited all earlier
+  children's parent-side pipe ends (fabric sat at 67 stale fds; children
+  even carried fds from the launching terminal). `cloexecInheritedFds()`
+  runs in supervisor startChild, fabric's runExecutor and procutil
+  runCmd — fabric 72→7 fds, flat across runs; the executor sandbox is
+  now hermetic (RLIMIT_NOFILE=64 no longer tripped on inherited pipes).
+
+- **Parallel waves resolve paths against the conversation workspace** —
+  the `x-harness.parallel` fan-out skipped applyWorkspace, so parallel
+  safe tools (read, read_many, files, grep, git_*) resolved relative
+  paths against the harness root instead of the session workspace (bench
+  transcripts caught DS t06-stackvm reading the 29KB Niffler README
+  instead of the task repo — ~15k wasted tokens).
 
 - **supervisor: a retired session runner could brick its conversation** —
   the rpNever retirement reap deleted `children[i]` instead of the
