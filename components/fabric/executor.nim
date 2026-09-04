@@ -87,8 +87,12 @@ proc setLimit(resource: cint, value: int) =
   discard setrlimit(resource, lim)
 
 proc main =
-  # resource cap before anything heavy: the VM's compile+eval allocation
+  # resource cap before anything heavy: the VM's compile+eval allocation.
+  # Close inherited fds first (a long-lived parent accumulates pipes; the
+  # sandbox must not inherit them — 64 fds is the guest's own budget).
   when defined(linux) or defined(macosx):
+    for fd in 3 ..< 256:
+      discard posix.close(fd.cint)
     setLimit(rlimitCpu, 300)
     setLimit(rlimitNproc, 0)
     setLimit(rlimitNofile, 64)

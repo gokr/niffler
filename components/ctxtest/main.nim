@@ -301,6 +301,30 @@ comp.tool(%*{"hidden": true}):
         # program library: run the stored program by name
         return toolCall("t1", "fabric", %*{"name": "fab-lib-test"})
       return %*{"content": "lib-turn-done"}
+    if sessionId == "fab-curate":
+      if stage == 0:
+        # session-side curation: a live session may populate the library
+        # via invoke put (kind fabricprog) — the store's put tool is
+        # onDemand and kind-scoped for sessions.
+        return toolCall("t1", "invoke", %*{
+          "tool": "put",
+          "arguments": %*{"kind": "fabricprog",
+                           "id": "fab-lib-curated",
+                           "value": %*{"code":
+                             "import fabricguest\n" &
+                             "finish(jobj(jpair(\"curated\", " &
+                             "jesc(\"curated-ok\"))))"}}})
+      if stage == 1:
+        # the kind gate: harness-managed kinds are rejected from sessions
+        return toolCall("t2", "invoke", %*{
+          "tool": "put",
+          "arguments": %*{"kind": "message",
+                           "id": "fab-curate:000999",
+                           "value": %*{"role": "tamper"}}})
+      if stage == 2:
+        # run the program the session just curated, by name
+        return toolCall("t3", "fabric", %*{"name": "fab-lib-curated"})
+      return %*{"content": "curate-done"}
     if sessionId == "fab-batch":
       if stage == 0:
         # bounded batch with effect declarations: the two ctx_sleep items

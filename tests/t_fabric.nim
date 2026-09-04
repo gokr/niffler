@@ -243,6 +243,26 @@ proc main() =
   check("stored program ran by name",
         libTranscript.contains("stored-ok"), libTranscript)
 
+  # session-side curation: a live session populates the library itself via
+  # invoke put (fabricprog), runs the curated program by name, and is
+  # rejected when it tries a harness-managed kind — the documented
+  # "save programs with the store's put tool" flow, end to end.
+  let curTurn = call(nc, "core", "session",
+                     %*{"sessionId": "fab-curate", "content": "go"}, 120_000)
+  check("curation turn completed",
+        curTurn{"reply"}.getStr("") == "curate-done", $curTurn)
+  var curTranscript = ""
+  for i in 1 .. 8:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "fab-curate:" & align($i, 6, '0')}, 10_000)
+    if m{"error"} != nil: break
+    curTranscript.add(m{"value"}{"content"}.getStr(""))
+  check("session curated a program and ran it by name",
+        curTranscript.contains("curated-ok"), curTranscript)
+  check("session put of a harness-managed kind rejected",
+        curTranscript.contains("forbidden-kind"), curTranscript)
+
   # bounded batch: independent calls overlap on the host, one failing item
   # is isolated in its slot, outcomes come back in input order
   var evSub: ptr natsSubscription

@@ -70,16 +70,39 @@ proc getRev(kind, id: string): int =
   if raw.len == 0: return 0
   return raw.parseInt()
 
-comp.tool(%*{"hidden": true}):
-  proc put(kind: string, id: string, value: JsonNode, expectRev: int = 0): JsonNode =
-    ## Upsert a document into the store. Hidden from the LLM: writes are
-    ## made by core on the agent's behalf (conversations, messages,
-    ## spawned component records). expectRev > 0 → fail if the current
-    ## revision differs (optimistic concurrency).
-    ## - kind: Document kind (conversation, message, component, ...)
-    ## - id: Document id within the kind
-    ## - value: The document body (any JSON)
-    ## - expectRev: Require this current revision, or fail with rev-conflict
+# Low-level registration (not the `comp.tool:` macro): sessions may save
+# model-curated documents (kind fabricprog — the fabric name-based
+# library), so the handler needs the raw __session injection to scope
+# writes. Direct bus callers (cli, tests, core-internal clients) carry no
+# session and keep full access.
+let putSchema = toolSchema(%*{
+  "kind": {"type": "string",
+            "description": "Document kind. From a session only curated kinds are writable: 'fabricprog' (programs fabric runs by name)."},
+  "id": {"type": "string",
+        "description": "Document id within the kind (fabricprog: the program name)"},
+  "value": {"type": "object",
+            "description": "The document body (any JSON). fabricprog entries: {code: <program source>}"},
+  "expectRev": {"type": "integer",
+                "description": "Require this current revision, or fail with rev-conflict (default 0 = upsert)"}
+}, required = @["kind", "id", "value"],
+  description = "Save a document into the store. From a session this writes the model-curated program library (kind fabricprog — code of fabric programs, run them with the fabric tool's name parameter; list what exists with store list). Other kinds are harness-managed and rejected from sessions.")
+putSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+discard comp.tool("put", putSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let kind = toolArgs{"kind"}.getStr("")
+    let id = toolArgs{"id"}.getStr("")
+    let value = toolArgs{"value"}
+    let expectRev = toolArgs{"expectRev"}.getInt(0)
+    # Session scoping: the harness manages its own kinds (conversation,
+    # message, component, ...) through the SDK store client; a session may
+    # only curate the model-owned library so no live session can corrupt
+    # transcripts or component records. Direct bus callers (cli, tests)
+    # carry an empty session and keep full access.
+    if toolArgs{"__session"}{"session"}.getStr("").len > 0 and
+        kind != "fabricprog":
+      return errResult(
+        "sessions may only put curated kinds (fabricprog); '" & kind &
+        "' is harness-managed", "forbidden-kind")
     let cur = getRev(kind, id)
     if expectRev > 0:
       if cur == 0:
@@ -89,7 +112,7 @@ comp.tool(%*{"hidden": true}):
                          %*{"currentRev": cur})
     discard db.set(docKey(kind, id), $value)
     discard db.set(revKey(kind, id), $(cur + 1))
-    return okResult(%*{"rev": cur + 1})
+    return okResult(%*{"rev": cur + 1}))
 
 comp.tool:
   proc get(kind: string, id: string): JsonNode =
