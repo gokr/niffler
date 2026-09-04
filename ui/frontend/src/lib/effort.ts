@@ -1,5 +1,5 @@
 // Per-conversation LLM thinking-effort selection, the web twin of the TUI's
-// ctrl+g: "" (provider default, shown as "auto") | low | medium | high.
+// ctrl+g: "" (provider default, shown as "auto") | low | medium | high | max.
 // Persisted per conversation through core's session tool
 // (`core.session {sessionId, thinking}`, a model-only call: no inference),
 // applied by the session runner on the next turn and forwarded to the LLM
@@ -7,9 +7,9 @@
 
 import { send } from "../nats";
 
-export type EffortLevel = "" | "low" | "medium" | "high";
+export type EffortLevel = "" | "low" | "medium" | "high" | "max";
 
-export const EFFORT_CYCLE: EffortLevel[] = ["", "low", "medium", "high"];
+export const EFFORT_CYCLE: EffortLevel[] = ["", "low", "medium", "high", "max"];
 
 export function effortLabel(effort: EffortLevel): string {
   return effort === "" ? "auto" : effort;
