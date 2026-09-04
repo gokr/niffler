@@ -1,0 +1,65 @@
+name: test
+
+# Gate merging to main: the whole bus-contract suite (make test — private
+# NATS server + temp NIF_ROOT per test, no API keys, no live LLM calls;
+# the fetch/plugins tests use a local http server and a file:// git repo).
+# timeout-minutes is load-bearing: a hung test must fail the job, not eat
+# the runner (each Nim test binary has its own per-call NATS timeouts, but
+# a wedge anywhere has historically stalled the loop — see t_agent 2026-09).
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore: ["docs/**", "website/**", "bench/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nim via choosenim, pinned to the version the repo develops against
+      # (niffler.nimble requires >= 2.2.10). Cache the toolchain and the
+      # nimble package store keyed on the .nimble file — first run builds
+      # the deps, later runs reuse them.
+      - name: Install Nim
+        run: |
+          curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+          echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
+
+      - name: Cache nim toolchain + packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.choosenim
+            ~/.nimble
+          key: nim-2.2.10-${{ hashFiles('niffler.nimble') }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install nats-server
+        run: |
+          go install github.com/nats-io/nats-server/v2@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # t_grep/t_files shell out to ripgrep (preinstalled on some runner
+      # images, not guaranteed — install when missing)
+      - name: ripgrep
+        run: "if ! command -v rg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi"
+
+      - name: nimble deps (first build only)
+        run: nimble install -d -y
+
+      - name: make test
+        run: make -j4 test
