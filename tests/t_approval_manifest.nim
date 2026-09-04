@@ -1,4 +1,4 @@
-## Unit tests for program-shaped approval manifests (docs/FABRIC_NEXT.md §8).
+## Unit tests for program-shaped approval manifests (docs/MANUAL.md, "Fabric and subagents").
 
 import std/[json, os, strutils]
 import ../core/approval

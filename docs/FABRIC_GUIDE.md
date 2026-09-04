@@ -2,8 +2,8 @@
 
 This is the *user's* guide: what Fabric is for, how to ask Niffler for it,
 and what a run looks like from your side of the conversation. For the
-design and threat model see [research/FABRIC.md](research/FABRIC.md); for
-the roadmap see [FABRIC_NEXT.md](FABRIC_NEXT.md).
+design and threat model see [research/FABRIC.md](research/FABRIC.md);
+explicitly deferred follow-ups are listed in [PLAN.md](PLAN.md).
 
 ## What Fabric is
 
@@ -86,9 +86,12 @@ If you click "always allow", that decision is stored **per digest**: the same
 program runs freely again, but a *different* program asks again. A blanket
 "approve everything called fabric" is deliberately impossible.
 
-You can also write the program yourself (or paste one from below) and ask the
-model to run it verbatim — then you are the author and already know what you
-approved.
+You can also write the program yourself (or paste one from below) and ask
+the model to run it verbatim — then you are the author and already know
+what you approved. Programs that turn out to be worth keeping can be saved
+to the model-curated library (store kind `fabricprog`) and re-run with
+`fabric {name}` — a stored program that stabilizes should graduate into a
+real component via `builder` + `core.spawn`.
 
 ## A tour of examples
 
@@ -347,7 +350,8 @@ whole run, and a call cannot outlive it.
 ## Shipped examples and tests
 
 - Worked programs (kept executable by the test suite):
-  `components/fabric/examples/` — `pipeline.nim`, `fanout.nim`, `hybrid.nim`.
+  `components/fabric/examples/` — `pipeline.nim`, `fanout.nim`,
+  `hybrid.nim`, `retry-loop.nim`, `bench-selfreview.nim`.
 - The guest API: `components/fabric/fabricguest/fabricguest.nim` (raw bridge
   + JSON helpers) and `fabricmeta.nim` (typed wrappers).
 - End-to-end coverage: `tests/t_fabric.nim` (typed runs, budgets, catalog

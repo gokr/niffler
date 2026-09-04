@@ -559,7 +559,7 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
                      onEvent: proc(kind: string, data: JsonNode) {.closure.},
                      turnId = ""): int =
   ## Pop accepted advisor payloads queued by pumpAdvise (the expert peer,
-  ## EXPERT.md) and append each as a distinctly marked user message into the
+  ## docs/research/EXPERT.md) and append each as a distinctly marked user message into the
   ## running conversation. Like steer, folding keeps the turn alive on early
   ## stop; the "advice" event carries the structured provenance.
   if ct.adviseStream == nil: return 0
@@ -1302,7 +1302,7 @@ func steerSubject*(sessionId: string): string =
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
 
 func adviseSubject*(sessionId: string): string =
-  ## Turn-bound advisory requests from the expert peer (EXPERT.md): answered
+  ## Turn-bound advisory requests from the expert peer (docs/research/EXPERT.md): answered
   ## by the runner's pumpAdvise with {accepted, reason}; advice never leaks
   ## past the named turn.
   "svc.session." & sanitizeSessionId(sessionId) & ".advise"

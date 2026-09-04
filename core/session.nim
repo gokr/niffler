@@ -87,7 +87,7 @@ proc main() =
     stderr.writeLine("session: subscribe " & steerSubjectStr & ": " & getErrorString(sst))
     quit(1)
   ct.steerStream.sub = steerSub
-  # Advisory channel: sync subscribe to svc.session.<id>.advise (EXPERT.md).
+  # Advisory channel: sync subscribe to svc.session.<id>.advise (docs/research/EXPERT.md).
   # pumpAdvise answers each turn-bound advisory request — accepted only while
   # that turn is live — from dispatch's idle slot during a turn and from the
   # main loop while idle, so late advice is rejected, never queued.

@@ -269,7 +269,8 @@ zero-runtime-threat; ours is a real language with a governance gate.
 
 What fabric lacks that their node set has: **fan-in/reduce and gated
 phases** as first-class constructs, and a hard concurrency cap as a
-scheduling concept. FABRIC_NEXT work on orchestration should study this,
+scheduling concept. The deferred-fabric work in docs/PLAN.md (councils,
+map/reduce research) should study this,
 plus their `AUTOMATIC_WORKFLOWS.md` (agent drafts the workflow, shows the
 plan at the current permission mode, runtime compiles and monitors it).
 

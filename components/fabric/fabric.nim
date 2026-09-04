@@ -116,7 +116,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   var logEvents = 0
   var logBytes = 0
   const maxBatchInflight = 4
-    ## Explicit concurrency cap (FABRIC_NEXT Phase 4): at most this many
+    ## Explicit concurrency cap (bounded concurrent batch): at most this many
     ## nested calls are on the bus at once; the rest queue in launch
     ## order. Sequential callTool never queues more than one.
   type Pending = object

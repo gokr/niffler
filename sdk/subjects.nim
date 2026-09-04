@@ -56,5 +56,5 @@ proc sessionToolSubject*(sessionId: string): string =
 
 proc sessionAdviseSubject*(sessionId: string): string =
   ## Turn-bound advisory request/reply subject (expert → runner): accepted
-  ## only while the addressed turn is still live (EXPERT.md).
+  ## only while the addressed turn is still live (docs/research/EXPERT.md).
   "svc.session." & sanitizeSessionId(sessionId) & ".advise"

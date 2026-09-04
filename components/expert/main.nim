@@ -1,4 +1,4 @@
-## expert — the advisory peer (EXPERT.md).
+## expert — the advisory peer (docs/research/EXPERT.md).
 ##
 ## Follows ONE working session on the bus (1:1, best-effort), watches its
 ## ev.session.* events into a bounded in-process observation frame, and asks
@@ -8,7 +8,7 @@
 ## turn-bound `svc.session.<id>.advise` request/reply surface, which the
 ## session runner accepts only while that turn is still live.
 ##
-## Design invariants (EXPERT.md):
+## Design invariants (docs/research/EXPERT.md):
 ## - The working session never waits for expert inference (single advisory
 ##   lane, cooldown, latest-state coalescing).
 ## - No growing expert transcript: every judgment call is stateless — a fixed
@@ -148,7 +148,7 @@ var
   gRejected = 0
   gStaleDrops = 0
   gErrors = 0
-  # judgment token accounting (EXPERT.md §8: measure before claiming a
+  # judgment token accounting (docs/research/EXPERT.md §8: measure before claiming a
   # cache win; cached input is what the knowledge prefix should optimize)
   gTokPrompt = 0
   gTokCached = 0

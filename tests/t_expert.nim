@@ -1,4 +1,4 @@
-## expert advisory peer tests (EXPERT.md).
+## expert advisory peer tests (docs/research/EXPERT.md).
 ##
 ## Boots a sandbox core (store + bash + git) with a test-only mock llm
 ## (tests/mock_llm.nim) and the expert component. One expert follows one

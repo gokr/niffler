@@ -67,7 +67,7 @@ svc.session.<id>.steer # fire-and-forget event envelope {content} injected into 
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)
 svc.session.<id>.advise # turn-bound advisory request/reply (the expert peer,
-                        #   EXPERT.md): {sessionId, turnId, source, content, ...};
+                        #   research/EXPERT.md): {sessionId, turnId, source, content, ...};
                         #   answered {accepted, reason?} — accepted only while
                         #   that exact turn is live (stale-turn, no-active-turn,
                         #   advisory-limit, duplicate, ...); never queued past it

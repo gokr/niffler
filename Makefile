@@ -147,7 +147,7 @@ var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthr
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/agent/main.nim
 
-# expert — advisory peer (EXPERT.md): follows one session, LLM-judged,
+# expert — advisory peer (docs/research/EXPERT.md): follows one session, LLM-judged,
 # turn-bound steer. Inert until expert_follow names a target.
 var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off --path:sdk -o:$@ components/expert/main.nim

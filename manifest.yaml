@@ -143,7 +143,7 @@ components:
     required: false
     restart: on-failure
 
-  # Advisory peer (EXPERT.md): follows one working session on demand,
+  # Advisory peer (docs/research/EXPERT.md): follows one working session on demand,
   # LLM-judged, turn-bound steer. Inert until expert_follow names a target.
   - name: expert
     build: {lang: nim, src: components/expert/main.nim}

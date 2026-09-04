@@ -4,7 +4,8 @@ Everything you need to operate, configure and recover a Niffler harness, plus
 reference chapters for the shipped components. Design rationale lives in
 [research/REBOOT.md](research/REBOOT.md); the wire protocol is
 [WIRE.md](WIRE.md); the core/component boundary is
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md); open work is consolidated in
+[PLAN.md](PLAN.md).
 
 ## Contents
 
@@ -18,6 +19,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
 - [Observation and logs (`observe`, `logfile`)](#observation-and-logs)
+- [Hooks](#hooks)
 - [Fabric and subagents](#fabric-and-subagents)
 - [Expert advisory peer (`expert`)](#expert-advisory-peer-expert)
 - [Recovery](#recovery--recover) · [The store](#the-store) · [Testing](#testing)
@@ -28,9 +30,9 @@ reference chapters for the shipped components. Design rationale lives in
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + session runner (`session.nim`: one process per conversation, the conversation loop) |
-| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `agent`, `fabric`, `observe`, `logfile`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) |
+| `components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `agent`, `fabric`, `expert`, `observe`, `logfile`, `hooks`, `dialog`, `systemprompt`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) + the `llm-openai` swap-in example |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
-| `docs/` | this manual, the wire spec, the core-boundary rationale and `research/` (design history) |
+| `docs/` | this manual, the wire spec (`WIRE.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`PLAN.md`) and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, and `llm` |
 | `var/` | **runtime state, gitignored, disposable** — the repo is the snapshot |
 | `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |
@@ -55,12 +57,12 @@ reference chapters for the shipped components. Design rationale lives in
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `edit` | Nim | optional | the file tools: `read` (plain, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
-| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt) |
-| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small || `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `edit` | Nim | optional | the file tools: `read` (plain, pageable), `read_many` (up to 8 files in one call), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
+| `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
+| `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
-| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match) and `files` (sorted listing); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
+| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -182,6 +184,12 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search` | `16777216` |
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
+| `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `20` |
+| `NIF_RUNNER_IDLE_S` | a session runner with no session call for this long retires; the next call spawns a fresh one (subagent children re-ensure on demand) | `600` |
+| `NIF_WRITE_MAX_BYTES` | cap for the `write` tool's whole-file payload | `900000` |
+| `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
+| `NIF_LOG_MAX_MB` | core's child-log retention cap in `var/logs` (MB) | `200` |
+| `NIF_LOG_RETENTION_DAYS` | days core retains child logs before sweeping | `7` |
 
 Every Niffler variable carries the `NIF_` prefix, so the harness never
 collides with tools that use the bare conventions (`NATS_URL`,
@@ -238,7 +246,9 @@ ev.approval.request    core → UI: {id, tool, args, caller?, fallback?} —
                        # human gate, broadcast (see Approvals below)
 ev.approval.reply      UI → core: {id, ack?} | {id, ok}
 ev.approval.resolved   core → UIs: {id, ok} — gate verdict; dismiss stale modals
-ev.cancel.<call-id>    cancellation signal (components may subscribe)
+cancel.<component>     cancellation side-channel: a runner publishes it when a
+                       turn cancel lands while a dispatch is in flight; bash
+                       kills the command's process group (see WIRE.md)
 ```
 
 **Streaming.** The `llm` component streams tokens while generating:
@@ -279,11 +289,13 @@ install from local git repos (hermetic tests, mirrors).
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
 `bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
-`plugin_install`, `plugin_update`, `plugin_remove`, `skill_install`,
-`skill_remove`, `provider_add`, `provider_update`, `provider_export`,
-`provider_import`, `provider_use_environment`, `write`, `observe_send`,
-`observe_request`, `observe_dump` — are
-gated on a human before they execute:
+`edit`, `write`, `undo_last_edit`, `fabric`, `agent_run`, `agent_spawn`,
+`expert_follow`, `plugin_install`, `plugin_update`, `plugin_remove`,
+`skill_install`, `skill_remove`, `provider_add`, `provider_update`,
+`provider_export`, `provider_import`, `provider_use_environment`,
+`observe_send`, `observe_request`, `observe_dump`, `observe_monitor` —
+are gated on a human before they execute (core also gates its own
+`conversation_delete` surface the same way):
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
   name and arguments; answer `y`/`n` (falls back to the tty prompt only
@@ -808,25 +820,30 @@ current discovery reflects that it is gone.
 
 ### Shipped policy
 
-With the complete shipped manifest, 13 tools are direct:
+With the complete shipped manifest, 8 tools are direct:
 
 - Core: `discover`, `invoke`.
-- Routine work: `bash`, store `get`/`list`, `grep`/`files`, and the file
-  tools `read`/`edit`/`write`/`undo_last_edit` (the `edit` component).
-  Anchored block moves (the niffler-hashline plugin) register
-  `hashline_replace`/`hashline_undo` as onDemand: run `discover`/`invoke`
-  against them once installed.
-- Skill entry points: `skill_list`, `skill_load`.
+- Routine work: `bash`, `files`, and the file tools
+  `read`/`read_many`/`edit`/`write` (the `edit` component).
 
 The long tail is on demand:
 
+- Search and inspection: `grep` (ripgrep-backed, 4 replicas), the git
+  tools, `undo_last_edit`, and the observe/logfile diagnostics.
+- State and introspection: store `get`/`list`, `session_info`, and the
+  skill entry points `skill_list`/`skill_load` (a workflow guide is
+  loaded only when one fits the task).
+- Orchestration: `fabric`, the `agent_*` tools, `expert_follow`.
 - Core lifecycle/status/catalog, builder, plugins, and fetch.
 - Models and provider administration.
-- Observe and logfile diagnostics.
 - Skill resources, online search, install, and remove.
 
-Internal tools remain hidden: core `session`, store `put`/`del`, LLM `chat`,
-and credential-bearing `provider_active`.
+Internal tools remain hidden: core `session`/`session_prepare`, store
+`del`, LLM `chat`/`llm_resolve`, the systemprompt prompt, and the
+credential-bearing provider tools (`provider_update`,
+`provider_use_environment`, `provider_status`, `provider_active`,
+`provider_get`). Store `put` is on demand (it carries
+`x-harness.sessionId` for the frozen-toolset snapshot).
 
 Absent `onDemand` metadata remains direct for third-party compatibility. A
 component spawned after a session starts still does not mutate that session's
@@ -1120,8 +1137,9 @@ their memory.
 | `observe_request` | Diagnostic request/reply to a concrete `svc.*.call`; approval-gated and limited to 30 seconds |
 
 `observe_send` cannot send call/result/error envelopes or registrations.
-`observe_send`, `observe_request`, and the filesystem-mutating `observe_dump`
-carry `x-harness.approval: always`, so an LLM path must pass core's human gate.
+`observe_send`, `observe_request`, `observe_monitor`, and the
+filesystem-mutating `observe_dump` carry `x-harness.approval: always`, so
+an LLM path must pass core's human gate.
 A client talking directly to `svc.observe.call` is already a trusted bus peer
 and bypasses core policy, just as it can call any other service subject directly.
 Generated captures are pruned oldest-first to a byte quota and a 256-file cap.
@@ -1252,14 +1270,11 @@ core-owned bus (primarily useful for tests and diagnostics) — only when
 request. It reports whether subscription detail was truncated; `mostSubscribed`
 means subscriber density, not message throughput.
 
-#All `NIF_OBSERVE_*`, `NIF_LOGFILE_*` and `NIF_LOG_LEVEL` variables are
+All `NIF_OBSERVE_*`, `NIF_LOGFILE_*` and `NIF_LOG_LEVEL` variables are
 listed in the master [Environment variables](#environment-variables) table above.
 
 All bounds are validated at startup; invalid configuration exits non-zero
 rather than silently substituting a default.
-
-All bounds are validated at startup; invalid configuration exits non-zero rather
-than silently substituting a default.
 
 ### Verification
 
@@ -1323,7 +1338,7 @@ guide with nudge phrasing and worked examples:
 ## Expert advisory peer (`expert`)
 
 The `expert` component is a non-interactive advisory peer (design:
-[EXPERT.md](../EXPERT.md)). It follows ONE working session — armed explicitly
+[research/EXPERT.md](research/EXPERT.md)). It follows ONE working session — armed explicitly
 with `expert_follow {session_id}` (approval-gated, off by default) — watches
 that session's `ev.session.*` events into a bounded in-memory current-turn
 frame, and asks an LLM judge (a stateless hidden-`chat` call: fixed
@@ -1388,10 +1403,16 @@ Kinds in use by core:
 
 | Kind | Id | Value |
 |---|---|---|
-| `conversation` | `conv-<ts>` | `{createdAt, model, title}` |
+| `conversation` | `conv-<ts>` | `{createdAt, model, title}` — the conversation header (also carries the frozen system prompt, model/thinking selection, per-session budget controls and token meters) |
 | `message` | `<convId>:<seq>` | `{conversationId, role, content, ...}` |
-| `component` | `<name>` | `{name, binary, policy, addedAt}` |
+| `component` | `<name>` | `{name, binary, policy, addedAt}` — persisted shape restored on boot |
 | `plugin` | `<pkg name>` | `{name, repo, ref, dir, version, components, addedAt}` — install record of the `plugins` component |
+| `provider` | nickname (plus the `active` marker doc) | redacted-at-rest LLM provider registry of the `provider` component |
+| `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discoverydiscoverinvoke)) |
+| `slash` | `slash` | the merged slash-command table UIs render (see [WIRE.md](WIRE.md)) |
+| `agentjob` | `<jobId>` | durable background `agent_spawn` job records |
+| `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata |
+| `fabricprog` | program name | the model-curated fabric program library (`fabric {name}` runs one) |
 
 Backend is an embedded BitBarrel (bitcask-style) at `var/barrel-db`.
 **Exactly one process owns that file** — never run two `store` processes

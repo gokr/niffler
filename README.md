@@ -225,7 +225,8 @@ wins. Service mode (no tty): `NIF_NATS_URL=... NIF_OPENAI_API_KEY=...
 
 ```
 docs/                MANUAL.md (operating guide), WIRE.md (wire protocol),
-                     ARCHITECTURE.md (core boundary), research/ (design history)
+                     ARCHITECTURE.md (core boundary), FABRIC_GUIDE.md,
+                     PLAN.md (open work), research/ (design history)
 manifest.yaml        bootstrap component manifest
 sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
@@ -335,6 +336,9 @@ package installs and its tools work. That cli flow is the preferred way
 to CI any plugin repo — Niffler testing itself.
 
 ## Milestone status
+
+Open work — deferred follow-ups and quests — is consolidated in
+[docs/PLAN.md](docs/PLAN.md).
 
 - [x] wire spec, envelope, Nim + Go + TypeScript SDKs
 - [x] supervisor (spawn/monitor/restart/drain), catalog, dispatch
@@ -461,7 +465,7 @@ to CI any plugin repo — Niffler testing itself.
       the builder compiles `lang: "ts"` components via tsc into a node
       wrapper binary; verified live (builder → spawn → call from Node.js)
 - [x] **progressive tool discovery** — one complete global catalog, but each
-      conversation freezes a small immutable direct toolset (13 shipped);
+      conversation freezes a small immutable direct toolset (8 shipped);
       `discover` returns hints/full schemas into the append-only history and
       `invoke` calls any live non-hidden tool through the normal approval/
       timeout path (docs/MANUAL.md); UI Live Components panel colors
@@ -493,7 +497,7 @@ to CI any plugin repo — Niffler testing itself.
       worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
       `tests/t_agent.nim`, `tests/t_fabric.nim`)
-- [x] **expert advisory peer** (EXPERT.md) — one expert follows one working
+- [x] **expert advisory peer** (docs/research/EXPERT.md) — one expert follows one working
       session: bounded current-turn observation from `ev.session.*`, a
       stateless LLM judgment over a cache-stable knowledge prefix, and a
       turn-bound `svc.session.<id>.advise` request/reply (stale advice
@@ -509,6 +513,8 @@ to CI any plugin repo — Niffler testing itself.
   /provider /provider-strip command routes
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
+
+Tracked in [docs/PLAN.md](docs/PLAN.md); kept here for the flavor:
 
 1. **store-sqlite comparison** — port components/store/main.nim to SQLite
    (e.g. nim-community/libsql), same tools, run both, compare. The contract

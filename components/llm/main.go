@@ -769,7 +769,7 @@ func resultJSON(providerName, model string, ctx int, content, reasoning string,
 			"completion_tokens": usage.CompletionTokens,
 			"total_tokens":      usage.TotalTokens,
 		}
-		// Cache economics (EXPERT.md §8): forward the provider's cached-input
+		// Cache economics (docs/research/EXPERT.md §8): forward the provider's cached-input
 		// breakdown when reported, so callers can measure prompt-cache hits.
 		if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
 			u["prompt_tokens_details"] = map[string]any{

@@ -1,4 +1,4 @@
-## mock_llm — test-only `llm` stand-in (tests/t_expert.nim, EXPERT.md).
+## mock_llm — test-only `llm` stand-in (tests/t_expert.nim, docs/research/EXPERT.md).
 ##
 ## Answers chat deterministically over the bus, no provider, no network:
 ## - a call whose last message carries the "expert-observation" marker is an
@@ -39,7 +39,7 @@ proc(c: Component, args: JsonNode): JsonNode =
       "comparison instead of shell git.\",\"tools\":[\"git_diff\"]," &
       "\"confidence\":\"high\",\"reason\":\"dedicated tool exists\"}",
       "model": "mock-model",
-      # cached-input breakdown (EXPERT.md §8): lets t_expert assert the
+      # cached-input breakdown (docs/research/EXPERT.md §8): lets t_expert assert the
       # expert's token accounting sees prompt-cache hits
       "usage": {"prompt_tokens": 900, "completion_tokens": 30,
                 "total_tokens": 930,
