@@ -46,15 +46,19 @@ and use the `fabric` tool. Exploratory subtasks that need fresh context and
 per-step judgment belong in `agent_run` subagents. Single-step requests
 stay direct.
 
-Your home is $# — the git repo Niffler runs from. Shipped component
-sources: components/, SDKs: sdk/, design docs: docs/, build front door:
-Makefile. var/ is disposable runtime state — gitignored.
+Your home is the harness root — the git repo Niffler runs from. Shipped
+component sources: components/, SDKs: sdk/, design docs: docs/, build
+front door: Makefile. var/ is disposable runtime state — gitignored.
+Run `pwd` for absolute paths.
 
 Be concise.
 """
 
 proc systemPrompt(root: string): string =
-  result = systemPromptFmt % [root]
+  ## Minimal degraded fallback (used only when the systemprompt component is
+  ## absent/slow). Root is accepted for signature compatibility; the prompt
+  ## itself stays path-free for byte stability.
+  result = systemPromptFmt
 
 const systemPromptTimeoutMs = 8_000
   ## Generous: the component only reads a few files, but a first-call compile
@@ -1042,6 +1046,25 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
       commitToolItem(ct, p, messages, exposure, onEvent, sessionId, turnId,
                      it, oc, toolStartedAt, toolDurationMs)
+
+  # The only way out of the round loop without a return is the round budget:
+  # end the turn loudly. A silent empty reply here reads exactly like a hang
+  # — the transcript just stops after the last tool result with no trace of
+  # why (two long authoring turns ended this way and were misdiagnosed as
+  # session-runner deadlocks). Same shape as the token/call budget endings,
+  # plus a persisted error so the model sees the cutoff on the next turn.
+  let msg = "turn round budget exhausted (" & $effMaxRounds &
+            " LLM rounds) — send a follow-up message to continue" &
+            (if maxRounds > 0: "" else: "; raise NIF_MAX_TURN_ROUNDS for longer turns")
+  turnError = msg
+  p.persistMsg(%*{"role": "error", "content": msg, "error": "rounds",
+                 "turnId": turnId},
+               %*{"rounds": rounds})
+  if onEvent != nil:
+    onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                       "error": msg})
+  emitTurnDone(msg)
+  return msg
 
 # ---------------------------------------------------------------------------
 # Session service — core as a component for UIs (svc.core.call, tool "session")

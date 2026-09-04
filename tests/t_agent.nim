@@ -459,7 +459,9 @@ proc main() =
 
   # --- round budget: maxRounds caps the child's tool rounds -----------------
   # Two rounds run (depth-guard attempt, bash) and the scripted final round
-  # never happens; the turn ends as budget-exhausted (turnError, no reply).
+  # never happens; the turn ends budget-exhausted and LOUD: the child's
+  # transcript carries the persisted error (a silent empty reply here read
+  # exactly like a runner hang when long turns hit the default budget).
   let roundsParent = "agt-rounds"
   discard call(nc, "core", "session",
                %*{"sessionId": roundsParent, "content": "go"}, 120_000)
@@ -468,6 +470,8 @@ proc main() =
         roundsChild.text.contains("agent-ok"), roundsChild.text)
   check("round-budget child stopped before its final round",
         not roundsChild.text.contains("subagent-done"), roundsChild.text)
+  check("round-budget exhaustion is persisted and explicit",
+        roundsChild.text.contains("round budget exhausted"), roundsChild.text)
 
   # --- call budget: maxCalls caps the child's total tool dispatches --------
   # The depth-guard attempt spends the budget of 1; the scripted bash round
