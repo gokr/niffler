@@ -526,6 +526,14 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           discovered.add(t{"name"}.getStr(""))
         info["directTools"] = %direct
         info["discoveredTools"] = %discovered
+      # The frozen tool allowlist (subagent scoping) also shapes what the
+      # conversation can actually reach — the expert advisory peer reads it
+      # here to keep its steers session-visible.
+      let allow = header{"value"}{"toolAllowlist"}
+      if allow != nil and allow.kind == JArray:
+        var allowlist: seq[string] = @[]
+        for t in allow: allowlist.add(t.getStr(""))
+        info["toolAllowlist"] = %allowlist
       for f in ["model", "modelOverride", "provider", "thinkingEffort"]:
         if header{"value"}{f} != nil:
           info[f] = header{"value"}{f}

@@ -61,12 +61,13 @@ proc stopHard(p: var Process) =
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for bin in ["niffler", "session", "store", "bash", "git", "expert"]:
+  for bin in ["niffler", "session", "store", "bash", "git", "expert",
+              "skills"]:
     if not fileExists(repoRoot / "var" / "bin" / bin):
       fail("missing binary " & bin & " — run `make build` first")
       quit(1)
   let sandbox = newCoreSandbox("expert", ["store", "bash", "git", "llm",
-                                          "expert"])
+                                          "skills", "expert"])
   let root = sandbox.root
   echo "sandbox root: ", root
   # Replace the copied real llm binary with the test-only mock (no provider,
@@ -109,6 +110,7 @@ proc main() =
   check("store registered", waitComponent(nc, "store"))
   check("mock llm registered", waitComponent(nc, "llm"))
   check("git registered", waitComponent(nc, "git"))
+  check("skills registered", waitComponent(nc, "skills"))
   check("expert registered", waitComponent(nc, "expert"))
 
   # Watch the turn lifecycle events for the session we are about to run.
@@ -172,6 +174,13 @@ proc main() =
   check("expert token accounting reports cached input",
         status{"tokens"}{"cached"}.getInt(0) >= 800 and
         status{"tokens"}{"prompt"}.getInt(0) >= 900, $status)
+  # The knowledge prefix embeds the reviewed bundled skills (the sandbox
+  # runs the real skills component, so the load path is exercised end to
+  # end) — the judge's steer guidance comes from them.
+  check("expert loaded the reviewed skills",
+        status{"skills"} != nil and status{"skills"}.getElems().len == 2,
+        $status)
+  let v1 = status{"knowledgeVersion"}.getStr("")
 
   # Turn-bound guarantee: after the turn, a late advise is rejected, never
   # queued into the next turn.
@@ -182,6 +191,48 @@ proc main() =
         $late)
   check("late advise reason",
         late{"reason"}.getStr("") in ["no-active-turn", "stale-turn"], $late)
+
+  # Scenario 2 — session-visible knowledge: a session frozen with a tool
+  # allowlist of ["bash"] cannot reach git_diff (the allowlist gates even
+  # discover/invoke), so the mock's git_diff steer must be suppressed as
+  # not visible. The expert armed at follow time has no exposure to read
+  # yet (the session has never run a turn), falls back to the global direct
+  # set, and must rebuild at the first turn start — the suppression proves
+  # the rebuild happened with the allowlist applied.
+  sleep(9000)  # EvalCooldownMs spacing: this turn needs its own judgment
+  let s2 = "conv-expert-" & $int(epochTime())
+  let follow2 = call(nc, "expert", "expert_follow",
+                     %*{"session_id": s2}, 15_000)
+  check("expert_follow s2 ok", follow2{"ok"}.getBool(false), $follow2)
+  let turn2 = call(nc, "core", "session",
+                   %*{"sessionId": s2, "content": "Show me the diff",
+                      "tools": ["bash"]}, 120_000)
+  check("s2 turn ok", turn2{"error"} == nil, $turn2)
+  sleep(500)  # let the expert finish the judgment the turn triggered
+  let status2 = call(nc, "expert", "expert_status", %*{}, 10_000)
+  check("s2 steer suppressed as not session-visible",
+        status2{"steers"}.getInt(0) == 1, $status2)
+  check("s2 suppression counted", status2{"errors"}.getInt(0) >= 1, $status2)
+  check("s2 turn-start rebuild changed the knowledge version",
+        status2{"knowledgeVersion"}.getStr("") != v1, $status2)
+
+  # Scenario 3 — tool-change gate: a steer naming only tools already in the
+  # activity frame (the worker is mid-bash) is repetition, not a correction.
+  # The expert must suppress it structurally, without any phrase matching.
+  sleep(9000)  # cooldown spacing, as above
+  let s3 = "conv-expert-" & $int(epochTime())
+  let follow3 = call(nc, "expert", "expert_follow",
+                     %*{"session_id": s3}, 15_000)
+  check("expert_follow s3 ok", follow3{"ok"}.getBool(false), $follow3)
+  let turn3 = call(nc, "core", "session",
+                   %*{"sessionId": s3, "content": "Run the build"}, 120_000)
+  check("s3 turn ok", turn3{"error"} == nil, $turn3)
+  sleep(500)
+  let status3 = call(nc, "expert", "expert_status", %*{}, 10_000)
+  check("s3 steer suppressed by the tool-change gate",
+        status3{"steers"}.getInt(0) == 1, $status3)
+  check("s3 suppression counted as silence",
+        status3{"silences"}.getInt(0) >= 1, $status3)
 
   report("EXPERT")
 

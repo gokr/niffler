@@ -2,15 +2,26 @@
 
 Design sketch for a **non-interactive advisory peer** that follows one working
 session on the bus and occasionally injects a steer when a separate LLM judges
-that the working agent is not fully exploiting Niffler. Status: **phase 1
-implemented** — the turn-bound wire surfaces (`ev.session.turn`, `turnId`
-correlation, `svc.session.<id>.advise`) and the 1:1 `expert` component with
-the LLM judgment contract and fail-closed delivery (`tests/t_expert.nim`,
-mock-llm driven). Cached-token plumbing is in place: the `llm` adapter
-forwards `prompt_tokens_details.cached_tokens`, core passes usage through,
-and `expert_status` accumulates judgment prompt/cached/completion tokens.
-Not yet built: judgment quality tuning against a real model, and anything
-beyond one target session.
+that the working agent is not fully exploiting Niffler. Status: **phase 2** —
+the turn-bound wire surfaces (`ev.session.turn`, `turnId` correlation,
+`svc.session.<id>.advise`), the 1:1 `expert` component with the LLM judgment
+contract and fail-closed delivery (`tests/t_expert.nim`, mock-llm driven), and
+a knowledge prefix rebuilt around **tool-selection correctness**: the judge's
+mission is to keep the working session on the correct Niffler tool, the prefix
+carries the OBSERVED SESSION's own tool view (frozen direct exposure + frozen
+allowlist via `core.prompt_preview`, on-demand hints via `discover` — never
+the global LLM toolset, which overstates what an older or allowlisted session
+can call), plus the reviewed bundled skills `niffler-tools` (when to use every
+core component/tool) and `niffler-fabric` (how to construct fabric programs).
+Because the prefix is cached per follow it may fill up to 80% of the judge's
+context window (resolved via `llm.llm_resolve`, minus a reserve for the
+observation); a steer may therefore carry real how-to — component AND exact
+tool to invoke, invocation argument shape, or a minimal fabric program
+sketch. Cached-token plumbing is in place: the `llm` adapter forwards
+`prompt_tokens_details.cached_tokens`, core passes usage through, and
+`expert_status` accumulates judgment prompt/cached/completion tokens.
+Not yet built: judgment quality tuning against a real model at this new
+prefix size, and anything beyond one target session.
 
 The working session should keep its small frozen direct toolset and
 task-focused transcript, as described in
@@ -68,38 +79,56 @@ persisted conversation process.
 
 The fixed system prefix contains reviewed, model-facing knowledge:
 
-- the restrictive advisory policy in section 5;
-- the direct/on-demand/hidden tool model and the `discover` + `invoke`
-  workflow;
-- live **non-hidden** component and tool descriptions captured at
-  initialization;
-- the self-extension path: inspect the ecosystem first, then write source,
-  `builder.build`, `core.spawn`, and `discover`;
-- plugin and skill discovery, including `plugin_search`-before-build;
-- file-tool selection (`grep`/`files`, `read`/`edit`/`write`, read-only git
-  tools, and when `bash` remains appropriate);
-- context-economy guidance: keep large mechanical work out of the working
-  transcript and spill oversized output;
-- the fabric/subagent when-to-use matrix from
-  [FABRIC.md](docs/research/FABRIC.md): direct loop for adaptive one-step work,
-  `fabric` for mechanical known-shape orchestration and context isolation, and
-  `agent_run` for exploratory work needing a fresh context. Fabric fan-out is
-  currently sequential, not a parallel-speed mechanism.
+- the restrictive advisory policy in section 5, framed around the mission:
+  tool selection — the judge's only job is to keep the worker on the correct
+  Niffler tool for the job;
+- the **reviewed bundled skills** `niffler-tools` and `niffler-fabric`,
+  loaded from the `skills` component at build time. The `SkillAllowlist`
+  const IS the trust boundary: only those names load, and only when the
+  returned copy's source is `bundled` — a project/home skill shadowing a
+  bundled name is refused and the static fallback knowledge takes its
+  place. `niffler-tools` is the when-to-use authority for every core
+  component and tool (edit vs write, files vs grep, git_* vs shell git,
+  bash's remaining jobs, discover/invoke, plugins, skills, self-extension,
+  agent_run/fabric matrix); `niffler-fabric` is the guest-program
+  construction authority (imports, typed mode, callTool, batch, logg,
+  finish, patterns, budgets, pitfalls) — this is what lets a steer sketch a
+  working fabric program instead of saying "use fabric";
+- the **observed session's own tool view**: its frozen direct tool names and
+  frozen tool allowlist via `core.prompt_preview` (read-only store
+  provenance), joined with global catalog descriptions, plus on-demand
+  hints from `discover` filtered by the same allowlist. The global LLM
+  toolset is NOT advertised: a session created before a component existed,
+  or frozen with an allowlist, cannot call tools outside its own view, and
+  the expert must not recommend them. An expert armed before the session's
+  first turn has no exposure yet — it falls back to the global direct set
+  and rebuilds at the first turn start (the exposure and allowlist are
+  frozen there, so later turns no-op);
+- the self-extension path, plugin/skill discovery, file-tool selection,
+  context-economy and fabric/subagent guidance — these live in the skills;
+  the static fallback block (used when the skills component is absent, e.g.
+  `--minimal`) carries the same content in condensed form.
 
 The prefix must not contain hidden tool schemas. `x-harness.hidden` means
 invisible to an LLM, including the expert LLM. A full catalog snapshot may be
 used as local component data, but only its non-hidden projection may enter the
 prompt.
 
-Skills are not trusted merely because their names begin with `niffler-`.
-Additional skill content must come from a reviewed allowlist. The expert records
-a canonical knowledge version/hash so diagnostics and cache measurements can
-identify the exact prefix used.
+**Prefix sizing.** The prefix is sent on every judgment but cached per follow,
+so the economics favor filling deep: the budget is 80% of the judge's resolved
+context window (`llm.llm_resolve`, honoring the follow's model/provider
+overrides) minus a fixed reserve (`PrefixObsReserveTokens`) for the
+observation and the verdict. Over budget, tool descriptions shrink first
+(lowest value per byte) and only as a last resort the tail is truncated with
+an explicit marker. An unresolvable context window means no budget: everything
+loads. `expert_status` reports prefix size, budget, and loaded skills so cache
+economics stay measurable.
 
-Knowledge is static between explicit reloads. A newly installed component does
-not silently mutate the prefix. `expert_reload` rebuilds the reviewed projection
-and starts a new cache epoch. Until then, concise current live-tool information
-may be included in the variable observation suffix when needed.
+Knowledge is static between explicit reloads and the turn-start rebuilds
+described above. `expert_reload` rebuilds the reviewed projection (including
+re-reading the skills) and starts a new cache epoch. The expert records a
+canonical knowledge version/hash so diagnostics and cache measurements can
+identify the exact prefix used.
 
 ## 3. Observation contract
 
@@ -162,17 +191,18 @@ For its target, the expert keeps one bounded in-process observation frame:
   "assistantText": "...",
   "reasoning": "...",
   "context": {"usedTokens": 42000, "limit": 128000},
-  "liveRelevantTools": [
-    {"name": "git_diff", "description": "..."}
-  ]
+  "visibleTools": {"discovered": ["git_diff", "grep"]}
 }
 ```
 
 Bounds are mandatory. Keep the current user request, the latest assistant text,
 a capped reasoning tail, a small number of recent tool activities, truncated
-arguments/results, and current context occupancy. Do not retain completed turns
-or forward full tool results to the expert provider. Raw evidence remains local
-unless it survives explicit size and redaction rules.
+arguments/results, current context occupancy, and the names of on-demand tools
+the session has already discovered (the direct set lives in the prefix; the
+discovered list is the only part of the tool view that can change mid-session).
+Do not retain completed turns or forward full tool results to the expert
+provider. Raw evidence remains local unless it survives explicit size and
+redaction rules.
 
 ## 4. Best-effort scheduling
 
@@ -227,41 +257,58 @@ or:
 
 ```json
 {
+```json
+{
   "action": "steer",
-  "message": "Use `git_diff` for the next comparison instead of another shell diff.",
+  "message": "discover the git component and invoke `git_diff` with
+              {repo: ".", args: ["HEAD~1"]} for the next comparison instead
+              of another shell diff.",
   "reason": "The working session is manually reproducing a live dedicated tool.",
   "tools": ["git_diff"],
-  "sources": ["git_diff schema"],
   "confidence": "high"
 }
 ```
 
+A steer toward `fabric` carries a minimal program sketch (imports, tool
+calls, `finish()` return) drawn from the embedded `niffler-fabric` skill —
+the judge never says "use fabric" without showing the program.
+
 The fixed policy tells the model:
 
+- **Mission: tool selection.** The judge's only job is to keep the working
+  session on the correct Niffler tool for the job — which harness mechanism
+  should do the work, and how to reach it. Task strategy (what to
+  implement, which file to edit, when to run tests) is the worker's job on
+  any harness and is always silent.
 - Silence is healthy. Speak only when advice is high-confidence and likely to
   change the next action materially.
 - Judge the working approach, not the user. Never reinterpret, replace, or
   correct the user's request.
-- Advice is additive and actionable. Name the concrete next mechanism rather
-  than saying "use better tools."
+- Name the exact mechanism: for on-demand tools, the component AND the tool
+  to invoke, with the invocation's argument shape; for fabric, a program
+  sketch. "Use better tools" is not advice.
+- Only tools in the observation's session-visible listings are steerable;
+  an allowlisted session cannot reach anything outside its list, not even
+  via discover.
 - Do not interrupt a valid approach merely because an alternative exists.
-- Judge harness usage only: task-strategy advice (what to implement, which
-  file to edit, when to run tests) is always silent — that is the working
-  agent's job, not the expert's.
 - Do not repeat advice already present in the observation.
-- Never recommend a hidden, absent, or incompatible tool.
-- Fabric is for mechanical known-shape orchestration and context isolation, not
-  arbitrary shell work or promised parallel speed.
-- The expert may suggest approval-gated work, but it never performs that work;
-  the working session's normal human approval remains authoritative.
+- The expert may suggest approval-gated work, but it never performs that
+  work; the working session's normal human approval remains authoritative.
 - Return `silent` when evidence is incomplete, stale, ambiguous, or merely a
   style preference.
 
 The component validates the response. Unknown actions, malformed JSON,
 oversized messages, non-high-confidence steers, a missing/empty `tools` array,
-any non-live/non-hidden tool, a tool not named verbatim in backticks in the
-message, model errors, and timeouts all become silence. This validation is
-delivery policy, not a behavioral heuristic.
+any tool not in the observed session's visible set, a tool not named verbatim
+in backticks in the message, model errors, and timeouts all become silence.
+One further gate is **observation-grounded, not phrase-matched**: the steer
+must name at least one tool the worker is not already using in the current
+activity frame — a steer that only repeats the worker's current toolset is
+task-strategy or repetition, never a tool change. (The earlier English phrase
+blacklist — "run the tests", "read the file" — was removed: those steers can
+only name tools already in the frame, so the structural check catches them
+without matching words.) This validation is delivery policy, not a behavioral
+heuristic.
 
 Observations and model judgments are not appended to subsequent expert calls.
 Every call starts again with the identical system prefix and one current
@@ -316,7 +363,8 @@ Initial delivery limits:
 
 - at most one accepted expert steer per working turn;
 - no repeated advice hash within the bound session;
-- a strict message length cap;
+- a strict message length cap (1200 chars — room for a program sketch or
+  invocation args, not just a tool name);
 - no delivery after the turn changes;
 - no automatic action by the expert.
 
@@ -326,7 +374,7 @@ The component is registered with `client: false` and exposes administrative,
 on-demand controls:
 
 ```nim
-let comp = newComponent("expert", "0.1.0")
+let comp = newComponent("expert", "0.2.0")
 
 comp.tool:
   proc expert_follow(session_id: string, model: string = "",
@@ -340,13 +388,15 @@ comp.tool:
 
 comp.tool:
   proc expert_reload(): JsonNode =
-    ## Rebuild the reviewed non-hidden knowledge prefix and begin a new cache
-    ## epoch. Does not change the followed working session.
+    ## Rebuild the reviewed non-hidden knowledge prefix (including the
+    ## bundled skills) and begin a new cache epoch. Does not change the
+    ## followed working session.
 
 comp.tool:
   proc expert_status(): JsonNode =
     ## Report target session, active turn, inference state, model, knowledge
-    ## version, usage, last decision, accepted advice, and stale drops.
+    ## version, loaded skills, prefix size/budget, usage, last decision,
+    ## accepted advice, and stale drops.
 ```
 
 `expert_follow` is explicit and off by default. Its schema should be on-demand
@@ -396,44 +446,58 @@ categories, and bounded redacted previews only when explicitly enabled.
 - **Reasoning volume:** reasoning tokens can dwarf the useful evidence. Keep a
   capped tail and prefer the final reasoning field when available.
 - **Knowledge churn:** reloads invalidate the stable prefix. Make them explicit,
-  versioned, and infrequent.
+  versioned, and infrequent — the turn-start rebuild only fires when the
+  session's visible tool set or allowlist actually changed (practically: the
+  first turn after an early follow).
+- **Skill shadowing:** a project/home skill with the same name as a bundled
+  one wins in the skills component's search order. The expert refuses any
+  copy whose source is not `bundled` — the allowlist alone is not enough.
 - **Prompt injection:** working-session content and external skills are
-  untrusted model input. Delimit observations as evidence, use a reviewed skill
-  allowlist, and prevent the expert from acquiring tools or action surfaces.
+  untrusted model input. Delimit observations as evidence, use the reviewed
+  skill allowlist + bundled-source check, and prevent the expert from
+  acquiring tools or action surfaces.
 - **Approvals:** advice may suggest `core.spawn`, plugin installation, or another
   approved operation, but only the working session can request it through the
   normal approval gate.
 - **Provider privacy:** following a session sends its bounded current-turn
   evidence to the expert's configured provider. `expert_follow` must make that
   explicit to the human.
-- **Cache economics:** a large prefix has a cold-start cost and cached input is
-  not necessarily free. Measure before broadening the knowledge bundle.
+- **Cache economics:** the deep prefix (skills + tool hints, up to 80% of the
+  judge context) has a cold-start cost and cached input is not necessarily
+  free. The budget trim and `expert_status` prefix metrics exist to measure
+  it; re-tune `PrefixFillRatio`/`PrefixObsReserveTokens` from observed
+  cache-hit and latency data before broadening the knowledge bundle further.
+- **Steer length:** a 1200-char steer (fabric sketch) is real content folded
+  into the worker's history. One accepted steer per turn and the
+  tool-change gate bound the damage; watch the bench's expert columns for
+  noise before raising the cap again.
 
-## 10. First build
-
-Minimal honest prototype, in order:
+## 10. Build history
 
 1. Add `turnId` and `ev.session.turn` to the session event contract; propagate
-   `turnId` through existing events and preserve structured tool errors.
+   `turnId` through existing events and preserve structured tool errors. (done)
 2. Add the turn-bound `svc.session.<id>.advise` request/reply path, structured
-   provenance, persistence metadata, and stale-turn rejection tests.
+   provenance, persistence metadata, and stale-turn rejection tests. (done)
 3. Build the one-target `expert_follow`/`unfollow`/`status` component with a
-   bounded current-turn observation and latest-state coalescing.
+   bounded current-turn observation and latest-state coalescing. (done)
 4. Build a reviewed, non-hidden, versioned knowledge prefix containing the
    discovery, tool-selection, plugin, skill, self-extension, fabric, and
-   subagent guidance.
+   subagent guidance. (done — now session-scoped: frozen exposure +
+   allowlist via `core.prompt_preview`, skills via the bundled allowlist)
 5. Call the hidden `chat` tool directly with the fixed prefix plus one ephemeral
    observation. Give the model no tools and validate the `silent|steer` JSON
-   contract.
+   contract. (done)
 6. Run live with one expert following one normal session. Verify that inference
    never delays the working turn, late answers are discarded, and accepted
-   advice appears with clear provenance.
+   advice appears with clear provenance. (done)
 7. Expose cached-token usage where the provider reports it, then measure cold
    prefix cost, cache hits, completion cost, inference latency, silence rate,
-   accepted advice, and stale-drop rate.
+   accepted advice, and stale-drop rate. (plumbing done; the deep-prefix
+   measurements at 80% fill are open)
 8. Tune the knowledge and policy prompt from observed judgment quality. Do not
    add multi-session following until the 1:1 design has useful precision and
-   understandable cost.
+   understandable cost. (in progress — mission reframe + skill-backed
+   knowledge landed; live-judgment tuning remains)
 
 The architecture is validated when an expert can follow one live session,
 remain silent during reasonable work, occasionally deliver a useful steer in

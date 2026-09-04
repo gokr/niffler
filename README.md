@@ -499,10 +499,13 @@ Open work — deferred follow-ups and quests — is consolidated in
       `tests/t_agent.nim`, `tests/t_fabric.nim`)
 - [x] **expert advisory peer** (docs/research/EXPERT.md) — one expert follows one working
       session: bounded current-turn observation from `ev.session.*`, a
-      stateless LLM judgment over a cache-stable knowledge prefix, and a
-      turn-bound `svc.session.<id>.advise` request/reply (stale advice
-      rejected, never queued into a later turn); core emits `ev.session.turn`
-      and `turnId`-correlated session events; silent by default, fail-closed
+      stateless LLM judgment over a cache-stable knowledge prefix (reviewed
+      bundled skills `niffler-tools`/`niffler-fabric` plus the observed
+      session's own frozen tool view, filling up to 80% of the judge
+      context), and a turn-bound `svc.session.<id>.advise` request/reply
+      (stale advice rejected, never queued into a later turn); steers are
+      tool-selection corrections — component + exact tool to invoke, or a
+      fabric program sketch; silent by default, fail-closed
       (`tests/t_expert.nim` with a scripted mock llm)
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [x] Web UI TUI-parity features: slash commands (built-ins + the plugin

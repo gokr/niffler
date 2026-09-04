@@ -2,20 +2,24 @@
 ##
 ## Answers chat deterministically over the bus, no provider, no network:
 ## - a call whose last message carries the "expert-observation" marker is an
-##   expert judgment: answers with a steer JSON naming git_diff (the sandbox
-##   runs the real git component, so the expert's tool validation passes);
-## - the first working turn round returns a scripted bash tool_call, which
-##   keeps the turn in its tool loop long enough for the expert to judge and
-##   deliver turn-bound advice mid-turn;
+##   expert judgment. The steer is keyed by the observed user request:
+##   requests containing "diff" get a git_diff steer (the sandbox runs the
+##   real git component, so the session-visible validation passes for an
+##   unrestricted session); requests containing "build" get a bash steer
+##   naming only the tool already in the activity frame — the expert's
+##   tool-change gate must suppress it;
+## - the first round of each working session returns a scripted bash
+##   tool_call, which keeps the turn in its tool loop long enough for the
+##   expert to judge and deliver turn-bound advice mid-turn;
 ## - every later working round returns the final reply "working-done".
 ##
 ## The mock replaces var/bin/llm inside the test sandbox only.
 
-import std/[json, strutils]
+import std/[json, strutils, tables]
 import niffler/sdk
 
 let comp = newComponent("llm", "0.1.0-mock")
-var workingRounds = 0
+var workingFirstRound = initTable[string, bool]()
 
 discard comp.tool("chat", %*{
   "type": "object",
@@ -38,18 +42,24 @@ proc(c: Component, args: JsonNode): JsonNode =
     # judges habitually wrap names in backticks and the expert must
     # normalize before validating against the catalog (bench finding:
     # decorated names silenced good steers).
-    return %*{"content":
-      "{\"action\":\"steer\",\"message\":\"Use `git_diff` for the next " &
-      "comparison instead of shell git.\",\"tools\":[\"`git_diff`\"]," &
-      "\"confidence\":\"high\",\"reason\":\"dedicated tool exists\"}",
-      "model": "mock-model",
+    var steer = "{\"action\":\"steer\",\"message\":\"Use `git_diff` for the " &
+      "next comparison instead of shell git.\",\"tools\":[\"`git_diff`\"]," &
+      "\"confidence\":\"high\",\"reason\":\"dedicated tool exists\"}"
+    if last.contains("build"):
+      # Names only the tool already in the activity frame: the tool-change
+      # gate must suppress this as repetition, not a change of tool.
+      steer = "{\"action\":\"steer\",\"message\":\"Use `bash` to run the " &
+        "build.\",\"tools\":[\"bash\"],\"confidence\":\"high\"," &
+        "\"reason\":\"bash fits\"}"
+    return %*{"content": steer, "model": "mock-model",
       # cached-input breakdown (docs/research/EXPERT.md §8): lets t_expert assert the
       # expert's token accounting sees prompt-cache hits
       "usage": {"prompt_tokens": 900, "completion_tokens": 30,
                 "total_tokens": 930,
                 "prompt_tokens_details": {"cached_tokens": 800}}}
-  workingRounds += 1
-  if workingRounds == 1:
+  let sessionId = args{"sessionId"}.getStr("")
+  if not workingFirstRound.getOrDefault(sessionId, false):
+    workingFirstRound[sessionId] = true
     # The scripted bash call sleeps: it is the expert's delivery window. The
     # runner pumps svc.session.<id>.advise from dispatch's idle slot while
     # the tool call is in flight, so a mid-turn advisory is accepted here.
