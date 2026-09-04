@@ -18,23 +18,41 @@ import { run, parseJsonLines, zeroUsage, addUsage } from "../lib/util.mjs";
 // developer's real ~/.codewhale and hosts the custom-provider tables
 // (llmgateway is not a native provider; deepseek is). Sessions are
 // workspace-scoped, so sharing the home across combos is safe. The config
-// table is written once, from config.json's codewhale.providers map.
+// is the UNION of every combo's codewhale.providers seen so far: the first
+// combo to boot must not freeze an empty config for the others (that bug
+// cost a whole glm codewhale column — deepseek booted first, wrote an
+// empty config.toml, and every llmgateway cell then failed provider
+// resolution in 1s × 6 rounds).
 let homePromise = null;
+const providerTables = new Map();
+function writeConfig(home) {
+  const lines = [];
+  for (const [id, table] of providerTables) {
+    lines.push(`[providers.${id}]`);
+    for (const [k, v] of Object.entries(table)) {
+      lines.push(`${k} = ${JSON.stringify(v)}`);
+    }
+    lines.push("");
+  }
+  fs.writeFileSync(path.join(home, "config.toml"), lines.join("\n"));
+}
 function cwHome(modelCfg) {
   if (!homePromise) {
     homePromise = new Promise((resolve) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "niffler-bench-cw-"));
-      const lines = [];
-      for (const [id, table] of Object.entries(modelCfg.providers || {})) {
-        lines.push(`[providers.${id}]`);
-        for (const [k, v] of Object.entries(table)) {
-          lines.push(`${k} = ${JSON.stringify(v)}`);
-        }
-        lines.push("");
-      }
-      fs.writeFileSync(path.join(dir, "config.toml"), lines.join("\n"));
+      writeConfig(dir);
       resolve(dir);
     });
+  }
+  let changed = false;
+  for (const [id, table] of Object.entries(modelCfg.providers || {})) {
+    if (JSON.stringify(providerTables.get(id)) !== JSON.stringify(table)) {
+      providerTables.set(id, table);
+      changed = true;
+    }
+  }
+  if (changed) {
+    homePromise.then((home) => writeConfig(home));
   }
   return homePromise;
 }
