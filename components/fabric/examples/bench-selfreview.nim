@@ -2,85 +2,126 @@
 ## distilled findings report. The big intermediate transcripts stay off the
 ## wire; only the compact report reaches the conversation.
 ##
-## A bench run lives under var/bench/results/<run>/ with one cell directory per
-## <harness>__<model>__<task> combo. Each cell carries:
+## v2 (17-task bench, ~130 cells): per-cell read calls don't scale (2 calls
+## per cell blows the default maxCalls budget), so an embedded python walker
+## distills each chunk of ~16 cells in one bash call (~5KB, safely under the
+## bash tool's ~12KB output cap). Per-cell derivation (classification
+## included) lives in the walker verbatim; the guest keeps aggregation,
+## flags and the report shape. Total calls: 2 discovery + ceil(cells/16)
+## walker chunks — fits the default maxCalls for any current bench size.
+##
+## A bench run lives under var/bench/results/<run>/ with one cell directory
+## per <harness>__<model>__<task> combo. Each cell carries:
 ##   transcript.json = {"sessionId", "items": [ {value:{role, content,
 ##                      tool_calls, usage}} ]}   (full per-round conversation)
 ##   result.json      = {"verdict","rounds","agentTimeS","tokens",
-##                       "firstPromptTokens", ...}
+##                       "invalid","footprintOver","testTimeS", ...}
+## Task kind comes from bench/tasks/<task>/meta.json (general | fabric |
+## expert | selfextend).
 ##
-## Per cell this program derives:
-##   - LLM rounds   = assistant messages whose value carried tool_calls
-##   - tool-call histogram (by tool function name)
-##   - bash-command classes: read-ish (cat/ls/find/pwd/head/tail/wc/file),
-##     test runs (./test.* | go test | pytest | node --test), writes
-##     (heredoc / > / tee). Decision priority: test > write > read > other.
-##   - prompt-token mass of the first and last LLM round (usage.prompt_tokens)
-##   - the result verdict (from result.json)
-## Then it aggregates per harness+model and emits flags:
-##   * cells whose bash file-inspection share of tool calls is > 30%
+## Per cell the walker derives: verdict, invalid/footprintOver marks, kind,
+## agent/test seconds, LLM rounds (assistant messages carrying tool_calls),
+## tool-call histogram, bash classes (read-ish cat/ls/find/pwd/head/tail/
+## wc/file; test runs ./test*/go test/pytest/node --test; writes via tee,
+## heredoc or bare >; priority test > write > read > other) and the
+## first/last prompt-token mass. The guest then aggregates per
+## harness+model and per kind, and flags:
+##   * cells whose bash file-inspection share of bash calls is > 30%
 ##   * cells whose last-round prompt mass is > 2.5x the first round's
 ##   * the top 3 cells by LLM round count
+##   * cells marked invalid or footprintOver
+##   * expected cells that never ran (harness x task gaps)
 ##
-## Read tool results carry a "content" field; bash results carry "exit_code"
-## and "output". Both tools' file text is fetched verbatim here.
-##
-## Run:  tools = ["bash", "read"], code = <this file>,
-##       strings = {"run": "<run-id>"}
+## Run:  tools = ["bash"], strings = {"run": "<run-id>"}
 
 import fabricguest
 import std/[strutils, tables]
 
 const runDirBase = "var/bench/results/"
-const readIshWords = ["cat", "ls", "find", "pwd", "head", "tail", "wc", "file"]
+const chunkSize = 16            # cells per walker call (~5KB output)
 
-# ------------------------------------------------------------- classification
+# ------------------------------------------------------------------ walker
+# Prints one JSON line per distilled cell. Args: base, start, end (indices
+# into the sorted cell-glob list). Kept terse so chunk output stays small.
 
-proc hasWriteCmd(cmd: string): bool =
-  ## heredoc / > / tee create files; stderr redirects 2> &> 1> are noise here.
-  if cmd.contains("tee") or cmd.contains("<<"): return true
-  var i = 0
-  while i < cmd.len:
-    if cmd[i] == '>' and (i == 0 or cmd[i-1] notin {'1', '2', '&', '>'}):
-      return true
-    inc i
-  false
-
-proc isTestRun(cmd: string): bool =
-  cmd.contains("./test") or cmd.contains("go test") or
-    cmd.contains("pytest") or cmd.contains("node --test")
-
-proc isReadCommand(cmd: string): bool =
-  ## tokenized match on the classic shell inspection commands
-  var cur = ""
-  for c in cmd:
-    if c in Whitespace or c in {';', '|', '&', '(', ')', '<', '>'}:
-      if cur.len > 0:
-        for w in readIshWords:
-          if cur == w: return true
-        cur = ""
-    else:
-      cur.add(c)
-  if cur.len > 0:
-    for w in readIshWords:
-      if cur == w: return true
-  false
-
-proc classifyBash(args: JsonNode): string =
-  if args == nil: return "other"
-  let cnode = args{"command"}
-  if cnode == nil or cnode.kind != JString: return "other"
-  let cmd = cnode.getStr
-  if isTestRun(cmd): "test"
-  elif hasWriteCmd(cmd): "write"
-  elif isReadCommand(cmd): "read"
-  else: "other"
+const walker = r"""
+import json, sys, glob, os
+base, start, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+RI = ["cat", "ls", "find", "pwd", "head", "tail", "wc", "file"]
+def has_write(cmd):
+    if "tee" in cmd or "<<" in cmd: return True
+    for i, c in enumerate(cmd):
+        if c == ">" and (i == 0 or cmd[i-1] not in "12&>"): return True
+    return False
+def is_test(cmd):
+    return "./test" in cmd or "go test" in cmd or "pytest" in cmd or "node --test" in cmd
+def is_read(cmd):
+    for tok in cmd.replace(";", " ").replace("|", " ").replace("&", " ") \
+                  .replace("(", " ").replace(")", " ").replace("<", " ") \
+                  .replace(">", " ").split():
+        if tok in RI: return True
+    return False
+def cls(cmd):
+    if is_test(cmd): return "test"
+    if has_write(cmd): return "write"
+    if is_read(cmd): return "read"
+    return "other"
+for d in sorted(glob.glob(os.path.join(base, "*__*__*")))[start:end]:
+    cell = os.path.basename(d.rstrip("/"))
+    out = {"cell": cell, "verdict": "?", "invalid": False, "fpOver": False,
+           "kind": "?", "agentS": 0.0, "testS": 0.0}
+    try:
+        r = json.load(open(os.path.join(d, "result.json")))
+        out["verdict"] = r.get("verdict", "?")
+        out["invalid"] = bool(r.get("invalid", False))
+        out["fpOver"] = bool(r.get("footprintOver", False))
+        out["agentS"] = r.get("agentTimeS") or 0
+        out["testS"] = r.get("testTimeS") or 0
+    except Exception:
+        pass
+    parts = cell.split("__")
+    task = "__".join(parts[2:]) if len(parts) > 2 else cell
+    try:
+        out["kind"] = json.load(open(os.path.join(
+            "bench", "tasks", task, "meta.json"))).get("kind", "general")
+    except Exception:
+        pass
+    rounds = 0; hist = {}; bash = {"read": 0, "test": 0, "write": 0, "other": 0}
+    ptF = -1; ptL = -1
+    try:
+        t = json.load(open(os.path.join(d, "transcript.json")))
+        for it in t.get("items", []):
+            v = (it or {}).get("value") or {}
+            if v.get("role") != "assistant": continue
+            tcs = v.get("tool_calls") or []
+            if not tcs: continue
+            rounds += 1
+            pt = ((v.get("usage") or {}).get("prompt_tokens") or 0)
+            if pt > 0:
+                if ptF < 0: ptF = pt
+                ptL = pt
+            for tc in tcs:
+                fn = tc.get("function") or {}
+                n = fn.get("name", "unknown")
+                hist[n] = hist.get(n, 0) + 1
+                if n == "bash":
+                    try:
+                        a = (json.loads(fn.get("arguments") or "{}") or {}) \
+                             .get("command", "")
+                    except Exception:
+                        a = ""
+                    bash[cls(a)] += 1
+    except Exception:
+        pass
+    out["rounds"] = rounds; out["hist"] = hist; out["bash"] = bash
+    out["ptF"] = ptF; out["ptL"] = ptL; out["calls"] = sum(hist.values())
+    print(json.dumps(out, separators=(",", ":")))
+"""
 
 # ---------------------------------------------------------------- transport
 
 proc textOf(n: JsonNode): string =
-  ## read results come back as a JSON string (verbatim file body); bash results
-  ## carry an "output" member. Tolerantly recover the raw text either way.
+  ## bash results carry an "output" member; tolerate a bare string too.
   if n == nil: return ""
   if n.kind == JString: return n.str
   let outp = n{"output"}
@@ -91,13 +132,26 @@ proc textOf(n: JsonNode): string =
     return $cont
   ""
 
-proc intAt(n: JsonNode, key: string): int =
-  if n == nil: return 0
-  let v = n{key}
-  if v == nil or v.kind != JInt: return 0
-  v.getInt
+proc numOf(v: JsonNode): float =
+  ## tolerant numeric read of a value node (walker emits ints or floats)
+  if v == nil: return 0.0
+  case v.kind
+  of JInt: v.getFloat
+  of JFloat: v.getFloat
+  else: 0.0
 
-proc cellId(h, m, t: string): string = h & "__" & m & "__" & t
+proc numOf(n: JsonNode, key: string): float =
+  ## tolerant numeric read of member `key`
+  if n == nil: return 0.0
+  numOf(n{key})
+
+proc lineRows(text: string): seq[JsonNode] =
+  ## one JSON object per walker output line; tolerate blanks/noise
+  for ln in text.splitLines():
+    let s = strip(ln)
+    if s.len == 0 or not s.startsWith("{"): continue
+    try: result.add(parseJson(s))
+    except: discard
 
 # ------------------------------------------------------------------ report
 
@@ -105,7 +159,7 @@ proc report(jid: string) =
   let base = runDirBase & jid
   logg("bench-selfreview: scanning run '" & jid & "' under " & base)
 
-  # enumerate cell directories with one bash call; guard empties with `true`
+  # discovery call 1: enumerate cell directories; guard empties with `true`
   let listing = tools.bash(command = "cd " & base &
                            " 2>/dev/null && ls -d ./*__*__*/ 2>/dev/null; true")
   var cells: seq[string] = @[]
@@ -123,11 +177,28 @@ proc report(jid: string) =
   if cur.len > 0:
     if cur.startsWith("."): cur = cur[1 .. ^1]
     cells.add(cur)
-
   logg("bench-selfreview: found " & $cells.len & " cells")
 
-  var rows = newJArray()
-  # per harness|model aggregate accumulators
+  # discovery call 2: the expected task list (for missing-cell flags)
+  let taskListing = tools.bash(command = "ls bench/tasks 2>/dev/null; true")
+  var expectedTasks: seq[string] = @[]
+  for ln in textOf(taskListing).splitLines():
+    let s = strip(ln)
+    if s.startsWith("t"): expectedTasks.add(s)
+
+  # walker chunks: distill all cells, chunkSize per bash call
+  var rows: seq[JsonNode] = @[]
+  var i = 0
+  while i < cells.len:
+    let hi = min(i + chunkSize, cells.len)
+    let outp = tools.bash(command = "python3 - " & base & " " & $i & " " & $hi &
+                          " <<'PYEOF'\n" & walker & "\nPYEOF")
+    let chunk = lineRows(textOf(outp))
+    rows.add(chunk)
+    logg("  walker " & $i & ".." & $hi & ": " & $chunk.len & " cells distilled")
+    i = hi
+
+  # per-cell rows -> aggregates
   var aCells = initTable[string, int]()
   var aRounds = initTable[string, int]()
   var aCalls = initTable[string, int]()
@@ -138,67 +209,40 @@ proc report(jid: string) =
   var aPass = initTable[string, int]()
   var aAgentS = initTable[string, float]()
 
-  for cell in cells:
+  var kCells = initTable[string, int]()
+  var kPass = initTable[string, int]()
+  var kRounds = initTable[string, int]()
+  var kCalls = initTable[string, int]()
+  var kAgentS = initTable[string, float]()
+
+  var present = initTable[string, bool]()
+  var fInspect = newJArray()
+  var fDrift = newJArray()
+  var fInvalid = newJArray()
+  var fFpOver = newJArray()
+
+  for row in rows:
+    let cell = row{"cell"}.getStr
     let parts = cell.split("__")
     if parts.len < 3: continue
     let harness = parts[0]
     let model = parts[1]
     var task = parts[2]
     for p in 3 ..< parts.len: task &= "__" & parts[p]
+    present[harness & "|" & model & "|" & task] = true
 
-    let transText = textOf(tools.read(path = base & "/" & cell & "/transcript.json"))
-    let resText   = textOf(tools.read(path = base & "/" & cell & "/result.json"))
-    var trans, res: JsonNode
-    try: trans = parseJson(transText)
-    except: continue            # not a usable bench cell -> skip
-    try: res = parseJson(resText)
-    except: continue
-
-    let verdict = res{"verdict"}.getStr("?")
-    let agentTime = res{"agentTimeS"}.getFloat
-
-    var rounds = 0
-    var totalCalls = 0
-    var hist = initCountTable[string]()
-    var bRead, bTest, bWrite, bOther = 0
-    var firstPrompt = -1
-    var lastPrompt = -1
-
-    let items = trans{"items"}
-    if items != nil and items.kind == JArray:
-      for item in items:
-        let value = item{"value"}
-        if value == nil: continue
-        if value{"role"} == nil or value{"role"}.getStr != "assistant": continue
-        let tcs = value{"tool_calls"}
-        if tcs == nil or tcs.kind != JArray or tcs.len == 0: continue
-        inc rounds                       # one LLM round per tool-call message
-        let usage = value{"usage"}
-        if usage != nil:
-          let pt = intAt(usage, "prompt_tokens")
-          if pt > 0:
-            if firstPrompt < 0: firstPrompt = pt
-            lastPrompt = pt
-        for tc in tcs:
-          let fnMeta = tc{"function"}
-          if fnMeta == nil: continue
-          let tname = fnMeta{"name"}.getStr("unknown")
-          hist.inc(tname)
-          inc totalCalls
-          if tname == "bash":
-            let a = fnMeta{"arguments"}
-            var args: JsonNode = nil
-            if a != nil and a.kind == JString:
-              try: args = parseJson(a.getStr)
-              except: discard
-            case classifyBash(args)
-            of "read":  inc bRead
-            of "test":  inc bTest
-            of "write": inc bWrite
-            else:       inc bOther
-
+    let verdict = row{"verdict"}.getStr("?")
+    let kind = row{"kind"}.getStr("?")
+    let bashJ = row{"bash"}
+    let bRead = int(bashJ{"read"}.numOf)
+    let bTest = int(bashJ{"test"}.numOf)
+    let bWrite = int(bashJ{"write"}.numOf)
+    let bOther = int(bashJ{"other"}.numOf)
     let bashTotal = bRead + bTest + bWrite + bOther
-    let readIshShare = if totalCalls > 0: (bRead * 100) div totalCalls else: 0
+    let rounds = int(row{"rounds"}.numOf)
+    let totalCalls = int(row{"calls"}.numOf)
+    let agentTime = row{"agentS"}.numOf
+    let readIshShare = if bashTotal > 0: (bRead * 100) div bashTotal else: 0
     let key = harness & "|" & model
 
     aCells[key] = aCells.getOrDefault(key) + 1
@@ -211,64 +255,54 @@ proc report(jid: string) =
     if verdict == "pass": aPass[key] = aPass.getOrDefault(key) + 1
     aAgentS[key] = aAgentS.getOrDefault(key, 0.0) + agentTime
 
+    kCells[kind] = kCells.getOrDefault(kind) + 1
+    kRounds[kind] = kRounds.getOrDefault(kind) + rounds
+    kCalls[kind] = kCalls.getOrDefault(kind) + totalCalls
+    kAgentS[kind] = kAgentS.getOrDefault(kind, 0.0) + agentTime
+    if verdict == "pass": kPass[kind] = kPass.getOrDefault(kind) + 1
+
     var histObj = newJObject()
-    for k, v in hist: histObj[$k] = %v
-    var bashObj = newJObject()
-    bashObj["read"] = %bRead
-    bashObj["test"] = %bTest
-    bashObj["write"] = %bWrite
-    bashObj["other"] = %bOther
+    let hist = row{"hist"}
+    if hist != nil and hist.kind == JObject:
+      for hk, hv in hist: histObj[hk] = %int(numOf(hv))
 
-    rows.add(%*{
-      "cell": cellId(harness, model, task),
-      "verdict": verdict,
-      "llmRounds": rounds,
-      "toolCalls": totalCalls,
-      "bashCalls": bashTotal,
-      "bashClasses": bashObj,
-      "readIshSharePct": readIshShare,
-      "firstPromptTokens": firstPrompt,
-      "lastPromptTokens": lastPrompt,
-      "toolHistogram": histObj
-    })
-    logg("  cell " & cell & ": " & $rounds & " rounds / " & $totalCalls &
-         " calls / " & $readIshShare & "% read-ish bash; " & verdict)
-
-  # ----------------------------------------------------------- flags (cells)
-  var fInspect = newJArray()
-  var fDrift = newJArray()
-  for r in rows:
-    let id = r{"cell"}.getStr
-    if r{"readIshSharePct"}.getInt > 30:
-      fInspect.add(%*{"cell": id,
-                      "readIshSharePct": r{"readIshSharePct"}.getInt})
-    let first = r{"firstPromptTokens"}.getInt
-    let last = r{"lastPromptTokens"}.getInt
+    # per-cell flags
+    if readIshShare > 30:
+      fInspect.add(%*{"cell": cell, "readIshSharePct": readIshShare})
+    let first = int(row{"ptF"}.numOf)
+    let last = int(row{"ptL"}.numOf)
     if first > 0 and last * 2 > first * 5:      # last > 2.5x first
-      fDrift.add(%*{"cell": id,
+      fDrift.add(%*{"cell": cell,
                     "firstTokenMass": first,
                     "lastTokenMass": last,
                     "ratioX": last.float / first.float})
+    if row{"invalid"}.getBool(false):
+      fInvalid.add(%*{"cell": cell, "verdict": verdict})
+    if row{"fpOver"}.getBool(false):
+      fFpOver.add(%*{"cell": cell, "verdict": verdict})
 
-  # top 3 cells by LLM round count (simple linear selection)
-  var taken = initCountTable[string]()
-  var top3 = newJArray()
-  for _ in 0 ..< 3:
-    var best = -1
-    var bestN = -1
-    for i in 0 ..< rows.len:
-      let r = rows[i]
-      if taken.getOrDefault(r{"cell"}.getStr, 0) > 0: continue
-      let n = r{"llmRounds"}.getInt
-      if n > bestN:
-        bestN = n
-        best = i
-    if best >= 0:
-      top3.add(%*{"cell": rows[best]{"cell"}.getStr,
-                  "llmRounds": rows[best]{"llmRounds"}.getInt})
-      taken[rows[best]{"cell"}.getStr] = 1
+    logg("  cell " & cell & ": " & $rounds & " rounds / " & $totalCalls &
+         " calls / " & $readIshShare & "% read-ish bash; " & verdict &
+         " (" & kind & ")")
 
-  # --------------------------------------------------- aggregates per h/m
+  # --------------------------------------------------- missing-cell flags
+  # combos (harness x model) actually present in the run; a combo with zero
+  # cells can't be known here (the _combo-* dirs would tell, but they are
+  # harness-internal bookkeeping).
+  var combos: seq[string] = @[]
+  for c in cells:
+    let p = c.split("__")
+    if p.len >= 2:
+      let k = p[0] & "|" & p[1]
+      if k notin combos: combos.add(k)
+  var fMissing = newJArray()
+  for k in combos:
+    let sp = k.split("|")
+    for t in expectedTasks:
+      if not present.getOrDefault(k & "|" & t, false):
+        fMissing.add(%*{"harness": sp[0], "model": sp[1], "task": t})
+
+  # ------------------------------------------------- aggregates per h/m
   var aggRows = newJArray()
   for key in aCells.keys:
     let sp = key.split("|")
@@ -287,14 +321,49 @@ proc report(jid: string) =
       "agentTimeS": aAgentS[key]
     })
 
+  # ------------------------------------------------- aggregates per kind
+  var kindRows = newJArray()
+  for kind in kCells.keys:
+    kindRows.add(%*{
+      "kind": kind,
+      "cells": kCells[kind],
+      "passCount": kPass.getOrDefault(kind),
+      "llmRounds": kRounds[kind],
+      "toolCalls": kCalls[kind],
+      "agentTimeS": kAgentS[kind]
+    })
+
+  # ------------------------------------------------------- top 3 by rounds
+  var taken = initCountTable[string]()
+  var top3 = newJArray()
+  for _ in 0 ..< 3:
+    var best = -1
+    var bestN = -1
+    for idx in 0 ..< rows.len:
+      let r = rows[idx]
+      if taken.getOrDefault(r{"cell"}.getStr, 0) > 0: continue
+      let n = int(r{"rounds"}.numOf)
+      if n > bestN:
+        bestN = n
+        best = idx
+    if best >= 0:
+      top3.add(%*{"cell": rows[best]{"cell"}.getStr,
+                  "llmRounds": bestN})
+      taken[rows[best]{"cell"}.getStr] = 1
+
   finish($(%*{
     "run": jid,
     "cellCount": rows.len,
+    "expectedCellCount": combos.len * expectedTasks.len,
     "aggregatesByHarnessModel": aggRows,
+    "aggregatesByKind": kindRows,
     "flags": {
       "bashInspectionGt30pct": fInspect,
       "lastRoundPromptGt2_5xFirst": fDrift,
-      "top3CellsByLLMRounds": top3
+      "top3CellsByLLMRounds": top3,
+      "invalidCells": fInvalid,
+      "footprintOverCells": fFpOver,
+      "missingCells": fMissing
     }
   }))
 
