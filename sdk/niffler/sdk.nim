@@ -40,9 +40,11 @@ import ../envelope
 import ../dotenv
 import ../subjects
 import procutil
+import jsonx
 
 export envelope
 export subjects  # session subject builders (wire spec, docs/WIRE.md)
+export jsonx     # nil-safe JsonNode helpers (kind/iterate/$ on nil)
 export procutil  # runCmd/runArgv/capBytes/capLines/tailBytes
 export dotenv    # standalone clients (cli, console) import niffler/sdk only
 export json  # components write %*{"..."} and JsonNode without their own import
