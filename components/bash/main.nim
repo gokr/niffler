@@ -107,13 +107,13 @@ proc wasCancelled(sessionId: string): bool =
 # {__session: {session}} as private context so cancels can be matched.
 let bashSchema = toolSchema(%*{
   "command": {"type": "string",
-              "description": "The shell command line to run (bash -c)"},
+              "description": "The command line to run"},
   "timeoutMs": {"type": "integer",
-                "description": "Kill the command after this many ms (default 30000)"},
+                "description": "Kill after this many ms (default 30000)"},
   "cwd": {"type": "string",
-          "description": "Working directory (defaults to the active conversation workspace)"}
+          "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Execute a shell command via bash -c — builds, tests, piping, git mutations, process inspection. Returns combined stdout/stderr and the last command's exit code; on timeout the process tree is killed (124), on turn cancel (130). Output over ~12KB is spilled to a temp file (result.spill.path) and the result keeps only head+tail with a marker — page through the full output with read (offset/limit) on that path instead of assuming you saw everything. Prefer dedicated tools for file work and repo state: read/read_many, edit/write, files, grep, git_* (discover on the git component).")
+  description = "Run a shell command (bash -c) — builds, tests, git, processes. Result starts with an (exit N) line: non-zero = failure (124 timed out, 130 cancelled); the rest is stdout+stderr. Output over ~12KB spills to a file (path in result) — page it with read. Prefer read/read_many/edit/files/grep for file work.")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
@@ -121,8 +121,8 @@ discard comp.tool("bash", bashSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let sessionId = toolArgs{"__session"}{"session"}.getStr("")
     if sessionId.len > 0 and wasCancelled(sessionId):
-      return %*{"exit_code": 130, "cancelled": true,
-                "output": "[cancelled by request]\n"}
+      return %*{"text": "(exit 130 — cancelled by request)",
+                "exit_code": 130, "cancelled": true}
     let command = toolArgs{"command"}.getStr("")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(30_000)
     let cwd = toolArgs{"cwd"}.getStr("")
@@ -132,31 +132,36 @@ discard comp.tool("bash", bashSchema,
     let (code, captured) = runCmd(scoped, timeoutMs,
       proc(): bool = drainCancels(sessionId))
     var full = captured
-    if code == 124:
-      full = "[timed out after " & $timeoutMs & "ms]\n" & captured
-    elif code == 130:
-      full = "[cancelled by request]\n" & captured
     # hard capture bound: beyond this even the spill file is cut
     if full.len > maxCaptureBytes:
       full = capBytes(full, maxCaptureBytes,
         "re-run a narrower command (grep/head/tail/wc) for the missing part")
-    var result = %*{"exit_code": code, "cancelled": code == 130}
+    var payload = %*{"exit_code": code, "cancelled": code == 130}
+    var status = "(exit " & $code
+    if code == 124: status.add(" — timed out after " & $timeoutMs & "ms")
+    elif code == 130: status.add(" — cancelled by request")
+    status.add(")")
+    var text = status & "\n"
     # transcript cap: spill the full capture and keep only head+tail in
     # the conversation; the model pages the rest with read (offset/limit).
     if full.len > transcriptCapBytes:
       let spillPath = spillOutput(full, sessionId)
       if spillPath.len > 0:
-        result["spill"] = %*{"path": spillPath,
-                              "bytes": full.len,
-                              "lines": full.countLines()}
-        result["output"] = %capBytes(full, transcriptCapBytes,
+        payload["spill"] = %*{"path": spillPath,
+                             "bytes": full.len,
+                             "lines": full.countLines()}
+        text.add("[full output: " & $full.len & " bytes, " &
+                 $full.countLines() & " lines → " & spillPath &
+                 " — page through it with read (offset/limit)]\n")
+        text.add(capBytes(full, transcriptCapBytes,
           "full output saved to " & spillPath &
-          " — page through it with read (offset/limit)")
+          " — page through it with read (offset/limit)"))
       else:
-        result["output"] = %capBytes(full, transcriptCapBytes,
-          "re-run a narrower command (grep/head/tail/wc) for the missing part")
+        text.add(capBytes(full, transcriptCapBytes,
+          "re-run a narrower command (grep/head/tail/wc) for the missing part"))
     else:
-      result["output"] = %full
-    return result)
+      text.add(full)
+    payload["text"] = %text
+    return payload)
 
 comp.run()

@@ -71,7 +71,7 @@ proc main() =
     echo "FAIL: expected result, got " & $resp.kind & ": " & $resp
     raise newException(AssertionDefect, "smoke test failed")
   let exitCode = resp.args{"exit_code"}.getInt(-1)
-  let output = resp.args{"output"}.getStr("")
+  let output = resp.args{"text"}.getStr("")
   # last command in the chain is `echo done`, so exit code is 0
   if exitCode != 0 or not output.contains("hello-from-bash") or not output.contains("No such file") or not output.contains("done"):
     echo "FAIL: unexpected result: " & $resp.args

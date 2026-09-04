@@ -49,14 +49,14 @@ proc main() =
   # basic search: match found, path + line number in output
   let r1 = call(nc, "grep", "grep", %*{"pattern": "helloWorld"})
   check("grep exit 0 on match", r1{"exit_code"}.getInt(-1) == 0, $r1)
-  let out1 = r1{"output"}.getStr("")
+  let out1 = r1{"text"}.getStr("")
   check("grep shows path:line", out1.contains("alpha.nim") and
         out1.contains(":1:"), $r1)
   check("grep shows match text", out1.contains("helloWorld"), $r1)
 
   # .gitignore respected, hidden files skipped by default
   let r2 = call(nc, "grep", "grep", %*{"pattern": "hello"})
-  let out2 = r2{"output"}.getStr("")
+  let out2 = r2{"text"}.getStr("")
   check("grep respects gitignore", not out2.contains("notes.txt"), $r2)
   check("grep skips hidden files", not out2.contains("hidden.nim"), $r2)
   check("grep searches nested dirs", out2.contains("nested.txt"), $r2)
@@ -66,11 +66,11 @@ proc main() =
                 %*{"pattern": "helloHidden", "hidden": true})
   check("grep hidden:true finds hidden",
         r3{"exit_code"}.getInt(-1) == 0 and
-        r3{"output"}.getStr("").contains("hidden.nim"), $r3)
+        r3{"text"}.getStr("").contains("hidden.nim"), $r3)
 
   # glob filter narrows to .nim files
   let r4 = call(nc, "grep", "grep", %*{"pattern": "hello", "glob": "*.nim"})
-  let out4 = r4{"output"}.getStr("")
+  let out4 = r4{"text"}.getStr("")
   check("grep glob filters", out4.contains("alpha.nim") and
         not out4.contains("nested.txt"), $r4)
 
@@ -79,23 +79,23 @@ proc main() =
                 %*{"pattern": "hello", "case_insensitive": true,
                    "path": "src/beta.nim"})
   check("grep case_insensitive", r5{"exit_code"}.getInt(-1) == 0 and
-        r5{"output"}.getStr("").contains("HELLO"), $r5)
+        r5{"text"}.getStr("").contains("HELLO"), $r5)
 
   # no matches: exit 1 with marker
   let r6 = call(nc, "grep", "grep", %*{"pattern": "zzzNoSuchThing"})
   check("grep no matches exit 1", r6{"exit_code"}.getInt(-1) == 1 and
-        r6{"output"}.getStr("").contains("[no matches]"), $r6)
+        r6{"text"}.getStr("").contains("[no matches]"), $r6)
 
   # bad regex: exit 2, error text shown
   let r7 = call(nc, "grep", "grep", %*{"pattern": "["})
   check("grep bad regex exit 2", r7{"exit_code"}.getInt(-1) == 2 and
-        r7{"output"}.getStr("").len > 0, $r7)
+        r7{"text"}.getStr("").len > 0, $r7)
 
   # max_results caps lines with an exact marker
   let r8 = call(nc, "grep", "grep",
                 %*{"pattern": "needle", "path": "many.txt",
                    "max_results": 10})
-  let out8 = r8{"output"}.getStr("")
+  let out8 = r8{"text"}.getStr("")
   check("grep caps result lines", out8.contains("needle 10") and
         not out8.contains("needle 11"), $r8)
   check("grep truncation marker counts", out8.contains("490 more result lines"),
@@ -103,7 +103,7 @@ proc main() =
 
   # files tool: sorted listing, gitignore + hidden respected
   let f1 = call(nc, "grep", "files", %*{})
-  let outf1 = f1{"output"}.getStr("")
+  let outf1 = f1{"text"}.getStr("")
   check("files lists tracked files",
         outf1.contains("src/alpha.nim") and outf1.contains("src/beta.nim") and
         outf1.contains("sub/nested.txt"), $f1)
@@ -112,17 +112,17 @@ proc main() =
 
   let f2 = call(nc, "grep", "files", %*{"hidden": true})
   check("files hidden:true lists hidden",
-        f2{"output"}.getStr("").contains(".hidden.nim"), $f2)
+        f2{"text"}.getStr("").contains(".hidden.nim"), $f2)
 
   let f3 = call(nc, "grep", "files", %*{"glob": "*.nim"})
-  let outf3 = f3{"output"}.getStr("")
+  let outf3 = f3{"text"}.getStr("")
   check("files glob filters", outf3.contains("alpha.nim") and
         not outf3.contains("nested.txt"), $f3)
 
   # files max_results caps
   let f4 = call(nc, "grep", "files",
                 %*{"path": "many.txt", "max_results": 1})
-  check("files caps paths", f4{"output"}.getStr("").contains("many.txt"),
+  check("files caps paths", f4{"text"}.getStr("").contains("many.txt"),
         $f4)
 
   # drain: component exits

@@ -36,8 +36,11 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
     o = "[timed out]\n" & o
   if code == 1 and o.strip().len == 0:
     o = "[no matches]"
+  var status = "(exit " & $code & ")"
+  if code == 124: status = "(exit 124 — timed out)"
+  if code == 127: status = "(exit 127 — ripgrep not installed)"
   result = %*{"exit_code": code,
-              "output": capBytes(
+              "text": status & "\n" & capBytes(
                 capLines(o, maxResults,
                          hint = "raise max_results or narrow pattern/path/glob"),
                 maxOutputBytes,
@@ -94,15 +97,13 @@ comp.tool(%*{"timeoutMs": 60000,
                            "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
              max_results: int = 500, timeoutMs: int = 30000): JsonNode =
-    ## List repository files, sorted, one path per line — the fastest survey
-    ## before searching or editing. Respects .gitignore; hidden files only
-    ## with hidden: true. Prefer over bash ls/find inside the harness root.
-    ## - path: Directory to list (default: the active conversation
-    ##   workspace, else the harness root)
+    ## List repo files sorted, one path per line — survey before searching
+    ## or editing. Respects .gitignore; hidden only with hidden: true.
+    ## - path: Directory (default: workspace, else harness root)
     ## - glob: Only files matching this glob (e.g. "*.nim")
-    ## - hidden: Also include hidden files (.gitignore still applies)
-    ## - max_results: Cap on file paths (default 500, max 10000)
-    ## - timeoutMs: Kill the listing after this many ms (default 30000)
+    ## - hidden: Include hidden files
+    ## - max_results: Cap (default 500, max 10000)
+    ## - timeoutMs: Kill after this many ms (default 30000)
     var args = @["--files", "--no-require-git"]
     if hidden: args.add("--hidden")
     if glob.len > 0:
@@ -114,7 +115,7 @@ comp.tool(%*{"timeoutMs": 60000,
       args.add(path)
     let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
     if code == 0 and output.strip().len == 0:
-      return %*{"exit_code": 0, "output": "[no files]"}
+      return %*{"exit_code": 0, "text": "[no files]"}
     return finish(code, output, min(max(1, max_results), 10_000))
 
 comp.run()

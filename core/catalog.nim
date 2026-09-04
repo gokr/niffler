@@ -143,7 +143,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. query returns concise hints; component plus up to 16 tool names returns full schemas. Call returned tools through invoke. The plugins component (packages) and skills component (workflow guides) live behind this too.",
+      "description": "Find live components and tools outside the fixed direct toolset. query returns concise hints; component or tools (up to 16 names) return full schemas. Call returned tools through invoke — plugins (packages) and skills (workflow guides) live here too.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
@@ -154,7 +154,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "invoke", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Call a non-hidden tool after discover returns its schema. Put the target tool's arguments unchanged under arguments. The target's normal approval and timeout policy still applies.",
+      "description": "Call a non-hidden tool after discover returns its schema: put the target's arguments unchanged under arguments. Its normal approval and timeout policy applies.",
       "properties": {
         "tool": {"type": "string", "description": "Exact tool name returned by discover"},
         "arguments": {"type": "object", "description": "Arguments matching the discovered target schema"}
@@ -171,7 +171,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "title": {"type": "string", "description": "Rename the conversation (shown in session lists); non-empty updates the title, empty/absent leaves it"},
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},
         "thinking": {"type": "string", "enum": ["low", "medium", "high"],
-                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default)"},
+                     "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
         "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"}
       },
       "required": ["sessionId"],

@@ -651,7 +651,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   let lineSummary = if addedTotal > 0 or removedTotal > 0:
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."
     else: ""
-  result = %*{"summary": "Successfully applied " & $planned.len & " " & noun &
+  result = %*{"text": "Successfully applied " & $planned.len & " " & noun &
                        " to " & path & "." & lineSummary,
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
@@ -689,7 +689,7 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
   writeAtomic(target, entry.bom & restoreEnding(entry.content, entry.ending))
   clearUndo(target)
   let d = compactDiff(entry.resultContent, entry.content)
-  result = %*{"summary": "Undid the last edit on " & path &
+  result = %*{"text": "Undid the last edit on " & path &
               ". File reverted to its previous state; re-read it before further edits.",
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine}
@@ -792,25 +792,31 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
   let limit = args{"limit"}.getInt(MAX_READ_LINES)
   if limit < 1:
     raise newException(ValueError, "[E_BAD_SHAPE] limit must be positive.")
+  var blocks: seq[string]
   var items = newJArray()
   var used = 0
   for item in paths:
     if item.kind != JString or item.getStr("").len == 0:
+      blocks.add("### <invalid path>\n[E_BAD_SHAPE] path must be a non-empty string")
       items.add(%*{"path": "", "error": "path must be a non-empty string"})
       continue
     let path = item.getStr()
     try:
       let content = hRead(c, %*{"path": path, "limit": limit})
-      let encoded = $content
-      if used + encoded.len > 512_000:
+      let text = content.getStr()
+      if used + text.len > 512_000:
+        blocks.add("### " & path &
+          "\n[read_many limit: aggregate output exceeds 512000 bytes; read remaining files separately]")
         items.add(%*{"path": path,
                      "error": "aggregate read_many output exceeds 512000 bytes; read remaining files separately"})
         break
-      used += encoded.len
+      used += text.len
+      blocks.add("### " & path & "\n" & text)
       items.add(%*{"path": path, "content": content})
     except CatchableError as e:
+      blocks.add("### " & path & "\n" & e.msg)
       items.add(%*{"path": path, "error": e.msg})
-  %*{"items": items, "count": items.len}
+  result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
 # ---------------------------------------------------------------------------
 # write handler
@@ -842,7 +848,11 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
   let overwrote = fileExists(target)
   writeAtomic(target, content)
   result = %*{"path": target, "bytes_written": content.len,
-              "overwrote": overwrote}
+              "overwrote": overwrote,
+              "text": (if overwrote:
+                         "Overwrote " & target & " (" & $content.len & " bytes)"
+                       else:
+                         "Wrote " & $content.len & " bytes to " & target)}
 
 # ---------------------------------------------------------------------------
 # component
@@ -853,45 +863,45 @@ loadStore()
 
 discard comp.tool("read", toolSchema(%*{
   "path": {"type": "string",
-           "description": "File to read, relative to the harness root or absolute"},
+           "description": "File to read"},
   "offset": {"type": "integer", "minimum": 1,
-             "description": "Line number to start reading from (1-indexed)"},
+             "description": "1-indexed start line"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Maximum number of lines to read (default 2000)"}
+            "description": "Max lines (default 2000)"}
 }, @["path"],
-  "Read a text file — the standard way to inspect content before editing. Verbatim lines, no line numbers: copy text exactly into edit's old_string. Pageable (offset/limit; the hint reports the range shown). Binary/UTF-16/32 and >100MB files are refused, empty files reported, huge lines elided with a bash hint. Use grep to search across files, read_many to survey several."), hRead,
+  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Pageable (offset/limit). Refuses binary and >100MB. grep searches across files; read_many surveys several."), hRead,
   %*{"timeoutMs": 60000, "parallel": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("read_many", toolSchema(%*{
   "paths": {"type": "array", "minItems": 1, "maxItems": 8,
             "items": {"type": "string"},
-            "description": "Text files to read in order"},
+            "description": "Files to read, in order"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Maximum lines per file (default 2000)"}
+            "description": "Max lines per file (default 2000)"}
 }, @["paths"],
-  "Read up to 8 named text files in one call — an initial repository survey instead of bash cat or many read calls. Returns [{path, content}|{path, error}] in request order; one bad file doesn't hide the others. Max 512KB total."),
+  "Read up to 8 files in one call — the multi-file survey instead of many reads or bash cat. Content under a \"### path\" heading each; a bad file errors alone. 512KB total cap."),
   hReadMany, %*{"timeoutMs": 60000, "parallel": true,
                 "workspace": {"pathArrayFields": ["paths"]}})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",
-           "description": "File to edit, relative to the harness root or absolute"},
+           "description": "File to edit"},
   "edits": {"type": "array",
-    "description": "The replacements to apply, each {old_string, new_string}; all old_strings are matched against the same original file content",
+    "description": "Replacements to apply, all matched against the original file",
     "items": {"type": "object",
       "properties": {
         "old_string": {"type": "string",
-          "description": "Exact text to replace — must occur exactly once in the file; copy it verbatim including indentation and newlines"},
+          "description": "Exact text to replace — must occur exactly once (verbatim, whitespace included)"},
         "new_string": {"type": "string",
           "description": "Replacement text; \"\" deletes old_string"},
         "replace_all": {"type": "boolean",
-          "description": "Replace every occurrence of old_string instead of requiring uniqueness (default false)"}
+          "description": "Replace every occurrence (default false)"}
       },
       "required": ["old_string", "new_string"]}
   }
 }, @["path", "edits"],
-  "Surgically replace exact text in an existing file. Each edits[].old_string must occur EXACTLY ONCE (add surrounding lines to disambiguate; replace_all for every occurrence); whitespace matters — read the file first and copy verbatim. Several non-overlapping edits per call are fine; merge changes to the same block. new_string \"\" deletes. For NEW files or wholesale rewrites use write. Revertible with undo_last_edit."), hEdit,
+  "Replace exact text in an existing file — read it first, copy old_string verbatim (whitespace matters). Each old_string must occur exactly once: add context lines to disambiguate, or set replace_all. Batch independent edits per call. Prefer write for new files; undo_last_edit reverts."), hEdit,
   %*{"approval": "always", "timeoutMs": 300000,
      "workspace": {"pathFields": ["path"]}})
 
@@ -910,11 +920,11 @@ discard comp.tool("undo_last_edit", toolSchema(%*{
 
 discard comp.tool("write", toolSchema(%*{
   "path": {"type": "string",
-           "description": "File to write, relative to the harness root or absolute"},
+           "description": "File to write"},
   "content": {"type": "string",
-              "description": "The full new file content (\"\" truncates the file)"}
+              "description": "Full new content (\"\" truncates)"}
 }, @["path", "content"],
-  "Create a NEW file or replace a whole small file atomically (temp+rename; parent dirs created, permissions preserved). Use for new components, configs, scripts, generated artifacts. For surgical changes to existing files prefer edit. \"\" truncates. Cap 900KB — use bash for larger files."), hWrite,
+  "Create or replace a whole file atomically (parent dirs created). Prefer edit for surgical changes to existing files. \"\" truncates. Cap 900KB."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000,
      "workspace": {"pathFields": ["path"]}})
 

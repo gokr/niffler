@@ -62,14 +62,14 @@ proc main() =
   # git_status: branch line + one line per changed file
   let s1 = call(nc, "git", "git_status", %*{})
   check("git_status exit 0", s1{"exit_code"}.getInt(-1) == 0, $s1)
-  let so1 = s1{"output"}.getStr("")
+  let so1 = s1{"text"}.getStr("")
   check("git_status shows branch", so1.contains("## "), $s1)
   check("git_status shows modified file", so1.contains(" M a.txt"), $s1)
   check("git_status shows untracked file", so1.contains("?? c.txt"), $s1)
 
   # path scope narrows the listing
   let s2 = call(nc, "git", "git_status", %*{"path": "c.txt"})
-  let so2 = s2{"output"}.getStr("")
+  let so2 = s2{"text"}.getStr("")
   check("git_status path scope includes", so2.contains("?? c.txt"), $s2)
   check("git_status path scope excludes", not so2.contains("a.txt"), $s2)
 
@@ -88,11 +88,11 @@ proc main() =
   let s3 = call(nc, "git", "git_status", %*{"repo": "subrepo"})
   check("git_status repo param scopes the subrepo",
         s3{"exit_code"}.getInt(-1) == 0 and
-        not s3{"output"}.getStr("").contains("c.txt"), $s3)
+        not s3{"text"}.getStr("").contains("c.txt"), $s3)
   let s4 = call(nc, "git", "git_status", %*{"repo": "nowhere"})
   check("git_status refuses a missing repo",
         s4{"exit_code"}.getInt(-1) == 2 and
-        s4{"output"}.getStr("").contains("existing directory"), $s4)
+        s4{"text"}.getStr("").contains("existing directory"), $s4)
   let s5 = call(nc, "git", "git_status", %*{"repo": "../escape"})
   check("git_status refuses a .. repo",
         s5{"exit_code"}.getInt(-1) == 2, $s5)
@@ -100,7 +100,7 @@ proc main() =
   # git_diff: staged+unstaged since HEAD = the a.txt tweak only
   let d1 = call(nc, "git", "git_diff", %*{})
   check("git_diff exit 0", d1{"exit_code"}.getInt(-1) == 0, $d1)
-  let do1 = d1{"output"}.getStr("")
+  let do1 = d1{"text"}.getStr("")
   check("git_diff shows hunk", do1.contains("--- a/a.txt") and
         do1.contains("+++ b/a.txt"), $d1)
   check("git_diff shows removed line", do1.contains("-three"), $d1)
@@ -108,63 +108,63 @@ proc main() =
 
   # stat: compact one-line-per-file summary, no hunks
   let d2 = call(nc, "git", "git_diff", %*{"stat": true})
-  let do2 = d2{"output"}.getStr("")
+  let do2 = d2{"text"}.getStr("")
   check("git_diff stat is compact", do2.contains("a.txt |") and
         not do2.contains("--- a/a.txt"), $d2)
 
   # clean path: marker instead of empty output
   let d3 = call(nc, "git", "git_diff", %*{"path": "b.txt"})
   check("git_diff clean path marker",
-        d3{"output"}.getStr("").contains("[no changes since HEAD]"), $d3)
+        d3{"text"}.getStr("").contains("[no changes since HEAD]"), $d3)
 
   # git_log: both commits, newest first
   let l1 = call(nc, "git", "git_log", %*{})
-  let lo1 = l1{"output"}.getStr("")
+  let lo1 = l1{"text"}.getStr("")
   check("git_log lists commits", lo1.contains("second commit") and
         lo1.contains("first commit"), $l1)
 
   # max_count caps
   let l2 = call(nc, "git", "git_log", %*{"max_count": 1})
-  let lo2 = l2{"output"}.getStr("")
+  let lo2 = l2{"text"}.getStr("")
   check("git_log max_count caps", lo2.contains("second commit") and
         not lo2.contains("first commit"), $l2)
 
   # author substring filter
   let l3 = call(nc, "git", "git_log", %*{"author": "Test"})
   check("git_log author filter matches",
-        l3{"output"}.getStr("").contains("second commit"), $l3)
+        l3{"text"}.getStr("").contains("second commit"), $l3)
   let l4 = call(nc, "git", "git_log", %*{"author": "zzzNobody"})
   check("git_log author filter empty marker",
-        l4{"output"}.getStr("").contains("[no commits matched]"), $l4)
+        l4{"text"}.getStr("").contains("[no commits matched]"), $l4)
 
   # path filter: only commits touching b.txt
   let l5 = call(nc, "git", "git_log", %*{"path": "b.txt"})
-  let lo5 = l5{"output"}.getStr("")
+  let lo5 = l5{"text"}.getStr("")
   check("git_log path filter", lo5.contains("second commit") and
         not lo5.contains("first commit"), $l5)
 
   # git_show: full commit with diff
   let h1 = call(nc, "git", "git_show", %*{"rev": "HEAD"})
-  let ho1 = h1{"output"}.getStr("")
+  let ho1 = h1{"text"}.getStr("")
   check("git_show shows commit", ho1.contains("second commit") and
         ho1.contains("diff --git a/a.txt") and
         ho1.contains("diff --git a/b.txt"), $h1)
 
   # path scope limits the shown diff
   let h2 = call(nc, "git", "git_show", %*{"rev": "HEAD", "path": "b.txt"})
-  let ho2 = h2{"output"}.getStr("")
+  let ho2 = h2{"text"}.getStr("")
   check("git_show path scope", ho2.contains("diff --git a/b.txt") and
         not ho2.contains("a/a.txt"), $h2)
 
   # revision expressions
   let h3 = call(nc, "git", "git_show", %*{"rev": "HEAD~1"})
-  let ho3 = h3{"output"}.getStr("")
+  let ho3 = h3{"text"}.getStr("")
   check("git_show revision expression", ho3.contains("first commit") and
         not ho3.contains("b/b.txt"), $h3)
 
   # git_blame: author attribution, uncommitted lines flagged
   let b1 = call(nc, "git", "git_blame", %*{"path": "a.txt"})
-  let bo1 = b1{"output"}.getStr("")
+  let bo1 = b1{"text"}.getStr("")
   check("git_blame shows author", bo1.contains("Test User"), $b1)
   check("git_blame flags uncommitted line",
         bo1.contains("Not Committed Yet"), $b1)
@@ -172,7 +172,7 @@ proc main() =
   # line window paging
   let b2 = call(nc, "git", "git_blame", %*{"path": "a.txt",
                                            "start_line": 2, "max_lines": 1})
-  let bo2 = b2{"output"}.getStr("")
+  let bo2 = b2{"text"}.getStr("")
   check("git_blame line window", bo2.contains("two") and
         not bo2.contains("THREE"), $b2)
 
@@ -205,7 +205,7 @@ proc main() =
   sleep(700)  # let it subscribe and register
   let n1 = call(nc, "git", "git_status", %*{})
   check("git_status not-a-repo", n1{"exit_code"}.getInt(-1) == 128 and
-        n1{"output"}.getStr("").contains("no git repository"), $n1)
+        n1{"text"}.getStr("").contains("no git repository"), $n1)
 
   # drain: component exits
   drain(nc)

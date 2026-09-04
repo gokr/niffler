@@ -124,8 +124,10 @@ proc finish(code: int, output: string, maxLines = 10_000): JsonNode =
     o = "[timed out]\n" & o
   if code == 128 and o.contains("not a git repository"):
     o = "[no git repository at the target directory]\n" & o
+  var status = "(exit " & $code & ")"
+  if code == 124: status = "(exit 124 — timed out)"
   result = %*{"exit_code": code,
-              "output": capBytes(
+              "text": status & "\n" & capBytes(
                 capLines(o, maxLines, label = "lines",
                          hint = "narrow the scope"),
                 maxOutputBytes,
@@ -133,7 +135,7 @@ proc finish(code: int, output: string, maxLines = 10_000): JsonNode =
 
 proc refused(msg: string): JsonNode =
   ## Argument refused before any git process runs.
-  %*{"exit_code": 2, "output": "[refused] " & msg}
+  %*{"exit_code": 2, "text": "(exit 2 — refused) " & msg}
 
 proc validPath(path: string): bool =
   ## "" = the whole repo. Otherwise relative, no .. escapes, no absolute
@@ -245,7 +247,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
       args.add(["--", path])
     let (code, output) = runGit(args, 40_000)
     if code == 0 and output.strip().len == 0:
-      return %*{"exit_code": 0, "output": "[no changes since HEAD]"}
+      return %*{"exit_code": 0, "text": "(exit 0)\n[no changes since HEAD]"}
     return finish(code, output, if stat: 500 else: 10_000)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
@@ -282,7 +284,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
       args.add(["--", path])
     let (code, output) = runGit(args, 15_000)
     if code == 0 and output.strip().len == 0:
-      return %*{"exit_code": 0, "output": "[no commits matched]"}
+      return %*{"exit_code": 0, "text": "(exit 0)\n[no commits matched]"}
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,

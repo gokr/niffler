@@ -43,7 +43,8 @@ proc main() =
                    "edits": [{"old_string": "hello", "new_string": "hi"}]})
   check("edit replaces text",
         readFile(tmp / "a.txt") == "hi\nworld\n" and
-        r1{"edits_applied"}.getInt(0) == 1, $r1)
+        r1{"edits_applied"}.getInt(0) == 1 and
+        r1{"text"}.getStr("").contains("Successfully applied 1 edit"), $r1)
 
   # ambiguity refused, file untouched
   writeFile(tmp / "amb.txt", "same\nsame\n")
@@ -79,7 +80,8 @@ proc main() =
                              {"old_string": "ccc", "new_string": "CCC"}]})
   check("edit applies multiple edits",
         readFile(tmp / "multi.txt") == "AAA\nbbb\nCCC\n" and
-        r5{"edits_applied"}.getInt(0) == 2, $r5)
+        r5{"edits_applied"}.getInt(0) == 2 and
+        r5{"text"}.getStr("").contains("Successfully applied 2 edits"), $r5)
 
   # overlapping edits refused
   let r6 = call(nc, "edit", "edit",
@@ -185,11 +187,14 @@ proc main() =
   writeFile(tmp / "m2.txt", "beta\n")
   let rm1 = call(nc, "edit", "read_many",
                  %*{"paths": ["m1.txt", "missing.txt", "m2.txt"]})
+  let rm1s = rm1{"text"}.getStr("")
   check("read_many returns files in order with per-item errors",
         rm1{"count"}.getInt(0) == 3 and
         rm1{"items"}[0]{"content"}.getStr("") == "alpha\n" and
         rm1{"items"}[1]{"error"} != nil and
-        rm1{"items"}[2]{"content"}.getStr("") == "beta\n", $rm1)
+        rm1{"items"}[2]{"content"}.getStr("") == "beta\n" and
+        rm1s.find("### m1.txt") >= 0 and
+        rm1s.find("### m2.txt") > rm1s.find("### m1.txt"), $rm1)
   let rm2 = call(nc, "edit", "read_many", %*{"paths": []})
   check("read_many refuses empty paths",
         rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..8"), $rm2)
@@ -210,17 +215,21 @@ proc main() =
                  %*{"path": "dir/sub/new.txt", "content": "hello\nworld\n"})
   check("write creates new file",
         rw1{"bytes_written"}.getInt(-1) == 12 and
-        rw1{"overwrote"}.getBool(true) == false, $rw1)
+        rw1{"overwrote"}.getBool(true) == false and
+        rw1{"text"}.getStr("").contains("Wrote 12 bytes to"), $rw1)
   check("write created parent dirs",
         readFile(tmp / "dir" / "sub" / "new.txt") == "hello\nworld\n")
   let rw2 = call(nc, "edit", "write",
                  %*{"path": "dir/sub/new.txt", "content": "replaced"})
   check("write overwrites", rw2{"overwrote"}.getBool(false) == true and
+        rw2{"text"}.getStr("").contains("Overwrote") and
         readFile(tmp / "dir" / "sub" / "new.txt") == "replaced", $rw2)
   let rw3 = call(nc, "edit", "write",
                  %*{"path": "dir/sub/new.txt", "content": ""})
   check("write truncates on empty content",
         rw3{"bytes_written"}.getInt(-1) == 0 and
+        rw3{"text"}.getStr("").contains("Overwrote") and
+        rw3{"text"}.getStr("").contains("0 bytes") and
         readFile(tmp / "dir" / "sub" / "new.txt") == "", $rw3)
   let rr5 = call(nc, "edit", "read", %*{"path": "dir/sub/new.txt"})
   check("read reports empty files", rr5.getStr("").contains("is empty"), $rr5)

@@ -342,8 +342,8 @@ comp.tool(%*{"hidden": true}):
           "let outcomes = parseJson(r)\n" &
           "let b3Out = parseJson(outcomes[3]{\"result\"}.getStr(\"\"))\n" &
           "let b4Out = parseJson(outcomes[4]{\"result\"}.getStr(\"\"))\n" &
-          "let b3Date = b3Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
-          "let b4Date = b4Out{\"output\"}.getStr(\"\").splitLines()[1].parseFloat()\n" &
+          "let b3Date = b3Out{\"text\"}.getStr(\"\").splitLines()[2].parseFloat()\n" &
+          "let b4Date = b4Out{\"text\"}.getStr(\"\").splitLines()[2].parseFloat()\n" &
           "finish($(%*{\"items\": outcomes.len,\n" &
           "  \"writesSerialized\": b4Date > b3Date,\n" &
           "  \"nope\": outcomes[2]{\"error\"}.getStr(\"\"),\n" &
@@ -486,7 +486,7 @@ discard comp.tool("ctxecho", ctxSchema,
                          "fingerprint": "wrong"})
     return %*{
       "goodKind": $good.kind,
-      "goodOutput": good.args{"output"}.getStr(""),
+      "goodOutput": good.args{"text"}.getStr(""),
       "badCode": bad.error{"code"}.getStr(""),
       "hiddenCode": hidden.error{"code"}.getStr(""),
       "chatCode": chatDeny.error{"code"}.getStr(""),

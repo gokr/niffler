@@ -16,6 +16,7 @@ import std/[algorithm, json, math, monotimes, os, sequtils, strutils,
     tables, times, unicode]
 import natswrapper
 import ../sdk/envelope
+import ../sdk/niffler/jsonx
 import catalog
 import dispatch
 import supervisor
@@ -49,8 +50,8 @@ stay direct.
 Your home is the harness root — the git repo Niffler runs from. Shipped
 component sources: components/, SDKs: sdk/, design docs: docs/, build
 front door: Makefile. var/ is disposable runtime state — gitignored.
-Run `pwd` for absolute paths.
-
+In a session workspace, bash starts inside the repository — no cd/pwd
+needed; view and search files with read/grep, not bash cat/sed/grep.
 Be concise.
 """
 
@@ -151,7 +152,7 @@ type
     persister*: Persister
     workspace*: string       ## absolute, immutable after conversation creation
     modelOverride*: string
-    thinkingEffort*: string  ## "" (provider default) | low | medium | high
+    thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
     maxRounds*: int          ## per-turn tool-round budget (0 = default 20)
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
@@ -609,10 +610,21 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
     ct.sup.pump(ct.cat)
   if oc.ok and it.name == "discover":
     recordDiscovery(ct, sessionId, exposure, oc.value)
+  ## LLM-facing projection (WIRE.md, "Tool results"): a result object with
+  ## a string `text` field is rendered verbatim into the tool message —
+  ## that is the whole diet; every other field stays machine-readable on
+  ## the bus (fabric programs, tests, UIs) and never reaches the transcript.
+  let content =
+    if oc.ok:
+      let t = oc.value{"text"}
+      if t.isStr: t.getStr()
+      else: jdump(oc.value)
+    else:
+      ""
   let toolMsg =
     if oc.ok:
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": $oc.value}
+         "content": content}
     else:
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
          "content": "ERROR: " & oc.error}
@@ -1230,7 +1242,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       %*{"modelOverride": entry.modelOverride})
   if args.kind == JObject and args.hasKey("thinking"):
     entry.thinkingEffort = args{"thinking"}.getStr("").strip()
-    if entry.thinkingEffort notin ["", "low", "medium", "high"]:
+    if entry.thinkingEffort notin ["", "low", "medium", "high", "max"]:
       return %*{"error": "thinking must be low, medium or high (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})

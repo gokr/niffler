@@ -36,8 +36,9 @@ proc main() =
   let r1 = call(nc, "bash", "bash",
                 %*{"command": "echo out; echo err >&2; exit 3", "timeoutMs": 10000})
   check("bash exit code", r1{"exit_code"}.getInt(-1) == 3, $r1)
-  check("bash stdout", r1{"output"}.getStr("").contains("out"), $r1)
-  check("bash stderr captured", r1{"output"}.getStr("").contains("err"), $r1)
+  let out1 = r1{"text"}.getStr("")
+  check("bash stdout", out1.contains("out"), $r1)
+  check("bash stderr captured", out1.contains("err"), $r1)
 
   # exit code of the last command decides
   let r2 = call(nc, "bash", "bash",
@@ -50,7 +51,7 @@ proc main() =
                  %*{"command": "pwd", "timeoutMs": 10000, "cwd": tmp / "sub"})
   check("bash cwd param scopes the command",
         r2b{"exit_code"}.getInt(-1) == 0 and
-        r2b{"output"}.getStr("").contains("sub"), $r2b)
+        r2b{"text"}.getStr("").contains("sub"), $r2b)
 
   # timeout: killed, exit 124, marked in output — and the WHOLE command
   # tree dies (a bare wrapper kill would orphan the sleep 30; the group
@@ -61,7 +62,7 @@ proc main() =
                    "timeoutMs": 500}, 15_000)
   check("bash timeout exit 124", r3{"exit_code"}.getInt(-1) == 124, $r3)
   check("bash timeout marks output",
-        r3{"output"}.getStr("").contains("timed out after"), $r3)
+        r3{"text"}.getStr("").contains("timed out after"), $r3)
   check("bash timeout kills quickly", epochTime() - t0 < 10, $r3)
   sleep(400)  # an orphaned sleep would still be alive now
   check("bash timeout killed the command tree (no orphan)",
@@ -72,7 +73,7 @@ proc main() =
   let r4 = call(nc, "bash", "bash",
                 %*{"command": "for i in $(seq 1 20000); do echo line-$i; done",
                    "timeoutMs": 20000}, 30_000)
-  let out4 = r4{"output"}.getStr("")
+  let out4 = r4{"text"}.getStr("")
   check("bash caps output", out4.len < 300_000 and
         out4.contains("truncated") and out4.contains("line-1") and
         out4.contains("line-20000"), "len=" & $out4.len)
