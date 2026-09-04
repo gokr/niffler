@@ -25,8 +25,15 @@ import { run, parseJsonLines, zeroUsage, addUsage } from "../lib/util.mjs";
 // resolution in 1s × 6 rounds).
 let homePromise = null;
 const providerTables = new Map();
+// reasoning_effort written at the top of the bench's own config.toml (run
+// profile; null = leave CodeWhale's default "auto"). One profile per run, so
+// a plain rewrite on change is enough.
+let writtenEffort = null;
 function writeConfig(home) {
   const lines = [];
+  if (writtenEffort) {
+    lines.push(`reasoning_effort = ${JSON.stringify(writtenEffort)}`, "");
+  }
   for (const [id, table] of providerTables) {
     lines.push(`[providers.${id}]`);
     for (const [k, v] of Object.entries(table)) {
@@ -36,7 +43,11 @@ function writeConfig(home) {
   }
   fs.writeFileSync(path.join(home, "config.toml"), lines.join("\n"));
 }
-function cwHome(modelCfg) {
+function cwHome(modelCfg, effort) {
+  if (effort && effort !== writtenEffort) {
+    writtenEffort = effort;
+    if (homePromise) homePromise.then((home) => writeConfig(home));
+  }
   if (!homePromise) {
     homePromise = new Promise((resolve) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "niffler-bench-cw-"));
@@ -63,8 +74,8 @@ function cwHome(modelCfg) {
 const continuedRepos = new Set();
 
 export async function round(opts) {
-  const { repo, prompt, modelCfg, keys = {}, turnTimeoutMs } = opts;
-  const home = await cwHome(modelCfg);
+  const { repo, prompt, modelCfg, keys = {}, turnTimeoutMs, thinking } = opts;
+  const home = await cwHome(modelCfg, thinking);
 
   const args = ["--provider", modelCfg.provider, "--model", modelCfg.model];
   if (continuedRepos.has(repo)) args.push("--continue");

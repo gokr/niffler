@@ -70,6 +70,30 @@
     "$comment": "firstPromptBudget: warn (never fail) when a niffler first assistant prompt exceeds this many tokens — the direct-toolset + baseprompt footprint guard",
     "firstPromptBudget": 7000
   },
+  "thinking": {
+    "$comment": [
+      "Uniform reasoning-effort control across harnesses: `bench/run.mjs --thinking <profile>`",
+      "maps each harness to the strongest effort its own CLI can express. pi needs a",
+      "thinkingLevelMap on the model entries (adapters/pi.mjs) to send a real \"max\"; opencode uses --variant; codewhale writes reasoning_effort into its isolated",
+      "config.toml; niffler forwards it as the session's reasoning_effort. DeepSeek maps",
+      "low/medium to high server-side, so every harness's \"low\" lane is equivalent."
+    ],
+    "default": "low",
+    "profiles": {
+      "low": {
+        "niffler": "low",
+        "pi": "low",
+        "opencode": "low",
+        "codewhale": "low"
+      },
+      "max": {
+        "niffler": "max",
+        "pi": "max",
+        "opencode": "max",
+        "codewhale": "max"
+      }
+    }
+  },
   "expertJudge": {
     "$comment": [
       "Judgment provider for the niffler-expert harness variant. Reached via",

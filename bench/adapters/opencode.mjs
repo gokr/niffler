@@ -20,6 +20,11 @@ export async function round(opts) {
     repo,
   ];
   if (sessionId) args.push("--session", sessionId);
+  // Reasoning effort: opencode's --variant passes the effort straight to the
+  // provider (e.g. reasoning_effort for openai-compatible endpoints). No
+  // per-model default in config.json today — only the run-level profile.
+  const thinking = opts.thinking || modelCfg.thinking || "";
+  if (thinking) args.push("--variant", thinking);
   const res = await run("opencode", args, { cwd: repo, timeoutMs: turnTimeoutMs });
 
   const events = parseJsonLines(res.stdout);

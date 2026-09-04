@@ -42,7 +42,40 @@ const taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin
 const turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
 const testTimeoutMs = Number(opt("test-timeout-sec", cfg.defaults.testTimeoutSec)) * 1000;
 const JOBS = Number(opt("jobs", cfg.defaults.jobs));
+// Niffler-only: LLM round budget per turn (NIF_MAX_TURN_ROUNDS). Default 100:
+// the 60 default clipped long agentic SWE turns (sympy-13031 exhausted it and
+// submitted an empty patch).
+const maxTurnRounds = Number(opt("max-turn-rounds", 100));
 const KEEP_REPOS = opt("keep-repos", false) === true;
+
+// ---------- thinking profile ----------
+// Uniform reasoning-effort control across harnesses (--thinking low|max per
+// config.json thinking.profiles). Each profile maps a harness to the
+// strongest effort its own CLI can express: pi sends --thinking (real "max"
+// via thinkingLevelMap in adapters/pi.mjs), niffler forwards the value as the
+// session's reasoning_effort, opencode passes --variant, codewhale writes
+// reasoning_effort into its isolated config.toml. Without --thinking the
+// per-model defaults (models.<m>.<harness>.thinking) apply — today that means
+// niffler/pi run "low" and opencode/codewhale the provider default.
+const THINKING = String(opt("thinking", "") || "");
+const thinkingProfiles = cfg.thinking?.profiles || {};
+let thinkingByHarness = null;
+if (THINKING) {
+  thinkingByHarness = thinkingProfiles[THINKING];
+  if (!thinkingByHarness) {
+    console.error(
+      `bench: unknown thinking profile '${THINKING}' (have: ${Object.keys(thinkingProfiles).join(", ")})`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `bench: thinking profile '${THINKING}': ` +
+      Object.entries(thinkingByHarness)
+        .map(([h, v]) => `${h}=${v}`)
+        .join(", "),
+  );
+}
+const thinkingFor = (harness) => (thinkingByHarness ? thinkingByHarness[harness] || "" : "");
 
 const harnesses =
   harnessArg === "all"
@@ -359,6 +392,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             sessionFile: adapterState.sessionFile || null,
             cfgDir: shared.piCfgDir,
             turnTimeoutMs,
+            thinking: thinkingFor("pi"),
           });
           adapterState.sessionFile = res.sessionFile;
         } else if (combo.harness === "opencode") {
@@ -368,6 +402,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             modelCfg: combo.modelCfg.opencode,
             turnTimeoutMs,
             sessionId: adapterState.sessionId || null,
+            thinking: thinkingFor("opencode"),
           });
           adapterState.sessionId = res.sessionId;
         } else if (combo.harness === "codewhale") {
@@ -377,6 +412,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             modelCfg: combo.modelCfg.codewhale,
             keys,
             turnTimeoutMs,
+            thinking: thinkingFor("codewhale"),
           });
         } else if (isNifflerHarness(combo.harness)) {
           res = await shared.niffler.round({
@@ -565,6 +601,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     harness: combo.harness,
     model: combo.model,
     modelLabel: combo.modelCfg.label || combo.model,
+    thinking: thinkingFor(combo.harness) || null,
     task: taskId,
     verdict,
     invalid,
@@ -623,7 +660,8 @@ async function ensureCombo(combo) {
           baseUrl: combo.modelCfg.niffler.baseUrl,
           apiKey: keys[combo.modelCfg.niffler.apiKeyEnv],
           model: combo.modelCfg.niffler.model,
-          thinking: combo.modelCfg.niffler.thinking || "",
+          thinking: thinkingByHarness ? thinkingFor("niffler") : combo.modelCfg.niffler.thinking || "",
+          maxTurnRounds,
           expertEnabled: combo.harness === "niffler-expert",
           expertJudge:
             combo.harness === "niffler-expert" && cfg.expertJudge
@@ -684,6 +722,10 @@ async function main() {
     taskTimeoutMs,
     turnTimeoutMs,
     keepRepos: KEEP_REPOS,
+    thinking: {
+      profile: THINKING || null,
+      harnesses: thinkingByHarness,
+    },
   });
 
   // Task-major scheduling: one cell = (combo, task). Cells are emitted task

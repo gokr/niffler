@@ -79,7 +79,8 @@ node bench/report.mjs --latest         # most recent run in var/bench/results
 ```
 
 Useful flags: `--rounds N` (feedback rounds, default 6), `--turn-timeout-min`,
-`--task-timeout-min`, `--test-timeout-sec`, `--harness niffler,pi`,
+`--task-timeout-min`, `--test-timeout-sec`, `--max-turn-rounds N` (niffler
+LLM-round budget per turn, default 100), `--harness niffler,pi`,
 `--model a,b`, `--task t01,t03`, `--task-root path` (generated/custom tasks),
 `--keep-repos` (preserve each completed
 workdir's `.git` for debugging; default strips it after `patch.diff` capture so

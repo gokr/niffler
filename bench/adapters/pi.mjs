@@ -29,6 +29,10 @@ export function setupPiConfig(runRoot, defaults) {
                 input: ["text"],
                 contextWindow: 1000000,
                 maxTokens: 384000,
+                // thinkingLevelMap: without it pi treats the extended "max"
+                // level as unsupported and clamps to high; "xhigh" stays
+                // hidden. "low" keeps the provider default mapping.
+                thinkingLevelMap: { xhigh: null, max: "max" },
                 cost: { input: 0.283, output: 1.14, cacheRead: 0.028, cacheWrite: 0 },
               },
             ],
@@ -45,6 +49,7 @@ export function setupPiConfig(runRoot, defaults) {
                 input: ["text"],
                 contextWindow: 200000,
                 maxTokens: 131072,
+                thinkingLevelMap: { xhigh: null, max: "max" },
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               },
             ],
@@ -71,6 +76,9 @@ function newestSessionFile(sessionsDir) {
 export async function round(opts) {
   const { repo, prompt, modelCfg, keys, sessionsDir, sessionFile, turnTimeoutMs, cfgDir } =
     opts;
+  // Explicit round-level thinking (run.mjs --thinking profile) wins over the
+  // per-model config default.
+  const thinking = opts.thinking || modelCfg.thinking || "";
   const args = [
     "--mode",
     "json",
@@ -86,7 +94,7 @@ export async function round(opts) {
     sessionsDir,
   ];
   if (sessionFile) args.push("--session", sessionFile);
-  if (modelCfg.thinking) args.push("--thinking", modelCfg.thinking);
+  if (thinking) args.push("--thinking", thinking);
   args.push("-p", prompt);
 
   const env = {
