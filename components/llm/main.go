@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"sort"
@@ -413,7 +414,7 @@ type chatArgs struct {
 	SessionID string        `json:"sessionId"`
 	Stream    bool          `json:"stream"`
 	// ReasoningEffort forwards a per-turn thinking-effort selection
-	// ("low"|"medium"|"high"); empty = provider default. Only sent to the
+	// ("low"|"medium"|"high"|"max"); empty = provider default. Only sent to the
 	// API when set — providers that do not support reasoning_effort
 	// (deepseek-reasoner, most open gateways) never see the field.
 	ReasoningEffort string `json:"reasoning_effort"`
@@ -589,6 +590,7 @@ func sanitizeMessages(msgs []chatMessage) {
 }
 
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
+	startedAt := time.Now()
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
@@ -608,6 +610,18 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 	if usedModel == "" {
 		usedModel = model
 	}
+	effort := args.ReasoningEffort
+	if effort == "" {
+		effort = "default"
+	}
+	total := time.Since(startedAt)
+	tps := 0.0
+	if resp.Usage.CompletionTokens > 0 && total > 0 {
+		tps = float64(resp.Usage.CompletionTokens) / total.Seconds()
+	}
+	log.Printf("INFO chat provider=%s model=%s effort=%s ttft=n/a dur=%s prompt=%d completion=%d tok/s=%.1f status=ok",
+		providerName, usedModel, effort, total.Truncate(time.Millisecond),
+		resp.Usage.PromptTokens, resp.Usage.CompletionTokens, tps)
 	return resultJSON(providerName, usedModel, contextSize, msg.Content,
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
 }
@@ -664,6 +678,32 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	}
 	defer stream.Close()
 
+	// Per-request timing telemetry: TTFT (time to first visible delta) and
+	// total wall time against the provider's reported usage — this is what
+	// attributes a turn's wallclock to the provider (decode throughput,
+	// thinking bursts) instead of the harness. One stderr line per request;
+	// the supervisor captures it into var/logs/llm.log.
+	startedAt := time.Now()
+	var ttft time.Duration
+	logStreamStats := func(usage openai.Usage, reasoningChars int, errdone bool) {
+		total := time.Since(startedAt)
+		tps := 0.0
+		if usage.CompletionTokens > 0 && total > 0 {
+			tps = float64(usage.CompletionTokens) / total.Seconds()
+		}
+		status := "ok"
+		if errdone {
+			status = "aborted"
+		}
+		effort := args.ReasoningEffort
+		if effort == "" {
+			effort = "default"
+		}
+		log.Printf("INFO chat provider=%s model=%s effort=%s ttft=%s dur=%s prompt=%d completion=%d tok/s=%.1f reasoning_chars=%d status=%s",
+			providerName, model, effort, ttft.Truncate(time.Millisecond), total.Truncate(time.Millisecond),
+			usage.PromptTokens, usage.CompletionTokens, tps, reasoningChars, status)
+	}
+
 	var content, reasoning strings.Builder
 	var calls []openai.ToolCall // aggregated by index, in stream order
 	var usedModel string
@@ -678,10 +718,12 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 			break
 		}
 		if err != nil {
+			logStreamStats(usage, reasoning.Len(), true)
 			return nil, err
 		}
 		var resp llmChunk
 		if err := json.Unmarshal(raw, &resp); err != nil {
+			logStreamStats(usage, reasoning.Len(), true)
 			return nil, fmt.Errorf("bad stream chunk: %w", err)
 		}
 		if resp.Model != "" {
@@ -700,6 +742,9 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		}
 		if delta.reasoning() != "" {
 			reasoning.WriteString(delta.reasoning())
+		}
+		if ttft == 0 && (delta.Content != "" || delta.reasoning() != "" || len(delta.ToolCalls) > 0) {
+			ttft = time.Since(startedAt)
 		}
 		// one token frame per chunk with anything to show
 		if args.SessionID != "" && (delta.Content != "" || delta.reasoning() != "") {
@@ -731,6 +776,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	if usedModel == "" {
 		usedModel = model
 	}
+	logStreamStats(usage, reasoning.Len(), false)
 	return resultJSON(providerName, usedModel, contextSize, content.String(),
 		reasoning.String(), calls, usage, usageSeen)
 }
@@ -858,7 +904,7 @@ func main() {
 			"stream": map[string]any{"type": "boolean",
 				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
 			"reasoning_effort": map[string]any{"type": "string",
-				"description": "Backend reasoning effort (low/medium/high); omitted when empty = provider default"},
+				"description": "Backend reasoning effort (low/medium/high/max); omitted when empty = provider default"},
 			"maxTokens": map[string]any{"type": "integer",
 				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
