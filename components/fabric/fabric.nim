@@ -67,6 +67,9 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   # stdout stays the framing pipe; stderr goes to a file so guest compile
   # errors (the embedded VM prints and quits) become actionable diagnostics
   let sh = "exec " & quoteShell(bin) & " 2> " & quoteShell(errFile)
+  # keep fabric-exec lean: without the sweep it inherits every fd this
+  # component holds (supervisor-inherited pipes, NATS socket, ...)
+  cloexecInheritedFds()
   let p = startProcess("/bin/sh", args = ["-c", sh], env = env,
                        options = {poUsePath})
   var sel = newSelector[cint]()

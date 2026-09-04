@@ -31,6 +31,28 @@ proc readCapture(tmpPath: string): string =
       try: removeFile(tmpPath)
       except CatchableError: discard
 
+proc cloexecInheritedFds*() =
+  ## Mark every open fd above stderr close-on-exec, right before spawning a
+  ## child. Pipes/sockets created by the spawn itself come later and stay
+  ## inheritable, so the child still gets its explicit stdio — but nothing
+  ## else leaks across exec. Without this, a long-lived parent hands ALL of
+  ## its open pipe ends to every child: the supervisor's /bin/sh spawns left
+  ## each component holding ~3 stale pipe ends per earlier component (fabric
+  ## sat at 67 pipe fds, all inherited), and children even carried fds from
+  ## whatever terminal launched the harness. No-op where /proc is missing
+  ## (macOS).
+  try:
+    for kind, path in walkDir("/proc/self/fd"):
+      let fdStr = path.splitPath.tail
+      if fdStr.allCharsInSet({'0'..'9'}):
+        let fd = fdStr.parseInt.cint
+        if fd > 2:
+          let flags = posix.fcntl(fd, posix.F_GETFD)
+          if flags >= 0:
+            discard posix.fcntl(fd, posix.F_SETFD, flags or posix.FD_CLOEXEC)
+  except CatchableError:
+    discard
+
 proc killGroup(pid: Pid, sig: cint) =
   ## Signal the command's whole process group. The forked child made itself
   ## the group leader via setpgid(0, 0), so a negative-pid kill reaches the
@@ -48,6 +70,7 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
   ## probe turns true (checked every 50ms) it is 130. Output is whatever the
   ## command produced before dying.
   inc callCounter
+  cloexecInheritedFds()
   let tmpPath = getTempDir() /
     ("niffler-run-" & $getCurrentProcessId() & "-" & $callCounter & ".out")
   # Wrapped in a subshell so the redirection covers the whole command

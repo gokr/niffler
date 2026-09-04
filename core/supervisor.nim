@@ -7,6 +7,7 @@
 import std/[algorithm, json, os, osproc, strutils, times]
 import natswrapper
 import ../sdk/envelope
+import ../sdk/niffler/procutil
 import catalog
 
 type
@@ -105,6 +106,9 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   except CatchableError:
     discard
   let logPath = logDir / (c.childLabel() & ".log")
+  # Stop the pipe-web: without this sweep every child inherited the parent
+  # ends of all earlier children's spawn pipes (see cloexecInheritedFds).
+  cloexecInheritedFds()
   var cmd = "exec " & quoteShell(c.binary)
   for a in args:
     cmd.add(" " & quoteShell(a))

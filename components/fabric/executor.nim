@@ -108,8 +108,12 @@ proc main =
     let snapshot = $schemas
     code = "import fabricmeta\n" &
       "fabricTools(" & $(%snapshot) & ")\n" & code
-  for k, v in ctx{"strings"}:
-    stringsTable[][k] = v.getStr("")
+  # guard the shape: a malformed frame (missing/non-object "strings") must
+  # not segfault the executor — iterating a nil JsonNode does exactly that
+  let stringsJ = ctx{"strings"}
+  if stringsJ != nil and stringsJ.kind == JObject:
+    for k, v in stringsJ:
+      stringsTable[][k] = v.getStr("")
 
   let std = findNimStdLibCompileTime()
   let interp = createInterpreter("guest.nim",
