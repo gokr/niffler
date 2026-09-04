@@ -25,7 +25,6 @@
     total_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
   }
-  }
 
   interface Msg {
     role: "user" | "assistant" | "tool" | "meta" | "error";
