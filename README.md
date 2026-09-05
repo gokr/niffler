@@ -429,7 +429,9 @@ Open work — deferred follow-ups and quests — is consolidated in
       oversized content spilled to `var/fetch` files
 - [x] **cli component** — drive the harness from a terminal or a script
       (`catalog` / `wait` / `call` / `install`), exit 0 on success; the
-      preferred way to CI a plugin repo (niffler-weather's workflow uses it)
+      preferred way to CI a plugin repo (niffler-weather's workflow uses it).
+      Registration/install verification and tool lookup use core's accepted
+      catalog rather than raw registration announcements
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
