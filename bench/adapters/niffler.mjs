@@ -96,9 +96,14 @@ export class NifflerHarness {
     fs.copyFileSync(path.join(this.benchRoot, ".env"), path.join(this.root, ".env"));
 
     // 1. Private NATS bus on a free port (never the developer's 4222 bus).
+    //    Prefer the in-repo component build (var/bin/nats-server); PATH
+    //    fallback for machines that never ran `make build`.
     this.natsPort = await freePort();
+    const natsBin = fs.existsSync(path.join(this.root, "var", "bin", "nats-server"))
+      ? path.join(this.root, "var", "bin", "nats-server")
+      : "nats-server";
     this.natsProc = spawn(
-      "nats-server",
+      natsBin,
       ["-a", "127.0.0.1", "-p", String(this.natsPort), "-m", "-1"],
       {
         cwd: this.runRoot,

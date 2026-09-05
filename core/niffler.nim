@@ -41,7 +41,16 @@ proc openNatsLib() =
       raise newException(IOError, "nats_Open: " & getErrorString(st))
     natsLib = true
 
-proc spawnNats(): tuple[process: Process, url, monitorUrl: string] =
+proc natsServerBinary(): string =
+  ## The nats-server component (components/nats) builds into var/bin beside
+  ## this binary and wins when present — `make build` alone satisfies the bus
+  ## dependency, no PATH install (pure desktop). PATH remains the fallback for
+  ## hand-compiled dev runs without a full build.
+  let local = getAppDir() / "nats-server"
+  if fileExists(local): return local
+  "nats-server"
+
+proc spawnNats(): tuple[process: Process, url, monitorUrl, binary: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
   ## bind-close-start race: try the canonical 4222 first (local clients
   ## default there), and fall back to any free port when it is taken — a
@@ -49,8 +58,9 @@ proc spawnNats(): tuple[process: Process, url, monitorUrl: string] =
   ## file is needed only during startup.
   let portsDir = createTempDir("niffler-nats-", "")
   try:
+    result.binary = natsServerBinary()
     for port in ["4222", "-1"]:
-      result.process = startProcess("nats-server",
+      result.process = startProcess(result.binary,
         args = ["-a", "127.0.0.1", "-p", port, "-m", "-1",
                 "--ports_file_dir", portsDir],
         options = {poUsePath})
@@ -82,7 +92,8 @@ proc spawnNats(): tuple[process: Process, url, monitorUrl: string] =
       result.process = nil
       result.url = ""
       result.monitorUrl = ""
-    raise newException(IOError, "spawned nats-server did not publish its ports")
+    raise newException(IOError, "spawned " & result.binary &
+                                 " did not publish its ports")
   finally:
     removeDir(portsDir)
 
@@ -224,7 +235,7 @@ proc main() =
       serverProc = spawned.process
       natsUrl = spawned.url
       monitorUrl = spawned.monitorUrl
-      echo "core: spawned nats-server at " & natsUrl &
+      echo "core: spawned " & spawned.binary & " at " & natsUrl &
            " (monitoring " & monitorUrl & ")"
   os.putEnv("NIF_NATS_URL", natsUrl)  # children inherit the bus address
   var nc: NatsConnection

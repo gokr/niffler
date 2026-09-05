@@ -80,7 +80,9 @@ as many UIs as needed.
 
 ## Prerequisites
 
-Core + components need **Nim**, **Go** and **nats-server**; TypeScript
+Core + components need **Nim** and **Go** (the NATS bus server is built
+from source as a component — `components/nats` → `var/bin/nats-server`);
+TypeScript
 components and the desktop UI additionally need **Node/npm** (the
 builder's `lang: "ts"` pulls typescript from the npm registry per build);
 the UI also needs the **wails CLI** and (on Linux) WebKit/GTK dev
@@ -103,8 +105,7 @@ sudo snap install go --classic
 # Nim 2.x (Ubuntu's apt package is too old) — adds ~/.nimble/bin to PATH
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh
 
-# nats-server — or grab a binary from https://github.com/nats-io/nats-server/releases
-go install github.com/nats-io/nats-server/v2@latest
+# nats-server — built from source by `make build` (components/nats), no install needed
 
 # Node/npm (frontend; wails runs `npm install` itself). Ubuntu 24.04 ships
 # node 18, which is fine. Older Ubuntu versions need NodeSource or nvm —
@@ -121,7 +122,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config l
 ### macOS (Homebrew)
 
 ```bash
-brew install go nim nats-server node
+brew install go nim node
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 ```
 
@@ -201,7 +202,8 @@ probe for a live core (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222),
 else spawn `var/bin/niffler` itself (`NIF_AUTOSTART=1`). Interactive
 frontends register `"client": true`; an autostarted core exits when the
 last one departs. Core itself reuses a bus on the default port when one is
-live, else spawns nats-server there (falling back to a random loopback port
+live, else spawns the built nats-server component (`var/bin/nats-server`)
+there (falling back to a random loopback port
 when 4222 is taken) and writes `var/nats-url`. Set `NIF_NATS_URL` to attach
 to any bus, even a remote one.
 

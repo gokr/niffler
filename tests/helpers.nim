@@ -42,7 +42,14 @@ proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: strin
     # Redirect the server's output to a file: with the default pipe, the
     # server's connection logs fill the 64KB buffer (reconnect storms make
     # this inevitable) and the blocked write freezes the whole bus.
-    var cmd = "exec nats-server"
+    # Prefer the in-repo nats-server component (var/bin) when NIF_REPO_ROOT
+    # is set — the Makefile always sets it for test runs; PATH is the
+    # fallback for hand-run `nim c -r tests/t_*.nim`.
+    var natsBin = "nats-server"
+    let repoRoot = getEnv("NIF_REPO_ROOT", "")
+    if repoRoot.len > 0 and fileExists(repoRoot / "var" / "bin" / "nats-server"):
+      natsBin = repoRoot / "var" / "bin" / "nats-server"
+    var cmd = "exec " & quoteShell(natsBin)
     for a in args:
       cmd.add(" " & quoteShell(a))
     cmd.add(" >> /tmp/niffler-test-nats.log 2>&1")
@@ -276,6 +283,6 @@ proc newCoreSandbox*(tag: string,
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
   writeFile(result.root / "manifest.yaml", manifest)
-  for name in ["niffler", "session", "cli"]:
+  for name in ["niffler", "session", "cli", "nats-server"]:
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
