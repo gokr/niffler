@@ -317,8 +317,10 @@ proc main() =
     of bkFree:
       spawnPorts = @[portOf(natsUrl)]
     of bkForeignCore:
-      stderr.writeLine("core: WARNING " & natsUrl & " is owned by the harness at " &
-        probe.owner & " — spawning an isolated bus instead; stop that harness to reclaim " &
+      let who = if probe.owner.len > 0: "the harness at " & probe.owner
+                else: "an unidentified (older?) harness"
+      stderr.writeLine("core: WARNING " & natsUrl & " is owned by " & who &
+        " — spawning an isolated bus instead; stop that harness to reclaim " &
         natsUrl)
       spawnPorts = @["-1"]
     of bkBareNats:
