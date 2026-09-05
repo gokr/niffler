@@ -431,7 +431,8 @@ Open work — deferred follow-ups and quests — is consolidated in
       (`catalog` / `wait` / `call` / `install`), exit 0 on success; the
       preferred way to CI a plugin repo (niffler-weather's workflow uses it).
       Registration/install verification and tool lookup use core's accepted
-      catalog, so rejected announcements cannot report success
+      catalog; installs match spawned process IDs, so rejected announcements or
+      existing same-name components cannot report success
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;

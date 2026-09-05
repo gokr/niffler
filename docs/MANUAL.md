@@ -325,7 +325,10 @@ it is the scripting face, the tty admin shell is the interactive one:
 ```
 
 `cli install` clones, builds via the builder, spawns every component and
-waits for core to accept each service registration; interactive components
+waits for core to accept the specific process IDs returned by each service
+spawn; an existing same-name component cannot confirm the new installation.
+Missing process IDs fail verification (upgrade core and plugins together with
+CLI). Interactive components
 are verified by their build. CLI catalog and tool lookup also use core's
 authoritative directory, never raw registration broadcasts. A plugin repo's CI
 proves a package by running the harness itself through this one command. `file://` repo URLs
