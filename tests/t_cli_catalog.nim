@@ -66,14 +66,15 @@ proc main() =
     let code = cli.waitForExit(5_000)
     if code == -1: cli.kill()
     let output = cli.outputStream.readAll()
-    check("call reaches accepted provider", code == 0 and output.contains("\"pong\":true"), output)
+    check("call uses core’s catalog-selected service", code == 0 and output.contains("\"pong\":true"), output)
 
-  for response in ["not-json", "{}", "{\"components\":[]}"]:
+  for response in ["not-json", "core-error", "{}", "{\"components\":[]}"]:
     let cli = startComponent(cliBin, url, root = root, args = ["catalog"])
     defer: stopProcess(cli)
     let request = nextCall(core)
     announce()
     let data = if response == "not-json": response
+               elif response == "core-error": errorEnvelope(request.env.id, "unavailable", "fixture").encode()
                else: resultEnvelope(request.env.id, parseJson(response)).encode()
     nc.publish(request.reply, data)
     let code = cli.waitForExit(5_000)
@@ -111,49 +112,24 @@ proc main() =
                          "replacement": ["old_tool"]}}).encode())
     let install = nextCall(plugins)
     nc.publish(install.reply, resultEnvelope(install.env.id,
-      %*{"ok": true, "components": [{"name": "replacement", "spawned": true, "pids": [222, 333]}]}).encode())
-    # Old membership remains present. Neither it nor a partially accepted
-    # replica group can acknowledge the instances returned by this spawn.
-    for ids in [@[111], @[111, 222]]:
-      let pending = nextCall(core)
-      nc.publish(pending.reply, resultEnvelope(pending.env.id,
-        %*{"components": [{"name": "replacement", "pids": ids,
-                           "tools": [{"name": "old_tool"}]}]}).encode())
+      %*{"ok": true, "components": [{"name": "replacement", "spawned": true}]}).encode())
     let missing = nextCall(core)
     nc.publish(missing.reply, resultEnvelope(missing.env.id,
-      %*{"components": []}).encode())
+      %*{"components": {"plugins": ["plugin_install"]}}).encode())
+    # The earlier membership must not survive this snapshot. Receiving
+    # another request proves install kept waiting instead of using the cache.
+    let unavailable = nextCall(core)
+    nc.publish(unavailable.reply, errorEnvelope(unavailable.env.id,
+      "unavailable", "fixture").encode())
     let accepted = nextCall(core)
     nc.publish(accepted.reply, resultEnvelope(accepted.env.id,
-      %*{"components": [{"name": "replacement", "pids": [222, 333],
-        "tools": [{"name": "new_one"}, {"name": "new_two"}]}]}).encode())
-    let code = cli.waitForExit(5_000)
-    if code == -1: cli.kill()
-    let output = cli.outputStream.readAll()
-    check("install requires every spawned instance in a fresh accepted snapshot",
-          code == 0 and output.contains("replacement registered (2 tools)"), output)
-
-  for ids in [newJNull(), %* [], %* [0], %* ["222"]]:
-    var plugins: ptr natsSubscription
-    doAssert natsConnection_SubscribeSync(addr plugins, nc.conn,
-                                          "svc.plugins.call") == NATS_OK
-    defer: natsSubscription_Destroy(plugins)
-    discard natsConnection_Flush(nc.conn)
-    let cli = startComponent(cliBin, url, root = root,
-                             args = ["install", "fixture/package"])
-    defer: stopProcess(cli)
-    let initial = nextCall(core)
-    nc.publish(initial.reply, resultEnvelope(initial.env.id,
       %*{"components": {"plugins": ["plugin_install"],
-                         "replacement": ["old_tool"]}}).encode())
-    let install = nextCall(plugins)
-    nc.publish(install.reply, resultEnvelope(install.env.id,
-      %*{"ok": true, "components": [{"name": "replacement", "spawned": true,
-                                      "pids": ids}]}).encode())
+                         "replacement": ["new_one", "new_two"]}}).encode())
     let code = cli.waitForExit(5_000)
     if code == -1: cli.kill()
     let output = cli.outputStream.readAll()
-    check("install fails closed without valid spawn IDs: " & $ids,
-      code > 0 and output.contains("INSTALL FAILED"), output)
+    check("install replaces stale membership with a fresh accepted snapshot",
+          code == 0 and output.contains("replacement registered (2 tools)"), output)
 
   report("CLI CATALOG TEST")
 

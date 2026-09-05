@@ -105,13 +105,6 @@ proc main() =
 
   let reg = runCli(cliBin, url, @["wait", "lifec", "15"], root = root)
   check("lifec registers", reg.code == 0, reg.output)
-  let snapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
-  var matchingInstance = false
-  for entry in snapshot["components"]:
-    if entry{"name"}.getStr() == "lifec":
-      matchingInstance = spawned{"pids"} != nil and
-        spawned["pids"].len == 1 and spawned["pids"] == entry{"pids"}
-  check("spawn returns the accepted process identity", matchingInstance, $spawned)
   let ping = runCli(cliBin, url, @["call", "lifec_ping", "{}"], 30_000,
                     root = root)
   check("lifec_ping callable", ping.code == 0 and

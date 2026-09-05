@@ -210,16 +210,9 @@ ev.approval.resolved   # core → UIs: {id, ok} gate verdict; clients dismiss
 projection — tools without `x-harness.onDemand`/`x-harness.hidden`),
 `components` (component→tools view over the full catalog for bus clients
 — the CLI reads this authoritative snapshot for catalog, tool lookup, and
-named registration checks; raw `reg.publish` is not acceptance) and
+registration/install verification; raw `reg.publish` is not acceptance) and
 `snapshot` (full registration payloads incl. schemas — session runners
 seed their catalog from it at startup, then follow `reg.>` live).
-`spawn` returns `pids`, the process IDs it started, alongside `ok`, `name`,
-and `replicas`; this confirms process creation, not registration acceptance.
-`plugin_install` preserves these IDs in each spawned component result. CLI
-installation verification requires every returned PID in that component's
-accepted `snapshot.pids`; an existing same-name component is insufficient.
-Missing instance IDs fail verification. If an initial process exits and is
-restarted, the replacement PID does not acknowledge the original spawn.
 The LLM-facing core tools also include `discover` (hint/schema lookup
 over the non-hidden catalog) and `invoke` (generic gateway into any live
 non-hidden tool, preserving its approval/timeout policy) — see

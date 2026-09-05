@@ -170,49 +170,6 @@ proc main() =
   check("conflicting plugin cleaned up", conflictRemoval.code == 0,
         conflictRemoval.output)
 
-  # Keep an external same-name component accepted while installing a new
-  # incompatible instance. Core permits spawn (it is not supervised), then
-  # rejects its registration; the old name must not validate this install.
-  let replacementRepo = pkgDir / "replacementrepo"
-  createDir(replacementRepo)
-  writeFile(replacementRepo / "niffler.json",
-    readFile(conflictRepo / "niffler.json").replace("testconflict", "testreplacement")
-      .replace("conflict", "replacement"))
-  writeFile(replacementRepo / "main.nim",
-    readFile(conflictRepo / "main.nim").replace("conflict", "replacement")
-      .replace("catalog", "replacement_new"))
-  commitRepo(replacementRepo)
-  let externalBuild = call(nc, "builder", "build", %*{"lang": "nim",
-    "name": "external-replacement", "source": """
-    import niffler/sdk
-    let comp = newComponent("replacement", "0.1.0")
-    comp.tool:
-      proc replacement_old(): JsonNode =
-        ## Identify the external instance
-        %*{"old": true}
-    comp.run()
-    """.dedent()}, 300_000)
-  doAssert externalBuild{"ok"}.getBool(false), $externalBuild
-  let external = startComponent(externalBuild{"binary"}.getStr(), url, root = root)
-  defer: stopProcess(external)
-  let ready = runCli(cliBin, url, @["wait", "replacement", "15"], root = root)
-  doAssert ready.code == 0, ready.output
-  let replacement = runCli(cliBin, url,
-    @["install", "file://" & replacementRepo], 300_000, root = root)
-  check("same-name rejected instance cannot produce INSTALL OK",
-    replacement.code != 0 and replacement.output.contains("INSTALL FAILED") and
-    not replacement.output.contains("INSTALL OK"), replacement.output)
-  let snapshot = call(nc, "core", "catalog", %*{"op": "snapshot"})
-  var oldOnly = false
-  for entry in snapshot["components"]:
-    if entry{"name"}.getStr() == "replacement":
-      oldOnly = entry{"pids"} == %* [external.processID]
-  check("old external instance remains the only accepted replacement", oldOnly, $snapshot)
-  let cleanup = runCli(cliBin, url,
-    @["call", "plugin_remove", """{"package":"testreplacement"}"""],
-    60_000, root = root)
-  check("same-name rejected plugin cleaned up", cleanup.code == 0, cleanup.output)
-
   # duplicate install is rejected
   let dup = runCli(cliBin, url, @["install", "file://" & repoDir], 60_000,
                    root = root)

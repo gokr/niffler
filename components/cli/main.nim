@@ -21,7 +21,6 @@ import dotenv
 import subjects
 
 var components = initTable[string, seq[string]]()  ## component -> tools
-var componentPids = initTable[string, seq[int]]() ## accepted instances
 var toolIndex = initTable[string, string]()        ## tool -> component
 
 proc resolveBusUrl(): string =
@@ -30,14 +29,12 @@ proc resolveBusUrl(): string =
   ## (SDK's resolveNatsUrl — the same order every client follows).
   resolveNatsUrl()
 
-proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000, instances = false): bool =
-  ## Core owns registration acceptance. Replace all indexes on every read;
+proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000): bool =
+  ## Core owns registration acceptance. Replace both indexes on every read;
   ## a failed read must not leave stale entries available as proof of success.
   components.clear()
   toolIndex.clear()
-  componentPids.clear()
-  let op = if instances: "snapshot" else: "components"
-  let data = callEnvelope("catalog", %*{"op": op}).encode()
+  let data = callEnvelope("catalog", %*{"op": "components"}).encode()
   var msg: ptr natsMsg
   let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call".cstring,
                                   data.cstring, data.len.cint, timeoutMs.int64)
@@ -45,28 +42,9 @@ proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000, instances = false): b
   defer: natsMsg_Destroy(msg)
   try:
     let r = decode($natsMsg_GetData(msg))
-    var snapshot = r.args{"components"}
-    if r.kind != ekResult or snapshot == nil: return false
-    var pids = initTable[string, seq[int]]()
-    if instances:
-      if snapshot.kind != JArray: return false
-      let entries = snapshot
-      snapshot = newJObject()
-      for entry in entries:
-        let name = entry{"name"}.getStr("")
-        if name.len == 0 or entry{"pids"} == nil or
-           entry{"pids"}.kind != JArray or entry{"tools"} == nil or
-           entry{"tools"}.kind != JArray: return false
-        var ids: seq[int] = @[]
-        for pid in entry["pids"]:
-          if pid.kind != JInt or pid.getInt() <= 0: return false
-          ids.add(pid.getInt())
-        pids[name] = ids
-        snapshot[name] = newJArray()
-        for tool in entry["tools"]:
-          if tool{"name"} == nil: return false
-          snapshot[name].add(tool["name"])
-    if snapshot.kind != JObject: return false
+    let snapshot = r.args{"components"}
+    if r.kind != ekResult or snapshot == nil or snapshot.kind != JObject:
+      return false
     var accepted = initTable[string, seq[string]]()
     var owners = initTable[string, string]()
     for name, tools in snapshot:
@@ -79,7 +57,6 @@ proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000, instances = false): b
         ts.add(tname)
         owners[tname] = name
       accepted[name] = ts
-    componentPids = pids
     components = accepted
     toolIndex = owners
     return true
@@ -87,7 +64,7 @@ proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000, instances = false): b
     return false
 
 proc waitForRegistration(nc: NatsConnection, name: string, secs: int,
-                         isTool = false, expectedPids: seq[int] = @[]): bool =
+                         isTool = false): bool =
   ## Poll the authoritative snapshot; raw reg.* never grants membership.
   ## Bound each request by the remaining wait. A zero-second wait performs
   ## one bounded snapshot read, without a final unconfirmed cache lookup.
@@ -96,14 +73,11 @@ proc waitForRegistration(nc: NatsConnection, name: string, secs: int,
     let remaining = (deadline - getMonoTime()).inMilliseconds
     let timeoutMs = if secs <= 0: 5_000
                     else: int(max(1'i64, min(5_000'i64, remaining)))
-    if refreshCatalog(nc, timeoutMs, instances = expectedPids.len > 0):
+    if refreshCatalog(nc, timeoutMs):
       if isTool:
         if toolIndex.hasKey(name): return true
       elif components.hasKey(name):
-        var matched = true
-        for pid in expectedPids:
-          if pid notin componentPids.getOrDefault(name): matched = false
-        if matched: return true
+        return true
     let left = (deadline - getMonoTime()).inMilliseconds
     if left <= 0: return false
     sleep(int(min(200'i64, left)))
@@ -170,8 +144,7 @@ proc cmdCall(nc: NatsConnection,
 
 proc cmdInstall(nc: NatsConnection, repoRef: string): int =
   ## plugin_install, then wait for every spawned service component to
-  ## register its returned process IDs. Interactive components are verified
-  ## by their successful build.
+  ## register. Interactive components are verified by their successful build.
   var repo = repoRef
   var version = ""
   let at = repo.rfind('@')
@@ -210,19 +183,7 @@ proc cmdInstall(nc: NatsConnection, repoRef: string): int =
            c{"error"}.getStr("unknown error")
       inc failed
       continue
-    var expectedPids: seq[int] = @[]
-    let ids = c{"pids"}
-    if ids != nil and ids.kind == JArray:
-      for pid in ids:
-        if pid.kind != JInt or pid.getInt() <= 0:
-          expectedPids.setLen(0)
-          break
-        expectedPids.add(pid.getInt())
-    if expectedPids.len == 0:
-      echo "cli: FAIL — " & name & " spawn returned no valid instance IDs"
-      inc failed
-      continue
-    if waitForRegistration(nc, name, 60, expectedPids = expectedPids):
+    if waitForComponent(nc, name, 60):
       echo "cli: " & name & " registered (" &
            $components.getOrDefault(name).len & " tools)"
     else:

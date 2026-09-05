@@ -207,10 +207,9 @@ proc readManifest(dir: string): Manifest =
 
 proc spawnComponent(mc: ManifestComp, binary: string): JsonNode =
   try:
-    let spawned = comp.request("core", "spawn",
+    discard comp.request("core", "spawn",
                          %*{"name": mc.name, "binary": binary}, 360_000)
-    return %*{"name": mc.name, "binary": binary, "spawned": true,
-              "pids": spawned{"pids"}}
+    return %*{"name": mc.name, "binary": binary, "spawned": true}
   except CatchableError as e:
     return %*{"name": mc.name, "binary": binary, "spawned": false,
               "error": e.msg}

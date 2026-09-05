@@ -369,11 +369,7 @@ proc main() =
       60_000)
     check("replica: spawn two sr processes",
           spawned{"ok"}.getBool(false) and
-          spawned{"replicas"}.getInt(0) == 2 and
-          spawned{"pids"} != nil and spawned["pids"].len == 2 and
-          spawned["pids"][0].getInt() > 0 and
-          spawned["pids"][1].getInt() > 0 and
-          spawned["pids"][0] != spawned["pids"][1], $spawned)
+          spawned{"replicas"}.getInt(0) == 2, $spawned)
     check("replica: both processes registered", waitReplicas(nc, "sr", 2))
 
     let status = call(nc, "core", "status", newJObject(), 10_000)

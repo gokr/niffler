@@ -325,14 +325,13 @@ it is the scripting face, the tty admin shell is the interactive one:
 ```
 
 `cli install` clones, builds via the builder, spawns every component and
-waits for core to accept the specific process IDs returned by each service
-spawn; an existing same-name component cannot confirm the new installation.
-Missing process IDs fail verification (upgrade core and plugins together with
-CLI). Interactive components
-are verified by their build. CLI catalog and tool lookup also use core's
+waits for each service name to appear in core's accepted catalog; interactive
+components are verified by their build. CLI catalog and tool lookup also use core's
 authoritative directory, never raw registration broadcasts. A plugin repo's CI
 proves a package by running the harness itself through this one command. `file://` repo URLs
-install from local git repos (hermetic tests, mirrors).
+install from local git repos (hermetic tests, mirrors). Name-based verification
+does not distinguish an existing accepted component from a newly started
+process with the same name.
 
 ## Approvals
 

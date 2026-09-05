@@ -200,18 +200,16 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let abs = if binary.startsWith("/"): binary else: ct.sup.root / binary
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
-    var pids: seq[int] = @[]
     for i in 0 ..< replicas:
       discard ct.sup.addChild(name, abs)
       ct.sup.startChild(ct.sup.children[^1])
-      pids.add(ct.sup.children[^1].process.processID)
     try:
       discard ct.storePutRev("component", name,
         %*{"name": name, "binary": abs, "policy": "on-failure",
            "replicas": replicas, "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
-    return %*{"ok": true, "name": name, "replicas": replicas, "pids": pids}
+    return %*{"ok": true, "name": name, "replicas": replicas}
   of "kill":
     ## Stop a running component: drain, then terminate. It stays persisted
     ## in the store and is restored on the next boot.
