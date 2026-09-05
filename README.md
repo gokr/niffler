@@ -64,7 +64,9 @@ subagents). Changelog: [CHANGELOG.md](CHANGELOG.md).
 git clone https://github.com/gokr/niffler.git && cd niffler
 make setup              # prerequisites for your platform
 make                    # build everything, once
-ui/build/bin/niffler-ui # the desktop UI; or:
+make install            # put niffler / niffler-cli / niffler-console on PATH
+                        # (asks about the niffler-tui plugin; WITH_TUI=1 skips the ask)
+niffler-tui             # terminal chat; or:
 make ui-install         # install the launcher + app icon (Linux), then click it
 ```
 
@@ -73,6 +75,15 @@ running (via the SDK's `ensureHarness`), and the **last interactive client to
 close stops a harness it autostarted**. Note that the `niffler-tui` plugin
 does *not* autostart anything: it attaches to an already-running harness
 (like any bus client, it probes `NIF_NATS_URL` → `var/nats-url` → 4222).
+
+**One clone = one instance.** A harness claims its home bus (`.env`'s
+`NIF_NATS_URL`, default `nats://127.0.0.1:4222`) when free, attaches only to
+its own core, and yields loudly to a foreign one — clones never mix buses or
+stores, even on the shared port. Dev clones set `NIF_NATS_SPAWN=1` to always
+get an isolated random-port bus. Startup prints the harness root + git
+revision, and every catalog response carries them (`/status` in the tui
+shows them too). Children (components, nats-server) can't outlive their
+harness even on SIGKILL.
 
 Using multiple UIs in parallel? Start core manually with
 `./var/bin/niffler`; its admin shell stays up until you stop it. Then launch
