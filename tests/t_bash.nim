@@ -5,6 +5,7 @@
 
 import std/[json, os, osproc, strutils, times]
 import natswrapper
+import envelope
 import helpers
 
 proc main() =
@@ -17,7 +18,7 @@ proc main() =
   let tmp = tempRoot("bash")
   defer: removeDir(tmp)
 
-  let (server, url) = startNats(routed = true)
+  let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

@@ -27,7 +27,7 @@ proc main() =
     "\nswitch(\"nimcache\", thisDir() / \"var\" / \"nimcache\")\n")
   copyFile(root / "niffler.nimble", tmp / "niffler.nimble")
 
-  let (server, url) = startNats(routed = true)
+  let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

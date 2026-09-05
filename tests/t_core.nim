@@ -143,7 +143,8 @@ proc main() =
     # started by this supervisor, even when all replicas share one name.
     let external = startComponent(built{"binary"}.getStr(), url, root = root)
     defer: stopProcess(external)
-    doAssert waitRegistered(nc, "lifec")
+    let externalReady = runCli(cliBin, url, @["wait", "lifec", "15"], root = root)
+    doAssert externalReady.code == 0, externalReady.output
     let group = call(nc, "core", "spawn",
       %*{"name": "lifec", "binary": built{"binary"}.getStr()}, 60_000)
     doAssert group{"ok"}.getBool(false), $group
@@ -395,7 +396,7 @@ proc main() =
   let minimalSandbox = newCoreSandbox(
     "minimal", ["store", "bash", "builder", "plugins", "llm"])
   defer: removeDir(minimalSandbox.root)
-  let (server3, url3) = startNats(routed = true)
+  let (server3, url3) = startNats()
   defer: stopServer(server3)
   var nc3 = waitConnect(url3)
   defer: nc3.close()
@@ -423,7 +424,6 @@ proc main() =
   check("seed persisted component for minimal mode", seeded)
   stopProcess(seedStore, 1500)
   seedStore = nil
-  stopCatalogRouter(server3)
 
   let minimalCore = startComponent(minimalSandbox.sandboxBin("niffler"), url3,
     root = minimalSandbox.root, args = ["--minimal"])

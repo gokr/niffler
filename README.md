@@ -46,7 +46,7 @@ component with its own language's SDK, not code compiled into core.
 
 On a normal boot, `manifest.yaml` autostarts `store`, `bash`, `builder`,
 `plugins`, `skills`, `fetch`, `models`, `provider`, `llm`, `edit`,
-`grep` (four stateless service replicas), `git`, `observe`, `logfile`,
+`grep` (four stateless queue-group replicas), `git`, `observe`, `logfile`,
 `agent` and `fabric`. The Nim SDK
 powers all of those except Go-based `models`, `provider` and `llm`; `cli` and `console` are built-in Nim
 clients run on demand. A minimal non-streaming Go adapter, `llm-openai`, ships
@@ -432,8 +432,7 @@ Open work — deferred follow-ups and quests — is consolidated in
       preferred way to CI a plugin repo (niffler-weather's workflow uses it).
       Registration/install verification and tool lookup use core's accepted
       catalog; installs match spawned process IDs, so rejected announcements or
-      existing same-name components cannot report success. Core routes only to
-      accepted private instance addresses; kill/remove preserve external peers
+      existing same-name components cannot report success
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
@@ -441,7 +440,7 @@ Open work — deferred follow-ups and quests — is consolidated in
 - [x] **parallel tool waves + process replicas** — session runners fan out
       explicitly `x-harness.parallel` calls over distinct NATS inboxes and
       commit replies in model order; stateless logical components can declare
-      or spawn 1–16 service replicas for same-component concurrency while
+      or spawn 1–16 queue-group replicas for same-component concurrency while
       the default Nim SDK pump remains threadless (four `grep` replicas ship by
       default); audited Go tools can opt into bounded `ToolConcurrent`
       goroutines, enabled first for both LLM adapters

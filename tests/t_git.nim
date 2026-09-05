@@ -45,7 +45,7 @@ proc main() =
   defer: removeDir(tmp)
   gitSetup(tmp)
 
-  let (server, url) = startNats(routed = true)
+  let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

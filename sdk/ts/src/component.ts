@@ -80,7 +80,6 @@ export class Component {
   private chain: Promise<unknown> = Promise.resolve();
   private handlerContext = new AsyncLocalStorage<boolean>();
   private closing: Promise<void> | null = null;
-  private service = "";
   private closeRequested = false;
   private stopRun: (() => void) | null = null;
 
@@ -249,9 +248,10 @@ export class Component {
     });
     this.closing = null;
 
-    // Core forwards the logical service address only to accepted instances.
-    this.service = "svc." + this.name + ".instance." + newId() + ".call";
-    const callSub = this.nc.subscribe(this.service);
+    // queue-grouped call subject: N replicas, one gets each call
+    const callSub = this.nc.subscribe("svc." + this.name + ".call", {
+      queue: this.name,
+    });
     callSub.callback = (err, msg) => {
       if (err) return;
       this.enqueue(() => this.handleCall(msg.subject, msg.reply ?? "", msg.data));
@@ -296,18 +296,7 @@ export class Component {
       this.subs.push(sub);
     }
 
-    try {
-      const ack = await this.nc.request("reg.publish",
-        sc.encode(JSON.stringify(this.regPayload())), { timeout: 30_000 });
-      if (JSON.parse(sc.decode(ack.data)).accepted !== true) {
-        throw new Error(`registration rejected by core: ${this.name}`);
-      }
-    } catch (error) {
-      await this.nc.close();
-      this.nc = null;
-      this.subs = [];
-      throw error;
-    }
+    this.announce("reg.publish");
     console.log(
       `${this.name} v${this.version} online on ${url} (${this.tools.length} tools)`
     );
@@ -380,18 +369,14 @@ export class Component {
     }
   }
 
-  private regPayload() {
-    return {
+  private announce(subject: string): void {
+    const payload = {
       name: this.name,
       version: this.version,
       pid: process.pid,
-      service: this.service,
       tools: this.tools.map((t) => ({ name: t.name, schema: t.schema })),
     };
-  }
-
-  private announce(subject: string): void {
-    this.nc?.publish(subject, sc.encode(JSON.stringify(this.regPayload())));
+    this.nc?.publish(subject, sc.encode(JSON.stringify(payload)));
   }
 
   /** Serialize handler execution (single logical thread). */

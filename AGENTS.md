@@ -21,8 +21,7 @@ anything structural.
   `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
   write source → `builder.build`
   → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
-  coordinated components; core routes calls across their accepted private
-  instance addresses. SDKs never subscribe to public component call subjects. Removing
+  coordinated components and uses their existing NATS queue group. Removing
   one logical group = `core.kill` (temporary) or `core.remove` (also deletes
   the persisted record). The agent does this to itself,
   mid-conversation — that is the architecture's validation criterion.

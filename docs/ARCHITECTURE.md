@@ -31,8 +31,8 @@ definition.
 Process lifecycle: start, crash detection, drain ordering, SIGTERM→SIGKILL
 escalation on shutdown. `core.spawn`/`kill`/`remove` are its API surface.
 Stateless logical components may have multiple supervised process replicas;
-core distributes calls across their accepted private service addresses.
-Lifecycle operations stop the supervised replicas and preserve external peers.
+their shared NATS queue group distributes calls, and lifecycle operations act
+on the whole replica group.
 
 Two separate reasons it cannot be a component:
 
@@ -68,12 +68,8 @@ The live registry: `reg.publish`/`reg.depart` handling, global tool-name
 uniqueness enforcement, exposure projection (`x-harness.hidden` removes a
 tool from every LLM view; `x-harness.onDemand` keeps it out of the per-
 conversation direct set but discoverable via `discover`), schema
-normalization, `ev.catalog.updated` announcements, and accepted-instance routing. Routing always uses the
-full catalog — exposure shapes prompts, not dispatch rights. SDK processes
-subscribe only to private instance addresses. The system catalog owns public
-component addresses and forwards to accepted instances, preserving the original
-reply inbox. Rejection therefore excludes a process from delivery, not just
-from discovery. Session catalogs are read-only mirrors and never own routes.
+normalization, `ev.catalog.updated` announcements. Routing always uses the
+full catalog — exposure shapes prompts, not dispatch rights.
 
 The borderline case — it is almost a component (a `reg.>` subscriber). It stays
 in core because it must (a) exist before any component registers — boot order —

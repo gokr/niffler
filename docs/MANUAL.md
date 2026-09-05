@@ -63,7 +63,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
-| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless service replicas overlap same-component searches |
+| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -263,7 +263,7 @@ Core speaks exactly one protocol: JSON envelopes over NATS (details in
 ```
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
 reg.depart             graceful shutdown announcement
-svc.<component>.call   tool call request/reply routed by core
+svc.<component>.call   queue-grouped tool call request/reply
 svc.session.<id>.steer   fire-and-forget mid-turn message injection ({content})
 svc.session.<id>.advise  turn-bound advisory request/reply (the expert peer):
                          accepted only while the named turnId is live
@@ -333,6 +333,11 @@ are verified by their build. CLI catalog and tool lookup also use core's
 authoritative directory, never raw registration broadcasts. A plugin repo's CI
 proves a package by running the harness itself through this one command. `file://` repo URLs
 install from local git repos (hermetic tests, mirrors).
+
+This verifies catalog acceptance, not exclusive delivery: service calls still
+use the existing NATS queue groups. A rejected same-name process can remain
+subscribed and receive calls. Failed installations are not automatically
+rolled back; removing them preserves unrelated external registrations.
 
 ## Approvals
 
@@ -444,13 +449,13 @@ The agent adds capabilities at runtime, mid-conversation:
 3. `core.spawn {name, binary, replicas?}` starts it; it registers itself; new
    conversations expose its tools directly (when not on demand), existing
    ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery))
-4. `core.kill {name}` stops every supervised replica temporarily (restored on next boot);
-   `core.remove {name}` stops supervised replicas and deletes their persisted record;
-   external replicas remain registered
+4. `core.kill {name}` stops every replica temporarily (restored on next boot);
+   `core.remove {name}` stops the group and deletes its persisted record
 
 `replicas` is optional (1–16, default 1) and is persisted. Use it only for
-stateless or externally coordinated components: core routes the public
-`svc.<name>.call` address round-robin across accepted private instance addresses. Never replicate single-writer `store`, or a component such as `edit`
+stateless or externally coordinated components: all replicas share the same
+`svc.<name>.call` NATS queue group, so concurrent requests distribute one per
+process. Never replicate single-writer `store`, or a component such as `edit`
 whose mutation/undo state is process-local. The default Nim SDK pump remains
 serial. A component may explicitly own native concurrency when replicas do not
 fit: prefer `std/threads` + `std/locks` for long-lived/shared-state Nim workers,
@@ -1470,12 +1475,6 @@ against the same barrel (a second core booted against the same root would
 do exactly that; use a temp `NIF_ROOT` copy for experiments).
 
 ## Testing
-
-Standalone component tests run the production catalog router from
-`tests/catalog_router.nim`; readiness checks query its accepted directory.
-`make test-core` also exercises rejected live subscribers and replica routing.
-For the TypeScript SDK, run `make build var/bin/test_catalog_router`, then
-`npm ci --prefix sdk/ts` and `npm test --prefix sdk/ts`.
 
 ```bash
 make test        # the whole bus-contract suite (spawns its own NATS per test)

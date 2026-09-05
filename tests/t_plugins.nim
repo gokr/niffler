@@ -115,11 +115,8 @@ proc main() =
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
-  # Rejected SDK instances exit, so supervisor retries produce output. Do
-  # not leave core writing to an undrained osproc pipe during timeout tests.
   let coreProc = startComponent(coreBin, url, root = root,
-    extra = [("NIF_AUTO_APPROVE", "1")],
-    logFile = getEnv("NIF_TEST_CORE_LOG", root / "var" / "core-test.log"))
+                                extra = [("NIF_AUTO_APPROVE", "1")])
   defer:
     if coreProc.running():
       coreProc.terminate()
@@ -183,8 +180,7 @@ proc main() =
       .replace("conflict", "replacement"))
   writeFile(replacementRepo / "main.nim",
     readFile(conflictRepo / "main.nim").replace("conflict", "replacement")
-      .replace("catalog", "replacement_old")
-      .replace("comp.run()", "comp.tool:\n  proc replacement_extra(): JsonNode =\n    %*{\"extra\": true}\ncomp.run()"))
+      .replace("catalog", "replacement_new"))
   commitRepo(replacementRepo)
   let externalBuild = call(nc, "builder", "build", %*{"lang": "nim",
     "name": "external-replacement", "source": """
@@ -212,15 +208,6 @@ proc main() =
     if entry{"name"}.getStr() == "replacement":
       oldOnly = entry{"pids"} == %* [external.processID]
   check("old external instance remains the only accepted replacement", oldOnly, $snapshot)
-  var acceptedCalls = 0
-  for i in 0 ..< 40:
-    let reply = call(nc, "core", "invoke",
-      %*{"tool": "replacement_old", "arguments": {}}, 3_000)
-    if reply{"old"}.getBool(false): inc acceptedCalls
-  check("rejected same-name process never receives routed calls", acceptedCalls == 40)
-  let direct = runCli(cliBin, url, @["call", "replacement_old", "{}"], root = root)
-  check("CLI calls reach only the accepted instance", direct.code == 0 and
-        direct.output.contains("\"old\":true"), direct.output)
   let cleanup = runCli(cliBin, url,
     @["call", "plugin_remove", """{"package":"testreplacement"}"""],
     60_000, root = root)

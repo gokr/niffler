@@ -39,18 +39,6 @@ proc main() =
     coreProc.close()
     removeDir(sandbox.root)
 
-  # Models can serve before core finishes booting. The extension lifecycle
-  # below also needs core, builder and store; wait for their accepted catalog.
-  var lifecycleUp = false
-  for i in 0 ..< 100:
-    let r = call(nc, "core", "catalog", %*{"op": "components"}, 3_000)
-    if r{"components", "builder"} != nil and
-       r{"components", "store"} != nil:
-      lifecycleUp = true
-      break
-    sleep(200)
-  doAssert lifecycleUp, "core, builder and store did not become ready"
-
   var modelsUp = false
   for i in 0 ..< 100:
     let r = call(nc, "models", "models_sources", newJObject(), 3_000)

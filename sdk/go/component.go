@@ -98,7 +98,6 @@ type Component struct {
 	Client bool
 
 	nc            *nats.Conn
-	service       string
 	tools         []Tool
 	slash         []SlashCommand
 	events        []eventBinding
@@ -389,12 +388,6 @@ func (c *Component) Connect() error {
 		return fmt.Errorf("connect %s: %w", url, err)
 	}
 	c.nc = nc
-	ready := false
-	defer func() {
-		if !ready {
-			nc.Close()
-		}
-	}()
 	if c.shutdown == nil {
 		c.shutdown = make(chan struct{})
 	}
@@ -402,10 +395,9 @@ func (c *Component) Connect() error {
 		c.concurrentSem = make(chan struct{}, defaultConcurrentLimit)
 	}
 
-	// Core forwards the logical service address only to accepted instances.
-	c.service = "svc." + c.Name + ".instance." + NewID() + ".call"
-	callSubject := c.service
-	sub, err := nc.Subscribe(callSubject, c.handleCall)
+	// queue-grouped call subject: N replicas, one gets each call
+	callSubject := "svc." + c.Name + ".call"
+	sub, err := nc.QueueSubscribe(callSubject, c.Name, c.handleCall)
 	if err != nil {
 		return fmt.Errorf("subscribe %s: %w", callSubject, err)
 	}
@@ -460,7 +452,6 @@ func (c *Component) Connect() error {
 	if err := c.nc.Flush(); err != nil {
 		return fmt.Errorf("flush subscriptions: %w", err)
 	}
-	ready = true
 	slog.Info("online", "component", c.Name, "version", c.Version, "url", url,
 		"tools", len(c.tools))
 	return nil
@@ -533,7 +524,7 @@ func (c *Component) announce(subject string) error {
 		tools = append(tools, map[string]any{"name": t.Name, "schema": t.Schema})
 	}
 	payload := map[string]any{
-		"name": c.Name, "version": c.Version, "pid": os.Getpid(), "service": c.service, "tools": tools,
+		"name": c.Name, "version": c.Version, "pid": os.Getpid(), "tools": tools,
 	}
 	if len(c.slash) > 0 {
 		payload["slash"] = c.slash
@@ -544,19 +535,6 @@ func (c *Component) announce(subject string) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
-	}
-	if subject == "reg.publish" {
-		msg, err := c.nc.Request(subject, data, 30*time.Second)
-		if err != nil {
-			return fmt.Errorf("registration authority unavailable: %w", err)
-		}
-		var ack struct {
-			Accepted bool `json:"accepted"`
-		}
-		if err := json.Unmarshal(msg.Data, &ack); err != nil || !ack.Accepted {
-			return fmt.Errorf("registration rejected by core: %s", c.Name)
-		}
-		return nil
 	}
 	return c.nc.Publish(subject, data)
 }

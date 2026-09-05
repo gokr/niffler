@@ -21,7 +21,7 @@ proc main() =
   let tmp = tempRoot("edit")
   defer: removeDir(tmp)
 
-  let (server, url) = startNats(routed = true)
+  let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
