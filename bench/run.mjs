@@ -681,6 +681,13 @@ async function ensureCombo(combo) {
           await shared.niffler.start();
         } catch (e) {
           st.error = `harness start failed: ${e.message}`;
+          // A failed boot must not brick the combo for the rest of the run:
+          // reset the in-flight marker so the next cell retries (a transient
+          // conflict — a stale store from a killed run, a busy port — may
+          // have cleared), and tear down the half-booted harness so its
+          // store does not hold the barrel-db against that retry.
+          st.booting = null;
+          try { await shared.niffler.stop(); } catch {}
         }
       }
       st.shared = shared;
