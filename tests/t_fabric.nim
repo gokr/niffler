@@ -62,7 +62,7 @@ proc main() =
   var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
                                 root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1")],
-                                logFile = "/tmp/opencode/core-fab.log")
+                                logFile = root / "var" / "test-logs" / "core-fab.log")
   defer:
     if coreProc != nil and coreProc.running():
       coreProc.terminate()
@@ -89,7 +89,7 @@ proc main() =
   var logLines = 0
 
   let ctxProc = startComponent(ctxBin, url, root = root,
-                               logFile = "/tmp/opencode/ctxtest-fab.log")
+                               logFile = root / "var" / "test-logs" / "ctxtest-fab.log")
   defer:
     if ctxProc.running():
       ctxProc.terminate()
@@ -98,7 +98,7 @@ proc main() =
     ctxProc.close()
   check("ctxtest registered", waitComponent(nc, "ctxtest"))
   let fabProc = startComponent(sandbox.sandboxBin("fabric"), url, root = root,
-                               logFile = "/tmp/opencode/fabric.log")
+                               logFile = root / "var" / "test-logs" / "fabric.log")
   defer:
     if fabProc.running():
       fabProc.terminate()
@@ -107,7 +107,7 @@ proc main() =
     fabProc.close()
   check("fabric registered", waitComponent(nc, "fabric"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
-                                 logFile = "/tmp/opencode/agent-fab.log")
+                                 logFile = root / "var" / "test-logs" / "agent-fab.log")
   defer:
     if agentProc.running():
       agentProc.terminate()
@@ -116,7 +116,7 @@ proc main() =
     agentProc.close()
   check("agent registered", waitComponent(nc, "agent"))
   let grepProc = startComponent(sandbox.sandboxBin("grep"), url, root = root,
-                                 logFile = "/tmp/opencode/grep-fab.log")
+                                 logFile = root / "var" / "test-logs" / "grep-fab.log")
   defer:
     if grepProc.running():
       grepProc.terminate()
