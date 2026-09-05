@@ -28,14 +28,15 @@ when defined(macosx):
   switch("passC", "-I" & quoteShell(brewPrefix / "include"))
   switch("passL", "-L" & quoteShell(brewPrefix / "lib"))
 
-# Per-repo nim cache. Nim's default is ~/.cache/nim/<project>_d — every
-# repo's main.nim maps to the SAME main_d, so two concurrent builds anywhere
-# (this repo's worktrees, agent-built components, other projects) overwrite
-# each other's objects and links fail with "hidden symbol ... isn't defined".
-# Pinning the cache under var/ (gitignored) scopes it to this checkout:
-# worktrees and bench harness roots (which copy this config.nims) each get
-# their own cache; test sandboxes keep overriding it per-sandbox.
-switch("nimcache", thisDir() / "var" / "nimcache")
+# Per-entrypoint nim cache. Nim's default is ~/.cache/nim/<project>_d, so every
+# component named main.nim collides across worktrees. One cache per checkout is
+# still unsafe because `make -j` compiles several entrypoints concurrently.
+# Use the project path relative to this config as a stable, filesystem-safe key:
+# parallel component/test builds cannot overwrite each other's objects, while
+# repeat builds of the same entrypoint remain incremental. Test sandboxes that
+# provide an explicit cache path keep overriding this setting.
+let cacheKey = projectPath().relativePath(thisDir()).changeFileExt("").replace(DirSep, '_')
+switch("nimcache", thisDir() / "var" / "nimcache" / cacheKey)
 
 # futhark (via natswrapper) emits a bogus FILE-size warning for the C header
 switch("warning", "User:off")
