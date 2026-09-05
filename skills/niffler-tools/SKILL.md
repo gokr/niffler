@@ -79,8 +79,8 @@ before checking the ecosystem is the classic mistake.
 
 ## Skills (on-demand)
 
-- `skill_list` / `skill_load` — reviewed workflow guides (including this one
-  and niffler-fabric). Skills add strategy, not tools.
+- `skill_list` / `skill_load` — reviewed workflow guides (including this
+  one, niffler-fabric and niffler-harness). Skills add strategy, not tools.
 
 ## Context economy
 
@@ -97,6 +97,23 @@ before checking the ecosystem is the classic mistake.
   collection plus ONE judgment → a fabric program calling agent_run.
 - Oversized outputs spill to files instead of the transcript.
 
+## Execution contexts (who can call what)
+
+The same harness exposes different toolsets to different callers — never
+assume a tool you saw in one context exists in another:
+
+- **Main conversation** — its frozen direct toolset plus everything
+  on-demand via `discover` + `invoke`.
+- **agent_run subagent** — a fresh context with its own loop; it cannot
+  spawn further subagents (`x-harness.noSpawn`) and only sees the tools its
+  dispatch grants. Steer it toward what IT can call, not what the main
+  session has.
+- **Fabric guest** — only the bridge (the pinned typed allowlist in typed
+  mode); std/os, std/net, std/osproc are lint-banned.
+- The frozen direct set is **per conversation**: `discover` (or the
+  session's `prompt_preview`) is the authority on what THIS session can
+  call right now.
+
 ## Core operations (on-demand)
 
 - `catalog` (op list/schemas) — what is registered; `status` — live
@@ -104,6 +121,10 @@ before checking the ecosystem is the classic mistake.
   a conversation's frozen direct tools and prompt provenance;
   `session_info` — a conversation's summary; `conversation_delete` — remove
   a conversation.
+- `models_list` / `models_sources` — the effective model catalog
+  (models.dev + plugin patches + local override) is the authority on
+  capabilities, limits, context windows and prices; never hardcode model
+  recommendations.
 
 ## Observation (on-demand)
 
@@ -118,4 +139,6 @@ before checking the ecosystem is the classic mistake.
 - building an integration before `plugin_search`
 - `cat`/`sed` file edits; `curl` for web pages
 - bulk exploration in the main transcript instead of agent_run/fabric
+- naming a tool the current context cannot reach (subagent allowlist,
+  fabric guest bridge) — check that context's actual exposure first
 - re-running work a listed tool already did
