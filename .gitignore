@@ -36,3 +36,8 @@ logs/
 
 # codewhale agent state (npm package, not repo content)
 .codewhale/
+
+# local agent tooling (machine-specific, not repo content)
+.mcp.json
+.opencode/
+.pi/
