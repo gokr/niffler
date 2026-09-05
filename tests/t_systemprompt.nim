@@ -94,7 +94,7 @@ proc main() =
   var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
                                 root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1")],
-                                logFile = "/tmp/opencode/core-sp.log")
+                                logFile = root / "var" / "test-logs" / "core-sp.log")
   defer:
     if coreProc != nil and coreProc.running():
       coreProc.terminate()
@@ -113,7 +113,7 @@ proc main() =
   check("core up", coreUp)
 
   let ctxProc = startComponent(ctxBin, url, root = root,
-                               logFile = "/tmp/opencode/ctxtest-sp.log")
+                               logFile = root / "var" / "test-logs" / "ctxtest-sp.log")
   defer:
     if ctxProc.running():
       ctxProc.terminate()
@@ -123,11 +123,11 @@ proc main() =
   check("ctxtest registered", waitComponent(nc, "ctxtest"))
   let spProc = startComponent(sandbox.sandboxBin("systemprompt"), url,
                               root = root,
-                              logFile = "/tmp/opencode/systemprompt.log")
+                              logFile = root / "var" / "test-logs" / "systemprompt.log")
   # stopped mid-test (frozen-prompt check); the close below reaps it
   check("systemprompt registered", waitComponent(nc, "systemprompt"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
-                                 logFile = "/tmp/opencode/agent-sp.log")
+                                 logFile = root / "var" / "test-logs" / "agent-sp.log")
   defer:
     if agentProc.running():
       agentProc.terminate()

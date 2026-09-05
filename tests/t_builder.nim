@@ -11,6 +11,11 @@ import envelope
 import helpers
 
 proc main() =
+  when defined(macosx):
+    # A desktop-launched harness does not inherit Makefile-only settings.
+    # Exercise SDK and library discovery through the real runtime builder.
+    delEnv("SDKROOT")
+    delEnv("LIBRARY_PATH")
 
   let root = getEnv("NIF_ROOT", getAppDir().parentDir())
   let bin = root / "var" / "bin" / "builder"

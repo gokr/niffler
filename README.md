@@ -141,8 +141,10 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 
 Xcode command-line tools also supply Clang/libclang; a separate Homebrew
 LLVM installation is not needed. Wails uses the system WebKit. The Makefile
-sets `SDKROOT` and the Homebrew library search path too; keep the exports
-above when invoking Nim/Nimble directly from your shell.
+sets `SDKROOT` and the Homebrew library search path for dependency installation.
+The project compiler configuration also discovers them for direct Nim builds,
+including components compiled by the runtime builder. Keep the exports above
+when installing Nimble packages directly from your shell.
 
 `fabric-exec` embeds the Nim VM and needs the matching compiler sources,
 including `dist/checksums`. Homebrew Nim 2.2.10 omits that directory;

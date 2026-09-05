@@ -92,7 +92,7 @@ proc main() =
 
   var coreProc = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1")],
-                                logFile = "/tmp/opencode/core-expert.log")
+                                logFile = root / "var" / "test-logs" / "core-expert.log")
   defer: stopHard(coreProc)
 
   var coreUp = false

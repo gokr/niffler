@@ -64,7 +64,7 @@ proc main() =
   var coreProc = startComponent(coreBin, url, root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1"),
                                          ("NIF_RUNNER_IDLE_S", "2")],
-                                logFile = "/tmp/opencode/core.log")
+                                logFile = root / "var" / "test-logs" / "core.log")
   defer:
     if coreProc != nil and coreProc.running():
       coreProc.terminate()
@@ -84,7 +84,7 @@ proc main() =
   check("stale child log swept at boot", not fileExists(staleLog))
 
   let ctxProc = startComponent(ctxBin, url, root = root,
-                               logFile = "/tmp/opencode/ctxtest.log")
+                               logFile = root / "var" / "test-logs" / "ctxtest.log")
   defer:
     if ctxProc.running():
       ctxProc.terminate()
@@ -93,7 +93,7 @@ proc main() =
     ctxProc.close()
   check("ctxtest registered", waitComponent(nc, "ctxtest"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
-                                 logFile = "/tmp/opencode/agent.log")
+                                 logFile = root / "var" / "test-logs" / "agent.log")
   defer:
     if agentProc.running():
       agentProc.terminate()

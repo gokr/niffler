@@ -24,6 +24,10 @@ switch("define", "ssl")
 switch("define", "usePcreHeader")
 switch("passL", "-lpcre")
 when defined(macosx):
+  # Runtime builder invokes Nim directly, outside the Makefile environment.
+  # Futhark's libclang needs the SDK too; preserve an explicitly selected SDK.
+  if getEnv("SDKROOT").len == 0:
+    putEnv("SDKROOT", staticExec("xcrun --show-sdk-path").strip())
   let brewPrefix = staticExec("brew --prefix").strip()
   switch("passC", "-I" & quoteShell(brewPrefix / "include"))
   switch("passL", "-L" & quoteShell(brewPrefix / "lib"))
