@@ -5,6 +5,11 @@
 # shipped components. Agent-written components go through builder + spawn.
 
 components:
+  # Store engines: barrel (default), store-sqlite, store-tidb all register
+  # as component "store" with identical tools. NIF_STORE_BACKEND picks the
+  # engine at boot (core resolves this entry's binary): unset/barrel →
+  # var/bin/store, sqlite → var/bin/store-sqlite, tidb → var/bin/store-tidb
+  # (docs/research/STORE_V2.md).
   - name: store
     build: {lang: nim, src: components/store/main.nim}
     binary: var/bin/store

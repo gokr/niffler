@@ -10,6 +10,7 @@ reference chapters for the shipped components. Design rationale lives in
 ## Contents
 
 - [Layout of a running system](#layout-of-a-running-system)
+- [Store engines](#store-engines)
 - [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
 - [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
@@ -48,7 +49,7 @@ reference chapters for the shipped components. Design rationale lives in
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency) |
+| `store` | Nim | required | document store over the bus (`put/get/list/del`, rev-based concurrency). Alternative engines register under the same name with identical tools: `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) selected with `NIF_STORE_BACKEND=sqlite` — see [Store engines](#store-engines) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a temp file pageable with `read` |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
@@ -134,6 +135,47 @@ UI: it only inspects the harness itself — `help`, `status`, `catalog`,
 (see `core/tty.nim`). The LLM chat lives in the web UI and the `niffler-tui`
 plugin; scripting goes through the `cli` component.
 
+### Store engines
+
+The store's **bus contract is the artifact**: `put/get/list/del`,
+`expectRev` optimistic concurrency, id-ordered lists (docs/WIRE.md).
+Multiple engines implement it and register as component `store` with
+identical tools — consumers never learn which engine is live. Selection is
+a boot-time choice: `NIF_STORE_BACKEND=barrel|sqlite|tidb` (default
+`barrel`); core resolves the manifest entry's binary accordingly and
+refuses to boot on an unknown value.
+
+- **barrel** (default): embedded BitBarrel KV (Bitcask-style) in
+  `var/barrel-db` — schema-free by design, zero deps, proven.
+- **sqlite** (`var/bin/store-sqlite`, Go): the same document contract on
+  SQLite. Documents live verbatim as JSON TEXT; `put` is one atomic
+  statement (doc + rev move together — the KV engine's two-key crash
+  window is gone); schema via embedded goose migrations; pure-Go driver
+  (`modernc.org/sqlite`, no cgo). Data file `var/store.db` (WAL),
+  introspectable with any SQLite tool (`sqlite3 var/store.db 'select kind,
+  count(*) from docs group by kind'`), attachable read-only from DuckDB
+  for offline analytics.
+- **tidb** (`var/bin/store-tidb`, Go): the same schema over the MySQL
+  protocol (go-sql-driver) — a network-shared store any number of
+  harnesses can serve from. `NIF_STORE_TIDB_DSN` points at the cluster
+  (`root@tcp(host:4000)/niffler`; single-node docker:
+  `docker run -p 4000:4000 pingcap/tidb`). `value` stays MEDIUMTEXT, not
+  the native JSON type — binary JSON normalizes key order and number
+  precision, breaking the verbatim-document contract; indexed queries
+  arrive later as generated columns over the TEXT (a goose migration).
+  `kind`/`id` are utf8mb4_bin: byte-exact equality, byte-order list
+  sorting and case-sensitive LIKE prefixes (contract parity with the
+  other engines). No flock — the cluster is shared state by design; row
+  locks (`SELECT … FOR UPDATE`, pessimistic transactions) arbitrate
+  writers and the rev counter stays the optimistic-concurrency check.
+  Works against plain MySQL 8 too.
+
+All engines enforce single-writer the same way: one process owns the file
+(flock; kernel-released on crash), everyone else speaks envelopes. The
+same dataset moves between engines by export/import (JSONL over the bus —
+docs/research/STORE_V2.md "Moving data between engines"); until comparison
+data says otherwise, barrel stays the default.
+
 ## Environment variables
 
 All components load `.env` (from the harness root and cwd, existing shell
@@ -148,6 +190,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
 | `NIF_ENSURE_ATTACH` | `0` makes `ensureHarness` skip attaching and always spawn a core (tests) | `1` |
+| `NIF_STORE_BACKEND` | store engine selected at boot: `barrel` (default → `var/bin/store`), `sqlite` (→ `var/bin/store-sqlite`), `tidb` (→ `var/bin/store-tidb`); anything else refuses to boot. All engines register as component `store` with identical tools — see [Store engines](#store-engines) | `barrel` |
+| `NIF_STORE_TIDB_DSN` | TiDB/MySQL DSN for the `tidb` store engine, e.g. `root@tcp(127.0.0.1:4000)/niffler` (docker single-node: `docker run -p 4000:4000 pingcap/tidb`). Required for that engine — no local default; the component refuses to boot without it. Sessions are forced to UTC unless the DSN sets `time_zone` | unset |
 | `NIF_GIT_MIRROR` | host prefix replacing `https://github.com` when the `plugins` component clones packages (e.g. `https://cnb.cool` or a Gitee mirror) — API/search endpoints stay on GitHub | unset |
 | `NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default |
 | `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |

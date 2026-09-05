@@ -4,6 +4,12 @@
 > progress. Revision 2: SQLite and TiDB stores are **additional** engines —
 > the barrel store stays and remains the default until comparison data says
 > otherwise.
+>
+> Progress: **M3 and M4 landed on `main`** — `components/store-sqlite` and
+> `components/store-tidb` (both Go, goose migrations, `NIF_STORE_BACKEND`
+> boot switch in core, `make test-store-sqlite` / `test-store-tidb` running
+> the same contract; TiDB verified live against v8.5.0). The SDK refactor
+> pass (M2) and the default-flip decision (M7) remain open.
 
 Two entangled goals, one branch:
 
@@ -244,14 +250,36 @@ green at every commit, and `t_store` runs against all three engines.
 - [ ] **M2** — SDK additions (Nim + Go `storeclient`, config helpers, http
   helper) with unit tests; refactor the duplication ledger onto them;
   `make test` green.
-- [ ] **M3** — `store-sqlite` (Go, goose embedded, flock, byte-identical
+- [x] **M3** — `store-sqlite` (Go, goose embedded, flock, byte-identical
   results) as an *additional* engine; `NIF_STORE_BACKEND` boot switch in
   core; `t_store` green against barrel and sqlite; barrel stays default.
-- [ ] **M4** — `store-tidb` engine; `t_store` green against a TiDB DSN
-  (docker in CI, user's cluster manually).
+  Shipped: JSON-in-TEXT stored verbatim, single atomic put (BEGIN
+  IMMEDIATE upsert/compare-and-set), flock on `var/store.db.lock`,
+  schema mirrored from the barrel engine's tool schemas. Deviations,
+  both accidental barrel behaviors (documented in the component header):
+  no tombstone ghosts, list limit < 1 clamps to one item instead of
+  barrel's critbit post-increment quirk.
+- [x] **M4** — `store-tidb` engine; `t_store` green against a TiDB DSN
+  (docker in CI, user's cluster manually). Shipped: MySQL protocol via
+  go-sql-driver, same docs schema (MEDIUMTEXT, utf8mb4_bin — binary
+  collation is required for byte-exact ids/ordering), `SELECT … FOR
+  UPDATE` upsert under pessimistic transactions, `ClientFoundRows` for
+  correct CAS, no flock (network state; row locks arbitrate), DSN from
+  `NIF_STORE_TIDB_DSN` (session forced to UTC unless the DSN picks a
+  zone). Verified live: TiDB v8.5.0 in docker (single-node), full
+  contract + unit tests + core boot probe.
 - [ ] **M5** — `tools/store-copy.nim` (JSONL export/import) so datasets
   move between engines; a small comparison script (same synthetic load,
-  wall-clock + file size per engine).
+  wall-clock + file size per engine). *Partial: comparison shipped as
+  `tools/bench_stores.nim` (bus-contract bench, both engines). Measured on
+  the dev box, end-to-end over NATS — sqlite leads every phase ~2-6x, but
+  the gap is dominated by per-request overhead of the component stacks
+  (barrel's floor is ~2 ms/request even for no-op reads; list amortizes to
+  ~27 µs/item vs sqlite's similar batch cost), not document I/O. Disk:
+  barrel 0.4-0.5 MB, sqlite 1.4 MB (+WAL high-water during writes,
+  checkpointed away on clean close). Boot to registered: 22 ms vs 7 ms.
+  Both are far beyond the harness's needs; the copy tool itself remains
+  open.*
 - [ ] **M6** — DuckDB observer: `observe` sink mode (or sibling component)
   materializing `ev.*` into `var/observe.db`; stock queries shipped as
   examples.

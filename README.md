@@ -356,7 +356,10 @@ Open work — deferred follow-ups and quests — is consolidated in
       (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
       duplication cleanup; three interchangeable store engines behind one
       contract (barrel stays default; Go SQLite + TiDB engines with goose
-      migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer
+      migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer.
+      **SQLite + TiDB engines landed**: `components/store-sqlite` and
+      `components/store-tidb` (Go, goose, `NIF_STORE_BACKEND=sqlite|tidb`,
+      `make test-store-sqlite` / `test-store-tidb` green against live TiDB)
 - [x] **session service** — svc.core.call `session` turns + ev.session.*
       events; service mode (no tty) for UIs; verified live
 - [x] **session runners** — one conversation = one process: the system

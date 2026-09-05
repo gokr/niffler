@@ -59,7 +59,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
-        test test-bash test-store test-builder test-console test-plugins test-skills test-fetch \
+        test test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
         test-systemprompt test-grep test-git test-edit test-expert \
         test-retry-unit test-ctx-accounting \
@@ -100,6 +100,20 @@ var/bin/session: $(CORE_NIM) $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/store/main.nim
+
+# store-sqlite — the SQLite engine of the store contract (docs/research/
+# STORE_V2.md M3). Same component name/tools; selected at boot via
+# NIF_STORE_BACKEND=sqlite. Pure-Go driver: no cgo, no build prerequisites.
+var/bin/store-sqlite: components/store-sqlite/main.go components/store-sqlite/go.mod components/store-sqlite/go.sum \
+    $(wildcard components/store-sqlite/migrations/*.sql) $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && go build -o ../../var/bin/store-sqlite .'
+
+# store-tidb — the TiDB/MySQL engine of the store contract (M4): a network-
+# shared store, many harnesses can serve from one cluster. Selected at boot
+# via NIF_STORE_BACKEND=tidb; needs NIF_STORE_TIDB_DSN. Pure Go, no cgo.
+var/bin/store-tidb: components/store-tidb/main.go components/store-tidb/go.mod components/store-tidb/go.sum \
+    $(wildcard components/store-tidb/migrations/*.sql) $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/store-tidb && go build -o ../../var/bin/store-tidb .'
 
 var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/bash/main.nim
@@ -191,7 +205,7 @@ var/bin/dialog: components/dialog/dialog.sh | var/bin
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
-components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/bash \
+components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
 	var/bin/edit var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
@@ -281,7 +295,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # tests: one binary per tests/*.nim; `make test` runs the whole suite
 # sequentially. Runtime state and NATS are isolated per test, so individual
 # test targets may run concurrently with each other and a live harness.
-# Individual: make test-bash, test-store,
+# Individual: make test-bash, test-store, test-store-sqlite, test-store-tidb,
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
 # test-core, test-discover, test-cli, test-systemprompt,
 # test-observe, test-logfile, test-models, test-grep,
@@ -309,6 +323,18 @@ test: build $(TEST_BINS) gotest
 
 test-bash:    build var/bin/test_t_bash    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_bash
 test-store:   build var/bin/test_t_store   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_store
+# Same bus-contract test against the SQLite engine (t_store picks the binary
+# up from NIF_STORE_BIN; the target above runs the barrel default).
+test-store-sqlite: build var/bin/test_t_store ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" NIF_STORE_BIN="$(ROOT)/var/bin/store-sqlite" ./var/bin/test_t_store
+# Same bus-contract test against the TiDB engine — needs a live server:
+# NIF_STORE_TIDB_DSN=root@tcp(127.0.0.1:4000)/test (docker run -p 4000:4000 pingcap/tidb).
+test-store-tidb: build var/bin/test_t_store
+	@if [ -z "$$NIF_STORE_TIDB_DSN" ]; then \
+		echo "SKIP: test-store-tidb — set NIF_STORE_TIDB_DSN (e.g. \"root@tcp(127.0.0.1:4000)/test\")"; \
+	else \
+		$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" \
+			NIF_STORE_BIN="$(ROOT)/var/bin/store-tidb" ./var/bin/test_t_store; \
+	fi
 test-builder: build var/bin/test_t_builder ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_builder
 test-console: build var/bin/test_t_console ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_console
 test-plugins: build var/bin/test_t_plugins ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_plugins
@@ -346,6 +372,8 @@ gotest:
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...
 	cd components/llm-openai && go test ./... && go vet ./...
+	cd components/store-sqlite && go test ./... && go vet ./...
+	cd components/store-tidb && go test ./... && go vet ./...
 	cd components/nats && go test ./... && go vet ./...
 
 # recover: back to factory shape. The repo is the snapshot; var/ is

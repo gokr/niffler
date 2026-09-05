@@ -12,7 +12,17 @@ import helpers
 proc main() =
 
   let root = getEnv("NIF_ROOT", getAppDir().parentDir())
-  let bin = root / "var" / "bin" / "store"
+  # Engine under test: NIF_STORE_BIN overrides the default barrel binary
+  # (make test-store-sqlite runs this exact contract against the SQLite
+  # engine; docs/research/STORE_V2.md). Relative paths resolve against root.
+  let bin = block:
+    let override = getEnv("NIF_STORE_BIN", "")
+    if override.len == 0:
+      root / "var" / "bin" / "store"
+    elif override.isAbsolute():
+      override
+    else:
+      root / override
   if not fileExists(bin):
     fail(bin & " missing — run `make build` first")
     quit(1)

@@ -168,8 +168,12 @@ The SPA is a NATS client, not a Wails client: it only talks to
   on 4222 when free (else a random loopback
   port) and writes it to `var/nats-url`; standalone clients (`cli`,
   `console`) follow that file when `NIF_NATS_URL` is unset.
-- The `store` component is single-writer: exactly one process owns
-  `var/barrel-db`. Never run two stores against the same file.
+- The `store` component is single-writer: exactly one process owns its
+  database (barrel engine: `var/barrel-db` + flock; sqlite engine:
+  `var/store.db` + flock; tidb engine: `NIF_STORE_TIDB_DSN` cluster — no
+  flock, the DSN is shared network state and row locks arbitrate;
+  selected with `NIF_STORE_BACKEND` — see docs/research/STORE_V2.md).
+  Never run two file-backed stores against the same file.
 - **Reading a conversation (session transcript) from the store**: the store
   keeps full history even though in-memory context gets trimmed. While the
   harness that owns the barrel-db is on the bus:

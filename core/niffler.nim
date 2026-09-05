@@ -279,16 +279,29 @@ proc main() =
     let name = c{"name"}.getStr("")
     if minimalMode and name notin minimalComponents:
       continue
-    let binary = root / c{"binary"}.getStr("")
-    if not fileExists(binary):
-      echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binary & ")"
+    # Store engine selection (docs/research/STORE_V2.md): all engines
+    # register as component "store" with identical tools — the manifest
+    # keeps its single entry and core resolves the binary at boot.
+    # barrel (default) | sqlite | tidb; anything else refuses to boot.
+    var binary = c{"binary"}.getStr("")
+    if name == "store":
+      case getEnv("NIF_STORE_BACKEND", "barrel")
+      of "", "barrel": discard
+      of "sqlite": binary = "var/bin/store-sqlite"
+      of "tidb": binary = "var/bin/store-tidb"
+      else:
+        quit("core: unknown NIF_STORE_BACKEND '" &
+          getEnv("NIF_STORE_BACKEND") & "' (barrel|sqlite|tidb) — refusing to boot", 1)
+    let binaryPath = root / binary
+    if not fileExists(binaryPath):
+      echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binaryPath & ")"
       continue
     let requestedReplicas = c{"replicas"}.getInt(1)
     let replicas = min(max(requestedReplicas, 1), 16)
     if requestedReplicas != replicas:
       echo "core: WARNING replicas for " & name & " clamped to " & $replicas
     for i in 0 ..< replicas:
-      discard sup.addChild(name, binary,
+      discard sup.addChild(name, binaryPath,
         parsePolicy(c{"restart"}.getStr("on-failure")))
     if minimalMode or c{"required"}.getBool(false):
       required.add(name)
