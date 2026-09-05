@@ -37,6 +37,11 @@ const taskArg = opt("task", "all");
 const TASK_ROOT = path.resolve(BENCH_ROOT, String(opt("task-root", "bench/tasks")));
 const RUN_ID = opt("run-id", new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19));
 const RESULTS = path.join(BENCH_ROOT, "var", "bench", "results", RUN_ID);
+// --resume: skip cells of THIS run id whose result.json already holds a
+// verdict (pass/fail/timeout/invalid) — only error cells re-run. Lets a
+// killed/suspended run continue where it stopped; delete a cell's
+// result.json to force its re-run.
+const RESUME = argv.includes("--resume");
 const roundsMax = Number(opt("rounds", cfg.defaults.rounds));
 const taskTimeoutMs = Number(opt("task-timeout-min", cfg.defaults.taskTimeoutMin)) * 60_000;
 const turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin)) * 60_000;
@@ -748,6 +753,16 @@ async function main() {
   async function worker() {
     while (cellIdx < cells.length) {
       const { combo, taskId } = cells[cellIdx++];
+      if (RESUME) {
+        try {
+          const prev = JSON.parse(fs.readFileSync(
+            path.join(RESULTS, `${combo.harness}__${combo.model}__${taskId}`, "result.json"), "utf8"));
+          if (prev.runId === RUN_ID && prev.verdict && prev.verdict !== "error") {
+            console.log(`[${combo.harness}/${combo.model}/${taskId}] resume: kept ${prev.verdict}`);
+            continue;
+          }
+        } catch {}
+      }
       try {
         const st = await ensureCombo(combo);
         if (st.error) {
