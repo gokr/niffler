@@ -8,6 +8,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **NATS server as a first-class Go component** — `components/nats`
+  rebuilds the official nats-server (v2.14.6, in-process server library,
+  CLI-compatible) into `var/bin/nats-server`; core prefers that binary over
+  a PATH install, so `make build` alone satisfies the bus dependency and
+  pure-desktop use needs no `go install` of nats-server. `make setup` drops
+  `install-nats`; tests and the bench prefer the built component too.
+
 - **Bench: full17 task set, thinking profiles, CodeWhale lane** — the
   comparison bench grows to 17 tasks tagged by kind (general / fabric /
   expert / selfextend; six seeded-bug repairs, a racy worker pool under

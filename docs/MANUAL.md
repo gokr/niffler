@@ -142,7 +142,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
-| `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns `nats-server` there (or on a random loopback port when 4222 is taken) and writes `var/nats-url` | auto |
+| `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns the built nats-server component (`var/bin/nats-server`, `components/nats` — a PATH binary is the fallback) there (or on a random loopback port when 4222 is taken) and writes `var/nats-url` | auto |
 | `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 — only when `NIF_NATS_URL` is unset (an explicit URL always wins) | unset |
 | `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
@@ -1253,7 +1253,8 @@ falls back to `info`.
 ### Monitoring
 
 When core spawns nats-server it uses distinct loopback client and HTTP ports,
-then writes:
+then writes (the binary is the built component `var/bin/nats-server` from
+`components/nats` when present, else a PATH `nats-server`):
 
 ```text
 var/nats-url
@@ -1490,7 +1491,10 @@ make clean          # remove all build artifacts (var/, nimcache/, UI build)
   `NIF_NATS_URL=... NIF_OPENAI_API_KEY=... ./var/bin/niffler < /dev/null` —
   serves `svc.core.call`; approval-requiring tools are denied unless a UI
   is attached or `NIF_AUTO_APPROVE=1`.
-- **Attach to any bus**: `NIF_NATS_URL=nats://host:4222` (even remote).
+- **Attach to any bus**: `NIF_NATS_URL=nats://host:4222` (even remote), or
+  start your own nats-server on the default port before core — core reuses
+  a live bus on `127.0.0.1:4222` and only spawns its own (the built
+  `var/bin/nats-server` component) when none answers.
 - **Probe the bus** without the LLM: one-shot `nim c -r` scripts in
   `tests/` (see AGENTS.md "Debugging the bus").
 - **Wails**: build only with `wails build -tags webkit2_41` (Linux);

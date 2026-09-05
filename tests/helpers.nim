@@ -283,6 +283,6 @@ proc newCoreSandbox*(tag: string,
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
   writeFile(result.root / "manifest.yaml", manifest)
-  for name in ["niffler", "session", "cli"]:
+  for name in ["niffler", "session", "cli", "nats-server"]:
     copyFileWithPermissions(result.repoRoot / "var" / "bin" / name,
                             result.sandboxBin(name))
