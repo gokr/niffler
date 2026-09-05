@@ -25,7 +25,7 @@ proc waitUntil(predicate: proc(): bool, timeoutMs = 5000): bool =
   predicate()
 
 proc startObserveNats(): tuple[prc: Process, url, monitorUrl: string] =
-  startNatsMonitoring()
+  startNatsMonitoring(routed = true)
 
 proc compileTarget(root, tmp: string): string =
   let source = tmp / "probe_target.nim"

@@ -269,7 +269,7 @@ proc main() =
     discard rebuildShipped(root)
 
   # --- 2. catalog + supervisor ------------------------------------------
-  var cat = newCatalog(nc)
+  var cat = newCatalog(nc, serve = true)
   var sup = newSupervisor(root, nc)
 
   # --- 3. manifest → children --------------------------------------------

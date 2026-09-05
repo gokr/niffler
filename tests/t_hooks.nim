@@ -9,7 +9,7 @@ proc main() =
      not fileExists(repoRoot / "var" / "bin" / "hooks"):
     echo "FAIL: missing binaries — make build first"; quit(1)
 
-  let (natsProc, url) = startNats()
+  let (natsProc, url) = startNats(routed = true)
   defer: stopServer(natsProc)
 
   let sandbox = newCoreSandbox("hooks", ["store", "bash"])

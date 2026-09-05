@@ -55,7 +55,7 @@ comp.run()
   check("test log emitter compiles", compileCode == 0, compileOutput)
   if compileCode != 0: report("LOGFILE TEST")
 
-  let (server, url) = startNats()
+  let (server, url) = startNats(routed = true)
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

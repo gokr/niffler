@@ -17,7 +17,7 @@ proc main() =
     fail(bin & " missing — run `make build` first")
     quit(1)
 
-  let (server, url) = startNats()
+  let (server, url) = startNats(routed = true)
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

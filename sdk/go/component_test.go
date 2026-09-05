@@ -47,7 +47,23 @@ func startTestNATS(t *testing.T) string {
 					Nats []string `json:"nats"`
 				}
 				if json.Unmarshal(data, &ports) == nil && len(ports.Nats) > 0 {
-					return ports.Nats[0]
+					routerBin, err := filepath.Abs("../../var/bin/test_catalog_router")
+					if err != nil {
+						t.Fatal(err)
+					}
+					ready := filepath.Join(portsDir, "router-ready")
+					router := exec.Command(routerBin, ports.Nats[0], ready)
+					if err := router.Start(); err != nil {
+						t.Fatalf("build test_catalog_router first: %v", err)
+					}
+					t.Cleanup(func() { _ = router.Process.Kill(); _ = router.Wait() })
+					for i := 0; i < 100; i++ {
+						if _, err := os.Stat(ready); err == nil {
+							return ports.Nats[0]
+						}
+						time.Sleep(20 * time.Millisecond)
+					}
+					t.Fatal("catalog router did not become ready")
 				}
 			}
 		}
@@ -472,5 +488,40 @@ func TestSlashRegistrationPublishesSpec(t *testing.T) {
 	force, ok := params[1].(map[string]any)
 	if !ok || force["kind"] != "bool" || force["default"] != false {
 		t.Fatalf("second param = %v, want force/bool/false", params[1])
+	}
+}
+
+func TestRejectedInstanceCannotServe(t *testing.T) {
+	url := startTestNATS(t)
+	t.Setenv("NIF_NATS_URL", url)
+	schema := map[string]any{"type": "object", "properties": map[string]any{}}
+	accepted := New("admission", "1").Tool("admission_ping", schema,
+		func(_ *Component, _ json.RawMessage) (any, error) { return map[string]bool{"accepted": true}, nil })
+	if err := accepted.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer accepted.Close()
+	rejected := New("admission", "1").Tool("admission_ping", schema,
+		func(_ *Component, _ json.RawMessage) (any, error) {
+			t.Error("rejected handler executed")
+			return nil, nil
+		})
+	rejected.Tool("admission_extra", schema,
+		func(_ *Component, _ json.RawMessage) (any, error) { return nil, nil })
+	if err := rejected.Connect(); err == nil {
+		t.Fatal("incompatible registration accepted")
+	}
+	rejected.Close()
+	for i := 0; i < 20; i++ {
+		data, err := accepted.Request("admission", "admission_ping", map[string]any{}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Accepted bool `json:"accepted"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil || !result.Accepted {
+			t.Fatalf("wrong provider: %s", data)
+		}
 	}
 }

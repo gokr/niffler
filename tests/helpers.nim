@@ -4,7 +4,7 @@
 ## NIF_ROOT. Full-core tests snapshot only the shipped binaries they need,
 ## so tests may overlap each other and a live development harness.
 
-import std/[json, os, osproc, streams, strtabs, strutils, tempfiles, times]
+import std/[json, os, osproc, streams, strtabs, tempfiles, times]
 import natswrapper
 import envelope
 
@@ -32,7 +32,9 @@ proc report*(label: string) =
 # --------------------------------------------------------------------------
 # NATS
 
-proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: string] =
+var testRouters: seq[tuple[server, router: Process]]
+
+proc startNatsImpl(monitoring: bool, routed = false): tuple[prc: Process, url, monitorUrl: string] =
   let portsDir = createTempDir("niffler-nats-", "")
   try:
     var args = @["-a", "127.0.0.1", "-p", "-1"]
@@ -75,22 +77,44 @@ proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: strin
         result.prc.terminate()
       result.prc.close()
       raise newException(IOError, "nats-server did not publish a client port")
+    if routed:
+      let repoRoot = getEnv("NIF_REPO_ROOT", getEnv("NIF_ROOT", ""))
+      let routerBin = repoRoot / "var" / "bin" / "test_catalog_router"
+      let ready = portsDir / "router-ready"
+      let router = startProcess(routerBin, args = [result.url, ready],
+        options = {poParentStreams})
+      testRouters.add((result.prc, router))
+      for i in 0 ..< 100:
+        if fileExists(ready): break
+        sleep(20)
+      doAssert fileExists(ready), "catalog router did not become ready"
   finally:
     removeDir(portsDir)
 
-proc startNats*(): tuple[prc: Process, url: string] =
+proc startNats*(routed = false): tuple[prc: Process, url: string] =
   ## Let NATS allocate its own loopback port, avoiding bind-close-start races.
-  let started = startNatsImpl(false)
+  let started = startNatsImpl(false, routed)
   (started.prc, started.url)
 
-proc startNatsMonitoring*(): tuple[prc: Process, url, monitorUrl: string] =
+proc startNatsMonitoring*(routed = false): tuple[prc: Process, url, monitorUrl: string] =
   ## Start an isolated bus with NATS-assigned client and monitoring ports.
-  startNatsImpl(true)
+  startNatsImpl(true, routed)
+
+proc stopCatalogRouter*(server: Process) =
+  ## End the standalone authority before handing this bus to a full core.
+  for i in countdown(testRouters.len - 1, 0):
+    let pair = testRouters[i]
+    if pair.server == server:
+      if pair.router.running(): pair.router.kill()
+      discard pair.router.waitForExit()
+      pair.router.close()
+      testRouters.delete(i)
 
 proc stopServer*(server: Process, waitMs = 800) =
   ## Terminate a test bus, wait, escalate to SIGKILL, then reap.
   if server == nil:
     return
+  stopCatalogRouter(server)
   if server.running():
     server.terminate()
     let deadline = epochTime() + waitMs.float / 1000.0
@@ -125,24 +149,20 @@ proc waitConnect*(url: string, tries = 40): NatsConnection =
   raise newException(IOError, "cannot connect to " & url)
 
 proc waitRegistered*(nc: NatsConnection, comp: string, secs = 15): bool =
-  ## Watch reg.publish until the named component registers.
-  var sub: ptr natsSubscription
-  let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
-  if not checkStatus(st):
-    fail("subscribe reg.publish: " & getErrorString(st))
-    return false
+  ## Wait for core's accepted directory, not the registration request.
   let deadline = epochTime() + secs.float
-  result = false
   while epochTime() < deadline:
+    let data = callEnvelope("catalog", %*{"op": "components"}).encode()
     var msg: ptr natsMsg
-    let r = natsSubscription_NextMsg(addr msg, sub, 200)
-    if r == NATS_OK:
-      let data = $natsMsg_GetData(msg)
+    let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call",
+      data.cstring, data.len.cint, 500)
+    if st == NATS_OK:
+      let reply = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
-      if data.contains("\"" & comp & "\""):
-        result = true
-        break
-  natsSubscription_Destroy(sub)
+      if reply.kind == ekResult and reply.args{"components", comp} != nil:
+        return true
+    sleep(20)
+  return false
 
 proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,
            timeoutMs = 10_000): JsonNode =

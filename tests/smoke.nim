@@ -15,7 +15,7 @@ proc main() =
     echo "FAIL: nats_Open: " & getErrorString(initSt)
     raise newException(AssertionDefect, "smoke test failed")
 
-  let (server, natsUrl) = startNats()
+  let (server, natsUrl) = startNats(routed = true)
   defer: stopServer(server)
   var nc = waitConnect(natsUrl)
   defer: nc.close()
@@ -34,27 +34,8 @@ proc main() =
     if bashProc != nil and bashProc.running(): bashProc.terminate()
     if bashProc != nil: bashProc.close()
 
-  # wait for registration on reg.publish
-  var sub: ptr natsSubscription
-  let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
-  if not checkStatus(st):
-    echo "FAIL: subscribe: " & getErrorString(st)
-    raise newException(AssertionDefect, "smoke test failed")
-  var registered = false
-  for i in 0 ..< 100:
-    var msg: ptr natsMsg
-    let r = natsSubscription_NextMsg(addr msg, sub, 100)
-    if r == NATS_OK:
-      let data = $natsMsg_GetData(msg)
-      natsMsg_Destroy(msg)
-      if data.contains("bash"):
-        registered = true
-        echo "OK: bash registered"
-        break
-  if not registered:
-    echo "FAIL: bash never registered"
-    raise newException(AssertionDefect, "smoke test failed")
-  natsSubscription_Destroy(sub)
+  doAssert waitRegistered(nc, "bash"), "bash never accepted by catalog"
+  echo "OK: bash registered"
 
   # call svc.bash.call with a call envelope
   let callEnv = callEnvelope("bash", %*{"command": "echo hello-from-bash; ls /nonexistent; echo done", "timeoutMs": 10000})

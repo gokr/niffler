@@ -41,13 +41,14 @@ Rules:
 ## Subjects
 
 ```
-reg.publish            # component process announces itself on connect
-                       #   {name, version, pid, tools: [ {name, schema} ], client?,
+reg.publish            # registration request; core replies {accepted: bool}
+                       #   {name, version, pid, service?, tools: [ {name, schema} ], client?,
                        #    slash?: [SlashCommand]}; repeated logical name +
                        #    identical contract joins its replica group
-reg.depart             # {name, pid, ...}, graceful process departure; the logical
+reg.depart             # {name, pid, service?, ...}, graceful process departure; the logical
                        #   component remains while another replica PID is live
-svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
+svc.<component>.call   # public address owned by core
+svc.<component>.instance.<id>.call  # private address of one SDK instance
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?,
                        #   title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?};
@@ -220,6 +221,15 @@ installation verification requires every returned PID in that component's
 accepted `snapshot.pids`; an existing same-name component is insufficient.
 Missing instance IDs fail verification. If an initial process exits and is
 restarted, the replacement PID does not acknowledge the original spawn.
+`kill` and `remove` stop supervised instances and remove only their PIDs from
+catalog membership. External replicas remain registered and callable; `remove`
+also deletes the supervised group's persisted record.
+
+Core and SDK service components must be upgraded together: subscribing directly
+to public component addresses is no longer a supported SDK transport. This is
+cooperative protocol admission on a trusted NATS bus, not an authorization
+boundary against clients that deliberately subscribe to others' subjects; such
+isolation requires NATS permissions.
 The LLM-facing core tools also include `discover` (hint/schema lookup
 over the non-hidden catalog) and `invoke` (generic gateway into any live
 non-hidden tool, preserving its approval/timeout policy) — see
@@ -252,11 +262,18 @@ ends — turns never nest.
 1. Core boots: spawn NATS if no `NIF_NATS_URL` → read `manifest.yaml` → select
    the boot profile → spawn children (no ordering; ordering emerges from the
    bus). A stateless entry may set `replicas: N` (1–16; default 1), producing N
-   queue-group subscribers under one logical component name. Normal mode uses
+   private instance subscribers under one logical component name. Normal mode uses
    the manifest; `--minimal` filters it to `store`, `bash`, and `llm` and skips
    restoration of persisted spawned components.
-2. Each component process connects and publishes `reg.publish` with its tool
-   schemas. Core tracks all live PIDs for an identical logical registration;
+2. Each SDK process subscribes to a fresh private instance address, then
+   requests registration on `reg.publish` with its tool schemas and `service`
+   address. Only the system catalog replies; SDK startup succeeds only on
+   `{"accepted":true}` and closes the connection on rejection/unavailability.
+   Core owns `svc.<component>.call` and forwards requests round-robin only to
+   accepted instance addresses, preserving the payload and original reply inbox.
+   Forwarding does not wait for results, so replica calls remain concurrent.
+   Rejected subscribers cannot consume calls to the public address even if
+   they remain connected to their private address. Core tracks live PIDs;
    `catalog {op: snapshot}` exposes `pids` and `replicas`, while `core.status`
    also exposes `runningReplicas`.
 3. Core converges when the selected profile's required set has registered
@@ -326,8 +343,8 @@ keys:
   execution is an independent, explicit component choice: stateless services
   can use process replicas; audited Go handlers can register with
   `ToolConcurrent`; a Nim component may own native workers even though the
-  default SDK pump remains serial. The NATS queue group on
-  `svc.<component>.call` distributes one call per process subscriber.
+  default SDK pump remains serial. Core routes `svc.<component>.call`
+  across the accepted private instance addresses.
 
 ## Conventions
 

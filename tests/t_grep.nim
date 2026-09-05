@@ -32,7 +32,7 @@ proc main() =
   for i in 1 .. 500: many.add("needle " & $i & "\n")
   writeFile(tmp / "many.txt", many)
 
-  let (server, url) = startNats()
+  let (server, url) = startNats(routed = true)
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()

@@ -218,9 +218,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let name = args{"name"}.getStr("")
     if name.len == 0:
       return %*{"error": "kill needs name"}
+    var ownedPids: seq[int]
+    for child in ct.sup.children:
+      if child.name == name and child.process != nil:
+        ownedPids.add(child.process.processID)
     if not ct.sup.removeChild(name):
       return %*{"error": "no such component: " & name}
-    ct.cat.dropComponent(name)
+    for pid in ownedPids: ct.cat.dropReplica(name, pid)
     return %*{"ok": true, "name": name, "persisted": true}
   of "remove":
     ## Stop a component AND delete its persisted record, so it does not
@@ -228,8 +232,12 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let name = args{"name"}.getStr("")
     if name.len == 0:
       return %*{"error": "remove needs name"}
+    var ownedPids: seq[int]
+    for child in ct.sup.children:
+      if child.name == name and child.process != nil:
+        ownedPids.add(child.process.processID)
     discard ct.sup.removeChild(name)
-    ct.cat.dropComponent(name)
+    for pid in ownedPids: ct.cat.dropReplica(name, pid)
     try:
       ct.storeDel("component", name)
     except CatchableError as e:
@@ -1080,7 +1088,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
 # replies by round-robin polling — no threads, no asyncdispatch. This
 # parallelizes calls to *different* components (read ∥ grep ∥ git_status);
 # same-component calls still serialize in one process, but stateless logical
-# components can run multiple NATS queue-group process replicas.
+# components can run multiple accepted process replicas.
 
 type
   ToolCallOutcome* = object

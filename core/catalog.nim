@@ -39,6 +39,7 @@ type
     version*: string
     pid*: int            ## primary/compatibility PID (first live replica)
     pids*: seq[int]      ## all live replicas of this logical component
+    services*: Table[int, string] ## accepted PID -> private call subject
     client*: bool       ## interactive frontend (UI) — keeps an autostarted core alive
     tools*: seq[ToolReg]
     slash*: seq[SlashCommand]
@@ -53,9 +54,12 @@ type
     ## uses it to checkpoint the merged slash table into the store.
     onChange*: proc (cat: Catalog)
     sub*: ptr natsSubscription
+    serve: bool
+    routes: Table[string, ptr natsSubscription]
+    nextReplica: Table[string, int]
 
-proc newCatalog*(nc: NatsConnection): Catalog =
-  result = Catalog(nc: nc,
+proc newCatalog*(nc: NatsConnection, serve = false): Catalog =
+  result = Catalog(nc: nc, serve: serve,
                    components: initTable[string, ComponentReg](),
                    toolIndex: initTable[string, string](),
                    slashIndex: initTable[string, string]())
@@ -72,7 +76,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
         "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"},
-        "replicas": {"type": "integer", "minimum": 1, "maximum": 16, "description": "Number of identical stateless component processes to run in the NATS queue group (default 1)"}
+        "replicas": {"type": "integer", "minimum": 1, "maximum": 16, "description": "Number of identical stateless component processes to run behind the accepted-instance router (default 1)"}
       },
       "required": ["name", "binary"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -80,7 +84,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "kill", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Stop every process replica of a running logical component. It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
+      "description": "Stop every supervised process replica of a running logical component, preserving external replicas. It stays persisted in the store and is restored on the next boot; use remove to delete it for good",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -88,7 +92,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "remove", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Stop every replica of a logical component and delete its persisted record — it will not be restored on the next boot",
+      "description": "Stop supervised replicas of a logical component and delete its persisted record, preserving external replicas — it will not be restored on the next boot",
       "properties": {"name": {"type": "string", "description": "Component name"}},
       "required": ["name"],
       "x-harness": {"approval": "always", "onDemand": true}
@@ -443,7 +447,22 @@ proc slashList*(reg: ComponentReg): JsonNode =
     cmds.add(node)
   cmds
 
+proc syncRoutes(cat: Catalog) =
+  ## Only the system catalog owns public service addresses. Session catalogs
+  ## are read-only mirrors and must never compete for routed calls.
+  if not cat.serve: return
+  for name, reg in cat.components:
+    if reg.services.len == 0 or cat.routes.hasKey(name): continue
+    var sub: ptr natsSubscription
+    let subject = "svc." & name & ".call"
+    let st = natsConnection_QueueSubscribeSync(addr sub, cat.nc.conn,
+                                               subject.cstring, "core-router")
+    if not checkStatus(st):
+      raise newException(IOError, "subscribe service route: " & getErrorString(st))
+    cat.routes[name] = sub
+
 proc announce(cat: Catalog) =
+  cat.syncRoutes()
   let env = Envelope(v: 1, id: newId(), kind: ekEvent,
                      payload: cat.promptTools())
   cat.nc.publish("ev.catalog.updated", env.encode())
@@ -463,10 +482,15 @@ proc dropRegistration(cat: Catalog, name, reason: string) =
     if cat.slashIndex.getOrDefault(s.name) == name:
       cat.slashIndex.del(s.name)
   cat.components.del(name)
+  if cat.routes.hasKey(name):
+    discard natsSubscription_Unsubscribe(cat.routes[name])
+    natsSubscription_Destroy(cat.routes[name])
+    cat.routes.del(name)
+    cat.nextReplica.del(name)
   echo "catalog: " & name & " " & reason
   cat.announce()
 
-proc handle(cat: Catalog, subject, data: string) =
+proc handle(cat: Catalog, subject, data: string): bool =
   var node: JsonNode
   try:
     node = data.parseJson()
@@ -498,6 +522,21 @@ proc handle(cat: Catalog, subject, data: string) =
       reg.pids.add(reg.pid)
     if reg.pid <= 0 and reg.pids.len > 0:
       reg.pid = reg.pids[0]
+    let service = node{"service"}.getStr("")
+    if service.len > 0:
+      if not name.allCharsInSet({'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}):
+        echo "catalog: rejecting invalid service component name"
+        return
+      let prefix = "svc." & name & ".instance."
+      if reg.pid <= 0 or not service.startsWith(prefix) or
+         not service.endsWith(".call") or service.len <= prefix.len + 5:
+        echo "catalog: rejecting invalid instance service for " & name
+        return
+      let token = service[prefix.len ..< service.len - 5]
+      if token.len == 0 or not token.allCharsInSet({'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}):
+        echo "catalog: rejecting invalid instance service for " & name
+        return
+      reg.services[reg.pid] = service
     # tool names are unique across the whole catalog (docs/WIRE.md). A clash
     # refuses the ENTIRE registration, before any state changes: a component
     # that joins minus its colliding tool shows up "installed" while silently
@@ -515,7 +554,10 @@ proc handle(cat: Catalog, subject, data: string) =
         reg.tools.add(ToolReg(name: tname,
                               schema: normalizeToolSchema(t{"schema"}),
                               component: name))
-    # A second process with the same logical name is a NATS queue-group
+    if cat.serve and reg.tools.len > 0 and service.len == 0:
+      echo "catalog: rejecting " & name & " — service instance address required"
+      return
+    # A second process with the same logical name is a service
     # replica. It must advertise an identical tool contract; then only its
     # PID joins the existing registration. This keeps global tool identity
     # singular while the service has N workers.
@@ -539,6 +581,8 @@ proc handle(cat: Catalog, subject, data: string) =
         echo "catalog: rejecting replica " & name &
              " — registration contract differs from the live group"
         return
+      for pid, service in reg.services:
+        current.services[pid] = service
       for pid in reg.pids:
         if pid notin current.pids: current.pids.add(pid)
       if current.pid <= 0 and current.pids.len > 0:
@@ -548,7 +592,7 @@ proc handle(cat: Catalog, subject, data: string) =
       echo "catalog: " & name & " replica registered (" &
            $current.pids.len & " live)"
       cat.announce()
-      return
+      return true
     for t in reg.tools:
       cat.toolIndex[t.name] = name
     # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
@@ -601,11 +645,16 @@ proc handle(cat: Catalog, subject, data: string) =
     echo "catalog: " & name & " v" & reg.version & " registered (" &
          $reg.tools.len & " tools, " & $reg.slash.len & " slash commands)"
     cat.announce()
+    return true
 
   elif subject == "reg.depart":
     if cat.components.hasKey(name):
       let pid = node{"pid"}.getInt(0)
       var reg = cat.components[name]
+      let service = node{"service"}.getStr("")
+      # Snapshot-seeded session mirrors track membership by PID and do not
+      # own private routes. Only the authority validates endpoint identity.
+      if cat.serve and service.len > 0 and reg.services.getOrDefault(pid) != service: return
       if pid > 0 and reg.pids.len > 0:
         var remaining: seq[int]
         for livePid in reg.pids:
@@ -613,6 +662,7 @@ proc handle(cat: Catalog, subject, data: string) =
         # Ignore a stale/duplicate departure rather than dropping peers.
         if remaining.len == reg.pids.len: return
         if remaining.len > 0:
+          reg.services.del(pid)
           reg.pids = remaining
           reg.pid = remaining[0]
           cat.components[name] = reg
@@ -626,7 +676,7 @@ proc applyReg*(cat: Catalog, node: JsonNode) =
   ## Inject one registration payload ({name, version, pid, pids?, tools}) as if it
   ## had arrived on reg.publish — used by session runners to seed their
   ## catalog from the system's snapshot taken at startup.
-  handle(cat, "reg.publish", $node)
+  discard handle(cat, "reg.publish", $node)
 
 proc clientCount*(cat: Catalog): int =
   ## Registered interactive frontends (reg.publish with "client": true).
@@ -636,7 +686,7 @@ proc clientCount*(cat: Catalog): int =
 
 proc dropReplica*(cat: Catalog, name: string, pid: int) =
   ## Called by the supervisor when one process dies without reg.depart. Keep
-  ## the logical component registered while another queue-group replica lives.
+  ## the logical component registered while another accepted replica lives.
   if not cat.components.hasKey(name): return
   var reg = cat.components[name]
   if pid > 0 and reg.pids.len > 0:
@@ -645,6 +695,7 @@ proc dropReplica*(cat: Catalog, name: string, pid: int) =
       if livePid != pid: remaining.add(livePid)
     if remaining.len == reg.pids.len: return
     if remaining.len > 0:
+      reg.services.del(pid)
       reg.pids = remaining
       reg.pid = remaining[0]
       cat.components[name] = reg
@@ -667,5 +718,38 @@ proc pump*(cat: Catalog) =
     if not checkStatus(st): break
     let subject = $natsMsg_GetSubject(msg)
     let data = $natsMsg_GetData(msg)
+    let reply = $natsMsg_GetReply(msg)
     natsMsg_Destroy(msg)
-    cat.handle(subject, data)
+    let accepted = cat.handle(subject, data)
+    if cat.serve and subject == "reg.publish" and reply.len > 0:
+      cat.nc.publish(reply, $(%*{"accepted": accepted}))
+
+  # Forward without waiting for a result: the original reply inbox travels
+  # with the request, so calls and replicas remain concurrent. Rejected
+  # registrations never enter this address selection.
+  if cat.serve:
+    for name, sub in cat.routes:
+      # Never wait on an idle service: routing latency must not grow with
+      # the number of registered components.
+      var pending: cint
+      if natsSubscription_GetPending(sub, addr pending, nil) != NATS_OK: continue
+      for i in 0 ..< min(64, pending.int):
+        var msg: ptr natsMsg
+        let st = natsSubscription_NextMsg(addr msg, sub, 1)
+        if st != NATS_OK: break
+        let reg = cat.components[name]
+        var endpoints: seq[string]
+        for pid in reg.pids:
+          if reg.services.hasKey(pid): endpoints.add(reg.services[pid])
+        if endpoints.len > 0:
+          let index = cat.nextReplica.getOrDefault(name) mod endpoints.len
+          cat.nextReplica[name] = (index + 1) mod endpoints.len
+          let reply = $natsMsg_GetReply(msg)
+          if reply.len > 0:
+            discard natsConnection_PublishRequest(cat.nc.conn,
+              endpoints[index].cstring, reply.cstring,
+              natsMsg_GetData(msg), natsMsg_GetDataLength(msg))
+          else:
+            discard natsConnection_Publish(cat.nc.conn, endpoints[index].cstring,
+              natsMsg_GetData(msg), natsMsg_GetDataLength(msg))
+        natsMsg_Destroy(msg)

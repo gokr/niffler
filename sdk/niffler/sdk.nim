@@ -80,6 +80,7 @@ type
     taps*: seq[tuple[pattern: string, handler: TapHandler]]
     drainHandlers: seq[DrainHandler]
     nc*: NatsConnection
+    service: string  ## private per-instance call subject
     bindings: seq[SubscriptionBinding]
     shuttingDown*: bool
 
@@ -438,14 +439,25 @@ proc regPayload(c: Component): JsonNode =
   for t in c.tools:
     toolsJson.add(%*{"name": t.name, "schema": t.schema})
   result = %*{"name": c.name, "version": c.version,
-              "pid": getCurrentProcessId(), "tools": toolsJson}
+              "pid": getCurrentProcessId(), "service": c.service, "tools": toolsJson}
   if c.slashCommands.len > 0:
     result["slash"] = %c.slashCommands
   if c.client:
     result["client"] = %true
 
 proc announce(c: Component, subject: string) =
-  c.nc.publish(subject, $c.regPayload())
+  let data = $c.regPayload()
+  if subject != "reg.publish":
+    c.nc.publish(subject, data)
+    return
+  var msg: ptr natsMsg
+  let st = natsConnection_Request(addr msg, c.nc.conn, subject.cstring,
+                                  data.cstring, data.len.cint, 30_000)
+  if st != NATS_OK:
+    raise newException(IOError, "registration authority unavailable: " & getErrorString(st))
+  defer: natsMsg_Destroy(msg)
+  if not parseJson($natsMsg_GetData(msg)){"accepted"}.getBool(false):
+    raise newException(IOError, "registration rejected by core: " & c.name)
 
 # ---------------------------------------------------------------------------
 # Harness discovery + ensure — for interactive clients (UIs, terminal
@@ -636,11 +648,11 @@ proc run*(c: Component) =
   let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
   c.nc = connect(url)
 
-  # queue-grouped call subject: N replicas, one gets each call
+  # Core forwards the logical service address only to accepted instances.
   var sub: ptr natsSubscription
-  let callSubject = "svc." & c.name & ".call"
-  let st = natsConnection_QueueSubscribeSync(addr sub, c.nc.conn,
-                                             callSubject.cstring, c.name.cstring)
+  c.service = "svc." & c.name & ".instance." & newId() & ".call"
+  let callSubject = c.service
+  let st = natsConnection_SubscribeSync(addr sub, c.nc.conn, callSubject.cstring)
   if not checkStatus(st):
     raise newException(IOError, "subscribe " & callSubject & ": " & getErrorString(st))
   c.bindings.add(SubscriptionBinding(sub: sub, kind: skCall))
@@ -665,7 +677,13 @@ proc run*(c: Component) =
     c.bindings.add(SubscriptionBinding(sub: s, kind: skTap,
                                       tapHandler: t.handler))
 
-  c.announce("reg.publish")
+  try:
+    c.announce("reg.publish")
+  except CatchableError:
+    for binding in c.bindings: natsSubscription_Destroy(binding.sub)
+    c.bindings.setLen(0)
+    c.nc.close()
+    raise
   echo c.name & " v" & c.version & " online on " & url &
        " (" & $c.tools.len & " tools)"
 
