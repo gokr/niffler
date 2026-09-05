@@ -41,3 +41,6 @@ logs/
 .mcp.json
 .opencode/
 .pi/
+
+# worktrees (using-git-worktrees skill)
+.worktrees/
