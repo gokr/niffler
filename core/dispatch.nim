@@ -861,9 +861,12 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   if not checkStatus(st):
     raise newException(IOError, "publish request: " & getErrorString(st))
   let deadline = epochTime() + timeoutMs.float / 1000.0
+  # The system core also forwards every service request. A long reply wait
+  # delays each dependent call made by the session we are waiting for.
+  let replyPollMs = if ct.sup != nil: 1 else: 100
   while epochTime() < deadline:
     var msg: ptr natsMsg
-    let ns = natsSubscription_NextMsg(addr msg, sub, 100)
+    let ns = natsSubscription_NextMsg(addr msg, sub, replyPollMs)
     if ns == NATS_OK:
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
