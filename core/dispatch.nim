@@ -218,13 +218,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let name = args{"name"}.getStr("")
     if name.len == 0:
       return %*{"error": "kill needs name"}
-    var ownedPids: seq[int]
-    for child in ct.sup.children:
-      if child.name == name and child.process != nil:
-        ownedPids.add(child.process.processID)
     if not ct.sup.removeChild(name):
       return %*{"error": "no such component: " & name}
-    for pid in ownedPids: ct.cat.dropReplica(name, pid)
+    ct.cat.dropComponent(name)
     return %*{"ok": true, "name": name, "persisted": true}
   of "remove":
     ## Stop a component AND delete its persisted record, so it does not
@@ -232,12 +228,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     let name = args{"name"}.getStr("")
     if name.len == 0:
       return %*{"error": "remove needs name"}
-    var ownedPids: seq[int]
-    for child in ct.sup.children:
-      if child.name == name and child.process != nil:
-        ownedPids.add(child.process.processID)
     discard ct.sup.removeChild(name)
-    for pid in ownedPids: ct.cat.dropReplica(name, pid)
+    ct.cat.dropComponent(name)
     try:
       ct.storeDel("component", name)
     except CatchableError as e:

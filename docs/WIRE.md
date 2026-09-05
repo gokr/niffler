@@ -218,8 +218,6 @@ and `replicas`; this confirms process creation, not registration acceptance.
 `plugin_install` preserves these IDs in each spawned component result. CLI
 installation verification requires every returned PID in that component's
 accepted `snapshot.pids`; an existing same-name component is insufficient.
-`kill` and `remove` drop only supervised process IDs from the catalog,
-preserving unrelated external replicas.
 Missing instance IDs fail verification. If an initial process exits and is
 restarted, the replacement PID does not acknowledge the original spawn.
 The LLM-facing core tools also include `discover` (hint/schema lookup

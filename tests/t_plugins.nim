@@ -213,18 +213,6 @@ proc main() =
     60_000, root = root)
   check("same-name rejected plugin cleaned up", cleanup.code == 0, cleanup.output)
 
-  let afterRemoval = call(nc, "core", "catalog", %*{"op": "snapshot"})
-  var externalKept = false
-  for entry in afterRemoval["components"]:
-    if entry{"name"}.getStr() == "replacement":
-      externalKept = entry{"pids"} == %* [external.processID]
-  check("plugin removal preserves the unrelated external registration",
-        external.running() and externalKept, $afterRemoval)
-  let stillCallable = call(nc, "core", "invoke",
-    %*{"tool": "replacement_old", "arguments": {}}, 3_000)
-  check("external tool remains callable after plugin removal",
-        stillCallable{"old"}.getBool(false), $stillCallable)
-
   # duplicate install is rejected
   let dup = runCli(cliBin, url, @["install", "file://" & repoDir], 60_000,
                    root = root)

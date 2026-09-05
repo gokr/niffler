@@ -138,41 +138,6 @@ proc main() =
     if item{"id"}.getStr("") == "lifec": lifecGone = false
   check("remove deletes the component record", lifecGone, $stored2)
 
-  block:
-    # One compatible replica is external. kill/remove own only the processes
-    # started by this supervisor, even when all replicas share one name.
-    let external = startComponent(built{"binary"}.getStr(), url, root = root)
-    defer: stopProcess(external)
-    let externalReady = runCli(cliBin, url, @["wait", "lifec", "15"], root = root)
-    doAssert externalReady.code == 0, externalReady.output
-    let group = call(nc, "core", "spawn",
-      %*{"name": "lifec", "binary": built{"binary"}.getStr()}, 60_000)
-    doAssert group{"ok"}.getBool(false), $group
-    var both = false
-    for i in 0 ..< 100:
-      let view = call(nc, "core", "catalog", %*{"op": "snapshot"})
-      for entry in view["components"]:
-        if entry{"name"}.getStr() == "lifec" and entry["pids"].len == 2:
-          both = true
-      if both: break
-      sleep(20)
-    check("managed and external replicas both accepted", both)
-    let stopped = call(nc, "core", "kill", %*{"name": "lifec"}, 60_000)
-    check("kill stops only managed replicas", stopped{"ok"}.getBool(false), $stopped)
-    let forgotten = call(nc, "core", "remove", %*{"name": "lifec"}, 60_000)
-    check("remove without managed children preserves external replicas",
-          forgotten{"ok"}.getBool(false), $forgotten)
-    let view = call(nc, "core", "catalog", %*{"op": "snapshot"})
-    var externalOnly = false
-    for entry in view["components"]:
-      if entry{"name"}.getStr() == "lifec":
-        externalOnly = entry["pids"] == %* [external.processID]
-    check("external replica survives kill/remove in catalog",
-          external.running() and externalOnly, $view)
-    let reply = call(nc, "core", "invoke",
-      %*{"tool": "lifec_ping", "arguments": {}}, 3_000)
-    check("external replica still serves calls", reply{"alive"}.getBool(false), $reply)
-
   # --- duplicate tool name rejected by the catalog --------------------------
   const rogue = """
     import niffler/sdk

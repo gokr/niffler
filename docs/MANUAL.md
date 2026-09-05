@@ -334,11 +334,6 @@ authoritative directory, never raw registration broadcasts. A plugin repo's CI
 proves a package by running the harness itself through this one command. `file://` repo URLs
 install from local git repos (hermetic tests, mirrors).
 
-This verifies catalog acceptance, not exclusive delivery: service calls still
-use the existing NATS queue groups. A rejected same-name process can remain
-subscribed and receive calls. Failed installations are not automatically
-rolled back; removing them preserves unrelated external registrations.
-
 ## Approvals
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
