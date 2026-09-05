@@ -475,7 +475,7 @@ install-go:
 install-native-deps:
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
-		brew install pkg-config cnats lz4 llvm; \
+		brew install pkg-config cnats lz4; \
 	else \
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \

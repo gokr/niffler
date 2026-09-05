@@ -132,7 +132,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 
 ```bash
 # Install Xcode command-line tools first: xcode-select --install
-brew install go node pkg-config cnats lz4 llvm
+brew install go node pkg-config cnats lz4
 export SDKROOT="$(xcrun --show-sdk-path)"
 export LIBRARY_PATH="$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
@@ -140,7 +140,8 @@ export PATH="$HOME/.nimble/bin:$PATH"
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 ```
 
-No extra GUI libraries on macOS — Wails uses the system WebKit. The Makefile
+Xcode command-line tools also supply Clang/libclang; a separate Homebrew
+LLVM installation is not needed. Wails uses the system WebKit. The Makefile
 sets `SDKROOT` and the Homebrew library search path too; keep the exports
 above when invoking Nim/Nimble directly from your shell.
 
