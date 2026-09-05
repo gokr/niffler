@@ -8,6 +8,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bundled skill `niffler-harness`** — operational guide to the running
+  harness itself: lifecycle (`make run` / `--minimal` / `--recover` /
+  `make down`, autostart rules), session runners, the store (engines,
+  reading a conversation out via `cli`), self-extension end-to-end with the
+  `x-harness.*` schema extensions, bus debugging (`console`, `cli`,
+  `observe`, `logfile`, prompt-cache discipline), plugins/skills discovery,
+  config and a recovery cheatsheet. Complements `niffler-tools` (which
+  tool) and `niffler-fabric` (program construction). `niffler-tools` gains
+  an execution-contexts section (main session vs `agent_run` vs fabric
+  guest), a per-conversation toolset reminder, and the model-catalog-
+  as-authority pointer.
+
 - **NATS server as a first-class Go component** — `components/nats`
   rebuilds the official nats-server (v2.14.6, in-process server library,
   CLI-compatible) into `var/bin/nats-server`; core prefers that binary over
