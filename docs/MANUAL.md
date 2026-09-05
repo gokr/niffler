@@ -325,8 +325,10 @@ it is the scripting face, the tty admin shell is the interactive one:
 ```
 
 `cli install` clones, builds via the builder, spawns every component and
-waits for each registration — a plugin repo's CI proves a package by
-running the harness itself through this one command. `file://` repo URLs
+waits for core to accept each service registration; interactive components
+are verified by their build. CLI catalog and tool lookup also use core's
+authoritative directory, never raw registration broadcasts. A plugin repo's CI
+proves a package by running the harness itself through this one command. `file://` repo URLs
 install from local git repos (hermetic tests, mirrors).
 
 ## Approvals

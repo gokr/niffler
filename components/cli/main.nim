@@ -1,8 +1,8 @@
 ## cli component — drive the harness from a terminal or a script.
 ##
-## A standalone bus client (like console): subscribes to reg.* to keep a
-## live catalog of components and the tools they register at runtime, and
-## can dispatch tool calls request/reply over the bus. No tools of its own,
+## A standalone bus client: reads the accepted component/tool catalog from
+## core and dispatches tool calls request/reply over the bus. Component
+## announcements are not registration acknowledgements. No tools of its own,
 ## not spawned by core — run it on demand while a harness is up:
 ##
 ##   ./var/bin/cli catalog                        # components + tools
@@ -14,7 +14,7 @@
 ## The bus comes from NIF_NATS_URL, then the harness's var/nats-url
 ## discovery file, then nats://127.0.0.1:4222.
 
-import std/[json, os, parseopt, strutils, tables, times]
+import std/[json, os, parseopt, strutils, tables, times, monotimes]
 import natswrapper
 import envelope
 import dotenv
@@ -29,91 +29,69 @@ proc resolveBusUrl(): string =
   ## (SDK's resolveNatsUrl — the same order every client follows).
   resolveNatsUrl()
 
-proc handleReg(subject, data: string) =
-  var node: JsonNode
-  try:
-    node = data.parseJson()
-  except CatchableError:
-    return
-  let name = node{"name"}.getStr("")
-  if name.len == 0: return
-  if subject == "reg.publish":
-    var tools: seq[string] = @[]
-    let ts = node{"tools"}
-    if ts != nil:
-      for t in ts:
-        let tname = t{"name"}.getStr("")
-        if tname.len == 0: continue
-        tools.add(tname)
-        toolIndex[tname] = name
-    components[name] = tools
-  elif subject == "reg.depart":
-    for t in components.getOrDefault(name):
-      if toolIndex.getOrDefault(t) == name:
-        toolIndex.del(t)
-    components.del(name)
-
-proc seedCatalog(nc: NatsConnection) =
-  ## The catalog only sees registrations that happen after we connect.
-  ## Ask core for the current component→tools mapping so a cli started
-  ## against an already-running harness still knows everything.
+proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000): bool =
+  ## Core owns registration acceptance. Replace both indexes on every read;
+  ## a failed read must not leave stale entries available as proof of success.
+  components.clear()
+  toolIndex.clear()
   let data = callEnvelope("catalog", %*{"op": "components"}).encode()
   var msg: ptr natsMsg
   let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call".cstring,
-                                  data.cstring, data.len.cint, 5_000)
-  if st != NATS_OK: return
-  let r = decode($natsMsg_GetData(msg))
-  natsMsg_Destroy(msg)
-  if r.kind != ekResult or r.args{"components"} == nil: return
-  for name, tools in r.args{"components"}:
-    var ts: seq[string] = @[]
-    if tools != nil:
+                                  data.cstring, data.len.cint, timeoutMs.int64)
+  if st != NATS_OK: return false
+  defer: natsMsg_Destroy(msg)
+  try:
+    let r = decode($natsMsg_GetData(msg))
+    let snapshot = r.args{"components"}
+    if r.kind != ekResult or snapshot == nil or snapshot.kind != JObject:
+      return false
+    var accepted = initTable[string, seq[string]]()
+    var owners = initTable[string, string]()
+    for name, tools in snapshot:
+      if tools.kind != JArray: return false
+      var ts: seq[string] = @[]
       for t in tools:
+        if t.kind != JString: return false
         let tname = t.getStr("")
         if tname.len == 0: continue
         ts.add(tname)
-        toolIndex[tname] = name
-    components[name] = ts
+        owners[tname] = name
+      accepted[name] = ts
+    components = accepted
+    toolIndex = owners
+    return true
+  except CatchableError:
+    return false
 
-proc pump(sub: ptr natsSubscription) =
+proc waitForRegistration(nc: NatsConnection, name: string, secs: int,
+                         isTool = false): bool =
+  ## Poll the authoritative snapshot; raw reg.* never grants membership.
+  ## Bound each request by the remaining wait. A zero-second wait performs
+  ## one bounded snapshot read, without a final unconfirmed cache lookup.
+  let deadline = getMonoTime() + initDuration(seconds = max(0, secs))
   while true:
-    var msg: ptr natsMsg
-    let st = natsSubscription_NextMsg(addr msg, sub, 1)
-    if st == NATS_TIMEOUT: break
-    if not checkStatus(st): break
-    let subject = $natsMsg_GetSubject(msg)
-    let data = $natsMsg_GetData(msg)
-    natsMsg_Destroy(msg)
-    handleReg(subject, data)
+    let remaining = (deadline - getMonoTime()).inMilliseconds
+    let timeoutMs = if secs <= 0: 5_000
+                    else: int(max(1'i64, min(5_000'i64, remaining)))
+    if refreshCatalog(nc, timeoutMs):
+      if isTool:
+        if toolIndex.hasKey(name): return true
+      elif components.hasKey(name):
+        return true
+    let left = (deadline - getMonoTime()).inMilliseconds
+    if left <= 0: return false
+    sleep(int(min(200'i64, left)))
 
-proc waitForComponent(nc: NatsConnection, sub: ptr natsSubscription,
-                      comp: string, secs: int): bool =
-  let deadline = epochTime() + secs.float
-  while epochTime() < deadline:
-    pump(sub)
-    if components.hasKey(comp): return true
-    seedCatalog(nc)  # covers registrations we missed (races at startup)
-    if components.hasKey(comp): return true
-    sleep(200)
-  pump(sub)
-  return components.hasKey(comp)
+proc waitForComponent(nc: NatsConnection, comp: string, secs: int): bool =
+  waitForRegistration(nc, comp, secs)
 
-proc waitForTool(nc: NatsConnection, sub: ptr natsSubscription,
-                 tool: string, secs: int): bool =
-  let deadline = epochTime() + secs.float
-  while epochTime() < deadline:
-    pump(sub)
-    if toolIndex.hasKey(tool): return true
-    seedCatalog(nc)  # covers registrations we missed (races at startup)
-    if toolIndex.hasKey(tool): return true
-    sleep(200)
-  pump(sub)
-  return toolIndex.hasKey(tool)
+proc waitForTool(nc: NatsConnection, tool: string, secs: int): bool =
+  waitForRegistration(nc, tool, secs, isTool = true)
 
 proc callTool(nc: NatsConnection, tool: string, args: JsonNode,
               timeoutMs: int): JsonNode =
   ## Dispatch a tool call to whatever component provides it. The catalog
-  ## must have seen the registration (waitForTool) before calling.
+  ## must have confirmed core acceptance (waitForTool) before calling.
   let comp = toolIndex.getOrDefault(tool)
   if comp.len == 0:
     raise newException(ValueError, "no component provides tool '" & tool & "'")
@@ -133,8 +111,10 @@ proc callTool(nc: NatsConnection, tool: string, args: JsonNode,
     raise newException(ValueError, r.error{"message"}.getStr("component error"))
   return r.args
 
-proc cmdCatalog(sub: ptr natsSubscription): int =
-  pump(sub)
+proc cmdCatalog(nc: NatsConnection): int =
+  if not refreshCatalog(nc):
+    echo "cli: cannot read core catalog — is a harness up?"
+    return 1
   if components.len == 0:
     echo "cli: catalog empty — is a harness up?"
     return 1
@@ -142,7 +122,7 @@ proc cmdCatalog(sub: ptr natsSubscription): int =
     echo comp & ": " & (if tools.len > 0: tools.join(", ") else: "(no tools)")
   return 0
 
-proc cmdCall(nc: NatsConnection, sub: ptr natsSubscription,
+proc cmdCall(nc: NatsConnection,
              tool, argsStr: string, timeoutMs: int): int =
   var args = newJObject()
   if argsStr.len > 0:
@@ -151,7 +131,7 @@ proc cmdCall(nc: NatsConnection, sub: ptr natsSubscription,
     except CatchableError as e:
       echo "cli: bad JSON args: " & e.msg
       return 2
-  if not waitForTool(nc, sub, tool, 60):
+  if not waitForTool(nc, tool, 60):
     echo "cli: no component provides tool '" & tool & "' (within 60s)"
     return 1
   try:
@@ -162,8 +142,7 @@ proc cmdCall(nc: NatsConnection, sub: ptr natsSubscription,
     return 1
   return 0
 
-proc cmdInstall(nc: NatsConnection, sub: ptr natsSubscription,
-                repoRef: string): int =
+proc cmdInstall(nc: NatsConnection, repoRef: string): int =
   ## plugin_install, then wait for every spawned service component to
   ## register. Interactive components are verified by their successful build.
   var repo = repoRef
@@ -173,7 +152,7 @@ proc cmdInstall(nc: NatsConnection, sub: ptr natsSubscription,
     version = repo[at + 1 .. ^1]
     repo = repo[0 ..< at]
   echo "cli: installing " & repo & (if version.len > 0: "@" & version else: "")
-  if not waitForComponent(nc, sub, "plugins", 60):
+  if not waitForComponent(nc, "plugins", 60):
     echo "cli: FAIL — plugins component never registered"
     return 1
   var inst: JsonNode
@@ -204,7 +183,7 @@ proc cmdInstall(nc: NatsConnection, sub: ptr natsSubscription,
            c{"error"}.getStr("unknown error")
       inc failed
       continue
-    if waitForComponent(nc, sub, name, 60):
+    if waitForComponent(nc, name, 60):
       echo "cli: " & name & " registered (" &
            $components.getOrDefault(name).len & " tools)"
     else:
@@ -255,26 +234,19 @@ proc main() =
   except CatchableError:
     echo "cli: cannot connect to " & url & " — is the harness running?"
     quit(1)
-  var sub: ptr natsSubscription
-  let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.>".cstring)
-  if not checkStatus(st):
-    echo "cli: subscribe reg.>: " & getErrorString(st)
-    quit(1)
-  seedCatalog(nc)
-
   case positional[0]
   of "catalog":
-    quit(cmdCatalog(sub))
+    quit(cmdCatalog(nc))
   of "call":
     if positional.len < 2:
       usage(); quit(2)
     let argsStr = if positional.len >= 3: positional[2] else: ""
-    quit(cmdCall(nc, sub, positional[1], argsStr, timeoutMs))
+    quit(cmdCall(nc, positional[1], argsStr, timeoutMs))
   of "wait":
     if positional.len < 2:
       usage(); quit(2)
     let secs = if positional.len >= 3: parseInt(positional[2]) else: 60
-    if waitForComponent(nc, sub, positional[1], secs):
+    if waitForComponent(nc, positional[1], secs):
       echo "cli: " & positional[1] & " registered"
       quit(0)
     echo "cli: " & positional[1] & " not registered within " & $secs & "s"
@@ -282,7 +254,7 @@ proc main() =
   of "install":
     if positional.len < 2:
       usage(); quit(2)
-    quit(cmdInstall(nc, sub, positional[1]))
+    quit(cmdInstall(nc, positional[1]))
   else:
     echo "cli: unknown command '" & positional[0] & "'"
     usage()

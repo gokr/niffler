@@ -209,7 +209,8 @@ ev.approval.resolved   # core → UIs: {id, ok} gate verdict; clients dismiss
 `kill`, `remove`. `catalog` ops: `list` (the name-sorted *direct*
 projection — tools without `x-harness.onDemand`/`x-harness.hidden`),
 `components` (component→tools view over the full catalog for bus clients
-that missed the registrations — the cli seeds its catalog from it) and
+— the CLI reads this authoritative snapshot for catalog, tool lookup, and
+registration/install verification; raw `reg.publish` is not acceptance) and
 `snapshot` (full registration payloads incl. schemas — session runners
 seed their catalog from it at startup, then follow `reg.>` live).
 The LLM-facing core tools also include `discover` (hint/schema lookup
@@ -226,8 +227,8 @@ ends — turns never nest.
 - Presence = connection; component death detected by core via NATS disconnect
   plus `reg.depart` (graceful) vs silence (crash).
 - Tool names are unique across the whole catalog — enforced by core at
-  registration, rejected with an error envelope. The LLM only ever sees tool
-  names; core maps tool → component at dispatch. The namespace is deliberately
+  registration; conflicting registrations are refused in full. The LLM only
+  sees tool names; core maps tool → component at dispatch. The namespace is deliberately
   **flat**, not `component.tool`-qualified: flat names are the LLM's call
   vocabulary (no `edit.edit` noise), and dot-names would break Anthropic-style
   providers that restrict tool names to `[a-zA-Z0-9_-]`. Clash avoidance is by
