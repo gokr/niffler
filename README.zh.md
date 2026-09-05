@@ -68,7 +68,8 @@ shell 会一直运行，直到你主动停止。然后随意启动任意多个 U
 
 ## 环境要求
 
-Core + 组件需要 **Nim**、**Go** 和 **nats-server**；TypeScript 组件和
+Core + 组件需要 **Nim** 和 **Go**（NATS 总线服务器作为组件从源码构建——
+`components/nats` → `var/bin/nats-server`）；TypeScript 组件和
 桌面 UI 额外需要 **Node/npm**（builder 的 `lang: "ts"` 每次构建会从
 npm registry 拉取 typescript）；UI 还需要 **wails CLI**，以及（Linux
 上）WebKit/GTK 开发库。
@@ -90,8 +91,7 @@ sudo snap install go --classic
 # Nim 2.x（Ubuntu apt 的版本太旧）—— 会把 ~/.nimble/bin 加入 PATH
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh
 
-# nats-server —— 或从 https://github.com/nats-io/nats-server/releases 拿二进制
-go install github.com/nats-io/nats-server/v2@latest
+# nats-server —— 由 `make build` 从源码构建（components/nats），无需安装
 
 # Node/npm（前端；wails 会自己跑 npm install）。Ubuntu 24.04 自带
 # node 18，可用。更老的 Ubuntu 需要 NodeSource 或 nvm —— 见 docs/MANUAL.md。
@@ -107,7 +107,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config l
 ### macOS（Homebrew）
 
 ```bash
-brew install go nim nats-server node
+brew install go nim node
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 ```
 
@@ -177,8 +177,9 @@ harness 同时测试 Nim 和 Go 组件）。可写状态放在唯一的临时 `N
 探测 live core（`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222），
 否则自己拉起 `var/bin/niffler`（`NIF_AUTOSTART=1`）。交互式前端注册
 `"client": true`；自动启动的 core 在最后一个客户端离开后退出。Core
-本身会复用默认端口上已在运行的总线，否则在那里拉起 nats-server
-（4222 被占用时退回随机回环端口）并写 `var/nats-url`。设置
+本身会复用默认端口上已在运行的总线，否则在那里拉起内置的 nats-server
+组件（`var/bin/nats-server`，4222 被占用时退回随机回环端口）并写
+`var/nats-url`。设置
 `NIF_NATS_URL` 可挂到任意总线，包括远程的。
 
 **审批。** 会改变机器或 harness 的工具——包括 `bash`、`builder.build`、
