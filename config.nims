@@ -19,6 +19,15 @@ if dirExists(pkgsDir):
 # (macOS) — `make setup` installs it.
 switch("define", "ssl")
 
+# Link PCRE explicitly instead of loading it by a bare filename at runtime
+# (Homebrew libraries are outside macOS's default dlopen search path).
+switch("define", "usePcreHeader")
+switch("passL", "-lpcre")
+when defined(macosx):
+  let brewPrefix = staticExec("brew --prefix").strip()
+  switch("passC", "-I" & quoteShell(brewPrefix / "include"))
+  switch("passL", "-L" & quoteShell(brewPrefix / "lib"))
+
 # Per-repo nim cache. Nim's default is ~/.cache/nim/<project>_d — every
 # repo's main.nim maps to the SAME main_d, so two concurrent builds anywhere
 # (this repo's worktrees, agent-built components, other projects) overwrite

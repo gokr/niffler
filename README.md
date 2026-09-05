@@ -81,9 +81,9 @@ as many UIs as needed.
 ## Prerequisites
 
 Core + components need **Nim >= 2.2.10**, **Go**, and native development
-libraries for NATS C and LZ4. Futhark also needs Clang/libclang to generate
+libraries for NATS C, LZ4, and PCRE. Futhark also needs Clang/libclang to generate
 bindings. The NATS bus server is built from source as a component
-(`components/nats` → `var/bin/nats-server`). TypeScript components and the desktop UI additionally need **Node/npm** (the
+(`components/nats` → `var/bin/nats-server`). TypeScript components and the desktop UI additionally need **Node 20+/npm** (the
 builder's `lang: "ts"` pulls typescript from the npm registry per build);
 the UI also needs the **wails CLI** and (on Linux) WebKit/GTK dev
 libraries.
@@ -108,7 +108,7 @@ sudo snap install go --classic
 
 # Native build dependencies (install before Nim packages)
 sudo apt update
-sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev
+sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev libpcre3-dev
 
 # Complete Nim toolchain (Ubuntu's apt package is too old)
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
@@ -116,10 +116,9 @@ export PATH="$HOME/.nimble/bin:$PATH"
 
 # nats-server — built from source by `make build` (components/nats), no install needed
 
-# Node/npm (frontend; wails runs `npm install` itself). Ubuntu 24.04 ships
-# node 18, which is fine. Older Ubuntu versions need NodeSource or nvm —
-# see docs/MANUAL.md.
-sudo apt install nodejs npm
+# Node 20+ / npm (Ubuntu 24.04's apt Node 18 is too old).
+# Alternatively install from nodejs.org or your version manager.
+sudo snap install node --classic --channel=22
 
 # Wails CLI (lands in ~/go/bin — the Makefile finds it there)
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -132,7 +131,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 
 ```bash
 # Install Xcode command-line tools first: xcode-select --install
-brew install go node pkg-config cnats lz4
+brew install go node pkg-config cnats lz4 pcre
 export SDKROOT="$(xcrun --show-sdk-path)"
 export LIBRARY_PATH="$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10

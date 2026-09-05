@@ -198,7 +198,7 @@ var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
 # on the search path, resolved via the real toolchain (choosenim shims are
 # binaries, so readlink lies — getCurrentCompilerExe does not).
-COMPDIR := $(shell PATH="$(PATH)" nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
+COMPDIR := $(shell PATH="$(PATH)" nim --skipProjCfg --skipParentCfg --skipUserCfg --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
 
 var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
@@ -426,9 +426,9 @@ doctor:
 	$(call check_tool,nimble,install-nim)
 	$(call check_tool,clang,install-native-deps)
 	$(call check_tool,opir,install-nim-deps)
-	@if pkg-config --exists libnats liblz4 2>/dev/null; then \
-		echo "  NATS C + LZ4 development libraries: OK"; \
-	else echo "  NATS C/LZ4: MISSING — run 'make install-native-deps'"; fi
+	@if pkg-config --exists libnats liblz4 libpcre 2>/dev/null; then \
+		echo "  NATS C + LZ4 + PCRE development libraries: OK"; \
+	else echo "  NATS C/LZ4/PCRE: MISSING — run 'make install-native-deps'"; fi
 	@if nimble path yaml htmlparser checksums natswrapper bitbarrel >/dev/null 2>&1; then \
 		echo "  Nim packages: OK"; \
 	else echo "  Nim packages: MISSING — run 'make install-nim-deps'"; fi
@@ -438,7 +438,9 @@ doctor:
 	else \
 		echo "  nats-server: built from source by 'make build' (components/nats)"; \
 	fi
-	$(call check_tool,node,install-node)
+	@if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' 2>/dev/null; then \
+		echo "  node (20+): OK"; \
+	else echo "  node: MISSING or too old — run 'make install-node'"; fi
 	$(call check_tool,npm,install-node)
 	@echo "Optional (bash-written dialog component):"
 	$(call check_tool,jq,install-jq)
@@ -475,11 +477,11 @@ install-go:
 install-native-deps:
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
-		brew install pkg-config cnats lz4; \
+		brew install pkg-config cnats lz4 pcre; \
 	else \
 		$(SUDO) apt-get update && \
 		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
-			pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev; fi
+			pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev libpcre3-dev; fi
 
 install-nim:
 	@if ! command -v nim >/dev/null 2>&1; then \
@@ -514,10 +516,12 @@ install-zenity:
 	else $(SUDO) apt-get install -y zenity; fi
 
 install-node:
-	@if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then \
-		echo "node/npm: already installed"; \
-	elif [ -n "$(IS_MAC)" ]; then brew install node; \
-	else $(SUDO) apt-get install -y nodejs npm; fi
+	@if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then \
+		if [ -n "$(IS_MAC)" ]; then brew install node; \
+		elif command -v snap >/dev/null 2>&1; then $(SUDO) snap install node --classic --channel=22; \
+		else echo "Install Node.js 20+ and npm from https://nodejs.org/ (or your version manager)"; exit 1; fi; \
+	fi
+	@node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Node.js 20+ required by the frontend dependencies; upgrade Node and check PATH."); process.exit(1); }'
 
 install-wails:
 	@if command -v wails >/dev/null 2>&1 || [ -x "$(WAILS)" ]; then \
@@ -532,5 +536,4 @@ install-ui-deps:
 	else echo "Installing webkit2gtk 4.1 + GTK3 dev packages ..."; \
 		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev; fi
 
-# note: Ubuntu 24.04 ships node 18 (fine for Vite 5). Older Ubuntu needs
-# NodeSource/nvm — see docs/MANUAL.md.
+# Ubuntu 24.04 apt ships Node 18; use a supported Node release for the UI.
