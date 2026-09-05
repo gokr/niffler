@@ -69,11 +69,9 @@ proc followBus() =
   var nc = connect(url)
 
   # announce so the catalog (and core's log) sees us, like the ui component
-  let reg = Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"name": "console", "version": "0.1.0",
-                                 "pid": getCurrentProcessId(),
-                                 "tools": newJArray()})
-  nc.publish("reg.publish", reg.encode())
+  let reg = %*{"name": "console", "version": "0.1.0",
+                "pid": getCurrentProcessId(), "tools": newJArray()}
+  nc.publish("reg.publish", $reg)
 
   var sub: ptr natsSubscription
   let st = natsConnection_SubscribeSync(addr sub, nc.conn, ">".cstring)

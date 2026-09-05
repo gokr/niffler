@@ -49,10 +49,7 @@ proc main() =
       sleep(100)
     return false
 
-# console should announce itself (reg.publish with name console)
-  var sub: ptr natsSubscription
-  discard natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
-  check("console registers on reg.publish", waitRegistered(nc, "console"))
+  check("console appears in the accepted catalog", waitRegistered(nc, "console"))
 
   # publish a call envelope and a result; console should render both
   let callEnv = callEnvelope("tping", %*{"hello": "world"})
