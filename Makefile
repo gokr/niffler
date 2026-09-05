@@ -14,6 +14,8 @@
 
 SHELL   := /bin/bash
 ROOT    := $(abspath .)
+# choosenim and Nimble-installed helpers (notably Futhark's opir).
+export PATH := $(HOME)/.nimble/bin:$(PATH)
 WAILS   ?= $(shell command -v wails 2>/dev/null || echo "$(HOME)/go/bin/wails")
 UI_TAGS := $(if $(filter Linux,$(shell uname -s)),-tags webkit2_41,)
 
@@ -22,6 +24,13 @@ UNAME_S := $(shell uname -s)
 IS_MAC  := $(filter Darwin,$(UNAME_S))
 IS_LNX  := $(filter Linux,$(UNAME_S))
 SUDO    := $(if $(filter 0,$(shell id -u)),,sudo)
+
+ifneq ($(IS_MAC),)
+# libclang needs the SDK headers; the linker needs Homebrew's native libraries.
+export SDKROOT ?= $(shell xcrun --show-sdk-path 2>/dev/null)
+BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+export LIBRARY_PATH := $(BREW_PREFIX)/lib$(if $(LIBRARY_PATH),:$(LIBRARY_PATH))
+endif
 
 # per-binary sources: a change in one component rebuilds only that binary;
 # a change in the SDK rebuilds everything that imports it
@@ -65,7 +74,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test-retry-unit test-ctx-accounting \
         test-autostart test-smoke smoke dev clean gotest \
         setup doctor recover install-go install-nim install-nats \
-        install-node install-wails install-ui-deps \
+        install-node install-wails install-ui-deps install-native-deps install-nim-deps \
         install-natscli install-jq install-zenity
 
 help:
@@ -189,7 +198,7 @@ var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
 # on the search path, resolved via the real toolchain (choosenim shims are
 # binaries, so readlink lies — getCurrentCompilerExe does not).
-COMPDIR := $(shell nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
+COMPDIR := $(shell PATH="$(PATH)" nim --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
 
 var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
@@ -393,8 +402,14 @@ clean:
 # ---------------------------------------------------------------------------
 # prerequisites
 
-setup: install-go install-nim install-node install-wails install-ui-deps \
-       install-natscli install-jq install-zenity
+# Keep package-manager writes serial, including under make -j. Native headers
+# and Clang must exist before Nimble builds Futhark and BitBarrel.
+setup:
+	@set -e; for target in install-native-deps install-nim install-nim-deps \
+		install-go install-node install-wails install-ui-deps \
+		install-natscli install-jq install-zenity; do \
+		$(MAKE) --no-print-directory $$target; \
+	done
 	@echo "setup done — verify with 'make doctor', then 'make'"
 
 define check_tool
@@ -407,7 +422,16 @@ endef
 
 doctor:
 	@echo "Prerequisites:"
-	$(call check_tool,nim,install-nim)
+	@bash scripts/check-nim-toolchain.sh || true
+	$(call check_tool,nimble,install-nim)
+	$(call check_tool,clang,install-native-deps)
+	$(call check_tool,opir,install-nim-deps)
+	@if pkg-config --exists libnats liblz4 2>/dev/null; then \
+		echo "  NATS C + LZ4 development libraries: OK"; \
+	else echo "  NATS C/LZ4: MISSING — run 'make install-native-deps'"; fi
+	@if nimble path yaml htmlparser checksums natswrapper bitbarrel >/dev/null 2>&1; then \
+		echo "  Nim packages: OK"; \
+	else echo "  Nim packages: MISSING — run 'make install-nim-deps'"; fi
 	$(call check_tool,go,install-go)
 	@if [ -x var/bin/nats-server ] || command -v nats-server >/dev/null 2>&1; then \
 		echo "  nats-server: OK"; \
@@ -448,11 +472,25 @@ install-go:
 	elif command -v snap >/dev/null 2>&1; then $(SUDO) snap install go --classic; \
 	else echo "Install Go from https://go.dev/dl (or use your package manager)"; fi
 
+install-native-deps:
+	@if [ -n "$(IS_MAC)" ]; then \
+		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
+		brew install pkg-config cnats lz4 llvm; \
+	else \
+		$(SUDO) apt-get update && \
+		$(SUDO) apt-get install -y build-essential curl ca-certificates git \
+			pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev; fi
+
 install-nim:
-	@if command -v nim >/dev/null 2>&1; then echo "nim: already installed"; \
-	elif [ -n "$(IS_MAC)" ]; then brew install nim; \
-	else echo "Installing Nim via choosenim (~/.nimble/bin) ..."; \
-		curl -sSf https://nim-lang.org/choosenim/init.sh | sh; fi
+	@if ! command -v nim >/dev/null 2>&1; then \
+		echo "Installing Nim via choosenim (~/.nimble/bin) ..."; \
+		set -o pipefail; curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10; \
+	fi
+	@bash scripts/check-nim-toolchain.sh
+
+install-nim-deps:
+	@bash scripts/check-nim-toolchain.sh
+	nimble install -y --depsOnly
 
 install-nats:
 	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
@@ -492,7 +530,7 @@ install-ui-deps:
 	elif pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
 		echo "webkit2gtk-4.1: already installed"; \
 	else echo "Installing webkit2gtk 4.1 + GTK3 dev packages ..."; \
-		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config libssl-dev; fi
+		$(SUDO) apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev; fi
 
 # note: Ubuntu 24.04 ships node 18 (fine for Vite 5). Older Ubuntu needs
 # NodeSource/nvm — see docs/MANUAL.md.

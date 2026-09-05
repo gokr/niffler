@@ -80,21 +80,25 @@ as many UIs as needed.
 
 ## Prerequisites
 
-Core + components need **Nim** and **Go** (the NATS bus server is built
-from source as a component — `components/nats` → `var/bin/nats-server`);
-TypeScript
-components and the desktop UI additionally need **Node/npm** (the
+Core + components need **Nim >= 2.2.10**, **Go**, and native development
+libraries for NATS C and LZ4. Futhark also needs Clang/libclang to generate
+bindings. The NATS bus server is built from source as a component
+(`components/nats` → `var/bin/nats-server`). TypeScript components and the desktop UI additionally need **Node/npm** (the
 builder's `lang: "ts"` pulls typescript from the npm registry per build);
 the UI also needs the **wails CLI** and (on Linux) WebKit/GTK dev
 libraries.
 
+On a minimal Ubuntu image, install `make` first (`sudo apt update && sudo apt install make`).
+
 ```bash
-make setup    # installs everything for your platform (Ubuntu/macOS)
+make setup    # installs native prerequisites, toolchains and Nim packages
 make doctor   # checks what's installed and what's missing
 ```
 
 The Makefile finds wails in `~/go/bin` even when it's not on PATH. The
-manual commands below are what `make setup` runs.
+commands below cover the build prerequisites. `setup` also installs optional
+dialog tools. Keep `~/.nimble/bin` on your shell PATH for Nim and Futhark's
+`opir`; the Makefile adds it for its own commands.
 
 ### Ubuntu 24.04+
 
@@ -102,8 +106,13 @@ manual commands below are what `make setup` runs.
 # Go — or download from https://go.dev/dl
 sudo snap install go --classic
 
-# Nim 2.x (Ubuntu's apt package is too old) — adds ~/.nimble/bin to PATH
-curl -sSf https://nim-lang.org/choosenim/init.sh | sh
+# Native build dependencies (install before Nim packages)
+sudo apt update
+sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev
+
+# Complete Nim toolchain (Ubuntu's apt package is too old)
+curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+export PATH="$HOME/.nimble/bin:$PATH"
 
 # nats-server — built from source by `make build` (components/nats), no install needed
 
@@ -116,24 +125,45 @@ sudo apt install nodejs npm
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
 # Wails build deps: webkit2gtk 4.1, GTK3, build tooling
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev build-essential pkg-config libssl-dev
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 ```
 
 ### macOS (Homebrew)
 
 ```bash
-brew install go nim node
+# Install Xcode command-line tools first: xcode-select --install
+brew install go node pkg-config cnats lz4 llvm
+export SDKROOT="$(xcrun --show-sdk-path)"
+export LIBRARY_PATH="$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+export PATH="$HOME/.nimble/bin:$PATH"
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 ```
 
-No extra GUI deps on macOS — Wails uses the system WebKit. Ensure the Xcode
-command-line tools are installed (`xcode-select --install`).
+No extra GUI libraries on macOS — Wails uses the system WebKit. The Makefile
+sets `SDKROOT` and the Homebrew library search path too; keep the exports
+above when invoking Nim/Nimble directly from your shell.
+
+`fabric-exec` embeds the Nim VM and needs the matching compiler sources,
+including `dist/checksums`. Homebrew Nim 2.2.10 omits that directory;
+use choosenim or another complete Nim >= 2.2.10 distribution. This
+requirement applies on both platforms. `make install-nim`
+checks an existing toolchain and reports incompatibilities rather than
+replacing it.
 
 ### Nim packages
 
-Niffler's Nim dependencies are declared in `niffler.nimble` (`yaml`, plus
-`gokr/natswrapper` and `gokr/bitbarrel` from GitHub) and installed
-automatically by nimble on the first build (`make build`).
+Niffler's Nim dependencies are declared in `niffler.nimble`. After installing
+the native prerequisites and Nim, run:
+
+```bash
+make install-nim-deps   # nimble install -y --depsOnly; included in make setup
+make doctor
+make build             # core + components; use make for the desktop UI too
+```
+
+`make build` compiles with installed dependencies; it does not install Nim
+packages. After changing `niffler.nimble`, rerun `make install-nim-deps`.
 
 ## Running
 

@@ -58,8 +58,10 @@ jobs:
       - name: ripgrep
         run: "if ! command -v rg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi"
 
-      - name: nimble deps (first build only)
-        run: nimble install -d -y
+      - name: Native and Nim dependencies
+        run: |
+          make install-native-deps
+          make install-nim-deps
 
       - name: make test
         run: make -j4 test
