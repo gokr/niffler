@@ -71,6 +71,10 @@ proc waitForRegistration(nc: NatsConnection, name: string, secs: int,
   let deadline = getMonoTime() + initDuration(seconds = max(0, secs))
   while true:
     let remaining = (deadline - getMonoTime()).inMilliseconds
+    # A request fired with almost no time left cannot be answered in time;
+    # publishing one anyway leaks it onto svc.core.call to confuse the next
+    # caller (timer jitter makes this reachable even for a 1s wait).
+    if secs > 0 and remaining < 100: return false
     let timeoutMs = if secs <= 0: 5_000
                     else: int(max(1'i64, min(5_000'i64, remaining)))
     if refreshCatalog(nc, timeoutMs):
