@@ -47,7 +47,7 @@
         <tr><td>session</td><td>nim</td><td data-i18n="comp.session.p">one conversation = one process — an ephemeral per-conversation runner that resumes from the store; killing one loses only the in-flight turn</td></tr>
         <tr><td>bash</td><td>nim</td><td data-i18n="comp.bash.p">shell access as a tool — approval-gated, process-tree cancellation on stopped turns, oversized output spilled to disk and paged with read</td></tr>
         <tr><td>builder</td><td>nim</td><td data-i18n="comp.builder.p">compiles agent-written source → binary</td></tr>
-        <tr><td>store</td><td>nim</td><td data-i18n="comp.store.p">document store over the bus (bitbarrel-backed, rev-based concurrency)</td></tr>
+        <tr><td>store</td><td>nim</td><td data-i18n="comp.store.p">document store over the bus (rev-based optimistic concurrency) — swappable engines behind one contract: barrel (default), SQLite and TiDB/MySQL, picked with NIF_STORE_BACKEND</td></tr>
         <tr><td>plugins</td><td>nim</td><td data-i18n-html="comp.plugins.p">component ecosystem: topic search, <code>niffler.json</code> packages, install/update/remove — always built from source</td></tr>
         <tr><td>skills</td><td>nim</td><td data-i18n="comp.skills.p">Agent Skills discovery, progressive-disclosure loading, resources, managed install/remove, and skill_audit (unmerged on-disk inventory)</td></tr>
         <tr><td>systemprompt</td><td>nim</td><td data-i18n-html="comp.systemprompt.p">the conversation constitution as a component — session runners ask <code>svc.systemprompt.call</code> once per conversation; replace it to replace the prompt</td></tr>
@@ -65,8 +65,9 @@
         <tr><td>agent</td><td>nim</td><td data-i18n-html="comp.agent.p">subagent sessions — synchronous <code>agent_run</code> delegates to a child runner with fresh context; durable background jobs (<code>agent_spawn</code>/<code>status</code>/<code>wait</code>/<code>stop</code>/<code>steer</code>) survive restarts; idle runners retire on their own</td></tr>
         <tr><td>expert</td><td>nim</td><td data-i18n-html="comp.expert.p">the advisory peer — follows one working session, LLM-judges bounded observations, delivers high-confidence steer as a marked message; silent by default, fail-closed</td></tr>
         <tr><td>dialog</td><td>bash</td><td data-i18n-html="comp.dialog.p">a component in pure bash — <code>dialog_show</code>/<code>dialog_ask</code> desktop dialogs (zenity → notify-send → log fallback) spoken with only the nats CLI + jq, no SDK, no compile step</td></tr>
-        <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos</td></tr>
+        <tr><td>cli</td><td>nim</td><td data-i18n-html="comp.cli.p">drive the harness from a script: <code>catalog</code>/<code>wait</code>/<code>call</code>/<code>install</code> — the CI front door for plugin repos; installs confirm against core's accepted catalog, not raw registration announcements</td></tr>
         <tr><td>console</td><td>nim</td><td data-i18n="comp.console.p">bus viewer — renders every envelope on stdout (follow along in a second terminal)</td></tr>
+        <tr><td>nats</td><td>go</td><td data-i18n="comp.nats.p">the bus server itself, built from source — components/nats compiles the official nats-server into var/bin/nats-server; core prefers that binary over a PATH install, so make build alone satisfies the bus dependency</td></tr>
         <tr><td>ui</td><td>go + svelte 5</td><td data-i18n="comp.ui.p">the desktop chat UI — sessions, streaming tokens, tool runs, approvals, model controls · Wails-hosted SPA, architecturally a NATS client</td></tr>
         <tr class="row-your"><td data-i18n="comp.your.name">your tool</td><td data-i18n="comp.your.lang">any</td><td data-i18n="comp.your.p">port the SDK — the envelope is the artifact (~200 lines)</td></tr>
       </tbody>
@@ -131,10 +132,14 @@
       <li><span class="check">✓</span> <span data-i18n="status.l49">prompt diet — lean baseprompt + trimmed tool descriptions, pure JSON Schema to the LLM (first prompt −31%, cache reads −35%)</span></li>
       <li><span class="check">✓</span> <span data-i18n-html="status.l50">hooks + operator tools — <code>hooks</code> runs shell commands on bus events (opt-in); <code>prompt_preview</code>, <code>doctor</code>, <code>review_receipt</code>, <code>skill_audit</code> for inspection and handoff</span></li>
       <li><span class="check">✓</span> <span data-i18n-html="status.l51">dialog — a component in pure bash: <code>dialog_show</code>/<code>dialog_ask</code> desktop dialogs via zenity/notify-send</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l52">store engines — barrel (default), SQLite and TiDB/MySQL behind NIF_STORE_BACKEND; one bus contract, identical tools</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l53">bundled bus server — <code>make build</code> compiles the official nats-server into <code>var/bin/nats-server</code>; core prefers it over a PATH install</span></li>
+      <li><span class="check">✓</span> <span data-i18n="status.l54">bundled skills niffler-tools + niffler-harness — which tool to reach for, and how to operate the running harness</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l55">authoritative cli installs — <code>cli install</code> confirms registrations against core's accepted catalog, not raw registration announcements</span></li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>
-      <li><span class="todo-x">✗</span> <span data-i18n="status.t3">store-tidb with FTS + vector memory</span></li>
+      <li><span class="todo-x">✗</span> <span data-i18n="status.t3">store FTS + vector memory (the TiDB engine landed; search comes later)</span></li>
     </ul>
   </div>
 </section>
