@@ -95,6 +95,10 @@ The Makefile is the front door (it wraps the nimble tasks below):
 ```bash
 make all              # build core + all components + desktop UI
 make build            # core + components only (var/bin, no UI)
+make install          # PATH entries: niffler, niffler-cli, niffler-console
+                      # + niffler-tui wrapper (asks; WITH_TUI=1 to force,
+                      # NIF_BIN_DIR=~/bin to override the bin dir)
+make uninstall        # remove those PATH entries again
 make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler     # the harness itself (admin shell) — UIs autostart it too
 ./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
@@ -163,12 +167,21 @@ The SPA is a NATS client, not a Wails client: it only talks to
 - **`.env` (gitignored) holds a real API key** (`NIF_OPENAI_API_KEY`, NIF_OPENAI_*
   pointed at DeepSeek). Components load it via `sdk/dotenv.nim`; existing shell
   env wins. Never commit it. Full env var reference: docs/MANUAL.md.
-- `NIF_NATS_URL` set → attach to that bus (can be remote); unset → core
-  spawns the built nats-server component (`var/bin/nats-server` from
-  `components/nats`, built by `make build`; a PATH binary is the fallback)
-  on 4222 when free (else a random loopback
-  port) and writes it to `var/nats-url`; standalone clients (`cli`,
-  `console`) follow that file when `NIF_NATS_URL` is unset.
+- **The clone is the home of an instance.** `NIF_NATS_URL` in the process
+  environment → attach to exactly that bus (can be remote; tests/bench set
+  it). Declared in `.env` (or the well-known default `4222`) → this is the
+  harness's **home bus**: claimed when free, attached to only when the
+  answering core serves *our root* (the catalog carries `root` + `gitHash`;
+  `ensureHarness` in both SDKs checks the same), yielded loudly to a
+  foreign core or a bare nats-server (isolated random bus instead; own
+  leftover nats are reclaimed via `var/nats-pid`). `NIF_NATS_SPAWN=1` (dev
+  clones) → always an isolated core-owned bus on a random port, never 4222.
+  Core is started without PDEATHSIG (UI-detached autostart lifecycle);
+  every spawned child (components, nats) carries it — `setpriv
+  --pdeathsig TERM` supervisor-side, `PR_SET_PDEATHSIG` in both SDKs and
+  the nats component — so nothing survives its harness, even on SIGKILL.
+  Core writes `var/nats-url`; standalone clients (`cli`, `console`)
+  resolve it against their binary's clone, never the cwd.
 - The `store` component is single-writer: exactly one process owns its
   database (barrel engine: `var/barrel-db` + flock; sqlite engine:
   `var/store.db` + flock; tidb engine: `NIF_STORE_TIDB_DSN` cluster — no

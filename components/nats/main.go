@@ -11,15 +11,20 @@
 // bus exists and it registers no tools, so it is deliberately absent from
 // manifest.yaml. It must stay CLI-compatible with the official binary —
 // core passes -a/-p/-m/--ports_file_dir and relies on the server exiting
-// non-zero when the requested port cannot be bound.
+// non-zero when the requested port cannot be bound. On Linux it sets
+// PR_SET_PDEATHSIG (SIGTERM) in main: if the spawning core (or test/bench
+// helper) dies — even by SIGKILL — the kernel reaps the server, so no
+// orphaned bus can outlive its owner.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"golang.org/x/sys/unix"
 )
 
 var usageStr = `
@@ -93,8 +98,24 @@ func usage() {
 	os.Exit(0)
 }
 
+func dieWithParent() {
+	// Kernel-enforced cleanup (Linux): SIGTERM this server the moment the
+	// spawning core (or test/bench helper) dies — even on SIGKILL — so no
+	// orphaned bus can outlive its owner. The ppid re-check closes the fork
+	// race. Other platforms: no-op.
+	if runtime.GOOS != "linux" {
+		return
+	}
+	ppid := os.Getppid()
+	_ = unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGTERM), 0, 0, 0)
+	if os.Getppid() != ppid {
+		os.Exit(1)
+	}
+}
+
 func main() {
 	exe := "nats-server"
+	dieWithParent()
 
 	// Create a FlagSet and sets the usage
 	fs := flag.NewFlagSet(exe, flag.ExitOnError)

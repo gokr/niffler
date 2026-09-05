@@ -35,6 +35,8 @@
 
 import std/[json, monotimes, os, osproc, strutils, strtabs, tables, times]
 import std/macros
+when defined(linux):
+  import std/posix
 import natswrapper
 import ../envelope
 import ../dotenv
@@ -460,6 +462,43 @@ proc interactive*(c: Component): Component =
   c.client = true
   return c
 
+proc dieWithParent*() =
+  ## Kernel-enforced cleanup (Linux): ask the kernel to SIGTERM this process
+  ## the moment the parent dies — even on SIGKILL — so a crashed test or core
+  ## can never leave components behind. The ppid re-check closes the fork
+  ## race: if the parent died between fork and this call, we were re-parented
+  ## and exit immediately. Other platforms: no-op (Unix orphans children).
+  when defined(linux):
+    proc prctl(option: cint): cint {.varargs, importc,
+                                     header: "<sys/prctl.h>".}
+    const prSetPdeathsig = 1.cint   # PR_SET_PDEATHSIG (<sys/prctl.h>)
+    const sigTerm = 15.cint
+    let ppid = getppid()
+    discard prctl(prSetPdeathsig, sigTerm)
+    if getppid() != ppid:
+      quit(1)                       # parent already died while starting up
+
+proc coreRoot*(url: string, timeoutMs = 500): string =
+  ## The harness root of the core answering svc.core.call on this bus ("")
+  ## when none answers). Identity probe: the clone is the home of an
+  ## instance — clients attach only to a bus whose core serves their own
+  ## root, so two clones can never mix.
+  ensureLib()
+  try:
+    var nc = natswrapper.connect(url)
+    defer: nc.close()
+    let data = callEnvelope("catalog", %*{"op": "list"}).encode()
+    var msg: ptr natsMsg
+    let st = natsConnection_Request(addr msg, nc.conn, "svc.core.call".cstring,
+                                    data.cstring, data.len.cint, timeoutMs.int64)
+    if st != NATS_OK: return ""
+    defer: natsMsg_Destroy(msg)
+    let r = decode(messageData(msg))
+    if r.kind != ekResult: return ""
+    return r.args{"root"}.getStr("")
+  except CatchableError:
+    return ""
+
 proc coreAnswers*(url: string, timeoutMs = 500): bool =
   ## Is a live core answering svc.core.call on this bus?
   ensureLib()
@@ -503,10 +542,9 @@ proc ensureHarness*(root = ""): string =
   let explicit = getEnv("NIF_NATS_URL")
   if explicit.len > 0:
     return explicit
-  let r = if root.len > 0: root else: getEnv("NIF_ROOT")
-  if r.len == 0:
-    raise newException(ValueError,
-      "ensureHarness: no harness root (pass it or set NIF_ROOT)")
+  # The clone is the home of the instance: root from the argument, the
+  # environment, or this binary's own location (see subjects.harnessRoot).
+  let r = if root.len > 0: root else: harnessRoot()
   reapSpawnedCore()
   # Probe for ~10s (NIF_ENSURE_ATTACH=0 skips attach entirely — tests):
   # covers an already-running core, a stale discovery file, and a sibling UI
@@ -515,7 +553,9 @@ proc ensureHarness*(root = ""): string =
     let probeUntil = epochTime() + 10.0
     while true:
       for url in candidateUrls(r):
-        if coreAnswers(url):
+        # Attach only to a core serving OUR root — a foreign harness on the
+        # well-known port must never be adopted.
+        if coreRoot(url) == r:
           os.putEnv("NIF_NATS_URL", url)
           return url
       if epochTime() >= probeUntil:
@@ -630,6 +670,7 @@ proc drainHandler(c: Component, subject: string, payload: JsonNode) =
   gShutdown = true
 
 proc run*(c: Component) =
+  dieWithParent()
   installSignals()
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")

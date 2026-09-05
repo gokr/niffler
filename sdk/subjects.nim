@@ -8,12 +8,23 @@
 
 import std/[os, strutils]
 
+proc harnessRoot*(): string =
+  ## The clone is the home of a Niffler instance: NIF_ROOT wins, else the
+  ## root is derived from this binary's own location — var/bin/<bin> lives
+  ## inside the clone, so installed symlinks (~/bin/niffler-cli → <clone>)
+  ## and any working directory resolve to the binary's own clone, never the
+  ## caller's cwd.
+  getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
+
 proc resolveNatsUrl*(root = ""): string =
-  ## Bus address: NIF_NATS_URL env → <root>/var/nats-url discovery file →
-  ## the well-known local default.
+  ## Bus address: NIF_NATS_URL env → <home root>/var/nats-url discovery file
+  ## → the well-known local default. The discovery file is resolved against
+  ## the harness root (env or this binary's clone — see harnessRoot), never
+  ## the cwd, so a client cannot mix with another clone's harness by
+  ## accident.
   result = getEnv("NIF_NATS_URL")
   if result.len > 0: return
-  let r = if root.len > 0: root else: getEnv("NIF_ROOT", ".")
+  let r = if root.len > 0: root else: harnessRoot()
   let disc = r / "var" / "nats-url"
   if fileExists(disc):
     let u = readFile(disc).strip()

@@ -21,13 +21,21 @@ import (
 const defaultNatsUrl = "nats://127.0.0.1:4222"
 
 // ResolveNatsUrl returns the bus address: NIF_NATS_URL env →
-// <root>/var/nats-url discovery file → the well-known local default.
+// <home root>/var/nats-url discovery file → the well-known local default.
+// The home root is NIF_ROOT or this binary's own clone (var/bin/<bin> →
+// clone root) — never the cwd, so installed symlinks resolve to the clone
+// the binary was built into.
 func ResolveNatsUrl(root string) string {
 	if u := os.Getenv("NIF_NATS_URL"); u != "" {
 		return u
 	}
 	if root == "" {
 		root = os.Getenv("NIF_ROOT")
+	}
+	if root == "" {
+		if exe, err := os.Executable(); err == nil {
+			root = filepath.Dir(filepath.Dir(filepath.Dir(exe)))
+		}
 	}
 	data, err := os.ReadFile(filepath.Join(root, "var", "nats-url"))
 	if err == nil {
@@ -57,6 +65,38 @@ func CoreAnswers(url string, timeout time.Duration) bool {
 		return false
 	}
 	return ParseEnvelope(msg.Data).Kind == KindResult
+}
+
+// CoreRoot returns the harness root of the core answering svc.core.call on
+// url ("" when none answers). Identity probe — the clone is the home of an
+// instance: clients attach only to a bus whose core serves their own root.
+func CoreRoot(url string, timeout time.Duration) string {
+	nc, err := nats.Connect(url, nats.Timeout(timeout))
+	if err != nil {
+		return ""
+	}
+	defer nc.Close()
+	args, _ := json.Marshal(map[string]any{"op": "list"})
+	call := Envelope{V: 1, ID: NewID(), Kind: KindCall, Tool: "catalog", Args: args}
+	data, err := call.Marshal()
+	if err != nil {
+		return ""
+	}
+	msg, err := nc.Request("svc.core.call", data, timeout)
+	if err != nil {
+		return ""
+	}
+	r := ParseEnvelope(msg.Data)
+	if r.Kind != KindResult {
+		return ""
+	}
+	var resp struct {
+		Root string `json:"root"`
+	}
+	if err := json.Unmarshal(r.Args, &resp); err != nil {
+		return ""
+	}
+	return resp.Root
 }
 
 func candidateUrls(root string) []string {
@@ -95,7 +135,9 @@ func EnsureHarness(root string) (string, error) {
 		probeUntil := time.Now().Add(10 * time.Second)
 		for {
 			for _, url := range candidateUrls(root) {
-				if CoreAnswers(url, 500*time.Millisecond) {
+				// Attach only to a core serving OUR root — a foreign harness on
+				// the well-known port must never be adopted.
+				if CoreRoot(url, 500*time.Millisecond) == root {
 					os.Setenv("NIF_NATS_URL", url)
 					return url, nil
 				}

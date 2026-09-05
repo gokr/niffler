@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# niffler-tui — run the Niffler harness at @ROOT@ and open the terminal chat
+# client (the niffler-tui plugin, gokr/niffler-tui). The tui never starts the
+# harness itself, so this wrapper does: attach to a live core, or boot one on
+# demand (NIF_AUTOSTART=1 — the harness winds down after the tui exits).
+#
+# Bus resolution mirrors the SDK: NIF_NATS_URL env (explicit, never spawns)
+# → <root>/var/nats-url discovery file → nats://127.0.0.1:4222.
+set -euo pipefail
+
+ROOT="${NIF_ROOT:-@ROOT@}"
+CORE="$ROOT/var/bin/niffler"
+CLI="$ROOT/var/bin/cli"
+TUI="$ROOT/var/bin/tui"
+
+if [ ! -x "$TUI" ]; then
+  echo "niffler-tui: $TUI missing — in $ROOT run:" >&2
+  echo "  make install WITH_TUI=1    # (re)installs the niffler-tui plugin" >&2
+  exit 1
+fi
+
+answers() { NIF_NATS_URL="$1" "$CLI" catalog >/dev/null 2>&1; }
+
+if [ -n "${NIF_NATS_URL:-}" ]; then
+  url="$NIF_NATS_URL"                       # explicit bus: attach only
+else
+  url="$(tr -d '[:space:]' < "$ROOT/var/nats-url" 2>/dev/null || true)"
+  found=""
+  for cand in "$url" "nats://127.0.0.1:4222"; do
+    [ -n "$cand" ] || continue
+    if answers "$cand"; then url="$cand"; found=1; break; fi
+  done
+  if [ -z "$found" ]; then
+    echo "niffler-tui: booting harness at $ROOT ..." >&2
+    mkdir -p "$ROOT/var/logs"
+    NIF_AUTOSTART=1 setsid "$CORE" </dev/null >>"$ROOT/var/logs/core.log" 2>&1 &
+    for _ in $(seq 1 150); do
+      [ -f "$ROOT/var/nats-url" ] && url="$(tr -d '[:space:]' < "$ROOT/var/nats-url")"
+      answers "$url" && break
+      sleep 0.2
+    done
+    answers "$url" || { echo "niffler-tui: harness did not answer — see $ROOT/var/logs/core.log" >&2; exit 1; }
+  fi
+fi
+
+export NIF_NATS_URL="$url"
+exec "$TUI" "$@"

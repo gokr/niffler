@@ -13,6 +13,7 @@ import natswrapper
 when defined(posix):
   import std/posix
 import ../sdk/dotenv
+import ../sdk/envelope
 import approval
 import catalog
 import conversation
@@ -50,16 +51,16 @@ proc natsServerBinary(): string =
   if fileExists(local): return local
   "nats-server"
 
-proc spawnNats(): tuple[process: Process, url, monitorUrl, binary: string] =
+proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUrl, binary: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
-  ## bind-close-start race: try the canonical 4222 first (local clients
-  ## default there), and fall back to any free port when it is taken — a
-  ## failed bind makes nats-server exit, which retries with -1. The ports
-  ## file is needed only during startup.
+  ## bind-close-start race: `ports` is the attempt order — the home port
+  ## first (local clients default there), then -1 for a random port when
+  ## allowed. A failed bind makes nats-server exit, which tries the next
+  ## entry. The ports file is needed only during startup.
   let portsDir = createTempDir("niffler-nats-", "")
   try:
     result.binary = natsServerBinary()
-    for port in ["4222", "-1"]:
+    for port in ports:
       result.process = startProcess(result.binary,
         args = ["-a", "127.0.0.1", "-p", port, "-m", "-1",
                 "--ports_file_dir", portsDir],
@@ -96,6 +97,71 @@ proc spawnNats(): tuple[process: Process, url, monitorUrl, binary: string] =
                                  " did not publish its ports")
   finally:
     removeDir(portsDir)
+
+type BusProbeKind = enum
+  bkFree         ## nothing is listening on the port
+  bkOurs         ## a core serving OUR root — safe to attach
+  bkForeignCore  ## a core serving another clone's root — never adopt
+  bkBareNats     ## a bare nats-server (no core) — not ours to ride
+
+proc probeBus(url, root: string): tuple[kind: BusProbeKind, owner: string] =
+  ## Identity probe for a home-bus candidate: is a core answering, and does
+  ## it serve THIS root? The clone is the home of an instance — a harness
+  ## never attaches to (or rides) a bus belonging to another clone.
+  try:
+    var probe = connect(url)
+    defer: probe.close()
+    let data = callEnvelope("catalog", %*{"op": "list"}).encode()
+    var msg: ptr natsMsg
+    let st = natsConnection_Request(addr msg, probe.conn, "svc.core.call".cstring,
+                                    data.cstring, data.len.cint, 1500)
+    if st != NATS_OK:
+      return (bkBareNats, "")
+    defer: natsMsg_Destroy(msg)
+    let length = natsMsg_GetDataLength(msg).int
+    var body = ""
+    if length > 0:
+      body = newString(length)
+      copyMem(addr body[0], natsMsg_GetData(msg), length)
+    let r = decode(body)
+    if r.kind != ekResult:
+      return (bkBareNats, "")
+    let owner = r.args{"root"}.getStr("")
+    if owner == root:
+      (bkOurs, owner)
+    else:
+      (bkForeignCore, owner)
+  except CatchableError:
+    (bkFree, "")
+
+proc reclaimOwnNats(root: string): bool =
+  ## A bare nats-server squatting on our home port is usually our own
+  ## leftover (a SIGKILLed core — the kernel's PDEATHSIG makes this rare).
+  ## var/nats-pid names it: if alive, stop it and reclaim the port.
+  let pidFile = root / "var" / "nats-pid"
+  if not fileExists(pidFile):
+    return false
+  let pid = try: parseInt(readFile(pidFile).strip())
+            except CatchableError: return false
+  if pid <= 0 or kill(Pid(cint(pid)), 0) != 0:
+    return false
+  discard kill(Pid(cint(pid)), SIGTERM)
+  for i in 0 ..< 40:
+    if kill(Pid(cint(pid)), 0) != 0:
+      return true
+    sleep(50)
+  discard kill(Pid(cint(pid)), SIGKILL)
+  sleep(200)
+  true
+
+proc isLoopbackNatsUrl(url: string): bool =
+  ## Only loopback addresses can be claimed (spawned); remote buses are
+  ## attach-only by nature.
+  let host = url.replace("nats://", "").split(':')[0].split('/')[0]
+  host in ["127.0.0.1", "localhost", "::1", "[::1]"]
+
+proc portOf(url: string): string =
+  url.rsplit(':', 1)[1]
 
 proc connectWithRetry(url: string, tries = 40): NatsConnection =
   var lastErr = ""
@@ -201,9 +267,18 @@ proc main() =
   if minimalMode:
     echo "core: MINIMAL mode — starting store, bash and llm only"
   let root = getEnv("NIF_ROOT", getAppDir().parentDir().parentDir())
+  # The clone is the home of a Niffler instance: its .env is the master
+  # config, and a NIF_NATS_URL declared there is this harness's home bus —
+  # claimed when free, never shared with another clone. A NIF_NATS_URL in
+  # the process environment is an explicit operator override instead (tests,
+  # bench, scripts): attach-only, exactly the bus that was handed to us.
+  # An empty value counts as unset (the install dance passes NIF_NATS_URL=).
+  let natsUrlFromEnv = existsEnv("NIF_NATS_URL") and
+                       getEnv("NIF_NATS_URL").len > 0
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", root / ".env")
   openNatsLib()
+  echo "core: Niffler " & harnessGitHash(root) & " — root " & root
 
   # Signal handlers go up before the bus spawn so a SIGTERM during startup
   # can never leave the spawned nats-server orphaned.
@@ -211,32 +286,58 @@ proc main() =
     discard signal(SIGTERM, onSig)
     discard signal(SIGINT, onSig)
 
-  # --- 1. NATS: env/.env → try the default port → spawn if needed ---------
+  # --- 1. NATS: home bus (.env) or explicit env → claim/attach ------------
   var natsUrl = getEnv("NIF_NATS_URL")
   var serverProc: Process = nil
   defer:
     stopSpawnedBus(serverProc)
     removeFile(root / "var" / "nats-pid")
   var monitorUrl = ""
+  if natsUrl.len == 0 and getEnv("NIF_NATS_SPAWN") != "1":
+    natsUrl = "nats://127.0.0.1:4222"   # the well-known home port
   if natsUrl.len == 0:
-    # default: prefer a bus already running on 4222; only spawn when absent
-    let defaultUrl = "nats://127.0.0.1:4222"
-    var spawnBus = getEnv("NIF_NATS_SPAWN") == "1"
-    if not spawnBus:
-      try:
-        var probe = connect(defaultUrl)
-        probe.close()
-        natsUrl = defaultUrl
-        echo "core: using bus at " & natsUrl
-      except CatchableError:
-        spawnBus = true
-    if spawnBus:
-      let spawned = spawnNats()
+    # NIF_NATS_SPAWN=1 — dev clones and tests: an isolated core-owned bus on
+    # a random port. Never 4222, never attaches to anything.
+    let spawned = spawnNats(["-1"])
+    serverProc = spawned.process
+    natsUrl = spawned.url
+    monitorUrl = spawned.monitorUrl
+    echo "core: spawned " & spawned.binary & " at " & natsUrl &
+         " (isolated bus — NIF_NATS_SPAWN=1, monitoring " & monitorUrl & ")"
+  elif not natsUrlFromEnv and isLoopbackNatsUrl(natsUrl):
+    # Home address declared by this clone (.env or the well-known default):
+    # claim it when free, attach only to our own core, and yield loudly to
+    # anything else — two clones must never mix, and a bare nats-server
+    # (no core on it) is not ours to ride.
+    let probe = probeBus(natsUrl, root)
+    var spawnPorts: seq[string] = @[]
+    case probe.kind
+    of bkOurs:
+      echo "core: using bus at " & natsUrl & " (our harness)"
+    of bkFree:
+      spawnPorts = @[portOf(natsUrl)]
+    of bkForeignCore:
+      stderr.writeLine("core: WARNING " & natsUrl & " is owned by the harness at " &
+        probe.owner & " — spawning an isolated bus instead; stop that harness to reclaim " &
+        natsUrl)
+      spawnPorts = @["-1"]
+    of bkBareNats:
+      if reclaimOwnNats(root):
+        spawnPorts = @[portOf(natsUrl)]
+      else:
+        stderr.writeLine("core: WARNING " & natsUrl &
+          " is held by a bare nats-server (no core on it) — spawning an isolated bus instead")
+        spawnPorts = @["-1"]
+    if spawnPorts.len > 0:
+      let spawned = spawnNats(spawnPorts)
       serverProc = spawned.process
       natsUrl = spawned.url
       monitorUrl = spawned.monitorUrl
       echo "core: spawned " & spawned.binary & " at " & natsUrl &
            " (monitoring " & monitorUrl & ")"
+  # else: explicit NIF_NATS_URL from the environment (tests, bench, scripts)
+  # or a remote address — attach to exactly the bus we were handed; the
+  # connectWithRetry below reports a dead one.
   os.putEnv("NIF_NATS_URL", natsUrl)  # children inherit the bus address
   var nc: NatsConnection
   try:

@@ -20,9 +20,16 @@ if dirExists(pkgsDir):
 switch("define", "ssl")
 
 # Link PCRE explicitly instead of loading it by a bare filename at runtime
-# (Homebrew libraries are outside macOS's default dlopen search path).
-switch("define", "usePcreHeader")
-switch("passL", "-lpcre")
+# (Homebrew libraries are outside macOS's default dlopen search path) — but
+# only when the headers exist: Linux machines with just the runtime package
+# (no libpcre3-dev) have no pcre.h, and Nim's default pattern dlopens
+# libpcre.so.3 there. `make setup` installs the dev package on Ubuntu.
+when defined(macosx):
+  switch("define", "usePcreHeader")
+  switch("passL", "-lpcre")
+elif fileExists("/usr/include/pcre.h") or fileExists("/usr/local/include/pcre.h"):
+  switch("define", "usePcreHeader")
+  switch("passL", "-lpcre")
 when defined(macosx):
   # Runtime builder invokes Nim directly, outside the Makefile environment.
   # Futhark's libclang needs the SDK too; preserve an explicitly selected SDK.

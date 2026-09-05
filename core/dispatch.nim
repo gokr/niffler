@@ -300,7 +300,12 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     # arrived before its request so the snapshot cannot lag the live bus.
     ct.cat.pump()
     if args{"op"}.getStr("") == "list":
-      return %*{"tools": ct.cat.promptTools()}
+      ## `root`/`gitHash` identify the owning harness: attach/probe logic
+      ## (core boot, ensureHarness in both SDKs) only ever attaches to a bus
+      ## whose core serves THIS root — a foreign core on 4222 must never be
+      ## adopted, and users can see which clone they are talking to.
+      return %*{"tools": ct.cat.promptTools(), "root": ct.root,
+                "gitHash": harnessGitHash(ct.root)}
     if args{"op"}.getStr("") == "components":
       ## component→tools view for bus clients that missed the registrations
       ## (cli seeds its catalog from this)
@@ -311,7 +316,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         for t in reg.tools:
           tools.add(%t.name)
         comps[name] = tools
-      return %*{"components": comps}
+      return %*{"components": comps, "root": ct.root,
+                "gitHash": harnessGitHash(ct.root)}
     if args{"op"}.getStr("") == "schemas":
       return ct.cat.selectedSchemas(args{"tools"})
     if args{"op"}.getStr("") == "snapshot":
@@ -366,7 +372,8 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
           except CatchableError:
             discard
         comps.add(entry)
-      return %*{"components": comps}
+      return %*{"components": comps, "root": ct.root,
+                "gitHash": harnessGitHash(ct.root)}
     return %*{"error":
       "catalog op must be 'list', 'components', 'snapshot' or 'schemas'"}
   of "discover":

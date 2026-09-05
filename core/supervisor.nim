@@ -15,6 +15,22 @@ type
     rpNever = "never"
     rpOnFailure = "on-failure"
 
+var gGitHash = ""
+
+proc harnessGitHash*(root: string): string =
+  ## Short commit of the harness checkout, cached. The clone is the home of
+  ## an instance — this is the second half of the identity a user sees (with
+  ## the root) on startup and in the catalog, so a mixup is visible at a
+  ## glance. Falls back to "unknown" outside a git checkout.
+  if gGitHash.len == 0:
+    try:
+      let (output, code) = execCmdEx("git -C " & quoteShell(root) &
+                                    " rev-parse --short HEAD")
+      gGitHash = if code == 0: output.strip() else: "unknown"
+    except CatchableError:
+      gGitHash = "unknown"
+  gGitHash
+
 proc parsePolicy*(s: string): RestartPolicy =
   ## Manifest/store policy strings → enum. Unknown values fall back to
   ## on-failure (the safe default: a crashed component comes back).
@@ -109,7 +125,18 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   # Stop the pipe-web: without this sweep every child inherited the parent
   # ends of all earlier children's spawn pipes (see cloexecInheritedFds).
   cloexecInheritedFds()
-  var cmd = "exec " & quoteShell(c.binary)
+  var cmd = "exec "
+  when defined(linux):
+    # Kernel-enforced child cleanup: setpriv --pdeathsig makes the kernel
+    # SIGTERM the child the instant this core dies (even on SIGKILL) — no
+    # component can outlive its harness. setpriv ships in util-linux; SDK
+    # components additionally self-set PR_SET_PDEATHSIG (sdk/niffler/sdk.nim,
+    # sdk/go, nats-server), so test/bench-spawned copies are covered too.
+    block:
+      let sp = findExe("setpriv")
+      if sp.len > 0:
+        cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
+  cmd.add(quoteShell(c.binary))
   for a in args:
     cmd.add(" " & quoteShell(a))
   cmd.add(" >> " & quoteShell(logPath) & " 2>&1")

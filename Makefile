@@ -73,6 +73,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test-systemprompt test-grep test-git test-edit test-expert \
         test-retry-unit test-ctx-accounting \
         test-autostart test-smoke smoke dev clean gotest \
+        install uninstall \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps install-native-deps install-nim-deps \
         install-natscli install-jq install-zenity
@@ -83,6 +84,9 @@ help:
 	@echo 'make ui        build the Wails desktop UI'
 	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
+	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
+	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
+	@echo '                overrides: NIF_BIN_DIR=~/bin  WITH_TUI=1  FORCE=1'
 	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make down      stop any running harness, components and nats-server'
 	@echo 'make test      bus-contract suite: one test per component + smoke + go tests'
@@ -277,6 +281,15 @@ ui-uninstall:
 	rm -f $(ICON_DIR)/256x256/apps/niffler.png
 	-update-desktop-database $(DESKTOP_DIR) 2>/dev/null || true
 	@echo "Done."
+
+# CLI/terminal integration: niffler-prefixed symlinks + the on-demand
+# niffler-tui wrapper in a user bin dir (see scripts/install.sh — never
+# component binaries, so PATH cannot be shadowed by grep/git/edit/...).
+install: build
+	./scripts/install.sh
+
+uninstall:
+	./scripts/install.sh --uninstall
 
 # ---------------------------------------------------------------------------
 # run / test

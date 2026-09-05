@@ -184,8 +184,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | Variable | Meaning | Default |
 |---|---|---|
 | `NIF_ROOT` | the harness root (repo). Core derives it from its binary location if unset, and sets it for all children. Components use it to find the SDK, `var/`, `.env`. Every component runs with **cwd = NIF_ROOT**, so the agent's `bash pwd` is always the home — regardless of where you launched the harness | `<binary location>/../..` |
-| `NIF_NATS_URL` | bus to attach to. Unset → core reuses a live bus on `127.0.0.1:4222`, else spawns the built nats-server component (`var/bin/nats-server`, `components/nats` — a PATH binary is the fallback) there (or on a random loopback port when 4222 is taken) and writes `var/nats-url` | auto |
-| `NIF_NATS_SPAWN` | `1` forces core to spawn an isolated loopback bus instead of reusing port 4222 — only when `NIF_NATS_URL` is unset (an explicit URL always wins) | unset |
+| `NIF_NATS_URL` | bus address. In the **environment** (tests, bench, scripts): attach-only — core uses exactly that bus. Declared in **`.env`** (or the well-known `nats://127.0.0.1:4222`): the clone's **home bus** — claimed when free, attached to only when the answering core serves this root (identity via the catalog's `root` field), yielded loudly to a foreign core or bare nats-server (isolated random bus instead; a recorded leftover `var/nats-pid` is reclaimed first), and written to `var/nats-url` | auto |
+| `NIF_NATS_SPAWN` | `1` forces an isolated core-owned bus on a random port — never 4222, never attaches (dev clones and tests). With an explicit `NIF_NATS_URL` the URL wins | unset |
 | `NIF_AUTOSTART` | set by an SDK's `ensureHarness` when a UI had to spawn core: that core exits when the last interactive client departs (see Starting and stopping) | unset |
 | `NIF_AUTOSTART_IDLE_S` | seconds after the last interactive departure before an autostarted core exits | `10` |
 | `NIF_AUTOSTART_BOOT_S` | seconds an autostarted core waits for its first interactive client before giving up | `60` |
@@ -1308,8 +1308,8 @@ var/nats-monitor-url
 The monitor discovery file is written only after the client connection succeeds.
 A reused or remote bus has no discoverable HTTP endpoint; configure
 `NIF_OBSERVE_MONITOR_URL` explicitly. `NIF_NATS_SPAWN=1` forces an isolated
-core-owned bus (primarily useful for tests and diagnostics) — only when
-`NIF_NATS_URL` is unset; an explicit URL always wins.
+core-owned bus on a random port (primarily for tests and diagnostics) —
+never 4222; an explicit `NIF_NATS_URL` in the environment wins.
 
 `observe_monitor` reads `/subsz` and `/connz` with a fresh HTTP client for each
 request. It reports whether subscription detail was truncated; `mostSubscribed`
@@ -1498,9 +1498,11 @@ There is no launcher script — the binaries own the lifecycle:
 
 - **Desktop icon / `niffler-ui`** — the common case. The bridge's first act
   is the SDK's `ensureHarness`: probe `NIF_NATS_URL` → `var/nats-url` →
-  127.0.0.1:4222 for a live core; if none answers, spawn `var/bin/niffler`
-  detached with `NIF_AUTOSTART=1`. The repo root is baked in at `make ui`
-  time (ldflags), so the installed icon works as well as the in-tree binary.
+  127.0.0.1:4222 for a core serving **this root** (the catalog carries the
+  owning harness's root; a foreign clone's core is never adopted); if none
+  answers, spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`. The
+  repo root is baked in at `make ui` time (ldflags), so the installed icon
+  works as well as the in-tree binary.
 - **Interactive plugins** (e.g. `niffler-tui`) — they do **not** call
   `ensureHarness` and never spawn a harness: they probe for a live bus
   (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222), connect and register
@@ -1526,6 +1528,10 @@ spawned bus with it; if none ever arrives it gives up after
 ./var/bin/niffler --minimal   # store + bash + llm only at boot
 niffler-ui                    # desktop UI; autostarts the full profile
 make build          # rebuild what changed
+make install        # PATH entries (niffler, niffler-cli, niffler-console,
+                    # + niffler-tui wrapper on request — never component
+                    # binaries, so PATH cannot shadow grep/git/...)
+make uninstall      # remove those PATH entries again
 make test           # the bus-contract suite (each test owns a private bus)
 make doctor         # check prerequisites
 make clean          # remove all build artifacts (var/, nimcache/, UI build)
