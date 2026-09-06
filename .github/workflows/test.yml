@@ -8,6 +8,12 @@ name: test
 # a wedge anywhere has historically stalled the loop — see t_agent 2026-09).
 
 on:
+  # Main runs the suite itself so the default-branch cache — the only one
+  # PR runs can restore (GitHub cache scoping) — is populated after every
+  # merge, and so merges of paths-ignore-skipped PRs (docs-only etc.) are
+  # still verified.
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
     paths-ignore: ["docs/**", "website/**", "bench/**", "**.md"]
