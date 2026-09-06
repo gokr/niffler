@@ -110,7 +110,7 @@ const taskDirs = fs
   .sort();
 const tasks = taskArg === "all" ? taskDirs : taskArg.split(",");
 
-const { keys, missing } = resolveKeys(BENCH_ROOT);
+const { keys, missing } = resolveKeys(BENCH_ROOT, new Set(models));
 if (missing.length) {
   console.error(`bench: missing API keys: ${missing.join(", ")} — see bench/README.md`);
   process.exit(1);
@@ -401,6 +401,13 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
       let transportRetries = 0;
       let res = null;
       for (;;) {
+        // The adapters retry internally; a hung/retrying round sequence must
+        // not outrun the task budget — surface it as a budget-only round (the
+        // captured diff still gets verified, like a mid-turn cutoff).
+        if (Date.now() - t0 > taskTimeoutMs) {
+          res = { error: "round budget exhausted (task budget reached mid-retry)", agentS: 0, reply: "" };
+          break;
+        }
         const r0 = Date.now();
         if (combo.harness === "pi") {
           res = await pi.round({
@@ -739,10 +746,22 @@ async function main() {
     `bench run ${RUN_ID}: ${combos.length} combos × ${tasks.length} tasks ` +
       `(rounds≤${roundsMax}, task≤${taskTimeoutMs / 60000}min, jobs=${JOBS})`,
   );
-  writeJson(path.join(RESULTS, "run.json"), {
+  // Merge into an existing run.json when a second lane is (re)launched into
+  // the same run id: union of combos, earliest startedAt. Scalars keep the
+  // current run's values.
+  const runMetaPath = path.join(RESULTS, "run.json");
+  let prevMeta = null;
+  try {
+    prevMeta = JSON.parse(fs.readFileSync(runMetaPath, "utf8"));
+  } catch {}
+  const combosAll = [...(prevMeta?.combos || [])];
+  for (const c of combos) {
+    if (!combosAll.some((x) => x.harness === c.harness && x.model === c.model)) combosAll.push(c);
+  }
+  writeJson(runMetaPath, {
     runId: RUN_ID,
-    startedAt: nowIso(),
-    combos,
+    startedAt: prevMeta?.startedAt || nowIso(),
+    combos: combosAll,
     tasks,
     taskRoot: path.relative(BENCH_ROOT, TASK_ROOT) || ".",
     roundsMax,

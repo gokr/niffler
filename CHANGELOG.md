@@ -717,6 +717,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Self-knowledge in the system prompt** — the agent is now told its home
   directory (the git repo), where components/SDK/docs/manifest live, that
   `var/` is disposable build output, and that `--recover` rebuilds it.
+- **Configurable chat completion timeout** — `NIF_LLM_TIMEOUT_MS` raises
+  `llm`'s chat ceiling (default 5 min) for slow reasoning models; a single
+  GLM thinking=max completion can legitimately exceed it. Bench harnesses
+  inherit it to the private bus.
 
 ### Changed
 
@@ -876,6 +880,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **Bench orchestration: scoped key checks, round-budget guard, run.json
+  lane merge** — `resolveKeys` demanded `LLMGATEWAY_API_KEY` even for
+  deepseek-only runs (now optional unless a selected model needs it, and
+  the check is scoped to the run's models); the round loop could burn the
+  whole task budget on adapter-internal retries and still re-enter the
+  provider (a task-budget-reached round is surfaced budget-only, diff
+  still verified); and relaunching a lane into an existing run id
+  overwrote `run.json` metadata (now merged: combo union, earliest
+  `startedAt`). `bench/config.json` gains medium/high thinking profiles.
 
 - **Registration success is reported only from core's accepted catalog** —
   `cli`'s `wait` and `install` (and `plugin_install`'s post-spawn checks)

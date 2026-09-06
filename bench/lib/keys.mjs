@@ -6,7 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { loadDotEnv } from "./util.mjs";
 
-export function resolveKeys(benchRoot) {
+// want: set of model ids whose keys must resolve (llmgateway stays optional
+// otherwise); deepseek falls back to NIF_OPENAI_* in niffler's .env.
+export function resolveKeys(benchRoot, want = new Set(["deepseek-v4-flash", "glm-5.3-flash"])) {
   const env = process.env;
   const dot = loadDotEnv(path.join(benchRoot, ".env"));
   const keys = {};
@@ -45,7 +47,10 @@ export function resolveKeys(benchRoot) {
   }
 
   const missing = [];
+  // LLMGATEWAY (glm-5.3-flash) is optional: only required when a selected
+  // lane actually uses it (deepseek-only runs must not fail without it).
   if (!keys.DEEPSEEK_API_KEY) missing.push("DEEPSEEK_API_KEY");
-  if (!keys.LLMGATEWAY_API_KEY) missing.push("LLMGATEWAY_API_KEY");
+  if (want.has("glm-5.3-flash") && !keys.LLMGATEWAY_API_KEY)
+    missing.push("LLMGATEWAY_API_KEY");
   return { keys, missing };
 }
