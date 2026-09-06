@@ -164,8 +164,12 @@ proc main() =
   check("advisory folded into transcript",
         ($msgs).contains("[Niffler advisor: expert]"), $msgs)
 
-  # Diagnostics reflect one accepted steer.
-  let status = call(nc, "expert", "expert_status", %*{}, 10_000)
+  # Diagnostics reflect one accepted steer. The session form returns that
+  # follow's frame (target, skills, knowledgeVersion, per-session counters);
+  # the no-arg aggregate form only carries the target list + lifetime
+  # diagnostics (expert multi-target).
+  let status = call(nc, "expert", "expert_status",
+                    %*{"session_id": sessionId}, 10_000)
   check("expert_status ok", status{"ok"}.getBool(false), $status)
   check("expert_status target", status{"target"}.getStr("") == sessionId,
         $status)
@@ -213,8 +217,10 @@ proc main() =
   check("s2 steer suppressed as not session-visible",
         status2{"steers"}.getInt(0) == 1, $status2)
   check("s2 suppression counted", status2{"errors"}.getInt(0) >= 1, $status2)
+  let status2s = call(nc, "expert", "expert_status",
+                      %*{"session_id": s2}, 10_000)
   check("s2 turn-start rebuild changed the knowledge version",
-        status2{"knowledgeVersion"}.getStr("") != v1, $status2)
+        status2s{"knowledgeVersion"}.getStr("") != v1, $status2s)
 
   # Scenario 3 — tool-change gate: a steer naming only tools already in the
   # activity frame (the worker is mid-bash) is repetition, not a correction.
