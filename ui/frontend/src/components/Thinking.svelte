@@ -3,8 +3,9 @@
   // (web twin of the TUI's ctrl+t): full shows the whole reasoning as gray
   // italic text, brief collapses it to one dim line per block, off hides
   // it entirely. Streamed reasoning is compacted like the TUI: edge
-  // newlines trimmed and interior blank-line runs collapsed to a single
-  // newline, so paragraph flow stays dense.
+  // newlines trimmed and blank-line runs capped at ONE blank line, so
+  // paragraph breaks between thinking blocks survive without runaway
+  // gaps (collapsing runs to a single newline erased those gaps).
   import { thinkLevel, type ThinkLevel } from "../lib/prefs.svelte";
   import { t } from "../lib/i18n.svelte";
 
@@ -14,7 +15,9 @@
 
   const compact = $derived.by(() => {
     const trimmed = (text ?? "").replace(/^[\n\r]+|[\n\r]+$/g, "");
-    return trimmed.replace(/(?:\r?\n){2,}/g, "\n");
+    // cap blank-line runs at one blank line (\n\n): keeps paragraph
+    // separation between thinking blocks visible, still bounds density
+    return trimmed.replace(/(?:\r?\n){3,}/g, "\n\n");
   });
 
   const briefText = $derived(t("chat.thinkingCollapsed"));
