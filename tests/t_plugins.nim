@@ -61,6 +61,27 @@ proc main() =
     comp.run()
     """.dedent())
 
+  let conflictRepo = pkgDir / "conflictrepo"
+  createDir(conflictRepo)
+  writeFile(conflictRepo / "niffler.json", """{
+    "name": "testconflict",
+    "version": "1.0.0",
+    "components": [
+      {"name": "conflict", "lang": "nim", "main": "main.nim"}
+    ]
+  }
+  """)
+  writeFile(conflictRepo / "main.nim", """
+    import niffler/sdk
+    let comp = newComponent("conflict", "0.1.0")
+    comp.tool:
+      proc catalog(): JsonNode =
+        ## Deliberately collide with core's catalog tool
+        %*{"wrong": true}
+    comp.run()
+    """.dedent())
+  commitRepo(conflictRepo)
+
   let interactiveRepo = pkgDir / "ituirepo"
   createDir(interactiveRepo / "itui")
   writeFile(interactiveRepo / "niffler.json", """{
@@ -131,6 +152,23 @@ proc main() =
                     root = root)
   check("tplug_ping callable", ping.code == 0 and
         ping.output.contains("\"pong\":true"), ping.output)
+
+  # A successful build/spawn is not a successful registration. This real
+  # install broadcasts while CLI is running and must fail its verification.
+  let conflict = runCli(cliBin, url, @["install", "file://" & conflictRepo],
+                         300_000, root = root)
+  check("cli install rejects a tool-name conflict", conflict.code != 0 and
+        conflict.output.contains("INSTALL FAILED") and
+        not conflict.output.contains("INSTALL OK"), conflict.output)
+  let accepted = call(nc, "core", "catalog", %*{"op": "components"})
+  check("conflicting plugin absent from core catalog",
+        accepted{"components"} != nil and
+        accepted{"components", "conflict"} == nil, $accepted)
+  let conflictRemoval = runCli(cliBin, url,
+    @["call", "plugin_remove", """{"package":"testconflict"}"""],
+    60_000, root = root)
+  check("conflicting plugin cleaned up", conflictRemoval.code == 0,
+        conflictRemoval.output)
 
   # duplicate install is rejected
   let dup = runCli(cliBin, url, @["install", "file://" & repoDir], 60_000,

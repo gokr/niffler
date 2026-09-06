@@ -7,9 +7,8 @@
 ## validates the tools the spawned weather component registers (network,
 ## minutes). The hermetic file:// install path is covered by t_plugins.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, streams, strutils]
 import natswrapper
-import envelope
 import helpers
 
 proc main() =
@@ -60,9 +59,63 @@ proc main() =
   # --- wait ----------------------------------------------------------------
   let waitOk = runCli(cliBin, url, @["wait", "plugins", "15"], root = root)
   check("cli wait plugins succeeds", waitOk.code == 0, waitOk.output)
+  let waitImmediate = runCli(cliBin, url, @["wait", "plugins", "0"], root = root)
+  check("cli zero-second wait checks core once", waitImmediate.code == 0,
+        waitImmediate.output)
   let waitNo = runCli(cliBin, url, @["wait", "nonexistent-xyz", "2"],
                       root = root)
   check("cli wait nonexistent fails", waitNo.code != 0, waitNo.output)
+
+  # Start the CLI first, then announce. Observing its catalog request is a
+  # synchronization barrier: an old CLI has already subscribed to reg.>.
+  # Starting it after the announcement misses the original false-success bug.
+  block:
+    var requests: ptr natsSubscription
+    doAssert natsConnection_SubscribeSync(addr requests, nc.conn,
+                                          "svc.core.call") == NATS_OK
+    defer: natsSubscription_Destroy(requests)
+    discard natsConnection_Flush(nc.conn)
+    let waiting = startComponent(cliBin, url, root = root,
+                                  args = ["wait", "cli-rejected", "2"])
+    defer: stopProcess(waiting)
+    var request: ptr natsMsg
+    doAssert natsSubscription_NextMsg(addr request, requests, 5_000) == NATS_OK
+    natsMsg_Destroy(request)
+    nc.publish("reg.publish", $(%*{"name": "cli-rejected", "version": "1",
+      "tools": [{"name": "catalog", "schema": {"type": "object"}}]}))
+    let snapshot = call(nc, "core", "catalog", %*{"op": "components"})
+    check("core rejects conflicting registration",
+          snapshot{"components"} != nil and
+          snapshot{"components", "cli-rejected"} == nil, $snapshot)
+    let code = waiting.waitForExit(7_000)
+    if code == -1: waiting.kill()
+    let output = waiting.outputStream.readAll()
+    check("cli wait rejects a live conflicting announcement",
+          code > 0 and output.contains("not registered"), output)
+
+  block:
+    var requests: ptr natsSubscription
+    doAssert natsConnection_SubscribeSync(addr requests, nc.conn,
+                                          "svc.core.call") == NATS_OK
+    defer: natsSubscription_Destroy(requests)
+    discard natsConnection_Flush(nc.conn)
+    let waiting = startComponent(cliBin, url, root = root,
+                                  args = ["wait", "cli-accepted", "5"])
+    defer: stopProcess(waiting)
+    var request: ptr natsMsg
+    doAssert natsSubscription_NextMsg(addr request, requests, 5_000) == NATS_OK
+    natsMsg_Destroy(request)
+    nc.publish("reg.publish", $(%*{"name": "cli-accepted", "version": "1",
+                                  "tools": []}))
+    let code = waiting.waitForExit(7_000)
+    if code == -1: waiting.kill()
+    let output = waiting.outputStream.readAll()
+    check("cli wait sees a newly accepted zero-tool component",
+          code == 0 and output.contains("cli-accepted registered"), output)
+    nc.publish("reg.depart", $(%*{"name": "cli-accepted"}))
+    let departed = runCli(cliBin, url, @["wait", "cli-accepted", "1"], root = root)
+    check("cli wait rejects a departed component", departed.code != 0,
+          departed.output)
 
   # --- call ----------------------------------------------------------------
   let callOk = runCli(cliBin, url, @["call", "list", """{"kind":"plugin"}"""],

@@ -193,8 +193,13 @@ proc startComponent*(bin: string, url: string, root = "",
     env[k] = v
   if logFile.len > 0:
     createDir(logFile.parentDir())
-    # exec replaces bash, so the Process handle still tracks the component
-    let cmd = "exec " & quoteShell(bin) & " > " & quoteShell(logFile) & " 2>&1"
+    # exec replaces bash, so the Process handle still tracks the component.
+    # Args must ride along in the command string — startProcess's args only
+    # reach the bash process itself, not the exec'd binary.
+    var cmd = "exec " & quoteShell(bin)
+    for a in args:
+      cmd.add(" " & quoteShell(a))
+    cmd.add(" > " & quoteShell(logFile) & " 2>&1")
     result = startProcess("bash", workingDir = root2, args = ["-c", cmd],
                           env = env, options = {poUsePath})
   else:
