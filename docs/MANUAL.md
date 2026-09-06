@@ -211,6 +211,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.retry`. Auth/quota/bad-request errors always fail fast | `2` |
+| `NIF_LLM_TIMEOUT_MS` | ceiling for one `llm` `chat` completion; slow reasoning models (e.g. GLM thinking=max via llmgateway) can exceed the default on a single response | `300000` |
 | `NIF_CTX_RESERVE` | output tokens held back when deciding to trim context: the trim level is min(90% of window, window − reserve); `0` disables the reserve | `16384` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |

@@ -854,6 +854,18 @@ func resolveHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	}, nil
 }
 
+// Chat tool timeout. Slow reasoning models (e.g. GLM with thinking=max via
+// llmgateway) can exceed the 5-minute default on a single completion; bench
+// runs raise it with NIF_LLM_TIMEOUT_MS.
+func chatTimeoutMs() int {
+	if v := os.Getenv("NIF_LLM_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 300000
+}
+
 func main() {
 	comp := sdk.New("llm", "0.4.0")
 	// Both handlers are request-local: provider/model lookup uses thread-safe
@@ -909,7 +921,7 @@ func main() {
 				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
 		"required":  []string{"messages"},
-		"x-harness": map[string]any{"hidden": true, "timeoutMs": 300000},
+		"x-harness": map[string]any{"hidden": true, "timeoutMs": chatTimeoutMs()},
 	}, chatHandler)
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "llm:", err)
