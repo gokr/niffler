@@ -8,6 +8,26 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Store engines: SQLite and TiDB behind `NIF_STORE_BACKEND`** — the store
+  bus contract is now an interchangeable engine choice with one component
+  identity: every engine registers as `store` v0.1.0 with identical
+  put/get/list/del tools and result shapes, and core resolves the manifest
+  entry's binary from `NIF_STORE_BACKEND` (`barrel` default, `sqlite`,
+  `tidb`; unknown values refuse boot). `components/store-sqlite` is pure-Go
+  modernc.org/sqlite (goose embedded migrations, WAL, flock single-writer,
+  one-statement upsert/CAS) and `components/store-tidb` speaks the MySQL
+  protocol (DSN from `NIF_STORE_TIDB_DSN`, pessimistic upsert transactions,
+  `utf8mb4_bin` for byte-exact ids). `tests/t_store.nim` takes a
+  `NIF_STORE_BIN` override so one bus-contract suite runs against any
+  engine (`make test-store` / `test-store-sqlite` / `test-store-tidb`), and
+  `tools/bench_stores.nim` benchmarks engines at the bus level.
+
+- **`make install` / `make uninstall`** — installs `niffler`-prefixed
+  symlinks to the built binaries plus a `niffler-tui` wrapper (which
+  performs the opt-in plugin dance before launching the TUI) and generates
+  a starter `.env` (`scripts/install.sh`); README quickstart now points at
+  it, with clone-equals-instance isolation noted.
+
 - **Bundled skill `niffler-harness`** — operational guide to the running
   harness itself: lifecycle (`make run` / `--minimal` / `--recover` /
   `make down`, autostart rules), session runners, the store (engines,
@@ -700,6 +720,43 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The git clone is the instance identity — bus attach rules follow it**
+  (`NIF_NATS_URL` in the process env stays attach-only for tests/bench; a
+  URL from the clone's `.env` — or the well-known 4222 default — is the
+  clone's home bus: claimed when free, attached to only when the answering
+  core serves this root, and yielded loudly (isolated random bus) to a
+  foreign core or a bare nats-server; a recorded leftover (`var/nats-pid`)
+  is reclaimed). `NIF_NATS_SPAWN=1` now means "never 4222": always an
+  isolated core-owned random-port bus. The catalog (list/components/
+  snapshot) carries root + gitHash, core prints both at startup,
+  `ensureHarness` (Nim and Go) only attaches to a core serving its own
+  root, and clients resolve `var/nats-url` from their binary's clone rather
+  than the cwd. Nothing survives its harness either way: PR_SET_PDEATHSIG
+  in both SDKs and the nats-server component, and the supervisor wraps
+  every child with `setpriv --pdeathsig TERM`. The 4222 yield warning now
+  names an unidentified (older?) harness when no owner record is present.
+
+- **Core routes calls only to accepted service instances** — components no
+  longer share a public NATS queue group per tool: core keeps an
+  accepted-PID → private call subject route table and round-robins
+  replicas over it (the `replicas` manifest option now spawns service
+  replicas behind that router, not queue-group members), so a rejected or
+  departed process can never receive a call. While a session waits on a
+  service reply, core forwards other service requests on a 1 ms poll
+  instead of 100 ms, so dependent calls from the awaited session stay
+  responsive.
+
+- **`make setup` dependency installation rebuilt** — new
+  `install-native-deps` (build tools, clang/libclang, NATS C + LZ4, PCRE;
+  Homebrew vs apt per platform) and `install-nim-deps` (`nimble install
+  --depsOnly`) targets, with setup running the install targets serially so
+  package-manager writes and Nimble builds never race under `make -j`.
+  Nim installs via choosenim pinned to 2.2.10, Node must be 20+ for the
+  UI toolchain (snap channel 22 on Linux, explicit error otherwise), and
+  macOS uses Xcode's own libclang instead of installing a redundant LLVM.
+  `make doctor` checks clang, `opir`, NATS C/LZ4/PCRE and the Nimble
+  packages it can now actually verify.
+
 - **Bash discipline in the constitution** — two explicit rules after the
   SWE-bench tool-use audit (~15% of bash calls were redundant navigation:
   `cd` into the repo the tool already runs in, `pwd` re-verification,
@@ -819,6 +876,44 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **Registration success is reported only from core's accepted catalog** —
+  `cli`'s `wait` and `install` (and `plugin_install`'s post-spawn checks)
+  used to treat raw `reg.*` announcements as proof that a component came
+  up, so a rejected announcement or an existing same-name component could
+  report success. Verification now polls the authoritative
+  `catalog {op: components}` snapshot, a failed read clears both indexes
+  instead of leaving stale entries available as proof, and confirmation is
+  limited to the authoritative name lookup. `console`'s hand-rolled
+  registration also published an invalid envelope shape and now speaks the
+  real one.
+
+- **cli no longer leaks an orphan catalog request** — when NATS's
+  `NextMsg` timeout fired a hair early, `waitForRegistration` could run
+  one more loop iteration with a ~1 ms bound and publish a second catalog
+  request it never waited for; the next caller's request/reply pairing
+  latched onto the fossil and timed out. Each request is now bounded by
+  the remaining wait (t_cli_catalog went from 5/6 parallel failures to
+  10/10 passes).
+
+- **Per-entrypoint nim caches** — Nim's default cache collided on every
+  `main.nim`, and scoping one cache per checkout still broke `make -j`,
+  which compiles several entrypoints concurrently ("hidden symbol ...
+  isn't defined"). The cache is now keyed by the project path relative to
+  `config.nims` under `var/nimcache/`, so parallel builds cannot overwrite
+  each other's objects while repeat builds stay incremental.
+
+- **The runtime builder finds the SDK toolchain on macOS** — the builder
+  invokes Nim outside the Makefile environment, so Futhark's libclang had
+  no SDK headers; `config.nims` now supplies `SDKROOT` (and the Homebrew
+  include/lib paths) for direct Nim builds, including agent-built
+  components. PCRE is linked via the dev package when present instead of
+  dlopen by bare filename, so machines with only `libpcre.so.3` build
+  again.
+
+- **Test helpers: `startComponent(logFile=...)` passes args through** —
+  the logFile branch exec'd only the binary, dropping arguments (the cli
+  printed usage and quit 2); args are now appended to the exec'd command.
 
 - **Round-budget exhaustion ends the turn loudly** — a turn hitting
   `NIF_MAX_TURN_ROUNDS` used to fall off the round loop with no done
