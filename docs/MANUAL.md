@@ -533,9 +533,11 @@ beats home beats config):
 | home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
 | config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
 
-Bundled skills (e.g. `todo-markdown` — keep todo state in a repo TODO.md,
-not in tool state) make Niffler useful out of the box; shadow one by
-dropping a same-named skill into a project or home directory.
+Bundled skills (`todo-markdown` — keep todo state in a repo TODO.md,
+not in tool state; `niffler-tools` — which tool fits which job;
+`niffler-fabric` — constructing fabric programs; `niffler-harness` —
+operating the running harness itself) make Niffler useful out of the box;
+shadow one by dropping a same-named skill into a project or home directory.
 
 | Tool | What it does |
 |---|---|
