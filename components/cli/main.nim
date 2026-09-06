@@ -22,6 +22,8 @@ import subjects
 
 var components = initTable[string, seq[string]]()  ## component -> tools
 var toolIndex = initTable[string, string]()        ## tool -> component
+var servingRoot = ""                               ## harness root the bus serves
+var servingHash = ""                               ## its git revision
 
 proc resolveBusUrl(): string =
   ## NIF_NATS_URL wins; otherwise follow the harness's discovery file so a
@@ -45,6 +47,12 @@ proc refreshCatalog(nc: NatsConnection, timeoutMs = 5_000): bool =
     let snapshot = r.args{"components"}
     if r.kind != ekResult or snapshot == nil or snapshot.kind != JObject:
       return false
+    ## Which harness is answering — the clone is the home of an instance, and
+    ## the cli has no attach-time identity check (it trusts the discovery
+    ## file), so surfacing root + gitHash here is how a mixup becomes
+    ## visible instead of silent.
+    servingRoot = r.args{"root"}.getStr("")
+    servingHash = r.args{"gitHash"}.getStr("")
     var accepted = initTable[string, seq[string]]()
     var owners = initTable[string, string]()
     for name, tools in snapshot:
@@ -119,6 +127,9 @@ proc cmdCatalog(nc: NatsConnection): int =
   if not refreshCatalog(nc):
     echo "cli: cannot read core catalog — is a harness up?"
     return 1
+  if servingRoot.len > 0:
+    let hash = if servingHash.len > 0: servingHash else: "unknown"
+    echo "# harness: " & servingRoot & " @ " & hash
   if components.len == 0:
     echo "cli: catalog empty — is a harness up?"
     return 1
