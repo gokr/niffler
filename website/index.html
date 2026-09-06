@@ -129,8 +129,9 @@
       <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
       <p data-i18n-html="why.4p">Capabilities survive restarts: spawned components are recorded in the
       store and restored on boot. The repo holds the reproducible source;
-      <code>var/bin/</code> can be rebuilt, while <code>var/barrel-db</code>
-      holds persistent state.</p>
+      <code>var/bin/</code> can be rebuilt, while the store engine holds
+      persistent state (<code>var/barrel-db</code> by default — SQLite or
+      TiDB via <code>NIF_STORE_BACKEND</code>).</p>
     </article>
   </div>
 </section>
@@ -218,16 +219,18 @@
       <h3 data-i18n-html="bench.1h"><span class="num">01</span> SWE-bench Verified pilot</h3>
       <p data-i18n-html="bench.1p">10 sympy instances, one-shot, graded by the official
         <code>swebench</code> 4.1.0 Docker harness — niffler, pi and opencode
-        side by side over two models. Niffler resolves comparable counts at
+        side by side over two models. Niffler resolves fewer tasks, at
         2.3–2.9× less total tokens per task. Full report:
         <code>bench/reports/swe-sympy10-pilot-report.md</code>.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="bench.2h"><span class="num">02</span> harness bench</h3>
-      <p data-i18n-html="bench.2p">A harness-comparison framework with five red-at-base tasks
-        verified green by reference implementations, per-turn feedback
+      <p data-i18n-html="bench.2p">A harness-comparison framework — seventeen red-at-base tasks
+        tagged by kind (general / fabric / expert / selfextend), each verified
+        green by a reference implementation, with per-turn feedback
         loops, protected-file guards and provider token accounting —
-        niffler / pi / opencode × two models, plus a paired
+        niffler / pi / opencode / codewhale × two models, a
+        <code>--thinking low|max</code> matrix, plus a paired
         niffler-expert variant that measures the advisory peer.</p>
     </article>
   </div>
@@ -248,7 +251,7 @@
         <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
         <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># the desktop UI — autostarts the harness</span></p>
         <p><span class="p">$</span> make ui-install    <span class="dim" data-i18n="qs.uiinstall"># optional: puts niffler-ui on PATH + launcher/app icon (Linux)</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — 30 contract tests + smoke + go tests</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — one test per component + smoke + go tests</span></p>
         <p class="dim">│</p>
         <p class="dim" data-i18n="qs.see">└─ make run / recover / down / dev · see docs/MANUAL.md</p>
       </div>
@@ -258,7 +261,7 @@
       <ul class="reqs">
         <li><span class="check">✓</span> <span data-i18n="qs.req.nim">nim 2.x</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.go">go</span></li>
-        <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server</span></li>
+        <li><span class="check">✓</span> <span data-i18n="qs.req.nats">nats-server (built from source)</span></li>
         <li><span class="check">✓</span> <span data-i18n="qs.req.node">node / npm</span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(UI only)</span></span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
