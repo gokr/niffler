@@ -1,12 +1,13 @@
 ## expert — the advisory peer (docs/research/EXPERT.md).
 ##
-## Follows ONE working session on the bus (1:1, best-effort), watches its
-## ev.session.* events into a bounded in-process observation frame, and asks
-## an LLM judge (the hidden `chat` tool, no tools of its own) whether the
-## evidence warrants a steer. The judge returns constrained JSON — silent or
-## steer — and only high-confidence steers are delivered through the
-## turn-bound `svc.session.<id>.advise` request/reply surface, which the
-## session runner accepts only while that turn is still live.
+## Follows one or more working sessions on the bus (multi-target,
+## best-effort), watches their ev.session.* events into bounded per-session
+## in-process observation frames, and asks an LLM judge (the hidden `chat`
+## tool, no tools of its own) whether the evidence warrants a steer. The
+## judge returns constrained JSON — silent or steer — and only
+## high-confidence steers are delivered through the turn-bound
+## `svc.session.<id>.advise` request/reply surface, which the session runner
+## accepts only while that turn is still live.
 ##
 ## The judge's mission is tool selection: make sure the working session uses
 ## the correct Niffler tool for the job. The knowledge prefix therefore
@@ -34,7 +35,7 @@
 ##
 ## This component is inert until expert_follow names a target session.
 
-import std/[algorithm, json, monotimes, strutils, times]
+import std/[algorithm, json, monotimes, sequtils, strutils, tables, times]
 import checksums/md5
 import natswrapper
 import niffler/sdk
@@ -178,34 +179,53 @@ type
     resultSummary: string
     error: string
 
+  Follow = object
+    ## Per-session observation frame + knowledge + per-follow metrics. The
+    ## table key IS the followed session id; everything the old single-target
+    ## globals held lives here so several sessions can be followed at once.
+    turnId: string             # active turn of this session ("" = none)
+    userRequest: string
+    activities: seq[Activity]
+    assistant: string
+    reasoningTail: string
+    usedTokens: int
+    ctxLimit: int
+    knowledge: string          # cache-stable prefix (policy + skills + tool hints)
+    knowledgeVersion: string
+    liveTools: seq[string]     # this session's direct tools
+    discoverable: seq[string]  # on-demand tools it can discover+invoke
+    discovered: seq[string]    # on-demand tools it already discovered
+    knowledgeSet: seq[string]  # visible direct set the prefix holds
+    knowledgeAllowlist: seq[string]
+    skillsLoaded: seq[string]  # reviewed skills embedded in the prefix
+    prefixChars: int           # prefix size actually sent (diagnostics)
+    prefixBudgetTokens: int    # judge context * fill ratio - reserve
+    model: string              # per-follow judgment model/provider overrides
+    provider: string
+    turnJudgments: int
+    turnAdvised: bool
+    # per-follow metrics (the bench reads these via expert_status)
+    judgments: int
+    silences: int
+    steers: int
+    accepted: int
+    rejected: int
+    staleDrops: int
+    errors: int
+    tokPrompt: int
+    tokCached: int
+    tokCompletion: int
+
 var
   gComp: Component = nil
-  gTarget = ""             # followed session id ("" = not following)
-  gTurnId = ""             # active turn of the target ("" = none)
-  gUserRequest = ""
-  gActivities: seq[Activity] = @[]
-  gAssistant = ""
-  gReasoningTail = ""
-  gUsedTokens = 0
-  gCtxLimit = 0
-  gKnowledge = ""          # cache-stable prefix (policy + skills + tool hints)
-  gKnowledgeVersion = ""
-  gLiveTools: seq[string] = @[]      # the observed session's direct tools
-  gDiscoverable: seq[string] = @[]   # on-demand tools it can discover+invoke
-  gDiscovered: seq[string] = @[]     # on-demand tools it already discovered
-  gKnowledgeSet: seq[string] = @[]   # visible direct set the prefix holds
-  gKnowledgeAllowlist: seq[string] = @[]
-  gSkillsLoaded: seq[string] = @[]   # reviewed skills embedded in the prefix
-  gPrefixChars = 0                   # prefix size actually sent (diagnostics)
-  gPrefixBudgetTokens = 0            # judge context * fill ratio - reserve
-  gModel = ""              # optional model override for judgments
-  gProvider = ""           # optional provider override for judgments
+  gFollows = initTable[string, Follow]()
+  # Single judge lane (component-wide by design: one LLM judgment in flight,
+  # shared cooldown, latest-state coalescing). Per-session state lives in
+  # gFollows; these globals only schedule WHO judges next.
   gEvaluating = false
   gPending = false
-  gTurnJudgments = 0
-  gTurnAdvised = false
   gLastEval = default(MonoTime)
-  # diagnostics (bounded counts only; never transcript content)
+  # lifetime diagnostics (bounded counts only; never transcript content)
   gJudgments = 0
   gSilences = 0
   gSteers = 0
@@ -213,8 +233,8 @@ var
   gRejected = 0
   gStaleDrops = 0
   gErrors = 0
-  # judgment token accounting (docs/research/EXPERT.md §8: measure before claiming a
-  # cache win; cached input is what the knowledge prefix should optimize)
+  # judgment token accounting (docs/research/EXPERT.md §8: measure before
+  # claiming a cache win; cached input is what the knowledge prefix optimizes)
   gTokPrompt = 0
   gTokCached = 0
   gTokCompletion = 0
@@ -226,21 +246,21 @@ proc clip(s: string, max: int): string =
   while cut > 0 and (s[cut].uint8 and 0xC0) == 0x80: dec cut
   result = s[0 ..< cut] & "..."
 
-proc resetFrame(turnId, content: string) =
-  gTurnId = turnId
-  gUserRequest = clip(content, MaxField)
-  gActivities = @[]
-  gAssistant = ""
-  gReasoningTail = ""
-  gPending = false
-  gTurnJudgments = 0
-  gTurnAdvised = false
+proc resetFrame(f: var Follow, turnId, content: string) =
+  f.turnId = turnId
+  f.userRequest = clip(content, MaxField)
+  f.activities = @[]
+  f.assistant = ""
+  f.reasoningTail = ""
+  f.turnJudgments = 0
+  f.turnAdvised = false
 
-proc clearFrame() =
-  resetFrame("", "")
-  gUserRequest = ""
-  gUsedTokens = 0
-  gCtxLimit = 0
+proc clearFrame(f: var Follow) =
+  ## Drop the turn frame and context gauges; knowledge (prefix, tool view)
+  ## survives — it is per-follow, not per-turn.
+  resetFrame(f, "", "")
+  f.usedTokens = 0
+  f.ctxLimit = 0
 
 proc sessionVisibleTools(comp: Component, sessionId: string):
     tuple[direct, discovered, allowlist: seq[string], allowlisted: bool] =
@@ -363,6 +383,7 @@ proc renderPrefix(hints: tuple[live, od: seq[ToolHint]],
     odLines & allowLine
 
 proc buildKnowledge(comp: Component, sessionId: string,
+                    f: var Follow,
                     visible: tuple[direct, discovered, allowlist: seq[string],
                                    allowlisted: bool]): string =
   ## The cache-stable prefix, sized to the judge model: policy + reviewed
@@ -374,36 +395,36 @@ proc buildKnowledge(comp: Component, sessionId: string,
   ## a reserve for the observation and verdict. Over budget, tool
   ## descriptions shrink first (lowest value per byte) and only as a last
   ## resort the tail is truncated.
-  gLiveTools = @[]
-  gDiscoverable = @[]
-  gKnowledgeSet = @[]
-  gKnowledgeAllowlist = visible.allowlist
-  gDiscovered = visible.discovered
-  gPrefixBudgetTokens = 0
+  f.liveTools = @[]
+  f.discoverable = @[]
+  f.knowledgeSet = @[]
+  f.knowledgeAllowlist = visible.allowlist
+  f.discovered = visible.discovered
+  f.prefixBudgetTokens = 0
   try:
     var resolveArgs = %*{}
-    if gModel.len > 0: resolveArgs["model"] = %gModel
-    if gProvider.len > 0: resolveArgs["provider"] = %gProvider
+    if f.model.len > 0: resolveArgs["model"] = %f.model
+    if f.provider.len > 0: resolveArgs["provider"] = %f.provider
     let r = comp.request("llm", "llm_resolve", resolveArgs, 10_000)
     let ctx = r{"context"}.getInt(0)
     if ctx > 0:
-      gPrefixBudgetTokens = int(float(ctx) * PrefixFillRatio) -
+      f.prefixBudgetTokens = int(float(ctx) * PrefixFillRatio) -
                             PrefixObsReserveTokens
   except CatchableError:
     discard  # unknown context window: no budget, load everything
 
   var skills: string
   let sk = skillKnowledge(comp)
-  gSkillsLoaded = sk.loaded
+  f.skillsLoaded = sk.loaded
   skills = if sk.text.len > 0: sk.text else: expertFallbackKnowledge
 
   let hints = fetchToolHints(comp, visible)
   var liveClip = 160
   var odClip = 140
   result = renderPrefix(hints, visible, skills, liveClip, odClip)
-  gPrefixChars = result.len
-  let charsBudget = gPrefixBudgetTokens * 4
-  if gPrefixBudgetTokens > 0 and result.len > charsBudget:
+  f.prefixChars = result.len
+  let charsBudget = f.prefixBudgetTokens * 4
+  if f.prefixBudgetTokens > 0 and result.len > charsBudget:
     # Over budget: tighten the tool description clips before cutting content.
     while result.len > charsBudget and (liveClip > 40 or odClip > 40):
       liveClip = max(40, liveClip div 2)
@@ -413,31 +434,31 @@ proc buildKnowledge(comp: Component, sessionId: string,
       var cut = charsBudget - 3
       while cut > 0 and (result[cut].uint8 and 0xC0) == 0x80: dec cut
       result = result[0 ..< cut] & "...\n[prefix truncated to fit context]"
-    gPrefixChars = result.len
-  for h in hints.live: gLiveTools.add(h.name)
-  for h in hints.od: gDiscoverable.add(h.name)
-  gKnowledgeSet = gLiveTools
-  gKnowledgeVersion = "md5:" & getMD5(result)
+    f.prefixChars = result.len
+  for h in hints.live: f.liveTools.add(h.name)
+  for h in hints.od: f.discoverable.add(h.name)
+  f.knowledgeSet = f.liveTools
+  f.knowledgeVersion = "md5:" & getMD5(result)
 
-proc refreshKnowledge(comp: Component) =
+proc refreshKnowledge(comp: Component, sessionId: string, f: var Follow) =
   ## Per-turn-start check. The session's direct set and allowlist are frozen
   ## at its first turn, so this usually no-ops. It matters when expert_follow
   ## preceded that first turn (no exposure existed; the prefix fell back to
   ## the global set) — rebuild once the real exposure is known. Also picks
   ## up the growing discovered list for the observation.
-  let visible = sessionVisibleTools(comp, gTarget)
+  let visible = sessionVisibleTools(comp, sessionId)
   var candidate: seq[string] = @[]
   for n in visible.direct:
     if not visible.allowlisted or n in visible.allowlist:
       candidate.add(n)
   candidate.sort()
-  gDiscovered = visible.discovered
+  f.discovered = visible.discovered
   if candidate.len > 0 and
-      (candidate != gKnowledgeSet or visible.allowlist != gKnowledgeAllowlist):
-    gKnowledge = buildKnowledge(comp, gTarget, visible)
+      (candidate != f.knowledgeSet or visible.allowlist != f.knowledgeAllowlist):
+    f.knowledge = buildKnowledge(comp, sessionId, f, visible)
     comp.log("info", "knowledge rebuilt at turn start",
-             %*{"target": gTarget, "knowledgeVersion": gKnowledgeVersion,
-                "liveTools": gLiveTools.len, "skills": gSkillsLoaded})
+             %*{"target": sessionId, "knowledgeVersion": f.knowledgeVersion,
+                "liveTools": f.liveTools.len, "skills": f.skillsLoaded})
 
 proc extractJson(s: string): JsonNode =
   ## Parse the judgment out of the model content, tolerating code fences and
@@ -450,17 +471,18 @@ proc extractJson(s: string): JsonNode =
   body = body[first .. last]
   result = parseJson(body)
 
-proc sendAdvise(comp: Component, turnId, content, reason: string): bool =
+proc sendAdvise(comp: Component, sessionId: string, f: Follow,
+                turnId, content, reason: string): bool =
   ## Turn-bound delivery: a request/reply to the runner's advise subject. The
   ## runner accepts only while the named turn is live — a stale expert is
   ## rejected, never queued into a later turn.
   let payload = %*{
-    "sessionId": gTarget, "turnId": turnId,
+    "sessionId": sessionId, "turnId": turnId,
     "kind": "advisor", "source": "expert",
     "content": content, "reason": reason,
-    "knowledgeVersion": gKnowledgeVersion}
+    "knowledgeVersion": f.knowledgeVersion}
   let env = callEnvelope("advise", payload, "expert")
-  let subject = sessionAdviseSubject(gTarget)
+  let subject = sessionAdviseSubject(sessionId)
   let reply = comp.requestEnvelope(subject, env, 10_000)
   if reply.kind == ekError:
     gRejected += 1
@@ -475,17 +497,23 @@ proc sendAdvise(comp: Component, turnId, content, reason: string): bool =
            %*{"reason": reply.args{"reason"}.getStr("")})
   return false
 
-proc evaluate(comp: Component) =
-  ## One judgment: snapshot the frame, ask the LLM judge, maybe deliver.
-  ## Runs on the SDK's single thread; SDK request() keeps taps pumping, so
-  ## observation continues (gEvaluating guards re-entrancy).
+proc deliver(comp: Component, sessionId, turnId: string, resp: JsonNode)
+
+proc evaluate(comp: Component, sessionId: string) =
+  ## One judgment for one followed session: snapshot the frame, ask the LLM
+  ## judge, deliver. Runs on the SDK's single thread; SDK request() keeps
+  ## taps pumping, so the follow table can change mid-call — judge from a
+  ## snapshot, then re-verify before any write-back (gEvaluating guards
+  ## re-entrancy).
   gEvaluating = true
   gLastEval = getMonoTime()
   defer: gEvaluating = false
-  let turnId = gTurnId
+  if sessionId notin gFollows: return
+  let snap = gFollows[sessionId]
+  let turnId = snap.turnId
   if turnId.len == 0: return  # no turn identity — cannot advise turn-bound
   var activities = newJArray()
-  for a in gActivities:
+  for a in snap.activities:
     var ja = %*{"tool": a.tool}
     if a.argsSummary.len > 0: ja["args"] = %a.argsSummary
     if a.resultSummary.len > 0: ja["result"] = %a.resultSummary
@@ -498,48 +526,62 @@ proc evaluate(comp: Component) =
       ja["status"] = %"RUNNING — result not yet available"
     activities.add(ja)
   var obs = %*{
-    "sessionId": gTarget, "turnId": turnId,
-    "userRequest": gUserRequest,
+    "sessionId": sessionId, "turnId": turnId,
+    "userRequest": snap.userRequest,
     "recentActivity": activities,
-    "assistantText": gAssistant,
-    "context": {"usedTokens": gUsedTokens, "limit": gCtxLimit}}
-  if gReasoningTail.len > 0: obs["reasoningTail"] = %gReasoningTail
-  if gDiscovered.len > 0:
-    obs["visibleTools"] = %*{"discovered": %gDiscovered}
+    "assistantText": snap.assistant,
+    "context": {"usedTokens": snap.usedTokens, "limit": snap.ctxLimit}}
+  if snap.reasoningTail.len > 0: obs["reasoningTail"] = %snap.reasoningTail
+  if snap.discovered.len > 0:
+    obs["visibleTools"] = %*{"discovered": %snap.discovered}
   var chatArgs = %*{
     "messages": [
-      %*{"role": "system", "content": gKnowledge},
+      %*{"role": "system", "content": snap.knowledge},
       %*{"role": "user", "content": "expert-observation (untrusted evidence):\n" & $obs}
     ],
-    "sessionId": "expert-" & gTarget,
+    "sessionId": "expert-" & sessionId,
     "stream": false,
     "maxTokens": JudgeMaxOutputTokens,
     "reasoning_effort": JudgeReasoningEffort}
-  if gModel.len > 0: chatArgs["model"] = %gModel
-  if gProvider.len > 0: chatArgs["provider"] = %gProvider
+  if snap.model.len > 0: chatArgs["model"] = %snap.model
+  if snap.provider.len > 0: chatArgs["provider"] = %snap.provider
   var resp: JsonNode
   try:
     gJudgments += 1
-    gTurnJudgments += 1
     resp = comp.request("llm", "chat", chatArgs, ChatTimeoutMs)
-    let u = resp{"usage"}
-    if u != nil:
-      gTokPrompt += u{"prompt_tokens"}.getInt(0)
-      gTokCompletion += u{"completion_tokens"}.getInt(0)
-      gTokCached += u{"prompt_tokens_details"}{"cached_tokens"}.getInt(0)
   except CatchableError as e:
     gErrors += 1
     comp.log("warn", "judgment failed", %*{"error": clip(e.msg, 160)})
     return
-  if gTurnId != turnId:
+  # The await pumped taps: the follow may be gone or the turn replaced.
+  # Judge outcome lands only on the turn that was observed.
+  if sessionId notin gFollows or gFollows[sessionId].turnId != turnId:
     gStaleDrops += 1
-    return  # the turn ended while judging — discard, never deliver late
+    return
+  deliver(comp, sessionId, turnId, resp)
+
+proc deliver(comp: Component, sessionId, turnId: string, resp: JsonNode) =
+  ## Post-await half of a judgment: parse, gate, maybe steer. Works on a
+  ## fresh copy of the follow — the frame may have moved while the judge
+  ## ran — and writes it back before every exit.
+  if sessionId notin gFollows: return
+  var f = gFollows[sessionId]
+  f.judgments += 1
+  f.turnJudgments += 1
+  let u = resp{"usage"}
+  if u != nil:
+    let pt = u{"prompt_tokens"}.getInt(0)
+    let ct = u{"completion_tokens"}.getInt(0)
+    let ca = u{"prompt_tokens_details"}{"cached_tokens"}.getInt(0)
+    gTokPrompt += pt; gTokCompletion += ct; gTokCached += ca
+    f.tokPrompt += pt; f.tokCompletion += ct; f.tokCached += ca
   var judgment: JsonNode
   try:
     judgment = extractJson(resp{"content"}.getStr(""))
   except CatchableError as e:
-    gErrors += 1
+    f.errors += 1; gErrors += 1
     comp.log("warn", "judgment parse failed", %*{"error": clip(e.msg, 120)})
+    gFollows[sessionId] = f
     return
   let action = judgment{"action"}.getStr("")
   # Audit trail: every parsed judgment lands in ev.log.expert (action,
@@ -550,19 +592,23 @@ proc evaluate(comp: Component) =
       "message": clip(judgment{"message"}.getStr(""), 200),
       "confidence": judgment{"confidence"}.getStr("")})
   if action != "steer":
-    gSilences += 1
+    f.silences += 1; gSilences += 1
+    gFollows[sessionId] = f
     return
   # Delivery policy: high confidence, bounded message, session-visible tools.
   if judgment{"confidence"}.getStr("") != "high":
-    gSilences += 1
+    f.silences += 1; gSilences += 1
+    gFollows[sessionId] = f
     return
   let message = judgment{"message"}.getStr("")
   if message.len == 0 or message.len > MaxMessage:
-    gErrors += 1
+    f.errors += 1; gErrors += 1
+    gFollows[sessionId] = f
     return
   let tools = judgment{"tools"}
   if tools == nil or tools.kind != JArray or tools.len == 0:
-    gSilences += 1
+    f.silences += 1; gSilences += 1
+    gFollows[sessionId] = f
     return
   var named: seq[string] = @[]
   for t in tools:
@@ -575,19 +621,22 @@ proc evaluate(comp: Component) =
       # tolerate "component.tool" spellings, like invoke does
       tool = tool.split('.')[^1]
     if tool.len == 0:
-      gErrors += 1
+      f.errors += 1; gErrors += 1
       comp.log("warn", "steer suppressed: empty tool name",
                %*{"raw": t.getStr("")})
+      gFollows[sessionId] = f
       return
-    if tool notin gLiveTools and tool notin gDiscoverable:
-      gErrors += 1
+    if tool notin f.liveTools and tool notin f.discoverable:
+      f.errors += 1; gErrors += 1
       comp.log("warn", "steer suppressed: not visible to this session",
                %*{"tool": tool})
+      gFollows[sessionId] = f
       return
     if not message.contains("`" & tool & "`") and not message.contains(tool):
-      gErrors += 1
+      f.errors += 1; gErrors += 1
       comp.log("warn", "steer suppressed: tool absent from message",
                %*{"tool": tool})
+      gFollows[sessionId] = f
       return
     named.add(tool)
   # Tool-change gate (observation-grounded, no phrase matching): the steer
@@ -600,7 +649,7 @@ proc evaluate(comp: Component) =
   var proposesChange = false
   for tool in named:
     var inFrame = false
-    for a in gActivities:
+    for a in f.activities:
       if a.tool == tool:
         inFrame = true
         break
@@ -608,20 +657,28 @@ proc evaluate(comp: Component) =
       proposesChange = true
       break
   if not proposesChange:
-    gSilences += 1
+    f.silences += 1; gSilences += 1
     comp.log("info", "steer suppressed: names only tools already in use",
              %*{"tools": %named})
+    gFollows[sessionId] = f
     return
-  gSteers += 1
-  if sendAdvise(comp, turnId, message, judgment{"reason"}.getStr("")):
-    gTurnAdvised = true
+  f.steers += 1; gSteers += 1
+  if sendAdvise(comp, sessionId, f, turnId, message,
+                judgment{"reason"}.getStr("")):
+    f.accepted += 1; gAccepted += 1
+    f.turnAdvised = true
+  else:
+    f.rejected += 1; gRejected += 1
+  gFollows[sessionId] = f
 
-proc maybeEvaluate(comp: Component) =
-  ## Inference scheduling: cooldown + single-lane + latest-state coalescing.
-  ## Intentionally lossy — a skipped or stale evaluation is dropped, never
-  ## queued against the working session.
-  if gTarget.len == 0 or gTurnId.len == 0 or gTurnAdvised or
-      gTurnJudgments >= MaxJudgmentsPerTurn:
+proc maybeEvaluate(comp: Component, sessionId: string) =
+  ## Inference scheduling: shared cooldown + single judge lane + latest-state
+  ## coalescing per followed session. Intentionally lossy — a skipped or
+  ## stale evaluation is dropped, never queued against the working session.
+  if sessionId notin gFollows: return
+  let f = gFollows[sessionId]
+  if f.turnId.len == 0 or f.turnAdvised or
+      f.turnJudgments >= MaxJudgmentsPerTurn:
     return
   if gEvaluating:
     gPending = true
@@ -631,19 +688,24 @@ proc maybeEvaluate(comp: Component) =
       now - gLastEval < initDuration(milliseconds = EvalCooldownMs):
     gPending = true
     return
-  evaluate(comp)
+  evaluate(comp, sessionId)
   # Coalesced catch-up: events that arrived while judging marked pending.
-  # Evaluate the newest consolidated state once more if the cooldown allows;
-  # otherwise the next event re-triggers. Never backlog.
-  while gPending and not gTurnAdvised and
-      gTurnJudgments < MaxJudgmentsPerTurn and
+  # Re-judge the newest consolidated state once if the cooldown allows;
+  # otherwise the next event re-triggers. Never backlog. Candidates are
+  # snapshotted first: evaluate pumps taps, so the table may change under us.
+  while gPending and not gEvaluating and
       getMonoTime() - gLastEval >= initDuration(milliseconds = EvalCooldownMs):
     gPending = false
-    evaluate(comp)
+    var cands: seq[string] = @[]
+    for sid, fo in gFollows:
+      if fo.turnId.len > 0 and not fo.turnAdvised and
+          fo.turnJudgments < MaxJudgmentsPerTurn:
+        cands.add(sid)
+    if cands.len == 0: break
+    evaluate(comp, cands[^1])
   gPending = false
 
 proc onSessionEvent(comp: Component, subject: string, data: string) =
-  if gTarget.len == 0: return
   var env: Envelope
   try:
     env = decode(data)
@@ -651,7 +713,9 @@ proc onSessionEvent(comp: Component, subject: string, data: string) =
     return
   if env.kind != ekEvent or env.payload == nil: return
   let p = env.payload
-  if p{"sessionId"}.getStr("") != gTarget: return
+  let sid = p{"sessionId"}.getStr("")
+  if sid.len == 0 or sid notin gFollows: return
+  var f = gFollows[sid]
   let suffix = if subject.len > "ev.session.".len:
                  subject.substr("ev.session.".len)
                else: ""
@@ -664,12 +728,14 @@ proc onSessionEvent(comp: Component, subject: string, data: string) =
       # does refresh the session-visible tool knowledge: an expert armed
       # BEFORE the session's first turn had no exposure to snapshot at
       # follow time and must rebuild once it exists.
-      resetFrame(p{"turnId"}.getStr(""), p{"content"}.getStr(""))
-      refreshKnowledge(comp)
+      resetFrame(f, p{"turnId"}.getStr(""), p{"content"}.getStr(""))
+      refreshKnowledge(comp, sid, f)
+      gFollows[sid] = f
     else:
       # turn done: drop everything — no advice may cross a turn boundary
-      clearFrame()
+      clearFrame(f)
       gPending = false
+      gFollows[sid] = f
   of "toolcall":
     # Start is the first real evidence of harness usage and provides a window
     # to advise while the tool runs. Completion enriches the same activity;
@@ -677,46 +743,51 @@ proc onSessionEvent(comp: Component, subject: string, data: string) =
     let phase = p{"phase"}.getStr("")
     let callId = p{"callId"}.getStr("")
     if phase == "start":
-      gActivities.add(Activity(callId: callId,
+      f.activities.add(Activity(callId: callId,
         tool: p{"tool"}.getStr(""),
         argsSummary: clip($p{"args"}, MaxField)))
-      if gActivities.len > MaxActivities:
-        gActivities.delete(0)
-      maybeEvaluate(comp)
+      if f.activities.len > MaxActivities:
+        f.activities.delete(0)
+      gFollows[sid] = f
+      maybeEvaluate(comp, sid)
     elif phase in ["", "done"]:
       var idx = -1
       if callId.len > 0:
-        for i in 0 ..< gActivities.len:
-          if gActivities[i].callId == callId:
+        for i in 0 ..< f.activities.len:
+          if f.activities[i].callId == callId:
             idx = i
       if idx < 0:
-        gActivities.add(Activity(callId: callId,
+        f.activities.add(Activity(callId: callId,
           tool: p{"tool"}.getStr(""),
           argsSummary: clip($p{"args"}, MaxField)))
-        idx = gActivities.high
-        if gActivities.len > MaxActivities:
-          gActivities.delete(0)
-          idx = gActivities.high
+        idx = f.activities.high
+        if f.activities.len > MaxActivities:
+          f.activities.delete(0)
+          idx = f.activities.high
       if p{"error"} != nil:
-        gActivities[idx].error = clip(p{"error"}.getStr(""), MaxField)
+        f.activities[idx].error = clip(p{"error"}.getStr(""), MaxField)
       elif p{"result"} != nil:
-        gActivities[idx].resultSummary = clip($p{"result"}, MaxField)
-      maybeEvaluate(comp)
+        f.activities[idx].resultSummary = clip($p{"result"}, MaxField)
+      gFollows[sid] = f
+      maybeEvaluate(comp, sid)
   of "assistant":
     # Keep the final text as evidence, but do not spend a judgment merely
     # because the agent spoke — completed tool activity is the useful trigger.
-    gAssistant = clip(p{"content"}.getStr(""), MaxField)
+    f.assistant = clip(p{"content"}.getStr(""), MaxField)
+    gFollows[sid] = f
   of "status", "context":
-    gUsedTokens = p{"usedTokens"}.getInt(gUsedTokens)
-    gCtxLimit = p{"context"}.getInt(gCtxLimit)
+    f.usedTokens = p{"usedTokens"}.getInt(f.usedTokens)
+    f.ctxLimit = p{"context"}.getInt(f.ctxLimit)
+    gFollows[sid] = f
     # Context pressure is the one non-tool event worth an intervention.
-    if suffix == "context" and gCtxLimit > 0 and
-        gUsedTokens * 5 >= gCtxLimit * 4:
-      maybeEvaluate(comp)
+    if suffix == "context" and f.ctxLimit > 0 and
+        f.usedTokens * 5 >= f.ctxLimit * 4:
+      maybeEvaluate(comp, sid)
   of "token":
     let r = p{"reasoning"}.getStr("")
     if r.len > 0:
-      gReasoningTail = clip(gReasoningTail & r, MaxReasoningTail)
+      f.reasoningTail = clip(f.reasoningTail & r, MaxReasoningTail)
+      gFollows[sid] = f
   else:
     discard
 
@@ -727,77 +798,118 @@ discard comp.tap("ev.session.>", onSessionEvent)
 comp.tool:
   proc expert_follow(session_id: string, model: string = "",
                      provider: string = ""): JsonNode =
-    ## Follow one working session (1:1). The expert watches its ev.session.*
+    ## Follow a working session (multi-target): every followed session keeps
+    ## its own observation frame, knowledge prefix and judgment budget, and
+    ## all of them are watched concurrently. The expert watches ev.session.*
     ## events into a bounded current-turn frame and asks an LLM judge whether
     ## to steer; high-confidence steers are delivered turn-bound (rejected
-    ## once the turn ends). Replaces any current target. Use when you want a
-    ## knowledgeable peer to keep this conversation on the correct Niffler
-    ## tool for the job — never for work the agent should do itself.
+    ## once the turn ends). Re-following a session resets its frame. Use when
+    ## you want a knowledgeable peer to keep this conversation on the correct
+    ## Niffler tool for the job — never for work the agent should do itself.
     ## - session_id: the conversation id to follow (conv-*)
     ## - model: optional model override for the judgment calls
     ## - provider: optional provider for the judgment calls (a NIF_LLM_PROVIDERS
     ##   nickname or stored provider) — keeps judge cost off the worker's model
     if session_id.len == 0:
       return %*{"error": "expert_follow needs session_id"}
-    gTarget = session_id
-    gModel = model
-    gProvider = provider
-    clearFrame()
-    gKnowledge = buildKnowledge(comp, session_id,
-                                sessionVisibleTools(comp, session_id))
+    var f = gFollows.getOrDefault(session_id)
+    f.model = model
+    f.provider = provider
+    clearFrame(f)
+    f.knowledge = buildKnowledge(comp, session_id, f,
+                                 sessionVisibleTools(comp, session_id))
+    gFollows[session_id] = f
     comp.log("info", "following session",
-             %*{"target": gTarget, "knowledgeVersion": gKnowledgeVersion,
-                "skills": gSkillsLoaded, "prefixChars": gPrefixChars,
-                "prefixBudgetTokens": gPrefixBudgetTokens})
-    %*{"ok": true, "target": gTarget,
-       "knowledgeVersion": gKnowledgeVersion}
+             %*{"target": session_id, "knowledgeVersion": f.knowledgeVersion,
+                "skills": f.skillsLoaded, "prefixChars": f.prefixChars,
+                "prefixBudgetTokens": f.prefixBudgetTokens,
+                "follows": gFollows.len})
+    %*{"ok": true, "target": session_id,
+       "knowledgeVersion": f.knowledgeVersion}
 
 comp.tools[^1].schema["x-harness"] =
   %*{"approval": "always", "onDemand": true}
 
 comp.tool:
-  proc expert_unfollow(): JsonNode =
-    ## Stop following and discard the observation frame. Pending judgments
-    ## are abandoned; nothing is delivered after this returns.
-    let was = gTarget
-    gTarget = ""
-    clearFrame()
-    comp.log("info", "unfollowed", %*{"target": was})
-    %*{"ok": true, "target": was}
+  proc expert_unfollow(session_id: string = ""): JsonNode =
+    ## Stop following and discard the observation frame(s). Pending judgments
+    ## are abandoned; nothing is delivered after this returns. With
+    ## session_id: drop that follow only; without: drop all follows.
+    var dropped: seq[string] = @[]
+    if session_id.len > 0:
+      if gFollows.hasKey(session_id):
+        dropped.add(session_id)
+        gFollows.del(session_id)
+    else:
+      for sid in gFollows.keys:
+        dropped.add(sid)
+      gFollows.clear()
+    comp.log("info", "unfollowed", %*{"targets": dropped})
+    %*{"ok": true, "targets": dropped}
 
 comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.tool:
   proc expert_reload(): JsonNode =
-    ## Rebuild the knowledge prefix — policy, reviewed skills and the
-    ## observed session's tool view — and start a new cache epoch. Use after
-    ## installing or removing components (or editing the bundled skills) so
-    ## advice can name current tools. Does not change the followed session.
-    gKnowledge = buildKnowledge(comp, gTarget,
-                                sessionVisibleTools(comp, gTarget))
-    %*{"ok": true, "knowledgeVersion": gKnowledgeVersion,
-       "liveTools": gLiveTools.len, "skills": gSkillsLoaded,
-       "prefixChars": gPrefixChars}
+    ## Rebuild the knowledge prefix of every followed session — policy,
+    ## reviewed skills and each session's own tool view — and start a new
+    ## cache epoch. Use after installing or removing components (or editing
+    ## the bundled skills) so advice can name current tools. Does not change
+    ## which sessions are followed.
+    let sids = toSeq(gFollows.keys)
+    var versions: seq[string] = @[]
+    for sid in sids:
+      var f = gFollows[sid]
+      f.knowledge = buildKnowledge(comp, sid, f,
+                                   sessionVisibleTools(comp, sid))
+      gFollows[sid] = f
+      versions.add(f.knowledgeVersion)
+    %*{"ok": true, "knowledgeVersions": versions,
+       "follows": gFollows.len}
 
 comp.tools[^1].schema["x-harness"] = %*{"onDemand": true}
 
 comp.tool:
-  proc expert_status(): JsonNode =
-    ## Report the advisory lane state: target, active turn, knowledge version,
-    ## inference state and bounded diagnostics counters. No transcript
-    ## content is included.
+  proc expert_status(session_id: string = ""): JsonNode =
+    ## Report the advisory lane state. With session_id: that follow's frame,
+    ## knowledge version and per-session counters. Without: the aggregate —
+    ## followed targets plus lifetime diagnostics. No transcript content is
+    ## included.
+    if session_id.len > 0:
+      if session_id notin gFollows:
+        return %*{"ok": false, "error": "not following " & session_id}
+      let f = gFollows[session_id]
+      return %*{"ok": true,
+         "target": session_id,
+         "follows": gFollows.len,
+         "turnId": f.turnId,
+         "model": f.model,
+         "provider": f.provider,
+         "evaluating": gEvaluating,
+         "pending": gPending,
+         "knowledgeVersion": f.knowledgeVersion,
+         "liveTools": f.liveTools.len,
+         "skills": f.skillsLoaded,
+         "prefixChars": f.prefixChars,
+         "prefixBudgetTokens": f.prefixBudgetTokens,
+         "judgments": f.judgments,
+         "silences": f.silences,
+         "steers": f.steers,
+         "accepted": f.accepted,
+         "rejected": f.rejected,
+         "staleDrops": f.staleDrops,
+         "errors": f.errors,
+         "tokens": {"prompt": f.tokPrompt,
+                    "cached": f.tokCached,
+                    "completion": f.tokCompletion}}
+    var targets: seq[string] = @[]
+    for sid in gFollows.keys:
+      targets.add(sid)
     %*{"ok": true,
-       "target": gTarget,
-       "turnId": gTurnId,
-       "model": gModel,
-       "provider": gProvider,
+       "targets": targets,
+       "follows": gFollows.len,
        "evaluating": gEvaluating,
        "pending": gPending,
-       "knowledgeVersion": gKnowledgeVersion,
-       "liveTools": gLiveTools.len,
-       "skills": gSkillsLoaded,
-       "prefixChars": gPrefixChars,
-       "prefixBudgetTokens": gPrefixBudgetTokens,
        "judgments": gJudgments,
        "silences": gSilences,
        "steers": gSteers,

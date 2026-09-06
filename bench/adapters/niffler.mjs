@@ -46,11 +46,17 @@ export class NifflerHarness {
     // the shared llm component can reach a second provider (e.g. Synthetic)
     // without touching the provider store; the worker keeps its own model.
     this.expertJudge = opts.expertJudge || null;
-    this.expertBaselines = new Map();
   }
 
   cliEnv() {
-    return { NIF_NATS_URL: `nats://127.0.0.1:${this.natsPort}`, NIF_ROOT: this.root };
+    // Inherit the parent env (keys, NIF_LLM_TIMEOUT_MS, proxies) and pin the
+    // private bus/root last so a stray NIF_NATS_URL in the shell can't
+    // redirect the bench harness.
+    return {
+      ...process.env,
+      NIF_NATS_URL: `nats://127.0.0.1:${this.natsPort}`,
+      NIF_ROOT: this.root,
+    };
   }
 
   async start() {
@@ -271,36 +277,31 @@ export class NifflerHarness {
     if (!follow.ok || follow.target !== sessionId) {
       throw new Error(`expert_follow did not target ${sessionId}: ${JSON.stringify(follow)}`);
     }
-    // Counters are component-lifetime totals, so snapshot after follow and
-    // subtract at task end. Follow itself performs no judgment.
-    const status = await this.callTool("expert_status", {}, 30_000);
-    this.expertBaselines.set(sessionId, status);
   }
 
   async expertMetricsSince(sessionId) {
     if (!this.expertEnabled) return null;
+    // Per-session counters (expert_status with session_id) — exact, no
+    // baseline subtraction, immune to concurrent cells of the same combo.
     // A status request queued behind an in-flight judgment can take as long
     // as the expert's chat timeout; waiting also makes token accounting final.
-    const status = await this.callTool("expert_status", {}, 150_000);
-    const base = this.expertBaselines.get(sessionId) || {};
-    const delta = (key) => Math.max(0, (status[key] || 0) - (base[key] || 0));
-    const tokenDelta = (key) =>
-      Math.max(0, (status.tokens?.[key] || 0) - (base.tokens?.[key] || 0));
+    const status = await this.callTool("expert_status", { session_id: sessionId }, 150_000);
+    if (!status || status.ok === false) return null;
     return {
-      active: status.target === sessionId && delta("judgments") > 0,
+      active: (status.judgments || 0) > 0,
       target: status.target || "",
       knowledgeVersion: status.knowledgeVersion || "",
-      judgments: delta("judgments"),
-      silences: delta("silences"),
-      steers: delta("steers"),
-      accepted: delta("accepted"),
-      rejected: delta("rejected"),
-      staleDrops: delta("staleDrops"),
-      errors: delta("errors"),
+      judgments: status.judgments || 0,
+      silences: status.silences || 0,
+      steers: status.steers || 0,
+      accepted: status.accepted || 0,
+      rejected: status.rejected || 0,
+      staleDrops: status.staleDrops || 0,
+      errors: status.errors || 0,
       tokens: {
-        prompt: tokenDelta("prompt"),
-        cached: tokenDelta("cached"),
-        completion: tokenDelta("completion"),
+        prompt: status.tokens?.prompt || 0,
+        cached: status.tokens?.cached || 0,
+        completion: status.tokens?.completion || 0,
       },
     };
   }
@@ -328,6 +329,12 @@ export class NifflerHarness {
 
   // Sum token usage over the conversation transcript in the store.
   async usageFromTranscript(sessionId, items = null) {
+    // $/MTok per model, same table as bench/adapters/pi.mjs — niffler cells
+    // otherwise report cost 0 in reports while pi/opencode price the same
+    // traffic.
+    const PRICE = {
+      "deepseek-v4-flash": { input: 0.283, output: 1.14, cacheRead: 0.028 },
+    };
     const usage = zeroUsage();
     if (!items) items = await this.transcript(sessionId);
     for (const it of items) {
@@ -347,7 +354,14 @@ export class NifflerHarness {
       usage.input += prompt - cached;
       usage.output += v.usage.completion_tokens || 0;
       usage.cacheRead += cached;
-      usage.cost += 0; // pricing not configured for bench gateways
+      const price = PRICE[this.model] || null;
+      if (price) {
+        usage.cost +=
+          ((prompt - cached) * price.input +
+            (v.usage.completion_tokens || 0) * price.output +
+            cached * price.cacheRead) /
+          1_000_000;
+      }
     }
     return usage;
   }
