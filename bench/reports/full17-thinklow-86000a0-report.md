@@ -29,7 +29,7 @@
 | deepseek-v4-flash | niffler | t08-logsum | pass | 34 | 1 | 66.2k | 3.9k | 4.9k | 57.5k/0 | 0.0000 | 70/3 | - |
 | deepseek-v4-flash | niffler | t09-poolrace | pass | 14.7 | 1 | 19.0k | 1.7k | 653 | 16.6k/0 | 0.0000 | 4/1 | - |
 | deepseek-v4-flash | niffler | t10-iniparse | pass | 25.9 | 1 | 28.7k | 2.3k | 1.6k | 24.8k/0 | 0.0000 | 6/5 | - |
-| deepseek-v4-flash | niffler | t11-asyncbugs | error | 1.3 | 1 | 104.2k | 9.2k | 3.8k | 91.1k/0 | 0.0095 | 0/0 | - |
+| deepseek-v4-flash | niffler | t11-asyncbugs | pass | 10.5 | 1 | 175.5k | 11.6k | 5.0k | 159.0k/0 | 0.0134 | 5/10 | - |
 | deepseek-v4-flash | niffler | t12-refactor | pass | 8.5 | 1 | 46.6k | 4.8k | 1.8k | 39.9k/0 | 0.0000 | 2/4 | - |
 | deepseek-v4-flash | niffler | t13-batchrename | pass | 9.3 | 1 | 28.0k | 4.3k | 556 | 23.2k/0 | 0.0000 | 27/27 | - |
 | deepseek-v4-flash | niffler | t14-todosweep | pass | 23.3 | 1 | 40.7k | 3.3k | 2.5k | 34.9k/0 | 0.0000 | 18/0 | - |
@@ -144,7 +144,7 @@
 | model | harness | pass rate | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | avg diff (+/-) |
 |---|---|---|---:|---:|---:|---:|---:|---|
 | deepseek-v4-flash | codewhale | 17/17 | 19 | 105.5k | 55.4k | 48.4k | 1.7k | 23/4 |
-| deepseek-v4-flash | niffler | 16/17 | 18 | 41.7k | 3.6k | 35.7k | 2.3k | 30/7 |
+| deepseek-v4-flash | niffler | 17/17 | 19 | 45.9k | 3.8k | 39.7k | 2.4k | 30/7 |
 | deepseek-v4-flash | niffler-expert | 17/17 | 20 | 46.1k | 6.3k | 37.6k | 2.2k | 28/6 |
 | deepseek-v4-flash | opencode | 17/17 | 27 | 123.2k | 17.4k | 104.7k | 1.1k | 27/6 |
 | glm-5.3-flash | codewhale | 17/17 | 68 | 60.9k | 35.1k | 24.3k | 1.5k | 26/6 |

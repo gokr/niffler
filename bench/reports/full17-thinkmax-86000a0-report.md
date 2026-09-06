@@ -109,7 +109,7 @@
 | glm-5.3-flash | niffler-expert | t03-ringbuffer | pass | 68.5 | 1 | 32.7k | 25.8k | 887 | 6.0k/0 | 0.0000 | 17/4 | 2/0/0 |
 | glm-5.3-flash | niffler-expert | t04-csvbugfix | pass | 69.7 | 1 | 38.4k | 25.4k | 828 | 12.2k/0 | 0.0000 | 3/3 | 2/0/0 |
 | glm-5.3-flash | niffler-expert | t05-todostore | pass | 181.7 | 1 | 43.3k | 35.0k | 2.3k | 6.0k/0 | 0.0000 | 16/4 | 1/1/1 |
-| glm-5.3-flash | niffler-expert | t06-stackvm | timeout | 35100.8 | 1 | 18.9k | 12.7k | 160 | 6.0k/0 | 0.0000 | 0/0 | 2/0/0 |
+| glm-5.3-flash | niffler-expert | t06-stackvm | pass | 126.1 | 1 | 286.4k | 80.4k | 16.8k | 189.2k/0 | 0.0000 | 159/54 | 2/0/0 |
 | glm-5.3-flash | niffler-expert | t07-validate | pass | 32185.7 | 1 | 129.1k | 21.1k | 6.1k | 101.9k/0 | 0.0000 | 7/11 | 2/0/0 |
 | glm-5.3-flash | niffler-expert | t08-logsum | pass | 254.1 | 1 | 55.9k | 19.5k | 2.5k | 34.0k/0 | 0.0000 | 82/5 | 2/0/0 |
 | glm-5.3-flash | niffler-expert | t09-poolrace | pass | 56.1 | 1 | 44.1k | 9.7k | 1.5k | 33.0k/0 | 0.0000 | 9/2 | 2/0/0 |
@@ -122,11 +122,11 @@
 | glm-5.3-flash | niffler-expert | t16-apisum | pass | 798.4 | 1 | 899.9k | 69.6k | 21.3k | 809.0k/0 | 0.0000 | 20/0 | 1/1/1 |
 | glm-5.3-flash | niffler-expert | t17-doccheck | pass | 167.2 | 1 | 62.8k | 23.0k | 3.4k | 36.4k/0 | 0.0000 | 112/0 | 2/0/0 |
 | glm-5.3-flash | opencode | t01-roman | pass | 175.1 | 1 | 80.7k | 44.5k | 386 | 35.8k/0 | 0.0040 | 13/1 | - |
-| glm-5.3-flash | opencode | t02-jsonrepair | timeout | 1810.3 | 1 | 0 | 0 | 0 | 0/0 | 0.0000 | 0/0 | - |
+| glm-5.3-flash | opencode | t02-jsonrepair | pass | 2483 | 2 | 767.4k | 211.9k | 17.9k | 537.6k/0 | 0.0482 | 84/1 | - |
 | glm-5.3-flash | opencode | t03-ringbuffer | pass | 59 | 1 | 86.7k | 33.0k | 739 | 52.9k/0 | 0.0035 | 16/4 | - |
 | glm-5.3-flash | opencode | t04-csvbugfix | pass | 80.6 | 1 | 82.7k | 42.0k | 384 | 40.3k/0 | 0.0039 | 3/3 | - |
 | glm-5.3-flash | opencode | t05-todostore | pass | 102.7 | 1 | 101.7k | 42.8k | 647 | 58.2k/0 | 0.0044 | 17/4 | - |
-| glm-5.3-flash | opencode | t06-stackvm | timeout | 1810.4 | 1 | 0 | 0 | 0 | 0/0 | 0.0000 | 0/0 | - |
+| glm-5.3-flash | opencode | t06-stackvm | pass | 649 | 1 | 217.8k | 73.2k | 5.7k | 138.9k/0 | 0.0148 | 123/41 | - |
 | glm-5.3-flash | opencode | t07-validate | pass | 103.4 | 1 | 108.3k | 35.0k | 751 | 72.5k/0 | 0.0044 | 12/8 | - |
 | glm-5.3-flash | opencode | t08-logsum | pass | 88.6 | 1 | 92.8k | 27.1k | 997 | 64.7k/0 | 0.0047 | 51/2 | - |
 | glm-5.3-flash | opencode | t09-poolrace | pass | 62.6 | 1 | 87.7k | 13.7k | 667 | 73.3k/0 | 0.0032 | 8/1 | - |
@@ -149,7 +149,7 @@
 | deepseek-v4-flash | opencode | 17/17 | 41 | 156.5k | 17.8k | 137.5k | 1.2k | 28/7 |
 | glm-5.3-flash | codewhale | 17/17 | 109 | 55.8k | 33.8k | 20.3k | 1.7k | 37/6 |
 | glm-5.3-flash | niffler | 17/17 | 96 | 32.3k | 15.2k | 14.9k | 2.2k | 34/6 |
-| glm-5.3-flash | niffler-expert | 16/17 | 4105 | 129.6k | 21.3k | 104.9k | 3.5k | 25/4 |
-| glm-5.3-flash | opencode | 15/17 | 287 | 92.9k | 22.4k | 69.8k | 617 | 19/4 |
+| glm-5.3-flash | niffler-expert | 17/17 | 2047 | 145.3k | 25.3k | 115.6k | 4.4k | 34/7 |
+| glm-5.3-flash | opencode | 17/17 | 258 | 150.8k | 39.2k | 109.6k | 2.0k | 31/6 |
 
 *`invalid*` = tests pass but protected files (tests) were modified.*
