@@ -38,7 +38,10 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tool) and `niffler-fabric` (program construction). `niffler-tools` gains
   an execution-contexts section (main session vs `agent_run` vs fabric
   guest), a per-conversation toolset reminder, and the model-catalog-
-  as-authority pointer.
+  as-authority pointer. The expert advisory peer embeds it in the judge
+  prefix — `SkillAllowlist` now carries all three bundled skills
+  (`niffler-tools`, `niffler-fabric`, `niffler-harness`) and `t_expert`
+  asserts the full set loads.
 
 - **NATS server as a first-class Go component** — `components/nats`
   rebuilds the official nats-server (v2.14.6, in-process server library,
