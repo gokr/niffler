@@ -24,6 +24,10 @@ bench/
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
   reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)
+  deepswe/             # DeepSWE (Datacurve) port — 113 original long-horizon
+                       # tasks, 5 languages (see deepswe/README.md)
+  container/           # niffler-bench Docker job image + compose (builds
+                       # Niffler at NIFFLER_REF per run; see container/README.md)
 var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wipes it)
 ```
 
@@ -61,6 +65,19 @@ all are red at `base` and verified green with a reference solution. The same
 prompt text (with the repo path substituted) goes to every harness.
 
 ## Running
+
+Interactive launcher (asks: target localhost/wowbagger, harnesses, model,
+thinking profile, benchmark + tasks, rounds/jobs; every prompt has a default
+and every answer can be passed as a flag instead — `--dry-run` prints the
+command only):
+
+```bash
+node bench/launch.mjs                                   # guided
+node bench/launch.mjs --dry-run --harness niffler,pi \
+  --model glm-5.3-flash --thinking max --bench deepswe-pilot
+```
+
+Direct orchestrator:
 
 ```bash
 # single combo
@@ -207,4 +224,15 @@ See `swe/README.md` for the active 10-task SymPy pilot. `uv` installs the
 pinned official SWE-bench 4.1 harness, `prepare.mjs` creates base-only checkouts
 under `var/`, and official Docker images apply `test_patch` only at verification
 time. `run.mjs --task-root var/bench/swe/tasks --rounds 1` runs canonical
-one-shot submissions across Niffler, Pi, and OpenCode.
+one-shot submissions across Niffler, Pi, and OpenCode. The importer downloads
+all 500 rows; omit `--repos`/`--limit` to benchmark the full set.
+
+## DeepSWE (Datacurve)
+
+See `deepswe/README.md`. 113 original long-horizon tasks (TS/Python/Go/Rust/JS)
+from datacurve-ai/deep-swe, graded by Datacurve's own verifier inside Docker;
+verified end-to-end on `etree-xml-diff-patch` (trivial patch unresolved, gold
+patch resolved). Same task-root protocol: `--task-root var/bench/deepswe/tasks
+--rounds 1`, with larger timeouts (--turn-timeout-min 185 --task-timeout-min
+200 --test-timeout-sec 2000). Runs remotely via the niffler-bench container
+(`container/README.md`) — see also bench/container/README.md.

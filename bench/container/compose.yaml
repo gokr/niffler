@@ -1,0 +1,51 @@
+# niffler-bench job runner. The image holds toolchains only; the entrypoint
+# clones Niffler at NIFFLER_REF (tag/branch/SHA, default main), builds it into
+# a cached volume, and execs the command from that checkout. Rebuild the image
+# only when toolchains or harness CLIs change.
+#
+# Laptop/dev (from a niffler checkout):
+#   docker build -t niffler-bench:latest bench/container
+#   NIFFLER_REF=main docker compose -f bench/container/compose.yaml run --rm bench \
+#     node bench/run.mjs --task-root var/bench/deepswe/tasks-pilot --task all \
+#       --harness niffler,pi,opencode --model deepseek-v4-flash --rounds 1 --jobs 2 \
+#       --turn-timeout-min 185 --task-timeout-min 200 --test-timeout-sec 2000 \
+#       --run-id deepswe-pilot-<ref>
+#
+# Server (wowbagger): ssh in, clone this repo, put keys in .env, build once,
+# then trigger jobs with NIFFLER_REF=<tag>. Results land in the host checkout's
+# var/bench/results (bind mount), images/verifiers on the host docker daemon
+# (socket mount). See bench/container/README.md.
+name: niffler-bench
+
+services:
+  bench:
+    image: niffler-bench:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    environment:
+      NIFFLER_REF: ${NIFFLER_REF:-main}
+      NIFFLER_REPO_URL: ${NIFFLER_REPO_URL:-https://github.com/gokr/niffler.git}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Keys pass through; the repo's .env (gitignored) is also loaded below.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LLMGATEWAY_API_KEY: ${LLMGATEWAY_API_KEY:-}
+      SYNTHETIC_API_KEY: ${SYNTHETIC_API_KEY:-}
+      # Gated tools must not deny with no human reachable in a headless job.
+      NIF_AUTO_APPROVE: "1"
+    env_file:
+      - path: ../../.env
+        required: false
+    volumes:
+      # Verification (swe/deepswe) drives the HOST docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Toolchain + build + cards cache (persisted across jobs/refs).
+      - bench-cache:/cache
+      # Neutral data mounts, symlinked into the checkout by the entrypoint.
+      - ../../var/bench/results:/data/results
+      - ../../var/bench/deepswe:/data/deepswe
+      - ../../var/bench/swe:/data/swe
+
+volumes:
+  bench-cache:

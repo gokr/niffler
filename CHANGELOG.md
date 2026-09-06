@@ -721,6 +721,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `llm`'s chat ceiling (default 5 min) for slow reasoning models; a single
   GLM thinking=max completion can legitimately exceed it. Bench harnesses
   inherit it to the private bus.
+- **DeepSWE benchmark port, niffler-bench container, interactive launcher
+  (bench/)** — `bench/deepswe/` ports Datacurve's deep-swe: 113 original
+  long-horizon tasks across TS/Python/Go/Rust/JS, imported with
+  `import.mjs`, prepared into task-root layout with `prepare.mjs`, and
+  graded by Datacurve's own verifier inside Docker (`verify.mjs`);
+  verified end-to-end on `etree-xml-diff-patch` (trivial patch unresolved,
+  gold patch resolved). `bench/container/` builds the niffler-bench job
+  image + compose (builds Niffler at `NIFFLER_REF` per run) so lanes run
+  on a remote host. `bench/launch.mjs` is a guided front-end for `run.mjs`
+  (target/harness/model/thinking/benchmark prompts, flag-equivalent,
+  `--dry-run`). `bench/README.md` documents all three.
 
 ### Changed
 
