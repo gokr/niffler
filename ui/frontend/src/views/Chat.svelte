@@ -82,6 +82,11 @@
 
   let input = $state("");
   let scrollEl: HTMLDivElement | undefined = $state();
+  // Autoscroll policy: follow the stream only while the user is at (or near)
+  // the bottom — scrolling up pauses the follow so wheel scrolling is not
+  // fought by token deltas; sending re-engages it.
+  let followBottom = true;
+  let scrollQueued = false;
   // Bash-style command history: ArrowUp/ArrowDown walk past submissions,
   // editing without navigating keeps the draft safe for ArrowDown to return.
   let history = $state<string[]>([]);
@@ -379,6 +384,7 @@
   async function sendMsg() {
     const text = input.trim();
     if (!text) return;
+    followBottom = true; // you sent it — follow the reply
 
     // A slash command line is local — never sent to the model, never
     // recorded in sent-message history or the transcript.
@@ -513,8 +519,28 @@
     scroll();
   }
 
+  function onScroll() {
+    // Re-evaluate the follow gate on any scroll (wheel, drag, programmatic).
+    // A programmatic jump to the bottom lands within the threshold, so an
+    // engaged follow stays engaged.
+    const el = scrollEl;
+    if (el) followBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }
+
   function scroll() {
-    tick().then(() => scrollEl?.scrollTo({ top: scrollEl.scrollHeight }));
+    // Coalesce token-delta bursts into at most one layout+scroll per frame,
+    // and skip entirely when the user has scrolled away. The previous
+    // tick().then(scrollTo) per delta forced a layout per token and yanked
+    // the viewport back down mid-scroll.
+    if (scrollQueued) return;
+    scrollQueued = true;
+    tick().then(() =>
+      requestAnimationFrame(() => {
+        scrollQueued = false;
+        const el = scrollEl;
+        if (el && followBottom) el.scrollTo({ top: el.scrollHeight });
+      })
+    );
   }
 
   // Live LLM deltas (ev.session.token): append to the current round's
@@ -571,6 +597,7 @@
       }
       l.messages = stored;
       l.liveIdx = null;
+      followBottom = true; // fresh conversation view starts pinned to the bottom
       scroll();
     } catch {
       /* store unavailable — start empty */
@@ -664,7 +691,11 @@
 </script>
 
 <div class="flex-1 flex flex-col min-h-0">
-  <div bind:this={scrollEl} class="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
+  <div
+    bind:this={scrollEl}
+    onscroll={onScroll}
+    class="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3"
+  >
     {#each groups as g (g.key)}
       {#if g.kind === "run"}
         <ToolRun items={g.items} />
