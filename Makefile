@@ -444,9 +444,12 @@ doctor:
 	@if pkg-config --exists libnats liblz4 libpcre 2>/dev/null; then \
 		echo "  NATS C + LZ4 + PCRE development libraries: OK"; \
 	else echo "  NATS C/LZ4/PCRE: MISSING — run 'make install-native-deps'"; fi
-	@if nimble path yaml htmlparser checksums natswrapper bitbarrel >/dev/null 2>&1; then \
-		echo "  Nim packages: OK"; \
-	else echo "  Nim packages: MISSING — run 'make install-nim-deps'"; fi
+	@missing=""; for pkg in yaml htmlparser checksums natswrapper bitbarrel; do \
+		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
+		[ -d "$$p" ] || missing="$$missing $$pkg"; \
+	done; \
+	if [ -z "$$missing" ]; then echo "  Nim packages: OK"; \
+	else echo "  Nim packages MISSING:$$missing — run 'make install-nim-deps'"; fi
 	$(call check_tool,go,install-go)
 	@if [ -x var/bin/nats-server ] || command -v nats-server >/dev/null 2>&1; then \
 		echo "  nats-server: OK"; \
@@ -508,6 +511,18 @@ install-nim:
 install-nim-deps:
 	@bash scripts/check-nim-toolchain.sh
 	nimble install -y --depsOnly
+	@# nimble can exit 0 even when a dependency's own build failed (observed
+	@# with futhark's opir linking without libclang) and 'nimble path' also
+	@# exits 0 for missing packages — verify each one actually landed.
+	@for pkg in yaml htmlparser checksums natswrapper bitbarrel; do \
+		p=$$(nimble path $$pkg 2>/dev/null | tail -1); \
+		if [ ! -d "$$p" ]; then \
+			echo "nimble: package '$$pkg' did not install — rerun after 'make install-native-deps' (libclang etc.)"; \
+			exit 1; \
+		fi; \
+	done
+	@command -v opir >/dev/null || \
+		{ echo "nimble: futhark's opir is not on PATH — is libclang-dev installed? (run 'make install-native-deps')"; exit 1; }
 
 install-nats:
 	@echo "nats-server: built from source by 'make build' (components/nats) — nothing to install"
