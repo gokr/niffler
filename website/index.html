@@ -74,7 +74,7 @@
       <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
         <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="763">
       </a>
-      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — it attaches to an already-running harness)</span></figcaption>
+      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — the installed niffler-tui wrapper boots the harness on demand)</span></figcaption>
     </figure>
   </div>
   <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-ui</code> and <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
@@ -90,7 +90,7 @@
     <div class="term-body">
       <p><span class="p">$</span> make && ui/build/bin/niffler-ui</p>
       <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
-      <p class="dim" data-i18n="term.l1">→ spawning nats-server on 127.0.0.1:4222</p>
+      <p class="dim" data-i18n="term.l1">→ home bus: claimed nats://127.0.0.1:4222 · root ~/niffler @ 8094748</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
       <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, fetch, models, provider, llm, grep, edit, git, observe, logfile, agent, expert, fabric</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
@@ -249,11 +249,13 @@
         <p><span class="p">$</span> <span data-i18n="qs.clone">git clone git@github.com:gokr/niffler.git && cd niffler</span></p>
         <p><span class="p">$</span> make setup        <span class="dim" data-i18n="qs.setup"># prerequisites (Ubuntu / macOS)</span></p>
         <p><span class="p">$</span> make              <span class="dim" data-i18n="qs.make"># build core + components + desktop UI, once</span></p>
+        <p><span class="p">$</span> make install      <span class="dim" data-i18n="qs.install"># niffler / niffler-cli / niffler-console on PATH (+ niffler-tui on request)</span></p>
+        <p><span class="p">$</span> niffler-tui        <span class="dim" data-i18n="qs.tui"># terminal chat — boots the harness on demand if none runs</span></p>
         <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># the desktop UI — autostarts the harness</span></p>
         <p><span class="p">$</span> make ui-install    <span class="dim" data-i18n="qs.uiinstall"># optional: puts niffler-ui on PATH + launcher/app icon (Linux)</span></p>
         <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — one test per component + smoke + go tests</span></p>
         <p class="dim">│</p>
-        <p class="dim" data-i18n="qs.see">└─ make run / recover / down / dev · see docs/MANUAL.md</p>
+        <p class="dim" data-i18n="qs.see">└─ make run / recover / down / uninstall / dev · see docs/MANUAL.md</p>
       </div>
     </div>
     <div class="qs-side">
@@ -267,6 +269,8 @@
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
       <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, natswrapper, bitbarrel — installed automatically on first build.</p>
+      <h3 data-i18n="qs.clonehome.h">one clone = one instance</h3>
+      <p class="dim small" data-i18n-html="qs.clonehome.p">a harness claims its home bus (<code>.env</code>'s <code>NIF_NATS_URL</code>, default <code>nats://127.0.0.1:4222</code>) only when the answering core serves this root — every catalog response carries <code>root</code> + <code>gitHash</code> — and yields loudly to a foreign one. Dev clones set <code>NIF_NATS_SPAWN=1</code> for an isolated random-port bus, and no child (component, nats-server) outlives its harness.</p>
     </div>
   </div>
 </section>

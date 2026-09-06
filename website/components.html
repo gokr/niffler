@@ -136,6 +136,8 @@
       <li><span class="check">✓</span> <span data-i18n-html="status.l53">bundled bus server — <code>make build</code> compiles the official nats-server into <code>var/bin/nats-server</code>; core prefers it over a PATH install</span></li>
       <li><span class="check">✓</span> <span data-i18n="status.l54">bundled skills niffler-tools + niffler-harness — which tool to reach for, and how to operate the running harness</span></li>
       <li><span class="check">✓</span> <span data-i18n-html="status.l55">authoritative cli installs — <code>cli install</code> confirms registrations against core's accepted catalog, not raw registration announcements</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l56">one clone = one instance — the home bus is claimed only for this root (the catalog carries <code>root</code> + <code>gitHash</code>), yielded loudly to a foreign core; <code>NIF_NATS_SPAWN=1</code> forces an isolated bus; parent-death cleanup so no child outlives its harness</span></li>
+      <li><span class="check">✓</span> <span data-i18n-html="status.l57"><code>make install</code> / <code>make uninstall</code> — niffler, niffler-cli, niffler-console on PATH (+ the niffler-tui wrapper on request, <code>WITH_TUI=1</code>); only niffler-prefixed names, never component binaries, so PATH cannot shadow unix tools</span></li>
     </ul>
     <ul class="todo">
       <li><span class="todo-x">✗</span> <span data-i18n="status.t1">Level 1 UI dynamism (x-ui schema hints)</span></li>
