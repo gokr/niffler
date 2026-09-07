@@ -7,12 +7,14 @@
     "dev": "vite",
     "dev:wails": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tailwindcss/vite": "^4.1.5",
     "svelte": "^5.28.2",
+    "svelte-check": "^4.7.6",
     "tailwindcss": "^4.1.5",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"

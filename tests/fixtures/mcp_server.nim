@@ -32,6 +32,10 @@ var tools = @[
     schema: %*{"type": "object", "properties": %*{}}),
   FixtureTool(name: "mutate_tools", description: "Change the tool listing and notify",
     schema: %*{"type": "object", "properties": %*{}}),
+  FixtureTool(name: "slow", description: "Sleeps ms then echoes",
+    schema: %*{"type": "object",
+               "properties": %*{"ms": %*{"type": "integer", "description": "Sleep duration"}},
+               "required": %*["ms"]}),
 ]
 
 proc toolJson(t: FixtureTool): JsonNode =
@@ -140,6 +144,13 @@ proc main() =
                 "params": %*{}}, stdout)
         reply(stdout, id, %*{
           "content": %*[{"type": "text", "text": "mutated"}],
+          "isError": false,
+        })
+      of "slow":
+        let ms = msg{"params"}{"arguments"}{"ms"}.getInt(0)
+        sleep(ms.clamp(0, 60_000))
+        reply(stdout, id, %*{
+          "content": %*[{"type": "text", "text": "slept " & $ms}],
           "isError": false,
         })
       else:

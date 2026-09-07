@@ -198,7 +198,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     # Persisted in the component record so boot restore relaunches the same
     # instances; every replica of a name shares the same argv.
     var spawnArgs: seq[string]
-    if args{"args"} != nil and args{"args"}.kind == JArray:
+    if args{"args"} != nil:
+      if args{"args"}.kind != JArray:
+        return %*{"error": "spawn args must be an array of strings"}
       for a in args{"args"}:
         if a.kind != JString:
           return %*{"error": "spawn args must be strings"}

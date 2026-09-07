@@ -4,7 +4,7 @@
 ## removal. The fixture MCP server (tests/fixtures/mcp_server.nim) is a
 ## dependency-free stdio MCP implementation compiled into the sandbox.
 
-import std/[json, os, osproc, streams, strutils, times]
+import std/[json, os, osproc, streams, strtabs, strutils, times]
 import natswrapper
 import helpers
 
@@ -88,7 +88,7 @@ proc startMockRegistry(repoRoot, root: string): (Process, int) =
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  for binary in ["niffler", "session", "store", "mcp", "mcp-bridge"]:
+  for binary in ["niffler", "session", "store", "mcp", "mcp-bridge", "cli"]:
     if not fileExists(repoRoot / "var" / "bin" / binary):
       fail("missing " & binary & " binary — run `make build` first")
   if failures > 0:
@@ -134,7 +134,7 @@ proc main() =
   }, 60_000)
   check("mcp_add ok", added{"ok"}.getBool(false), $added)
   check("mcp_add found the fixture tools",
-        added{"toolCount"}.getInt(0) == 3, $added)
+        added{"toolCount"}.getInt(0) == 4, $added)
 
   check("bridge registered as mcp-fixture", waitForRegistration(nc, "mcp-fixture"))
 
@@ -164,6 +164,33 @@ proc main() =
                     %*{"tool": "mcp_fixture_fail", "arguments": {}}, 30_000)
   check("MCP tool errors surface as errors",
         failed{"error"}.getStr("").contains("boom"), $failed)
+
+  # --- cancellation: cancel.mcp-fixture aborts the in-flight MCP call -------
+  # The slow tool sleeps 8s. cli routes tool calls verbatim to
+  # svc.<comp>.call, so __session reaches the bridge exactly as published —
+  # core overwrites it on the core-dispatch path (x-harness.sessionId owns
+  # that key), which is what keeps unattributed callers from spoofing a
+  # session. The cancel event carries the same sessionId the runner injects.
+  let cliBin = repoRoot / "var" / "bin" / "cli"
+  let slowArgs = "mcp_fixture_slow {\"ms\":8000,\"__session\":{\"session\":\"cancel-probe\"}}"
+  var cliEnv = newStringTable()
+  cliEnv["NIF_NATS_URL"] = url
+  cliEnv["NIF_ROOT"] = root
+  cliEnv["PATH"] = getEnv("PATH")
+  let slowCall = startProcess(cliBin, args = @["call"] & slowArgs.split(' ', maxsplit = 1),
+                              env = cliEnv, options = {poStdErrToStdOut, poUsePath})
+  sleep(1200)  # the MCP call is now sleeping inside the bridge
+  let cancelStart = epochTime()
+  nc.publish("cancel.mcp-fixture",
+    "{\"v\":1,\"id\":\"cancel-probe\",\"kind\":\"event\",\"payload\":" &
+    $(%*{"sessionId": "cancel-probe", "tool": "mcp_fixture_slow", "ts": epochTime()}) & "}")
+  discard slowCall.waitForExit(10_000)
+  let slowOutput = slowCall.outputStream.readAll()
+  let slowDuration = epochTime() - cancelStart
+  check("cancel event aborts the in-flight MCP tool call",
+        slowDuration < 6.0 and slowOutput.contains("context canceled"),
+        "took " & $slowDuration & "s: " & slowOutput[0 ..< min(slowOutput.len, 300)])
+  slowCall.close()
 
   # --- resources: list + read through the bridge ---------------------------
   let listed = call(nc, "core", "invoke",
@@ -267,6 +294,39 @@ proc main() =
   check("bridge left the catalog", waitForNoComponent(nc, "mcp-fixture"))
   let gone = call(nc, "store", "get", %*{"kind": "mcp", "id": "fixture"}, 5_000)
   check("record deleted", gone{"error"}.getStr("").len > 0, $gone)
+
+  # --- stdio guard: no orphaned MCP servers, ever ---------------------------
+  # A dedicated fixture copy runs under its own guard; SIGKILLing the guard
+  # must reap the server via the kernel's PDEATHSIG (not just cooperative
+  # cleanup), because a SIGKILLed process runs no handlers.
+  let guardFixture = root / "var" / "guard-fixture"
+  copyFileWithPermissions(fixtureBin, guardFixture)
+  let fifo = root / "var" / "guard-fifo"
+  discard execCmdEx("mkfifo " & quoteShell(fifo))
+  let guardCmd = "exec 3<> " & quoteShell(fifo) & "; exec " &
+                 quoteShell(sandbox.sandboxBin("mcp-bridge")) &
+                 " --stdio-guard " & quoteShell(guardFixture)
+  let guardProc = startProcess("/bin/bash", args = ["-c", guardCmd],
+                               options = {poStdErrToStdOut, poUsePath})
+  defer: stopProcess(guardProc, 500)
+  var guardUp = false
+  for i in 0 ..< 100:
+    let (outp, code) = execCmdEx("pgrep -x guard-fixture")
+    if code == 0 and outp.len > 0:
+      guardUp = true
+      break
+    sleep(100)
+  check("guard launched the MCP server subprocess", guardUp)
+  # SIGKILL the guard (exec'd bash pid == bridge pid).
+  discard execCmdEx("kill -9 " & $guardProc.processID)
+  var guardReaped = false
+  for i in 0 ..< 50:
+    let (outp, code) = execCmdEx("pgrep -x guard-fixture")
+    if code != 0 or outp.len == 0:
+      guardReaped = true
+      break
+    sleep(100)
+  check("SIGKILLed guard leaves no orphaned MCP server", guardReaped)
 
   # --- adding a broken server fails cleanly ---------------------------------
   let badAdd = call(nc, "mcp", "mcp_add", %*{

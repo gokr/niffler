@@ -482,17 +482,23 @@ Open work — deferred follow-ups and quests — is consolidated in
       HTTP / SSE). Server tools become ordinary catalog tools
       (`mcp_<server>_<tool>`, on-demand by default) reachable through
       `discover` + `invoke` with normal approval/timeout semantics; sessions
-      are lazy (subprocess/HTTP connects on first call, idles out), and
-      server-pushed tool-contract drift persists + restarts the bridge so
-      discovery stays truthful. `core.spawn` learned optional persisted
-      `args` (restored on boot); the Go SDK learned deferred announce
-      (`DeferAnnounce`/`Announce`) for components that must load config
-      before declaring a contract. Server prompts become hidden tools +
-      slash commands (`mcp-<server>-<prompt>`), resources surface as one
-      read-effect `mcp_<server>_resources` tool (list/read, 64 KB text cap),
-      and `mcp_search` browses the official MCP Registry with a suggested
-      `mcp_add` config for npm/PyPI-packaged entries. Fixture-server + mock
-      registry bus test in `t_mcp`
+      are lazy (subprocess/HTTP connects on first call, idles out) and
+      sandboxed (stdio guard process-group reaping, env allowlist,
+      same-origin header injection), `cancel.mcp-<server>` aborts in-flight
+      MCP calls, and server-pushed tool-contract drift persists + restarts
+      the bridge so discovery stays truthful. `core.spawn` learned optional
+      persisted `args` (restored on boot); the Go SDK learned deferred
+      announce (`DeferAnnounce`/`Announce`, frozen contract after ready) for
+      components that must load config before declaring a contract. Server
+      prompts become hidden tools + slash commands
+      (`mcp-<server>-<prompt>`, rendered text re-enters the conversation as
+      a user message), resources surface as one read-effect
+      `mcp_<server>_resources` tool (list/read, 64 KiB inline cap with
+      spill-to-file for bigger results), and `mcp_search` browses the
+      official MCP Registry with a version-pinned, installability-gated
+      suggested `mcp_add` config for npm/PyPI-packaged entries. Fixture-server
+      + mock registry bus test in `t_mcp` (incl. cancellation and guard
+      orphan regressions), Go unit tests under `-race` in `make gotest`
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;

@@ -140,10 +140,10 @@ var/bin/grep: components/grep/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/git: components/git/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/git/main.nim
 
-var/bin/mcp: components/mcp/main.go components/mcp/types.go components/mcp/go.mod components/mcp/go.sum $(SDK_GO) | var/bin
+var/bin/mcp: $(wildcard components/mcp/*.go) components/mcp/go.mod components/mcp/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/mcp && go build -o ../../var/bin/mcp .'
 
-var/bin/mcp-bridge: components/mcp-bridge/main.go components/mcp-bridge/go.mod components/mcp-bridge/go.sum $(SDK_GO) | var/bin
+var/bin/mcp-bridge: $(wildcard components/mcp-bridge/*.go) components/mcp-bridge/go.mod components/mcp-bridge/go.sum $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/mcp-bridge && go build -o ../../var/bin/mcp-bridge .'
 
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -401,7 +401,9 @@ smoke: test-smoke  # legacy alias
 # Go unit tests (models, provider, both llm adapters, sdk) — no shared runtime
 # state, part of `make test`.
 gotest:
-	cd sdk/go && go test ./... && go vet ./...
+	cd sdk/go && go test -race ./... && go vet ./...
+	cd components/mcp && go test -race ./... && go vet ./...
+	cd components/mcp-bridge && go test -race ./... && go vet ./...
 	cd components/models && go test ./... && go vet ./...
 	cd components/provider && go test ./... && go vet ./...
 	cd components/llm && go test ./... && go vet ./...

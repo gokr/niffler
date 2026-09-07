@@ -273,10 +273,14 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   `{sessionId, tool, ts}`). Components opt in by subscribing their own
   subject and matching `sessionId` against the injected `__session.session`
   private context (`x-harness.sessionId`); bash kills the running command's
-  process group (exit 130). Components without a subscription drop the
-  message and run to completion or deadline — request/reply callers that
-  stop waiting only abandon the reply; the target work is not stopped. A
-  generic `ev.cancel.<call-id>` subject remains a possible future addition.
+  process group (exit 130), and mcp-bridge aborts the in-flight MCP call —
+  the MCP server's `notifications/cancelled`-equivalent (its per-call
+  context) fires immediately. Direct callers (CLI scripts) see
+  `""` for `__session.session` and cannot spoof a session id. Components
+  without a subscription drop the message and run to completion or deadline —
+  request/reply callers that stop waiting only abandon the reply; the target
+  work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
+  possible future addition.
 
 ## Approvals
 
@@ -307,6 +311,16 @@ keys:
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
 - `sessionContext`: the call runs in the live conversation (fabric, agent);
   the runner injects `__session` context and a nested-call lease.
+- `sessionId`: the runner injects `__session.session` (the live session id,
+  `""` for non-session callers) so the component can match
+  `cancel.<component>` events against its in-flight work (see Cancellation);
+  core overwrites any client-supplied `__session` for such tools at
+  dispatch — the key is core-owned private context, never caller data.
+- `effect`: `"read"` or `"write"` (default) — how the fabric batch host
+  schedules items (reads fill the concurrency cap together, writes run
+  exclusively).
+- `workspace`: path-shaped arguments are resolved against the conversation
+  workspace at dispatch.
 - `noSpawn`: a subagent (a session with a parent lineage record) may not call
   this tool (depth guard enforced at dispatch).
 - `parallel`: `true` marks the tool safe to dispatch **concurrently** with
@@ -336,6 +350,12 @@ keys:
   failure) and repeat the same facts in structured fields (`exit_code`,
   `cancelled`, `spill`, ...). A bare-string result is rendered as-is; a
   result without `text` is serialized into the transcript unchanged.
+  One `userMessage` convention rides the same machine-data rule: a result
+  object carrying `userMessage` (string) asks the *client UI* to render
+  that string as a user-authored message (MCP prompt templates, e.g.
+  `mcp-<server>-<prompt>` slash commands) — it never enters the transcript
+  as system or assistant content, and it is not required for the result to
+  carry `text` alongside.
 - Big payloads (tool output > ~64KB): reference, never inline —
   `{"ref": "store://bucket/key"}`; JetStream Object Store later, filesystem
   under `var/store/` for milestone 1.

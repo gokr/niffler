@@ -16,7 +16,7 @@
     pending?: boolean;
   }
 
-  let { items } = $props<{ items: Item[] }>();
+  let { items }: { items: Item[] } = $props();
 
   const anyPending = $derived(items.some((m) => m.pending));
   const failed = $derived(items.some((m) => m.error));

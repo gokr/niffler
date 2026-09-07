@@ -72,6 +72,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "properties": {
         "name": {"type": "string", "description": "Component name (must match its registration)"},
         "binary": {"type": "string", "description": "Path to the compiled binary (relative to the Niffler root or absolute)"},
+        "args": {"type": "array", "items": {"type": "string"}, "description": "Argument vector passed to the binary; persisted across restarts and boot restore"},
         "replicas": {"type": "integer", "minimum": 1, "maximum": 16, "description": "Number of identical stateless component processes to run in the NATS queue group (default 1)"}
       },
       "required": ["name", "binary"],

@@ -34,7 +34,9 @@ import (
 	neturl "net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "niffler.dev/sdk"
@@ -66,7 +68,7 @@ func main() {
 		"description": "List configured MCP servers with their transport, cached tool count and live bridge state. " +
 			"Env/header values are never echoed. Use mcp_add/mcp_edit/mcp_remove to manage servers.",
 		"properties": map[string]any{},
-		"x-harness":  map[string]any{"onDemand": true},
+		"x-harness":  map[string]any{"onDemand": true, "effect": "read"},
 	}, m.list)
 
 	comp.Tool("mcp_add", map[string]any{
@@ -87,7 +89,7 @@ func main() {
 			"approval":    map[string]any{"type": "string", "enum": []string{"", "always"}, "description": "Gate every tool of this server with a human approval prompt (default: none)"},
 			"expose":      map[string]any{"type": "string", "enum": []string{"ondemand", "direct"}, "description": "ondemand (default) keeps tools out of the frozen direct toolset (discover+invoke); direct puts schemas into every new conversation"},
 			"effect":      map[string]any{"type": "string", "enum": []string{"read", "write"}, "description": "Fabric scheduling hint for the server's tools (default write)"},
-			"timeoutMs":   map[string]any{"type": "integer", "description": "Per-tool-call deadline in milliseconds (0 = none beyond the caller's)"},
+			"timeoutMs":   map[string]any{"type": "integer", "minimum": 0, "description": "Per-call deadline in milliseconds (0 = 120 seconds); includes lazy initialization"},
 			"idleMs":      map[string]any{"type": "integer", "description": "Idle session close in milliseconds (default 300000)"},
 			"concurrency": map[string]any{"type": "string", "enum": []string{"parallel", "serial"}, "description": "parallel (default) allows overlapping calls; serial for servers that cannot handle it"},
 			"enabled":     map[string]any{"type": "boolean", "description": "Spawn the bridge now (default true); false stores the config without connecting"},
@@ -165,7 +167,7 @@ func main() {
 // ---------------------------------------------------------------- listing
 
 func (m *manager) list(_ *sdk.Component, _ json.RawMessage) (any, error) {
-	records, err := m.comp.StoreList(kindMCP, "", 100, 10*time.Second)
+	records, err := m.comp.StoreList(kindMCP, "", 1000, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +210,10 @@ func (m *manager) list(_ *sdk.Component, _ json.RawMessage) (any, error) {
 			"toolCount":   len(cfg.Tools),
 			"promptCount": len(cfg.Prompts),
 			"timeoutMs":   cfg.TimeoutMs,
+			"idleMs":      cfg.IdleMs,
+			"cwd":         cfg.Cwd,
+			"effect":      cfg.Effect,
+			"concurrency": cfg.Concurrency,
 			"approval":    cfg.Approval,
 			"expose":      cfg.Expose,
 		}
@@ -220,21 +226,37 @@ func (m *manager) list(_ *sdk.Component, _ json.RawMessage) (any, error) {
 			entry["args"] = cfg.Args
 			entry["envKeys"] = keys(cfg.Env)
 		}
-		component := "mcp-" + sanitizeComponent(cfg.Name)
+		component := "mcp-" + cfg.Name
 		entry["component"] = component
 		if names, ok := live[component]; ok {
 			entry["live"] = true
 			var toolNames []string
 			_ = json.Unmarshal(names, &toolNames)
 			entry["registeredTools"] = toolNames
-			if status, err := m.bridgeStatus(cfg.Name, "status", 5*time.Second); err == nil {
-				entry["bridge"] = status
-			}
+
 		} else {
 			entry["live"] = false
 		}
 		items = append(items, entry)
 	}
+	// One stalled bridge must not serialize every live-state lookup.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for _, entry := range items {
+		if entry["live"] != true {
+			continue
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(entry map[string]any) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if status, err := m.bridgeStatus(entry["name"].(string), "status", time.Second); err == nil {
+				entry["bridge"] = status
+			}
+		}(entry)
+	}
+	wg.Wait()
 	return map[string]any{"servers": items, "count": len(items)}, nil
 }
 
@@ -243,6 +265,7 @@ func keys(m map[string]string) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -253,16 +276,18 @@ const registryDefaultURL = "https://registry.modelcontextprotocol.io"
 // without the caller passing the entry through mcp_add (which validates
 // with a real connect and asks for approval).
 type registryEntry struct {
-	Name           string `json:"name"`
-	Title          string `json:"title,omitempty"`
-	Description    string `json:"description,omitempty"`
-	Version        string `json:"version,omitempty"`
-	Transport      string `json:"transport,omitempty"`
-	Command        string `json:"command,omitempty"`
-	Args           []any  `json:"args,omitempty"`
-	URL            string `json:"url,omitempty"`
-	Installable    bool   `json:"installable"`
-	NotInstallable string `json:"notInstallableReason,omitempty"`
+	Name           string         `json:"name"`
+	Title          string         `json:"title,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	Version        string         `json:"version,omitempty"`
+	Transport      string         `json:"transport,omitempty"`
+	Command        string         `json:"command,omitempty"`
+	Args           []string       `json:"args,omitempty"`
+	URL            string         `json:"url,omitempty"`
+	Config         map[string]any `json:"config,omitempty"`
+	Requirements   []string       `json:"requirements,omitempty"`
+	Installable    bool           `json:"installable"`
+	NotInstallable string         `json:"notInstallableReason,omitempty"`
 }
 
 // registrySearch queries the official MCP Registry browse endpoint
@@ -291,79 +316,30 @@ func registrySearch(query string, limit int) ([]registryEntry, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("registry returned status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
 	if err != nil {
 		return nil, err
 	}
+	if len(body) > 4<<20 {
+		return nil, errors.New("registry response exceeds 4 MiB")
+	}
 	var payload struct {
 		Servers []struct {
-			Name        string `json:"name"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Version     string `json:"version"`
-			Packages    []struct {
-				RegistryType string          `json:"registryType"`
-				Identifier   string          `json:"identifier"`
-				Transport    json.RawMessage `json:"transport"`
-			} `json:"packages"`
-			Remotes []struct {
-				Type string `json:"type"`
-				URL  string `json:"url"`
-			} `json:"remotes"`
+			Server registryServer `json:"server"`
 		} `json:"servers"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("bad registry payload: %w", err)
 	}
 	out := make([]registryEntry, 0, len(payload.Servers))
-	for _, srv := range payload.Servers {
-		entry := registryEntry{
-			Name: srv.Name, Title: srv.Title, Description: srv.Description, Version: srv.Version,
+	for _, wrapped := range payload.Servers {
+		if wrapped.Server.Name == "" {
+			return nil, errors.New("registry entry is missing server.name")
 		}
-		// Prefer a remote (http/sse) endpoint: zero local install. Fall back
-		// to the first stdio package (npm → npx, pypi → uvx).
-		for _, rem := range srv.Remotes {
-			if rem.URL == "" {
-				continue
-			}
-			entry.Transport = "http"
-			if rem.Type == "sse" {
-				entry.Transport = "sse"
-			}
-			entry.URL = rem.URL
-			entry.Installable = true
+		out = append(out, registryCandidate(wrapped.Server))
+		if len(out) == limit {
 			break
 		}
-		if !entry.Installable {
-			for _, pkg := range srv.Packages {
-				var tr struct {
-					Type string `json:"type"`
-				}
-				_ = json.Unmarshal(pkg.Transport, &tr)
-				if tr.Type != "" && tr.Type != "stdio" {
-					continue
-				}
-				switch pkg.RegistryType {
-				case "npm":
-					entry.Transport = "stdio"
-					entry.Command = "npx"
-					entry.Args = []any{"-y", pkg.Identifier}
-					entry.Installable = true
-				case "pypi":
-					entry.Transport = "stdio"
-					entry.Command = "uvx"
-					entry.Args = []any{pkg.Identifier}
-					entry.Installable = true
-				}
-				if entry.Installable {
-					break
-				}
-			}
-		}
-		if !entry.Installable && entry.NotInstallable == "" {
-			entry.NotInstallable = "no npm/pypi stdio package or http/sse remote announced"
-		}
-		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -382,51 +358,24 @@ func registrySuggestedName(full string) string {
 // present tracks which optional fields the caller actually supplied so edit
 // merges instead of replacing.
 func parseConfig(raw json.RawMessage) (cfg serverConfig, present map[string]bool, err error) {
-	var args map[string]json.RawMessage
-	if err = json.Unmarshal(raw, &args); err != nil {
-		return cfg, nil, fmt.Errorf("bad arguments: %w", err)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return cfg, nil, errors.New("arguments must be an object")
 	}
 	present = map[string]bool{}
-	str := func(key string, target *string) {
-		if v, ok := args[key]; ok {
-			present[key] = true
-			_ = json.Unmarshal(v, target)
+	for key, value := range fields {
+		if key == "tools" || key == "prompts" {
+			return cfg, nil, fmt.Errorf("%s is not editable", key)
 		}
-	}
-	intField := func(key string, target *int) {
-		if v, ok := args[key]; ok {
-			present[key] = true
-			_ = json.Unmarshal(v, target)
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return cfg, nil, fmt.Errorf("%s must not be null", key)
 		}
+		present[key] = true
 	}
-	str("name", &cfg.Name)
-	str("type", &cfg.Type)
-	str("command", &cfg.Command)
-	str("cwd", &cfg.Cwd)
-	str("url", &cfg.URL)
-	str("approval", &cfg.Approval)
-	str("expose", &cfg.Expose)
-	str("effect", &cfg.Effect)
-	str("concurrency", &cfg.Concurrency)
-	intField("timeoutMs", &cfg.TimeoutMs)
-	intField("idleMs", &cfg.IdleMs)
-	if v, ok := args["args"]; ok {
-		present["args"] = true
-		_ = json.Unmarshal(v, &cfg.Args)
-	}
-	if v, ok := args["env"]; ok {
-		present["env"] = true
-		_ = json.Unmarshal(v, &cfg.Env)
-	}
-	if v, ok := args["headers"]; ok {
-		present["headers"] = true
-		_ = json.Unmarshal(v, &cfg.Headers)
-	}
-	if v, ok := args["enabled"]; ok {
-		present["enabled"] = true
-		var enabled bool
-		_ = json.Unmarshal(v, &enabled)
-		cfg.Enabled = &enabled
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, nil, fmt.Errorf("bad arguments: %w", err)
 	}
 	return cfg, present, nil
 }
@@ -442,9 +391,11 @@ var oneOf = map[string][]string{
 // validate checks enum fields and transport-specific requirements. It does
 // not touch the network — that is the probe's job.
 func (m *manager) validate(cfg *serverConfig) error {
-	cfg.Name = sanitizeComponent(cfg.Name)
-	if cfg.Name == "" {
-		return fmt.Errorf("name is required")
+	if err := validateName(cfg.Name); err != nil {
+		return err
+	}
+	if cfg.Name == "bridge" {
+		return errors.New("server name bridge is reserved")
 	}
 	for field, allowed := range oneOf {
 		var got string
@@ -480,12 +431,23 @@ func (m *manager) validate(cfg *serverConfig) error {
 			return fmt.Errorf("stdio servers need a command")
 		}
 	case "http", "sse":
-		if strings.TrimSpace(cfg.URL) == "" {
-			return fmt.Errorf("%s servers need a url", cfg.Type)
+		u, err := neturl.Parse(cfg.URL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
+			return errors.New("url must be http(s), without embedded credentials or fragment")
 		}
 	}
-	if cfg.TimeoutMs < 0 || cfg.IdleMs < 0 {
-		return fmt.Errorf("timeoutMs/idleMs must be non-negative")
+	if cfg.TimeoutMs < 0 || cfg.IdleMs < 0 || cfg.TimeoutMs > 86_400_000 || cfg.IdleMs > 86_400_000 {
+		return fmt.Errorf("timeoutMs/idleMs must be between 0 and 86400000")
+	}
+	for k, v := range cfg.Env {
+		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) {
+			return errors.New("invalid environment key/value")
+		}
+	}
+	for k, v := range cfg.Headers {
+		if !headerNamePattern.MatchString(k) || strings.ContainsAny(v, "\r\n\x00") {
+			return errors.New("invalid header key/value")
+		}
 	}
 	return nil
 }
@@ -513,12 +475,14 @@ func (m *manager) probe(cfg *serverConfig) ([]cachedTool, []cachedPrompt, error)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, m.bridgeBin, "--server", cfg.Name, "--probe")
 	cmd.Stdin = bytes.NewReader(payload)
-	var stdout, stderr bytes.Buffer
+	stdout := cappedBuffer{limit: 1 << 20}
+	stderr := cappedBuffer{limit: 64 << 10}
+	cmd.WaitDelay = 3 * time.Second
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = os.Environ()
 	if err := cmd.Run(); err != nil {
-		tail := stderr.String()
+		tail := redactConfigText(cfg, stderr.String())
 		if len(tail) > 400 {
 			tail = tail[len(tail)-400:]
 		}
@@ -532,8 +496,17 @@ func (m *manager) probe(cfg *serverConfig) ([]cachedTool, []cachedPrompt, error)
 		Tools   []cachedTool   `json:"tools"`
 		Prompts []cachedPrompt `json:"prompts"`
 	}
+	if stdout.overflow {
+		return nil, nil, errors.New("probe result exceeded 1 MiB")
+	}
 	if err := json.Unmarshal(stdout.Bytes(), &reply); err != nil || !reply.OK {
 		return nil, nil, fmt.Errorf("probe produced no usable result: %s", strings.TrimSpace(stdout.String()))
+	}
+	candidate := *cfg
+	candidate.Tools = reply.Tools
+	candidate.Prompts = reply.Prompts
+	if _, err := contractNames(&candidate); err != nil {
+		return nil, nil, err
 	}
 	return reply.Tools, reply.Prompts, nil
 }
@@ -541,15 +514,34 @@ func (m *manager) probe(cfg *serverConfig) ([]cachedTool, []cachedPrompt, error)
 // spawnBridge asks core to supervise mcp-<name>. Idempotent: an already
 // supervised bridge (boot restore) is fine.
 func (m *manager) spawnBridge(name string) error {
-	_, err := m.comp.Request("core", "spawn", map[string]any{
+	_, err := m.comp.RequestOK("core", "spawn", map[string]any{
 		"name":   "mcp-" + name,
-		"binary": "var/bin/mcp-bridge",
+		"binary": m.bridgeBin,
 		"args":   []string{"--server", name},
 	}, 30*time.Second)
-	if err != nil && strings.Contains(err.Error(), "already supervised") {
-		return nil
+	if err != nil && !strings.Contains(err.Error(), "already supervised") {
+		return err
 	}
-	return err
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		snap, e := m.comp.RequestOK("core", "catalog", map[string]any{"op": "snapshot"}, time.Second)
+		if e == nil {
+			var catalog struct {
+				Components []struct {
+					Name string `json:"name"`
+				} `json:"components"`
+			}
+			if json.Unmarshal(snap, &catalog) == nil {
+				for _, c := range catalog.Components {
+					if c.Name == "mcp-"+name {
+						return nil
+					}
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("bridge did not register within 15s; inspect var/logs/mcp-" + name + ".log")
 }
 
 // stopBridge kills (and, with removeRecord, un-persists) the bridge.
@@ -558,7 +550,7 @@ func (m *manager) stopBridge(name string, removeRecord bool) error {
 	if removeRecord {
 		op = "remove"
 	}
-	_, err := m.comp.Request("core", op, map[string]any{"name": "mcp-" + name}, 30*time.Second)
+	_, err := m.comp.RequestOK("core", op, map[string]any{"name": "mcp-" + name}, 30*time.Second)
 	if err != nil && (strings.Contains(err.Error(), "no such component") ||
 		strings.Contains(err.Error(), "not found")) {
 		return nil
@@ -580,6 +572,11 @@ func (m *manager) add(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		}
 		if _, err := m.comp.StoreGet(kindMCP, cfg.Name, 10*time.Second); err == nil {
 			return nil, fmt.Errorf("server %q is already configured (use mcp_edit)", cfg.Name)
+		} else if !isNotFound(err) {
+			return nil, err
+		}
+		if err := m.validateNamespace(&cfg); err != nil {
+			return nil, err
 		}
 		if _, err := m.comp.StorePut(kindMCP, cfg.Name, cfg, 0, 10*time.Second); err != nil {
 			return nil, err
@@ -600,6 +597,9 @@ func (m *manager) add(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 	cfg.Tools = tools
 	cfg.Prompts = prompts
+	if err := m.validateNamespace(&cfg); err != nil {
+		return nil, err
+	}
 	if _, err := m.comp.StorePut(kindMCP, cfg.Name, cfg, 0, 10*time.Second); err != nil {
 		return nil, err
 	}
@@ -628,9 +628,9 @@ func (m *manager) edit(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := sanitizeComponent(cfg.Name)
-	if name == "" {
-		return nil, fmt.Errorf("name is required")
+	name := cfg.Name
+	if err := validateName(name); err != nil {
+		return nil, err
 	}
 	item, err := m.comp.StoreGet(kindMCP, name, 10*time.Second)
 	if err != nil {
@@ -659,6 +659,9 @@ func (m *manager) edit(_ *sdk.Component, raw json.RawMessage) (any, error) {
 		}
 		current.Tools = tools
 		current.Prompts = prompts
+	}
+	if err := m.validateNamespace(&current); err != nil {
+		return nil, err
 	}
 	if _, err := m.comp.StorePut(kindMCP, name, current, item.Rev, 10*time.Second); err != nil {
 		return nil, err
@@ -727,9 +730,9 @@ func (m *manager) remove(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad arguments: %w", err)
 	}
-	name := sanitizeComponent(args.Name)
-	if name == "" {
-		return nil, fmt.Errorf("name is required")
+	name := args.Name
+	if err := validateName(name); err != nil {
+		return nil, err
 	}
 	if _, err := m.comp.StoreGet(kindMCP, name, 10*time.Second); err != nil {
 		if isNotFound(err) {
@@ -741,7 +744,7 @@ func (m *manager) remove(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	// bridge does not resurrect on the next boot.
 	if err := m.stopBridge(name, true); err != nil {
 		return map[string]any{"ok": true, "name": name,
-			"warning": fmt.Sprintf("record deleted but bridge stop failed: %v", err)}, nil
+			"warning": fmt.Sprintf("record retained because bridge stop failed: %v", err)}, nil
 	}
 	if err := m.comp.StoreDel(kindMCP, name, 10*time.Second); err != nil {
 		return nil, err
@@ -756,9 +759,9 @@ func (m *manager) refresh(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("bad arguments: %w", err)
 	}
-	name := sanitizeComponent(args.Name)
-	if name == "" {
-		return nil, fmt.Errorf("name is required")
+	name := args.Name
+	if err := validateName(name); err != nil {
+		return nil, err
 	}
 	status, err := m.bridgeStatus(name, "refresh", 65*time.Second)
 	if err != nil {
@@ -770,7 +773,7 @@ func (m *manager) refresh(_ *sdk.Component, raw json.RawMessage) (any, error) {
 // bridgeStatus calls the bridge's hidden status tool directly over NATS
 // (component-to-component calls may target hidden tools).
 func (m *manager) bridgeStatus(server, op string, timeout time.Duration) (any, error) {
-	component := "mcp-" + sanitizeComponent(server)
+	component := "mcp-" + server
 	return m.comp.RequestOK(component, prefixedToolName(server, "")+"bridge_status",
 		map[string]any{"op": op}, timeout)
 }

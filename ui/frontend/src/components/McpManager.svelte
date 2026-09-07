@@ -1,6 +1,7 @@
 <script lang="ts">
   import { send } from "../nats";
   import { t } from "../lib/i18n.svelte";
+  import { editForm, formArguments, type McpServer, type EditForm } from "../lib/mcpForm";
 
   // Self-contained slide-over panel for the mcp component's server manager
   // (mcp_servers / mcp_add / mcp_edit / mcp_remove / mcp_refresh). Loads its
@@ -14,119 +15,48 @@
     onSaved?: () => void;
   } = $props();
 
-  interface McpServer {
-    name: string;
-    type?: "stdio" | "http" | "sse" | "";
-    enabled: boolean;
-    toolCount: number;
-    command?: string;
-    args?: string[];
-    envKeys?: string[];
-    url?: string;
-    headerKeys?: string[];
-    component?: string;
-    live?: boolean;
-    registeredTools?: string[];
-    approval?: string;
-    expose?: string;
-    timeoutMs?: number;
-    bridge?: Record<string, unknown>;
-    error?: string;
-  }
-
-  interface EditForm {
-    name: string;
-    type: "stdio" | "http" | "sse";
-    command: string;
-    args: string; // one argument per line
-    env: string; // KEY=VALUE per line
-    cwd: string;
-    url: string;
-    headers: string; // KEY=VALUE per line
-    approval: "" | "always";
-    expose: "ondemand" | "direct";
-    effect: "read" | "write";
-    concurrency: "parallel" | "serial";
-    timeoutMs: string;
-    idleMs: string;
-    enabled: boolean;
-    isEdit: boolean;
-  }
-
   let servers = $state<McpServer[]>([]);
   let loading = $state(false);
   let editing = $state<EditForm | null>(null);
   let saving = $state(false);
   let refreshing = $state("");
   let error = $state("");
+  let warning = $state("");
+  let loadVersion = 0;
   let confirmRemove = $state<string | null>(null);
 
   async function load() {
+    const version = ++loadVersion;
     loading = true;
     try {
       const resp = await send("mcp", "mcp_servers", {}, 15000);
+      if (version !== loadVersion) return;
       servers = (resp.servers ?? []) as McpServer[];
       error = "";
     } catch (e) {
+      if (version !== loadVersion) return;
       servers = [];
       error = String(e).replace(/^Error:\s*/, "");
     } finally {
-      loading = false;
+      if (version === loadVersion) loading = false;
     }
   }
 
   $effect(() => {
-    if (open && !editing) void load();
+    if (open) void load();
+    return () => { loadVersion++; };
   });
 
   function startAdd() {
-    editing = {
-      name: "", type: "stdio", command: "", args: "", env: "", cwd: "",
-      url: "", headers: "", approval: "", expose: "ondemand", effect: "write",
-      concurrency: "parallel", timeoutMs: "", idleMs: "", enabled: true, isEdit: false,
-    };
+    editing = editForm();
+    warning = "";
     error = "";
   }
 
   function startEdit(s: McpServer) {
-    editing = {
-      name: s.name,
-      type: (s.type as EditForm["type"]) || "stdio",
-      command: s.command ?? "",
-      args: (s.args ?? []).join("\n"),
-      env: "", // values are never echoed; leave blank to keep
-      cwd: "",
-      url: s.url ?? "",
-      headers: "", // values are never echoed; leave blank to keep
-      approval: (s.approval as EditForm["approval"]) || "",
-      expose: (s.expose as EditForm["expose"]) || "ondemand",
-      effect: (s.effect as EditForm["effect"]) || "write",
-      concurrency: (s.concurrency as EditForm["concurrency"]) || "parallel",
-      timeoutMs: s.timeoutMs ? String(s.timeoutMs) : "",
-      idleMs: "",
-      enabled: s.enabled,
-      isEdit: true,
-    };
+    editing = editForm(s);
+    warning = "";
     error = "";
-  }
-
-  function lines(text: string): string[] {
-    return text
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-  }
-
-  function parseKv(text: string): Record<string, string> | undefined {
-    const out: Record<string, string> = {};
-    for (const line of lines(text)) {
-      const eq = line.indexOf("=");
-      const colon = line.indexOf(":");
-      const sep = eq >= 0 && (colon < 0 || eq < colon) ? eq : colon;
-      if (sep <= 0) return undefined; // malformed entry -> signal skip
-      out[line.slice(0, sep).trim()] = line.slice(sep + 1).trim();
-    }
-    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   async function save() {
@@ -134,34 +64,9 @@
     saving = true;
     error = "";
     try {
-      const args: Record<string, unknown> = {
-        name: editing.name.trim(),
-        type: editing.type,
-        approval: editing.approval,
-        expose: editing.expose,
-        effect: editing.effect,
-        concurrency: editing.concurrency,
-        enabled: editing.enabled,
-      };
-      if (editing.type === "stdio") {
-        args.command = editing.command.trim();
-        const argv = lines(editing.args);
-        if (argv.length > 0) args.args = argv;
-        const env = parseKv(editing.env);
-        if (env) args.env = env;
-        if (editing.cwd.trim()) args.cwd = editing.cwd.trim();
-      } else {
-        args.url = editing.url.trim();
-        const headers = parseKv(editing.headers);
-        if (headers) args.headers = headers;
-      }
-      const ms = parseInt(editing.timeoutMs, 10);
-      if (!isNaN(ms) && ms > 0) args.timeoutMs = ms;
-      if (editing.isEdit) {
-        await send("mcp", "mcp_edit", args, 120000);
-      } else {
-        await send("mcp", "mcp_add", args, 120000);
-      }
+      const args = formArguments(editing);
+      const resp = await send("mcp", editing.isEdit ? "mcp_edit" : "mcp_add", args, 120000);
+      warning = typeof resp.warning === "string" ? resp.warning : "";
       editing = null;
       await load();
       onSaved?.();
@@ -175,7 +80,8 @@
   async function remove(name: string) {
     confirmRemove = null;
     try {
-      await send("mcp", "mcp_remove", { name }, 30000);
+      const resp = await send("mcp", "mcp_remove", { name }, 30000);
+      warning = typeof resp.warning === "string" ? resp.warning : "";
       await load();
       onSaved?.();
     } catch (e) {
@@ -199,6 +105,8 @@
     open = false;
     editing = null;
     error = "";
+    warning = "";
+    loadVersion++;
   }
 
   function transportLabel(s: McpServer): string {
@@ -261,18 +169,18 @@
                 />
               </div>
               <div>
-                <label for="mcp-args" class="block text-[11px] text-ink-400 mb-0.5">Arguments (one per line)</label>
+                <label for="mcp-args" class="block text-[11px] text-ink-400 mb-0.5">Arguments (JSON array of strings)</label>
                 <textarea
                   id="mcp-args"
                   class="w-full rounded-md bg-ink-800 border border-ink-600 px-2.5 py-1.5 text-[12px] text-ink-200 outline-none focus:border-accent-dim font-mono"
                   rows="3"
                   bind:value={editing.args}
-                  placeholder={"-y\n@modelcontextprotocol/server-github"}
+                  placeholder='["-y", "@modelcontextprotocol/server-github"]'
                 ></textarea>
               </div>
               <div>
                 <label for="mcp-env" class="block text-[11px] text-ink-400 mb-0.5">
-                  Env {editing.isEdit ? t("mcp.keepBlank") : ""} (KEY=VALUE per line)
+                  Env {editing.isEdit ? t("mcp.keepBlank") : ""} (KEY=VALUE; JSON object to replace, &#123;&#125; to clear)
                 </label>
                 <textarea
                   id="mcp-env"
@@ -302,7 +210,7 @@
               </div>
               <div>
                 <label for="mcp-headers" class="block text-[11px] text-ink-400 mb-0.5">
-                  Headers {editing.isEdit ? t("mcp.keepBlank") : ""} (KEY=VALUE per line)
+                  Headers {editing.isEdit ? t("mcp.keepBlank") : ""} (KEY=VALUE; &#123;&#125; to clear)
                 </label>
                 <textarea
                   id="mcp-headers"
@@ -367,6 +275,10 @@
                   placeholder="0"
                 />
               </div>
+              <div>
+                <label for="mcp-idle" class="block text-[11px] text-ink-400 mb-0.5">Idle timeout (ms; 0 = 5 minutes)</label>
+                <input id="mcp-idle" class="w-full rounded-md bg-ink-800 border border-ink-600 px-2.5 py-1.5 text-[12px] text-ink-200" bind:value={editing.idleMs} />
+              </div>
               <label class="flex items-center gap-2 text-[12px] text-ink-300 self-end pb-1.5">
                 <input type="checkbox" class="accent-accent" bind:checked={editing.enabled} />
                 {editing.isEdit ? t("mcp.enabled") : t("mcp.validateNow")}
@@ -395,6 +307,7 @@
           </div>
         {:else}
           <div class="space-y-2">
+            {#if warning}<div role="status" class="text-[12px] text-warn">{warning}</div>{/if}
             {#each servers as s (s.name)}
               <div class="rounded-lg border border-ink-600 bg-ink-900 px-3 py-2.5">
                 <div class="flex items-center justify-between gap-2">
@@ -423,8 +336,8 @@
                     <div class="mt-0.5 text-[11px] text-ink-500">
                       {t("mcp.tools", { n: String(s.toolCount) })}{#if secretLabel(s)} · {secretLabel(s)}{/if}
                     </div>
-                    {#if s.error}
-                      <div class="mt-0.5 text-[11px] text-danger">{s.error}</div>
+                    {#if s.error || s.bridge?.lastError}
+                      <div class="mt-0.5 text-[11px] text-danger">{s.error || s.bridge?.lastError}</div>
                     {/if}
                   </div>
                   <div class="flex gap-1 shrink-0 flex-wrap justify-end">

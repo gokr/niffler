@@ -110,8 +110,9 @@ make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_systemprompt, t_agent, t_fabric, t_nested, t_mcp —
                       # each owns a private NATS server + temporary NIF_ROOT,
                       # so component targets can overlap a live harness
-make gotest           # Go unit tests + vet: sdk/go, components/models,
-                      # provider, llm and llm-openai (also part of `make test`)
+make gotest           # Go unit tests + vet (+ `-race` for sdk/go, mcp,
+                      # mcp-bridge): sdk/go, components/models, provider,
+                      # llm, llm-openai, mcp, mcp-bridge (also part of make test)
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make down             # stop stray harnesses/components + nats-server (e.g. a

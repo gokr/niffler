@@ -136,6 +136,8 @@ type Component struct {
 	owner         *Component
 	inHandler     bool
 	deferAnnounce bool
+	contractMu    sync.RWMutex // protects setup while deferred calls/events can arrive
+	ready         bool
 }
 
 const defaultConcurrentLimit = 16
@@ -153,6 +155,8 @@ func New(name, version string) *Component {
 }
 
 func (c *Component) handlerView() *Component {
+	c.contractMu.RLock()
+	defer c.contractMu.RUnlock()
 	return &Component{
 		Name: c.Name, Version: c.Version, nc: c.nc, tools: c.tools,
 		events: c.events, taps: c.taps, subs: c.subs, shutdown: c.shutdown,
@@ -165,6 +169,11 @@ func (c *Component) handlerView() *Component {
 // other tool, event, and tap handlers in this component. Chainable:
 // New("x", "1").Tool(...).Tool(...).Run().
 func (c *Component) Tool(name string, schema map[string]any, h ToolHandler) *Component {
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if c.ready {
+		panic("Tool called after Announce")
+	}
 	c.tools = append(c.tools, Tool{Name: name, Schema: schema, handler: h})
 	return c
 }
@@ -177,6 +186,11 @@ func (c *Component) Tool(name string, schema map[string]any, h ToolHandler) *Com
 // lock. This server-side execution choice is independent of the runner-side
 // x-harness.parallel scheduling hint.
 func (c *Component) ToolConcurrent(name string, schema map[string]any, h ToolHandler) *Component {
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if c.ready {
+		panic("ToolConcurrent called after Announce")
+	}
 	c.tools = append(c.tools, Tool{
 		Name: name, Schema: schema, handler: h, concurrent: true,
 	})
@@ -198,6 +212,11 @@ func (c *Component) ConcurrentLimit(limit int) *Component {
 // Chainable: New("x","1").Tool(...).Slash(...).Run(). The target tool
 // (cmd.Tool, or cmd.Name when empty) must be registered by this component.
 func (c *Component) Slash(cmd SlashCommand) *Component {
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if c.ready {
+		panic("Slash called after Announce")
+	}
 	if cmd.Tool == "" {
 		cmd.Tool = cmd.Name
 	}
@@ -224,6 +243,11 @@ func (c *Component) Tap(pattern string, h TapHandler) *Component {
 // shutdown event. Chainable like Tool/On/Tap. Mirrors the Nim SDK's
 // onDrain.
 func (c *Component) OnDrain(h func(*Component)) *Component {
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if c.ready {
+		panic("OnDrain called after Announce")
+	}
 	c.drainHandlers = append(c.drainHandlers, h)
 	return c
 }
@@ -384,10 +408,10 @@ func (c *Component) RequestOK(component, tool string, args any, timeout time.Dur
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return raw, nil // not the convention's shape — pass through
 	}
+	if reply.Error != "" {
+		return nil, errors.New(reply.Error)
+	}
 	if reply.OK != nil && !*reply.OK {
-		if reply.Error != "" {
-			return nil, errors.New(reply.Error)
-		}
 		return nil, errors.New("tool call failed")
 	}
 	return raw, nil
@@ -474,7 +498,7 @@ func (c *Component) Connect() error {
 		return fmt.Errorf("flush subscriptions: %w", err)
 	}
 	if !c.deferAnnounce {
-		if err := c.announce("reg.publish"); err != nil {
+		if err := c.Announce(); err != nil {
 			return err
 		}
 		if err := c.nc.Flush(); err != nil {
@@ -540,9 +564,9 @@ func (c *Component) Run() error {
 // tool contract is complete. For components that must load their config (or
 // otherwise discover their tools) before they can declare a contract — the
 // catalog rejects a differing re-announce, so the first publish must already
-// carry the final toolset. Chainable like Tool/On/Tap. While deferred, calls
-// are served from the moment Connect subscribes — a caller that races the
-// Announce gets a normal no-tool error.
+// carry the final toolset. Calls before Announce receive not-ready without
+// touching the partially built contract. Tool/Slash/OnDrain registration
+// is frozen by Announce; events and taps must be installed before Connect.
 func (c *Component) DeferAnnounce() *Component {
 	c.deferAnnounce = true
 	return c
@@ -551,7 +575,13 @@ func (c *Component) DeferAnnounce() *Component {
 // Announce publishes (or republishes) the current tool contract to the
 // catalog. Required after Connect when DeferAnnounce is set.
 func (c *Component) Announce() error {
-	return c.announce("reg.publish")
+	c.contractMu.Lock()
+	defer c.contractMu.Unlock()
+	if err := c.announceLocked("reg.publish"); err != nil {
+		return err
+	}
+	c.ready = true
+	return c.nc.Flush()
 }
 
 // Wait blocks until SIGTERM/SIGINT or ev.sys.drain. Call Close afterwards.
@@ -575,6 +605,12 @@ func (c *Component) signalShutdown() {
 }
 
 func (c *Component) announce(subject string) error {
+	c.contractMu.RLock()
+	defer c.contractMu.RUnlock()
+	return c.announceLocked(subject)
+}
+
+func (c *Component) announceLocked(subject string) error {
 	tools := make([]map[string]any, 0, len(c.tools))
 	for _, t := range c.tools {
 		tools = append(tools, map[string]any{"name": t.Name, "schema": t.Schema})
@@ -603,12 +639,23 @@ func (c *Component) handleCall(m *nats.Msg) {
 		return
 	}
 
+	c.contractMu.RLock()
+	ready := c.ready
 	var tool *Tool
-	for i := range c.tools {
-		if c.tools[i].Name == env.Tool {
-			tool = &c.tools[i]
-			break
+	if ready {
+		for i := range c.tools {
+			if c.tools[i].Name == env.Tool {
+				copy := c.tools[i]
+				tool = &copy
+				break
+			}
 		}
+	}
+	c.contractMu.RUnlock()
+	if !ready {
+		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,
+			Error: &ErrorInfo{Code: "not-ready", Message: "component contract is not ready"}})
+		return
 	}
 	if tool == nil {
 		c.respond(m, Envelope{V: 1, ID: env.ID, Kind: KindError,

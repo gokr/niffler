@@ -733,7 +733,11 @@ bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► disco
 
 - **Naming**: tools are prefixed `mcp_<server>_<tool>` (niffler lowercase
   convention, globally unique in the catalog); descriptions carry a
-  `[mcp:<server>]` provenance prefix.
+  `[mcp:<server>]` provenance prefix. Server names must match
+  `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$` (≤32 chars, `bridge` reserved; ≤100
+  servers per harness); tool names are sanitized to the same alphabet and
+  capped at 64 chars. The manager rejects servers whose generated tool names
+  collide with another server's or with a catalog tool.
 - **Exposure**: on-demand by default (`x-harness.onDemand`) — schemas enter
   the conversation through `discover {component: "mcp-<server>"}` and calls
   go through `invoke`, so MCP servers never bloat the frozen direct toolset.
@@ -742,8 +746,29 @@ bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► disco
 - **Lazy sessions**: adding a server validates it with one real connect
   (initialize + tools/list) and caches the tool listing in the record; the
   MCP subprocess/HTTP session itself starts on the first tool call and idles
-  out after `idleMs` (default 5 min). Booting the harness never pays for
-  `npx`/`uvx` startup.
+  out after `idleMs` (default 5 min; capped at 24 h). Each call gets the
+  per-call timeout (`timeoutMs`, default 120 s, capped at 24 h). Booting the
+  harness never pays for `npx`/`uvx` startup.
+- **Cancellation**: MCP tools declare `x-harness.sessionId` — the session
+  runner injects the live session id as `__session.session`, and a cancelled
+  turn's `cancel.mcp-<server>` event (docs/WIRE.md) aborts the in-flight MCP
+  call immediately. Direct callers (CLI scripts) get `""` — they cannot
+  spoof a session, and unattributed calls are only bounded by `timeoutMs`.
+- **Sandboxing**: stdio servers run under a guard process (`mcp-bridge
+  --stdio-guard <cmd>`) that owns the server's process group and watches a
+  lifeline pipe — if the bridge dies (SIGKILL included), the guard SIGTERMs
+  then SIGKILLs the whole group; a kernel `PDEATHSIG` backstops the guard
+  itself, so an MCP server can never outlive its harness. stdio servers
+  inherit a fixed environment allowlist (PATH, HOME, TMPDIR, USER, SHELL,
+  LANG, TERM) — `NIF_*` variables and secrets in the harness environment
+  never reach them. HTTP/SSE servers only see configured `Authorization`
+  headers, and only when they point at the server's own origin — credentials
+  are never replayed to a cross-origin redirect target (the redirect is
+  refused instead).
+- **Result size**: MCP results ≤64 KiB are returned inline; larger results
+  are spilled to `$NIF_ROOT/var/mcp-results/result-*.json` and the tool
+  returns a short preview plus the file path (readable with niffler_edit,
+  niffler_grep or bash) instead of blowing up the context window.
 - **Drift**: on each fresh session (and on server-pushed
   `notifications/tools/list_changed`) the bridge re-lists the server's
   tools; when the contract moved it persists the fresh listing (best effort,
@@ -809,19 +834,27 @@ on changing the harness shape (docs/ARCHITECTURE.md).
 - **Prompts become slash commands.** Each server prompt is registered as a
   hidden catalog tool `mcp_<server>_prompt` (invisible to the LLM,
   `x-harness.hidden`) plus a slash command `mcp-<server>-<promptname>` whose
-  named parameters mirror the prompt's arguments. Rendering a prompt is an
-  ordinary bus call; the rendered message text enters the conversation as an
-  appended user message. The bridge re-registers them on drift like tools
-  (server-pushed `notifications/prompt_list_changed` included).
+  named parameters mirror the prompt's arguments (≤32 prompts per server,
+  ≤16 arguments each). Rendering a prompt is an ordinary bus call; the
+  result carries the rendered text as `userMessage`, and the UI appends it
+  to the conversation as a **user** message (slash result convention,
+  `ui/frontend/src/lib/slashResult.ts`) — prompt output is never injected
+  into the transcript as system/assistant content. The bridge re-registers
+  them on drift like tools (server-pushed `notifications/prompt_list_changed`
+  included).
 - **Resources** surface as one concurrent tool `mcp_<server>_resources`
   (`x-harness.effect: "read"`): `{op: "list"}` or `{op: "read", uri: ...}`.
-  Read results are capped at 64 KB of text; larger or binary blobs come back
-  base64 with the MCP mimeType.
+  Text results follow the same 64 KiB inline cap as tool results (larger
+  spill to `var/mcp-results`); binary blobs come back base64 with the MCP
+  mimeType.
 - **Registry**: `mcp_search <query>` queries the official MCP Registry
   (`registry.modelcontextprotocol.io`; override with `NIF_MCP_REGISTRY_URL`)
   and returns name/title/description/version plus a suggested `mcp_add`
-  config when the entry ships an npm or PyPI package (`npx -y <id>` /
-  `uvx <id>`); entries without a usable transport get a reason instead.
+  config for npm/PyPI-packaged entries — versions pinned from the registry
+  (`npx -y <id>@<v>` / `uvx <id>==<v>`). Entries are marked `installable`
+  only when they need zero configuration; template variables in the package
+  id or declared required env/headers surface as `requirements`
+  ("configuration required: ...") instead of a half-filled config.
 - **Drift covers prompts too**: `checkDriftLocked` (fresh session) and both
   list-changed notifications re-list tools *and* prompts; the record's cache
   is refreshed and the bridge exits 3 for a supervisor restart.
@@ -833,10 +866,16 @@ server (`tests/fixtures/mcp_server.nim`, newline-delimited JSON-RPC over
 stdio) and a mock registry (`tests/fixtures/mock_registry.nim`, std-only
 HTTP) into a private sandbox and exercises the whole contract — add (with
 secret redaction), bridge registration, discover hints + full schema, lazy
-invoke, tool-error propagation, resources list/read, prompt slash command +
+invoke, tool-error propagation, mid-flight cancellation (`cancel.mcp-<server>`
+aborts an in-flight call), resources list/read, prompt slash command +
 rendering, registry search against the mock, server-pushed drift (persist +
 restart + rediscovery), edit/respawn, spawn-args persistence for boot
-restore, and removal.
+restore, and removal. Two regression tests pin the process-hygiene fixes: a
+SIGKILLed guard must leave no orphaned MCP server (kernel `PDEATHSIG`), and
+failed adds must leave no record. Go unit tests (`make gotest`) cover the
+SDK's frozen-registration gate (`Announce` panics on late registration;
+post-ready calls fail with `not-ready`), name/contract validation, registry
+shape parsing, transport credential/redirect rules, and cancellation plumbing.
 
 ## Progressive tool discovery (`discover`/`invoke`)
 

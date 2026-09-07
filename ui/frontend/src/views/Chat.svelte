@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slashUserMessage } from "../lib/slashResult";
   import { onMount, tick } from "svelte";
   import { send, on, emit } from "../nats";
   import { renderMarkdown } from "$lib/markdown";
@@ -181,8 +182,10 @@
     if (!complete?.candidates || complete.candidates.length === 0) return;
     const n = complete.candidates.length;
     const i = complete.index ?? 0;
-    complete = { ...complete, index: (i + (backward ? -1 : 1) + n) % n };
-    input = complete.prefix + complete.candidates[(complete.index ?? 0)];
+    const next = (i + (backward ? -1 : 1) + n) % n;
+    const { prefix, candidates } = complete;
+    complete = { ...complete, index: next };
+    input = prefix + candidates[next];
   }
 
   function acceptCompletion() {
@@ -293,10 +296,15 @@
         }
         addMeta(l, t("chat.slashExec", { name: cmd.name, args: arg.trim() }));
         try {
+          const invocationSession = sessionId;
           const result = await send(cmd.component!, cmd.tool!, parsed.args);
-          // The exec meta line above already names the command — the result
-          // block carries only the formatted payload (summary or pretty JSON).
-          addMeta(l, formatSlashResult(result));
+          const message = slashUserMessage(result);
+          if (message !== undefined) {
+            if (sessionId !== invocationSession) throw new Error("Conversation changed while rendering; run the command again in the intended conversation");
+            await submitText(message);
+          } else {
+            addMeta(l, formatSlashResult(result));
+          }
         } catch (e) {
           addError(l, t("chat.slashFailed", { name: cmd.name, err: String(e) }));
         }
@@ -395,6 +403,12 @@
       return;
     }
 
+    await submitText(text);
+  }
+
+  // Normal messages and explicitly rendered prompts share the append-only
+  // session/steer path. Rendered text is not interpreted as another command.
+  async function submitText(text: string) {
     const l = ensureLive(sessionId);
     if (l.busy) {
       // Steer the running turn (Pi/TUI-style): fold into the live

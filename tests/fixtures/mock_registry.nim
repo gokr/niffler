@@ -10,17 +10,21 @@
 
 import std/[json, net, posix, streams, strutils]
 
+## Mirrors the live registry.modelcontextprotocol.io /v0/servers shape:
+## each entry wraps the server document in a "server" field (plus _meta).
 const body = $(%*{
   "servers": [
-    {"name": "io.github/example/github-mcp-server",
-     "title": "GitHub MCP", "description": "GitHub API tools",
-     "version": "1.0.0",
-     "packages": [{"registryType": "npm",
-                   "identifier": "@modelcontextprotocol/server-github",
-                   "transport": {"type": "stdio"}}]},
-    {"name": "io.github/example/not-installable",
-     "title": "Needs setup", "description": "no transports",
-     "version": "0.2.0", "packages": [], "remotes": []},
+    {"server": {"name": "io.github/example/github-mcp-server",
+                "title": "GitHub MCP", "description": "GitHub API tools",
+                "version": "1.0.0",
+                "packages": [{"registryType": "npm",
+                              "identifier": "@modelcontextprotocol/server-github",
+                              "version": "0.6.0",
+                              "transport": {"type": "stdio"}}]},
+     "_meta": {"io.modelcontextprotocol.registry/official": {"status": "active"}}},
+    {"server": {"name": "io.github/example/not-installable",
+                "title": "Needs setup", "description": "no transports",
+                "version": "0.2.0", "packages": [], "remotes": []}},
   ],
 })
 
