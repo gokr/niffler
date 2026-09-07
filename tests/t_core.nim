@@ -69,6 +69,16 @@ proc main() =
         coreDiscovery.output.contains("\"kill\"") and
         coreDiscovery.output.contains("\"remove\""), coreDiscovery.output)
 
+  # tools without a component: cross-component lookup by exact name
+  let cross = runCli(cliBin, url,
+    @["call", "discover",
+      """{"tools":["spawn","no-such-tool"]}"""], root = root)
+  check("discover tools without component searches every component",
+        cross.output.contains("\"spawn\"") and
+        cross.output.contains("\"component\":\"core\"") and
+        cross.output.contains("\"notFound\":[\"no-such-tool\"]"),
+        cross.output)
+
   # core.status: authoritative live set from the supervisor
   let st = call(nc, "core", "status", newJObject(), 10_000)
   check("core.status returns the shipped components",

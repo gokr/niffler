@@ -197,7 +197,7 @@ proc main() =
         rm1s.find("### m2.txt") > rm1s.find("### m1.txt"), $rm1)
   let rm2 = call(nc, "edit", "read_many", %*{"paths": []})
   check("read_many refuses empty paths",
-        rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..8"), $rm2)
+        rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..12"), $rm2)
   let rr2 = call(nc, "edit", "read",
                  %*{"path": "r.txt", "offset": 2, "limit": 1})
   check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)

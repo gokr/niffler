@@ -786,9 +786,10 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
     raise newException(ValueError,
       "[E_BAD_SHAPE] read_many requires a paths array.")
   let paths = args{"paths"}
-  if paths.len == 0 or paths.len > 8:
+  if paths.len == 0 or paths.len > 12:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read_many paths must contain 1..8 files.")
+      "[E_BAD_SHAPE] read_many paths must contain 1..12 files (got " &
+      $paths.len & ") — split into batches.")
   let limit = args{"limit"}.getInt(MAX_READ_LINES)
   if limit < 1:
     raise newException(ValueError, "[E_BAD_SHAPE] limit must be positive.")
@@ -874,13 +875,13 @@ discard comp.tool("read", toolSchema(%*{
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("read_many", toolSchema(%*{
-  "paths": {"type": "array", "minItems": 1, "maxItems": 8,
+  "paths": {"type": "array", "minItems": 1, "maxItems": 12,
             "items": {"type": "string"},
             "description": "Files to read, in order"},
   "limit": {"type": "integer", "minimum": 1,
             "description": "Max lines per file (default 2000)"}
 }, @["paths"],
-  "Read up to 8 files in one call — the multi-file survey instead of many reads or bash cat. Content under a \"### path\" heading each; a bad file errors alone. 512KB total cap."),
+  "Read up to 12 files in one call — the multi-file survey instead of many reads or bash cat. Content under a \"### path\" heading each; a bad file errors alone. 512KB total cap."),
   hReadMany, %*{"timeoutMs": 60000, "parallel": true,
                 "workspace": {"pathArrayFields": ["paths"]}})
 

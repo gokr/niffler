@@ -892,6 +892,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Silent `(exit 2)` on heredoc commands** — the bash tool's subshell wrap
+  `( cmd ) > capture 2>&1` glued the redirection onto a command-final
+  heredoc delimiter when the command lacked a trailing newline: the heredoc
+  swallowed the redirection, bash exited 2 before any output could be
+  captured, and the model saw a bare exit code with zero explanation (then
+  retried the identical broken command — observed five times in bench
+  transcripts). The wrapper now puts the closing paren on its own line for
+  heredoc commands, and a missing capture file yields an explicit
+  "failed to parse or start" note instead of silence.
+- **`discover` with `tools` but no `component` now searches every
+  component** instead of erroring — callers know the tool name, not its
+  owner; results carry the owning `component` per entry plus a `notFound`
+  list. The fabric errors now teach the expected shape ("needs
+  arguments.code or arguments.name") and "closed its output" points at
+  guest crash/compile failures and the diagnostics field. `read_many`
+  raised to 12 files with the actual count in the rejection.
+- **Bench metadata: expert cells recorded `thinking: null`** —
+  `thinkingFor("niffler-expert")` had no profile key (the sessions ran at
+  the correct profile via the niffler adapter; only the recorded metadata
+  was null). Profile lookup now falls back to the base harness, and the
+  bench adapter retries the cli spawn once on transient ENOENT (a
+  concurrent rebuild unlinks binaries mid-run).
+
 - **Bench orchestration: scoped key checks, round-budget guard, run.json
   lane merge** — `resolveKeys` demanded `LLMGATEWAY_API_KEY` even for
   deepseek-only runs (now optional unless a selected model needs it, and

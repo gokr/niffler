@@ -143,7 +143,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. query returns concise hints; component or tools (up to 16 names) return full schemas. Call returned tools through invoke — plugins (packages) and skills (workflow guides) live here too.",
+      "description": "Find live components and tools outside the fixed direct toolset. query returns concise hints; component or tools (up to 16 names) return full schemas — tools without a component searches every component. Call returned tools through invoke — plugins (packages) and skills (workflow guides) live here too.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
@@ -346,7 +346,41 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
   let requested = args{"tools"}
   if component.len == 0:
     if requested != nil and requested.kind != JNull:
-      return %*{"error": "discover tools needs component"}
+      # Tool-name lookup across ALL components: callers often know the tool
+      # name but not which component owns it (observed in bench: models
+      # repeatedly passed tools without a component and got a bare error).
+      if requested.kind != JArray:
+        return %*{"error": "discover tools must be an array"}
+      if requested.len > 16:
+        return %*{"error": "discover returns at most 16 tool schemas"}
+      var names: seq[string] = @[]
+      for node in requested:
+        if node.kind != JString or node.getStr("").len == 0:
+          return %*{"error": "discover tool names must be non-empty strings"}
+        let name = node.getStr("")
+        if name notin names:
+          names.add(name)
+      names.sort()
+      var schemas = newJArray()
+      var notFound = newJArray()
+      for name in names:
+        let owner = cat.toolIndex.getOrDefault(name)
+        var found = false
+        if owner.len > 0:
+          for tool in cat.components[owner].tools:
+            if tool.name == name and not tool.schema.isHidden():
+              schemas.add(%*{"name": tool.name, "component": owner,
+                             "schema": normalizeToolSchema(tool.schema)})
+              found = true
+              break
+        if not found:
+          notFound.add(%name)
+      if schemas.len == 0:
+        return %*{"error": "no discoverable tools named: " & names.join(", ")}
+      result = %*{"tools": schemas}
+      if notFound.len > 0:
+        result["notFound"] = notFound
+      return result
     let query = args{"query"}.getStr("").strip().toLowerAscii()
     var components = newJArray()
     for name in cat.sortedComponentNames():

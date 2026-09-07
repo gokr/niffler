@@ -26,6 +26,13 @@ proc readCapture(tmpPath: string): string =
   try:
     if fileExists(tmpPath):
       result = readFile(tmpPath)
+    else:
+      # The subshell died before its redirection was set up — typically an
+      # unterminated heredoc or unbalanced quote: bash exits 2 with the
+      # diagnostics on the parent's stderr, never in the capture file. Say
+      # so, or the caller sees a bare exit code with zero explanation.
+      result = "[no output captured — the command failed to parse or start; " &
+               "check quoting and heredoc termination]\n"
   finally:
     if fileExists(tmpPath):
       try: removeFile(tmpPath)
@@ -74,8 +81,12 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
   let tmpPath = getTempDir() /
     ("niffler-run-" & $getCurrentProcessId() & "-" & $callCounter & ".out")
   # Wrapped in a subshell so the redirection covers the whole command
-  # (incl. `;`/`&&`-chains), not just its last statement.
-  let wrapped = "( " & cmd & " ) > " & quoteShell(tmpPath) & " 2>&1"
+  # (incl. `;`/`&&`-chains), not just its last statement. A command holding
+  # a heredoc needs the closing paren on its own line: glued onto a final
+  # `EOF` delimiter line, the heredoc would swallow the redirection and
+  # bash would exit 2 before any output could be captured.
+  let close = if cmd.contains("<<"): "\n" else: " "
+  let wrapped = "( " & cmd & close & ") > " & quoteShell(tmpPath) & " 2>&1"
   let argv = allocCStringArray(["bash", "-c", wrapped])
   defer: deallocCStringArray(argv)
   let pid = posix.fork()

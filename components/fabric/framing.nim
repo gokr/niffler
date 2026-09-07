@@ -44,7 +44,8 @@ proc readFrame*(reader: var FrameReader, fd: cint, deadline: MonoTime,
     var chunk: array[4096, char]
     let count = posix.read(fd, addr chunk[0], chunk.len)
     if count <= 0:
-      raise newException(CatchableError, "fabric-exec closed its output")
+      raise newException(CatchableError, "fabric-exec closed its output before a " &
+        "complete response (the guest crashed or failed to compile — see diagnostics)")
     for i in 0 ..< count:
       reader.buffer.add(chunk[i])
 
@@ -59,7 +60,8 @@ proc readReady*(reader: var FrameReader, fd: cint,
   var chunk: array[4096, char]
   let count = posix.read(fd, addr chunk[0], chunk.len)
   if count <= 0:
-    raise newException(CatchableError, "fabric-exec closed its output")
+    raise newException(CatchableError, "fabric-exec closed its output before a " &
+      "complete response (the guest crashed or failed to compile — see diagnostics)")
   var s = ""
   for i in 0 ..< count:
     s.add(chunk[i])

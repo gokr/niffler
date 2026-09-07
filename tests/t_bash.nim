@@ -45,6 +45,14 @@ proc main() =
                 %*{"command": "false; echo done", "timeoutMs": 10000})
   check("bash last-command exit code", r2{"exit_code"}.getInt(-1) == 0, $r2)
 
+  # heredoc without a trailing newline: the wrapper must not glue the
+  # redirection onto the delimiter line (regression: silent exit 2)
+  let rh = call(nc, "bash", "bash",
+                %*{"command": "cat <<'EOF'\nheredoc body\nEOF", "timeoutMs": 10000})
+  check("bash heredoc without trailing newline",
+        rh{"exit_code"}.getInt(-1) == 0 and
+        rh{"text"}.getStr("").contains("heredoc body"), $rh)
+
   # cwd param: the command runs in the given directory
   createDir(tmp / "sub")
   let r2b = call(nc, "bash", "bash",

@@ -484,7 +484,8 @@ discard comp.tool("fabric", fabSchema,
       return %*{"error": "fabric takes either code or name, not both"}
     if code.len == 0:
       if name.len == 0:
-        return %*{"error": "fabric needs code or name"}
+        return %*{"error": "fabric needs arguments.code (a fabricguest program) " &
+          "or arguments.name (a stored program) — neither was present"}
       # program library: fetch the stored source (the model curates it
       # via the store's put/get/list — fabric only runs it)
       var stored: StoreItem
