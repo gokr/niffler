@@ -243,9 +243,20 @@ func (b *bridge) ensure(ctx context.Context) (*mcp.ClientSession, error) {
 // acceptContract never edits the immutable advertised config. If persistence
 // fails after bounded retries, fail closed in retiring state (status reports
 // the error; mcp_edit can repair it), rather than crash-looping a stale cache.
+// nilEmpty normalizes empty slices to nil: stored records omit empty
+// tool/prompt lists (json omitempty), while listContract returns non-nil
+// empty slices — without this, a server with no prompts (or no tools)
+// "drifts" on every boot and fail-closes the bridge into retiring forever.
+func nilEmpty[T any](s []T) []T {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
 func (b *bridge) acceptContract(tools []cachedTool, prompts []cachedPrompt) error {
-	old, _ := json.Marshal([]any{b.cfg.Tools, b.cfg.Prompts})
-	fresh, _ := json.Marshal([]any{tools, prompts})
+	old, _ := json.Marshal([]any{nilEmpty(b.cfg.Tools), nilEmpty(b.cfg.Prompts)})
+	fresh, _ := json.Marshal([]any{nilEmpty(tools), nilEmpty(prompts)})
 	if string(old) == string(fresh) {
 		return nil
 	}

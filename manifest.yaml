@@ -97,19 +97,15 @@ components:
   # External MCP servers (Model Context Protocol). The manager owns the
   # config (store kind "mcp") and spawns one mcp-bridge process per server
   # via core.spawn; bridges announce the server's tools as ordinary catalog
-  # tools (mcp_<server>_<tool>) reachable through discover/invoke. The
-  # bridge binary is built but never autostarts — spawn-per-server only.
+  # tools (mcp_<server>_<tool>) reachable through discover/invoke.
+  # NOTE: the bridge binary must NOT have a manifest entry — core spawns
+  # every listed entry at boot, and a bare `mcp-bridge` (no --server) fails
+  # validateName and crash-loops under restart: on-failure. `make build`
+  # builds it via the Makefile's explicit rule instead.
   - name: mcp
     build: {lang: go, src: components/mcp}
     binary: var/bin/mcp
     autostart: true
-    required: false
-    restart: on-failure
-
-  - name: mcp-bridge
-    build: {lang: go, src: components/mcp-bridge}
-    binary: var/bin/mcp-bridge
-    autostart: false
     required: false
     restart: on-failure
 
