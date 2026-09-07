@@ -240,16 +240,23 @@ export class NifflerHarness {
 
   async callTool(tool, args, timeoutMs = 30_000) {
     const cli = path.join(this.binDir, "cli");
-    const res = await run(
-      cli,
-      [
-        `--timeout:${Math.ceil(timeoutMs / 1000)}`,
-        "call",
-        tool,
-        JSON.stringify(args),
-      ],
-      { cwd: this.root, env: this.cliEnv(), timeoutMs: timeoutMs + 30_000 },
-    );
+    let res = null;
+    for (let attempt = 0; ; attempt++) {
+      res = await run(
+        cli,
+        [
+          `--timeout:${Math.ceil(timeoutMs / 1000)}`,
+          "call",
+          tool,
+          JSON.stringify(args),
+        ],
+        { cwd: this.root, env: this.cliEnv(), timeoutMs: timeoutMs + 30_000 },
+      );
+      // A concurrent rebuild transiently unlinks var/bin/cli (nim c writes
+      // the binary last) — one clean retry after a short wait.
+      if (attempt > 0 || res.code >= 0 || !/ENOENT/.test(res.stderr || "")) break;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
     let parsed = null;
     try {
       parsed = JSON.parse(res.stdout.trim().split("\n").at(-1));

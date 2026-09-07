@@ -90,7 +90,15 @@ if (THINKING) {
         .join(", "),
   );
 }
-const thinkingFor = (harness) => (thinkingByHarness ? thinkingByHarness[harness] || "" : "");
+const thinkingFor = (harness) =>
+  thinkingByHarness
+    ? thinkingByHarness[harness] ||
+      // niffler-expert has no profile key of its own — it is the niffler
+      // adapter with the expert lane; without this fallback its result.json
+      // recorded thinking: null even though the session ran at the profile.
+      thinkingByHarness[harness.replace(/-expert$/, "")] ||
+      ""
+    : "";
 
 const harnesses =
   harnessArg === "all"
