@@ -232,6 +232,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
 | `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `20` |
+| `NIF_MAX_DIRECT_TOKENS` | cap for the direct toolset in estimated tokens — `invoke {sticky: true}` promotion is deferred once the cap is reached | `4000` |
 | `NIF_RUNNER_IDLE_S` | a session runner with no session call for this long retires; the next call spawns a fresh one (subagent children re-ensure on demand) | `600` |
 | `NIF_WRITE_MAX_BYTES` | cap for the `write` tool's whole-file payload | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
@@ -427,7 +428,8 @@ reports:
   message tells the model history was cut). Whole-turn drops keep
   `tool_call_id` pairs intact. `ev.session.context {trimmed: n, reason:
   "reset:trim"}` — a trim is the one ordinary full prompt-cache miss, and
-  the reason names it.
+  the reason names it (the other legitimate full miss is a sticky `invoke`
+  promotion, reported as `reason: "reset:tools"`).
 - Before the model has reported usage (fresh or resumed session), a
   rough chars/4 estimate stands in.
 - The **store keeps the full history** — trimming is in-memory per
@@ -928,7 +930,7 @@ hidden tools directly over NATS.
 
 ### Core tools
 
-`discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles; `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
+`discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles: a profile is a selector list — `component` (all its non-hidden tools), `component.tool` (one exact tool), `-name` (exclude, may trim the base set or an earlier selector) — resolved against the live catalog and persisted; unresolvable selectors are skipped and reported as `missing`, with unknown and hidden indistinguishable so a profile cannot probe for hidden names. `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
 `session_info` (onDemand) summarizes a conversation; `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came
 from, how many project context files feed it, the frozen direct tool names
@@ -1032,7 +1034,10 @@ why `invoke` is fixed and generic.
 
 On the first turn, a session runner:
 
-1. computes `Catalog.promptTools()`;
+1. computes `Catalog.promptTools()`, then resolves the conversation's named
+   tool profile (`session.profile`) on top of it exactly once — the resolved
+   set is persisted and the profile is never consulted again for that
+   conversation (resume keeps the snapshot byte-stable);
 2. stores the exact ordered schemas under store kind `session`, id
    `<sessionId>:tools`;
 3. uses that snapshot for every LLM round and after runner restart.
@@ -1049,6 +1054,8 @@ The document shape is:
     {"component": "fetch", "name": "fetch"}
   ],
   "initializedAt": 0,
+  "profile": "",
+  "profileMissing": [],
   "updatedAt": 0
 }
 ```
@@ -1057,12 +1064,24 @@ The document shape is:
 `discovered` is a durable summary for inspection and UI state; the schemas
 themselves live in persisted tool-result messages. Only a successful
 full-schema `discover` call updates it. Hint searches and failed lookups do not.
+`profile` names the profile the direct set was resolved from (empty = the
+fundamental set) and `profileMissing` lists its selectors that matched nothing.
 
 Component registration churn never changes an existing conversation's direct
 array. A late component is found through `discover` and called through
 `invoke`. If a direct component departs, its frozen schema remains in that
 conversation for cache stability; a call fails through normal routing and
 current discovery reflects that it is gone.
+
+`invoke {sticky: true}` is the one explicit way an existing conversation's
+direct array grows: after a successful call the target's normalized schema is
+appended to the stored snapshot, so later calls skip the `invoke` hop. Hidden
+tools never promote, a session tool allowlist defers promotion, and the whole
+direct set stays under `NIF_MAX_DIRECT_TOKENS` (default 4000) — a deferred
+promotion is reported in the call result. Promotion re-reads the request
+prefix once; clients see a `reset:tools` status event carrying the new direct
+tool count and token estimate. The append is durable and never removes or
+rewrites earlier tools.
 
 ### Shipped policy
 
