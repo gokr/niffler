@@ -735,6 +735,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The expert follows several sessions concurrently** — component state
+  moved from one global observation frame to a per-session table keyed by
+  session id (frame, knowledge prefix, judgment budget, model/provider
+  overrides, per-follow metrics), so two followed sessions no longer
+  overwrite each other's target and `expert_status` answers per-session.
+  `expert_follow {session_id, model?, provider?}` adds a follow,
+  `expert_unfollow`/`expert_status` take an optional `session_id`
+  (aggregate without), and `expert_reload` rebuilds every followed
+  session's prefix. The judge lane stays global by design: one judgment in
+  flight, shared cooldown, per-session latest-state coalescing; stale
+  outcomes are dropped, never delivered.
+
+- **Bus max payload raised to 8MiB** — `llm` `chat` requests carry the whole
+  conversation, and the official 1MiB NATS `max_payload` capped usable
+  context at ~250k tokens (surfacing as `Maximum Payload Exceeded` around
+  206k visible tokens). The bundled `components/nats` build gains a
+  `--max_payload` flag (a Niffler extension — upstream accepts it only via
+  config file) and core spawns it with 8MiB (test buses likewise); a PATH
+  `nats-server` keeps the 1MiB default. A publish over the cap now reports
+  the size against the bus's `max_payload`.
+
+- **`cli catalog` prints the serving harness** — a `# harness: <root> @
+  <gitHash>` line above the component list. The cli has no attach-time
+  identity check (it trusts the discovery file by design), so the catalog's
+  root + gitHash makes a wrong-bus mixup visible instead of silent; older
+  cores answer without the fields and the line is simply omitted.
+
 - **The git clone is the instance identity — bus attach rules follow it**
   (`NIF_NATS_URL` in the process env stays attach-only for tests/bench; a
   URL from the clone's `.env` — or the well-known 4222 default — is the
@@ -891,6 +918,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **Resume could clobber a transcript** — a failed store `list` during
+  session resume was swallowed and read as an EMPTY conversation, so the
+  next persist restarted ids at `000001` and overwrote the transcript
+  (observed once as a whole conversation destroyed after a store reply
+  outgrew the bus max payload and the list reply never arrived). The
+  failure now propagates, and `seqNo` continues after the highest stored
+  id (error-role records own ids the loaded list excludes).
 
 - **Silent `(exit 2)` on heredoc commands** — the bash tool's subshell wrap
   `( cmd ) > capture 2>&1` glued the redirection onto a command-final
