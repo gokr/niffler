@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { currentProfile, selectProfile, componentsText } from '../lib/toolProfiles';
   import { slashUserMessage } from "../lib/slashResult";
   import { onMount, tick } from "svelte";
   import { send, on, emit } from "../nats";
@@ -217,6 +218,27 @@
     }
 
     switch (name) {
+      case 'components':
+      case 'profile':
+      case 'discover': {
+        try {
+          if (name === 'components') addMeta(l, await componentsText(sessionId, arg || 'all'));
+          else if (name === 'profile') {
+            if (arg) await selectProfile(arg);
+            const listing = await send('core', 'profile', { op: 'list' });
+            addMeta(l, `Profile for new chats: ${currentProfile() || 'default'}\n` + (listing.profiles ?? []).map((p: any) => `${p.name}: ${p.toolCount} tools, ~${p.estTokens} tokens`).join('\n'));
+          } else {
+            if (l.busy) throw new Error('Wait for the current turn to finish before explicit discovery.');
+            if (!arg) throw new Error('Usage: /discover COMPONENT or /discover tool=NAME');
+            const sid = sessionId ?? crypto.randomUUID();
+            sessionId = sid;
+            const discovery = arg.startsWith('tool=') ? {tools: [arg.slice(5)]} : {component: arg};
+            const result = await send('core', 'session', {sessionId: sid, profile: currentProfile(), discovery}, 60000);
+            addMeta(ensureLive(sid), JSON.stringify(result.discovery, null, 2));
+          }
+        } catch (e) { addError(l, String(e)); }
+        return true;
+      }
       case "provider":
       case "providers":
         if (!arg) {
@@ -447,7 +469,7 @@
     live.liveIdx = live.messages.length - 1;
 
     try {
-      await send("core", "session", { sessionId: sid, content: text, model: sessionModel }, 600000);
+      await send("core", "session", { sessionId: sid, content: text, model: sessionModel, profile: currentProfile() }, 600000);
       if (createdHere === sid) {
         createdHere = null;
         await titleSession(sid, createdTitle);

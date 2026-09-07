@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { currentProfile } from './lib/toolProfiles';
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
@@ -141,7 +142,7 @@
     sessionModels = { ...sessionModels, [sid]: model };
     chatRef?.setSessionModel(model);
     try {
-      await send("core", "session", { sessionId: sid, model }, 30000);
+      await send("core", "session", { sessionId: sid, model, profile: currentProfile() }, 30000);
     } catch {
       // approval denied or llm unavailable
     }

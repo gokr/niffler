@@ -245,6 +245,64 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — component record not deleted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "persisted": false}
+  of "profile":
+    ## Named tool profiles (store kind "profile"): persistent selector
+    ## lists resolved once into a conversation's direct toolset at its
+    ## first turn. Admin-time surface — onDemand, so conversations that
+    ## never touch it pay nothing. list/get resolve against the live
+    ## catalog to report toolCount/estTokens/missing for pickers and
+    ## budget checks; save/delete just manage the stored selector list.
+    let op = args{"op"}.getStr("")
+    case op
+    of "list":
+      var items = newJArray()
+      for item in ct.storeListItems("profile"):
+        let doc = item{"value"}
+        var selectors: seq[string]
+        if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
+          for sel in doc{"tools"}:
+            if sel.getStr("").len > 0: selectors.add(sel.getStr(""))
+        let (direct, missing) = ct.cat.resolveProfile(ct.cat.promptTools(),
+                                                      selectors)
+        items.add(%*{"name": item{"id"}.getStr(""),
+                     "tools": doc{"tools"}, "note": doc{"note"}.getStr(""),
+                     "toolCount": direct.len, "estTokens": profileTokens(direct),
+                     "missing": missing})
+      return %*{"profiles": items}
+    of "get":
+      let name = args{"name"}.getStr("")
+      if name.len == 0:
+        return %*{"error": "profile get needs name"}
+      let (doc, _) = ct.storeGetItem("profile", name)
+      if doc == nil:
+        return %*{"error": "profile '" & name & "' not found"}
+      var selectors: seq[string]
+      if doc{"tools"} != nil and doc{"tools"}.kind == JArray:
+        for sel in doc{"tools"}:
+          if sel.getStr("").len > 0: selectors.add(sel.getStr(""))
+      let (direct, missing) = ct.cat.resolveProfile(ct.cat.promptTools(), selectors)
+      var names = newJArray()
+      for tool in direct: names.add(tool{"name"})
+      return %*{"name": name, "tools": doc{"tools"}, "note": doc{"note"},
+                "resolved": names, "missing": missing,
+                "estTokens": profileTokens(direct)}
+    of "save":
+      let name = args{"name"}.getStr("")
+      let tools = args{"tools"}
+      if name.len == 0 or tools == nil or tools.kind != JArray:
+        return %*{"error": "profile save needs name and a tools selector array"}
+      discard ct.storePutRev("profile", name,
+        %*{"name": name, "tools": tools, "note": args{"note"}.getStr(""),
+           "updatedAt": epochTime()})
+      return %*{"ok": true, "name": name}
+    of "delete":
+      let name = args{"name"}.getStr("")
+      if name.len == 0:
+        return %*{"error": "profile delete needs name"}
+      ct.storeDel("profile", name)
+      return %*{"ok": true, "name": name}
+    else:
+      return %*{"error": "profile op must be list, get, save or delete"}
   of "conversation_delete":
     ## Delete a conversation and everything hanging off it: the runner
     ## (killed first — a live turn would resurrect records), the header,
@@ -990,7 +1048,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
               "session_info", "prompt_preview", "doctor",
-              "conversation_delete"] and
+              "conversation_delete", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)
     if r{"error"} != nil:
