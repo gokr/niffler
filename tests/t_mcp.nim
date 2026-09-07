@@ -4,7 +4,7 @@
 ## removal. The fixture MCP server (tests/fixtures/mcp_server.nim) is a
 ## dependency-free stdio MCP implementation compiled into the sandbox.
 
-import std/[json, os, osproc, strutils, times]
+import std/[json, os, osproc, streams, strutils, times]
 import natswrapper
 import helpers
 
@@ -58,6 +58,33 @@ proc toolsInHints(res: JsonNode): seq[string] =
 proc hasTool(nc: NatsConnection, component, tool: string): bool =
   tool in toolsInHints(discoverHints(nc, component))
 
+# startMockRegistry compiles + runs tests/fixtures/mock_registry.nim and
+# returns the process and the port it announced (first stdout line).
+proc startMockRegistry(repoRoot, root: string): (Process, int) =
+  let bin = root / "var" / "mock-registry"
+  let (outp, code) = execCmdEx(
+    "nim c --hints:off --warnings:off -o:" & quoteShell(bin) & " " &
+    quoteShell(repoRoot / "tests" / "fixtures" / "mock_registry.nim"),
+    options = {poUsePath})
+  if code != 0 or not fileExists(bin):
+    echo outp
+    fail("mock registry did not compile")
+    report("MCP TEST")
+  let p = startProcess(bin, options = {poStdErrToStdOut, poUsePath})
+  var line = ""
+  var ch: char
+  try:
+    # Read the announced port char by char until newline (Stream API).
+    while true:
+      ch = p.outputStream.readChar()
+      if ch == '\n' or ch == '\0':
+        break
+      line.add(ch)
+  except CatchableError:
+    discard
+  let port = parseInt(line)
+  return (p, port)
+
 proc main() =
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
@@ -86,10 +113,15 @@ proc main() =
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
+  # Mock official MCP Registry for mcp_search: a tiny HTTP responder on a
+  # localhost port; the manager reads NIF_MCP_REGISTRY_URL.
+  let (mockRegistry, registryPort) = startMockRegistry(repoRoot, root)
+  defer: stopProcess(mockRegistry, 500)
   # NIF_AUTO_APPROVE=1: mcp_add/mcp_remove are approval-gated and invoke of
   # the approval-tagged fixture tool must not block a headless test.
   let coreProcess = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
-                                   extra = [("NIF_AUTO_APPROVE", "1")])
+                                   extra = [("NIF_AUTO_APPROVE", "1"),
+                                            ("NIF_MCP_REGISTRY_URL", "http://127.0.0.1:" & $registryPort)])
   defer: stopProcess(coreProcess, 1500)
 
   check("mcp manager registered", waitForRegistration(nc, "mcp"))
@@ -132,6 +164,54 @@ proc main() =
                     %*{"tool": "mcp_fixture_fail", "arguments": {}}, 30_000)
   check("MCP tool errors surface as errors",
         failed{"error"}.getStr("").contains("boom"), $failed)
+
+  # --- resources: list + read through the bridge ---------------------------
+  let listed = call(nc, "core", "invoke",
+                    %*{"tool": "mcp_fixture_resources", "arguments": {"op": "list"}}, 30_000)
+  check("mcp resources list reachable",
+        listed != nil and listed{"count"}.getInt == 1 and
+        ($listed{"resources"}).contains("doc://readme"), $listed)
+  let read = call(nc, "core", "invoke",
+                  %*{"tool": "mcp_fixture_resources",
+                     "arguments": {"op": "read", "uri": "doc://readme"}}, 30_000)
+  check("mcp resources read returns content",
+        read != nil and ($read{"contents"}).contains("fixture readme contents"),
+        $read)
+
+  # --- prompts: slash command registered + hidden prompt tool renders ------
+  let catalog = call(nc, "core", "catalog", %*{"op": "snapshot"}, 10_000)
+  var slashFound, promptToolFound = false
+  if catalog != nil and catalog.kind == JObject:
+    for comp in catalog{"components"}:
+      if comp{"name"}.getStr("") != "mcp-fixture":
+        continue
+      for cmd in comp{"slash"}:
+        if cmd{"name"}.getStr("") == "mcp-fixture-greet":
+          slashFound = true
+      for tool in comp{"tools"}:
+        if tool{"name"}.getStr("") == "mcp_fixture_prompt":
+          promptToolFound = true
+  check("drift: prompt registered as slash command", slashFound, $catalog)
+  check("prompt tool registered (hidden)", promptToolFound, $catalog)
+  let rendered = call(nc, "mcp-fixture", "mcp_fixture_prompt",
+                      %*{"name": "greet", "arguments": {"name": "Ada"}}, 30_000)
+  let renderedText = $rendered
+  check("prompt renders the template",
+        renderedText.contains("greet") and renderedText.contains("Ada"), renderedText)
+  let promptRecord = call(nc, "store", "get",
+                          %*{"kind": "mcp", "id": "fixture"}, 5_000)
+  var promptCached = false
+  for p in promptRecord{"value"}{"prompts"}:
+    if p{"name"}.getStr("") == "greet":
+      promptCached = true
+  check("prompt templates cached in the store", promptCached, $promptRecord)
+
+  # --- mcp_search: registry browse (mocked base URL) -----------------------
+  let search = call(nc, "mcp", "mcp_search", %*{"query": "github"}, 20_000)
+  check("mcp_search returns registry entries",
+        search{"ok"}.getBool(false) and search{"count"}.getInt(0) >= 1, $search)
+  check("mcp_search marks installable entries",
+        search{"entries"}{0}{"installable"}.getBool(false), $search)
 
   # --- mcp_servers: listing redacts secrets ---------------------------------
   let listing = call(nc, "mcp", "mcp_servers", %*{}, 15_000)

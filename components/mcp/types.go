@@ -31,6 +31,7 @@ type serverConfig struct {
 	IdleMs      int               `json:"idleMs,omitempty"`
 	Concurrency string            `json:"concurrency,omitempty"`
 	Tools       []cachedTool      `json:"tools,omitempty"`
+	Prompts     []cachedPrompt    `json:"prompts,omitempty"`
 }
 
 // cachedTool is one MCP tool as last seen from the server (the bridge
@@ -39,6 +40,21 @@ type cachedTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+// cachedPrompt is one MCP prompt template cached by the bridge (the bridge
+// owns this list; the manager only round-trips it when editing records).
+type cachedPrompt struct {
+	Name        string            `json:"name"`
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Arguments   []cachedPromptArg `json:"arguments,omitempty"`
+}
+
+type cachedPromptArg struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
 }
 
 // sanitizeComponent mirrors sdk/subjects.nim's sanitizeSessionId: catalog

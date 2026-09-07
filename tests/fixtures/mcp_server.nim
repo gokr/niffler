@@ -1,13 +1,18 @@
 ## Minimal MCP server fixture for tests/t_mcp.nim — speaks the stdio
 ## transport (newline-delimited JSON-RPC 2.0) with just enough surface to
-## exercise the bridge: initialize, tools/list, tools/call, ping, and a
-## server-initiated tools/list_changed notification for drift handling.
+## exercise the bridge: initialize, tools/list, tools/call, prompts/list,
+## prompts/get, resources/list, resources/read, ping, and a server-initiated
+## tools/list_changed notification for drift handling.
 ##
 ## Tools:
 ##   echo         {message} -> text "echo: <message>"
 ##   fail         {}        -> tool error result ("boom")
 ##   mutate_tools {}        -> adds "extra_tool" to the listing and pushes
 ##                           notifications/tools/list_changed
+## Prompts:
+##   greet        {name}    -> one assistant message greeting the name
+## Resources:
+##   doc://readme           -> text resource ("fixture readme contents")
 ##
 ## Deterministic, dependency-free (std only), compiled by the test itself.
 
@@ -66,7 +71,9 @@ proc main() =
     of "initialize":
       reply(stdout, id, %*{
         "protocolVersion": msg{"params"}{"protocolVersion"}.getStr("2025-06-18"),
-        "capabilities": %*{"tools": %*{"listChanged": true}},
+        "capabilities": %*{"tools": %*{"listChanged": true},
+                          "prompts": %*{},
+                          "resources": %*{}},
         "serverInfo": %*{"name": "mcp-fixture", "version": "0.1.0"},
       })
     of "ping":
@@ -76,6 +83,40 @@ proc main() =
       for t in tools:
         arr.add(toolJson(t))
       reply(stdout, id, %*{"tools": arr})
+    of "prompts/list":
+      reply(stdout, id, %*{"prompts": %*[
+        {"name": "greet", "description": "Greet someone by name",
+         "arguments": %*[{"name": "name", "description": "Who to greet",
+                          "required": true}]},
+      ]})
+    of "prompts/get":
+      let promptName = msg{"params"}{"name"}.getStr("")
+      if promptName == "greet":
+        let who = msg{"params"}{"arguments"}{"name"}.getStr("stranger")
+        reply(stdout, id, %*{
+          "description": "Greeting template",
+          "messages": %*[
+            {"role": "user", "content": %*{"type": "text",
+             "text": "Please greet " & who & " warmly."}},
+          ],
+        })
+      else:
+        replyError(stdout, id, -32602, "unknown prompt: " & promptName)
+    of "resources/list":
+      reply(stdout, id, %*{"resources": %*[
+        {"uri": "doc://readme", "name": "readme",
+         "description": "The fixture readme", "mimeType": "text/plain",
+         "size": 21},
+      ]})
+    of "resources/read":
+      let uri = msg{"params"}{"uri"}.getStr("")
+      if uri == "doc://readme":
+        reply(stdout, id, %*{"contents": %*[
+          {"uri": "doc://readme", "mimeType": "text/plain",
+           "text": "fixture readme contents"},
+        ]})
+      else:
+        replyError(stdout, id, -32602, "unknown resource: " & uri)
     of "tools/call":
       let name = msg{"params"}{"name"}.getStr("")
       case name

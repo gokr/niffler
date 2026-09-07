@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -51,8 +52,8 @@ const (
 )
 
 // serverConfig is the stored record (kind "mcp"). The manager owns every
-// field except tools: the bridge rewrites only the cached tool list when it
-// detects drift.
+// field except tools and prompts: the bridge rewrites only those cached
+// listings when it detects drift.
 type serverConfig struct {
 	Name        string            `json:"name"`
 	Type        string            `json:"type"` // stdio (default) | http | sse
@@ -70,6 +71,7 @@ type serverConfig struct {
 	IdleMs      int               `json:"idleMs,omitempty"`
 	Concurrency string            `json:"concurrency,omitempty"` // parallel (default) | serial
 	Tools       []cachedTool      `json:"tools,omitempty"`
+	Prompts     []cachedPrompt    `json:"prompts,omitempty"`
 }
 
 func (c *serverConfig) enabled() bool {
@@ -99,6 +101,21 @@ type cachedTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+// cachedPrompt is one MCP prompt template as last seen from the server —
+// the bridge surfaces these as slash commands for interactive UIs.
+type cachedPrompt struct {
+	Name        string            `json:"name"`
+	Title       string            `json:"title,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Arguments   []cachedPromptArg `json:"arguments,omitempty"`
+}
+
+type cachedPromptArg struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
 }
 
 // ---------------------------------------------------------------- naming
@@ -207,6 +224,9 @@ func (b *bridge) connectLocked() error {
 		// be corrected on the next fresh session.
 		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
 			b.handleToolListChanged(ctx)
+		},
+		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
+			b.handleToolListChanged(ctx) // same flow: re-list, persist, restart
 		},
 	})
 	cs, err := client.Connect(b.sessCtx, transport, nil)
@@ -348,21 +368,66 @@ func toolsChanged(a, b []cachedTool) bool {
 	return string(ra) != string(rb)
 }
 
-// checkDriftLocked re-lists the server's tools and, when the contract moved,
-// persists the fresh list (best effort, rev-retried) and schedules a restart
-// so the announced catalog matches reality again. Probe mode skips both:
-// it only fills cfg.Tools for the report.
+// cachePrompts converts a server listing into the record's cached form.
+func cachePrompts(prompts []*mcp.Prompt) []cachedPrompt {
+	out := make([]cachedPrompt, 0, len(prompts))
+	for _, p := range prompts {
+		cp := cachedPrompt{Name: p.Name, Title: p.Title, Description: p.Description}
+		for _, a := range p.Arguments {
+			if a == nil || sanitizeTool(a.Name) == "" {
+				continue
+			}
+			cp.Arguments = append(cp.Arguments, cachedPromptArg{
+				Name: a.Name, Description: a.Description, Required: a.Required,
+			})
+		}
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// listAllPrompts paginates prompts/list. A server without prompt support
+// yields (nil, err) — callers treat that as "no prompts", not a failure.
+func listAllPrompts(ctx context.Context, cs *mcp.ClientSession) ([]*mcp.Prompt, error) {
+	var out []*mcp.Prompt
+	cursor := ""
+	for {
+		res, err := cs.ListPrompts(ctx, &mcp.ListPromptsParams{Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, res.Prompts...)
+		if res.NextCursor == "" {
+			return out, nil
+		}
+		cursor = res.NextCursor
+	}
+}
+
+// checkDriftLocked re-lists the server's tools (and prompts, best effort)
+// and, when the contract moved, persists the fresh lists (best effort,
+// rev-retried) and schedules a restart so the announced catalog matches
+// reality again. Probe mode skips both: it only fills cfg for the report.
 func (b *bridge) checkDriftLocked(ctx context.Context) error {
 	fresh, err := listAllTools(ctx, b.cs)
 	if err != nil {
 		return err
 	}
 	newList := cacheTools(fresh)
-	if !toolsChanged(b.cfg.Tools, newList) {
+	// Prompts are optional: a server without prompt support (or an error
+	// listing them) keeps the cached set — only a fresh successful listing
+	// that differs from the cache signals drift.
+	newPrompts := b.cfg.Prompts
+	if listed, err := listAllPrompts(ctx, b.cs); err == nil {
+		newPrompts = cachePrompts(listed)
+	}
+	if !toolsChanged(b.cfg.Tools, newList) && !toolsChangedPrompts(b.cfg.Prompts, newPrompts) {
 		return nil
 	}
 	b.drifted = true
 	b.cfg.Tools = newList
+	b.cfg.Prompts = newPrompts
 	if b.probe || b.comp == nil {
 		return nil
 	}
@@ -382,6 +447,7 @@ func (b *bridge) checkDriftLocked(ctx context.Context) error {
 			break
 		}
 		record.Tools = newList
+		record.Prompts = newPrompts
 		if _, err := b.comp.StorePut(kindMCP, b.cfg.Name, record, item.Rev, 10*time.Second); err != nil {
 			if errors.Is(err, sdk.ErrStoreConflict) {
 				continue
@@ -397,6 +463,157 @@ func (b *bridge) checkDriftLocked(ctx context.Context) error {
 		os.Exit(driftExitCode)
 	}()
 	return nil
+}
+
+// toolsChangedPrompts compares two cached prompt listings independent of order.
+func toolsChangedPrompts(a, b []cachedPrompt) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	ra, _ := json.Marshal(a)
+	rb, _ := json.Marshal(b)
+	return string(ra) != string(rb)
+}
+
+// callPrompt renders one MCP prompt template through the lazy session.
+func (b *bridge) callPrompt(prompt string, args json.RawMessage) (any, error) {
+	ctx := context.Background()
+	if b.cfg.TimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(b.cfg.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+	var req struct {
+		Arguments map[string]string `json:"arguments"`
+	}
+	_ = json.Unmarshal(args, &req)
+	cs, err := b.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res, err := cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: prompt, Arguments: req.Arguments})
+	if err != nil {
+		b.markErr(err)
+		b.dropSession()
+		return nil, fmt.Errorf("mcp prompt %q failed: %w", prompt, err)
+	}
+	b.touch()
+	messages := make([]map[string]any, 0, len(res.Messages))
+	for _, msg := range res.Messages {
+		entry := map[string]any{"role": string(msg.Role)}
+		if tc, ok := msg.Content.(*mcp.TextContent); ok {
+			entry["text"] = tc.Text
+		} else if raw, err := json.Marshal(msg.Content); err == nil {
+			entry["content"] = json.RawMessage(raw)
+		}
+		messages = append(messages, entry)
+	}
+	return map[string]any{
+		"prompt": prompt, "description": res.Description, "messages": messages,
+	}, nil
+}
+
+// resourcesList/read serve the server's resource catalog through the lazy
+// session. Readable resource text is capped: a huge file must not blow the
+// conversation (the LLM can ask for it in pieces when chunked URIs exist).
+const resourceTextCap = 64 * 1024
+
+func (b *bridge) listResources(ctx context.Context) (any, error) {
+	cs, err := b.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res, err := cs.ListResources(ctx, &mcp.ListResourcesParams{})
+	if err != nil {
+		b.markErr(err)
+		return nil, fmt.Errorf("mcp resources/list failed: %w", err)
+	}
+	b.touch()
+	items := make([]map[string]any, 0, len(res.Resources))
+	for _, r := range res.Resources {
+		if r == nil {
+			continue
+		}
+		items = append(items, map[string]any{
+			"uri": r.URI, "name": r.Name, "title": r.Title,
+			"description": r.Description, "mimeType": r.MIMEType, "size": r.Size,
+		})
+	}
+	return map[string]any{"resources": items, "count": len(items)}, nil
+}
+
+func (b *bridge) readResource(ctx context.Context, uri string) (any, error) {
+	if strings.TrimSpace(uri) == "" {
+		return nil, errors.New("uri is required for op=read")
+	}
+	cs, err := b.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		b.markErr(err)
+		return nil, fmt.Errorf("mcp resources/read failed: %w", err)
+	}
+	b.touch()
+	contents := make([]map[string]any, 0, len(res.Contents))
+	for _, c := range res.Contents {
+		if c == nil {
+			continue
+		}
+		entry := map[string]any{"uri": c.URI, "mimeType": c.MIMEType}
+		if c.Text != "" {
+			if len(c.Text) > resourceTextCap {
+				entry["text"] = c.Text[:resourceTextCap]
+				entry["truncated"] = true
+			} else {
+				entry["text"] = c.Text
+			}
+		} else if len(c.Blob) > 0 {
+			entry["blob"] = base64.StdEncoding.EncodeToString(c.Blob)
+		}
+		contents = append(contents, entry)
+	}
+	return map[string]any{"contents": contents}, nil
+}
+
+// resourcesHandler backs the on-demand mcp_<server>_resources tool.
+func (b *bridge) resourcesHandler(_ *sdk.Component, args json.RawMessage) (any, error) {
+	var req struct {
+		Op  string `json:"op"`
+		URI string `json:"uri"`
+	}
+	_ = json.Unmarshal(args, &req)
+	ctx := context.Background()
+	if b.cfg.TimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(b.cfg.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+	switch req.Op {
+	case "", "list":
+		return b.listResources(ctx)
+	case "read":
+		return b.readResource(ctx, req.URI)
+	default:
+		return nil, fmt.Errorf("op must be \"list\" or \"read\" (got %q)", req.Op)
+	}
+}
+
+// promptHandler backs the hidden mcp_<server>_prompt tool that slash
+// commands route to.
+func (b *bridge) promptHandler(_ *sdk.Component, args json.RawMessage) (any, error) {
+	var req struct {
+		Name      string            `json:"name"`
+		Arguments map[string]string `json:"arguments"`
+	}
+	if err := json.Unmarshal(args, &req); err != nil {
+		return nil, fmt.Errorf("bad arguments: %w", err)
+	}
+	if req.Name == "" {
+		return nil, errors.New("name is required")
+	}
+	return b.callPrompt(req.Name, args)
 }
 
 // callTool runs one MCP tool call through the lazy session.
@@ -516,7 +733,89 @@ func registerTools(comp *sdk.Component, cfg *serverConfig) (int, error) {
 	if registered == 0 {
 		return 0, fmt.Errorf("server %q has no tools", server)
 	}
+	// Resources (on demand, LLM-visible): servers without resource support
+	// surface a clean error on the first call — the tool itself is cheap and
+	// keeps the contract uniform.
+	comp.ToolConcurrent(prefixedToolName(server, "resources"), map[string]any{
+		"type": "object",
+		"description": fmt.Sprintf("[mcp:%s] List or read the server's MCP resources (exposed files/data). "+
+			"op=list (default) returns the catalog; op=read with uri returns the content.", server),
+		"properties": map[string]any{
+			"op":  map[string]any{"type": "string", "enum": []string{"list", "read"}, "description": "list (default) or read"},
+			"uri": map[string]any{"type": "string", "description": "resource URI (required for op=read)"},
+		},
+		"x-harness": resourcesXHarness(cfg),
+	}, func(_ *sdk.Component, args json.RawMessage) (any, error) {
+		return bGlobal.resourcesHandler(nil, args)
+	})
+	registered++
 	return registered, nil
+}
+
+// resourcesXHarness builds the metadata block for the resources tool.
+func resourcesXHarness(cfg *serverConfig) map[string]any {
+	xh := map[string]any{}
+	if cfg.Expose != "direct" {
+		xh["onDemand"] = true
+	}
+	if cfg.Approval == "always" {
+		xh["approval"] = "always"
+	}
+	if cfg.TimeoutMs > 0 {
+		xh["timeoutMs"] = cfg.TimeoutMs
+	}
+	xh["effect"] = "read" // listing/reading resources never mutates
+	return xh
+}
+
+// registerPrompts declares the cached prompt templates: one hidden tool
+// that renders a prompt, plus one slash command per template for
+// interactive UIs (docs/WIRE.md). Slash commands re-announce with the
+// catalog on drift, so UIs pick changes up through ev.catalog.updated.
+func registerPrompts(comp *sdk.Component, cfg *serverConfig) int {
+	server := cfg.Name
+	if len(cfg.Prompts) == 0 {
+		return 0
+	}
+	toolName := prefixedToolName(server, "prompt")
+	comp.Tool(toolName, map[string]any{
+		"type":        "object",
+		"description": fmt.Sprintf("Render an MCP prompt template from server %q (manager/UI-facing, hidden).", server),
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string", "description": "Prompt template name"},
+			"arguments": map[string]any{"type": "object", "description": "Template arguments"},
+		},
+		"required":  []string{"name"},
+		"x-harness": map[string]any{"hidden": true},
+	}, func(_ *sdk.Component, args json.RawMessage) (any, error) {
+		return bGlobal.promptHandler(nil, args)
+	})
+	count := 0
+	for _, p := range cfg.Prompts {
+		if sanitizeTool(p.Name) == "" {
+			continue
+		}
+		cmdName := "mcp-" + sanitizeComponent(server) + "-" + sanitizeTool(p.Name)
+		desc := p.Description
+		if desc == "" {
+			desc = p.Title
+		}
+		if desc == "" {
+			desc = fmt.Sprintf("MCP prompt %q from server %s", p.Name, server)
+		}
+		params := make([]sdk.SlashParam, 0, len(p.Arguments))
+		for _, a := range p.Arguments {
+			params = append(params, sdk.SlashParam{
+				Name: a.Name, Kind: "string",
+				Description: a.Description,
+			})
+		}
+		comp.Slash(sdk.SlashCommand{
+			Name: cmdName, Description: desc, Tool: toolName, Params: params,
+		})
+		count++
+	}
+	return count
 }
 
 // toolSchema builds the catalog schema: the MCP input schema plus the
@@ -581,6 +880,7 @@ func (b *bridge) status(_ *sdk.Component, args json.RawMessage) (any, error) {
 		"type":      b.cfg.transport(),
 		"connected": b.cs != nil,
 		"tools":     len(b.cfg.Tools),
+		"prompts":   len(b.cfg.Prompts),
 		"drifted":   b.drifted,
 		"lastError": b.lastErr,
 		"startedAt": epoch(b.started),
@@ -627,9 +927,10 @@ func runProbe(cfg *serverConfig) error {
 	}
 	b.mu.Lock()
 	tools := b.cfg.Tools
+	prompts := b.cfg.Prompts
 	sess := b.cs
 	b.mu.Unlock()
-	out, err := json.Marshal(map[string]any{"ok": true, "tools": tools})
+	out, err := json.Marshal(map[string]any{"ok": true, "tools": tools, "prompts": prompts})
 	if err != nil {
 		return err
 	}
@@ -719,6 +1020,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "mcp-bridge: %v\n", err)
 		os.Exit(1)
 	}
+	// Prompt templates become hidden prompt tools + slash commands for the
+	// interactive UIs; zero prompts is normal (most servers have none).
+	registerPrompts(comp, cfg)
 	comp.Tool("mcp_"+sanitizeTool(cfg.Name)+"_bridge_status", map[string]any{
 		"type":        "object",
 		"description": fmt.Sprintf("Bridge status for MCP server %q (manager-facing, hidden).", cfg.Name),

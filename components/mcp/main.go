@@ -27,7 +27,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -139,6 +143,19 @@ func main() {
 		"x-harness": map[string]any{"onDemand": true},
 	}, m.refresh)
 
+	comp.Tool("mcp_search", map[string]any{
+		"type": "object",
+		"description": "Search the official MCP Registry (registry.modelcontextprotocol.io) for MCP servers by keyword. " +
+			"Returns installable entries with ready mcp_add arguments (name/type/command/args/url) plus non-installable ones with the reason. " +
+			"Read-only browse: pass an entry through mcp_add to actually connect it.",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string", "description": "Search keywords (e.g. \"github\", \"filesystem\")"},
+			"limit": map[string]any{"type": "integer", "description": "Max results (default 10, max 20)"},
+		},
+		"required":  []string{"query"},
+		"x-harness": map[string]any{"onDemand": true, "effect": "read"},
+	}, m.search)
+
 	if err := comp.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "mcp: %v\n", err)
 		os.Exit(1)
@@ -185,13 +202,14 @@ func (m *manager) list(_ *sdk.Component, _ json.RawMessage) (any, error) {
 			continue
 		}
 		entry := map[string]any{
-			"name":      cfg.Name,
-			"type":      cfg.Type,
-			"enabled":   cfg.Enabled == nil || *cfg.Enabled,
-			"toolCount": len(cfg.Tools),
-			"timeoutMs": cfg.TimeoutMs,
-			"approval":  cfg.Approval,
-			"expose":    cfg.Expose,
+			"name":        cfg.Name,
+			"type":        cfg.Type,
+			"enabled":     cfg.Enabled == nil || *cfg.Enabled,
+			"toolCount":   len(cfg.Tools),
+			"promptCount": len(cfg.Prompts),
+			"timeoutMs":   cfg.TimeoutMs,
+			"approval":    cfg.Approval,
+			"expose":      cfg.Expose,
 		}
 		switch cfg.Type {
 		case "http", "sse":
@@ -226,6 +244,136 @@ func keys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+const registryDefaultURL = "https://registry.modelcontextprotocol.io"
+
+// registryEntry is one official-MCP-Registry result narrowed to what
+// mcp_add can consume directly. Browsing is read-only — nothing installs
+// without the caller passing the entry through mcp_add (which validates
+// with a real connect and asks for approval).
+type registryEntry struct {
+	Name           string `json:"name"`
+	Title          string `json:"title,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Version        string `json:"version,omitempty"`
+	Transport      string `json:"transport,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Args           []any  `json:"args,omitempty"`
+	URL            string `json:"url,omitempty"`
+	Installable    bool   `json:"installable"`
+	NotInstallable string `json:"notInstallableReason,omitempty"`
+}
+
+// registrySearch queries the official MCP Registry browse endpoint
+// (?search=&version=latest) with a short timeout and a response cap.
+// NIF_MCP_REGISTRY_URL overrides the base (air-gapped/proxied setups).
+func registrySearch(query string, limit int) ([]registryEntry, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	base := strings.TrimSpace(os.Getenv("NIF_MCP_REGISTRY_URL"))
+	if base == "" {
+		base = registryDefaultURL
+	}
+	url := fmt.Sprintf("%s/v0/servers?search=%s&version=latest&limit=%d",
+		strings.TrimRight(base, "/"), neturl.QueryEscape(query), limit)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("registry unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registry returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Servers []struct {
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Version     string `json:"version"`
+			Packages    []struct {
+				RegistryType string          `json:"registryType"`
+				Identifier   string          `json:"identifier"`
+				Transport    json.RawMessage `json:"transport"`
+			} `json:"packages"`
+			Remotes []struct {
+				Type string `json:"type"`
+				URL  string `json:"url"`
+			} `json:"remotes"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("bad registry payload: %w", err)
+	}
+	out := make([]registryEntry, 0, len(payload.Servers))
+	for _, srv := range payload.Servers {
+		entry := registryEntry{
+			Name: srv.Name, Title: srv.Title, Description: srv.Description, Version: srv.Version,
+		}
+		// Prefer a remote (http/sse) endpoint: zero local install. Fall back
+		// to the first stdio package (npm → npx, pypi → uvx).
+		for _, rem := range srv.Remotes {
+			if rem.URL == "" {
+				continue
+			}
+			entry.Transport = "http"
+			if rem.Type == "sse" {
+				entry.Transport = "sse"
+			}
+			entry.URL = rem.URL
+			entry.Installable = true
+			break
+		}
+		if !entry.Installable {
+			for _, pkg := range srv.Packages {
+				var tr struct {
+					Type string `json:"type"`
+				}
+				_ = json.Unmarshal(pkg.Transport, &tr)
+				if tr.Type != "" && tr.Type != "stdio" {
+					continue
+				}
+				switch pkg.RegistryType {
+				case "npm":
+					entry.Transport = "stdio"
+					entry.Command = "npx"
+					entry.Args = []any{"-y", pkg.Identifier}
+					entry.Installable = true
+				case "pypi":
+					entry.Transport = "stdio"
+					entry.Command = "uvx"
+					entry.Args = []any{pkg.Identifier}
+					entry.Installable = true
+				}
+				if entry.Installable {
+					break
+				}
+			}
+		}
+		if !entry.Installable && entry.NotInstallable == "" {
+			entry.NotInstallable = "no npm/pypi stdio package or http/sse remote announced"
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// registrySuggestedName turns "io.github.user/server-name" into "server-name".
+func registrySuggestedName(full string) string {
+	if idx := strings.LastIndex(full, "/"); idx >= 0 {
+		return full[idx+1:]
+	}
+	return full
 }
 
 // ---------------------------------------------------------------- add/edit
@@ -343,11 +491,11 @@ func (m *manager) validate(cfg *serverConfig) error {
 }
 
 // probe validates a candidate config through the bridge binary (config on
-// stdin, one real connect, tool listing on stdout).
-func (m *manager) probe(cfg *serverConfig) ([]cachedTool, error) {
+// stdin, one real connect, tool+prompt listings on stdout).
+func (m *manager) probe(cfg *serverConfig) ([]cachedTool, []cachedPrompt, error) {
 	payload, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// First runs of npx/uvx servers download packages; a server-configured
 	// per-call timeout above 30s extends validation too.
@@ -375,18 +523,19 @@ func (m *manager) probe(cfg *serverConfig) ([]cachedTool, error) {
 			tail = tail[len(tail)-400:]
 		}
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("validation timed out after %s (first run of npx/uvx servers downloads packages — raise NIF_MCP_PROBE_TIMEOUT_MS): %s", timeout, strings.TrimSpace(tail))
+			return nil, nil, fmt.Errorf("validation timed out after %s (first run of npx/uvx servers downloads packages — raise NIF_MCP_PROBE_TIMEOUT_MS): %s", timeout, strings.TrimSpace(tail))
 		}
-		return nil, fmt.Errorf("server did not validate: %s", strings.TrimSpace(tail))
+		return nil, nil, fmt.Errorf("server did not validate: %s", strings.TrimSpace(tail))
 	}
 	var reply struct {
-		OK    bool         `json:"ok"`
-		Tools []cachedTool `json:"tools"`
+		OK      bool           `json:"ok"`
+		Tools   []cachedTool   `json:"tools"`
+		Prompts []cachedPrompt `json:"prompts"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &reply); err != nil || !reply.OK {
-		return nil, fmt.Errorf("probe produced no usable result: %s", strings.TrimSpace(stdout.String()))
+		return nil, nil, fmt.Errorf("probe produced no usable result: %s", strings.TrimSpace(stdout.String()))
 	}
-	return reply.Tools, nil
+	return reply.Tools, reply.Prompts, nil
 }
 
 // spawnBridge asks core to supervise mcp-<name>. Idempotent: an already
@@ -445,11 +594,12 @@ func (m *manager) add(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	} else if !isNotFound(err) {
 		return nil, err
 	}
-	tools, err := m.probe(&cfg)
+	tools, prompts, err := m.probe(&cfg)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Tools = tools
+	cfg.Prompts = prompts
 	if _, err := m.comp.StorePut(kindMCP, cfg.Name, cfg, 0, 10*time.Second); err != nil {
 		return nil, err
 	}
@@ -503,11 +653,12 @@ func (m *manager) edit(_ *sdk.Component, raw json.RawMessage) (any, error) {
 	}
 	disabled := current.Enabled != nil && !*current.Enabled
 	if !disabled {
-		tools, err := m.probe(&current)
+		tools, prompts, err := m.probe(&current)
 		if err != nil {
 			return nil, fmt.Errorf("re-validation failed (record unchanged): %w", err)
 		}
 		current.Tools = tools
+		current.Prompts = prompts
 	}
 	if _, err := m.comp.StorePut(kindMCP, name, current, item.Rev, 10*time.Second); err != nil {
 		return nil, err
@@ -626,4 +777,27 @@ func (m *manager) bridgeStatus(server, op string, timeout time.Duration) (any, e
 
 func isNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "not found")
+}
+
+// search browses the official MCP Registry. Installable entries carry ready
+// mcp_add arguments; the caller still goes through mcp_add (validation +
+// approval) — browsing never mutates anything.
+func (m *manager) search(_ *sdk.Component, raw json.RawMessage) (any, error) {
+	var args struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("bad arguments: %w", err)
+	}
+	entries, err := registrySearch(args.Query, args.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok": true, "query": strings.TrimSpace(args.Query),
+		"entries": entries, "count": len(entries),
+		"note": "installable entries: call mcp_add with name=" + "\"<your-name>\"" +
+			" plus the entry's type/command/args/url (name suggestion: last path segment)",
+	}, nil
 }

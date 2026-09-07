@@ -774,7 +774,8 @@ One store document per server (kind `mcp`, id = sanitized server name;
   "timeoutMs": 120000,
   "idleMs": 300000,
   "concurrency": "parallel",
-  "tools": [{"name": "read_file", "description": "...", "inputSchema": {}}]
+  "tools": [{"name": "read_file", "description": "...", "inputSchema": {}}],
+  "prompts": [{"name": "review", "description": "...", "arguments": [{"name": "code", "required": true}]}]
 }
 ```
 
@@ -803,15 +804,39 @@ Adding an MCP server therefore asks for approval twice by design: once for
 the `mcp_add` itself, once for the `core.spawn` it triggers — the human gate
 on changing the harness shape (docs/ARCHITECTURE.md).
 
+### Prompts, resources, registry
+
+- **Prompts become slash commands.** Each server prompt is registered as a
+  hidden catalog tool `mcp_<server>_prompt` (invisible to the LLM,
+  `x-harness.hidden`) plus a slash command `mcp-<server>-<promptname>` whose
+  named parameters mirror the prompt's arguments. Rendering a prompt is an
+  ordinary bus call; the rendered message text enters the conversation as an
+  appended user message. The bridge re-registers them on drift like tools
+  (server-pushed `notifications/prompt_list_changed` included).
+- **Resources** surface as one concurrent tool `mcp_<server>_resources`
+  (`x-harness.effect: "read"`): `{op: "list"}` or `{op: "read", uri: ...}`.
+  Read results are capped at 64 KB of text; larger or binary blobs come back
+  base64 with the MCP mimeType.
+- **Registry**: `mcp_search <query>` queries the official MCP Registry
+  (`registry.modelcontextprotocol.io`; override with `NIF_MCP_REGISTRY_URL`)
+  and returns name/title/description/version plus a suggested `mcp_add`
+  config when the entry ships an npm or PyPI package (`npx -y <id>` /
+  `uvx <id>`); entries without a usable transport get a reason instead.
+- **Drift covers prompts too**: `checkDriftLocked` (fresh session) and both
+  list-changed notifications re-list tools *and* prompts; the record's cache
+  is refreshed and the bridge exits 3 for a supervisor restart.
+
 ### Verification
 
 `tests/t_mcp.nim` (in `make test`): compiles a dependency-free fixture MCP
 server (`tests/fixtures/mcp_server.nim`, newline-delimited JSON-RPC over
-stdio) into a private sandbox and exercises the whole contract — add (with
+stdio) and a mock registry (`tests/fixtures/mock_registry.nim`, std-only
+HTTP) into a private sandbox and exercises the whole contract — add (with
 secret redaction), bridge registration, discover hints + full schema, lazy
-invoke, tool-error propagation, server-pushed drift (persist + restart +
-rediscovery), edit/respawn, spawn-args persistence for boot restore, and
-removal.
+invoke, tool-error propagation, resources list/read, prompt slash command +
+rendering, registry search against the mock, server-pushed drift (persist +
+restart + rediscovery), edit/respawn, spawn-args persistence for boot
+restore, and removal.
 
 ## Progressive tool discovery (`discover`/`invoke`)
 

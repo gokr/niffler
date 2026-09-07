@@ -487,7 +487,12 @@ Open work — deferred follow-ups and quests — is consolidated in
       discovery stays truthful. `core.spawn` learned optional persisted
       `args` (restored on boot); the Go SDK learned deferred announce
       (`DeferAnnounce`/`Announce`) for components that must load config
-      before declaring a contract. Fixture-server bus test in `t_mcp`
+      before declaring a contract. Server prompts become hidden tools +
+      slash commands (`mcp-<server>-<prompt>`), resources surface as one
+      read-effect `mcp_<server>_resources` tool (list/read, 64 KB text cap),
+      and `mcp_search` browses the official MCP Registry with a suggested
+      `mcp_add` config for npm/PyPI-packaged entries. Fixture-server + mock
+      registry bus test in `t_mcp`
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;
