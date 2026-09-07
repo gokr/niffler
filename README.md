@@ -571,10 +571,12 @@ Open work — deferred follow-ups and quests — is consolidated in
       worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
       `tests/t_agent.nim`, `tests/t_fabric.nim`)
-- [x] **expert advisory peer** (docs/research/EXPERT.md) — one expert follows one working
-      session: bounded current-turn observation from `ev.session.*`, a
+- [x] **expert advisory peer** (docs/research/EXPERT.md) — one expert follows one or more working
+      sessions concurrently: bounded per-session current-turn observation from
+      `ev.session.*`, a
       stateless LLM judgment over a cache-stable knowledge prefix (reviewed
-      bundled skills `niffler-tools`/`niffler-fabric` plus the observed
+      bundled skills `niffler-tools`, `niffler-fabric` and `niffler-harness`
+      plus the observed
       session's own frozen tool view, filling up to 80% of the judge
       context), and a turn-bound `svc.session.<id>.advise` request/reply
       (stale advice rejected, never queued into a later turn); steers are

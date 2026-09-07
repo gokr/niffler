@@ -9,13 +9,14 @@ Niffler is a self-extending harness. Many capabilities are NOT in the direct
 toolset: they are **on-demand tools** reachable only via `discover` + `invoke`.
 The cardinal rule: **before hand-rolling a job in bash, ask whether a Niffler
 component already does it** — `discover` (query, or `component` for one
-component) lists live components and tools outside the fixed direct set;
+component, or `tools` alone to look names up across every component) lists
+live components and tools outside the fixed direct set;
 `invoke` calls a discovered tool with its documented arguments.
 
 ## File tools (direct)
 
 - `read` — single file, pageable (offset/limit). Use for one file.
-- `read_many` — up to 8 files in ONE call. Batch related reads; cut tool
+- `read_many` — up to 12 files in ONE call. Batch related reads; cut tool
   round trips when inspecting several files at once.
 - `files` — sorted file listing by path/glob. The listing tool.
 - `write` — atomic whole-file write (create or overwrite). Use for new files

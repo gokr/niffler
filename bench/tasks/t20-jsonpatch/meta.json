@@ -1,0 +1,3 @@
+{ "id": "t20-jsonpatch", "title": "RFC 6902-style JSON patch diff/apply with LCS arrays (Node)", "language": "javascript",
+  "kind": "general",
+  "protected": ["test.sh", "tests", "README.md", "package.json"] }

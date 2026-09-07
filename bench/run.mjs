@@ -118,6 +118,22 @@ const taskDirs = fs
   .sort();
 const tasks = taskArg === "all" ? taskDirs : taskArg.split(",");
 
+// ---------- task-shape check (always on) ----------
+// A task the verifier can never run green (no repo/test.sh and no meta.verify
+// script) burns a full agent round per cell before failing at verify time.
+// prepareRepo force-chmods test.sh, so the exec bit itself needs no check.
+const shapeBroken = tasks.filter((taskId) => {
+  const meta = readJson(path.join(TASK_ROOT, taskId, "meta.json")) || {};
+  return !meta.verify && !fs.existsSync(path.join(TASK_ROOT, taskId, "repo", "test.sh"));
+});
+if (shapeBroken.length) {
+  console.error(
+    "bench: task(s) with no runnable verifier (need repo/test.sh or meta.verify): " +
+      shapeBroken.join(", "),
+  );
+  process.exit(1);
+}
+
 const { keys, missing } = resolveKeys(BENCH_ROOT, new Set(models));
 if (missing.length) {
   console.error(`bench: missing API keys: ${missing.join(", ")} — see bench/README.md`);
@@ -210,6 +226,10 @@ function prepareRepo(taskId, dest) {
   if (!fs.existsSync(gi)) {
     fs.writeFileSync(gi, "__pycache__/\n*.pyc\n");
   }
+  // test.sh must be executable: prompts tell the agent to run `./test.sh`,
+  // and plain cp loses the exec bit (every cell wasted a turn on EACCES).
+  const ts = path.join(dest, "test.sh");
+  if (fs.existsSync(ts)) fs.chmodSync(ts, 0o755);
   // Task repos ship as plain files; create the pristine base commit here so
   // every run gets an identical history to diff against.
   if (!fs.existsSync(path.join(dest, ".git"))) {

@@ -113,7 +113,7 @@ let bashSchema = toolSchema(%*{
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c) — builds, tests, git, processes. Result starts with an (exit N) line: non-zero = failure (124 timed out, 130 cancelled); the rest is stdout+stderr. Output over ~12KB spills to a file (path in result) — page it with read. Prefer read/read_many/edit/files/grep for file work.")
+  description = "Run a shell command (bash -c) — builds, tests, git, processes.")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
@@ -140,6 +140,7 @@ discard comp.tool("bash", bashSchema,
     var status = "(exit " & $code
     if code == 124: status.add(" — timed out after " & $timeoutMs & "ms")
     elif code == 130: status.add(" — cancelled by request")
+    elif code == 126: status.add(" — found but not executable; run it via an interpreter, e.g. bash ./script.sh")
     status.add(")")
     var text = status & "\n"
     # transcript cap: spill the full capture and keep only head+tail in

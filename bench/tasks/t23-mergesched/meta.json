@@ -1,0 +1,3 @@
+{ "id": "t23-mergesched", "title": "Interval merge with priorities + min-rooms sweep (Go)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "sched_test.go", "go.mod", "README.md"] }

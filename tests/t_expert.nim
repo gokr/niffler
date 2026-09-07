@@ -182,7 +182,7 @@ proc main() =
   # runs the real skills component, so the load path is exercised end to
   # end) — the judge's steer guidance comes from them.
   check("expert loaded the reviewed skills",
-        status{"skills"} != nil and status{"skills"}.getElems().len == 2,
+        status{"skills"} != nil and status{"skills"}.getElems().len == 3,
         $status)
   let v1 = status{"knowledgeVersion"}.getStr("")
 

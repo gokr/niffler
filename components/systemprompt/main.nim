@@ -37,7 +37,10 @@ const maxFiles = 16
 const basePrompt = staticRead("baseprompt.txt")
   ## The product prompt, baked in at compile time: the repo is the snapshot,
   ## and the prompt must work from any runtime root (sandboxes have no
-  ## components/ tree). Editing baseprompt.txt = rebuild + respawn.
+  ## components/ tree). Editing baseprompt.txt = rebuild + respawn, and it
+  ## changes every FUTURE conversation (core freezes it per conversation for
+  ## prompt-cache stability). Live here, not in the prompt text: the model
+  ## has no use for harness plumbing notes.
 
 const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                     "CLAUDE.md", "CLAUDE.MD"]

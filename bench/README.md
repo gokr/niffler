@@ -60,9 +60,33 @@ specific tool-selection traps) and `selfextend` (build your own tool).
 | t16-apisum | Python | fetch a local JSON API and aggregate |
 | t17-doccheck | Go | build a checker tool and fix invariant violations |
 
+**Mid tier (t18–t27)** — added because t01–t17 saturated (frontier models
+clear them all in ~20 s/cell) while SWE-bench/DeepSWE cells burn hours.
+Difficulty comes from spec fidelity and edge cases (vixie cron's dom/dow OR
+rule, LCS-minimal JSON patches, tie-broken edit scripts, race-tested
+sharding, tar checksums), not volume. Target: 2–10 min/cell, part-fail
+expectation:
+
+| task | language | kind |
+|------|----------|------|
+| t18-lruttl | Go | LRU cache with per-key TTL, injected clock, purge-before-evict |
+| t19-tokbucket | Python | token bucket: refill math, atomic failed takes, µs-rounded retry_after |
+| t20-jsonpatch | Node | RFC 6902-style diff/apply with LCS array alignment, exact op order |
+| t21-wireproto | Go | varint/zigzag/length-delimited codec with exact error taxonomy |
+| t22-cronnext | Python | cron parser + next-run (vixie dom/dow OR, leap days, NoNext) |
+| t23-mergesched | Go | interval merge (adjacency ≠ overlap, max priority) + min-rooms sweep |
+| t24-editops | Node | Levenshtein edit script with deterministic keep>sub>ins>del tie-break |
+| t25-shardmap | Go | FNV-sharded concurrent map, exact Len under `-race` |
+| t26-logfilter | Python | mini query language: lexer, precedence parser, evaluator, error positions |
+| t27-tarpeek | Nim | ustar reader: checksums, octal fields, prefix/name joining |
+
 Every repo ships its tests + `./test.sh` (exit 0 = green) in the base commit;
 all are red at `base` and verified green with a reference solution. The same
 prompt text (with the repo path substituted) goes to every harness.
+
+First calibration data (niffler vs pi, glm-5.3-flash low: 20/20 pass) and the
+error/token analysis behind the `meta.verify` hidden-test plan:
+[midtier-analysis.md](midtier-analysis.md).
 
 ## Running
 

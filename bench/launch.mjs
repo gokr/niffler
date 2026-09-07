@@ -176,25 +176,26 @@ if (!taskSel) {
   const preview = bench.tasks.slice(0, 20).map((t, i) => `${i + 1}:${t}`).join("\n   ");
   const more = bench.tasks.length > 20 ? `\n   … +${bench.tasks.length - 20} more` : "";
   taskSel = await ask(
-    `Tasks of ${bench.count} — all | s<N> (random sample) | comma indexes\n   ${preview}${more}\n   [all]`,
+    `Tasks of ${bench.count} — all | s<N> (sample) | comma indexes or task names\n   ${preview}${more}\n   [all]`,
     "all",
   );
 }
 let tasksArg = "all";
-const indexes = [];
+const picked = [];
 if (taskSel !== "all") {
   const sm = taskSel.match(/^s(\d+)$/i);
   if (sm) {
     const n = Math.min(Number(sm[1]), bench.tasks.length);
-    for (let i = 0; i < n; i++) indexes.push(i); // first N: deterministic, image-friendly
-    // shuffle-free sample keeps prep (image pulls) predictable
+    for (let i = 0; i < n; i++) picked.push(bench.tasks[i]); // first N: deterministic, image-friendly
   } else {
     for (const part of taskSel.split(",")) {
-      const i = Number(part.trim());
-      if (Number.isInteger(i) && i >= 1 && i <= bench.tasks.length) indexes.push(i - 1);
+      const t = part.trim();
+      const i = /^\d+$/.test(t) ? Number(t) : 0;
+      if (i >= 1 && i <= bench.tasks.length) picked.push(bench.tasks[i - 1]);
+      else if (bench.tasks.includes(t)) picked.push(t);
     }
   }
-  tasksArg = [...new Set(indexes)].map((i) => bench.tasks[i]).join(",");
+  tasksArg = [...new Set(picked)].join(",");
   if (!tasksArg) {
     console.error("no tasks selected");
     close();

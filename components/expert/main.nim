@@ -15,7 +15,8 @@
 ## frozen allowlist via core.prompt_preview, on-demand hints via discover)
 ## — never the global LLM toolset, which overstates what an older or
 ## allowlisted session can actually call — plus the reviewed bundled skills
-## niffler-tools and niffler-fabric, so a steer can name a component AND the
+## niffler-tools, niffler-fabric and niffler-harness, so a steer can name a
+## component AND the
 ## exact tool to invoke, and sketch a working fabric program.
 ##
 ## Design invariants (docs/research/EXPERT.md):
@@ -65,7 +66,7 @@ const
     ## (~290 → ~10–30 tokens on Synthetic). Only sent when the llm provider
     ## accepts the field; strict providers that reject it should not be
     ## configured as the judge.
-  SkillAllowlist = ["niffler-tools", "niffler-fabric"]
+  SkillAllowlist = ["niffler-tools", "niffler-fabric", "niffler-harness"]
     ## Reviewed skills embedded in the knowledge prefix (docs/research/EXPERT.md
     ## §2): the allowlist IS the trust boundary. Only the bundled copies are
     ## accepted — a project/home skill shadowing a name is refused.
@@ -137,9 +138,9 @@ HOW TO PHRASE A STEER
   sketch for THIS task. Never just say "use fabric".
 - `tools` lists the tools the worker must invoke (the entry points), not the
   program's internal calls.
-- Use the skill knowledge below (niffler-tools, niffler-fabric) as the
-  authority on when each component fits; name tools exactly as the sections
-  below list them.
+- Use the skill knowledge below (niffler-tools, niffler-fabric,
+  niffler-harness) as the authority on when each component fits; name tools
+  exactly as the sections below list them.
 
 OUTPUT — strict JSON, nothing else:
 {"action":"silent","reason":"<one line>"}

@@ -1,0 +1,3 @@
+{ "id": "t27-tarpeek", "title": "ustar TAR header parser with checksums and prefix names (Nim)", "language": "nim",
+  "kind": "general",
+  "protected": ["test.sh", "test_tarpeek.nim", "README.md"] }

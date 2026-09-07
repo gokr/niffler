@@ -1,0 +1,3 @@
+{ "id": "t19-tokbucket", "title": "Token-bucket rate limiter with injected clock (Python)", "language": "python",
+  "kind": "general",
+  "protected": ["test.sh", "test_tokbucket.py", "README.md"] }
