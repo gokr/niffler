@@ -113,7 +113,7 @@ let bashSchema = toolSchema(%*{
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c) — builds, tests, git, processes. Result starts with an (exit N) line: non-zero = failure (124 timed out, 130 cancelled); the rest is stdout+stderr. Output over ~12KB spills to a file (path in result) — page it with read. Prefer read/read_many/edit/files/grep for file work.")
+  description = "Run a shell command (bash -c) — builds, tests, git, processes. Result starts with an (exit N) line: non-zero = failure (124 timed out, 130 cancelled, 126 not executable — run via an interpreter); the rest is stdout+stderr. Output over ~12KB spills to a file (path in result) — page it with read. Prefer read/read_many/files/grep for file work.")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
