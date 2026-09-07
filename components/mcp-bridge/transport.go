@@ -120,13 +120,21 @@ func makeTransport(cfg *serverConfig) (mcp.Transport, error) {
 		}
 		return &guardTransport{cfg: cfg}, nil
 	case "http", "sse":
-		u, err := url.Parse(cfg.URL)
+		endpoint, err := expandEnvRefs(cfg.URL)
+		if err != nil {
+			return nil, fmt.Errorf("url: %w", err)
+		}
+		headers, err := expandEnvMap(cfg.Headers)
+		if err != nil {
+			return nil, fmt.Errorf("headers: %w", err)
+		}
+		u, err := url.Parse(endpoint)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
 			return nil, errors.New("MCP URL must be http(s), without embedded credentials")
 		}
 		base := http.DefaultTransport.(*http.Transport).Clone()
 		base.ResponseHeaderTimeout = 30 * time.Second
-		client := &http.Client{Transport: headerTransport{base, cfg.Headers, u}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		client := &http.Client{Transport: headerTransport{base, headers, u}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("too many MCP redirects")
 			}
@@ -136,9 +144,9 @@ func makeTransport(cfg *serverConfig) (mcp.Transport, error) {
 			return nil
 		}}
 		if cfg.transport() == "sse" {
-			return &mcp.SSEClientTransport{Endpoint: cfg.URL, HTTPClient: client}, nil
+			return &mcp.SSEClientTransport{Endpoint: endpoint, HTTPClient: client}, nil
 		}
-		return &mcp.StreamableClientTransport{Endpoint: cfg.URL, HTTPClient: client}, nil
+		return &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: client}, nil
 	default:
 		return nil, fmt.Errorf("unknown transport %q", cfg.Type)
 	}
@@ -187,9 +195,21 @@ func (t *guardTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 		w.Close()
 		return nil, err
 	}
-	args := append([]string{"--stdio-guard", t.cfg.Command}, t.cfg.Args...)
+	env, err := expandEnvMap(t.cfg.Env)
+	if err != nil {
+		return nil, fmt.Errorf("env: %w", err)
+	}
+	args := make([]string, 0, len(t.cfg.Args)+2)
+	args = append(args, "--stdio-guard", t.cfg.Command)
+	for _, a := range t.cfg.Args {
+		expanded, err := expandEnvRefs(a)
+		if err != nil {
+			return nil, fmt.Errorf("args: %w", err)
+		}
+		args = append(args, expanded)
+	}
 	cmd := exec.Command(bin, args...)
-	cmd.Env = mergedEnv(t.cfg.Env)
+	cmd.Env = mergedEnv(env)
 	cmd.Dir = t.cfg.Cwd
 	cmd.ExtraFiles = []*os.File{r}
 	cmd.Stderr = os.Stderr
