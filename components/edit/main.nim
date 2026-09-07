@@ -870,7 +870,7 @@ discard comp.tool("read", toolSchema(%*{
   "limit": {"type": "integer", "minimum": 1,
             "description": "Max lines (default 2000)"}
 }, @["path"],
-  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Pageable (offset/limit). Refuses binary and >100MB. grep searches across files; read_many surveys several."), hRead,
+  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Line range after a search: use offset/limit, not bash sed/cat. Refuses binary and >100MB. read_many surveys several files."), hRead,
   %*{"timeoutMs": 60000, "parallel": true,
      "workspace": {"pathFields": ["path"]}})
 

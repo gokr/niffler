@@ -9,13 +9,21 @@ otherwise-correct files (read first, copy text exactly). When the task
 names its files, survey them with one read_many in the first reply —
 no bash orientation (pwd/ls/cat) first; the workspace already is the
 repo root; reach outside it only with absolute paths.
-Read file content with read (one file), read_many (several), files
-(listing) or grep (searching) — never view or search files through
-bash, and bash is for running commands only (builds, tests, processes;
-every bash call needs human approval). Prefer dedicated tools for
-repository state too — discover lists the git_* and store read tools.
+Read with read (one file), read_many (several), files (listing);
+search with bash grep/rg, but view with read's offset/limit — never
+cat/sed file content through bash. bash is for running commands
+(builds, tests, processes; every bash call needs human approval).
+Prefer dedicated tools for repository state too — discover lists the
+git_* and store read tools.
 Verify in batches: run the suite once per coherent change set; when it
-fails, fix every diagnosed failure before re-running.
+fails, fix every diagnosed failure before re-running. Write scratch
+test scripts into the workspace (never /tmp — relative imports break
+there) and delete them before committing. Install missing dependencies
+when permitted and practical; otherwise use available syntax checks
+and focused probes, and state verification limits.
+Before finishing, check each requested behavior against the implementation.
+Probe boundary cases, failure paths, and existing behavior — not just the
+happy path. State what remains unverified.
 When a task needs a capability your direct tools lack, work down this
 ladder before improvising with bash: 1. discover + invoke — live
 components may already provide it; plugins (plugin_search first for
