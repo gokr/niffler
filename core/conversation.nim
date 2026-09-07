@@ -193,40 +193,60 @@ proc persistMsg*(p: var Persister, value: JsonNode,
       p.failing = true
       echo "core: WARNING persistence down (messages not saved): " & e.msg
 
-proc loadStoredMessages*(ct: CoreTools, convId: string,
-                         promptTokens: var int, contextUsed: var int,
-                         ctxSize: var int): seq[JsonNode] =
+proc loadStoredMessagesEx*(ct: CoreTools, convId: string,
+                           promptTokens: var int, contextUsed: var int,
+                           ctxSize: var int): tuple[messages: seq[JsonNode],
+                                                   lastSeqNo: int] =
   ## Rebuild a conversation's message list from the store (resume).
   ## Token/context fields are filled from the last assistant message's
   ## persisted usage so the context meter and guard survive restarts.
-  result = @[]
-  try:
-    # 1000 = the store's list cap: resume must see the full transcript,
-    # not the list tool's default 100 (fixed here; was truncating resumes)
-    for item in ct.storeListItems("message", convId & ":", 1000):
-      let v = item{"value"}
-      # Turn errors are audit records, not provider message roles.
-      if v{"role"}.getStr("") == "error": continue
-      var msg = newJObject()
-      msg["role"] = v{"role"}
-      msg["content"] = v{"content"}
-      for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
-        if v{field} != nil:
-          msg[field] = v{field}
-      result.add(msg)
-      if v{"role"}.getStr("") == "assistant":
-        if v{"usage"}{"prompt_tokens"} != nil:
-          promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
-        let total = v{"usage"}{"total_tokens"}.getInt(0)
-        let completion = v{"usage"}{"completion_tokens"}.getInt(0)
-        if total > 0:
-          contextUsed = total
-        elif promptTokens > 0:
-          contextUsed = promptTokens + completion
-        if v{"context"} != nil:
-          ctxSize = v{"context"}.getInt(0)
-  except CatchableError:
-    discard
+  ## lastSeqNo is the highest stored message id (all roles, including the
+  ## error-role audit records the returned list excludes) — the next
+  ## persistMsg must continue AFTER it, never reuse its id.
+  ##
+  ## A store failure here is FATAL, not silently empty: resuming with an
+  ## empty list would restart seqNo at 0 and overwrite the transcript
+  ## (observed once as a whole conversation clobbered after a store reply
+  ## outgrew the bus max payload and the list reply never arrived).
+  result.messages = @[]
+  result.lastSeqNo = 0
+  # 1000 = the store's list cap: resume must see the full transcript,
+  # not the list tool's default 100 (fixed here; was truncating resumes)
+  for item in ct.storeListItems("message", convId & ":", 1000):
+    let v = item{"value"}
+    # Continuation id: the highest stored id number wins — covers the
+    # 1000-cap truncation and error-role records alike (the loaded list
+    # excludes errors, so its length would collide with their ids).
+    let id = item{"id"}.getStr("")
+    let dot = id.rfind(':')
+    if dot >= 0:
+      try:
+        result.lastSeqNo = max(result.lastSeqNo, parseInt(id[dot+1 .. ^1]))
+      except ValueError:
+        discard
+    # Turn errors are audit records, not provider message roles.
+    if v{"role"}.getStr("") == "error":
+      continue
+    var msg = newJObject()
+    msg["role"] = v{"role"}
+    msg["content"] = v{"content"}
+    for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
+      if v{field} != nil:
+        msg[field] = v{field}
+    result.messages.add(msg)
+    if v{"role"}.getStr("") == "assistant":
+      if v{"usage"}{"prompt_tokens"} != nil:
+        promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
+      let total = v{"usage"}{"total_tokens"}.getInt(0)
+      let completion = v{"usage"}{"completion_tokens"}.getInt(0)
+      if total > 0:
+        contextUsed = total
+      elif promptTokens > 0:
+        contextUsed = promptTokens + completion
+      if v{"context"} != nil:
+        ctxSize = v{"context"}.getInt(0)
+  if result.lastSeqNo == 0 and result.messages.len > 0:
+    result.lastSeqNo = result.messages.len
 
 proc ensureConversationHeader*(ct: CoreTools, convId: string) =
   ## Make sure a conversation header doc exists in the store, creating it
@@ -1221,14 +1241,16 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var pt = 0
     var used = 0
     var cs = 0
-    let stored = loadStoredMessages(ct, sessionId, pt, used, cs)
+    let (stored, lastSeqNo) = loadStoredMessagesEx(ct, sessionId, pt, used, cs)
     for m in stored:
       entry.messages.add(m)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
-    # cache metrics survive a runner restart.
+    # cache metrics survive a runner restart. seqNo continues after the
+    # highest stored id (not the loaded count — error-role records are
+    # excluded from the list but own ids the next persist must not reuse).
     entry.persister = Persister(
-      ct: ct, convId: sessionId, seqNo: stored.len,
+      ct: ct, convId: sessionId, seqNo: lastSeqNo,
       promptTokens: pt, contextUsed: used, ctxSize: cs,
       cachePrompt: header{"cachePrompt"}.getInt(0),
       cacheRead: header{"cacheRead"}.getInt(0))

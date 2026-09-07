@@ -49,6 +49,9 @@ proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: strin
     let repoRoot = getEnv("NIF_REPO_ROOT", "")
     if repoRoot.len > 0 and fileExists(repoRoot / "var" / "bin" / "nats-server"):
       natsBin = repoRoot / "var" / "bin" / "nats-server"
+      # the component build understands the harness's --max_payload
+      # extension (the PATH fallback official binary would reject it)
+      args.add(["--max_payload", "8388608"])
     var cmd = "exec " & quoteShell(natsBin)
     for a in args:
       cmd.add(" " & quoteShell(a))

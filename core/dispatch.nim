@@ -856,7 +856,9 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                                      inbox.cstring, data.cstring,
                                      data.len.cint)
   if not checkStatus(st):
-    raise newException(IOError, "publish request: " & getErrorString(st))
+    raise newException(IOError, "publish request: " & getErrorString(st) &
+      " (" & $data.len & " bytes; bus max_payload " &
+      $natsConnection_GetMaxPayload(ct.nc.conn) & " bytes)")
   let deadline = epochTime() + timeoutMs.float / 1000.0
   while epochTime() < deadline:
     var msg: ptr natsMsg

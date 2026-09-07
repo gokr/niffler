@@ -42,14 +42,15 @@ proc openNatsLib() =
       raise newException(IOError, "nats_Open: " & getErrorString(st))
     natsLib = true
 
-proc natsServerBinary(): string =
+proc natsServerBinary(): tuple[binary: string, ours: bool] =
   ## The nats-server component (components/nats) builds into var/bin beside
   ## this binary and wins when present — `make build` alone satisfies the bus
   ## dependency, no PATH install (pure desktop). PATH remains the fallback for
-  ## hand-compiled dev runs without a full build.
+  ## hand-compiled dev runs without a full build. `ours` marks the component
+  ## build: only it understands the harness's --max_payload extension.
   let local = getAppDir() / "nats-server"
-  if fileExists(local): return local
-  "nats-server"
+  if fileExists(local): return (local, true)
+  ("nats-server", false)
 
 proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUrl, binary: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
@@ -59,11 +60,18 @@ proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUr
   ## entry. The ports file is needed only during startup.
   let portsDir = createTempDir("niffler-nats-", "")
   try:
-    result.binary = natsServerBinary()
+    let (bin, ours) = natsServerBinary()
+    result.binary = bin
     for port in ports:
+      var args = @["-a", "127.0.0.1", "-p", port, "-m", "-1"]
+      if ours:
+        # LLM requests carry whole conversations; the official 1MiB default
+        # caps usable context at ~250k tokens. 8MiB ≈ 2M tokens of JSON —
+        # above it nats-server only warns, so this is the sanctioned max.
+        args.add(["--max_payload", "8388608"])
+      args.add(["--ports_file_dir", portsDir])
       result.process = startProcess(result.binary,
-        args = ["-a", "127.0.0.1", "-p", port, "-m", "-1",
-                "--ports_file_dir", portsDir],
+        args = args,
         options = {poUsePath})
       var bound = false
       for i in 0 ..< 200:

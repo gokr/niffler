@@ -38,6 +38,9 @@ Server Options:
     -P, --pid <file>                 File to store PID
     -m, --http_port <port>           Use port for http monitoring
     -ms,--https_port <port>          Use port for https monitoring
+        --max_payload <bytes>        Maximum message payload (default: 1MiB;
+                                     config-file only upstream — Niffler
+                                     extension, needed for large LLM requests)
     -c, --config <file>              Configuration file
     -t                               Test configuration and exit
     -sl,--signal <signal>[=<pid>]    Send signal to nats-server process (ldm, stop, quit, term, reopen, reload)
@@ -121,6 +124,13 @@ func main() {
 	fs := flag.NewFlagSet(exe, flag.ExitOnError)
 	fs.Usage = usage
 
+	// Niffler extension: the official binary only accepts max_payload via
+	// config file, but the harness needs it raised above the 1MiB default —
+	// LLM chat requests carry the whole conversation (docs/WIRE.md) and a
+	// 524k-token context window is ~1-2MB of JSON. Registered before
+	// ConfigureOptions so both flag sets land on the same FlagSet.
+	maxPayload := fs.Int64("max_payload", 0, "Maximum message payload in bytes (default: 1MiB)")
+
 	// Configure the options from the flags/config file
 	opts, err := server.ConfigureOptions(fs, os.Args[1:],
 		server.PrintServerAndExit,
@@ -131,6 +141,9 @@ func main() {
 	} else if opts.CheckConfig {
 		fmt.Fprintf(os.Stderr, "%s: configuration file %s is valid (%s)\n", exe, opts.ConfigFile, opts.ConfigDigest())
 		os.Exit(0)
+	}
+	if *maxPayload > 0 {
+		opts.MaxPayload = int32(*maxPayload)
 	}
 
 	// Redact secret arguments before expvar reads them.

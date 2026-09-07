@@ -46,7 +46,9 @@ comp.tool:
 comp.tool:
   proc probe_large(): JsonNode =
     ## Return a deliberately oversized result for SDK reply hardening.
-    %*{"value": "x".repeat(1_100_000)}
+    ## Must exceed the bus max_payload the test bus runs with (8MiB since
+    ## the harness raised it for large LLM requests — see core/niffler.nim).
+    %*{"value": "x".repeat(9_000_000)}
 comp.tool:
   proc probe_delay(delayMs: int): JsonNode =
     ## Return after a controlled delay for monotonic trace tests.
