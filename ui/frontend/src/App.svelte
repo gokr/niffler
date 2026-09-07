@@ -8,6 +8,7 @@
   import { t, cycleLocale, locale } from "./lib/i18n.svelte";
   import ProviderControl from "./components/ProviderControl.svelte";
   import ProviderManager from "./components/ProviderManager.svelte";
+  import McpManager from "./components/McpManager.svelte";
   import ModelPicker from "./components/ModelPicker.svelte";
   import type { ProviderSummary, ResolvedConfig, SessionStatus } from "./lib/providers";
   import { fmtContext, contextPct } from "./lib/providers";
@@ -65,6 +66,7 @@
   let sessionCtxUsed = $state<Record<string, number>>({});
   let sessionStatus = $state<Record<string, SessionStatus>>({});
   let managerOpen = $state(false);
+  let mcpOpen = $state(false);
   let modelPickerOpen = $state(false);
 
   function isAutoApproved(sid: string, tool: string, digest?: string): boolean {
@@ -522,6 +524,14 @@
         <ProviderControl {providers} {effective} onSwitch={switchProvider} onManage={() => (managerOpen = true)} />
 
         <button
+          class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 text-ink-300"
+          title={t("mcp.title")}
+          onclick={() => (mcpOpen = true)}
+        >
+          MCP
+        </button>
+
+        <button
           class="rounded-md border border-ink-600 px-2 py-1 text-[12px] hover:bg-ink-800 max-w-[160px] truncate"
           title={headerModel ? t("app.model") + " " + headerModel : t("app.selectModel")}
           onclick={() => (modelPickerOpen = true)}
@@ -584,6 +594,7 @@
 </div>
 
 <ProviderManager bind:open={managerOpen} {providers} onSaved={() => { loadProviders(); loadEffective(sessionModels[sessionId ?? ""] || undefined); }} />
+<McpManager bind:open={mcpOpen} />
 <ModelPicker bind:open={modelPickerOpen} catalog={headerCatalog} currentModel={headerModel} onSelect={pickModel} />
 
 {#if approvals.length > 0}
