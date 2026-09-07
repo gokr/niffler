@@ -1,0 +1,3 @@
+{ "id": "t24-editops", "title": "Levenshtein edit script with deterministic tie-breaking (Node)", "language": "javascript",
+  "kind": "general",
+  "protected": ["test.sh", "tests", "README.md", "package.json"] }

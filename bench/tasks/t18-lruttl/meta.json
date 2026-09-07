@@ -1,0 +1,3 @@
+{ "id": "t18-lruttl", "title": "LRU cache with TTL and injected clock (Go)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "cache_test.go", "go.mod", "README.md"] }

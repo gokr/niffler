@@ -1,0 +1,3 @@
+{ "id": "t22-cronnext", "title": "Cron parser + next-run with vixie dom/dow OR rule (Python)", "language": "python",
+  "kind": "general",
+  "protected": ["test.sh", "test_cron.py", "README.md"] }

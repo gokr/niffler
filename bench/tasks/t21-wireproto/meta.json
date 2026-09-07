@@ -1,0 +1,3 @@
+{ "id": "t21-wireproto", "title": "Varint + length-delimited binary codec with error taxonomy (Go)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "wire_test.go", "go.mod", "README.md"] }

@@ -1,0 +1,3 @@
+{ "id": "t25-shardmap", "title": "Concurrent FNV-sharded map, exact under -race (Go)", "language": "go",
+  "kind": "general",
+  "protected": ["test.sh", "shardmap_test.go", "go.mod", "README.md"] }

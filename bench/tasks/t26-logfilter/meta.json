@@ -1,0 +1,3 @@
+{ "id": "t26-logfilter", "title": "Mini query language: lexer, parser, evaluator (Python)", "language": "python",
+  "kind": "general",
+  "protected": ["test.sh", "test_logfilter.py", "README.md"] }
