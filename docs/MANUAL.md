@@ -61,7 +61,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `edit` | Nim | optional | the file tools: `read` (plain, pageable), `read_many` (up to 12 files in one call), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
-| `expert` | Nim | optional | advisory peer: follows one session, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
+| `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
@@ -811,6 +811,11 @@ The result contains normalized full schemas, sorted by tool name:
 Unknown and hidden tool requests have the same error shape so discovery is not
 a hidden-tool existence oracle.
 
+`tools` without a `component` searches every live component — callers often
+know the tool name but not its owner. Each returned schema then carries the
+owning `component`, and names with no discoverable tool are listed in
+`notFound` (an empty schema set is an error naming the requested tools).
+
 #### Invocation
 
 Call a discovered schema through the fixed gateway:
@@ -1390,9 +1395,10 @@ guide with nudge phrasing and worked examples:
 ## Expert advisory peer (`expert`)
 
 The `expert` component is a non-interactive advisory peer (design:
-[research/EXPERT.md](research/EXPERT.md)). It follows ONE working session — armed explicitly
-with `expert_follow {session_id}` (approval-gated, off by default) — watches
-that session's `ev.session.*` events into a bounded in-memory current-turn
+[research/EXPERT.md](research/EXPERT.md)). It follows one or more working
+sessions concurrently — armed explicitly with `expert_follow {session_id}`
+(approval-gated, off by default) — watches each followed session's
+`ev.session.*` events into a bounded per-session in-memory current-turn
 frame, and asks an LLM judge (a stateless hidden-`chat` call: fixed
 cache-stable knowledge prefix + one ephemeral observation, no tools) whether
 the evidence warrants a steer. Only high-confidence steers naming live,
@@ -1401,14 +1407,16 @@ non-hidden tools are delivered, through the turn-bound
 only while that exact turn is still running — late advice is rejected
 (`stale-turn`/`no-active-turn`), never queued into the next turn. Accepted
 advice is folded as a marked user message (`[Niffler advisor: expert] ...`),
-persisted, and announced on `ev.session.advice`.
+persisted, and announced on `ev.session.advice`. The judge lane itself stays
+global: one judgment in flight, shared cooldown, per-session latest-state
+coalescing.
 
 | Tool | What it does |
 |---|---|
-| `expert_follow {session_id, model?}` | Follow one session (1:1); captures the non-hidden catalog into the knowledge prefix. Approval-gated. |
-| `expert_unfollow` | Stop following and drop the observation frame. |
-| `expert_reload` | Rebuild the knowledge prefix from the live catalog (new cache epoch). |
-| `expert_status` | Target, active turn, inference state, and bounded counters (judgments, silences, steers, accepted, rejected, staleDrops, errors). |
+| `expert_follow {session_id, model?, provider?}` | Follow a session (multi-target: each followed session keeps its own frame, knowledge prefix, judgment budget and per-follow metrics); re-following resets its frame. `model`/`provider` override the judgment calls for that follow. Approval-gated. |
+| `expert_unfollow {session_id?}` | With `session_id`: drop that follow. Without: drop all follows and discard their frames. |
+| `expert_reload` | Rebuild the knowledge prefix of every followed session from the live catalog (new cache epoch). |
+| `expert_status {session_id?}` | With `session_id`: that follow's frame, knowledge version, and per-session counters (judgments, silences, steers, accepted, rejected, staleDrops, errors). Without: followed targets plus lifetime diagnostics. |
 
 Design invariants: the working session never waits for the expert
 (best-effort, cooldown, latest-state coalescing); no growing expert

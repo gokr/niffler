@@ -1,5 +1,11 @@
 # Niffler Advisory Peer ("the expert")
 
+> Shipped update: the component is now **multi-target** — one expert follows
+> several sessions concurrently, each with its own observation frame,
+> knowledge prefix and judgment budget, while the judge lane stays global
+> (one judgment in flight, shared cooldown). The 1:1 reasoning below records
+> the original single-target design.
+
 Design sketch for a **non-interactive advisory peer** that follows one working
 session on the bus and occasionally injects a steer when a separate LLM judges
 that the working agent is not fully exploiting Niffler. Status: **phase 2** —

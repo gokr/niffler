@@ -341,3 +341,9 @@ keys:
   under `var/store/` for milestone 1.
 - One message = one envelope. NDJSON for stdio streams (pipewrap) — same
   codec, line-delimited.
+- One envelope still has to fit the NATS `max_payload`. Core spawns the
+  bundled `components/nats` build with `--max_payload 8388608` (8MiB — a
+  Niffler flag extension; the official binary only accepts it via config
+  file) because an `llm` `chat` request carries the whole conversation; a
+  PATH `nats-server` keeps the official 1MiB default. A publish over the
+  cap fails and reports the size against the server's `max_payload`.
