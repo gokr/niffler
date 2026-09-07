@@ -210,6 +210,10 @@ function prepareRepo(taskId, dest) {
   if (!fs.existsSync(gi)) {
     fs.writeFileSync(gi, "__pycache__/\n*.pyc\n");
   }
+  // test.sh must be executable: prompts tell the agent to run `./test.sh`,
+  // and plain cp loses the exec bit (every cell wasted a turn on EACCES).
+  const ts = path.join(dest, "test.sh");
+  if (fs.existsSync(ts)) fs.chmodSync(ts, 0o755);
   // Task repos ship as plain files; create the pristine base commit here so
   // every run gets an identical history to diff against.
   if (!fs.existsSync(path.join(dest, ".git"))) {
