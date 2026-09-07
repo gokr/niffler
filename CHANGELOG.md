@@ -8,6 +8,78 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **External MCP servers as bus components (`mcp`, `mcp-bridge`)** — the
+  `mcp` manager owns a store-backed server registry (kind `mcp`) with
+  approval-gated CRUD (`mcp_add`/`mcp_edit`/`mcp_remove`), every add/edit
+  validated through one real connect via `mcp-bridge --probe`, and spawns
+  one supervised mcp-bridge process per server. Bridges (official Go SDK;
+  stdio / streamable HTTP / SSE) announce the server's tools as ordinary
+  catalog tools (`mcp_<server>_<tool>`, on-demand by default) reachable
+  through `discover` + `invoke`. MCP sessions are lazy (connect on first
+  call, idle timeout) and server-pushed tool-contract drift persists the
+  fresh listing and restarts the bridge so discovery stays truthful.
+  `${ENV}` references in headers, env, args and url are resolved at spawn
+  time, so tokens stay out of the store. Prompts and resources: each
+  server prompt registers a hidden `mcp_<server>_prompt` tool plus an
+  `mcp-<server>-<prompt>` slash command (prompt submits render as user
+  messages), and `mcp_<server>_resources` lists/reads resources (64KB
+  text cap, base64 blobs); prompt cache changes ride the same drift
+  flow. `mcp_search` queries the official MCP Registry
+  (`NIF_MCP_REGISTRY_URL` override) and suggests an `mcp_add` config for
+  npm/PyPI-packaged entries. Hardening: strict config parsing
+  (`DisallowUnknownFields`, validated URL/env/header/timeout bounds),
+  name + namespace collision checks, env allowlist for stdio servers,
+  same-origin-only header injection with cross-origin redirect refusal,
+  serialized call gate with mid-flight cancellation (`cancel.<server>`
+  aborts in-flight MCP calls), >64KiB results spilled to
+  `var/mcp-results`, capped probe buffers with secret redaction, and a
+  stdio guard subprocess (lifeline pipe, process-group
+  SIGTERM/SIGKILL, `PDEATHSIG`) so MCP servers never outlive the
+  harness. Supporting changes: `core.spawn` accepts persisted args
+  (restored on boot, preserved across supervisor restarts); the Go SDK
+  gains `DeferAnnounce`/`Announce`, extracted `Wait`, exported
+  `DieWithParent`, and a contract frozen after `Announce` (late
+  registration panics; post-ready calls fail not-ready). `tests/t_mcp.nim`
+  drives a dependency-free fixture server (prompts, resources,
+  cancellation, killed-guard orphan regressions) plus a mock registry,
+  and `make gotest` runs the mcp modules under `-race`. `docs/MANUAL.md`
+  has a full "External MCP servers" section.
+
+- **Web UI: MCP server manager panel** — `McpManager.svelte` (slide-over
+  mirroring ProviderManager): self-loading server list with
+  live/disabled badges, per-secret-key counts, two-click remove and
+  refresh, plus an add/edit form covering transport (stdio/http/sse),
+  args/env/headers (line format) and exposure/effect/approval/
+  concurrency/timeout. Talks straight to the mcp component's tools
+  (120s saves — validation runs one real connect); header MCP button and
+  en/zh/zh-TW strings; shared `mcpForm` model, warnings/lastError/idle
+  display, and 4 UI tests.
+
+- **Bench mid-tier tasks t18–t27** — t01–t17 saturated (frontier models
+  clear them in ~20s/cell) while SWE-bench cells burn hours, so ten new
+  tasks target 2–10 min/cell with difficulty from spec fidelity and edge
+  cases instead of volume: LRU+TTL with injected clock (go), token
+  bucket refill math (py), LCS-aligned JSON patch (node), varint/zigzag
+  wire codec (go), vixie cron next-run (py), interval merge + min-rooms
+  (go), deterministic Levenshtein edit script (node), race-tested FNV
+  shard map (go), mini log-query language (py), ustar reader (nim). Each
+  ships tests + `test.sh` in the base commit, red at base, verified
+  green with a reference solution. Supporting bench fixes: the launcher
+  accepts task names (`t22-cronnext` style) alongside indexes;
+  `run.mjs` chmods the prepared `test.sh` to 0755 (the plain copy lost
+  the exec bit, costing every cell a wasted exit-126 round) and the
+  committed task sources now carry the bit too; `run.mjs` aborts when a
+  task has no runnable verifier. First mid-tier calibration in
+  `bench/midtier-analysis.md` (niffler vs pi, glm-5.3-flash low: 20/20
+  pass, niffler avg 164s vs pi 103s, 84 LLM calls of which 61 are
+  <60-token tool-selection turns) with the README table updated.
+
+- **Prior-art analysis of Reasonix** (`docs/research/REASONIX.md`) —
+  research note on the DeepSeek-Reasonix codebase (Go, single binary):
+  transport-agnostic controller, MCP client, plugin/sidecar extension,
+  permission postures, and a ranked list of the ten highest-leverage
+  candidates for Niffler. Explicitly not a plan.
+
 - **Store engines: SQLite and TiDB behind `NIF_STORE_BACKEND`** — the store
   bus contract is now an interchangeable engine choice with one component
   identity: every engine registers as `store` v0.1.0 with identical
@@ -738,6 +810,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Prompt economy pass, driven by the bench prefix comparison** —
+  measured against pi's mid-tier prefix, niffler spent ~900 extra tokens
+  per request on tool schemas, so the system prompt dropped from 464 to
+  304 words (same rules, tightened wording; the systemprompt-provenance
+  note moved to a component doc comment and the contradicting `Run pwd`
+  line was dropped), the `discover` description from 309 to 208 chars,
+  and the `bash` description from 343 to 62 chars — the exit-124/130/126
+  explanations now live in the result text where they fire (including
+  the 126 interpreter hint) and spill paging is self-describing at
+  spill time. Baseprompt guidance now prefers one full write when
+  authoring, one `read_many` when the files are known, and one suite
+  run per change set, explains fresh-shell cwd semantics and ranged
+  reads, allows practical dependency installation, and asks for
+  completion checks over requested behaviors, boundaries, failure paths
+  and compatibility with verification gaps disclosed. Changes affect
+  new conversations' frozen prefixes only.
+
 - **The expert follows several sessions concurrently** — component state
   moved from one global observation frame to a per-session table keyed by
   session id (frame, knowledge prefix, judgment budget, model/provider
@@ -921,6 +1010,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **mcp-bridge boot crash-loop and eternal contract drift** — two field
+  failures fed each other. The manifest listed `mcp-bridge` with an
+  invented `autostart: false` key core silently ignores: core spawns
+  every listed entry at boot, and a bare bridge (no `--server`) fails
+  `validateName` and crash-loops under `restart: on-failure` (4344
+  exit-2 deaths in ~70 minutes on one harness); the entry is gone — the
+  Makefile builds the binary and the manager spawns bridges per server.
+  Meanwhile `acceptContract` compared the stored contract against a
+  fresh listing byte-for-byte: stored records omit empty tool/prompt
+  lists (`omitempty` → nil) while `listContract` returns non-nil empty
+  slices, so every server without prompts "drifted" on every boot,
+  fail-closing the bridge into retiring forever. Both sides are now
+  normalized; real drift still persists and restarts exactly as before.
 
 - **Resume could clobber a transcript** — a failed store `list` during
   session resume was swallowed and read as an EMPTY conversation, so the
