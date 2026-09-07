@@ -18,7 +18,8 @@ carries the OBSERVED SESSION's own tool view (frozen direct exposure + frozen
 allowlist via `core.prompt_preview`, on-demand hints via `discover` — never
 the global LLM toolset, which overstates what an older or allowlisted session
 can call), plus the reviewed bundled skills `niffler-tools` (when to use every
-core component/tool) and `niffler-fabric` (how to construct fabric programs).
+core component/tool), `niffler-fabric` (how to construct fabric programs) and
+`niffler-harness` (how to operate and debug the running harness).
 Because the prefix is cached per follow it may fill up to 80% of the judge's
 context window (resolved via `llm.llm_resolve`, minus a reserve for the
 observation); a steer may therefore carry real how-to — component AND exact
@@ -88,8 +89,8 @@ The fixed system prefix contains reviewed, model-facing knowledge:
 - the restrictive advisory policy in section 5, framed around the mission:
   tool selection — the judge's only job is to keep the worker on the correct
   Niffler tool for the job;
-- the **reviewed bundled skills** `niffler-tools` and `niffler-fabric`,
-  loaded from the `skills` component at build time. The `SkillAllowlist`
+- the **reviewed bundled skills** `niffler-tools`, `niffler-fabric` and
+  `niffler-harness`, loaded from the `skills` component at build time. The `SkillAllowlist`
   const IS the trust boundary: only those names load, and only when the
   returned copy's source is `bundled` — a project/home skill shadowing a
   bundled name is refused and the static fallback knowledge takes its
@@ -99,7 +100,9 @@ The fixed system prefix contains reviewed, model-facing knowledge:
   agent_run/fabric matrix); `niffler-fabric` is the guest-program
   construction authority (imports, typed mode, callTool, batch, logg,
   finish, patterns, budgets, pitfalls) — this is what lets a steer sketch a
-  working fabric program instead of saying "use fabric";
+  working fabric program instead of saying "use fabric"; `niffler-harness`
+  is the operate-and-debug-the-harness authority (lifecycle, store,
+  self-extension, bus debugging, recovery cheatsheet).
 - the **observed session's own tool view**: its frozen direct tool names and
   frozen tool allowlist via `core.prompt_preview` (read-only store
   provenance), joined with global catalog descriptions, plus on-demand
