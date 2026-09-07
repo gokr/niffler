@@ -754,6 +754,12 @@ bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► disco
   turn's `cancel.mcp-<server>` event (docs/WIRE.md) aborts the in-flight MCP
   call immediately. Direct callers (CLI scripts) get `""` — they cannot
   spoof a session, and unattributed calls are only bounded by `timeoutMs`.
+- **Secrets by reference**: `env` values, `headers` values, `args` and the
+  `url` may contain `${NAME}` references that resolve from the harness
+  environment when the bridge connects or spawns the server — the store
+  keeps the placeholder, listings echo only key names, and a missing
+  variable fails the connect with a clear error instead of sending an empty
+  credential. A bare `$` stays literal.
 - **Sandboxing**: stdio servers run under a guard process (`mcp-bridge
   --stdio-guard <cmd>`) that owns the server's process group and watches a
   lifeline pipe — if the bridge dies (SIGKILL included), the guard SIGTERMs
