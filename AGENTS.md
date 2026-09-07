@@ -83,7 +83,11 @@ anything structural.
   schemas all enter as appended messages). Any new contributor to the
   session context must state its effect: **frozen prefix** or **append-only
   history**. Never splice a volatile fact (time, a file edit, a catalog
-  change) into the head; append it as a user/tool-role message instead.
+  change) into the head; append it as a user/tool-role message instead. Tool
+  profiles resolve into the frozen direct set when a conversation starts.
+  `invoke {sticky: true}` is the explicit exception: it appends one normalized
+  schema to the persisted direct set, changing the request prefix once; the
+  append is durable and never removes or rewrites earlier tools.
   Cache hits are surfaced per turn in `ev.session.context` status events
   (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full miss is a
   trim, reported with `reason: "reset:trim"`.

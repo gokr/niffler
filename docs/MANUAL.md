@@ -922,7 +922,7 @@ hidden tools directly over NATS.
 
 ### Core tools
 
-`discover` and `invoke` are direct core tools in every new conversation.
+`discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles; `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
 `session_info` (onDemand) summarizes a conversation; `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came
 from, how many project context files feed it, the frozen direct tool names
@@ -931,6 +931,16 @@ anything. `doctor` (onDemand) is a one-shot machine-readable health report:
 store reachability, llm registration, active provider, systemprompt
 presence, catalog size, conversation count — all read-only probes, useful
 as a CI liveness gate or a first diagnostics step.
+
+#### Explicit client commands
+
+The chat clients expose the same catalog state without requiring an LLM turn:
+
+- `/components [all|direct|discovered|undiscovered]` lists live components and filters each tool by its exposure in the current conversation. `direct` means the schema is in the request tools array; `discovered` means it is known in history and callable through `invoke`; `undiscovered` means it is live but not yet exposed to this conversation.
+- `/discover COMPONENT` or `/discover tool=NAME` performs an explicit discovery request and records the returned schemas in the conversation's durable discovery summary. It does not promote tools into the direct array; use a profile at `/new`, or `invoke` with `sticky: true`, when direct schema exposure is wanted.
+- `/profile NAME` selects a named profile for new conversations; `/profile default` clears the selection. Changing it never rewrites an existing conversation's frozen exposure.
+
+The web Components panel provides the same all/direct/discovered/undiscovered filters and a text search. Hidden tools remain internal and are never listed by `/discover`.
 
 #### Hints
 

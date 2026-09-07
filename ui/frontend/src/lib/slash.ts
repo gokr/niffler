@@ -46,6 +46,9 @@ export function builtinSlashCommands(): SlashCommand[] {
     field: "id",
   };
   return [
+    { name: 'components', description: 'running components and conversation tool exposure', builtin: true, params: [{ name: 'filter', kind: 'enum', values: ['all', 'direct', 'discovered', 'undiscovered'] }] },
+    { name: 'discover', description: 'append component schemas to this conversation (tool=NAME for one tool)', builtin: true, params: [{ name: 'component', kind: 'string' }] },
+    { name: 'profile', description: 'select tool profile for new conversations; default clears', builtin: true, params: [{ name: 'name', kind: 'string' }] },
     {
       name: "provider",
       description: "choose the global provider",

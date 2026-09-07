@@ -158,9 +158,23 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "description": "Call a non-hidden tool after discover returns its schema: put the target's arguments unchanged under arguments. Its normal approval and timeout policy applies.",
       "properties": {
         "tool": {"type": "string", "description": "Exact tool name returned by discover"},
-        "arguments": {"type": "object", "description": "Arguments matching the discovered target schema"}
+        "arguments": {"type": "object", "description": "Arguments matching the discovered target schema"},
+        "sticky": {"type": "boolean", "description": "After a successful call, promote the tool into this conversation's direct toolset so later calls skip the invoke hop (one prefix re-read; capped by NIF_MAX_DIRECT_TOKENS; inert under a session allowlist)"}
       },
       "required": ["tool", "arguments"]
+    }))
+  coreReg.tools.add(ToolReg(name: "profile", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Named tool profiles: persistent selector lists resolved into a conversation's direct toolset at its first turn. ops: list (with resolved size estimate), get, save, delete. Selectors: component name, component.tool, -name to exclude; unresolvable names are skipped and reported.",
+      "properties": {
+        "op": {"type": "string", "enum": ["list", "get", "save", "delete"], "description": "Operation"},
+        "name": {"type": "string", "description": "Profile name (get/save/delete)"},
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "save: selector list applied on top of the fundamental direct set"},
+        "note": {"type": "string", "description": "save: what the profile is for"}
+      },
+      "required": ["op"],
+      "x-harness": {"onDemand": true}
     }))
   coreReg.tools.add(ToolReg(name: "session", component: "core",
     schema: %*{
@@ -173,7 +187,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "model": {"type": "string", "description": "Conversation model override; empty clears it"},
         "thinking": {"type": "string", "enum": ["low", "medium", "high"],
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
-        "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"}
+        "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"},
+        "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
@@ -300,6 +315,68 @@ proc promptTools*(cat: Catalog): JsonNode =
       continue
     result.add(%*{"name": tool.name,
                   "schema": normalizeToolSchema(tool.schema)})
+
+proc resolveProfile*(cat: Catalog, base: JsonNode,
+                     selectors: seq[string]): tuple[direct, missing: JsonNode] =
+  ## Expand named tool-profile selectors against the live catalog.
+  ## base is the fundamental direct set (promptTools); selectors, in order:
+  ## "comp" (every non-hidden tool of that component), "comp.tool" (one
+  ## exact tool) and "-name" (exclude — may trim the base or an earlier
+  ## add). Selectors that resolve to nothing are reported in `missing`
+  ## with no unknown/hidden distinction — same name-free rule as invoke,
+  ## so a profile cannot become a hidden-name oracle. Output is
+  ## name-sorted: the same catalog state always resolves to the same
+  ## byte-identical direct set, and profiles are resolved exactly once
+  ## per conversation (first turn), frozen thereafter.
+  var schemas = newJObject()   # name -> {component, schema}
+  if base != nil and base.kind == JArray:
+    for tool in base:
+      let name = tool{"name"}.getStr("")
+      if name.len > 0:
+        schemas[name] = %*{"component": cat.toolIndex.getOrDefault(name),
+                           "schema": tool{"schema"}}
+  var missing = newJArray()
+  var excluded: seq[string]
+  for sel in selectors:
+    if sel.len == 0: continue
+    if sel[0] == '-':
+      excluded.add(sel[1 ..^ 1])
+    elif sel.contains('.'):
+      let parts = sel.split('.')
+      let name = parts[^1]
+      let schema = cat.toolSchema(name)
+      if schema == nil or schema.isHidden() or
+          cat.toolIndex.getOrDefault(name) != parts[0]:
+        missing.add(%sel)
+      else:
+        schemas[name] = %*{"component": cat.toolIndex.getOrDefault(name),
+                           "schema": normalizeToolSchema(schema)}
+    elif cat.components.hasKey(sel):
+      for tool in cat.components[sel].tools:
+        if not tool.schema.isHidden():
+          schemas[tool.name] = %*{"component": sel, "schema": tool.schema}
+    else:
+      missing.add(%sel)
+  result.missing = missing
+  for name in excluded:
+    if schemas.hasKey(name): delete(schemas, name)
+  var names: seq[string]
+  for name in schemas.keys: names.add(name)
+  names.sort()
+  result.direct = newJArray()
+  for name in names:
+    var entry = schemas[name]
+    entry["name"] = %name
+    result.direct.add(entry)
+
+proc profileTokens*(direct: JsonNode): int =
+  ## Rough prompt cost of a resolved direct set: ~4 serialized chars per
+  ## token plus fixed per-tool overhead. Good enough for the budget
+  ## guardrail and profile listings; the exact number shows up in
+  ## ev.session.context usage once the conversation runs.
+  if direct == nil or direct.kind != JArray: return 0
+  for tool in direct:
+    result += ($(tool{"schema"})).len div 4 + 16
 
 proc shortDescription(schema: JsonNode): string =
   result = schema{"description"}.getStr("").splitWhitespace().join(" ")

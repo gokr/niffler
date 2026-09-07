@@ -57,6 +57,8 @@
   let exposureSession = $state<string | null>(null);
   let openName = $state<string | null>(null);
   let exposureRequest = 0;
+  let filter = $state('all');
+  let search = $state('');
 
   // Collapse state is sticky: localStorage so the panel stays the way you
   // left it. Default collapsed (the panel should not eat sidebar space).
@@ -74,7 +76,10 @@
   // and manifest. We just poll it — no local event store to drift or miss
   // registrations, and crashes vanish on the next poll.
   const componentEntries = $derived.by(() =>
-    Object.entries(components).sort(([a], [b]) => a.localeCompare(b))
+    Object.entries(components)
+      .filter(([name, comp]) => (filter === 'all' || sortedTools(comp).length > 0) &&
+        (name.includes(search) || sortedTools(comp).some(t => t.name.includes(search))))
+      .sort(([a], [b]) => a.localeCompare(b))
   );
 
   const directKeys = $derived.by(() => {
@@ -141,7 +146,10 @@
   }
 
   function sortedTools(component: StatusComp): StatusTool[] {
-    return [...(component.tools ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    return [...(component.tools ?? [])]
+      .filter(tool => filter === 'all' || toolState(component.name, tool) === filter)
+      .filter(tool => !search || component.name.includes(search) || tool.name.includes(search))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
 
@@ -231,6 +239,16 @@
     </span>
   </summary>
   <div class="flex flex-col gap-1">
+    <label class="text-xs">Tool exposure
+      <select aria-label="Tool exposure filter" bind:value={filter} class="w-full bg-ink-800">
+        <option value="all">All</option>
+        <option value="direct">Direct</option>
+        <option value="discovered">Discovered (via invoke)</option>
+        <option value="on-demand">Undiscovered</option>
+        <option value="hidden">Internal</option>
+      </select>
+    </label>
+    <input aria-label="Search components and tools" placeholder="Find component or tool" bind:value={search} class="w-full bg-ink-800 text-xs" />
     {#if sessionId && exposure}
       <div class="mb-1 flex flex-wrap gap-x-2 gap-y-0.5 px-2 text-[9px] uppercase tracking-wide">
         <span class="text-accent">{t("components.direct")}</span>
