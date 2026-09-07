@@ -8,6 +8,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`cli catalog` names the harness it is looking at** — the catalog output
+  now starts with `# harness: <root> @ <gitHash>`. The cli trusts
+  `var/nats-url` and does no attach-time identity check, so this is how a
+  mixup with another clone's bus becomes visible instead of silent.
+
+- **CI: main runs the test suite too** — the workflow also triggers on
+  `push` to main, so the default-branch cache (the only one PR runs can
+  restore, per GitHub cache scoping) is refreshed after every merge, and
+  merges of paths-ignore-skipped PRs (docs/website/bench/`**.md`) are
+  still verified.
+
 - **Store engines: SQLite and TiDB behind `NIF_STORE_BACKEND`** — the store
   bus contract is now an interchangeable engine choice with one component
   identity: every engine registers as `store` v0.1.0 with identical
@@ -735,6 +746,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Expert follows several sessions concurrently** — the advisory peer
+  moved from one global target to per-session observation frames (the
+  judge lane stays single: one judgment in flight, shared cooldown,
+  latest-state coalescing), `expert_unfollow` drops one follow or all of
+  them, and `expert_status` accepts `session_id` to report that follow's
+  counters and judge tokens exactly — component-lifetime totals with
+  baseline subtraction are gone, so the bench's concurrent same-combo
+  cells read per-session metrics instead.
+
+- **Bench: timeouts scale with thinking effort, niffler cells price their
+  tokens** — under a `max` thinking profile the default turn/task
+  timeouts scale ×3 (a twelve-minute max turn is doing real reasoning,
+  not hanging; explicit `--turn-timeout-min`/`--task-timeout-min` always
+  win), a session-call/turn timeout is no longer retried as a transient
+  transport error (it is deterministic budget exhaustion; genuine
+  transport failures still retry), and the niffler adapter computes cost
+  from a per-model price table so its cells no longer report cost 0 in
+  reports while pi/opencode price the same traffic.
+
 - **The git clone is the instance identity — bus attach rules follow it**
   (`NIF_NATS_URL` in the process env stays attach-only for tests/bench; a
   URL from the clone's `.env` — or the well-known 4222 default — is the
@@ -891,6 +921,26 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **UI: token streams no longer fight your scrolling** — the chat view
+  scrolled to the bottom on every token delta (one forced layout per
+  delta, viewport yanked back down mid-read). Scroll is now coalesced to
+  at most one layout+scroll per animation frame, and the stream is
+  followed only while the view is already near the bottom: scrolling up
+  pauses the follow, sending a message re-engages it.
+
+- **UI: thinking paragraph gaps restored** — streamed-reasoning
+  compaction collapsed every blank-line run to a single newline, erasing
+  the paragraph breaks between thinking blocks; runs are now capped at
+  one blank line instead.
+
+- **`make install-nim-deps` fails fast when a package silently failed to
+  install** — nimble can exit 0 even when a dependency's own build failed
+  (futhark's opir linking without libclang) and `nimble path` exits 0 for
+  missing packages, so a broken setup reported success and broke builds
+  much later; each package's install path is now verified and `opir`
+  must be on PATH, failing with the fixing hint. `make doctor` names the
+  missing packages instead of a blanket "MISSING".
 
 - **Silent `(exit 2)` on heredoc commands** — the bash tool's subshell wrap
   `( cmd ) > capture 2>&1` glued the redirection onto a command-final
