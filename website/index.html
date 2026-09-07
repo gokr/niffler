@@ -92,7 +92,7 @@
       <p class="dim" data-i18n="term.build">build core + components + desktop UI · the UI autostarts the harness</p>
       <p class="dim" data-i18n="term.l1">→ home bus: claimed nats://127.0.0.1:4222 · root ~/niffler @ 8094748</p>
       <p class="dim" data-i18n="term.l2">→ core listening on svc.core.call</p>
-      <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, fetch, models, provider, llm, grep, edit, git, observe, logfile, agent, expert, fabric</p>
+      <p class="dim">→ catalog: store, bash, builder, plugins, skills, systemprompt, fetch, models, provider, llm, grep, mcp, edit, git, observe, logfile, agent, expert, fabric</p>
       <p><span class="p">$</span> <span class="typed" data-i18n="term.typed"></span><span class="cursor">▌</span></p>
       <p class="dim small" data-i18n="term.note">that terminal is the admin shell (no chat) — conversations live in niffler-ui and niffler-tui</p>
     </div>
@@ -123,7 +123,9 @@
       packages install the same way: <code>plugin_install</code> clones,
       compiles from source and spawns — approval-gated, always built from
       the published code. <code>fabric</code> goes further: the LLM programs
-      whole control flows in an embedded Nim VM.</p>
+      whole control flows in an embedded Nim VM. External MCP servers join
+      the same bus: the <code>mcp</code> manager spawns one bridge process
+      per server, and its tools appear as ordinary catalog tools.</p>
     </article>
     <article class="card">
       <h3 data-i18n-html="why.4h"><span class="num">04</span> persistence of shape</h3>
@@ -163,6 +165,7 @@
       <div class="box">models<br><span class="box-lang">go sdk</span></div>
       <div class="box">provider<br><span class="box-lang">go sdk</span></div>
       <div class="box">llm<br><span class="box-lang">go sdk</span></div>
+      <div class="box">mcp<br><span class="box-lang">go sdk</span></div>
       <div class="box">edit<br><span class="box-lang">nim sdk</span></div>
       <div class="box">grep<br><span class="box-lang">nim sdk</span></div>
       <div class="box">git<br><span class="box-lang">nim sdk</span></div>
@@ -225,8 +228,9 @@
     </article>
     <article class="card">
       <h3 data-i18n-html="bench.2h"><span class="num">02</span> harness bench</h3>
-      <p data-i18n-html="bench.2p">A harness-comparison framework — seventeen red-at-base tasks
-        tagged by kind (general / fabric / expert / selfextend), each verified
+      <p data-i18n-html="bench.2p">A harness-comparison framework — twenty-seven red-at-base
+        tasks (17 core + 10 mid-tier targeting 2–10 min/cell) tagged by
+        kind (general / fabric / expert / selfextend), each verified
         green by a reference implementation, with per-turn feedback
         loops, protected-file guards and provider token accounting —
         niffler / pi / opencode / codewhale × two models, a
@@ -235,7 +239,8 @@
         Verified and Datacurve's DeepSWE (113 long-horizon tasks) run as
         additional benchmarks; <code>bench/container</code> ships a Docker
         job image and <code>bench/launch.mjs</code> is a guided launcher.
-        Latest full matrix: all 340 cells green.</p>
+        The full 17-task matrix ran green across all lanes (340/340);
+        the mid-tier set calibrated 20/20 (niffler vs pi, GLM low).</p>
     </article>
   </div>
 </section>
