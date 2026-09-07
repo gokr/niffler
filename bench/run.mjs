@@ -118,6 +118,22 @@ const taskDirs = fs
   .sort();
 const tasks = taskArg === "all" ? taskDirs : taskArg.split(",");
 
+// ---------- task-shape check (always on) ----------
+// A task the verifier can never run green (no repo/test.sh and no meta.verify
+// script) burns a full agent round per cell before failing at verify time.
+// prepareRepo force-chmods test.sh, so the exec bit itself needs no check.
+const shapeBroken = tasks.filter((taskId) => {
+  const meta = readJson(path.join(TASK_ROOT, taskId, "meta.json")) || {};
+  return !meta.verify && !fs.existsSync(path.join(TASK_ROOT, taskId, "repo", "test.sh"));
+});
+if (shapeBroken.length) {
+  console.error(
+    "bench: task(s) with no runnable verifier (need repo/test.sh or meta.verify): " +
+      shapeBroken.join(", "),
+  );
+  process.exit(1);
+}
+
 const { keys, missing } = resolveKeys(BENCH_ROOT, new Set(models));
 if (missing.length) {
   console.error(`bench: missing API keys: ${missing.join(", ")} — see bench/README.md`);

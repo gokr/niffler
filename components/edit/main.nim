@@ -925,7 +925,7 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "Full new content (\"\" truncates)"}
 }, @["path", "content"],
-  "Create or replace a whole file atomically (parent dirs created). Prefer edit for surgical changes to existing files. \"\" truncates. Cap 900KB."), hWrite,
+  "Create or replace a whole file atomically (parent dirs created). Preferred for authoring a file or replacing a stub — write the complete final content in one call. Prefer edit for surgical changes to otherwise-correct files. \"\" truncates. Cap 900KB."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000,
      "workspace": {"pathFields": ["path"]}})
 

@@ -140,6 +140,7 @@ discard comp.tool("bash", bashSchema,
     var status = "(exit " & $code
     if code == 124: status.add(" — timed out after " & $timeoutMs & "ms")
     elif code == 130: status.add(" — cancelled by request")
+    elif code == 126: status.add(" — found but not executable; run it via an interpreter, e.g. bash ./script.sh")
     status.add(")")
     var text = status & "\n"
     # transcript cap: spill the full capture and keep only head+tail in
