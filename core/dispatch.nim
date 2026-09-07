@@ -194,6 +194,15 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       return %*{"error": "spawn needs name and binary"}
     if replicas < 1 or replicas > 16:
       return %*{"error": "spawn replicas must be between 1 and 16"}
+    # Optional argv passed through to the binary (e.g. mcp-bridge --server fs).
+    # Persisted in the component record so boot restore relaunches the same
+    # instances; every replica of a name shares the same argv.
+    var spawnArgs: seq[string]
+    if args{"args"} != nil and args{"args"}.kind == JArray:
+      for a in args{"args"}:
+        if a.kind != JString:
+          return %*{"error": "spawn args must be strings"}
+        spawnArgs.add(a.getStr())
     for child in ct.sup.children:
       if child.name == name:
         return %*{"error": "component already supervised: " & name}
@@ -201,12 +210,13 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     if not fileExists(abs):
       return %*{"error": "binary not found: " & abs}
     for i in 0 ..< replicas:
-      discard ct.sup.addChild(name, abs)
+      discard ct.sup.addChild(name, abs, rpOnFailure, spawnArgs)
       ct.sup.startChild(ct.sup.children[^1])
     try:
       discard ct.storePutRev("component", name,
         %*{"name": name, "binary": abs, "policy": "on-failure",
-           "replicas": replicas, "addedAt": epochTime()})
+           "replicas": replicas, "args": spawnArgs,
+           "addedAt": epochTime()})
     except CatchableError as e:
       echo "core: warning — component not persisted (store down?): " & e.msg
     return %*{"ok": true, "name": name, "replicas": replicas}

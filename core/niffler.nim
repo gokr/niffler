@@ -498,11 +498,17 @@ proc main() =
           if alreadyManifest: continue  # shipped manifest definition wins
           if fileExists(binary):
             let replicas = min(max(item{"value"}{"replicas"}.getInt(1), 1), 16)
+            var restoreArgs: seq[string]
+            if item{"value"}{"args"} != nil and item{"value"}{"args"}.kind == JArray:
+              for a in item{"value"}{"args"}:
+                if a.kind == JString:
+                  restoreArgs.add(a.getStr())
             echo "core: restoring " & name & " from store (" & binary &
                  ", " & $replicas & " replica(s))"
             for i in 0 ..< replicas:
               discard sup.addChild(name, binary,
-                parsePolicy(item{"value"}{"policy"}.getStr("on-failure")))
+                parsePolicy(item{"value"}{"policy"}.getStr("on-failure")),
+                restoreArgs)
               sup.startChild(sup.children[^1])
           else:
             echo "core: WARNING stored component " & name &

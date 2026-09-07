@@ -70,7 +70,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
         test test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
-        test-systemprompt test-grep test-git test-edit test-expert \
+        test-systemprompt test-grep test-git test-edit test-expert test-mcp \
         test-retry-unit test-ctx-accounting \
         test-autostart test-smoke smoke dev clean gotest \
         install uninstall \
@@ -139,6 +139,12 @@ var/bin/grep: components/grep/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/git: components/git/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/git/main.nim
+
+var/bin/mcp: components/mcp/main.go components/mcp/types.go components/mcp/go.mod components/mcp/go.sum $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/mcp && go build -o ../../var/bin/mcp .'
+
+var/bin/mcp-bridge: components/mcp-bridge/main.go components/mcp-bridge/go.mod components/mcp-bridge/go.sum $(SDK_GO) | var/bin
+	$(BUILD_WRAP) bash -c 'cd components/mcp-bridge && go build -o ../../var/bin/mcp-bridge .'
 
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/builder/main.nim
@@ -224,7 +230,8 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sq
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
-	var/bin/hooks var/bin/dialog var/bin/nats-server
+	var/bin/hooks var/bin/dialog var/bin/nats-server \
+	var/bin/mcp var/bin/mcp-bridge
 
 build:
 	@mkdir -p var/bin; if [ "$$(cat $(MODE) 2>/dev/null)" = "release" ]; then \
@@ -321,7 +328,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
 # test-core, test-discover, test-cli, test-systemprompt,
 # test-observe, test-logfile, test-models, test-grep,
-# test-git, test-smoke.
+# test-git, test-mcp, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -375,6 +382,9 @@ test-cli: build var/bin/test_t_cli var/bin/test_t_cli_catalog
 	$(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_cli_catalog
 test-grep:    build var/bin/test_t_grep    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_grep
 test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_git
+# The fixture MCP server (tests/fixtures/mcp_server.nim) is compiled by the
+# test itself into the sandbox; t_mcp needs the mcp manager + bridge binaries.
+test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel

@@ -18,8 +18,8 @@ anything structural.
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
-  `logfile`, `models`, `provider`, `llm` are peers. Adding a capability =
-  write source → `builder.build`
+  `logfile`, `models`, `provider`, `llm`, `mcp` are peers. Adding a
+  capability = write source → `builder.build`
   → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
   coordinated components and uses their existing NATS queue group. Removing
   one logical group = `core.kill` (temporary) or `core.remove` (also deletes
@@ -107,9 +107,9 @@ make test             # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
                       # t_models, t_provider, t_observe, t_logfile, t_core,
                       # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_fabric, t_nested — each
-                      # owns a private NATS server + temporary NIF_ROOT, so
-                      # component targets can overlap a live harness
+                      # t_systemprompt, t_agent, t_fabric, t_nested, t_mcp —
+                      # each owns a private NATS server + temporary NIF_ROOT,
+                      # so component targets can overlap a live harness
 make gotest           # Go unit tests + vet: sdk/go, components/models,
                       # provider, llm and llm-openai (also part of `make test`)
 make recover          # stop everything, rebuild shipped binaries, wipe

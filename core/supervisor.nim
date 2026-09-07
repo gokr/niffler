@@ -46,6 +46,7 @@ type
     name*: string          ## logical component name (shared by replicas)
     instance*: int         ## 1-based supervisor instance for logs/status
     binary*: string
+    args*: seq[string]     ## extra argv, preserved across restarts
     policy*: RestartPolicy
     wanted*: bool          ## false while draining: never restart
     process*: Process
@@ -107,6 +108,9 @@ proc childLabel(c: Child): string =
   if c.instance <= 1: c.name else: c.name & "#" & $c.instance
 
 proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
+  ## Starts (or restarts) a child. An explicit argv overrides; otherwise the
+  ## child's persisted args ride along, so a restart relaunches the same
+  ## instance (core.spawn records, session runners).
   # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
   # Child output goes to var/logs/<name>.log: without a redirect, osproc
@@ -137,7 +141,8 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
       if sp.len > 0:
         cmd.add(quoteShell(sp) & " --pdeathsig TERM ")
   cmd.add(quoteShell(c.binary))
-  for a in args:
+  let argv = if args.len > 0: args else: c.args
+  for a in argv:
     cmd.add(" " & quoteShell(a))
   cmd.add(" >> " & quoteShell(logPath) & " 2>&1")
   # stdin stays a fresh pipe (EOF on read) as before; the wrapper's own
@@ -148,13 +153,14 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   c.restarts = 0
 
 proc addChild*(sup: Supervisor, name, binary: string,
-               policy: RestartPolicy = rpOnFailure): Child =
+               policy: RestartPolicy = rpOnFailure,
+               args: seq[string] = @[]): Child =
   var instance = 1
   for child in sup.children:
     if child.name == name:
       instance = max(instance, child.instance + 1)
   result = Child(name: name, instance: instance, binary: binary,
-                 policy: policy, wanted: true)
+                 args: args, policy: policy, wanted: true)
   sup.children.add(result)
 
 proc pump*(sup: Supervisor, cat: Catalog) =

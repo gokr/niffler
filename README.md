@@ -475,6 +475,19 @@ Open work — deferred follow-ups and quests — is consolidated in
       preferred way to CI a plugin repo (niffler-weather's workflow uses it).
       Registration/install verification and tool lookup use core's accepted
       catalog rather than raw registration announcements
+- [x] **external MCP servers** — the `mcp` manager (store kind `mcp`,
+      approval-gated `mcp_add`/`mcp_edit`/`mcp_remove`, validation via a real
+      connect through `mcp-bridge --probe`) plus one supervised
+      `mcp-bridge` process per server (official Go SDK: stdio / streamable
+      HTTP / SSE). Server tools become ordinary catalog tools
+      (`mcp_<server>_<tool>`, on-demand by default) reachable through
+      `discover` + `invoke` with normal approval/timeout semantics; sessions
+      are lazy (subprocess/HTTP connects on first call, idles out), and
+      server-pushed tool-contract drift persists + restarts the bridge so
+      discovery stays truthful. `core.spawn` learned optional persisted
+      `args` (restored on boot); the Go SDK learned deferred announce
+      (`DeferAnnounce`/`Announce`) for components that must load config
+      before declaring a contract. Fixture-server bus test in `t_mcp`
 - [x] **core re-entry** — dispatch polls a private inbox and serves
       `svc.core.call` mid-turn, so a component calling back into core
       (`plugin_install` → `core.spawn`) cannot deadlock the session;

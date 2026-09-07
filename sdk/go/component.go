@@ -23,6 +23,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// DieWithParent asks the kernel to SIGTERM this process when its parent
+// dies (even on SIGKILL). Run() does this automatically; custom main flows
+// (Connect/Wait/Close) must call it themselves.
+func DieWithParent() { dieWithParent() }
+
 // dieWithParent asks the kernel (Linux) to SIGTERM this process the moment
 // the parent dies — even on SIGKILL — so a crashed test or core can never
 // leave components behind. The ppid re-check closes the fork race: if the
@@ -130,6 +135,7 @@ type Component struct {
 	shutdownOnce  sync.Once
 	owner         *Component
 	inHandler     bool
+	deferAnnounce bool
 }
 
 const defaultConcurrentLimit = 16
@@ -464,14 +470,22 @@ func (c *Component) Connect() error {
 		c.subs = append(c.subs, s)
 	}
 
-	if err := c.announce("reg.publish"); err != nil {
-		return err
-	}
 	if err := c.nc.Flush(); err != nil {
 		return fmt.Errorf("flush subscriptions: %w", err)
 	}
-	slog.Info("online", "component", c.Name, "version", c.Version, "url", url,
-		"tools", len(c.tools))
+	if !c.deferAnnounce {
+		if err := c.announce("reg.publish"); err != nil {
+			return err
+		}
+		if err := c.nc.Flush(); err != nil {
+			return fmt.Errorf("flush registration: %w", err)
+		}
+		slog.Info("online", "component", c.Name, "version", c.Version, "url", url,
+			"tools", len(c.tools))
+	} else {
+		slog.Info("connected (announce deferred)", "component", c.Name,
+			"version", c.Version, "url", url)
+	}
 	return nil
 }
 
@@ -517,16 +531,39 @@ func (c *Component) Run() error {
 	if err := c.Connect(); err != nil {
 		return err
 	}
+	c.Wait()
+	c.Close()
+	return nil
+}
 
+// DeferAnnounce: Connect() performs no reg.publish; call Announce() once the
+// tool contract is complete. For components that must load their config (or
+// otherwise discover their tools) before they can declare a contract — the
+// catalog rejects a differing re-announce, so the first publish must already
+// carry the final toolset. Chainable like Tool/On/Tap. While deferred, calls
+// are served from the moment Connect subscribes — a caller that races the
+// Announce gets a normal no-tool error.
+func (c *Component) DeferAnnounce() *Component {
+	c.deferAnnounce = true
+	return c
+}
+
+// Announce publishes (or republishes) the current tool contract to the
+// catalog. Required after Connect when DeferAnnounce is set.
+func (c *Component) Announce() error {
+	return c.announce("reg.publish")
+}
+
+// Wait blocks until SIGTERM/SIGINT or ev.sys.drain. Call Close afterwards.
+// Run is Connect + Wait + Close; use Wait directly when Connect happened
+// earlier (e.g. deferred-announce setup in between).
+func (c *Component) Wait() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	select {
 	case <-ctx.Done():
 	case <-c.shutdown:
 	}
-
-	c.Close()
-	return nil
 }
 
 func (c *Component) signalShutdown() {

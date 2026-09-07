@@ -16,6 +16,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch)
+- [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -70,6 +71,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) |
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
+| `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server; tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
 | `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `core.spawn {name: "dialog", binary: ".../var/bin/dialog"}`. Prereqs: natscli, jq, zenity — `make setup` installs all three |
 ### Minimal boot profile (`--minimal`)
 
@@ -702,6 +704,114 @@ The `fetch` component is the web access tool (a port of the old niffler
 - Errors (non-2xx, timeouts, oversized responses, invalid URLs/methods)
   come back as `ok: false` with the status and a body snippet.
 - Read-only network access — no approval gate (like `plugin_search`).
+
+## External MCP servers (`mcp`)
+
+Status: **implemented** (manager + bridge + discovery integration; UI
+surfaces are thin clients over the same tools).
+
+Niffler acts as an MCP **client/host**: each configured external MCP server
+(Model Context Protocol) becomes one supervised bridge process, and the
+server's tools become ordinary catalog tools — discoverable, invocable and
+approval-gated exactly like any component tool. The bridge is built on the
+official Go SDK (`github.com/modelcontextprotocol/go-sdk`).
+
+### Shape
+
+```
+store kind "mcp" (one record per server)
+        │ owned by the mcp manager (components/mcp)
+        ▼
+core.spawn {name: "mcp-<server>", binary: var/bin/mcp-bridge, args: ["--server", <server>]}
+        │ one supervised process per server (survives reboots via the
+        │ component record; supervisor restarts it on failure)
+        ▼
+bridge announces mcp_<server>_<tool> schemas  ──►  catalog ──► discover/invoke
+        │
+        └── lazy MCP session ──► stdio subprocess / streamable-http / sse
+```
+
+- **Naming**: tools are prefixed `mcp_<server>_<tool>` (niffler lowercase
+  convention, globally unique in the catalog); descriptions carry a
+  `[mcp:<server>]` provenance prefix.
+- **Exposure**: on-demand by default (`x-harness.onDemand`) — schemas enter
+  the conversation through `discover {component: "mcp-<server>"}` and calls
+  go through `invoke`, so MCP servers never bloat the frozen direct toolset.
+  `"expose": "direct"` opts a server's tools into every new conversation's
+  snapshot.
+- **Lazy sessions**: adding a server validates it with one real connect
+  (initialize + tools/list) and caches the tool listing in the record; the
+  MCP subprocess/HTTP session itself starts on the first tool call and idles
+  out after `idleMs` (default 5 min). Booting the harness never pays for
+  `npx`/`uvx` startup.
+- **Drift**: on each fresh session (and on server-pushed
+  `notifications/tools/list_changed`) the bridge re-lists the server's
+  tools; when the contract moved it persists the fresh listing (best effort,
+  rev-retried) and exits 3, so the supervisor restarts it announcing the
+  current truth. Catalog and execution never disagree for long.
+- **Isolation**: one process per server; a hung or crashed server cannot
+  take down others (the supervisor's on-failure backoff restarts it). A
+  server's tools keep their frozen schema in existing conversations after
+  removal — calls then fail through normal routing.
+
+### The record
+
+One store document per server (kind `mcp`, id = sanitized server name;
+`mcp_servers` lists them with env/header **values redacted**):
+
+```json
+{
+  "name": "filesystem",
+  "type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+  "env": {"API_KEY": "..."},
+  "cwd": "",
+  "enabled": true,
+  "approval": "always",
+  "expose": "ondemand",
+  "effect": "write",
+  "timeoutMs": 120000,
+  "idleMs": 300000,
+  "concurrency": "parallel",
+  "tools": [{"name": "read_file", "description": "...", "inputSchema": {}}]
+}
+```
+
+`type` selects the transport: `stdio` (default; `command`+`args`+optional
+`env`/`cwd`), `http` (streamable HTTP; `url`+optional `headers`) or `sse`
+(`url`+`headers`). `approval: "always"` gates every tool of the server with
+the human approval prompt; `effect: "read"` marks read-only tools for fabric
+scheduling; `concurrency: "serial"` for servers that cannot handle overlapping
+calls (default `parallel` via the SDK's bounded `ToolConcurrent`). The
+manager owns every field except `tools` — the bridge rewrites only that cache
+when the server drifts.
+
+### Tools
+
+All on the `mcp` component, all on-demand; writes are approval-gated:
+
+| Tool | Effect |
+|---|---|
+| `mcp_servers` | list records + live bridge state (registered tools, session status, last error) |
+| `mcp_add` | validate with one real connect (through the bridge in probe mode — config on stdin, no bus), store the record with the cached tool listing, spawn the bridge. Validation timeout: 30s or `timeoutMs` if higher (`NIF_MCP_PROBE_TIMEOUT_MS` overrides) — first runs of `npx`/`uvx` servers download packages |
+| `mcp_edit` | merge provided fields, re-validate, respawn (or stop when disabling) |
+| `mcp_remove` | `core.remove` the bridge (no boot resurrection) + delete the record |
+| `mcp_refresh` | force a bridge to drop its session, reconnect and re-list now |
+
+Adding an MCP server therefore asks for approval twice by design: once for
+the `mcp_add` itself, once for the `core.spawn` it triggers — the human gate
+on changing the harness shape (docs/ARCHITECTURE.md).
+
+### Verification
+
+`tests/t_mcp.nim` (in `make test`): compiles a dependency-free fixture MCP
+server (`tests/fixtures/mcp_server.nim`, newline-delimited JSON-RPC over
+stdio) into a private sandbox and exercises the whole contract — add (with
+secret redaction), bridge registration, discover hints + full schema, lazy
+invoke, tool-error propagation, server-pushed drift (persist + restart +
+rediscovery), edit/respawn, spawn-args persistence for boot restore, and
+removal.
 
 ## Progressive tool discovery (`discover`/`invoke`)
 

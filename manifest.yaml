@@ -94,6 +94,25 @@ components:
     # concurrently while every SDK process remains simple and serial.
     replicas: 4
 
+  # External MCP servers (Model Context Protocol). The manager owns the
+  # config (store kind "mcp") and spawns one mcp-bridge process per server
+  # via core.spawn; bridges announce the server's tools as ordinary catalog
+  # tools (mcp_<server>_<tool>) reachable through discover/invoke. The
+  # bridge binary is built but never autostarts — spawn-per-server only.
+  - name: mcp
+    build: {lang: go, src: components/mcp}
+    binary: var/bin/mcp
+    autostart: true
+    required: false
+    restart: on-failure
+
+  - name: mcp-bridge
+    build: {lang: go, src: components/mcp-bridge}
+    binary: var/bin/mcp-bridge
+    autostart: false
+    required: false
+    restart: on-failure
+
   # File tools: read (plain, pageable) / edit (exact old_string match with
   # a guarded fallback cascade) / write (atomic whole-file) / undo_last_edit.
   - name: edit

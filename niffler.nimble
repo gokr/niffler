@@ -46,6 +46,8 @@ task all_internal, "Unlocked internal build — invoke through all (or the Makef
   exec "cd components/models && go build -o ../../var/bin/models ."
   exec "cd components/provider && go build -o ../../var/bin/provider ."
   exec "cd components/llm && go build -o ../../var/bin/llm ."
+  exec "cd components/mcp && go build -o ../../var/bin/mcp ."
+  exec "cd components/mcp-bridge && go build -o ../../var/bin/mcp-bridge ."
   exec "cd components/nats && go build -o ../../var/bin/nats-server ."
 
 task all, "Build core and all shipped components (whole generation under the shared build lock)":

@@ -1385,8 +1385,8 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
       if not fileExists(bin):
         raise newException(IOError,
           "session runner binary missing: " & bin & " — run `make build`")
-      discard ct.sup.addChild(rname, bin, rpNever)
-      ct.sup.startChild(ct.sup.children[^1], @[sessionId])
+      discard ct.sup.addChild(rname, bin, rpNever, @[sessionId])
+      ct.sup.startChild(ct.sup.children[^1])
   let deadline = epochTime() + 10
   while epochTime() < deadline:
     # Serve svc.core.call while waiting: the fresh runner seeds its catalog
@@ -1406,8 +1406,8 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
         # the entry was reaped mid-wait: spawn the replacement now
         let bin = ct.root / "var" / "bin" / "session"
         if fileExists(bin):
-          discard ct.sup.addChild(rname, bin, rpNever)
-          ct.sup.startChild(ct.sup.children[^1], @[sessionId])
+          discard ct.sup.addChild(rname, bin, rpNever, @[sessionId])
+          ct.sup.startChild(ct.sup.children[^1])
     if ct.cat.components.hasKey(rname): break
     sleep(100)
   if not ct.cat.components.hasKey(rname):
