@@ -29,6 +29,21 @@
         "apiKeyEnv": "DEEPSEEK_API_KEY"
       }
     },
+    "syn-large": {
+      "label": "Synthetic Large Text (GLM-5.3-Flash)",
+      "niffler": {
+        "baseUrl": "https://api.synthetic.new/openai/v1",
+        "model": "syn:large:text",
+        "apiKeyEnv": "SYNTHETIC_API_KEY",
+        "thinking": "low"
+      },
+      "pi": {
+        "provider": "synthetic",
+        "model": "syn:large:text",
+        "apiKeyEnv": "SYNTHETIC_API_KEY",
+        "thinking": "low"
+      }
+    },
     "glm-5.3-flash": {
       "label": "GLM-5.3-Flash",
       "niffler": {

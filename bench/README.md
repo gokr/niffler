@@ -33,9 +33,11 @@ var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wi
 
 ## Tasks
 
-Seventeen self-contained repos, all "make the visible test suite pass"
-(like SWE-bench's FAIL_TO_PASS, but lightweight and dependency-free so
-every harness starts equal). `meta.json` tags each with a `kind`:
+The custom suite is **full27** (formerly full17): twenty-seven self-contained
+repos, all "make the visible test suite pass" (like SWE-bench's FAIL_TO_PASS,
+but lightweight and dependency-free so every harness starts equal) — the base
+seventeen t01–t17 plus the mid tier t18–t27. `meta.json` tags each with a
+`kind`:
 `general` (bug fixes, implementations, refactors), `fabric` (mechanical
 fan-out work a guest program excels at), `expert` (tasks with Niffler-
 specific tool-selection traps) and `selfextend` (build your own tool).
@@ -208,6 +210,14 @@ written anywhere:
 |-------|----------|---------|----|----------|
 | deepseek-v4-flash | api.deepseek.com/v1 | `NIF_OPENAI_*` | `--provider deepseek` (models.json override) | `-m deepseek/deepseek-v4-flash` |
 | glm-5.3-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | `-m llmgateway/glm-5.3-flash` |
+| syn-large (`syn:large:text`) | api.synthetic.new/openai/v1 | `NIF_OPENAI_*` | `--provider synthetic` (models.json) | — |
+
+`syn-large` is Synthetic's GLM-5.3-Flash (fp8): 512k context, 64k output,
+reasoning efforts low/high/max, $0.15/M in · $0.50/M out · $0.04/M cache-read.
+The bench's pi entry sets `reasoning: true` so `--thinking low|high` reaches
+the API as a real `reasoning_effort` (the interactive `~/.pi` extension ships
+it with `reasoning: false`, which would flatten both variants to the provider
+default).
 
 The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
 `deepseek-v4-flash` with a China-hosting opt-in wall and reports

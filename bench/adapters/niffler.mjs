@@ -341,6 +341,7 @@ export class NifflerHarness {
     // traffic.
     const PRICE = {
       "deepseek-v4-flash": { input: 0.283, output: 1.14, cacheRead: 0.028 },
+      "syn:large:text": { input: 0.15, output: 0.5, cacheRead: 0.04 },
     };
     const usage = zeroUsage();
     if (!items) items = await this.transcript(sessionId);

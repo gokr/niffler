@@ -81,7 +81,7 @@ const listTasks = (root) => {
 const BENCHMARKS = [
   { key: "deepswe-pilot", label: "DeepSWE pilot-10 (ready, images pulled)", root: "var/bench/deepswe/tasks-pilot" },
   { key: "deepswe-full", label: "DeepSWE full 113 (needs prepare + image pulls)", root: "var/bench/deepswe/tasks" },
-  { key: "full17", label: "full17 custom tasks (bench/tasks)", root: "bench/tasks" },
+  { key: "full27", label: "full27 custom tasks (bench/tasks, t01–t27)", root: "bench/tasks" },
   { key: "swe-verified", label: "SWE-bench Verified (needs bench/swe/import.mjs)", root: "var/bench/swe/tasks" },
 ];
 for (const b of BENCHMARKS) {
@@ -91,10 +91,14 @@ for (const b of BENCHMARKS) {
   b.tasks = t || [];
 }
 
-const timeoutDefaults = (root) =>
-  /deepswe/.test(root)
+const timeoutDefaults = (root, thinking) => {
+  // Match run.mjs's deeper-effort scaling (max ×3, high ×2): the launcher
+  // always passes explicit timeouts, which would otherwise override it.
+  const scale = thinking === "max" ? 3 : thinking === "high" ? 2 : 1;
+  return /deepswe/.test(root)
     ? { turn: 185, task: 200, test: 2000 } // DeepSWE: 3h agent window, 30min verifier
-    : { turn: cfg.defaults.turnTimeoutMin, task: cfg.defaults.taskTimeoutMin, test: cfg.defaults.testTimeoutSec };
+    : { turn: cfg.defaults.turnTimeoutMin * scale, task: cfg.defaults.taskTimeoutMin * scale, test: cfg.defaults.testTimeoutSec };
+};
 
 // ---------- pre-flight ----------
 const sshOk = (() => {
@@ -208,7 +212,7 @@ if (!rounds) rounds = (await ask(`Rounds (1 = canonical one-shot) [1]`, "1")) ||
 let jobs = flag("jobs") || null;
 if (!jobs) jobs = (await ask(`Parallel jobs [${cfg.defaults.jobs}]`, String(cfg.defaults.jobs))) || String(cfg.defaults.jobs);
 
-const td = timeoutDefaults(bench.root);
+const td = timeoutDefaults(bench.root, thinking);
 td.turn = Number(flag("turn-timeout-min", td.turn));
 td.task = Number(flag("task-timeout-min", td.task));
 td.test = Number(flag("test-timeout-sec", td.test));

@@ -54,6 +54,30 @@ export function setupPiConfig(runRoot, defaults) {
               },
             ],
           },
+          // Synthetic (api.synthetic.new/openai/v1): OpenAI-compatible. The
+          // bench entry deliberately sets reasoning: true (unlike the
+          // interactive ~/.pi extension) so --thinking low|high maps to a
+          // real reasoning_effort — Synthetic's efforts are low/high/max,
+          // and without the map pi clamps "max" to "high". context/max
+          // tokens and pricing per Synthetic's model catalog
+          // (zai-org/GLM-5.3-Flash, fp8).
+          synthetic: {
+            baseUrl: "https://api.synthetic.new/openai/v1",
+            api: "openai-completions",
+            apiKey: "$SYNTHETIC_API_KEY",
+            models: [
+              {
+                id: "syn:large:text",
+                name: "Synthetic Large Text (GLM-5.3-Flash)",
+                reasoning: true,
+                input: ["text"],
+                contextWindow: 524288,
+                maxTokens: 65536,
+                thinkingLevelMap: { xhigh: null, max: "max" },
+                cost: { input: 0.15, output: 0.5, cacheRead: 0.04, cacheWrite: 0 },
+              },
+            ],
+          },
         },
       },
       null,
@@ -101,6 +125,7 @@ export async function round(opts) {
     PI_CODING_AGENT_DIR: cfgDir,
     DEEPSEEK_API_KEY: keys.DEEPSEEK_API_KEY || "missing",
     LLMGATEWAY_API_KEY: keys.LLMGATEWAY_API_KEY || "missing",
+    SYNTHETIC_API_KEY: keys.SYNTHETIC_API_KEY || "missing",
   };
   const res = await run("pi", args, {
     cwd: repo,

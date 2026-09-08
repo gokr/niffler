@@ -65,13 +65,17 @@ const KEEP_REPOS = opt("keep-repos", false) === true;
 const THINKING = String(opt("thinking", "") || "");
 // Deeper effort means legitimately longer turns: a max-effort turn that
 // needs 12 minutes is doing real reasoning, not hanging. The defaults are
-// tuned for low; under a max profile they turned slow turns into
+// tuned for low; under deeper profiles they turned slow turns into
 // timeout→retry→timeout storms (3×630s per round, then a TIMEOUT verdict —
-// seen on glm max: opencode t02/t06, expert t06). Scale ×3 with the
-// profile; explicit --turn-timeout-min / --task-timeout-min always win.
+// seen on glm max: opencode t02/t06, expert t06). Scale with the profile
+// (max ×3, high ×2); explicit --turn-timeout-min / --task-timeout-min
+// always win.
 if (THINKING === "max") {
   if (opt("turn-timeout-min", null) === null) turnTimeoutMs *= 3;
   if (opt("task-timeout-min", null) === null) taskTimeoutMs *= 3;
+} else if (THINKING === "high") {
+  if (opt("turn-timeout-min", null) === null) turnTimeoutMs *= 2;
+  if (opt("task-timeout-min", null) === null) taskTimeoutMs *= 2;
 }
 const thinkingProfiles = cfg.thinking?.profiles || {};
 let thinkingByHarness = null;

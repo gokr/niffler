@@ -32,8 +32,9 @@ export function resolveKeys(benchRoot, want = new Set(["deepseek-v4-flash", "glm
   }
 
   // Optional: Synthetic (expert judge provider for the niffler-expert
-  // variant). Only required when config.json's expertJudge is used.
-  keys.SYNTHETIC_API_KEY = env.SYNTHETIC_API_KEY || "";
+  // variant, and the syn-* worker models). env > niffler .env > opencode
+  // auth.json.
+  keys.SYNTHETIC_API_KEY = env.SYNTHETIC_API_KEY || dot.SYNTHETIC_API_KEY || "";
   if (!keys.SYNTHETIC_API_KEY) {
     try {
       const auth = JSON.parse(
@@ -47,10 +48,24 @@ export function resolveKeys(benchRoot, want = new Set(["deepseek-v4-flash", "glm
   }
 
   const missing = [];
-  // LLMGATEWAY (glm-5.3-flash) is optional: only required when a selected
-  // lane actually uses it (deepseek-only runs must not fail without it).
-  if (!keys.DEEPSEEK_API_KEY) missing.push("DEEPSEEK_API_KEY");
-  if (want.has("glm-5.3-flash") && !keys.LLMGATEWAY_API_KEY)
-    missing.push("LLMGATEWAY_API_KEY");
+  // Generic requirement check driven by config.json: every harness entry of
+  // a wanted model names its apiKeyEnv, and each must resolve (keys above
+  // already apply the model-specific fallbacks, e.g. deepseek → NIF_OPENAI_*).
+  // So a syn-large run demands SYNTHETIC_API_KEY while a deepseek-only run
+  // still passes without llmgateway/synthetic keys.
+  let cfgModels = {};
+  try {
+    cfgModels =
+      JSON.parse(fs.readFileSync(path.join(benchRoot, "bench", "config.json"), "utf8"))
+        .models || {};
+  } catch {}
+  const missingSet = new Set();
+  for (const model of want) {
+    for (const harness of Object.values(cfgModels[model] || {})) {
+      if (harness && typeof harness === "object" && harness.apiKeyEnv && !keys[harness.apiKeyEnv])
+        missingSet.add(harness.apiKeyEnv);
+    }
+  }
+  missing.push(...missingSet);
   return { keys, missing };
 }
