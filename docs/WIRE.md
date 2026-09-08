@@ -50,8 +50,8 @@ reg.depart             # {name, pid, ...}, graceful process departure; the logic
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?,
-                       #   title?, cwd?, profile?, tools?, maxRounds?, maxCalls?,
-                       #   maxTokens?};
+                       #   title?, cwd?, profile?, discovery?, tools?, maxRounds?,
+                       #   maxCalls?, maxTokens?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. thinking (low|medium|high,
@@ -59,9 +59,12 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   selection forwarded to the LLM as reasoning_effort
                        #   (provider-dependent; providers without support never see it).
                        #   profile names a stored tool profile resolved into the
-                       #   direct toolset at the conversation's first turn —
-                       #   ignored on resume (the snapshot is byte-stable)
-                       #   tools/maxRounds/maxCalls/maxTokens are frozen per-session
+                       #   direct toolset once, at the first call (unknown names
+                       #   fail the call; resumes ignore the argument — the
+                       #   snapshot is byte-stable). discovery {…} is an explicit
+                       #   client discovery: it runs `discover`, appends the
+                       #   schemas as a user message and records them, with no
+                       #   LLM turn. tools/maxRounds/maxCalls/maxTokens are frozen per-session
                        #   controls (first call wins, then the conversation header
                        #   carries them across runner resumes): a tool allowlist,
                        #   LLM rounds per turn (1-20), total tool dispatches per
@@ -159,10 +162,8 @@ ev.session.status      # {sessionId, turnId?, provider?, providerSource?, model?
                        #   sends prompt_tokens_details). Also emitted by
                        #   model-only session calls (no inference)
 ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
-                       #   warning?|trimmed?, reason?}; context-window pressure
-                       #   (75% warn, 90% trim) or a full cache miss
-                       #   (reset:trim, or reset:tools on sticky invoke
-                       #   promotion)
+                       #   warning?|trimmed?}; context-window pressure
+                       #   (75% warn, 90% trim)
 ev.session.retry       # {sessionId, turnId, attempt, maxRetries, delayMs, error}
                        #   a transient LLM failure is being retried after delayMs
                        #   (exponential backoff; NIF_LLM_MAX_RETRIES, default 2).
@@ -178,10 +179,8 @@ ev.session.steer       # {sessionId, turnId?, content} a steer message was folde
 ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
 ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
-                       #   warning?|trimmed?, reason?}; context-window pressure
-                       #   (75% warn, 90% trim) or a full cache miss
-                       #   (reset:trim, or reset:tools on sticky invoke
-                       #   promotion)
+                       #   warning?|trimmed?}; context-window pressure
+                       #   (75% warn, 90% trim)
 ev.session.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
 ```
 
@@ -222,11 +221,13 @@ registration/install verification; raw `reg.publish` is not acceptance) and
 `snapshot` (full registration payloads incl. schemas — session runners
 seed their catalog from it at startup, then follow `reg.>` live).
 The LLM-facing core tools also include `discover` (hint/schema lookup
-over the non-hidden catalog), `invoke` (generic gateway into any live
+over the non-hidden catalog) and `invoke` (generic gateway into any live
 non-hidden tool, preserving its approval/timeout policy; `sticky: true`
-appends the target's schema to the conversation's persisted direct set
-after a successful call), and `profile` (on-demand CRUD for named tool
-profiles) — see docs/MANUAL.md, section "Progressive tool discovery".
+appends a successful target's schema to the persisted direct toolset —
+one durable prefix change, capped by `NIF_MAX_DIRECT_TOKENS`). `profile`
+(onDemand) manages the named tool profiles a new conversation resolves
+its direct toolset from — see docs/MANUAL.md, section
+"Progressive tool discovery".
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`

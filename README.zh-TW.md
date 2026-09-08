@@ -394,7 +394,9 @@ Agent 在對話中途自己完成這一切——這就是該架構的驗證標�
 - [x] **漸進式工具發現** —— 一個完整的全域 catalog，但每個對話凍結
       一個小型不可變直接工具集（13 個內建）；`discover` 把提示/完整
       schema 回傳進 append-only 歷史，`invoke` 經正常核准/逾時路徑呼叫
-      任意 live 非隱藏工具（docs/MANUAL.md）；UI Live Components 面板
+      任意 live 非隱藏工具；命名工具 profile 在對話首輪解析進直接工具集，
+      `invoke {sticky: true}` 可把呼叫成功的工具提升進去
+      （docs/MANUAL.md）；UI Live Components 面板
       按活動對話給 direct/seen/demand/internal 上色
       （tests/t_discover.nim）
 - [x] **定向核准路由** —— 核准請求經私有

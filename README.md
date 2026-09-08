@@ -542,8 +542,11 @@ Open work — deferred follow-ups and quests — is consolidated in
       conversation freezes a small immutable direct toolset (8 shipped);
       `discover` returns hints/full schemas into the append-only history and
       `invoke` calls any live non-hidden tool through the normal approval/
-      timeout path (docs/MANUAL.md); UI Live Components panel colors
-      direct/seen/demand/internal per active session (`tests/t_discover.nim`)
+      timeout path; named tool profiles resolve into the direct toolset at a
+      conversation's first turn and `invoke {sticky: true}` promotes a
+      successful target into it (docs/MANUAL.md); UI Live Components panel
+      colors direct/seen/demand/internal per active session
+      (`tests/t_discover.nim`)
 - [x] **directed approval routing** — approval requests route to the
       component driving the turn via its private `svc.approval.<caller>.request`
       (ack-gated, broadcast fallback when the driver is gone, `ev.approval.resolved`
