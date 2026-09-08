@@ -79,6 +79,40 @@ comp.tool(%*{"hidden": true}):
                           %*{"command": "sleep 30 && touch " &
                               quoteShell(marker)})
         return withUsage(%*{"content": "slow-bash-done"})
+      # fabric-cancellation scripts (t_fabric_cancel): the child turn runs
+      # a fabric program that loops forever (FAB_BUSY, logg proves
+      # liveness), finishes immediately (FAB_QUICK), or blocks inside a
+      # nested bash sleep (FAB_SLOWBASH). The test stops the job mid-run
+      # and asserts the guest — and any nested process tree — ends.
+      if messages != nil and ($messages).contains("FAB_BUSY"):
+        if stage == 0:
+          let busy = "import fabricguest\n" &
+            "var i = 0\nvar logs = 0\n" &
+            "while true:\n" &
+            "  inc i\n" &
+            "  if i mod 2000000 == 0 and logs < 50:\n" &
+            "    inc logs\n" &
+            "    logg(\"fab-busy \" & $logs)\n"
+          return toolCall("t1", "fabric",
+                          %*{"code": busy, "timeoutMs": 60000})
+        return %*{"content": "fab-busy-done"}
+      if messages != nil and ($messages).contains("FAB_QUICK"):
+        if stage == 0:
+          return toolCall("t1", "fabric",
+            %*{"code": "import fabricguest\n" &
+                "finish(jobj(jpair(\"quick\", jesc(\"fab-quick-ok\"))))\n"})
+        return %*{"content": "fab-quick-done"}
+      if messages != nil and ($messages).contains("FAB_SLOWBASH"):
+        if stage == 0:
+          let marker = getEnv("NIF_ROOT", getCurrentDir()) / "var" /
+                       "fab-slowbash-marker"
+          let prog = "import fabricguest\n" &
+            "let r = callTool(\"bash\", jobj(jpair(\"command\", jesc(\"" &
+            "sleep 30 && touch " & quoteShell(marker) & "\"))))\n" &
+            "finish(jesc(r))\n"
+          return toolCall("t1", "fabric",
+                          %*{"code": prog, "timeoutMs": 60000})
+        return %*{"content": "fab-slowbash-done"}
       case stage
       of 0: return withUsage(toolCall("t1", "agent_run",
                                     %*{"task": "try to spawn"}))
@@ -132,6 +166,29 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_spawn",
                         %*{"task": "SLOW_BASH take your time"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "fcs-busy":
+      # fabric-cancellation parent: spawn a child whose turn runs a fabric
+      # program that loops forever; the test stops the child job mid-run
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "FAB_BUSY loop forever"})
+      return %*{"content": "fcs-parent-done"}
+    if sessionId == "fcs-quick":
+      # queued-run isolation: a second child whose fabric program finishes
+      # immediately — it must still run to completion after the busy run
+      # of fcs-busy is cancelled, and must not be cancelled itself
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "FAB_QUICK finish immediately"})
+      return %*{"content": "fcs-parent-done"}
+    if sessionId == "fcs-slowbash":
+      # nested-bridge cancellation: the child's fabric program blocks
+      # inside a nested bash sleep 30; stopping the job must kill the
+      # guest AND the nested bash process tree (no marker, no orphan)
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "FAB_SLOWBASH sleep via the bridge"})
+      return %*{"content": "fcs-parent-done"}
     if sessionId == "agt-allow":
       if stage == 0:
         # allowlist scoping: the child may dispatch only session_info, so

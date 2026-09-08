@@ -252,6 +252,9 @@ exhaustion ends the child turn as a failure, never a silent reply. `agent_stop`
 cancellation is real end-to-end: the child turn ends promptly and a bash
 command running inside it is killed (whole process tree), so stopped work
 stops spending. Same controls apply to `agent_spawn`'s background jobs.
+A fabric program that calls `agent_run` inherits the same guarantee: when
+the turn running the program is stopped, the program's guest is terminated
+and the nested subagent child is cancelled too.
 
 ### 7. Big payloads go through `strings`
 
@@ -325,9 +328,14 @@ whole run, and a call cannot outlive it.
   compiler diagnostics; budget exhaustion and timeouts return actionable
   messages. All of these land in the chat as the tool result so the model can
   self-correct.
-- **No mid-run cancellation.** There is no per-program cancel; a runaway
-  program runs until its deadline kills it. Stopping the turn abandons the
-  result, but the guest still runs out its deadline.
+- **Mid-run cancellation works.** Stopping the session turn that launched a
+  program (`agent_stop` on the job whose child runs it, or a session stop)
+  ends the guest within seconds — `fabric-exec` is terminated, any nested
+  `agent_run` children and bash process trees inside the run are stopped,
+  no further bridge calls are dispatched, and the run reports a
+  **cancelled** outcome (`ev.fabric.done` status `"cancelled"`), distinct
+  from success and from failure/timeout. One program's cancellation never
+  touches other in-flight or queued fabric runs.
 - **The guest is trusted, not sandboxed.** It is in `bash`'s trust class —
   approved once, by you, with its source readable at approval time. It has no
   NATS connection and no credentials; every declared tool effect crosses the
