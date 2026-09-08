@@ -21,10 +21,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 
 	"github.com/nats-io/nats-server/v2/server"
-	"golang.org/x/sys/unix"
 )
 
 var usageStr = `
@@ -99,21 +97,6 @@ Common Options:
 func usage() {
 	fmt.Printf("%s\n", usageStr)
 	os.Exit(0)
-}
-
-func dieWithParent() {
-	// Kernel-enforced cleanup (Linux): SIGTERM this server the moment the
-	// spawning core (or test/bench helper) dies — even on SIGKILL — so no
-	// orphaned bus can outlive its owner. The ppid re-check closes the fork
-	// race. Other platforms: no-op.
-	if runtime.GOOS != "linux" {
-		return
-	}
-	ppid := os.Getppid()
-	_ = unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGTERM), 0, 0, 0)
-	if os.Getppid() != ppid {
-		os.Exit(1)
-	}
 }
 
 func main() {
