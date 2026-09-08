@@ -102,18 +102,16 @@ proc formatToolsForLlm(tools: JsonNode): JsonNode =
   for t in tools:
     # the catalog already normalized schemas at registration
     let schema = t{"schema"}
-    var description = schema{"description"}.getStr(t{"name"}.getStr())
-    # Read-only tools (x-harness.effect = "read") get an explicit batch
-    # hint so models group them without waiting on a per-call prompt rule.
-    # Inert until a component tags its tools; default is "write".
-    if schema{"x-harness"}{"effect"}.getStr("") == "read":
-      description &= " — batches safely with other read-only calls"
+    # The tool's top-level description is promoted to function.description
+    # and stripped from parameters — leaving it in both serialized every
+    # description twice (25% of the frozen toolset's wire size).
+    let description = schema{"description"}.getStr(t{"name"}.getStr())
     # The LLM gets a pure JSON Schema: strip harness-only extensions so
     # approval/timeout/effect metadata never weighs the prompt (the
     # catalog keeps the full schema for gates and validation).
     var parameters = newJObject()
     for key, value in schema:
-      if key != "x-harness":
+      if key != "x-harness" and key != "description":
         parameters[key] = value
     result.add(%*{
       "type": "function",

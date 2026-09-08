@@ -144,7 +144,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset; call what it returns through invoke. query filters; component or tools (up to 16 names) return full schemas. Plugins and skills live here too.",
+      "description": "Find live components and tools outside the fixed direct toolset. query filters; component or tools (up to 16 names) return full schemas. Plugins and skills live here too.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},

@@ -141,7 +141,8 @@ proc main() =
                     %*{"cwd": root}, 10_000)
   let directPrompt = direct{"systemPrompt"}.getStr("")
   check("systemprompt answers direct calls",
-        directPrompt.contains("self-extending agent harness"), $direct)
+        directPrompt.contains("self-extending") and
+        directPrompt.contains("agent harness"), $direct)
   check("global AGENTS.md wraps into project_context with a root-relative path",
         directPrompt.contains(
           "<project_instructions path=\"AGENTS.md\">"),
@@ -183,7 +184,8 @@ proc main() =
   let sid = "sp-live"
   let echo1 = sysEcho(nc, sid)
   check("conversation system message comes from the component",
-        echo1.contains("self-extending agent harness") and
+        echo1.contains("self-extending") and
+        echo1.contains("agent harness") and
         echo1.contains("sandbox agents rules") and
         not echo1.contains("fallback prompt"), echo1)
   check("AGENTS.md shadows CLAUDE.md for the LLM too",

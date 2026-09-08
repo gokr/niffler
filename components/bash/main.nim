@@ -113,7 +113,7 @@ let bashSchema = toolSchema(%*{
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c) — builds, tests, git, processes. Fresh shell per call, starting in the workspace: cd does not persist between calls; pass cwd or use absolute paths instead of a cd prefix.")
+  description = "Run a shell command (bash -c). Fresh shell per call, starting in the workspace: cd does not persist between calls; pass cwd or use absolute paths instead of a cd prefix.")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}

@@ -147,9 +147,10 @@ proc main() =
       # root-relative for the same reason.
       var prompt = basePrompt
       if cwd != root:
-        prompt &= "\n\n<workspace>\nActive workspace: the conversation's working " &
+        prompt &= "\n\n<workspace>\nWorkspace: the conversation's working " &
           "directory — relative paths in tool calls resolve from it (`pwd` " &
-          "prints the absolute path). Keep all task work inside it.\n</workspace>\n"
+          "prints the absolute path). Keep all task work inside it; reach " &
+          "outside only with absolute paths.\n</workspace>\n"
 
       if files.len > 0:
         prompt &= "\n\n<project_context>\n\n"

@@ -92,7 +92,7 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true, "onDemand": true,
     let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
     return finish(code, output, min(max(1, max_results), 10_000))
 
-comp.tool(%*{"timeoutMs": 60000,
+comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc files(path: string = ".", glob: string = "", hidden: bool = false,
