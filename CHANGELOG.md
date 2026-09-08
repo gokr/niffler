@@ -8,6 +8,31 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Named tool profiles and sticky `invoke`** — a new on-demand core tool
+  `profile` (ops `list`/`get`/`save`/`delete`, store kind `profile`) manages
+  persistent selector lists applied on top of the fundamental direct set:
+  `component` (every non-hidden tool of that component), `component.tool`
+  (one exact tool) and `-name` (exclude, may trim the base or an earlier
+  add). `session.profile` selects a profile when a conversation is first
+  created; selectors resolve against the live catalog exactly once and the
+  resolved set is persisted with the conversation's frozen snapshot — the
+  profile is never consulted again, so resume stays byte-stable.
+  Unresolvable selectors are skipped and reported as `missing` (unknown and
+  hidden indistinguishable, same name-free rule as `invoke`, so a profile
+  cannot probe for hidden tools), output is name-sorted, and `list`/`get`
+  report `toolCount`/`estTokens` for pickers and budget checks. The
+  complementary path for existing conversations is `invoke {sticky: true}`:
+  after a successful call the target's normalized schema is appended to the
+  persisted direct set — hidden tools never promote, a session tool
+  allowlist defers it, and `NIF_MAX_DIRECT_TOKENS` (default 4000) caps the
+  whole direct set — emitting a `reset:tools` status event when the direct
+  set actually grows. Explicit discovery stays append-only in history with
+  no automatic promotion. The web client gains `/components
+  [all|direct|discovered|undiscovered]` filters (also in the Components
+  panel, with text search), an explicit `/discover COMPONENT` /
+  `/discover tool=NAME` command, and `/profile NAME` (or `/profile default`
+  to clear) to set the client default used by `/new`.
+
 - **External MCP servers as bus components (`mcp`, `mcp-bridge`)** — the
   `mcp` manager owns a store-backed server registry (kind `mcp`) with
   approval-gated CRUD (`mcp_add`/`mcp_edit`/`mcp_remove`), every add/edit
