@@ -1750,6 +1750,7 @@ make install        # PATH entries (niffler, niffler-cli, niffler-console,
 make uninstall      # remove those PATH entries again
 make test           # the bus-contract suite (each test owns a private bus)
 make doctor         # check prerequisites
+make ram            # RAM of running stacks (harness + components + nats + clients)
 make clean          # remove all build artifacts (var/, nimcache/, UI build)
 ```
 
@@ -1766,6 +1767,16 @@ make clean          # remove all build artifacts (var/, nimcache/, UI build)
 - **Wails**: build only with `wails build -tags webkit2_41` (Linux);
   plain `go build` produces a stub. `make dev` runs the SPA in a browser
   with the bridge stubbed.
+- **Monitor RAM** of a running system with `make ram` (or
+  `watch -n5 scripts/niffler-ram.sh`): totals per stack — your clone,
+  `nifflerprod`, and each bench private harness separately — over harness +
+  NATS + all spawned components + session runners + clients. Membership is
+  by executable path (`*/var/bin/*`, `niffler-ui`), not the process tree:
+  the tui is the *parent* of an autostarted harness, and a bench run's
+  private bus belongs to the bench driver, so a PPID walk would miss both.
+  Read PSS, not RSS: stacks sharing one `var/bin` build double-count
+  file-backed pages in RSS. Workload children of the `bash` tool
+  (compilers, test binaries) are excluded by design.
 
 ## Troubleshooting
 

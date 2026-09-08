@@ -88,6 +88,7 @@ help:
 	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
 	@echo '                overrides: NIF_BIN_DIR=~/bin  WITH_TUI=1  FORCE=1'
 	@echo 'make run       run the harness in the terminal (admin shell)'
+	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
 	@echo 'make test      bus-contract suite: one test per component + smoke + go tests'
 	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
@@ -303,6 +304,14 @@ uninstall:
 
 run: build
 	./var/bin/niffler
+
+# ram: how much memory is a running Niffler stack? harness + nats + every
+# spawned component + session runners + clients (tui/cli/console/ui),
+# grouped per stack (dev clone vs nifflerprod vs bench private harnesses).
+# See scripts/niffler-ram.sh for the membership rule (exe under var/bin —
+# a PPID walk would miss the tui parent and the bench driver's bus).
+ram:
+	bash scripts/niffler-ram.sh
 
 # down: stop every harness/component of this repo plus the bus. Needed when
 # a stray detached core (e.g. one autostarted by a UI whose terminal is gone)
