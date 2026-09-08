@@ -8,6 +8,34 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Tool profiles and explicit client discovery** — a new on-demand core
+  tool `profile` manages named selector lists (store kind `profile`; ops
+  `list`/`get`/`save`/`delete`; a selector is a component name, a
+  `component.tool` exact tool, or `-name` to exclude; unresolvable names
+  are skipped and reported, with no unknown/hidden distinction so a
+  profile cannot become a hidden-name oracle). `session.profile` (or
+  `NIF_PROFILE`) picks one when a conversation is first built: selectors
+  resolve against the live catalog exactly once, the resolved set is
+  persisted with the exposure doc (name-sorted, byte-stable) and the
+  argument is ignored on every resume, so the request prefix never
+  changes mid-conversation; an unknown profile name fails the call
+  instead of silently falling back. `invoke` gains `sticky: true` —
+  after a successful call, the target's schema is explicitly promoted
+  into the conversation's direct set so later calls skip the invoke hop
+  (capped by `NIF_MAX_DIRECT_TOKENS`, default 4000; inert under a
+  session allowlist, hidden tools never promoted, persisted
+  compare-and-swap). Web client: `/components
+  [all|direct|discovered|undiscovered]` lists live components filtered
+  by tool exposure in the current conversation, `/discover COMPONENT`
+  or `/discover tool=NAME` records returned schemas in the durable
+  discovery summary (append-only user context, no LLM turn, no automatic
+  promotion — direct exposure comes from a profile or sticky invoke),
+  and `/profile NAME` sets the client default used by `/new`; the
+  Components panel gets the same exposure filters plus component/tool
+  text search. Covered by `tests/t_profile.nim` (`make test-profile`);
+  `AGENTS.md` and `docs/MANUAL.md` document the prefix contract and the
+  new commands.
+
 - **External MCP servers as bus components (`mcp`, `mcp-bridge`)** — the
   `mcp` manager owns a store-backed server registry (kind `mcp`) with
   approval-gated CRUD (`mcp_add`/`mcp_edit`/`mcp_remove`), every add/edit
