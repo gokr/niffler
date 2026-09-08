@@ -232,6 +232,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
 | `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `20` |
+| `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
+| `NIF_PROFILE` | default named tool profile for new conversations, used when the `session` call carries no `profile` argument | unset |
 | `NIF_RUNNER_IDLE_S` | a session runner with no session call for this long retires; the next call spawns a fresh one (subagent children re-ensure on demand) | `600` |
 | `NIF_WRITE_MAX_BYTES` | cap for the `write` tool's whole-file payload | `900000` |
 | `NIF_OAUTH_CALLBACK_HOST` | host for the local OAuth callback listener (ports stay fixed at 1455/53692) | `127.0.0.1` |
@@ -382,9 +384,15 @@ reports:
   model, catalog and context provenance for interactive clients. See
   [Model catalog](#model-catalog-models).
 
-- `session {sessionId, content?, model?, thinking?, title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
+- `session {sessionId, content?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped model override. A model-only call persists and resolves
   the selection without inference; presence with an empty value clears it.
+  `profile` names a stored tool profile resolved into the direct toolset on
+  the conversation's first call only (`NIF_PROFILE` supplies the default);
+  an unknown profile fails the call, and resumes ignore the argument.
+  `discovery {…}` is an explicit client discovery: it runs `discover`,
+  records the schemas in the durable discovery summary and appends them as
+  a user message — no LLM turn, no promotion into the direct toolset.
   Core stores the choice in the conversation header and pins the resolved
   model across all tool rounds in a turn.
 - The per-session controls freeze on the first call and persist in the
@@ -427,7 +435,10 @@ reports:
   message tells the model history was cut). Whole-turn drops keep
   `tool_call_id` pairs intact. `ev.session.context {trimmed: n, reason:
   "reset:trim"}` — a trim is the one ordinary full prompt-cache miss, and
-  the reason names it.
+  the reason names it. The only other sanctioned prefix change is
+  `invoke {sticky: true}` promotion: it appends one schema to the persisted
+  direct toolset and reports `ev.session.context {reason: "reset:tools",
+  directToolCount, estimatedToolTokens}`.
 - Before the model has reported usage (fresh or resumed session), a
   rough chars/4 estimate stands in.
 - The **store keeps the full history** — trimming is in-memory per

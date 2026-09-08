@@ -8,6 +8,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Tool profiles and explicit discovery commands** — named tool profiles
+  (store kind `profile`, managed by a new onDemand `profile` core tool:
+  list/get/save/delete) are selector lists — a component name,
+  `component.tool`, or `-name` to exclude — resolved against the live
+  catalog once, at a conversation's first turn, into the persisted direct
+  tool snapshot. `session.profile` selects one (`NIF_PROFILE` is the
+  default; an unknown profile fails the call, unresolvable selectors are
+  reported as `profileMissing` rather than silently dropped, and resumes
+  ignore the argument so the request prefix stays byte-stable).
+  `invoke {sticky: true}` is the explicit complement: after a successful
+  call it appends the target's normalized schema to the persisted direct
+  set — one durable prefix change reported as
+  `ev.session.context {reason: "reset:tools", directToolCount,
+  estimatedToolTokens}`, capped by `NIF_MAX_DIRECT_TOKENS` (default 4000)
+  and inert while a session tool allowlist is active. The web client gains
+  `/components [all|direct|discovered|undiscovered]` filters,
+  `/discover COMPONENT` / `/discover tool=NAME` (append-only in history,
+  no automatic promotion) and `/profile NAME` for the client default used
+  by `/new`; the Components panel exposes the same filters plus a text
+  search. Covered by `tests/t_profile.nim`.
+
 - **External MCP servers as bus components (`mcp`, `mcp-bridge`)** — the
   `mcp` manager owns a store-backed server registry (kind `mcp`) with
   approval-gated CRUD (`mcp_add`/`mcp_edit`/`mcp_remove`), every add/edit

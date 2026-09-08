@@ -89,8 +89,9 @@ anything structural.
   schema to the persisted direct set, changing the request prefix once; the
   append is durable and never removes or rewrites earlier tools.
   Cache hits are surfaced per turn in `ev.session.context` status events
-  (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full miss is a
-  trim, reported with `reason: "reset:trim"`.
+  (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
+  trim (`reason: "reset:trim"`) and a sticky invoke promotion
+  (`reason: "reset:tools"`).
 
 ## Commands
 

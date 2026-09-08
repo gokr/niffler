@@ -50,14 +50,21 @@ reg.depart             # {name, pid, ...}, graceful process departure; the logic
 svc.<component>.call   # queue-grouped request/reply (one replica handles each call)
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?,
-                       #   title?, cwd?, tools?, maxRounds?, maxCalls?, maxTokens?};
+                       #   title?, cwd?, profile?, discovery?, tools?, maxRounds?,
+                       #   maxCalls?, maxTokens?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
                        #   the conversation override. thinking (low|medium|high,
                        #   empty clears) persists a per-conversation thinking-effort
                        #   selection forwarded to the LLM as reasoning_effort
                        #   (provider-dependent; providers without support never see it).
-                       #   tools/maxRounds/maxCalls/maxTokens are frozen per-session
+                       #   profile names a stored tool profile resolved into the
+                       #   direct toolset once, at the first call (unknown names
+                       #   fail the call; resumes ignore the argument — the
+                       #   snapshot is byte-stable). discovery {…} is an explicit
+                       #   client discovery: it runs `discover`, appends the
+                       #   schemas as a user message and records them, with no
+                       #   LLM turn. tools/maxRounds/maxCalls/maxTokens are frozen per-session
                        #   controls (first call wins, then the conversation header
                        #   carries them across runner resumes): a tool allowlist,
                        #   LLM rounds per turn (1-20), total tool dispatches per
@@ -215,8 +222,12 @@ registration/install verification; raw `reg.publish` is not acceptance) and
 seed their catalog from it at startup, then follow `reg.>` live).
 The LLM-facing core tools also include `discover` (hint/schema lookup
 over the non-hidden catalog) and `invoke` (generic gateway into any live
-non-hidden tool, preserving its approval/timeout policy) — see
-docs/MANUAL.md, section "Progressive tool discovery".
+non-hidden tool, preserving its approval/timeout policy; `sticky: true`
+appends a successful target's schema to the persisted direct toolset —
+one durable prefix change, capped by `NIF_MAX_DIRECT_TOKENS`). `profile`
+(onDemand) manages the named tool profiles a new conversation resolves
+its direct toolset from — see docs/MANUAL.md, section
+"Progressive tool discovery".
 
 Core stays responsive while a turn dispatch is in flight: tool calls from
 components that land on `svc.core.call` mid-turn (e.g. `plugin_install`
