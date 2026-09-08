@@ -22,6 +22,7 @@
 ## anchored replace.
 
 import std/[algorithm, json, os, posix, sequtils, strutils, tables]
+import checksums/sha1
 import niffler/sdk
 
 proc posixStat(pathname: cstring, buf: var Stat): cint {.importc: "stat",
@@ -39,6 +40,7 @@ const
   MAX_READ_LINES = 2000     # default read cap per call
   MAX_READ_BYTES = 256 * 1024
   MAX_READ_LINE_BYTES = 200 * 1024
+  MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
 
 # ---------------------------------------------------------------------------
 # line helpers + normalization
@@ -388,6 +390,39 @@ var
   gStorePath = ""
   gUndo = initTable[string, UndoEntry]()
 
+# ---------------------------------------------------------------------------
+# seen-state: what each conversation last observed of a file
+#
+# Keyed by (session, absolute target) so parallel conversations never see
+# each other's state; calls without a session (cli scripting, other
+# components) are never tracked and behave exactly as before. Digests cover
+# the RAW file bytes (BOM and line endings included) — the same bytes read
+# and write see on disk. Three consumers:
+# - read: an unchanged FULL re-read returns a compact confirmation instead
+#   of re-dumping bytes the conversation already holds,
+# - edit: refuses to match against a file whose bytes changed since the
+#   conversation last saw them (E_STALE — old_string may match text the
+#   model has never seen),
+# - write: reports lines + digest so "did it land?" needs no re-read.
+
+type SeenEntry = object
+  digest: string
+  bytes: int
+  lines: int
+  full: bool     # the conversation holds (or can derive) the full content
+
+var gSeen = initTable[string, SeenEntry]()
+
+proc seenKey(session, target: string): string = session & "\x1f" & target
+
+proc unchangedText(path, raw: string): string =
+  let (_, body) = stripBom(raw)
+  "[unchanged] " & path & ": " & $raw.len & " bytes, " &
+    $splitLf(toLf(body)).len & " lines, digest " & $secureHash(raw) &
+    " — byte-identical to what this conversation last read/wrote, so the " &
+    "bytes already in context are current; not re-dumping. Pass force=true " &
+    "(or an offset/limit window) to see them again."
+
 proc configDir(): string =
   let xdg = getEnv("XDG_CONFIG_HOME")
   if xdg.len > 0: xdg / "niffler-edit"
@@ -415,13 +450,25 @@ proc loadStore() =
       bom: node{"bom"}.getStr(""),
       ending: ending,
       resultContent: node{"resultContent"}.getStr(""))
+  let seen = doc{"seen"}
+  if seen != nil and seen.kind == JObject:
+    for key, node in seen:
+      if node == nil or node.kind != JObject: continue
+      gSeen[key] = SeenEntry(digest: node{"digest"}.getStr(""),
+                             bytes: node{"bytes"}.getInt(0),
+                             lines: node{"lines"}.getInt(0),
+                             full: node{"full"}.getBool(false))
 
 proc saveStore() =
-  var doc = %*{"version": STORE_VERSION, "undo": newJObject()}
+  var doc = %*{"version": STORE_VERSION, "undo": newJObject(),
+               "seen": newJObject()}
   for path, e in gUndo:
     doc["undo"][path] = %*{"content": e.content, "bom": e.bom,
                            "ending": e.ending,
                            "resultContent": e.resultContent}
+  for key, s in gSeen:
+    doc["seen"][key] = %*{"digest": s.digest, "bytes": s.bytes,
+                          "lines": s.lines, "full": s.full}
   writeAtomic(gStorePath, $doc)
 
 proc saveUndo(path: string, entry: UndoEntry): tuple[persisted: bool,
@@ -449,6 +496,19 @@ proc clearUndo(path: string) =
   if gUndo.hasKey(path):
     gUndo.del(path)
     saveStore()
+
+proc observe(session, target, raw: string, full: bool, persist = false) =
+  ## Record the state a conversation just observed. Read calls persist=false
+  ## (in-memory only: a restart merely loses stub/staleness hints, never
+  ## correctness); mutations persist alongside the undo store.
+  if session.len == 0: return
+  let (_, body) = stripBom(raw)
+  gSeen[seenKey(session, target)] = SeenEntry(
+    digest: $secureHash(raw), bytes: raw.len,
+    lines: splitLf(toLf(body)).len, full: full)
+  if persist:
+    try: saveStore()
+    except CatchableError: discard
 
 # ---------------------------------------------------------------------------
 # edit resolution
@@ -604,6 +664,21 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   let file = loadText(path)
   let content = file.normalized
 
+  # Staleness gate: this conversation last saw different bytes — external
+  # change, or a bash mutation since the read/write. Refuse before matching:
+  # old_string may still occur exactly once, but in text the model has
+  # never seen.
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len > 0:
+    let key = seenKey(session, file.absPath)
+    if gSeen.hasKey(key) and gSeen[key].digest !=
+        $secureHash(file.bom & restoreEnding(file.normalized, file.ending)):
+      raise newException(ValueError,
+        "[E_STALE] " & path & " changed since you last read/wrote it (" &
+        $gSeen[key].bytes & " bytes then, " & $getFileSize(file.absPath) &
+        " bytes now) — re-read it and redo the edit against current " &
+        "content; your old_string may match text you have never seen.")
+
   let starts = lineStarts(content)
   let lines = splitLf(content)
   var spans: seq[Span] = @[]
@@ -646,6 +721,14 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   except CatchableError:
     undo.restore()
     raise
+  if session.len > 0:
+    # the model derives the post-edit content from what it saw plus the
+    # edit, so carry the full flag rather than resetting it
+    let key = seenKey(session, file.absPath)
+    let prevFull = if gSeen.hasKey(key): gSeen[key].full else: false
+    observe(session, file.absPath,
+            file.bom & restoreEnding(applied, file.ending), prevFull,
+            persist = true)
   let d = compactDiff(content, applied)
   let noun = if planned.len == 1: "edit" else: "edits"
   let lineSummary = if addedTotal > 0 or removedTotal > 0:
@@ -688,6 +771,10 @@ proc hUndoLastEdit(c: Component, args: JsonNode): JsonNode =
       ": the file was modified after the edit, so undoing would overwrite those changes.")
   writeAtomic(target, entry.bom & restoreEnding(entry.content, entry.ending))
   clearUndo(target)
+  # the model saw the revert diff, not the restored bytes: mark unseen so
+  # the documented "re-read it before further edits" actually dumps
+  observe(args{"__session"}{"session"}.getStr(""), target,
+          readFile(target), false, persist = true)
   let d = compactDiff(entry.resultContent, entry.content)
   result = %*{"text": "Undid the last edit on " & path &
               ". File reverted to its previous state; re-read it before further edits.",
@@ -721,6 +808,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
       "[E_BAD_SHAPE] \"limit\" must be a positive integer.")
   let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
   let limit = if limN != nil and limN.kind == JInt: limN.getInt() else: MAX_READ_LINES
+  let session = args{"__session"}{"session"}.getStr("")
+  let force = args{"force"}.getBool(false)
 
   let target = followSymlink(toCwd(path, rootDir()))
   if dirExists(target):
@@ -747,6 +836,14 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let (_, body) = stripBom(raw)
   let lines = splitLf(toLf(body))
   let total = lines.len
+  # full view = one-shot whole-file delivery (explicit offset=1 is the
+  # caller saying "dump it anyway" — the pre-force escape hatch)
+  var fullDelivered = offN == nil and total <= limit and raw.len <= MAX_READ_BYTES
+  if session.len > 0 and not force and fullDelivered and raw.len >= MIN_STUB_BYTES:
+    let dig = $secureHash(raw)
+    let key = seenKey(session, target)
+    if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
+      return %unchangedText(path, raw)
   if offset > total:
     return %("Offset " & $offset & " is beyond end of file (" & $total &
       " lines). Use offset=1 to read from the start.")
@@ -757,6 +854,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
       selected[i] = "[line " & $(offset + i) & " exceeds " &
         $MAX_READ_LINE_BYTES & " bytes; content not shown. Use bash: sed -n '" &
         $(offset + i) & "p' <path> | head -c " & $MAX_READ_LINE_BYTES & "]"
+      fullDelivered = false
   var text = selected.join("\n")
   if toLf(body).endsWith("\n") and selected.len > 0: text.add("\n")
   var shownCount = selected.len
@@ -767,6 +865,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     shownCount = text.split('\n').len
     text.add("\n... [truncated at " & $MAX_READ_BYTES &
       " bytes — page with offset/limit]")
+    fullDelivered = false
   let lastLine = offset + shownCount - 1
   if not text.endsWith("\n"): text.add("\n")
   if lastLine < total:
@@ -775,6 +874,14 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   elif offset > 1:
     text.add("\n[Showing lines " & $offset & "-" & $lastLine & " of " &
       $total & ".]")
+  if session.len > 0:
+    # track what this conversation last saw: a full view delivers every
+    # byte; a window only carries an already-full view of identical bytes
+    let dig = $secureHash(raw)
+    let key = seenKey(session, target)
+    let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
+    let same = prev.digest == dig
+    observe(session, target, raw, fullDelivered or (same and prev.full))
   result = %text
 
 proc hReadMany(c: Component, args: JsonNode): JsonNode =
@@ -793,6 +900,7 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
   let limit = args{"limit"}.getInt(MAX_READ_LINES)
   if limit < 1:
     raise newException(ValueError, "[E_BAD_SHAPE] limit must be positive.")
+  let force = args{"force"}.getBool(false)
   var blocks: seq[string]
   var items = newJArray()
   var used = 0
@@ -803,7 +911,8 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
       continue
     let path = item.getStr()
     try:
-      let content = hRead(c, %*{"path": path, "limit": limit})
+      let content = hRead(c, %*{"path": path, "limit": limit, "force": force,
+                               "__session": args{"__session"}})
       let text = content.getStr()
       if used + text.len > 512_000:
         blocks.add("### " & path &
@@ -848,12 +957,22 @@ proc hWrite(c: Component, args: JsonNode): JsonNode =
       target & " is a directory — write needs a file path")
   let overwrote = fileExists(target)
   writeAtomic(target, content)
+  let session = args{"__session"}{"session"}.getStr("")
+  let (_, wbody) = stripBom(content)
+  let wlines = splitLf(toLf(wbody)).len
+  let digest = $secureHash(content)
+  if session.len > 0:
+    # the conversation authored every byte: it holds the full content
+    observe(session, target, content, full = true, persist = true)
   result = %*{"path": target, "bytes_written": content.len,
+              "lines": wlines, "digest": digest,
               "overwrote": overwrote,
               "text": (if overwrote:
-                         "Overwrote " & target & " (" & $content.len & " bytes)"
+                         "Overwrote " & target & " (" & $content.len &
+                         " bytes, " & $wlines & " lines, digest " & digest & ")"
                        else:
-                         "Wrote " & $content.len & " bytes to " & target)}
+                         "Wrote " & $content.len & " bytes (" & $wlines &
+                         " lines, digest " & digest & ") to " & target)}
 
 # ---------------------------------------------------------------------------
 # component
@@ -868,10 +987,12 @@ discard comp.tool("read", toolSchema(%*{
   "offset": {"type": "integer", "minimum": 1,
              "description": "1-indexed start line"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines (default 2000)"}
+            "description": "Max lines (default 2000)"},
+  "force": {"type": "boolean",
+            "description": "Re-dump the full content even when unchanged since your last read/write"}
 }, @["path"],
-  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Line range after a search: use offset/limit, not bash sed/cat. Refuses binary and >100MB. read_many surveys several files."), hRead,
-  %*{"timeoutMs": 60000, "parallel": true,
+  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Refuses binary and >100MB. An unchanged full re-read returns a compact [unchanged] confirmation instead of the bytes."), hRead,
+  %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("read_many", toolSchema(%*{
@@ -879,10 +1000,12 @@ discard comp.tool("read_many", toolSchema(%*{
             "items": {"type": "string"},
             "description": "Files to read, in order"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines per file (default 2000)"}
+            "description": "Max lines per file (default 2000)"},
+  "force": {"type": "boolean",
+            "description": "Re-dump files even when unchanged since your last read/write"}
 }, @["paths"],
-  "Read up to 12 files in one call — the multi-file survey instead of many reads or bash cat. Content under a \"### path\" heading each; a bad file errors alone. 512KB total cap."),
-  hReadMany, %*{"timeoutMs": 60000, "parallel": true,
+  "Read up to 12 files in one call. Content under a \"### path\" heading; a bad file errors alone; 512KB total cap."),
+  hReadMany, %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
                 "workspace": {"pathArrayFields": ["paths"]}})
 
 discard comp.tool("edit", toolSchema(%*{
@@ -893,7 +1016,7 @@ discard comp.tool("edit", toolSchema(%*{
     "items": {"type": "object",
       "properties": {
         "old_string": {"type": "string",
-          "description": "Exact text to replace — must occur exactly once (verbatim, whitespace included)"},
+          "description": "Exact text to replace (verbatim, whitespace included)"},
         "new_string": {"type": "string",
           "description": "Replacement text; \"\" deletes old_string"},
         "replace_all": {"type": "boolean",
@@ -902,8 +1025,8 @@ discard comp.tool("edit", toolSchema(%*{
       "required": ["old_string", "new_string"]}
   }
 }, @["path", "edits"],
-  "Replace exact text in an existing file — read it first, copy old_string verbatim (whitespace matters). Each old_string must occur exactly once: add context lines to disambiguate, or set replace_all. Batch independent edits per call. Prefer write for new files; undo_last_edit reverts."), hEdit,
-  %*{"approval": "always", "timeoutMs": 300000,
+  "Replace exact text in an existing file. Each old_string must occur exactly once — add context lines to disambiguate, or set replace_all. undo_last_edit reverts."), hEdit,
+  %*{"approval": "always", "timeoutMs": 300000, "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("undo_last_edit", toolSchema(%*{
@@ -917,6 +1040,7 @@ discard comp.tool("undo_last_edit", toolSchema(%*{
   "modified or deleted after the edit — re-read and edit forward instead. " &
   "The result shows the diff of the revert."), hUndoLastEdit,
   %*{"approval": "always", "timeoutMs": 120000, "onDemand": true,
+     "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("write", toolSchema(%*{
@@ -925,8 +1049,8 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "Full new content (\"\" truncates)"}
 }, @["path", "content"],
-  "Create or replace a whole file atomically (parent dirs created). Preferred for authoring a file or replacing a stub — write the complete final content in one call. Prefer edit for surgical changes to otherwise-correct files. \"\" truncates. Cap 900KB."), hWrite,
-  %*{"approval": "always", "timeoutMs": 60000,
+  "Create or replace a whole file atomically (parent dirs created). Cap 900KB."), hWrite,
+  %*{"approval": "always", "timeoutMs": 60000, "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
 
 comp.run()

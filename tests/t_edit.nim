@@ -216,7 +216,9 @@ proc main() =
   check("write creates new file",
         rw1{"bytes_written"}.getInt(-1) == 12 and
         rw1{"overwrote"}.getBool(true) == false and
-        rw1{"text"}.getStr("").contains("Wrote 12 bytes to"), $rw1)
+        rw1{"lines"}.getInt(-1) == 2 and
+        rw1{"digest"}.getStr("").len == 40 and
+        rw1{"text"}.getStr("").contains("Wrote 12 bytes (2 lines, digest"), $rw1)
   check("write created parent dirs",
         readFile(tmp / "dir" / "sub" / "new.txt") == "hello\nworld\n")
   let rw2 = call(nc, "edit", "write",
@@ -292,10 +294,120 @@ proc main() =
   check("stale undo left file alone",
         readFile(tmp / "s.txt") == "a\nb\nCHANGED\n")
 
-  # drain: the (restarted) component exits
+  # --- seen-state: per-session tracking (write digest, read stub, E_STALE) ---
+  let bigContent = repeat("line of text that keeps going\n", 40)  # ≥ 512B
+  discard call(nc, "edit", "write",
+               %*{"path": "w.txt", "content": bigContent,
+                  "__session": {"session": "s1"}})
+  let rs1 = call(nc, "edit", "read",
+                 %*{"path": "w.txt", "__session": {"session": "s1"}})
+  check("unchanged re-read returns compact stub",
+        rs1.getStr("").startsWith("[unchanged]") and
+        rs1.getStr("").contains("digest") and
+        rs1.getStr("").contains("40 lines"), $rs1)
+  let rf = call(nc, "edit", "read",
+                %*{"path": "w.txt", "force": true,
+                   "__session": {"session": "s1"}})
+  check("force re-dumps the bytes", rf.getStr("") == bigContent, $rf)
+  let rs2 = call(nc, "edit", "read",
+                 %*{"path": "w.txt", "__session": {"session": "s2"}})
+  check("other session gets full bytes (no cross-talk)",
+        rs2.getStr("") == bigContent, $rs2)
+  let rn = call(nc, "edit", "read", %*{"path": "w.txt"})
+  check("sessionless read (cli) always dumps", rn.getStr("") == bigContent, $rn)
+
+  # below the stub threshold: unchanged re-read just re-dumps
+  writeFile(tmp / "tiny.txt", "small\n")
+  discard call(nc, "edit", "write",
+               %*{"path": "tiny.txt", "content": "small\n",
+                  "__session": {"session": "s1"}})
+  let rt = call(nc, "edit", "read",
+                %*{"path": "tiny.txt", "__session": {"session": "s1"}})
+  check("tiny unchanged re-read dumps normally", rt.getStr("") == "small\n", $rt)
+
+  # edit refuses stale content before matching, works after a fresh read
+  writeFile(tmp / "stale.txt", bigContent)
+  discard call(nc, "edit", "read",
+               %*{"path": "stale.txt", "__session": {"session": "s1"}})
+  writeFile(tmp / "stale.txt", bigContent & "external line\n")
+  let rse = call(nc, "edit", "edit",
+                 %*{"path": "stale.txt",
+                    "edits": [{"old_string": "line of text that keeps going",
+                               "new_string": "CHANGED"}],
+                    "__session": {"session": "s1"}})
+  check("edit refuses stale content with E_STALE", rse.hasKey("error") and
+        rse{"error"}.getStr("").contains("[E_STALE]"), $rse)
+  discard call(nc, "edit", "read",
+               %*{"path": "stale.txt", "__session": {"session": "s1"}})
+  let rse2 = call(nc, "edit", "edit",
+                  %*{"path": "stale.txt",
+                     "edits": [{"old_string": "external line",
+                                "new_string": "seen"}],
+                     "__session": {"session": "s1"}})
+  check("edit works after fresh read", rse2.hasKey("edits_applied"), $rse2)
+  let rse3 = call(nc, "edit", "read",
+                  %*{"path": "stale.txt", "__session": {"session": "s1"}})
+  check("re-read after own edit is stubbed (full carried)",
+        rse3.getStr("").startsWith("[unchanged]"), $rse3)
+
+  # read_many: first pass dumps (m1 unseen, m2 externally changed since its
+  # tracked write), second pass stubs both unchanged files per-item
+  writeFile(tmp / "m1.txt", bigContent)
+  writeFile(tmp / "m2.txt", bigContent)
+  discard call(nc, "edit", "write",
+               %*{"path": "m2.txt", "content": bigContent,
+                  "__session": {"session": "s1"}})
+  writeFile(tmp / "m2.txt", bigContent & "tail\n")
+  let rm = call(nc, "edit", "read_many",
+                %*{"paths": ["m1.txt", "m2.txt"],
+                   "__session": {"session": "s1"}})
+  check("read_many dumps unseen and changed files",
+        rm{"text"}.getStr("").contains("### m1.txt") and
+        not rm{"text"}.getStr("").contains("[unchanged] m1.txt") and
+        not rm{"text"}.getStr("").contains("[unchanged] m2.txt"), $rm)
+  let rmst = call(nc, "edit", "read_many",
+                 %*{"paths": ["m1.txt", "m2.txt"],
+                    "__session": {"session": "s1"}})
+  check("read_many stubs unchanged files",
+        rmst{"text"}.getStr("").contains("[unchanged] m1.txt") and
+        rmst{"text"}.getStr("").contains("[unchanged] m2.txt") and
+        rmst{"items"}[0]{"content"}.getStr("").startsWith("[unchanged]"), $rmst)
+
+  # after undo the restored bytes were only diffed, never delivered: read dumps
+  writeFile(tmp / "u2.txt", bigContent)
+  discard call(nc, "edit", "edit",
+               %*{"path": "u2.txt",
+                  "edits": [{"old_string": "line of text that keeps going",
+                             "new_string": "edited", "replace_all": true}],
+                  "__session": {"session": "s1"}})
+  discard call(nc, "edit", "undo_last_edit",
+               %*{"path": "u2.txt", "__session": {"session": "s1"}})
+  let ru3 = call(nc, "edit", "read",
+                 %*{"path": "u2.txt", "__session": {"session": "s1"}})
+  check("read after undo dumps restored bytes",
+        ru3.getStr("") == bigContent, $ru3)
+
+  # seen-state persists across a restart (mutations persist alongside undo);
+  # the restarted component serves the remaining tests
+  e2.terminate()
+  sleep(400)
+  let e3 = startComponent(bin, url, root = tmp,
+                          extra = [("XDG_CONFIG_HOME", tmp / "config")])
+  defer:
+    if e3.running():
+      e3.terminate()
+      sleep(200)
+    e3.close()
+  check("edit re-registers after second restart", waitRegistered(nc, "edit"))
+  let rp2 = call(nc, "edit", "read",
+                 %*{"path": "w.txt", "__session": {"session": "s1"}})
+  check("seen-state persists across restart",
+        rp2.getStr("").startsWith("[unchanged]"), $rp2)
+
+  # drain: the (twice-restarted) component exits
   drain(nc)
   sleep(700)
-  check("edit drains and exits", not e2.running())
+  check("edit drains and exits", not e3.running())
 
   report("EDIT TEST")
 
