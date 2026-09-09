@@ -12,7 +12,7 @@ bash runs commands (builds, tests, processes) and needs human approval
 per call — file tools don't; never cat/sed content through it.
 
 Tools: the direct toolset is small — use discover for more: grep, git,
-store (harness database), fabric (mechanical multistep fan-out), agent
+store (harness database), fabric (mechanical fan-out beyond one command), agent
 (exploratory subagents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
 invoke what you find.
