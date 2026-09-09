@@ -189,9 +189,8 @@ proc main() =
 
   check("guest bash call through the bridge succeeded",
         transcript.contains("fabric-ok"), transcript)
-  check("banned import via bracket list rejected with guidance",
-        transcript.contains("import of 'os' is not allowed in fabric programs") and
-        transcript.contains("callTool"), transcript)
+  check("approved native guest imports ordinary stdlib modules",
+        transcript.contains("\"nativeStdlib\":true"), transcript)
   check("compile errors surface an actionable firstError",
         transcript.contains("firstError"), transcript)
   check("maxCalls budget enforced",

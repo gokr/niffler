@@ -11,7 +11,7 @@
 ## The child holds no credentials and no NATS connection.
 
 import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
-            strtabs, strutils, tables, times]
+            strtabs, strutils, tables, tempfiles, times]
 import natswrapper
 import niffler/sdk
 import framing
@@ -37,69 +37,6 @@ const
   forbiddenSelectedTools = ["fabric", "agent", "chat", "session", "invoke",
                             "session_prepare"]
 
-const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
-                      "importc", "osproc", "natswrapper", "std/os",
-                      "std/net", "std/selectors"]
-  ## source lint: auditable policy, not a sandbox claim (docs/research/FABRIC.md,
-  ## threat model). The VM itself also refuses FFI and gorge magics (the
-  ## executor is built without -d:nimcore).
-
-const bannedModules = ["os", "osproc", "net", "asyncnet", "asyncdispatch",
-                       "nativesockets", "selectors", "posix", "httpclient",
-                       "asyncfile"]
-  ## Modules whose import would hand a guest harness-level powers (filesystem,
-  ## processes, sockets) outside the per-call approval gate. The plain token
-  ## scan above misses import syntax that never spells "std/os" verbatim —
-  ## bench evidence (t13, syn-large): `import std/[os, strutils]` slipped
-  ## past it, the VM compile then failed on stdlib internals, and the agent
-  ## retried the identical guest twice on an unactionable first line.
-
-proc lint(code: string): string =
-  for b in bannedTokens:
-    if code.contains(b):
-      return "program rejected: '" & b & "' is not allowed in fabric programs"
-  # Import-line scan: `import a, std/[b, c] as d` and `from std/os import x`.
-  # Line-based and conservative — policy lint, not a parser.
-  # Lines inside triple-quoted strings ("""…""" — guests embed whole
-  # scripts, e.g. a python walker in a raw string) are skipped: their
-  # content lines can start with "import " without being Nim imports
-  # (bench evidence: bench-selfreview.nim's embedded python walker was
-  # false-positived on its own `import json, sys, glob, os`).
-  var inTriple = false
-  for raw in code.splitLines():
-    var n = 0
-    var i = 0
-    while true:
-      i = raw.find("\"\"\"", i)
-      if i < 0: break
-      inc n
-      inc i, 3
-    if n mod 2 == 1:
-      inTriple = not inTriple
-    if inTriple:
-      continue
-    let line = raw.strip()
-    var mods: seq[string] = @[]
-    if line.startsWith("import ") and line.len > 7:
-      for tok in line[7 .. ^1].replace('[', ',').replace(']', ',').split(','):
-        var m = tok.strip()
-        let asAt = m.find(" as ")
-        if asAt >= 0: m = m[0 ..< asAt]
-        m = m.strip()
-        if m.startsWith("std/"): m = m[4 .. ^1]
-        if m.len > 0: mods.add(m)
-    elif line.startsWith("from ") and " import " in line:
-      var m = line[5 ..< line.find(" import ")].strip()
-      if m.startsWith("std/"): m = m[4 .. ^1]
-      if m.len > 0: mods.add(m)
-    for m in mods:
-      if m in bannedModules:
-        return "program rejected: import of '" & m & "' is not allowed in " &
-          "fabric programs — guests must not touch the filesystem, processes " &
-          "or network directly; drive tools with callTool(\"bash\", ...) instead " &
-          "(see components/fabric/docs/REFERENCE.md)"
-  return ""
-
 proc writeLineTo(p: Process, line: string) =
   p.inputStream.write(line & "\n")
   p.inputStream.flush()
@@ -112,12 +49,19 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   let bin = getAppDir() / "fabric-exec"
   if not fileExists(bin):
     return %*{"error": "fabric-exec binary missing — run `make build`"}
-  let errFile = getTempDir() / ("niffler-fabric-exec-" & runId & ".err")
+  let buildDir = createTempDir("fabric-" & runId & "-", "")
+  setFilePermissions(buildDir, {fpUserRead, fpUserWrite, fpUserExec})
+  defer:
+    try: removeDir(buildDir)
+    except CatchableError: discard
+  let errFile = buildDir / "executor.err"
   var env = newStringTable(modeCaseSensitive)
   env["PATH"] = getEnv("PATH")
     # deliberately no NIF_* vars: the child has no bus and no credentials
-  # stdout stays the framing pipe; stderr goes to a file so guest compile
-  # errors (the embedded VM prints and quits) become actionable diagnostics
+  env["HOME"] = buildDir
+  env["TMPDIR"] = buildDir
+  # stdout stays the framing pipe; native guest stdout is redirected to
+  # stderr by the executor so ordinary echo cannot corrupt the protocol.
   let sh = "exec " & quoteShell(bin) & " 2> " & quoteShell(errFile)
   # keep fabric-exec lean: without the sweep it inherits every fd this
   # component holds (supervisor-inherited pipes, NATS socket, ...)
@@ -128,9 +72,13 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   var selectorRegistered = false
   proc stopChild() =
     try:
+      # Executor creates its own process group before compiling. Signal the
+      # group even if its leader already exited (descendants can retain pipes).
+      discard posix.kill(-Pid(p.processID), SIGTERM)
       if p.running():
-        p.terminate()
+        p.terminate() # also covers cancellation before setsid completed
         discard p.waitForExit(1000)
+      discard posix.kill(-Pid(p.processID), SIGKILL)
       if p.running():
         p.kill()
         discard p.waitForExit(1000)
@@ -149,12 +97,15 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       try: removeFile(errFile)
       except CatchableError: discard
   var calls = 0
+  var executionPhase = "compile"
+  var compileMs = 0'i64
 
   proc diag(msg: string): JsonNode =
     ## Failure result with the guest's compiler/quit output as diagnostics.
     let e = if fileExists(errFile): readFile(errFile).strip()
             else: ""
-    result = %*{"error": msg, "calls": calls}
+    result = %*{"error": msg, "calls": calls, "phase": executionPhase,
+                "compileMs": compileMs}
     if e.len > 0:
       let capped = if e.len > 4000: e[e.len - 4000 .. ^1] else: e
       result["diagnostics"] = %capped
@@ -165,10 +116,6 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         if line.contains("Error:"):
           result["firstError"] = %line.strip()
           break
-      if "ospaths2" in capped or "undeclared identifier: 'cmpic'" in capped:
-        result["hint"] = %("std/os (or a VM-unsafe import) failed to compile: " &
-          "fabric guests must not import os/osproc/net — drive the filesystem " &
-          "through callTool(\"bash\", ...) (see components/fabric/examples/)")
   sel.registerHandle(p.outputHandle.SocketHandle, {Read}, p.outputHandle.cint)
   selectorRegistered = true
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
@@ -327,6 +274,11 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   proc handleFrame(frame: JsonNode): bool =
     ## One guest frame; true when the program's result arrived.
     case frame{"t"}.getStr("")
+    of "phase":
+      executionPhase = frame{"phase"}.getStr("execute")
+      compileMs = frame{"compileMs"}.getBiggestInt(0)
+      comp.emit("ev.fabric.phase", %*{"runId": runId, "sessionId": sessionId,
+        "phase": executionPhase, "compileMs": compileMs})
     of "log":
       let message = frame{"s"}.getStr("")
       inc logEvents
@@ -417,7 +369,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         raise newException(CatchableError, "fabric-exec timed out")
 
   try:
-    var context = %*{"code": code, "strings": strings}
+    var context = %*{"code": code, "strings": strings, "buildDir": buildDir}
     if selectedMode: context["schemas"] = schemas
     p.inputStream.write($context & "\n")
     p.inputStream.flush()
@@ -443,6 +395,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   # every terminal path reports the real call count (lifecycle events and
   # budget accounting read it)
   resultJ["_calls"] = %calls
+  if resultJ{"compileMs"} == nil: resultJ["compileMs"] = %compileMs
   return resultJ
 
 proc cleanupArtifacts(dir: string, incomingBytes: int64) =
@@ -570,9 +523,6 @@ discard comp.tool("fabric", fabSchema,
       code = stored.value{"code"}.getStr("")
     if code.len > maxCodeBytes:
       return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
-    let lintMsg = lint(code)
-    if lintMsg.len > 0:
-      return %*{"error": lintMsg}
     let subject = sessionToolSubject(sess)
     let runId = newId()
     # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
@@ -654,7 +604,8 @@ discard comp.tool("fabric", fabSchema,
       var ev = %*{"runId": runId, "sessionId": sess, "status": status,
                   "durationMs": ((epochTime() - fabricStart) * 1000.0).int,
                   "calls": r{"_calls"}.getInt(r{"calls"}.getInt(0)),
-                  "maxCalls": maxCalls}
+                  "maxCalls": maxCalls,
+                  "compileMs": r{"compileMs"}.getBiggestInt(0)}
       if extra != nil:
         for key, val in extra: ev[key] = val
       comp.emit("ev.fabric.done", ev)

@@ -206,13 +206,9 @@ var/bin/hooks: components/hooks/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/expert: components/expert/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/expert/main.nim
 
-# fabric-exec embeds the Nim VM: it needs the compiler SOURCES (nimeval/vm)
-# on the search path, resolved via the real toolchain (choosenim shims are
-# binaries, so readlink lies — getCurrentCompilerExe does not).
-COMPDIR := $(shell PATH="$(PATH)" nim --skipProjCfg --skipParentCfg --skipUserCfg --verbosity:0 --hints:off --eval:'import std/os; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"' 2>/dev/null | tail -1)
-
+# Native guest compiler/supervisor: no embedded VM/compiler-source dependency.
 var/bin/fabric-exec: components/fabric/executor.nim components/fabric/fabricguest/fabricguest.nim components/fabric/fabricguest/fabricmeta.nim $(SDK_NIM) $(NIM_CONF) | var/bin
-	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk --path:"$(COMPDIR)" -o:$@ components/fabric/executor.nim
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fabric/executor.nim
 
 var/bin/fabric: components/fabric/fabric.nim components/fabric/framing.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fabric/fabric.nim
