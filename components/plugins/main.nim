@@ -332,6 +332,60 @@ proc removeComps(rec: JsonNode): JsonNode =
     except CatchableError as err:
       result.add(%*{"name": name, "removed": false, "error": err.msg})
 
+proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
+  ## In-place update for a package pinned to a branch rather than a release
+  ## tag (resolveTag found nothing to move to): `git pull --ff-only` the
+  ## existing clone and rebuild only when the pull actually moved HEAD — no
+  ## remove/reinstall round-trip, so a no-op pull costs nothing.
+  let dest = rec{"dir"}.getStr("")
+  let branch = rec{"ref"}.getStr("")
+  if dest.len == 0 or not dirExists(dest):
+    return errResult("package directory missing: " & dest)
+  if branch.len == 0:
+    return errResult("package has no tracked branch ref to pull")
+  let (hcode, hout) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
+  if hcode != 0:
+    return errResult("git rev-parse failed", extra = %*{"output": tailBytes(hout, 800)})
+  let before = hout.strip()
+  let (pcode, pout) = runCmd(
+    "git -C " & quoteShell(dest) & " pull --ff-only origin " & branch, 60_000)
+  if pcode != 0:
+    return errResult("git pull failed", extra = %*{"output": tailBytes(pout, 800)})
+  let (h2code, h2out) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
+  let after = if h2code == 0: h2out.strip() else: before
+  if after == before:
+    return okResult(%*{"updated": false, "ref": branch, "commit": after})
+
+  let removed = removeComps(rec)
+  var mf: Manifest
+  try:
+    mf = readManifest(dest)
+  except CatchableError as e:
+    dropRecord(pkg)
+    return errResult("manifest invalid after pull; package removed: " & e.msg,
+                     extra = %*{"removed": removed, "from": before, "to": after})
+
+  let binDir = root() / "var" / "bin"
+  var components = newJArray()
+  var installed = 0
+  for mc in mf.comps:
+    let st = installComp(mc, dest, binDir)
+    if st{"spawned"}.getBool(false) or
+       (st{"interactive"}.getBool(false) and st{"built"}.getStr("").len > 0):
+      inc installed
+    components.add(st)
+  if installed == 0:
+    return errResult("pulled new commits but no component could be rebuilt",
+                     extra = %*{"components": components, "removed": removed,
+                                "from": before, "to": after})
+
+  saveRecord(mf.name, %*{"name": mf.name, "repo": rec{"repo"}.getStr(""),
+                         "ref": branch, "dir": dest, "version": mf.version,
+                         "components": components,
+                         "addedAt": rec{"addedAt"}.getFloat(epochTime())})
+  return okResult(%*{"updated": true, "ref": branch, "from": before, "to": after,
+                     "removed": removed, "components": components})
+
 proc toPkgs(items: JsonNode): JsonNode =
   ## GitHub search "items" -> compact package list (repo, description,
   ## stars, url) for plugin_search.
@@ -472,11 +526,16 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
 
 comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_update(package: string): JsonNode =
-    ## Update an installed package to its latest release tag: removes its
-    ## current components and reinstalls at the new ref (each service removal
-    ## and spawn asks the human for approval). Interactive components are
-    ## rebuilt but not started. Reports updated:false when the
-    ## pinned ref is already the latest release.
+    ## Update an installed package. When GitHub has a newer release tag,
+    ## moves the pin to it: removes the current components and reinstalls
+    ## fresh at the new tag (each service removal and spawn asks the human
+    ## for approval). Otherwise — no releases at all, i.e. the package
+    ## tracks a branch like main — does an in-place `git pull --ff-only` on
+    ## the existing clone and only rebuilds components when the pull
+    ## actually moved HEAD; a no-op pull is reported without touching any
+    ## component. Interactive components are rebuilt but not started.
+    ## Reports updated:false when there was nothing new (latest release
+    ## already pinned, or the branch pull was a no-op).
     ## - package: Installed package name (see plugin_installed)
     let rec = pluginRecord(package)
     if rec == nil:
@@ -485,9 +544,7 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     let repo = rec{"repo"}.getStr("")
     let latest = resolveTag(repo)
     if latest.len == 0:
-      return errResult("repo " & repo &
-                       " has no releases — cannot update beyond " &
-                       rec{"ref"}.getStr(""))
+      return doUpdateBranch(package, rec)
     if latest == rec{"ref"}.getStr(""):
       return okResult(%*{"updated": false, "ref": latest})
     let removed = removeComps(rec)
