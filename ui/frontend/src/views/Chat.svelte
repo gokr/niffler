@@ -11,6 +11,7 @@
   import {
     mergeSlashCommands,
     loadPluginSlashCommands,
+    builtinSlashCommands,
     parseSlashArgs,
     slashCompletion,
     fetchCompletionValues,
@@ -20,7 +21,7 @@
     type CompletionState,
   } from "../lib/slash";
   import { effortLabel, nextEffort, isValidEffort, saveThinkingEffort, type EffortLevel } from "../lib/effort";
-  import { setLocale, locale } from "../lib/i18n.svelte";
+  import { setLocale, locale, slashDescription } from "../lib/i18n.svelte";
 
   interface Usage {
     prompt_tokens?: number;
@@ -304,6 +305,21 @@
         else addError(l, `unknown locale "${lang}" (en, zh, zh-TW)`);
         return true;
       }
+      case "info": {
+        const sid = (arg || sessionId || "").trim();
+        if (!sid) {
+          addError(l, t("info.noSession"));
+          return true;
+        }
+        try {
+          const info = await send("core", "session_info", { sessionId: sid });
+          if (info?.error) addError(l, String(info.error));
+          else addMeta(l, buildInfoText(info));
+        } catch (e) {
+          addError(l, t("chat.slashFailed", { name, err: String(e) }));
+        }
+        return true;
+      }
       case "help":
       case "?":
         addMeta(l, helpText());
@@ -335,27 +351,76 @@
     }
   }
 
+  /** Renders a builtin's declared params as a compact usage suffix:
+   * /effort [auto|low|medium|high], /provider [nickname]. */
+  function paramSyntax(c: SlashCommand): string {
+    const parts: string[] = [];
+    for (const p of c.params ?? []) {
+      if (p.kind === "bool") continue;
+      if (p.kind === "enum" && p.values?.length) parts.push("[" + p.values.join("|") + "]");
+      else parts.push("[" + p.name + "]");
+    }
+    return parts.length > 0 ? " " + parts.join(" ") : "";
+  }
+
   function helpText(): string {
-    const lines = [
-      t("help.title"),
-      t("help.new"),
-      t("help.session"),
-      t("help.provider"),
-      t("help.model"),
-      t("help.effort"),
-      t("help.connect"),
-      t("help.status"),
-      t("help.think"),
-      t("help.tools"),
-      t("help.help"),
-      "",
-      t("help.keys"),
-    ];
+    // Generated from builtinSlashCommands() so /help can never go stale —
+    // the command list (names, params, aliases) lives in slash.ts and only
+    // the descriptions are localized (slash.* keys, English fallback).
+    const lines = [t("help.title")];
+    for (const c of builtinSlashCommands()) {
+      if (c.alias) continue;
+      lines.push(`  /${c.name}${paramSyntax(c)} — ${slashDescription(c.name, c.description ?? "")}`);
+    }
+    lines.push("", t("help.keys"));
     const plugins = slashCmds.filter((c) => !c.builtin);
     if (plugins.length > 0) {
       lines.push("", t("help.pluginTitle"));
       for (const c of plugins) lines.push(`  /${c.name}${c.description ? " — " + c.description : ""} (${c.component})`);
     }
+    return lines.join("\n");
+  }
+
+  /** Pi-/session-style summary of core's session_info result: identity,
+   * model, message/token/cache accounting. */
+  function buildInfoText(info: Record<string, unknown>): string {
+    const lines: string[] = [];
+    const title = String(info.title ?? "");
+    lines.push(title ? t("info.title", { title }) : t("info.id", { id: String(info.sessionId ?? "") }));
+    const model = String(info.modelOverride ?? "") || String(info.model ?? "");
+    lines.push(t("info.model", {
+      model: model || t("status.unknown"),
+      provider: String(info.provider ?? "") || t("status.unknown"),
+    }));
+    lines.push(t("info.effort", { level: String(info.thinkingEffort ?? "") || "auto" }));
+    if (info.createdAt) lines.push(t("info.created", { time: new Date(Number(info.createdAt) * 1000).toLocaleString() }));
+    if (info.cwd) lines.push(t("info.cwd", { cwd: String(info.cwd) }));
+    const byRole = (info.messagesByRole ?? {}) as Record<string, number>;
+    lines.push(t("info.messages", {
+      total: String(info.messageCount ?? 0),
+      user: String(byRole.user ?? 0),
+      assistant: String(byRole.assistant ?? 0),
+      tool: String(byRole.tool ?? 0),
+    }));
+    const limit = Number(info.context ?? 0);
+    const used = Number(info.contextUsed ?? 0);
+    if (limit > 0) {
+      lines.push(t("info.context", { used: fmtK(used), limit: fmtK(limit), pct: String(Math.round((used / limit) * 100)) }));
+    } else {
+      lines.push(t("info.contextUsed", { used: fmtK(used) }));
+    }
+    const input = Number(info.cachePrompt ?? 0);
+    if (input > 0) {
+      const cached = Number(info.cacheRead ?? 0);
+      lines.push(t("info.input", {
+        total: fmtK(input),
+        cached: fmtK(cached),
+        rate: String(info.cacheHitRate ?? 0),
+        uncached: fmtK(Math.max(input - cached, 0)),
+      }));
+    }
+    const output = Number(info.completionTokens ?? 0);
+    if (output > 0) lines.push(t("info.output", { output: fmtK(output) }));
     return lines.join("\n");
   }
 
