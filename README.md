@@ -539,7 +539,7 @@ Open work — deferred follow-ups and quests — is consolidated in
       the builder compiles `lang: "ts"` components via tsc into a node
       wrapper binary; verified live (builder → spawn → call from Node.js)
 - [x] **progressive tool discovery** — one complete global catalog, but each
-      conversation freezes a small immutable direct toolset (8 shipped);
+      conversation freezes a small immutable direct toolset (7 shipped);
       `discover` returns hints/full schemas into the append-only history and
       `invoke` calls any live non-hidden tool through the normal approval/
       timeout path; named tool profiles resolve into the direct toolset at a

@@ -59,12 +59,12 @@ reference chapters for the shipped components. Design rationale lives in
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `edit` | Nim | optional | the file tools: `read` (plain, pageable), `read_many` (up to 12 files in one call), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
+| `edit` | Nim | optional | the file tools: `read` (plain, pageable; an unchanged full re-read returns a compact `[unchanged]` marker instead of the bytes — `force` or an offset/limit window re-dumps), `read_many` (up to 12 files in one call), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`; refuses with `E_STALE` when the file changed since this conversation last read/wrote it), `write` (atomic whole-file; result reports lines + digest), `undo_last_edit` (approval-gated mutations); seen-state is tracked per (session, file) — read observations stay in memory, mutation state persists with the undo store, and calls without a session behave exactly as before; anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
-| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
+| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, on demand) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -1077,16 +1077,17 @@ current discovery reflects that it is gone.
 
 ### Shipped policy
 
-With the complete shipped manifest, 8 tools are direct:
+With the complete shipped manifest, 7 tools are direct:
 
 - Core: `discover`, `invoke`.
-- Routine work: `bash`, `files`, and the file tools
+- Routine work: `bash` and the file tools
   `read`/`read_many`/`edit`/`write` (the `edit` component).
 
 The long tail is on demand:
 
-- Search and inspection: `grep` (ripgrep-backed, 4 replicas), the git
-  tools, `undo_last_edit`, and the observe/logfile diagnostics.
+- Search and inspection: `files` (sorted listing) and `grep`
+  (ripgrep-backed, 4 replicas), the git tools, `undo_last_edit`, and the
+  observe/logfile diagnostics.
 - State and introspection: store `get`/`list`, `session_info`, and the
   skill entry points `skill_list`/`skill_load` (a workflow guide is
   loaded only when one fits the task).

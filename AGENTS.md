@@ -64,9 +64,11 @@ anything structural.
   writes run exclusively),
   `x-harness.sessionId` (runner injects `__session.session` as private
   context so the component can match `cancel.<component>` messages against
-  its in-flight call — bash kills the command's process group; docs/WIRE.md
-  "Cancellation"), `x-harness.sessionContext` (fabric/agent: injects
-  `__session` with the live session + a lease for the nested-call proxy),
+  its in-flight call — bash kills the command's process group — or key
+  per-session state on it: the edit component tracks per-(session, file)
+  seen-state this way; docs/WIRE.md "Cancellation"),
+  `x-harness.sessionContext` (fabric/agent: injects `__session` with the
+  live session + a lease for the nested-call proxy),
   `x-harness.noSpawn` (subagents cannot spawn subagents, checked at dispatch
   time), `x-harness.workspace` (path-shaped arguments resolved against the
   conversation workspace).

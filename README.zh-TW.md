@@ -392,7 +392,7 @@ Agent 在對話中途自己完成這一切——這就是該架構的驗證標�
       tsc 把 `lang: "ts"` 組件編進 node wrapper 二進位檔；實測（builder →
       spawn → 從 Node.js 呼叫）
 - [x] **漸進式工具發現** —— 一個完整的全域 catalog，但每個對話凍結
-      一個小型不可變直接工具集（13 個內建）；`discover` 把提示/完整
+      一個小型不可變直接工具集（7 個內建）；`discover` 把提示/完整
       schema 回傳進 append-only 歷史，`invoke` 經正常核准/逾時路徑呼叫
       任意 live 非隱藏工具；命名工具 profile 在對話首輪解析進直接工具集，
       `invoke {sticky: true}` 可把呼叫成功的工具提升進去

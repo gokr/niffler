@@ -391,7 +391,7 @@ Agent 在对话中途自己完成这一切——这就是该架构的验证标�
       tsc 把 `lang: "ts"` 组件编进 node wrapper 二进制；实测（builder →
       spawn → 从 Node.js 调用）
 - [x] **渐进式工具发现** —— 一个完整的全局 catalog，但每个会话冻结
-      一个小型不可变直接工具集（13 个自带）；`discover` 把提示/完整
+      一个小型不可变直接工具集（7 个自带）；`discover` 把提示/完整
       schema 返回进 append-only 历史，`invoke` 经正常审批/超时路径调用
       任意 live 非隐藏工具；命名工具 profile 在会话首轮解析进直接工具集，
       `invoke {sticky: true}` 可把调用成功的工具提升进去

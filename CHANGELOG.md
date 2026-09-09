@@ -8,6 +8,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`niffler-ram` — per-stack RAM of running harnesses (`make ram`)** —
+  `scripts/niffler-ram.sh` sums RSS/PSS over every process whose executable
+  lives in a checkout's `var/bin` (harness, nats-server, all components,
+  session runners, tui/cli/console) plus the desktop UI, grouped per stack:
+  the dev clone, `nifflerprod`, and each bench private harness (cwd under
+  `var/bench/results/<run>/`) separately. Membership is by executable path,
+  not a PPID walk — the tui is the *parent* of an autostarted harness
+  (ensureHarness) and a bench run's private bus belongs to the bench
+  driver, so a tree walk would miss both. PSS is read rather than RSS
+  because stacks sharing one `var/bin` build double-count file-backed
+  pages; workload children of the `bash` tool are excluded by design.
+  Measured live: full prod stack ~300M PSS across 30 processes, supervisor
+  itself ~4M.
+
+- **Bench: full27 suite on the syn-large model** — the comparison suite is
+  renamed and grows to 27 tasks (t01–t27) and a new model is wired in:
+  Synthetic's GLM-5.3-Flash (`syn-large`, 512k context / 64k output) via
+  `--provider synthetic` (models.json), keys resolved from opencode
+  `auth.json` with the missing-key check derived from `apiKeyEnvs` + the
+  `.env` fallback. The max-profile timeout lesson now also scales the
+  high-effort variant (×2, max ×3) in both entry points. First `full27`
+  syn-large run (thinking=low, 27 tasks × {niffler, pi} × 6-round budget):
+  both lanes 27/27 green in round 1 — avg 73 s niffler / 74 s pi per cell,
+  niffler 27.3k tok/cell (4.4k uncached in, 21.8k cache-read) vs pi 16.5k,
+  cache behavior clean on both lanes
+  (`bench/reports/full27-syn-large-low-report.md`).
+
 - **Named tool profiles and sticky `invoke`** — a new on-demand core tool
   `profile` (ops `list`/`get`/`save`/`delete`, store kind `profile`) manages
   persistent selector lists applied on top of the fundamental direct set:
@@ -834,6 +861,42 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--dry-run`). `bench/README.md` documents all three.
 
 ### Changed
+
+- **File tools track per-session seen-state** — `read`, `read_many`,
+  `write` and `edit` now record a per-(session, file) digest of the raw
+  bytes each conversation last observed: an unchanged FULL re-read returns
+  a compact `[unchanged] path: N bytes, lines, digest` confirmation
+  instead of re-dumping content the conversation already holds —
+  `force` (or an offset/limit window) opts back out, and files under 512
+  bytes always re-dump (the marker would cost nearly as much as the
+  bytes). `write` reports lines + digest so "did it land?" needs no
+  re-read, and `edit` refuses with `E_STALE` when the file's bytes changed
+  since the conversation last saw them — `old_string` may still occur
+  exactly once, but in text the model has never seen (external change, or
+  a bash mutation since the read). State is keyed by session, so parallel
+  conversations never share it; calls without a session (CLI scripting,
+  other components) behave exactly as before, and `undo_last_edit` marks
+  the restored bytes unseen so the documented "re-read it before further
+  edits" actually dumps. The file-tool descriptions were slimmed to
+  point-of-use semantics — batching and authoring-routing rules live in
+  the baseprompt once. `read`/`read_many` gain a `force` flag; the edit
+  component's tools now declare `x-harness.sessionId`.
+
+- **Frozen-prefix diet — tool descriptions serialized once** —
+  `formatToolsForLlm` promotes the tool's top-level description to
+  `function.description` and strips it from `parameters`: leaving it in
+  both serialized every description twice (~25% of the frozen toolset's
+  wire size). The per-tool "batches safely with other read-only calls"
+  suffix is gone (the baseprompt owns the batching rule), `files` leaves
+  the frozen direct toolset for on demand (like `grep`), and component
+  descriptions are deduplicated against the constitution
+  (`bash`/`edit`/`read`/`read_many` — point-of-use semantics stay on the
+  tool, behavior rules live once in the baseprompt). The baseprompt is
+  tighter throughout: one merged call-discipline sentence, a
+  discovery-forward ladder that names the components, and a compact
+  workspace block carrying the reach-outside rule. Measured on a live
+  harness the frozen prefix dropped 9424 → 5854 chars (~2479 → ~1541
+  tokens). Changes affect new conversations' frozen prefixes only.
 
 - **Prompt economy pass, driven by the bench prefix comparison** —
   measured against pi's mid-tier prefix, niffler spent ~900 extra tokens

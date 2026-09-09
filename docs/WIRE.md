@@ -324,9 +324,12 @@ keys:
   the runner injects `__session` context and a nested-call lease.
 - `sessionId`: the runner injects `__session.session` (the live session id,
   `""` for non-session callers) so the component can match
-  `cancel.<component>` events against its in-flight work (see Cancellation);
-  core overwrites any client-supplied `__session` for such tools at
-  dispatch — the key is core-owned private context, never caller data.
+  `cancel.<component>` events against its in-flight work (see Cancellation)
+  or scope per-session state (the edit component keys its per-(session,
+  file) seen-state on it — unchanged-re-read markers and `E_STALE`
+  staleness); core overwrites any client-supplied `__session` for such
+  tools at dispatch — the key is core-owned private context, never caller
+  data.
 - `effect`: `"read"` or `"write"` (default) — how the fabric batch host
   schedules items (reads fill the concurrency cap together, writes run
   exclusively).
