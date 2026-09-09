@@ -1,0 +1,3 @@
+# These logs are benchmark input fixtures, not runtime output.
+!logs/
+!logs/*.log

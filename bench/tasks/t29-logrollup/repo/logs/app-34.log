@@ -1,0 +1,180 @@
+2026-08-14T09:39:34Z INFO worker: slow query 584ms
+2026-08-14T09:39:38Z DEBUG worker: job 9462 done
+2026-08-14T09:39:54Z INFO scheduler: retry attempt 2898
+2026-08-14T09:40:05Z DEBUG worker: session created for user u3864
+2026-08-14T09:40:16Z DEBUG db: retry attempt 7320
+2026-08-14T09:40:30Z DEBUG scheduler: heartbeat
+2026-08-14T09:40:51Z DEBUG http: job 3570 done
+2026-08-14T09:41:00Z WARN worker: connection pool exhausted
+2026-08-14T09:41:06Z DEBUG db: request served
+2026-08-14T09:41:13Z DEBUG worker: request served
+2026-08-14T09:41:26Z INFO http: slow query 9930ms
+2026-08-14T09:41:36Z DEBUG scheduler: request served
+2026-08-14T09:41:39Z DEBUG db: slow query 3504ms
+2026-08-14T09:41:48Z DEBUG worker: slow query 9941ms
+2026-08-14T09:42:10Z DEBUG http: cache miss key=k3528
+2026-08-14T09:42:35Z INFO db: request served
+2026-08-14T09:42:42Z INFO http: session created for user u4732
+2026-08-14T09:42:51Z INFO cache: gc pause 9666ms
+2026-08-14T09:43:10Z INFO auth: connection pool exhausted
+2026-08-14T09:43:27Z DEBUG db: queue depth 1560
+2026-08-14T09:43:41Z DEBUG auth: gc pause 5472ms
+2026-08-14T09:44:00Z INFO http: slow query 8158ms
+2026-08-14T09:44:18Z ERROR scheduler: request served
+2026-08-14T09:44:35Z INFO worker: connection pool exhausted
+2026-08-14T09:44:53Z ERROR worker: session created for user u9138
+2026-08-14T09:45:15Z DEBUG scheduler: connection pool exhausted
+2026-08-14T09:45:18Z DEBUG auth: gc pause 6537ms
+2026-08-14T09:45:27Z DEBUG worker: request served
+2026-08-14T09:45:40Z DEBUG http: heartbeat
+2026-08-14T09:45:55Z DEBUG worker: job 8724 done
+2026-08-14T09:46:14Z DEBUG scheduler: slow query 3562ms
+2026-08-14T09:46:25Z DEBUG scheduler: heartbeat
+2026-08-14T09:46:32Z ERROR scheduler: connection pool exhausted
+2026-08-14T09:46:50Z ERROR auth: job 3683 done
+2026-08-14T09:47:09Z ERROR http: gc pause 9154ms
+2026-08-14T09:47:13Z WARN db: request served
+2026-08-14T09:47:17Z INFO db: gc pause 8969ms
+2026-08-14T09:47:22Z INFO auth: slow query 6453ms
+2026-08-14T09:47:24Z DEBUG http: connection pool exhausted
+2026-08-14T09:47:35Z DEBUG auth: heartbeat
+2026-08-14T09:47:46Z DEBUG worker: slow query 9663ms
+2026-08-14T09:47:55Z DEBUG http: session created for user u7544
+2026-08-14T09:48:19Z INFO cache: request served
+2026-08-14T09:48:21Z DEBUG cache: cache miss key=k8406
+2026-08-14T09:48:43Z DEBUG auth: heartbeat
+2026-08-14T09:48:55Z INFO http: queue depth 488
+2026-08-14T09:49:05Z DEBUG auth: slow query 2430ms
+2026-08-14T09:49:25Z DEBUG http: queue depth 6282
+2026-08-14T09:49:29Z DEBUG scheduler: cache miss key=k1637
+2026-08-14T09:49:40Z ERROR worker: request served
+2026-08-14T09:49:56Z DEBUG worker: heartbeat
+2026-08-14T09:50:16Z DEBUG scheduler: request served
+2026-08-14T09:50:38Z INFO http: heartbeat
+2026-08-14T09:50:56Z DEBUG db: session created for user u582
+2026-08-14T09:51:05Z DEBUG scheduler: cache miss key=k8638
+2026-08-14T09:51:07Z INFO worker: cache miss key=k5108
+2026-08-14T09:51:14Z DEBUG worker: connection pool exhausted
+2026-08-14T09:51:37Z DEBUG scheduler: gc pause 3659ms
+2026-08-14T09:51:39Z INFO scheduler: slow query 7880ms
+2026-08-14T09:51:48Z DEBUG db: connection pool exhausted
+2026-08-14T09:51:53Z ERROR auth: slow query 9544ms
+2026-08-14T09:52:17Z WARN auth: job 8264 done
+2026-08-14T09:52:19Z WARN http: heartbeat
+2026-08-14T09:52:41Z INFO worker: gc pause 8548ms
+2026-08-14T09:53:06Z DEBUG db: job 647 done
+2026-08-14T09:53:23Z DEBUG scheduler: connection pool exhausted
+2026-08-14T09:53:34Z WARN scheduler: retry attempt 3773
+2026-08-14T09:53:56Z INFO worker: job 1836 done
+2026-08-14T09:54:01Z ERROR db: request served
+2026-08-14T09:54:17Z INFO cache: connection pool exhausted
+2026-08-14T09:54:27Z INFO scheduler: retry attempt 3056
+2026-08-14T09:54:47Z INFO worker: job 6233 done
+2026-08-14T09:55:07Z INFO worker: request served
+2026-08-14T09:55:10Z DEBUG worker: job 4158 done
+2026-08-14T09:55:14Z INFO cache: session created for user u6214
+2026-08-14T09:55:36Z INFO cache: cache miss key=k5325
+2026-08-14T09:55:43Z INFO http: gc pause 8968ms
+2026-08-14T09:55:57Z DEBUG db: gc pause 2203ms
+2026-08-14T09:56:01Z WARN auth: request served
+2026-08-14T09:56:22Z DEBUG worker: heartbeat
+2026-08-14T09:56:35Z DEBUG cache: cache miss key=k142
+2026-08-14T09:56:52Z INFO http: gc pause 7637ms
+2026-08-14T09:57:16Z DEBUG db: connection pool exhausted
+2026-08-14T09:57:22Z DEBUG auth: job 7033 done
+2026-08-14T09:57:36Z ERROR http: slow query 2239ms
+2026-08-14T09:57:44Z INFO auth: job 3259 done
+2026-08-14T09:57:51Z DEBUG db: session created for user u9907
+2026-08-14T09:57:54Z DEBUG scheduler: request served
+2026-08-14T09:58:14Z INFO scheduler: slow query 4042ms
+2026-08-14T09:58:22Z DEBUG worker: retry attempt 3750
+2026-08-14T09:58:39Z INFO auth: cache miss key=k7713
+2026-08-14T09:59:01Z INFO auth: session created for user u6081
+2026-08-14T09:59:21Z DEBUG worker: job 935 done
+2026-08-14T09:59:46Z INFO cache: retry attempt 4282
+2026-08-14T09:59:58Z DEBUG cache: slow query 4513ms
+2026-08-14T10:00:11Z DEBUG worker: slow query 6925ms
+2026-08-14T10:00:33Z DEBUG worker: gc pause 2012ms
+2026-08-14T10:00:38Z INFO cache: slow query 149ms
+2026-08-14T10:00:41Z INFO auth: session created for user u5591
+2026-08-14T10:00:52Z DEBUG auth: gc pause 4467ms
+2026-08-14T10:01:12Z WARN cache: retry attempt 8902
+2026-08-14T10:01:27Z WARN http: gc pause 3951ms
+2026-08-14T10:01:51Z INFO cache: session created for user u4401
+2026-08-14T10:01:55Z INFO scheduler: job 3098 done
+2026-08-14T10:02:12Z DEBUG cache: cache miss key=k1810
+2026-08-14T10:02:15Z WARN scheduler: session created for user u621
+2026-08-14T10:02:40Z INFO auth: connection pool exhausted
+2026-08-14T10:02:50Z INFO cache: queue depth 9552
+2026-08-14T10:03:06Z INFO auth: slow query 6777ms
+2026-08-14T10:03:21Z WARN worker: retry attempt 8184
+2026-08-14T10:03:31Z ERROR cache: queue depth 2901
+2026-08-14T10:03:36Z INFO scheduler: heartbeat
+2026-08-14T10:03:49Z INFO worker: session created for user u2753
+2026-08-14T10:03:53Z DEBUG scheduler: connection pool exhausted
+2026-08-14T10:04:10Z INFO db: session created for user u4821
+2026-08-14T10:04:26Z INFO http: retry attempt 5888
+2026-08-14T10:04:31Z DEBUG db: cache miss key=k2043
+2026-08-14T10:04:41Z WARN auth: job 6290 done
+2026-08-14T10:04:52Z INFO cache: heartbeat
+2026-08-14T10:05:14Z ERROR scheduler: request served
+2026-08-14T10:05:30Z DEBUG worker: retry attempt 7321
+2026-08-14T10:05:37Z DEBUG worker: job 5080 done
+2026-08-14T10:05:44Z DEBUG db: retry attempt 6001
+2026-08-14T10:06:02Z DEBUG worker: retry attempt 8055
+2026-08-14T10:06:10Z DEBUG db: retry attempt 3988
+2026-08-14T10:06:27Z DEBUG auth: queue depth 2510
+2026-08-14T10:06:48Z DEBUG cache: session created for user u858
+2026-08-14T10:06:50Z DEBUG auth: retry attempt 1764
+2026-08-14T10:07:09Z INFO cache: cache miss key=k4091
+2026-08-14T10:07:24Z DEBUG db: request served
+2026-08-14T10:07:43Z ERROR worker: heartbeat
+2026-08-14T10:07:46Z DEBUG worker: cache miss key=k9356
+2026-08-14T10:08:11Z DEBUG worker: slow query 4076ms
+2026-08-14T10:08:36Z INFO http: heartbeat
+2026-08-14T10:08:53Z DEBUG db: slow query 5198ms
+2026-08-14T10:09:16Z INFO cache: queue depth 9760
+2026-08-14T10:09:33Z INFO auth: gc pause 5603ms
+2026-08-14T10:09:45Z DEBUG http: cache miss key=k6598
+2026-08-14T10:09:52Z DEBUG worker: slow query 8041ms
+2026-08-14T10:09:58Z INFO auth: connection pool exhausted
+2026-08-14T10:10:02Z DEBUG http: queue depth 3428
+2026-08-14T10:10:08Z INFO db: slow query 4155ms
+2026-08-14T10:10:33Z DEBUG worker: slow query 2886ms
+2026-08-14T10:10:56Z INFO auth: heartbeat
+2026-08-14T10:11:11Z INFO cache: cache miss key=k5163
+2026-08-14T10:11:20Z ERROR scheduler: cache miss key=k4295
+2026-08-14T10:11:41Z DEBUG db: connection pool exhausted
+2026-08-14T10:11:51Z DEBUG worker: queue depth 6533
+2026-08-14T10:12:07Z INFO scheduler: slow query 5194ms
+2026-08-14T10:12:21Z DEBUG http: connection pool exhausted
+2026-08-14T10:12:36Z DEBUG db: connection pool exhausted
+2026-08-14T10:12:39Z INFO cache: cache miss key=k4966
+2026-08-14T10:12:43Z DEBUG cache: session created for user u200
+2026-08-14T10:12:49Z WARN worker: gc pause 6500ms
+2026-08-14T10:13:04Z WARN http: cache miss key=k9050
+2026-08-14T10:13:28Z INFO http: request served
+2026-08-14T10:13:45Z WARN cache: job 8816 done
+2026-08-14T10:13:50Z DEBUG scheduler: connection pool exhausted
+2026-08-14T10:14:15Z DEBUG worker: request served
+2026-08-14T10:14:29Z DEBUG cache: request served
+2026-08-14T10:14:39Z DEBUG db: job 6641 done
+2026-08-14T10:14:50Z INFO db: connection pool exhausted
+2026-08-14T10:15:03Z INFO http: request served
+2026-08-14T10:15:06Z DEBUG http: gc pause 1664ms
+2026-08-14T10:15:15Z DEBUG db: connection pool exhausted
+2026-08-14T10:15:30Z INFO http: request served
+2026-08-14T10:15:49Z DEBUG auth: job 2508 done
+2026-08-14T10:16:08Z INFO worker: gc pause 6237ms
+2026-08-14T10:16:15Z WARN auth: connection pool exhausted
+2026-08-14T10:16:21Z INFO scheduler: cache miss key=k208
+2026-08-14T10:16:27Z DEBUG db: request served
+2026-08-14T10:16:36Z ERROR db: gc pause 8503ms
+2026-08-14T10:16:48Z WARN http: slow query 3755ms
+2026-08-14T10:16:55Z INFO cache: slow query 2809ms
+2026-08-14T10:17:04Z WARN scheduler: heartbeat
+2026-08-14T10:17:13Z DEBUG auth: gc pause 1557ms
+2026-08-14T10:17:28Z DEBUG db: request served
+2026-08-14T10:17:45Z DEBUG worker: connection pool exhausted
+2026-08-14T10:17:52Z WARN auth: connection pool exhausted
+2026-08-14T10:18:14Z INFO db: retry attempt 4875
