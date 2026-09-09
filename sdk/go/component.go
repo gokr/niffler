@@ -14,35 +14,18 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"golang.org/x/sys/unix"
 )
 
 // DieWithParent asks the kernel to SIGTERM this process when its parent
 // dies (even on SIGKILL). Run() does this automatically; custom main flows
-// (Connect/Wait/Close) must call it themselves.
+// (Connect/Wait/Close) must call it themselves. See pdeathsig_linux.go /
+// pdeathsig_other.go for the platform-specific implementation.
 func DieWithParent() { dieWithParent() }
-
-// dieWithParent asks the kernel (Linux) to SIGTERM this process the moment
-// the parent dies — even on SIGKILL — so a crashed test or core can never
-// leave components behind. The ppid re-check closes the fork race: if the
-// parent died between fork and this call, we were re-parented and exit
-// immediately. Other platforms: no-op (Unix orphans children).
-func dieWithParent() {
-	if runtime.GOOS != "linux" {
-		return
-	}
-	ppid := os.Getppid()
-	_ = unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGTERM), 0, 0, 0)
-	if os.Getppid() != ppid {
-		os.Exit(1)
-	}
-}
 
 // ToolHandler implements one tool. args is the raw call arguments JSON;
 // return the result value (any JSON-marshalable) or an error.

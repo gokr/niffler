@@ -181,7 +181,7 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 # nats-server — the bus itself as a first-class component: a faithful rebuild
 # of the official binary (in-process server library), so `make build` alone
 # satisfies the NATS dependency (core prefers it over PATH, core/niffler.nim).
-var/bin/nats-server: components/nats/main.go components/nats/go.mod components/nats/go.sum | var/bin
+var/bin/nats-server: $(wildcard components/nats/*.go) components/nats/go.mod components/nats/go.sum | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/nats && go build -o ../../var/bin/nats-server .'
 
 var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin

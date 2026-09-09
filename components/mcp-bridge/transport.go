@@ -250,10 +250,7 @@ func runGuard(args []string) int {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Own process group (group cleanup covers launcher descendants) plus a
-	// kernel lifeline: if the guard itself is SIGKILLed, the server still
-	// receives SIGTERM — no orphaned MCP servers in any teardown path.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
+	cmd.SysProcAttr = guardSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
