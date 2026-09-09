@@ -144,18 +144,39 @@ const en = {
   "status.detailStrip": "model prefix stripping: on",
   "status.detailOverride": "model override: {model}",
   "help.title": "Commands:",
-  "help.new": "  /new [id] — start a new conversation",
-  "help.session": "  /session [id] — switch conversation",
-  "help.provider": "  /provider [name] — choose the global provider",
-  "help.model": "  /model [id] — choose this conversation's model",
-  "help.effort": "  /effort [auto|low|medium|high] — thinking effort",
-  "help.connect": "  /connect — open provider setup",
-  "help.status": "  /status — provider/model/context details",
-  "help.think": "  /think [full|brief|off] — reasoning display",
-  "help.tools": "  /tools [brief|full|off] — tool card display",
-  "help.help": "  /help — this help",
   "help.keys": "Ctrl+T thinking · Ctrl+E tool cards · Ctrl+G effort",
   "help.pluginTitle": "Plugin commands:",
+  // Built-in slash command descriptions for /help. slash.ts is the source
+  // of the command list (names, params, aliases); these keys localize the
+  // descriptions only — new builtins ship English-first via slashDescription().
+  "slash.components": "running components and conversation tool exposure",
+  "slash.discover": "append component schemas to this conversation (tool=NAME for one tool)",
+  "slash.profile": "select tool profile for new conversations; default clears",
+  "slash.provider": "choose the global provider",
+  "slash.model": "choose this conversation's model",
+  "slash.effort": "thinking effort",
+  "slash.connect": "open provider setup",
+  "slash.status": "provider/model/context details",
+  "slash.new": "start a new conversation",
+  "slash.session": "switch conversation",
+  "slash.think": "reasoning display: full, brief or off",
+  "slash.tools": "tool card display: brief, full or off",
+  "slash.locale": "switch the UI language",
+  "slash.info": "this session's stats: model, messages, tokens, prompt cache",
+  "slash.help": "show this help",
+  // /info rendering (core's session_info)
+  "info.id": "ID: {id}",
+  "info.title": "Title: {title}",
+  "info.model": "Model: {model} · {provider}",
+  "info.effort": "Thinking: {level}",
+  "info.created": "Created: {time}",
+  "info.cwd": "Workspace: {cwd}",
+  "info.messages": "Messages: {total} (user {user} · assistant {assistant} · tool {tool})",
+  "info.context": "Context: {used} / {limit} ({pct}%)",
+  "info.contextUsed": "Context: {used}",
+  "info.input": "Input: {total} — cached {cached} ({rate}%) · uncached {uncached}",
+  "info.output": "Output: {output}",
+  "info.noSession": "no session selected — /info [id] to inspect another conversation",
 } as const;
 
 const zh: Record<DictKey, string> = {
@@ -286,18 +307,35 @@ const zh: Record<DictKey, string> = {
   "status.detailStrip": "模型前缀剥离：开",
   "status.detailOverride": "模型覆写：{model}",
   "help.title": "命令：",
-  "help.new": "  /new [id] — 开始新对话",
-  "help.session": "  /session [id] — 切换对话",
-  "help.provider": "  /provider [名称] — 选择全局供应商",
-  "help.model": "  /model [id] — 选择本对话的模型",
-  "help.effort": "  /effort [auto|low|medium|high] — 思考强度",
-  "help.connect": "  /connect — 打开供应商设置",
-  "help.status": "  /status — 供应商/模型/上下文详情",
-  "help.think": "  /think [full|brief|off] — 推理显示",
-  "help.tools": "  /tools [brief|full|off] — 工具卡片显示",
-  "help.help": "  /help — 显示本帮助",
   "help.keys": "Ctrl+T 推理 · Ctrl+E 工具卡片 · Ctrl+G 强度",
   "help.pluginTitle": "插件命令：",
+  "slash.components": "运行中的组件与会话工具暴露",
+  "slash.discover": "将组件 schema 追加到本对话（tool=NAME 指定单个工具）",
+  "slash.profile": "为新对话选择工具 profile；default 清除",
+  "slash.provider": "选择全局供应商",
+  "slash.model": "选择本对话的模型",
+  "slash.effort": "思考强度",
+  "slash.connect": "打开供应商设置",
+  "slash.status": "供应商/模型/上下文详情",
+  "slash.new": "开始新对话",
+  "slash.session": "切换对话",
+  "slash.think": "推理显示：full、brief 或 off",
+  "slash.tools": "工具卡片显示：brief、full 或 off",
+  "slash.locale": "切换界面语言",
+  "slash.info": "本会话统计：模型、消息、令牌与提示缓存",
+  "slash.help": "显示帮助",
+  "info.id": "ID：{id}",
+  "info.title": "标题：{title}",
+  "info.model": "模型：{model} · {provider}",
+  "info.effort": "思考强度：{level}",
+  "info.created": "创建：{time}",
+  "info.cwd": "工作目录：{cwd}",
+  "info.messages": "消息：{total}（用户 {user} · 助手 {assistant} · 工具 {tool}）",
+  "info.context": "上下文：{used} / {limit}（{pct}%）",
+  "info.contextUsed": "上下文：{used}",
+  "info.input": "输入：{total} — 缓存 {cached}（{rate}%）· 未缓存 {uncached}",
+  "info.output": "输出：{output}",
+  "info.noSession": "未选择会话 — /info [id] 可查看其他会话",
 };
 
 const zhTW: Record<DictKey, string> = {
@@ -428,18 +466,35 @@ const zhTW: Record<DictKey, string> = {
   "status.detailStrip": "模型前綴剝離：開",
   "status.detailOverride": "模型覆寫：{model}",
   "help.title": "命令：",
-  "help.new": "  /new [id] — 開始新對話",
-  "help.session": "  /session [id] — 切換對話",
-  "help.provider": "  /provider [名稱] — 選擇全域供應商",
-  "help.model": "  /model [id] — 選擇本對話的模型",
-  "help.effort": "  /effort [auto|low|medium|high] — 思考強度",
-  "help.connect": "  /connect — 開啟供應商設定",
-  "help.status": "  /status — 供應商/模型/上下文詳情",
-  "help.think": "  /think [full|brief|off] — 推理顯示",
-  "help.tools": "  /tools [brief|full|off] — 工具卡片顯示",
-  "help.help": "  /help — 顯示本說明",
   "help.keys": "Ctrl+T 推理 · Ctrl+E 工具卡片 · Ctrl+G 強度",
   "help.pluginTitle": "外掛命令：",
+  "slash.components": "執行中的元件與對話工具暴露",
+  "slash.discover": "將元件 schema 附加到本對話（tool=NAME 指定單一工具）",
+  "slash.profile": "為新對話選擇工具 profile；default 清除",
+  "slash.provider": "選擇全域供應商",
+  "slash.model": "選擇本對話的模型",
+  "slash.effort": "思考強度",
+  "slash.connect": "開啟供應商設定",
+  "slash.status": "供應商/模型/上下文詳情",
+  "slash.new": "開始新對話",
+  "slash.session": "切換對話",
+  "slash.think": "推理顯示：full、brief 或 off",
+  "slash.tools": "工具卡片顯示：brief、full 或 off",
+  "slash.locale": "切換介面語言",
+  "slash.info": "本對話統計：模型、訊息、詞元與提示快取",
+  "slash.help": "顯示說明",
+  "info.id": "ID：{id}",
+  "info.title": "標題：{title}",
+  "info.model": "模型：{model} · {provider}",
+  "info.effort": "思考強度：{level}",
+  "info.created": "建立：{time}",
+  "info.cwd": "工作目錄：{cwd}",
+  "info.messages": "訊息：{total}（使用者 {user} · 助理 {assistant} · 工具 {tool}）",
+  "info.context": "上下文：{used} / {limit}（{pct}%）",
+  "info.contextUsed": "上下文：{used}",
+  "info.input": "輸入：{total} — 快取 {cached}（{rate}%）· 未快取 {uncached}",
+  "info.output": "輸出：{output}",
+  "info.noSession": "未選擇對話 — /info [id] 可檢視其他對話",
 };
 
 const DICTS: Record<Locale, Record<DictKey, string>> = { en, zh, "zh-TW": zhTW };
@@ -471,6 +526,14 @@ export function t(key: DictKey, vars?: Record<string, string>): string {
   const s = DICTS[current][key];
   if (!vars) return s;
   return s.replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? `{${k}}`);
+}
+
+/** Localized description of a built-in slash command. Translations live
+ * under `slash.<name>`; a builtin without one (newly added) falls back to
+ * its English declaration in slash.ts — the command list never depends on
+ * translation completeness. */
+export function slashDescription(name: string, fallback: string): string {
+  return DICTS[current][("slash." + name) as DictKey] ?? fallback;
 }
 
 export function setLocale(l: Locale): void {

@@ -6,12 +6,13 @@ a tool whose schema you haven't seen.
 Files: author with write — the complete file in one call, not a draft
 to patch later. Targeted changes go through edit (read first, copy
 exactly). read reads one file; read_many surveys several (use it when
-the task names files). Page long files with offset/limit.
+the task names files) — survey with read_many, not bash cat/ls. Page
+long files with offset/limit.
 bash runs commands (builds, tests, processes) and needs human approval
 per call — file tools don't; never cat/sed content through it.
 
 Tools: the direct toolset is small — use discover for more: grep, git,
-store (harness database), fabric (mechanical multistep fan-out), agent
+store (harness database), fabric (mechanical fan-out beyond one command), agent
 (exploratory subagents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
 invoke what you find.

@@ -294,6 +294,12 @@ comp.tool(%*{"hidden": true}):
           "components" / "fabric" / "examples" / "fanout.nim")
         return toolCall("t19", "fabric", %*{
           "tools": ["bash"], "code": example, "strings": {"dirs": "."}})
+      of 19:
+        # banned import via bracket module list: lint must reject before any
+        # executor spawn (bench evidence: this exact shape slipped past the
+        # token scan and crashed the VM compile twice)
+        let banned = "import std/[os, strutils, sequtils]\nfinish(\"{}\")\n"
+        return toolCall("t20", "fabric", %*{"code": banned})
       else:
         return %*{"content": "fabric-turn-done"}
     if sessionId == "fab-lib":

@@ -48,7 +48,7 @@ let turnTimeoutMs = Number(opt("turn-timeout-min", cfg.defaults.turnTimeoutMin))
 const testTimeoutMs = Number(opt("test-timeout-sec", cfg.defaults.testTimeoutSec)) * 1000;
 const JOBS = Number(opt("jobs", cfg.defaults.jobs));
 // Niffler-only: LLM round budget per turn (NIF_MAX_TURN_ROUNDS). Default 100:
-// the 60 default clipped long agentic SWE turns (sympy-13031 exhausted it and
+// the env default (50) clipped long agentic SWE turns (sympy-13031 exhausted it and
 // submitted an empty patch).
 const maxTurnRounds = Number(opt("max-turn-rounds", 100));
 const KEEP_REPOS = opt("keep-repos", false) === true;
@@ -721,6 +721,10 @@ async function ensureCombo(combo) {
           model: combo.modelCfg.niffler.model,
           thinking: thinkingByHarness ? thinkingFor("niffler") : combo.modelCfg.niffler.thinking || "",
           maxTurnRounds,
+          // LLM requests must outlive the longest thinking stream: the
+          // turn timeout alone once killed a 19m41s high-effort thinking
+          // call at the 5-min default, and the retry re-did the whole turn
+          llmTimeoutMs: turnTimeoutMs + 120_000,
           expertEnabled: combo.harness === "niffler-expert",
           expertJudge:
             combo.harness === "niffler-expert" && cfg.expertJudge

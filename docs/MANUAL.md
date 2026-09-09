@@ -231,7 +231,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search` | `16777216` |
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
-| `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `20` |
+| `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `50` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
 | `NIF_PROFILE` | default named tool profile for new conversations, used when the `session` call carries no `profile` argument | unset |
 | `NIF_RUNNER_IDLE_S` | a session runner with no session call for this long retires; the next call spawns a fresh one (subagent children re-ensure on demand) | `600` |
@@ -397,7 +397,7 @@ reports:
   model across all tool rounds in a turn.
 - The per-session controls freeze on the first call and persist in the
   header: `tools` (a tool allowlist the child may dispatch), `maxRounds`
-  (LLM rounds per turn, 1-20, overriding `NIF_MAX_TURN_ROUNDS`),
+  (LLM rounds per turn, 1-50, overriding `NIF_MAX_TURN_ROUNDS`),
   `maxCalls` (total tool dispatches per turn, 1-500 — every dispatch
   attempt counts, success or error), and `maxTokens` (cumulative
   provider-reported tokens per turn, checked before each new round).
@@ -1561,7 +1561,7 @@ guide with nudge phrasing and worked examples:
 | Tool | What it does |
 |---|---|
 | `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
-| `agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. Optional per-job budgets: `maxRounds` (tool rounds per turn, 1-20), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. |
+| `agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. Optional per-job budgets: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. |
 | `agent_spawn {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |

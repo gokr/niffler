@@ -144,7 +144,7 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. query filters; component or tools (up to 16 names) return full schemas. Plugins and skills live here too.",
+      "description": "Find live components and tools outside the fixed direct toolset. Every query word must match a component or tool name/description; component or tools (up to 16 names) return full schemas; an empty query lists tool names only.",
       "properties": {
         "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
         "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
@@ -392,9 +392,19 @@ proc shortDescription(schema: JsonNode): string =
 proc toolHint(tool: ToolReg): JsonNode =
   %*{"name": tool.name, "description": shortDescription(tool.schema)}
 
-proc componentSummary(reg: ComponentReg, query: string): JsonNode =
-  let componentMatches = query.len == 0 or
-    reg.name.toLowerAscii().contains(query)
+proc allWordsIn(words: seq[string], text: string): bool =
+  ## Every whitespace-separated query word must appear in the haystack.
+  ## Models search with keyword phrases ("mechanical fan-out") that rarely
+  ## occur verbatim in descriptions — bench evidence (t13): a two-word
+  ## query missed fabric entirely and the fallback was a 19KB empty-query
+  ## catalog dump. Word-AND keeps single-word behavior identical.
+  if words.len == 0: return true
+  for w in words:
+    if not text.contains(w): return false
+  return true
+
+proc componentSummary(reg: ComponentReg, words: seq[string], nameOnly = false): JsonNode =
+  let componentMatches = allWordsIn(words, reg.name.toLowerAscii())
   var direct = newJArray()
   var onDemand = newJArray()
   var tools: seq[ToolReg] = @[]
@@ -404,15 +414,18 @@ proc componentSummary(reg: ComponentReg, query: string): JsonNode =
   for tool in tools:
     if tool.schema.isHidden():
       continue
-    let toolMatches = componentMatches or
-      tool.name.toLowerAscii().contains(query) or
-      tool.schema{"description"}.getStr("").toLowerAscii().contains(query)
+    let haystack = tool.name.toLowerAscii() & " " &
+      tool.schema{"description"}.getStr("").toLowerAscii()
+    let toolMatches = componentMatches or allWordsIn(words, haystack)
     if not toolMatches:
       continue
+    # Empty query = bus directory: tool names only — full descriptions
+    # across every component serialized ~19KB per dump (bench evidence).
+    let hint = if nameOnly: %*{"name": tool.name} else: toolHint(tool)
     if tool.schema.isOnDemand():
-      onDemand.add(toolHint(tool))
+      onDemand.add(hint)
     else:
-      direct.add(toolHint(tool))
+      direct.add(hint)
   if direct.len == 0 and onDemand.len == 0:
     return nil
   return %*{"name": reg.name, "version": reg.version,
@@ -460,16 +473,20 @@ proc discover*(cat: Catalog, args: JsonNode): JsonNode =
         result["notFound"] = notFound
       return result
     let query = args{"query"}.getStr("").strip().toLowerAscii()
+    let words = query.split(Whitespace)
+    # Empty query = bus directory: names only ("component or tools" calls
+    # return the full descriptions/schemas).
+    let nameOnly = query.len == 0
     var components = newJArray()
     for name in cat.sortedComponentNames():
-      let summary = componentSummary(cat.components[name], query)
+      let summary = componentSummary(cat.components[name], words, nameOnly)
       if summary != nil:
         components.add(summary)
     return %*{"components": components, "count": components.len}
 
   if not cat.components.hasKey(component):
     return %*{"error": "no discoverable component '" & component & "'"}
-  let summary = componentSummary(cat.components[component], "")
+  let summary = componentSummary(cat.components[component], @[])
   if summary == nil:
     return %*{"error": "no discoverable component '" & component & "'"}
   if requested == nil or requested.kind == JNull or

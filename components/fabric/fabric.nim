@@ -42,10 +42,43 @@ const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
   ## threat model). The VM itself also refuses FFI and gorge magics (the
   ## executor is built without -d:nimcore).
 
+const bannedModules = ["os", "osproc", "net", "asyncnet", "asyncdispatch",
+                       "nativesockets", "selectors", "posix", "httpclient",
+                       "asyncfile"]
+  ## Modules whose import would hand a guest harness-level powers (filesystem,
+  ## processes, sockets) outside the per-call approval gate. The plain token
+  ## scan above misses import syntax that never spells "std/os" verbatim —
+  ## bench evidence (t13, syn-large): `import std/[os, strutils]` slipped
+  ## past it, the VM compile then failed on stdlib internals, and the agent
+  ## retried the identical guest twice on an unactionable first line.
+
 proc lint(code: string): string =
   for b in bannedTokens:
     if code.contains(b):
       return "program rejected: '" & b & "' is not allowed in fabric programs"
+  # Import-line scan: `import a, std/[b, c] as d` and `from std/os import x`.
+  # Line-based and conservative — policy lint, not a parser.
+  for raw in code.splitLines():
+    let line = raw.strip()
+    var mods: seq[string] = @[]
+    if line.startsWith("import ") and line.len > 7:
+      for tok in line[7 .. ^1].replace('[', ',').replace(']', ',').split(','):
+        var m = tok.strip()
+        let asAt = m.find(" as ")
+        if asAt >= 0: m = m[0 ..< asAt]
+        m = m.strip()
+        if m.startsWith("std/"): m = m[4 .. ^1]
+        if m.len > 0: mods.add(m)
+    elif line.startsWith("from ") and " import " in line:
+      var m = line[5 ..< line.find(" import ")].strip()
+      if m.startsWith("std/"): m = m[4 .. ^1]
+      if m.len > 0: mods.add(m)
+    for m in mods:
+      if m in bannedModules:
+        return "program rejected: import of '" & m & "' is not allowed in " &
+          "fabric programs — guests must not touch the filesystem, processes " &
+          "or network directly; drive tools with callTool(\"bash\", ...) instead " &
+          "(see components/fabric/examples/)"
   return ""
 
 proc writeLineTo(p: Process, line: string) =
@@ -106,6 +139,17 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     if e.len > 0:
       let capped = if e.len > 4000: e[e.len - 4000 .. ^1] else: e
       result["diagnostics"] = %capped
+      # Surface the actionable first line — bench evidence (t13): the agent
+      # retried an identical guest twice because "closed its output" carried
+      # no signal and the compiler error sat buried in the tail.
+      for line in capped.splitLines():
+        if line.contains("Error:"):
+          result["firstError"] = %line.strip()
+          break
+      if "ospaths2" in capped or "undeclared identifier: 'cmpic'" in capped:
+        result["hint"] = %("std/os (or a VM-unsafe import) failed to compile: " &
+          "fabric guests must not import os/osproc/net — drive the filesystem " &
+          "through callTool(\"bash\", ...) (see components/fabric/examples/)")
   sel.registerHandle(p.outputHandle.SocketHandle, {Read}, p.outputHandle.cint)
   selectorRegistered = true
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
@@ -469,7 +513,7 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 discard comp.tool("fabric", fabSchema,

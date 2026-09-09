@@ -555,15 +555,21 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
         info["parent"] = meta.value{"parent"}
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
+      # completionTotal is Σ completion_tokens over assistant messages with
+      # reported usage — the session's total output (persisted per message).
       var byRole = newJObject()
       var total = 0
+      var completionTotal = 0
       for item in ct.storeListItems("message", sessionId & ":", 1000):
         inc total
-        let role = item{"value"}{"role"}.getStr("")
+        let v = item{"value"}
+        let role = v{"role"}.getStr("")
         let key = if role.len > 0: role else: "unknown"
         byRole[key] = %(byRole{key}.getInt(0) + 1)
+        completionTotal += v{"usage"}{"completion_tokens"}.getInt(0)
       info["messageCount"] = %total
       info["messagesByRole"] = byRole
+      info["completionTokens"] = %completionTotal
       if total >= 1000:
         info["truncated"] = %true
     except CatchableError as e:

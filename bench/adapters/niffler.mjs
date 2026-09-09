@@ -41,6 +41,11 @@ export class NifflerHarness {
     this.expertEnabled = opts.expertEnabled || false;
     this.thinking = opts.thinking || "";
     this.maxTurnRounds = opts.maxTurnRounds || 100;
+    // LLM per-request ceiling: must exceed the longest legitimate thinking
+    // stream, not the 5-min default (bench: a 19m41s high-effort thinking
+    // call died at 300s and the retry re-did the whole turn). Sourced from
+    // the turn budget + margin by run.mjs.
+    this.llmTimeoutMs = opts.llmTimeoutMs || 0;
     // Optional judgment provider for niffler-expert runs:
     // {provider, model, baseUrl, apiKey}. Routed via NIF_LLM_PROVIDERS so
     // the shared llm component can reach a second provider (e.g. Synthetic)
@@ -135,6 +140,9 @@ export class NifflerHarness {
       // Agentic bench tasks need more than the default 20 LLM rounds per
       // turn; interactive use keeps the default (env only raises it here).
       NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),
+      ...(this.llmTimeoutMs
+        ? { NIF_LLM_TIMEOUT_MS: String(this.llmTimeoutMs) }
+        : {}),
     };
     if (this.expertEnabled && this.expertJudge) {
       env.NIF_LLM_PROVIDERS = JSON.stringify({

@@ -154,7 +154,7 @@ type
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
-    maxRounds*: int          ## per-turn tool-round budget (0 = default 20)
+    maxRounds*: int          ## per-turn tool-round budget (0 = default 50)
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
     maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
     exposure*: ToolExposure
@@ -852,13 +852,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ## reports usage) — the per-job token budget checks this before each new
     ## LLM round, so overshoot is bounded by one round.
   # Effective round budget: a per-session maxRounds (subagent budgets,
-  # 1-20) overrides the NIF_MAX_TURN_ROUNDS env default (default 20 —
-  # bench lanes raise it so long agentic tasks are not cut off).
+  # 1-50) overrides the NIF_MAX_TURN_ROUNDS env default (default 50 —
+  # pi's agent loop is unbounded, so the cap exists to bound runaway
+  # cost, not to shape behavior; bench lanes may raise it further).
   let envMaxRounds =
     block:
       var v = 20
       try:
-        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "20"))
+        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "50"))
       except ValueError:
         discard
       if v < 1: 20 else: v

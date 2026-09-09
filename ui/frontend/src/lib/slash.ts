@@ -32,6 +32,8 @@ export interface SlashCommand {
   tool?: string;
   params?: SlashParam[];
   builtin?: boolean;
+  /** Built-in alias of another command — excluded from /help listings. */
+  alias?: boolean;
 }
 
 export function builtinSlashCommands(): SlashCommand[] {
@@ -62,14 +64,14 @@ export function builtinSlashCommands(): SlashCommand[] {
         },
       ],
     },
-    { name: "providers", description: "choose the global provider", builtin: true, params: [{ name: "nickname", kind: "string", source: providerSrc }] },
+    { name: "providers", description: "choose the global provider", builtin: true, alias: true, params: [{ name: "nickname", kind: "string", source: providerSrc }] },
     {
       name: "model",
       description: "choose this conversation's model",
       builtin: true,
       params: [{ name: "id", kind: "string", description: "model id or 'default'" }],
     },
-    { name: "models", description: "choose this conversation's model", builtin: true, params: [{ name: "id", kind: "string" }] },
+    { name: "models", description: "choose this conversation's model", builtin: true, alias: true, params: [{ name: "id", kind: "string" }] },
     {
       name: "effort",
       description: "thinking effort for this conversation",
@@ -79,19 +81,25 @@ export function builtinSlashCommands(): SlashCommand[] {
     { name: "connect", description: "open provider setup", builtin: true },
     { name: "status", description: "show provider/model/context details", builtin: true },
     { name: "new", description: "start a new conversation", builtin: true, params: [{ name: "id", kind: "string", description: "optional conversation id" }] },
-    { name: "newsession", description: "start a new conversation", builtin: true, params: [{ name: "id", kind: "string" }] },
+    { name: "newsession", description: "start a new conversation", builtin: true, alias: true, params: [{ name: "id", kind: "string" }] },
     {
       name: "session",
       description: "switch conversation",
       builtin: true,
       params: [{ name: "id", kind: "string", description: "conversation id", source: sessionSrc }],
     },
-    { name: "sessions", description: "switch conversation", builtin: true, params: [{ name: "id", kind: "string", source: sessionSrc }] },
+    { name: "sessions", description: "switch conversation", builtin: true, alias: true, params: [{ name: "id", kind: "string", source: sessionSrc }] },
     { name: "think", description: "reasoning display: full, brief or off", builtin: true, params: [{ name: "level", kind: "enum", values: ["full", "brief", "off"] }] },
     { name: "tools", description: "tool card display: brief, full or off", builtin: true, params: [{ name: "level", kind: "enum", values: ["brief", "full", "off"] }] },
     { name: "locale", description: "switch the UI language", builtin: true, params: [{ name: "lang", kind: "enum", values: ["en", "zh", "zh-TW"] }] },
+    {
+      name: "info",
+      description: "this session's stats: model, messages, tokens, prompt cache",
+      builtin: true,
+      params: [{ name: "id", kind: "string", description: "optional conversation id", source: sessionSrc }],
+    },
     { name: "help", description: "show this help", builtin: true },
-    { name: "?", description: "show this help", builtin: true },
+    { name: "?", description: "show this help", builtin: true, alias: true },
   ];
 }
 

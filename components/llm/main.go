@@ -81,9 +81,15 @@ const defaultContext = 128000 // conservative fallback for unknown models
 const defaultOutput = 32768
 
 // knownContext: model id (lowercase) -> context window (tokens).
+// syn:large:text: the models.dev catalog has no Synthetic entry, so the
+// catalog lookup falls through — without this the 128k conservative
+// fallback applies to a 512k model (bench: full27-syn-large-* ran with
+// context 128000; the model serves 524288 per Synthetic's catalog).
 var knownContext = map[string]int{
-	"deepseek-chat":     1000000,
-	"deepseek-reasoner": 1000000,
+	"deepseek-chat":          1000000,
+	"deepseek-reasoner":      1000000,
+	"syn:large:text":         524288,
+	"zai-org/glm-5.3-flash": 524288,
 }
 
 type resolvedConfig struct {
