@@ -1,0 +1,3 @@
+{ "id": "t29-logrollup", "title": "Roll up 36 log files into an exact summary.json (Python)", "language": "python",
+  "kind": "fabric",
+  "protected": ["test.sh", "check.py", "logs/**", "README.md"] }

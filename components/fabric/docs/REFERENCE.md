@@ -38,19 +38,41 @@ the per-call approval gate. Filesystem/process/network work goes through
 
 | proc | returns | notes |
 | --- | --- | --- |
-| `callTool(tool, argsJson): string` | raw tool result as a **JSON string** | every call crosses approval + budget + deadline; raising calls (bash nonzero exit, tool errors) raise — wrap in `try/catch` when a failure is expected |
+| `callTool(tool, argsJson): string` | raw tool result as a **JSON string** — parse it before probing fields | every call crosses approval + budget + deadline; tool-level failures (invalid args, unknown tool, edit validation) raise `tool 'X' failed: <msg>` — wrap in `try/catch` when expected; **a bash nonzero exit is a normal result, not a raise** — check `exit_code` |
 | `batch(callsJson): string` | JSON array of per-item outcomes | independent calls only; max 16 items, 4 on the bus at once; a failing item never aborts the others |
 | `finish(valueJson)` | — | end the program; call exactly once; only this value reaches the conversation |
 | `logg(message)` | — | progress line to the activity stream (never the conversation) |
 | `stringArg(key): string` | — | read `strings[key]` big payloads |
 | `jesc/jpair/jobj/jarr/jnum/jbool` | — | build tool-argument JSON without `std/json` |
 
-**`callTool` returns a JSON string, not a node** — parse before probing:
+**`callTool` returns a JSON string, not a node** — parse before probing. In
+pinned mode (`tools` argument) the generated typed wrapper
+(`tools.bash(command = ...)`) already parses for you and returns the result
+**JsonNode** (or a typed scalar when the tool declares a scalar
+`outputSchema`); probe it directly:
 
 ```nim
+# raw mode: parse first
 let r = parseJson(callTool("bash", jobj(jpair("command", jesc("./test.sh")))))
-if r{"exit_code"}.getInt(0) == 0: ...
+if r{"exit_code"}.getInt(0) != 0: ...
+
+# pinned mode: wrapper returns the parsed node
+let r2 = tools.bash(command = "./test.sh")
+if r2{"exit_code"}.getInt(0) != 0: ...
 ```
+
+## Tool result envelopes inside a guest
+
+What each common tool returns on success (the exact JSON your program
+probes — no need to read component sources):
+
+| tool | success result |
+| --- | --- |
+| `bash` | `{"exit_code": N, "cancelled": bool, "text": "(exit N)\n<output>"}` — nonzero exit is a normal result; huge output spills and `text` names the spill path |
+| `edit` | `{"text": "Successfully applied N edit(s) to <path>.", "first_changed_line", "last_changed_line", "added_lines", "removed_lines"}` |
+| `grep` | `{"exit_code": N, "text": "path:line:match ..."}` — exit 1 with `"[no matches]"` means zero hits, not an error |
+| `read` | the file content itself (a JSON string result) |
+| `read_many` | `{"text", "items": [{"path", "content"} or {"path", "error"}], "count"}` — per-item errors never abort the batch |
 
 ## Result flow
 
@@ -70,7 +92,7 @@ if r{"exit_code"}.getInt(0) == 0: ...
 | --- | --- | --- |
 | `undeclared identifier: 'finish'/'logg'` | forgot `import fabricguest` (must be the first line) | add it |
 | `undeclared identifier: 'round'` etc. | forgot the std module (`import std/math`) | import it — VM-clean modules work |
-| `type mismatch` on `contains(r, "...")` | `callTool` returned a JSON **string** | `parseJson(r)` first |
+| `type mismatch` on `contains(r, "...")` | `callTool` returned a JSON **string** | `parseJson(r)` first — or use a pinned typed wrapper, which returns the node |
 | `import of 'os' is not allowed` | banned module (fs/process/network bypasses approval) | drive `callTool("bash"/"edit", ...)` |
 | `guest.nim(N,M) Error: closing " expected` or garbled expression | the program was mangled in transit | re-send; check JSON escaping of nested quotes |
 | `fabric takes either code or name, not both` | both arguments present | pass exactly one |

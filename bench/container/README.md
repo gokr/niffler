@@ -1,6 +1,6 @@
 # niffler-bench container
 
-Packages the bench (full27, SWE-bench Verified, DeepSWE) as a Docker job you
+Packages the bench (full30, SWE-bench Verified, DeepSWE) as a Docker job you
 can run on any Docker host — laptop, wowbagger (Arcane), CI. Design goal:
 **the base image is stable; the code under test is fetched per job.**
 

@@ -1,0 +1,3 @@
+{ "id": "t30-ifacedrift", "title": "Migrate 24 modules to a drifted library API (Node)", "language": "javascript",
+  "kind": "fabric",
+  "protected": ["test.sh", "test.mjs", "lib.mjs", "README.md"] }

@@ -33,10 +33,10 @@ var/bench/results/<runId>/   # raw output, disposable (gitignored, make clean wi
 
 ## Tasks
 
-The custom suite is **full27** (formerly full17): twenty-seven self-contained
+The custom suite is **full30** (formerly full27, before that full17): thirty self-contained
 repos, all "make the visible test suite pass" (like SWE-bench's FAIL_TO_PASS,
 but lightweight and dependency-free so every harness starts equal) — the base
-seventeen t01–t17 plus the mid tier t18–t27. `meta.json` tags each with a
+seventeen t01–t17, the mid tier t18–t27 and the fan-out tier t28–t30. `meta.json` tags each with a
 `kind`:
 `general` (bug fixes, implementations, refactors), `fabric` (mechanical
 fan-out work a guest program excels at), `expert` (tasks with Niffler-
@@ -81,6 +81,19 @@ expectation:
 | t25-shardmap | Go | FNV-sharded concurrent map, exact Len under `-race` |
 | t26-logfilter | Python | mini query language: lexer, precedence parser, evaluator, error positions |
 | t27-tarpeek | Nim | ustar reader: checksums, octal fields, prefix/name joining |
+
+**Fan-out tier (t28–t30)** — mechanical work that *varies per item*
+(per-package comment text, per-module API arguments, per-file aggregates) or
+carries oversized intermediates (~450KB of logs): a single `sed` cannot do
+it, and model-driven per-file edits burn a turn per file. They tilt toward
+harness bulk-machinery (Niffler's fabric, scripted bash) while staying
+solvable either way; red at base, verified green with a reference solution.
+
+| task | language | kind |
+|------|----------|------|
+| t28-docbackfill | Go | backfill/repair package doc comments across 27 files, 3 exact variants |
+| t29-logrollup | Python | aggregate 36 log files (~450KB) into a byte-exact summary.json |
+| t30-ifacedrift | Node | migrate 24 modules to a new API, args driven by per-module header directives |
 
 Every repo ships its tests + `./test.sh` (exit 0 = green) in the base commit;
 all are red at `base` and verified green with a reference solution. The same

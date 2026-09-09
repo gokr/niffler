@@ -81,7 +81,7 @@ const listTasks = (root) => {
 const BENCHMARKS = [
   { key: "deepswe-pilot", label: "DeepSWE pilot-10 (ready, images pulled)", root: "var/bench/deepswe/tasks-pilot" },
   { key: "deepswe-full", label: "DeepSWE full 113 (needs prepare + image pulls)", root: "var/bench/deepswe/tasks" },
-  { key: "full27", label: "full27 custom tasks (bench/tasks, t01–t27)", root: "bench/tasks" },
+  { key: "full30", label: "full30 custom tasks (bench/tasks, t01–t30)", root: "bench/tasks" },
   { key: "swe-verified", label: "SWE-bench Verified (needs bench/swe/import.mjs)", root: "var/bench/swe/tasks" },
 ];
 for (const b of BENCHMARKS) {

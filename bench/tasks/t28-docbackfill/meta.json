@@ -1,0 +1,3 @@
+{ "id": "t28-docbackfill", "title": "Backfill package doc comments across 27 files (Go)", "language": "go",
+  "kind": "fabric",
+  "protected": ["test.sh", "check.py", "go.mod", "smoke_test.go", "README.md"] }
