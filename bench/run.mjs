@@ -721,6 +721,10 @@ async function ensureCombo(combo) {
           model: combo.modelCfg.niffler.model,
           thinking: thinkingByHarness ? thinkingFor("niffler") : combo.modelCfg.niffler.thinking || "",
           maxTurnRounds,
+          // LLM requests must outlive the longest thinking stream: the
+          // turn timeout alone once killed a 19m41s high-effort thinking
+          // call at the 5-min default, and the retry re-did the whole turn
+          llmTimeoutMs: turnTimeoutMs + 120_000,
           expertEnabled: combo.harness === "niffler-expert",
           expertJudge:
             combo.harness === "niffler-expert" && cfg.expertJudge
