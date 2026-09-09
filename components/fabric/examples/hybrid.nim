@@ -12,6 +12,7 @@
 ##              types does the executor emit?"}
 
 import fabricguest
+import std/json
 
 # mechanical part: list the fabric sources (cheap, deterministic)
 let files = tools.bash(command = "ls " & stringArg("scope"))

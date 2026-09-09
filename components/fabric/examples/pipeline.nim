@@ -10,6 +10,7 @@
 ##   strings = {"symbol": "ensureRunner"}
 
 import fabricguest
+import std/json
 
 # 1. find the call sites (typed arguments, JsonNode result)
 let hits = tools.grep(

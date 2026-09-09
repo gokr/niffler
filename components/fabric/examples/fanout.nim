@@ -11,6 +11,7 @@
 ##   strings = {"dirs": "core,components,sdk,tests"}
 
 import fabricguest
+import std/json
 
 # explode the CSV from strings into one bash call per directory
 var dirs: seq[string] = @[]

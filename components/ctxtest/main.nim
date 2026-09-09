@@ -58,6 +58,14 @@ comp.tool(%*{"hidden": true}):
                            "completion_tokens": 100,
                            "total_tokens": 10100}
         r
+      # hybrid example child (t_fabric): the fabric program delegates the
+      # judgment part here — run the mechanical probe in this session, then
+      # reply; proves the child ran tools in its own conversation
+      if messages != nil and ($messages).contains("bridge frame types"):
+        if stage == 0:
+          return withUsage(toolCall("t1", "bash",
+                          %*{"command": "echo agent-ok"}))
+        return withUsage(%*{"content": "subagent-done"})
       # slow child for the stop test: the stub chat itself sleeps — the
       # stop must land while this LLM round is in flight (between-rounds
       # cancel checks at the next round top and at the would-stop point)
@@ -300,6 +308,41 @@ comp.tool(%*{"hidden": true}):
         # token scan and crashed the VM compile twice)
         let banned = "import std/[os, strutils, sequtils]\nfinish(\"{}\")\n"
         return toolCall("t20", "fabric", %*{"code": banned})
+      of 20:
+        # example fanout.nim: pinned typed bash + stringArg, aggregates
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "fanout.nim")
+        return toolCall("t21", "fabric",
+                        %*{"tools": ["bash"], "code": code,
+                           "strings": {"dirs": "core,components"}})
+      of 21:
+        # example pipeline.nim: search-then-read distillation (grep + store)
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "pipeline.nim")
+        return toolCall("t22", "fabric",
+                        %*{"tools": ["grep", "get"], "code": code,
+                           "strings": {"symbol": "ensureRunner"}})
+      of 22:
+        # example retry-loop.nim: mechanical retry until green
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "retry-loop.nim")
+        return toolCall("t23", "fabric",
+                        %*{"code": code, "strings": {"suite": "echo suite-ok"}})
+      of 23:
+        # example hybrid.nim: mechanical program + exploratory subagent
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "hybrid.nim")
+        return toolCall("t24", "fabric",
+                        %*{"tools": ["bash", "agent_run"], "code": code,
+                           "strings": {"scope": "components/fabric",
+                                       "question": "Which bridge frame types does the executor emit?"}})
+      of 24:
+        # example bench-selfreview.nim: walker distills fake bench cells
+        let code = readFile(getEnv("NIF_REPO_ROOT") /
+          "components" / "fabric" / "examples" / "bench-selfreview.nim")
+        return toolCall("t25", "fabric",
+                        %*{"tools": ["bash"], "code": code,
+                           "strings": {"run": "fake-run"}})
       else:
         return %*{"content": "fabric-turn-done"}
     if sessionId == "fab-lib":

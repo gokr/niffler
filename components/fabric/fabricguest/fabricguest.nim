@@ -1,4 +1,5 @@
-## fabricguest — the guest-side API for fabric programs (docs/research/FABRIC.md).
+## fabricguest — the guest-side API for fabric programs
+## (reference: components/fabric/docs/REFERENCE.md).
 ##
 ## The program imports this module and nothing else. Call-side procs
 ## (callTool, finish, logg, stringArg) have no bodies here — the fabric

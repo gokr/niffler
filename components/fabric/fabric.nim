@@ -1,4 +1,6 @@
-## fabric component — programmable tool calling (docs/research/FABRIC.md Phase 2).
+## fabric component — programmable tool calling.
+## LLM/guest reference: components/fabric/docs/REFERENCE.md (read-tested
+## by t_fabric; examples in components/fabric/examples/).
 ##
 ## One tool, `fabric`: the LLM writes a Nim program (guest) that orchestrates
 ## tool calls; only the program's finish() value enters the conversation.
@@ -58,7 +60,24 @@ proc lint(code: string): string =
       return "program rejected: '" & b & "' is not allowed in fabric programs"
   # Import-line scan: `import a, std/[b, c] as d` and `from std/os import x`.
   # Line-based and conservative — policy lint, not a parser.
+  # Lines inside triple-quoted strings ("""…""" — guests embed whole
+  # scripts, e.g. a python walker in a raw string) are skipped: their
+  # content lines can start with "import " without being Nim imports
+  # (bench evidence: bench-selfreview.nim's embedded python walker was
+  # false-positived on its own `import json, sys, glob, os`).
+  var inTriple = false
   for raw in code.splitLines():
+    var n = 0
+    var i = 0
+    while true:
+      i = raw.find("\"\"\"", i)
+      if i < 0: break
+      inc n
+      inc i, 3
+    if n mod 2 == 1:
+      inTriple = not inTriple
+    if inTriple:
+      continue
     let line = raw.strip()
     var mods: seq[string] = @[]
     if line.startsWith("import ") and line.len > 7:
@@ -78,7 +97,7 @@ proc lint(code: string): string =
         return "program rejected: import of '" & m & "' is not allowed in " &
           "fabric programs — guests must not touch the filesystem, processes " &
           "or network directly; drive tools with callTool(\"bash\", ...) instead " &
-          "(see components/fabric/examples/)"
+          "(see components/fabric/docs/REFERENCE.md)"
   return ""
 
 proc writeLineTo(p: Process, line: string) =
@@ -513,7 +532,7 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — the program imports fabricguest and worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — read components/fabric/docs/REFERENCE.md before writing a program; worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
 discard comp.tool("fabric", fabSchema,

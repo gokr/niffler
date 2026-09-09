@@ -35,6 +35,7 @@
 ## Run:  tools = ["bash"], strings = {"run": "<run-id>"}
 
 import fabricguest
+import std/json
 import std/[strutils, tables]
 
 const runDirBase = "var/bench/results/"

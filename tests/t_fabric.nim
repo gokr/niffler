@@ -54,6 +54,28 @@ proc main() =
     fail("ctxtest component failed to compile")
     quit(1)
 
+  # --- example fixtures: the fabric-example stages run real work ---------
+  # bench-selfreview walks var/bench/results/<run> with result.json +
+  # transcript.json per cell; pipeline greps path "core"; hybrid lists
+  # path "components/fabric" — all relative to the sandbox root.
+  let fakeRun = sandbox.root / "var" / "bench" / "results" / "fake-run"
+  for cell in ["agent__syn-large__t01-roman", "agent__syn-large__t02-jsonrepair"]:
+    let dir = fakeRun / cell
+    createDir(dir)
+    writeFile(dir / "result.json",
+      $(%*{"verdict": "pass", "agentTimeS": 10.5, "testTimeS": 0.4}))
+    # walker contract: assistant messages with tool_calls + prompt_tokens
+    let argsJson = "{\"command\": \"./test.sh\"}"
+    let item = %*{"value": {"role": "assistant",
+      "tool_calls": [{"function": {"name": "bash", "arguments": argsJson}}],
+      "usage": {"prompt_tokens": 1500}}}
+    writeFile(dir / "transcript.json", $(%*{"items": [item]}))
+  createDir(sandbox.root / "core")
+  writeFile(sandbox.root / "core" / "fixture.nim",
+            "## fixture\nproc ensureRunner() = discard\n")
+  createDir(sandbox.root / "components" / "fabric")
+  writeFile(sandbox.root / "components" / "fabric" / "fabric.nim", "## fixture\n")
+
   let (server, url) = startNats()
   defer: stopServer(server)
   var nc = waitConnect(url)
@@ -156,7 +178,7 @@ proc main() =
   # assistant(2), tool(3), assistant(4), tool(5), assistant(6), tool(7)
   var transcript = ""
   var selectedTranscript = ""
-  for i in 1 .. 42:
+  for i in 1 .. 80:  # covers every scripted fabric call in the turn
     let m = call(nc, "store", "get",
                  %*{"kind": "message",
                     "id": sessionId & ":" & align($i, 6, '0')}, 10_000)
@@ -220,6 +242,9 @@ proc main() =
   check("live catalog replacement invalidates a pinned run",
         selectedTranscript.contains("changed after the Fabric schema snapshot"),
         selectedTranscript)
+  check("bench-selfreview example distills the fake cells",
+        transcript.contains("\"cellCount\":2") and
+        transcript.contains("fake-run"), transcript)
   check("checked-in typed examples execute end to end",
         transcript.contains("grepDone") and transcript.contains("rawBytes") and
         transcript.contains("agentReply"), transcript)
@@ -404,10 +429,13 @@ proc main() =
 
   # the subagent really ran: fetch its transcript via the returned sessionId
   var childT = ""
+  # the fabric result is embedded as an escaped JSON string; markerText ends
+  # BEFORE the id so the scan below collects the full "agent-<id>" value
+  var markerText = ""
   var marker = transcript.find("sessionId\\\":\\\"agent-")
-    # the fabric result is embedded as an escaped JSON string
-  var markerText = "sessionId\\\":\\\""
-  if marker < 0:
+  if marker >= 0:
+    markerText = "sessionId\\\":\\\""
+  else:
     markerText = "\"sessionId\":\""
     marker = transcript.find(markerText & "agent-")
   if marker >= 0:
