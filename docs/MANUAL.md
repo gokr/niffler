@@ -493,7 +493,7 @@ topic `niffler-component` are discoverable without any registry:
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |
 | `plugin_installed` | the packages installed on this harness |
 | `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build`, then `core.spawn` each service component (approved) |
-| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref |
+| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt only when the pull moved HEAD |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
 - Install/update/remove all carry `x-harness.approval: "always"` — they
@@ -940,7 +940,8 @@ hidden tools directly over NATS.
 ### Core tools
 
 `discover` and `invoke` are direct core tools in every new conversation. `profile` is an on-demand core tool for managing named tool profiles; `session.profile` selects one when a conversation is first created. `/profile` in the web UI or TUI sets the client default used by `/new`.
-`session_info` (onDemand) summarizes a conversation; `prompt_preview`
+`session_info` (onDemand) summarizes a conversation (header fields,
+per-role message counts, cumulative completion tokens); `prompt_preview`
 (onDemand) shows composed-request provenance — where the system prompt came
 from, how many project context files feed it, the frozen direct tool names
 vs. schemas discovered so far, message/token counts — without sending
@@ -966,7 +967,12 @@ The web Components panel provides the same all/direct/discovered/undiscovered fi
 ```
 
 `query` is optional and matches component names, tool names, and descriptions
-case-insensitively. The result is deterministic: components and tools are
+case-insensitively. A multi-word query is a conjunction: every
+whitespace-separated word must appear in the component name or the tool
+name/description — a keyword phrase like "mechanical fan-out" matches even
+though no description contains it verbatim. An empty query returns the bus
+directory with tool names only; `component` and `tools` calls return full
+descriptions and schemas. The result is deterministic: components and tools are
 name-sorted, descriptions are whitespace-normalized one-line hints capped at
 200 characters, and volatile fields such as pid and registration time are
 excluded.
