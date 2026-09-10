@@ -34,7 +34,7 @@
 ## the original interactive caller. Idle child runners retire themselves
 ## (NIF_RUNNER_IDLE_S) and re-ensure on demand.
 
-import std/[json, os, sets, strutils, times]
+import std/[json, monotimes, os, sequtils, sets, strutils, times]
 import natswrapper
 import niffler/sdk
 
@@ -61,6 +61,114 @@ proc publishCancel(c: Component, child: string) =
   c.emit("llm.cancel." & sanitizeSessionId(child), %*{"sessionId": child})
   c.emit("svc.session." & sanitizeSessionId(child) & ".steer",
          %*{"__cancel": true})
+
+# --- cancellation side-channel ----------------------------------------------
+# The session runner publishes cancel.agent {sessionId, tool, ts} when the
+# turn that issued an in-flight agent_run is stopped (core/dispatch.nim,
+# docs/WIRE.md "Cancellation"): the caller stops waiting for the reply and
+# asks the callee to abandon the work. agent_run blocks this component's
+# pump for the child's whole turn, so the handler polls the subscription
+# itself (the same pattern as bash). A fresh cancel for the parent session
+# cancels the child turn (publishCancel) instead of leaving it running out
+# its budget for a caller that is gone — this is what stops nested
+# agent_run children when the fabric program that launched them is
+# cancelled mid-run. Cancels for other sessions are stashed so a request
+# that was queued behind this run is skipped, not started.
+const cancelFreshSeconds = 30.0
+var cancelSub: ptr natsSubscription
+var cancelledSessions: seq[tuple[sessionId: string, at: float]]
+
+proc drainCancels(mySession: string): bool =
+  ## Poll the cancel.agent subscription (non-blocking). Returns true when a
+  ## fresh cancel targets mySession — the caller cancels its child turn.
+  if cancelSub == nil:
+    let st = natsConnection_SubscribeSync(addr cancelSub, comp.nc.conn,
+                                          "cancel.agent")
+    if not checkStatus(st): return false
+  var cancelled = false
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, cancelSub, 0)
+    if not checkStatus(st): break  # NATS_TIMEOUT = drained
+    var payload = newJObject()
+    try:
+      let env = decode($natsMsg_GetData(msg))
+      if env.kind == ekEvent and env.payload != nil: payload = env.payload
+    except CatchableError:
+      discard
+    natsMsg_Destroy(msg)
+    let sid = payload{"sessionId"}.getStr("")
+    let ts = payload{"ts"}.getFloat(0.0)
+    if sid.len == 0 or epochTime() - ts > cancelFreshSeconds: continue
+    if mySession.len > 0 and sid == mySession: cancelled = true
+    else: cancelledSessions.add((sessionId: sid, at: ts))
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  cancelled
+
+proc wasCancelled(sessionId: string): bool =
+  ## True when a fresh cancel for sessionId arrived while its agent_run was
+  ## still queued behind another in-flight agent_run — the child must not
+  ## be started for a turn that has stopped waiting. The matched entry is
+  ## consumed: a later, genuinely new turn of the same session must not be
+  ## skipped by the stale notice.
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  for i in 0 ..< cancelledSessions.len:
+    if cancelledSessions[i].sessionId == sessionId:
+      cancelledSessions.delete(i)
+      return true
+  false
+
+proc requestChildTurn(c: Component, subject: string, env: Envelope,
+                      timeoutMs: int, parentSession, child: string): Envelope =
+  ## Publish the child session call and poll for the reply while keeping the
+  ## cancel.agent side-channel current: when the PARENT session's turn is
+  ## stopped mid-run (agent_stop on the job, or the session/fabric turn this
+  ## agent_run is part of), cancel the child once, then wait for its abort
+  ## reply so the caller's record stays honest.
+  let data = env.encode()
+  let inbox = "_INBOX.agent." & newId()
+  var subscription: ptr natsSubscription
+  let subscribeStatus = natsConnection_SubscribeSync(addr subscription,
+    c.nc.conn, inbox.cstring)
+  if not checkStatus(subscribeStatus):
+    raise newException(IOError,
+      "subscribe child inbox: " & getErrorString(subscribeStatus))
+  defer: natsSubscription_Destroy(subscription)
+  let publishStatus = natsConnection_PublishRequest(c.nc.conn, subject.cstring,
+    inbox.cstring, data.cstring, data.len.cint)
+  if not checkStatus(publishStatus):
+    raise newException(IOError,
+      "publish child session call: " & getErrorString(publishStatus))
+  let flushStatus = natsConnection_FlushTimeout(c.nc.conn,
+    min(timeoutMs, 1000).int64)
+  if not checkStatus(flushStatus):
+    discard  # polling still converges; flush is only a liveness hint
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs.int64)
+  var msg: ptr natsMsg
+  var cancelArmed = false
+  while true:
+    # A handler may issue this request while the component's normal pump is
+    # paused. Keep raw observation taps current without nesting calls/events.
+    discard c.pumpTaps(100)
+    let st = natsSubscription_NextMsg(addr msg, subscription, 25)
+    if st == NATS_OK:
+      break
+    if st != NATS_TIMEOUT:
+      raise newException(IOError,
+        "child session call: " & getErrorString(st))
+    if not cancelArmed and drainCancels(parentSession):
+      cancelArmed = true
+      publishCancel(c, child)
+    if getMonoTime() >= deadline:
+      raise newException(IOError,
+        "subagent timed out after " & $timeoutMs & "ms")
+  defer: natsMsg_Destroy(msg)
+  result = decode($natsMsg_GetData(msg))
+  if result.id != env.id:
+    raise newException(IOError, "child session call: reply id mismatch")
+  if result.kind notin {ekResult, ekError}:
+    raise newException(IOError,
+      "child session call: expected result or error envelope")
 
 proc hasParent(sessionId: string): bool =
   ## True when the session was itself spawned as a subagent child. Raises
@@ -284,12 +392,18 @@ discard comp.tool("agent_run", runSchema,
                             toolArgs{"model"}.getStr(""))
     if not prep.ok:
       return errResult(prep.error)
+    if wasCancelled(parentSession):
+      # A stop for this session landed while its agent_run was queued behind
+      # another in-flight agent_run: the launching turn is gone, so the
+      # child must never be started (bash's queued-request semantics).
+      return errResult("cancelled by request")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
       childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
                     toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
-    let resp = comp.requestEnvelope(prep.subject, env, timeoutMs)
+    let resp = requestChildTurn(c, prep.subject, env, timeoutMs,
+                                parentSession, prep.child)
     if resp.kind == ekError:
       return errResult(resp.error{"message"}.getStr("subagent failed"),
                        extra = %*{"sessionId": prep.child})

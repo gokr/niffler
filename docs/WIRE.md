@@ -284,9 +284,15 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   `{sessionId, tool, ts}`). Components opt in by subscribing their own
   subject and matching `sessionId` against the injected `__session.session`
   private context (`x-harness.sessionId`); bash kills the running command's
-  process group (exit 130), and mcp-bridge aborts the in-flight MCP call —
+  process group (exit 130), mcp-bridge aborts the in-flight MCP call —
   the MCP server's `notifications/cancelled`-equivalent (its per-call
-  context) fires immediately. Direct callers (CLI scripts) see
+  context) fires immediately. fabric subscribes `cancel.>`: a fabric
+  program's bridge calls are dispatched for it by the session runner, so a
+  stop that lands while a NESTED call is in flight arrives on that call's
+  component subject — the fabric run still terminates its guest
+  (`fabric-exec`), reports a cancelled outcome, and dispatches nothing
+  further. agent cancels the child of an in-flight `agent_run` whose parent
+  turn was stopped. Direct callers (CLI scripts) see
   `""` for `__session.session` and cannot spoof a session id. Components
   without a subscription drop the message and run to completion or deadline —
   request/reply callers that stop waiting only abandon the reply; the target

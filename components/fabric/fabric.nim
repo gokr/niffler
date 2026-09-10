@@ -10,8 +10,8 @@
 ## approval, budgets and audit apply exactly as for direct tool calls.
 ## The child holds no credentials and no NATS connection.
 
-import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
-            strtabs, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, posix, selectors, sequtils,
+            streams, strtabs, strutils, tables, times]
 import natswrapper
 import niffler/sdk
 import framing
@@ -100,6 +100,64 @@ proc lint(code: string): string =
           "(see components/fabric/docs/REFERENCE.md)"
   return ""
 
+# --- cancellation side-channel ----------------------------------------------
+# The session runner publishes cancel.<component> {sessionId, tool, ts} when a
+# turn is stopped while one of its tool dispatches is in flight
+# (core/dispatch.nim, docs/WIRE.md "Cancellation"): the runner stops waiting
+# for the reply and asks the callee to abandon the in-flight work. This
+# component's pump is blocked inside the guest run for the whole program, so
+# the run loop polls the subscription itself (the same pattern as bash). We
+# subscribe to cancel.> rather than only cancel.fabric: a fabric program's
+# bridge calls are dispatched for us by the session runner, so a stop that
+# lands while a NESTED call (bash/agent/...) is in flight is published on
+# that call's component subject, and the fabric run must still end its guest.
+# Matching by sessionId scopes the stop to that session's run — other
+# sessions' runs are untouched, and cancels for sessions whose request is
+# still queued behind this run are stashed for the queued-run pre-check.
+const cancelFreshSeconds = 30.0
+var cancelSub: ptr natsSubscription
+var cancelledSessions: seq[tuple[sessionId: string, at: float]]
+
+proc drainCancels(mySession: string): bool =
+  ## Poll the cancel side-channel (non-blocking). Returns true when a fresh
+  ## cancel targets mySession — the caller terminates its guest run.
+  if cancelSub == nil:
+    let st = natsConnection_SubscribeSync(addr cancelSub, comp.nc.conn,
+                                          "cancel.>")
+    if not checkStatus(st): return false
+  var cancelled = false
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, cancelSub, 0)
+    if not checkStatus(st): break  # NATS_TIMEOUT = drained
+    var payload = newJObject()
+    try:
+      let env = decode($natsMsg_GetData(msg))
+      if env.kind == ekEvent and env.payload != nil: payload = env.payload
+    except CatchableError:
+      discard
+    natsMsg_Destroy(msg)
+    let sid = payload{"sessionId"}.getStr("")
+    let ts = payload{"ts"}.getFloat(0.0)
+    if sid.len == 0 or epochTime() - ts > cancelFreshSeconds: continue
+    if mySession.len > 0 and sid == mySession: cancelled = true
+    else: cancelledSessions.add((sessionId: sid, at: ts))
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  cancelled
+
+proc wasCancelled(sessionId: string): bool =
+  ## True when a fresh cancel for sessionId arrived earlier while this
+  ## component was busy running another session's program — the request was
+  ## queued behind that run, so the work must be skipped, not started. The
+  ## matched entry is consumed: a later, genuinely new turn of the same
+  ## session must not be skipped by the stale notice.
+  cancelledSessions.keepItIf(epochTime() - it.at <= cancelFreshSeconds)
+  for i in 0 ..< cancelledSessions.len:
+    if cancelledSessions[i].sessionId == sessionId:
+      cancelledSessions.delete(i)
+      return true
+  false
+
 proc writeLineTo(p: Process, line: string) =
   p.inputStream.write(line & "\n")
   p.inputStream.flush()
@@ -181,6 +239,17 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       selected[entry{"name"}.getStr("")] = entry
   var logEvents = 0
   var logBytes = 0
+  type CancelledRun = object of CatchableError
+    ## Raised from a wait loop when a stop for this run's session lands —
+    ## the guest is terminated and the run reports a cancelled outcome,
+    ## distinct from success and from genuine failure/timeout.
+
+  proc checkCancel() =
+    ## Poll the cancel side-channel: end the run promptly when the session
+    ## that launched it was stopped (the runner stops waiting for the tool
+    ## result and publishes cancel.<component>, see core/dispatch.nim).
+    if drainCancels(sessionId):
+      raise newException(CancelledRun, "cancelled by request")
   const maxBatchInflight = 4
     ## Explicit concurrency cap (bounded concurrent batch): at most this many
     ## nested calls are on the bus at once; the rest queue in launch
@@ -363,6 +432,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## bytes arriving, and selector-gated draining would starve them until
     ## an unrelated reply happened to wake the pump.
     while resultJ == nil:
+      checkCancel()
       let buffered = reader.takeFrame()
       if buffered.available:
         if handleFrame(parseJson(buffered.line)): break
@@ -374,6 +444,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     ## as they land and topping up slots from the queue (bounded
     ## concurrency). Returns when every slot is free or the deadline hits.
     while inFlight.len > 0 and resultJ == nil:
+      checkCancel()
       drainPipeFrames()
       if resultJ != nil: break
       var progressed = false
@@ -422,6 +493,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     p.inputStream.write($context & "\n")
     p.inputStream.flush()
     while resultJ == nil:
+      checkCancel()
       drainPipeFrames()
       if resultJ != nil: break
       if inFlight.len > 0:
@@ -431,6 +503,22 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         if handleFrame(parseJson(
             reader.readFrame(p.outputHandle.cint, deadline, sel))):
           break
+  except CancelledRun:
+    # Session-turn cancellation: terminate the guest promptly, abandon the
+    # bridge (in-flight inbox subscriptions destroyed; queued calls are
+    # never dispatched — a stopped run dispatches nothing further), and
+    # report the cancelled outcome. The defer's stopChild already reaps
+    # the child on the way out; the explicit call keeps the window minimal.
+    stopChild()
+    for pending in inFlight:
+      comp.emit("ev.fabric.call.done", %*{"runId": runId,
+                "sessionId": sessionId, "seq": pending.id,
+                "ok": false, "tool": pending.tool, "at": epochTime(),
+                "durationMs": ((epochTime() - pending.launchedAt) *
+                    1000.0).int, "error": "cancelled by request"})
+    finishPending()
+    return %*{"error": "fabric program cancelled by request",
+              "cancelled": true, "calls": calls}
   except CatchableError as e:
     finishPending()
     if resultJ == nil:
@@ -541,6 +629,12 @@ discard comp.tool("fabric", fabSchema,
     let lease = toolArgs{"__session"}{"lease"}.getStr("")
     if sess.len == 0 or lease.len == 0:
       return %*{"error": "fabric needs a live session context"}
+    if wasCancelled(sess):
+      # A stop for this session landed while its request was queued behind
+      # another fabric run: the launching turn is gone, so the program must
+      # never run (same queued-request semantics as bash's wasCancelled).
+      return %*{"error": "fabric program cancelled by request",
+                "cancelled": true}
     var code = toolArgs{"code"}.getStr("")
     let name = toolArgs{"name"}.getStr("")
     if code.len > 0 and name.len > 0:
@@ -660,7 +754,11 @@ discard comp.tool("fabric", fabSchema,
       comp.emit("ev.fabric.done", ev)
     if r{"error"} != nil:
       let msg = r{"error"}.getStr("")
-      emitDone(if msg.contains("timed out"): "timeout" else: "failed",
+      let status =
+        if r{"cancelled"}.getBool(false): "cancelled"
+        elif msg.contains("timed out"): "timeout"
+        else: "failed"
+      emitDone(status,
                %*{"error": msg[0 ..< min(msg.len, 200)]})
       return r
     if r{"ok"}.getBool(false):

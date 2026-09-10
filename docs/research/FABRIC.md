@@ -272,6 +272,10 @@ aggregate), `hybrid.nim` (fabric calling agent).
 - `tests/t_fabric.nim` — compile-error round-trip, real programs driving bus
   tools, typed wrapper generation, catalog replacement, malformed arguments,
   budget/deadline behavior, and private artifacts.
+- `tests/t_fabric_cancel.nim` — mid-run cancellation of a fabric program:
+  stopping the session turn ends the guest well before its deadline with a
+  cancelled outcome, a queued run is untouched by another run's cancel, and
+  a guest blocked inside a nested bash call is torn down without orphans.
 
 ## Not shipped (deliberately later)
 
@@ -280,7 +284,9 @@ aggregate), `hybrid.nim` (fabric calling agent).
   cancellation stops the WAIT (a cancelled turn ends promptly) but the
   component's work still runs to its own timeout — NATS request/reply has
   no cancel semantics. (bash opted in: its command tree dies with the
-  cancel.)
+  cancel; fabric terminates the fabric-exec guest of the stopped session
+  and agent cancels the in-flight agent_run child — see WIRE.md
+  "Cancellation".)
 - Structured-output schemas for subagent replies, canonical working
   directories, and isolated git worktrees for spawned children
   (session-surface design).

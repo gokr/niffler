@@ -22,27 +22,21 @@ The fabric/agent architecture is complete and tested
 These are the consciously deferred deltas, none of which block the shipped
 mechanism:
 
-1. **Fabric mid-run cancellation.** `agent_stop` already cancels child turns
-   for real (llm.cancel + a `__cancel` steer; bash kills its whole process
-   group). A *fabric program* itself still cannot be cancelled mid-run:
-   NATS request/reply has no cancel semantics, so kill-on-timeout remains
-   the only stop — a stopped turn abandons the result but the guest runs out
-   its deadline. Revisit with durable workers.
-2. **Durable-agent hardening.** Per-job time budgets, lazy restart recovery,
+1. **Durable-agent hardening.** Per-job time budgets, lazy restart recovery,
    reasoning-effort selection, per-session tool allowlists, and per-turn
    round/call/token budgets have shipped. Still open: structured-output
    schemas, canonical working directories, and optional isolated git
    worktrees for subagents — all need deeper core session-surface design.
-3. **Resource-scoped batch effects.** `x-harness.effect: "read"` tools run
+2. **Resource-scoped batch effects.** `x-harness.effect: "read"` tools run
    concurrently in `batch(...)` (and may overlap one write); writes are
    mutually exclusive **globally**. Relaxing global write exclusion needs
    resource-scoped effect declarations — bash is a universal writer, so
    component identity does not imply resource disjointness.
-4. **Durable trace retention.** `ev.fabric.*`/`ev.agent.*` lifecycle events
+3. **Durable trace retention.** `ev.fabric.*`/`ev.agent.*` lifecycle events
    and child logs are diagnostic only (age/size-capped, swept at boot and per
    run). Durable retention/cleanup for traces and events would need
    store-backed records — today's logs are not an audit trail.
-5. **Sandboxing.** A separate milestone if and when *untrusted* guests are
+4. **Sandboxing.** A separate milestone if and when *untrusted* guests are
    required (restricted VM, WASM, or OS isolation). Today the guest is
    trusted code in `bash`'s trust class; approval plus source lint is the
    boundary, not a technical impossibility of reaching past the bridge.
