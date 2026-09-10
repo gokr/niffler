@@ -3,8 +3,11 @@
 Status: phases 2-6 implemented on feature/fabric-compiled-nim.
   - 2 native executor  3 executable cache  4 structured SDK + diagnostics
     5 fabric_help discovery  6 reference/examples rewrite (+ examples migrated
-    to the structured finish). Remaining: 7 stored-program migration/native-only
-    cutover, 8 calibration. See git log for the incremental commits.
+    to the structured finish)  7 native-only cutover (VM, compiler-source
+    requirement and the VM-era nimble removed; toolchain check/README/MANUAL
+    updated). Phase 8: deterministic tests done (native contract test incl.
+    process-group reaping, cache, non-terminating programs); t30 verifier
+    hardened. Bench calibration not run — it needs an explicit go-ahead.
 Worktree: `/home/gokr/git/niffler-fabric-compiled`.
 Baseline: `be8d880`.
 
