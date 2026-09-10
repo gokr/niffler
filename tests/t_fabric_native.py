@@ -156,6 +156,54 @@ finish(jobj(jpair("input", jesc(stringArg("name"))),
         assert len(list(cache_path.iterdir())) == 2
         print("OK: cache key distinguishes distinct programs")
 
+    # ---- process-group reaping: a hung guest and its children die on kill ----
+    with tempfile.TemporaryDirectory(prefix="fabric-hang-") as work:
+        pidfile = Path(work) / "child.pid"
+        # the guest spawns a child that outlives it, records the pid, then hangs
+        code = f'''import fabricguest, std/osproc, std/os, std/strutils
+let p = startProcess("/bin/sleep", args = ["600"])
+writeFile("{pidfile}", $p.processID)
+while true: sleep(1000)
+'''
+        ctx = {"code": code, "buildDir": work, "strings": {}}
+        env = {"PATH": os.environ["PATH"], "HOME": work, "TMPDIR": work}
+        p = subprocess.Popen([str(ROOT / "var/bin/fabric-exec")],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, cwd=work, env=env)
+        p.stdin.write((json.dumps(ctx) + "\n").encode()); p.stdin.flush()
+        # wait until the child records its pid (compile + spawn)
+        for _ in range(60):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.2)
+        assert pidfile.exists(), "guest never spawned its child"
+        child_pid = int(pidfile.read_text().strip())
+        # the executor is its own process group leader (setsid); kill the group
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait(timeout=5)
+        time.sleep(0.3)
+        alive = os.path.exists(f"/proc/{child_pid}")
+        if not alive:  # non-procfs fallback
+            try:
+                os.kill(child_pid, 0); alive = True
+            except ProcessLookupError:
+                alive = False
+        if alive:
+            os.kill(child_pid, signal.SIGKILL)
+        assert not alive, f"orphaned descendant {child_pid} survived the group kill"
+        print("OK: process-group kill reaps the guest and its descendants")
+
+    # ---- compile timeout: a non-terminating compile-time loop is bounded ----
+    hang = 'import fabricguest\nstatic:\n  while true: discard\nfinish(%*{})\n'
+    result, frames = run(hang, compile_ms_budget=40)
+    # The executor must not return success for a program that never ran. Either
+    # the compile is killed (deadline) or the compiler itself aborts it.
+    assert not result.get("ok"), result
+    print("OK: non-terminating program never reports success")
+
     print("fabric native PASSED")
 
 
