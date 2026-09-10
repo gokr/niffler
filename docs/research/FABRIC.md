@@ -127,7 +127,7 @@ into a synchronous surface and durable background jobs:
   `{reply, sessionId}`. The child session call is a plain request/reply whose
   result carries the final reply. `thinking` sets the child's reasoning
   effort, `tools` freezes a tool allowlist for the child conversation,
-  `maxRounds` caps tool rounds per child turn (1-20), and `maxCalls`/
+  `maxRounds` caps tool rounds per child turn (1-50), and `maxCalls`/
   `maxTokens` are per-job budgets: total tool dispatches (every attempt
   counts, success or error) and cumulative provider-reported tokens across
   the child's LLM rounds. Budget exhaustion ends the child turn as a
