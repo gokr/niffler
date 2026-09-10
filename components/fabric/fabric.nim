@@ -12,6 +12,7 @@
 
 import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
             strtabs, strutils, tables, tempfiles, times]
+import std/sequtils
 import natswrapper
 import niffler/sdk
 import framing
@@ -521,9 +522,43 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — read components/fabric/docs/REFERENCE.md before writing a program; worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — call fabric_help (empty topic) for the reference and the example index before writing a program; an example topic returns its source. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. The program is human-approved as a whole (bash's trust class); approved native code can import any std module.")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
+
+const helpDir = currentSourcePath().parentDir()
+proc exampleIndex(): string =
+  var all: seq[string] = @[]
+  try:
+    for kind, path in walkDir(helpDir / "examples"):
+      if kind == pcFile and path.endsWith(".nim"):
+        all.add(path.extractFilename().splitFile.name)
+  except CatchableError: discard
+  all.sort()
+  all.mapIt("\n- `" & it & "`").join()
+
+proc fabricHelpContent(topic: string): string =
+  ## Component-local help, readable without guessing the harness root.
+  ## `topic` is empty (overview + reference) or one of the example names.
+  if topic.len == 0:
+    let refPath = helpDir / "docs" / "REFERENCE.md"
+    if fileExists(refPath):
+      return readFile(refPath) & "\n\n# Worked examples\n" & exampleIndex()
+    return "fabric: no REFERENCE.md bundled with this build"
+  let fx = helpDir / "examples" / (topic & ".nim")
+  if not fileExists(fx):
+    return "unknown example '" & topic & "' — try 'all'"
+  readFile(fx)
+
+let helpSchema = toolSchema(%*{
+  "topic": {"type": "string", "description": "One example name (e.g. fanout), or empty for the reference plus the example index"}},
+  required = @[],
+  description = "Read the Fabric guest reference and worked examples without locating component files. Empty topic returns the full reference plus the index; a topic returns that example's source. Read this before writing a fabric program.")
+helpSchema["x-harness"] = %*{"onDemand": true}
+discard comp.tool("fabric_help", helpSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let topic = toolArgs{"topic"}.getStr("")
+    return %*{"content": fabricHelpContent(topic)})
 discard comp.tool("fabric", fabSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let sess = toolArgs{"__session"}{"session"}.getStr("")

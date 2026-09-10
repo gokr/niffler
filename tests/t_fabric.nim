@@ -128,6 +128,18 @@ proc main() =
       if fabProc.running(): fabProc.kill()
     fabProc.close()
   check("fabric registered", waitComponent(nc, "fabric"))
+
+  # fabric_help is an on-demand tool readable without locating component files;
+  # it needs no session context, so it is directly callable over the bus.
+  let help = call(nc, "fabric", "fabric_help", %*{}, 10_000)
+  check("fabric_help returns the reference",
+        help{"content"}.getStr("").contains("import fabricguest") and
+        help{"content"}.getStr("").contains("## Guest API"), $help)
+  let helpTopic = call(nc, "fabric", "fabric_help", %*{"topic": "fanout"}, 10_000)
+  check("fabric_help returns one example source",
+        helpTopic{"content"}.getStr("").contains("Example 2 — fan-out") and
+        not helpTopic{"content"}.getStr("").contains("## Guest API"), $helpTopic)
+
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
                                  logFile = root / "var" / "test-logs" / "agent-fab.log")
   defer:
