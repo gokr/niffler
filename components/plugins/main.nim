@@ -13,6 +13,8 @@
 ## agent uses for its own components — the harness already ships Nim/Go and
 ## builds its own extensions). Service components are core.spawned;
 ## interactive components are built for the user to start in a terminal.
+## Go clones get an untracked go.work redirecting the SDK replace to this
+## harness, so a manual `make` in var/plugins/<pkg>@<ref>/ builds too.
 ## Installed packages are
 ## recorded in the store (kind "plugin") so plugin_update and plugin_remove
 ## know their shape. var/ is disposable runtime state; the store record is
@@ -247,6 +249,56 @@ proc installComp(mc: ManifestComp, dest, binDir: string): JsonNode =
     result = %*{"name": mc.name, "spawned": false,
                 "error": "build failed: " & e.msg}
 
+proc writeGoWork(dest: string, mf: Manifest) =
+  ## Untracked go.work in a clone that redirects the repo's sibling-checkout
+  ## SDK replace (`replace niffler.dev/sdk => ../niffler/sdk/go`) to this
+  ## harness's sdk/go, so a manual `make` in the plugin directory builds
+  ## out of the box. go.mod itself is left untouched — a dirty tracked file
+  ## would break the next `git pull --ff-only` in plugin_update. Repos with
+  ## their own committed go.work are left alone.
+  let work = dest / "go.work"
+  if fileExists(work): return
+  var modDirs: seq[string]
+  for path in walkDirRec(dest):
+    if "/.git/" in path: continue
+    if path.endsWith("/go.mod"):
+      modDirs.add(path.parentDir())
+  if modDirs.len == 0: return  # no Go modules — nothing to redirect
+  # Use-list = the modules this package's manifest actually builds, so a
+  # broken/unrelated nested module cannot poison workspace builds. Fall
+  # back to the root module when no Go source matches.
+  var use: seq[string]
+  for d in modDirs:
+    for mc in mf.comps:
+      if mc.lang != "go": continue
+      var inModule = false
+      for src in mc.sources & @[mc.main]:
+        let p = dest / src
+        if p == d or p.startsWith(d & "/"): inModule = true
+      if inModule:
+        use.add(d)
+        break
+  if use.len == 0 and (dest / "go.mod") in modDirs:
+    use.add(dest)
+  if use.len == 0: return
+  # Mirror the module's own go directive (patch versions included) so the
+  # workspace never out-requires the installed toolchain.
+  var goLine = ""
+  for d in use:
+    for line in lines(d / "go.mod"):
+      let l = line.strip()
+      if l.startsWith("go "):
+        goLine = l
+        break
+    if goLine.len > 0: break
+  if goLine.len == 0: goLine = "go 1.24"
+  var content = goLine & "\n\n"
+  for d in use:
+    let rel = relativePath(d, dest).replace('\\', '/')
+    content.add("use " & (if rel == ".": "." else: "./" & rel) & "\n")
+  content.add("\nreplace niffler.dev/sdk => \"" & root() / "sdk" / "go" & "\"\n")
+  writeFile(work, content)
+
 proc doInstall(repo, refArg: string): JsonNode =
   ## Resolve ref (latest release tag, else default branch — skipped for
   ## local file:// repos, which clone HEAD), clone, then build each
@@ -292,6 +344,7 @@ proc doInstall(repo, refArg: string): JsonNode =
     return errResult("git clone failed", extra = %*{"output": tailBytes(cout, 800)})
 
   let mf = readManifest(dest)
+  writeGoWork(dest, mf)
   let binDir = root() / "var" / "bin"
   var components = newJArray()
   var installed = 0
@@ -354,6 +407,10 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   let (h2code, h2out) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
   let after = if h2code == 0: h2out.strip() else: before
   if after == before:
+    try:
+      writeGoWork(dest, readManifest(dest))
+    except CatchableError:
+      discard
     return okResult(%*{"updated": false, "ref": branch, "commit": after})
 
   let removed = removeComps(rec)
@@ -364,6 +421,7 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
     dropRecord(pkg)
     return errResult("manifest invalid after pull; package removed: " & e.msg,
                      extra = %*{"removed": removed, "from": before, "to": after})
+  writeGoWork(dest, mf)
 
   let binDir = root() / "var" / "bin"
   var components = newJArray()
@@ -542,10 +600,18 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
       return errResult("package not installed: " & package &
                        " — see plugin_installed")
     let repo = rec{"repo"}.getStr("")
-    let latest = resolveTag(repo)
+    # Local file:// repos have no GitHub releases; skip the API round-trip
+    # (offline it would hang resolveTag's client for its full timeout).
+    let latest = if repo.startsWith("file://"): "" else: resolveTag(repo)
     if latest.len == 0:
       return doUpdateBranch(package, rec)
     if latest == rec{"ref"}.getStr(""):
+      let dir = rec{"dir"}.getStr("")
+      if dir.len > 0 and dirExists(dir):
+        try:
+          writeGoWork(dir, readManifest(dir))
+        except CatchableError:
+          discard
       return okResult(%*{"updated": false, "ref": latest})
     let removed = removeComps(rec)
     if dirExists(rec{"dir"}.getStr("")):

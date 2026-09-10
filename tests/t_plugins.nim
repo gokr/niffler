@@ -4,8 +4,12 @@
 ## from a LOCAL git repo (file:// support) — no network needed. Covers
 ## the whole pipeline: clone → manifest → builder.build → core.spawn →
 ## registration → tool callable; interactive-only packages build without
-## spawning; duplicate-install rejection; plugin_remove teardown. Cleanup
-## leaves no records behind.
+## spawning; duplicate-install rejection; plugin_remove teardown. A Go
+## package whose go.mod replace assumes a sibling checkout gets an
+## untracked go.work at install so a manual `make` in the clone builds;
+## plugin_update on a branch-tracked package (no release tags) pulls in
+## place and rebuilds only when HEAD moved. Cleanup leaves no records
+## behind.
 ##
 ## With NIF_TEST_NETWORK=1 the test additionally runs plugin_search
 ## against the real GitHub topic search.
@@ -201,6 +205,101 @@ proc main() =
   check("interactive install persisted",
         ilist.output.contains("testinteractive") and
         ilist.output.contains("\"interactive\":true"), ilist.output)
+
+  # --- branch-tracked Go package: manual make + update without releases ---
+  # go.mod's replace assumes a sibling checkout (like gokr/niffler-tui),
+  # so a bare `make` in the clone would fail. Install must write an
+  # untracked go.work that redirects the SDK to the harness root; then
+  # plugin_update (no release tags) pulls the branch in place and rebuilds.
+  let upRepo = pkgDir / "uprepo"
+  createDir(upRepo / "itup")
+  writeFile(upRepo / "niffler.json", """{
+    "name": "updatepkg",
+    "version": "1.0.0",
+    "components": [
+      {"name": "itup", "lang": "go", "main": "itup/main.go",
+       "sources": ["itup/version.go"], "interactive": true}
+    ]
+  }
+  """)
+  writeFile(upRepo / "go.mod", """
+    module itup
+
+    go 1.24
+
+    require niffler.dev/sdk v0.0.0
+
+    replace niffler.dev/sdk => ../niffler/sdk/go
+    """.dedent())
+  writeFile(upRepo / "Makefile",
+    "BIN := bin/itup\n\nbuild:\n\tmkdir -p bin\n\tgo build -o $(BIN) ./itup\n")
+  writeFile(upRepo / "itup" / "main.go", """
+    package main
+    import sdk "niffler.dev/sdk"
+    func main() {
+      comp := sdk.New("itup", componentVersion())
+      if err := comp.Run(); err != nil { panic(err) }
+    }
+    """.dedent())
+  writeFile(upRepo / "itup" / "version.go", """
+    package main
+    func componentVersion() string { return "1.0.0" }
+    """.dedent())
+  commitRepo(upRepo)
+
+  let upInstall = runCli(cliBin, url,
+                         @["install", "file://" & upRepo & "@main"], 300_000,
+                         root = root)
+  check("branch-pinned plugin install ok", upInstall.code == 0 and
+        upInstall.output.contains("INSTALL OK"), upInstall.output)
+
+  let upClone = root / "var" / "plugins" / "uprepo@main"
+  let work = upClone / "go.work"
+  check("go.work written for manual builds", fileExists(work), $upClone)
+  let workContent = if fileExists(work): readFile(work) else: ""
+  check("go.work redirects SDK to harness root",
+        workContent.contains("replace niffler.dev/sdk => \"" &
+                             root & "/sdk/go\""), workContent)
+
+  let manualMake = execCmdEx("make", options = {poUsePath}, workingDir = upClone)
+  check("manual make in plugin clone builds",
+        manualMake.exitCode == 0 and fileExists(upClone / "bin" / "itup"),
+        manualMake.output)
+
+  # a second commit: plugin_update must pull it in place and rebuild
+  writeFile(upRepo / "niffler.json", readFile(upRepo / "niffler.json")
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"2.0.0\""))
+  writeFile(upRepo / "itup" / "version.go",
+    "package main\nfunc componentVersion() string { return \"2.0.0\" }\n")
+  let gc2 = startProcess("bash", args = ["-c",
+      "cd " & quoteShell(upRepo) & " && git add -A && git commit -qm v2"],
+      options = {poUsePath})
+  discard gc2.waitForExit()
+  gc2.close()
+
+  let upUpdate = runCli(cliBin, url,
+                        @["call", "plugin_update", """{"package":"updatepkg"}"""],
+                        600_000, root = root)
+  check("branch plugin_update pulls and rebuilds", upUpdate.code == 0 and
+        upUpdate.output.contains("\"updated\":true"), upUpdate.output)
+  let upList = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 60_000,
+                      root = root)
+  check("updated record carries the new version",
+        upList.output.contains("\"version\":\"2.0.0\""), upList.output)
+  let upNoop = runCli(cliBin, url,
+                      @["call", "plugin_update", """{"package":"updatepkg"}"""],
+                      600_000, root = root)
+  check("second update is a no-op", upNoop.code == 0 and
+        upNoop.output.contains("\"updated\":false"), upNoop.output)
+  let upRem = runCli(cliBin, url,
+                     @["call", "plugin_remove", """{"package":"updatepkg"}"""],
+                     120_000, root = root)
+  check("updatepkg removed", upRem.code == 0 and
+        upRem.output.contains("\"ok\":true"), upRem.output)
+  let upGone = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 30_000,
+                      root = root)
+  check("updatepkg record gone",
+        not upGone.output.contains("updatepkg"), upGone.output)
 
   # network-gated: real GitHub discovery
   if getEnv("NIF_TEST_NETWORK") == "1":
