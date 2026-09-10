@@ -7,6 +7,13 @@ history lives in [research/](research/README.md).
 
 ## In progress
 
+- **DSH steals** (`feat/dsh-steals`) —
+  [research/DSH-STEALS-PLAN.md](research/DSH-STEALS-PLAN.md): the three
+  selected steals from the DeepSeek-harness study, phased. A context layer
+  (a generic post-execute spill at the tool-result seam + a durable,
+  cache-aware compaction transaction to replace `reset:trim`), B continuable
+  subagents + forked children, C `fabric {api: true}` declarations on demand
+  (gated on the compiled-Nim fabric merge).
 - **Code hygiene + store v2** (`feat/code-hygiene`) —
   [research/STORE_V2.md](research/STORE_V2.md): SDK storeclient/config/http
   helpers + duplication cleanup; three interchangeable store engines behind
