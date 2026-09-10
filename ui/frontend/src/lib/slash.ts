@@ -4,8 +4,18 @@
 // (docs/WIRE.md): core validates the spec, checkpoints the merged table to
 // the store (kind "slash", id "slash") and announces ev.catalog.updated on
 // every change. Built-ins shadow same-named registrations.
+//
+// This module has no runtime dependencies — the bus is injected as a SendFn —
+// so the registry, its completion and its usage rendering are unit-testable on
+// plain node (tests/slash.test.mjs).
 
-import { send } from "../nats";
+/** Bus request, injected by the caller (see nats.ts `send`). */
+export type SendFn = (
+  component: string,
+  tool: string,
+  args?: Record<string, unknown>,
+  timeoutMs?: number,
+) => Promise<any>;
 
 export interface SlashSource {
   tool: string;
@@ -24,6 +34,13 @@ export interface SlashParam {
   values?: string[];
 }
 
+export interface SlashSubcommand {
+  /** Subcommand as typed, e.g. "strip" in `/provider strip off`. */
+  name: string;
+  /** Accepted synonyms, e.g. "env" for environment and "s" for search. */
+  aliases?: string[];
+}
+
 export interface SlashCommand {
   name: string;
   description?: string;
@@ -32,8 +49,13 @@ export interface SlashCommand {
   tool?: string;
   params?: SlashParam[];
   builtin?: boolean;
-  /** Built-in alias of another command — excluded from /help listings. */
-  alias?: boolean;
+  /** Built-in synonym of another built-in: accepted (and completed) like its
+   * canonical command, but never listed in /help. */
+  aliasOf?: string;
+  /** Declared second-level commands. Dispatch, validation and completion all
+   * read this table, so the accepted set cannot drift from the documented
+   * one — the drift that hid `/provider strip` behind a string comparison. */
+  subcommands?: SlashSubcommand[];
 }
 
 export function builtinSlashCommands(): SlashCommand[] {
@@ -49,29 +71,33 @@ export function builtinSlashCommands(): SlashCommand[] {
   };
   return [
     { name: 'components', description: 'running components and conversation tool exposure', builtin: true, params: [{ name: 'filter', kind: 'enum', values: ['all', 'direct', 'discovered', 'undiscovered'] }] },
-    { name: 'discover', description: 'append component schemas to this conversation (tool=NAME for one tool)', builtin: true, params: [{ name: 'component', kind: 'string' }] },
+    { name: 'discover', description: 'append component schemas to this conversation (tool=NAME for one tool)', builtin: true, params: [{ name: 'target', kind: 'string', description: 'component name, or tool=NAME' }] },
     { name: 'profile', description: 'select tool profile for new conversations; default clears', builtin: true, params: [{ name: 'name', kind: 'string' }] },
     {
       name: "provider",
       description: "choose the global provider",
       builtin: true,
+      subcommands: [
+        { name: "environment", aliases: ["env"] },
+        { name: "strip" },
+      ],
       params: [
         {
           name: "nickname",
           kind: "string",
-          description: "provider nickname, 'environment' or 'strip [on|off]'",
+          description: "provider nickname, or a declared subcommand",
           source: providerSrc,
         },
       ],
     },
-    { name: "providers", description: "choose the global provider", builtin: true, alias: true, params: [{ name: "nickname", kind: "string", source: providerSrc }] },
+    { name: "providers", description: "choose the global provider", builtin: true, aliasOf: "provider", params: [{ name: "nickname", kind: "string", source: providerSrc }] },
     {
       name: "model",
       description: "choose this conversation's model",
       builtin: true,
       params: [{ name: "id", kind: "string", description: "model id or 'default'" }],
     },
-    { name: "models", description: "choose this conversation's model", builtin: true, alias: true, params: [{ name: "id", kind: "string" }] },
+    { name: "models", description: "choose this conversation's model", builtin: true, aliasOf: "model", params: [{ name: "id", kind: "string" }] },
     {
       name: "effort",
       description: "thinking effort for this conversation",
@@ -81,14 +107,14 @@ export function builtinSlashCommands(): SlashCommand[] {
     { name: "connect", description: "open provider setup", builtin: true },
     { name: "status", description: "show provider/model/context details", builtin: true },
     { name: "new", description: "start a new conversation", builtin: true, params: [{ name: "id", kind: "string", description: "optional conversation id" }] },
-    { name: "newsession", description: "start a new conversation", builtin: true, alias: true, params: [{ name: "id", kind: "string" }] },
+    { name: "newsession", description: "start a new conversation", builtin: true, aliasOf: "new", params: [{ name: "id", kind: "string" }] },
     {
       name: "session",
       description: "switch conversation",
       builtin: true,
       params: [{ name: "id", kind: "string", description: "conversation id", source: sessionSrc }],
     },
-    { name: "sessions", description: "switch conversation", builtin: true, alias: true, params: [{ name: "id", kind: "string", source: sessionSrc }] },
+    { name: "sessions", description: "switch conversation", builtin: true, aliasOf: "session", params: [{ name: "id", kind: "string", source: sessionSrc }] },
     { name: "think", description: "reasoning display: full, brief or off", builtin: true, params: [{ name: "level", kind: "enum", values: ["full", "brief", "off"] }] },
     { name: "tools", description: "tool card display: brief, full or off", builtin: true, params: [{ name: "level", kind: "enum", values: ["brief", "full", "off"] }] },
     { name: "locale", description: "switch the UI language", builtin: true, params: [{ name: "lang", kind: "enum", values: ["en", "zh", "zh-TW"] }] },
@@ -99,8 +125,54 @@ export function builtinSlashCommands(): SlashCommand[] {
       params: [{ name: "id", kind: "string", description: "optional conversation id", source: sessionSrc }],
     },
     { name: "help", description: "show this help", builtin: true },
-    { name: "?", description: "show this help", builtin: true, alias: true },
+    { name: "?", description: "show this help", builtin: true, aliasOf: "help" },
   ];
+}
+
+// ---- subcommands -------------------------------------------------------------
+
+/** Resolve a subcommand by name or one of its declared aliases. */
+export function subcommandOf(cmd: SlashCommand, token: string): SlashSubcommand | undefined {
+  return (cmd.subcommands ?? []).find((s) => s.name === token || (s.aliases ?? []).includes(token));
+}
+
+/** Declared subcommand names, for /help and usage lines (aliases excluded). */
+export function subcommandNames(cmd: SlashCommand): string[] {
+  return (cmd.subcommands ?? []).map((s) => s.name);
+}
+
+/** Every completion token a subcommand answers to: names plus aliases. */
+export function subcommandTokens(cmd: SlashCommand): string[] {
+  return (cmd.subcommands ?? []).flatMap((s) => [s.name, ...(s.aliases ?? [])]);
+}
+
+/** The canonical (non-alias) built-in for a name: alias entries point at the
+ * command that owns the behavior, so an alias can never name a handler its
+ * target does not have. */
+export function canonicalCommand(name: string): SlashCommand | undefined {
+  const all = builtinSlashCommands();
+  const direct = all.find((c) => c.name === name);
+  if (!direct) return undefined;
+  return direct.aliasOf ? all.find((c) => c.name === direct.aliasOf) ?? direct : direct;
+}
+
+/** Renders a command's declared arguments as a usage suffix, for /help:
+ * /effort [auto|low|medium|high], /provider [nickname|environment|strip].
+ * Declared subcommands join the first positional, since they share its slot. */
+export function commandUsage(cmd: SlashCommand): string {
+  const parts: string[] = [];
+  const subs = subcommandNames(cmd);
+  for (const p of cmd.params ?? []) {
+    if (p.kind === "bool") continue;
+    if (p.kind === "enum" && p.values?.length) {
+      parts.push("[" + [...p.values, ...subs].join("|") + "]");
+    } else if (subs.length > 0 && parts.length === 0) {
+      parts.push("[" + [p.name, ...subs].join("|") + "]");
+    } else {
+      parts.push("[" + p.name + "]");
+    }
+  }
+  return parts.length > 0 ? " " + parts.join(" ") : "";
 }
 
 /** Merge plugin commands under the built-ins (built-ins win on name
@@ -119,7 +191,7 @@ export function mergeSlashCommands(pluginCmds: SlashCommand[]): SlashCommand[] {
 /** Load the merged slash registry store-first (kind "slash", id "slash"),
  * falling back to the live catalog snapshot when the checkpoint is missing
  * (older core). Plugin commands only; mergeSlashCommands adds built-ins. */
-export async function loadPluginSlashCommands(): Promise<SlashCommand[]> {
+export async function loadPluginSlashCommands(send: SendFn): Promise<SlashCommand[]> {
   try {
     const r = await send("store", "get", { kind: "slash", id: "slash" });
     if (r?.ok && Array.isArray(r.value?.commands)) {
@@ -267,12 +339,17 @@ export function slashCompletion(value: string, commands: SlashCommand[]): Comple
   const prefix = value.slice(0, value.length - token.length);
   if (token === "" && trailingSpace) positional++;
 
-  // The n-th (1-based) non-bool param decides the candidates.
+  // The n-th (1-based) non-bool param decides the candidates. A command with
+  // declared subcommands offers them alongside the param's own candidates, so
+  // `/provider ` completes both `environment`/`strip` and the nicknames the
+  // source tool returns.
   for (const p of cmd.params ?? []) {
     if (p.kind === "bool") continue;
     if (positional === 1) {
-      if (p.source) return { prefix, token, source: p.source };
+      const subs = subcommandTokens(cmd);
+      if (p.source) return { prefix, token, source: p.source, values: subs.length > 0 ? subs : undefined };
       if (p.values && p.values.length > 0) return { prefix, token, values: p.values };
+      if (subs.length > 0) return { prefix, token, values: subs };
       return null;
     }
     positional--;
@@ -315,7 +392,7 @@ export function extractCompletionValues(raw: unknown, field?: string): string[] 
 
 /** Fetch a completion source's values through core.invoke (so no client-side
  * tool index is needed) and extract the candidate strings. */
-export async function fetchCompletionValues(source: SlashSource): Promise<string[]> {
+export async function fetchCompletionValues(source: SlashSource, send: SendFn): Promise<string[]> {
   const raw = await send("core", "invoke", {
     tool: source.tool,
     arguments: source.args ?? {},

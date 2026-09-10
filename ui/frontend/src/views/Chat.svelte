@@ -1,27 +1,26 @@
 <script lang="ts">
   import { currentProfile, selectProfile, componentsText } from '../lib/toolProfiles';
-  import { slashUserMessage } from "../lib/slashResult";
   import { onMount, tick } from "svelte";
   import { send, on, emit } from "../nats";
   import { renderMarkdown } from "$lib/markdown";
   import ToolRun from "./ToolRun.svelte";
   import Thinking from "../components/Thinking.svelte";
-  import { t } from "$lib/i18n.svelte";
+  import { t, type DictKey } from "$lib/i18n.svelte";
   import { thinkLevel, toolLevel, setThinkLevel, setToolLevel, type ThinkLevel, type ToolLevel } from "../lib/prefs.svelte";
   import {
     mergeSlashCommands,
     loadPluginSlashCommands,
     builtinSlashCommands,
-    parseSlashArgs,
     slashCompletion,
+    commandUsage,
     fetchCompletionValues,
-    formatSlashResult,
     suggestSlash,
     type SlashCommand,
     type CompletionState,
   } from "../lib/slash";
+  import { isBuiltinCommand, runBuiltinCommand, runPluginCommand, type SlashContext } from "../lib/slashDispatch";
   import { effortLabel, nextEffort, isValidEffort, saveThinkingEffort, type EffortLevel } from "../lib/effort";
-  import { setLocale, locale, slashDescription } from "../lib/i18n.svelte";
+  import { setLocale, locale, slashDescription, type Locale } from "../lib/i18n.svelte";
 
   interface Usage {
     prompt_tokens?: number;
@@ -106,13 +105,13 @@
   let complete = $state<(CompletionState & { candidates?: string[]; index?: number; loading?: boolean }) | null>(null);
 
   onMount(() => {
-    loadPluginSlashCommands().then((cmds) => {
+    loadPluginSlashCommands(send).then((cmds) => {
       slashCmds = mergeSlashCommands(cmds);
     });
     const off = on("ev.catalog.updated", () => {
       // Components registered or departed: the slash registry changed.
       // Core checkpoints the merged table to the store before announcing.
-      loadPluginSlashCommands().then((cmds) => {
+      loadPluginSlashCommands(send).then((cmds) => {
         slashCmds = mergeSlashCommands(cmds);
       });
     });
@@ -133,8 +132,11 @@
       complete = { ...c, loading: true };
       const myToken = ++completeToken;
       try {
-        const values = await fetchCompletionValues(c.source);
+        const fetched = await fetchCompletionValues(c.source, send);
         if (myToken !== completeToken || !complete?.loading) return; // stale
+        // Declared candidates (a command's subcommands) first, then the source
+        // tool's values: /provider completes environment/strip and nicknames.
+        const values = [...new Set([...(c.values ?? []), ...fetched])];
         const filtered = values.filter((v) => v.startsWith(c.token));
         if (filtered.length === 0) {
           complete = null;
@@ -218,149 +220,49 @@
       return true;
     }
 
-    switch (name) {
-      case 'components':
-      case 'profile':
-      case 'discover': {
-        try {
-          if (name === 'components') addMeta(l, await componentsText(sessionId, arg || 'all'));
-          else if (name === 'profile') {
-            if (arg) await selectProfile(arg);
-            const listing = await send('core', 'profile', { op: 'list' });
-            addMeta(l, `Profile for new chats: ${currentProfile() || 'default'}\n` + (listing.profiles ?? []).map((p: any) => `${p.name}: ${p.toolCount} tools, ~${p.estTokens} tokens`).join('\n'));
-          } else {
-            if (l.busy) throw new Error('Wait for the current turn to finish before explicit discovery.');
-            if (!arg) throw new Error('Usage: /discover COMPONENT or /discover tool=NAME');
-            const sid = sessionId ?? crypto.randomUUID();
-            sessionId = sid;
-            const discovery = arg.startsWith('tool=') ? {tools: [arg.slice(5)]} : {component: arg};
-            const result = await send('core', 'session', {sessionId: sid, profile: currentProfile(), discovery}, 60000);
-            addMeta(ensureLive(sid), JSON.stringify(result.discovery, null, 2));
-          }
-        } catch (e) { addError(l, String(e)); }
-        return true;
-      }
-      case "provider":
-      case "providers":
-        if (!arg) {
-          onCommand("providers");
-          return true;
-        }
-        if (arg === "environment" || arg === "env") onCommand("provider-env");
-        else if (arg === "strip" || arg.startsWith("strip ")) onCommand("provider-strip:" + (arg.split(/\s+/)[1] !== "off"));
-        else onCommand("provider-switch:" + arg);
-        return true;
-      case "model":
-      case "models":
-        if (!arg) {
-          onCommand("model");
-          return true;
-        }
-        onCommand("model-set:" + (arg === "default" ? "" : arg));
-        return true;
-      case "effort": {
-        const level = (arg || "").toLowerCase();
-        if (level && !isValidEffort(level)) {
-          addError(l, "effort: expected one of auto, low, medium, high");
-          return true;
-        }
-        onCommand("effort-set:" + (level === "auto" ? "" : level));
-        return true;
-      }
-      case "think": {
-        const level = (arg || "").toLowerCase() as ThinkLevel;
-        if (level && ["full", "brief", "off"].includes(level)) setThinkLevel(level);
-        else if (!level) setThinkLevel(thinkLevel() === "full" ? "brief" : thinkLevel() === "brief" ? "off" : "full");
-        addMeta(l, t("chat.thinkLevel", { level: thinkLevel() }));
-        return true;
-      }
-      case "tools": {
-        const level = (arg || "").toLowerCase() as ToolLevel;
-        if (level && ["brief", "full", "off"].includes(level)) setToolLevel(level);
-        else if (!level) setToolLevel(toolLevel() === "brief" ? "full" : toolLevel() === "full" ? "off" : "brief");
-        addMeta(l, t("chat.toolLevel", { level: toolLevel() }));
-        return true;
-      }
-      case "connect":
-        onCommand("connect");
-        return true;
-      case "status":
-        addMeta(l, await buildStatusText());
-        return true;
-      case "new":
-      case "newsession":
-        onCommand("new-session" + (arg ? ":" + arg.trim() : ""));
-        return true;
-      case "session":
-      case "sessions":
-        if (arg) {
-          onCommand("switch-session:" + arg.trim());
-          return true;
-        }
-        onCommand("sessions");
-        return true;
-      case "locale": {
-        const lang = arg || locale();
-        if (lang === "en" || lang === "zh" || lang === "zh-TW") setLocale(lang);
-        else addError(l, `unknown locale "${lang}" (en, zh, zh-TW)`);
-        return true;
-      }
-      case "info": {
-        const sid = (arg || sessionId || "").trim();
-        if (!sid) {
-          addError(l, t("info.noSession"));
-          return true;
-        }
-        try {
-          const info = await send("core", "session_info", { sessionId: sid });
-          if (info?.error) addError(l, String(info.error));
-          else addMeta(l, buildInfoText(info));
-        } catch (e) {
-          addError(l, t("chat.slashFailed", { name, err: String(e) }));
-        }
-        return true;
-      }
-      case "help":
-      case "?":
-        addMeta(l, helpText());
-        return true;
-      default: {
-        // Registered plugin command: parse against the declared params and
-        // issue the target tool call; the result lands as a meta block.
-        const parsed = parseSlashArgs(cmd, arg);
-        if (parsed.error) {
-          addError(l, `/${cmd.name}: ${parsed.error}`);
-          return true;
-        }
-        addMeta(l, t("chat.slashExec", { name: cmd.name, args: arg.trim() }));
-        try {
-          const invocationSession = sessionId;
-          const result = await send(cmd.component!, cmd.tool!, parsed.args);
-          const message = slashUserMessage(result);
-          if (message !== undefined) {
-            if (sessionId !== invocationSession) throw new Error("Conversation changed while rendering; run the command again in the intended conversation");
-            await submitText(message);
-          } else {
-            addMeta(l, formatSlashResult(result));
-          }
-        } catch (e) {
-          addError(l, t("chat.slashFailed", { name: cmd.name, err: String(e) }));
-        }
-        return true;
-      }
+    // The built-in handlers live in lib/slashDispatch.ts, keyed by the names
+    // the registry declares (tests/slash.test.mjs asserts the two agree); this
+    // adapter is the only place that touches component state.
+    const ctx: SlashContext = {
+      arg,
+      meta: (text, sid) => addMeta(sid ? ensureLive(sid) : l, text),
+      error: (text) => addError(l, text),
+      send: (component, tool, args, timeoutMs) => send(component, tool, args, timeoutMs),
+      command: (action) => onCommand(action),
+      submit: (text) => submitText(text),
+      busy: () => l.busy,
+      session: () => sessionId ?? undefined,
+      adoptSession: (id) => {
+        sessionId = id;
+        ensureLive(id);
+      },
+      newSessionId: () => crypto.randomUUID(),
+      locale: () => locale(),
+      setLocale: (value) => setLocale(value as Locale),
+      thinkLevel: () => thinkLevel(),
+      setThinkLevel: (value) => setThinkLevel(value as ThinkLevel),
+      toolLevel: () => toolLevel(),
+      setToolLevel: (value) => setToolLevel(value as ToolLevel),
+      isValidEffort: (value) => isValidEffort(value),
+      profile: () => currentProfile(),
+      setProfile: (name) => selectProfile(name),
+      componentsText: (filter) => componentsText(sessionId, filter),
+      statusText: () => buildStatusText(),
+      infoText: async (sid) => {
+        const info = await send("core", "session_info", { sessionId: sid });
+        if (info?.error) throw new Error(String(info.error));
+        return buildInfoText(info);
+      },
+      helpText: () => helpText(),
+      t: (key, vars) => t(key as DictKey, vars),
+    };
+    try {
+      if (isBuiltinCommand(name)) await runBuiltinCommand(name, arg, ctx);
+      else await runPluginCommand(cmd, arg, ctx);
+    } catch (e) {
+      addError(l, t("chat.slashFailed", { name, err: String(e) }));
     }
-  }
-
-  /** Renders a builtin's declared params as a compact usage suffix:
-   * /effort [auto|low|medium|high], /provider [nickname]. */
-  function paramSyntax(c: SlashCommand): string {
-    const parts: string[] = [];
-    for (const p of c.params ?? []) {
-      if (p.kind === "bool") continue;
-      if (p.kind === "enum" && p.values?.length) parts.push("[" + p.values.join("|") + "]");
-      else parts.push("[" + p.name + "]");
-    }
-    return parts.length > 0 ? " " + parts.join(" ") : "";
+    return true;
   }
 
   function helpText(): string {
@@ -369,8 +271,8 @@
     // the descriptions are localized (slash.* keys, English fallback).
     const lines = [t("help.title")];
     for (const c of builtinSlashCommands()) {
-      if (c.alias) continue;
-      lines.push(`  /${c.name}${paramSyntax(c)} — ${slashDescription(c.name, c.description ?? "")}`);
+      if (c.aliasOf) continue;
+      lines.push(`  /${c.name}${commandUsage(c)} — ${slashDescription(c.name, c.description ?? "")}`);
     }
     lines.push("", t("help.keys"));
     const plugins = slashCmds.filter((c) => !c.builtin);
