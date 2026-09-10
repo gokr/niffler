@@ -610,22 +610,31 @@ discard comp.tool("fabric", fabSchema,
       return %*{"error": "fabric execution deadline expired"}
     let timeoutMs = min(requestedTimeoutMs, outerRemainingMs)
     let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
-    let stringsJ = if toolArgs{"strings"} != nil: toolArgs{"strings"}
+    let stringsArg = toolArgs{"strings"}
+    let stringsJ = if stringsArg != nil and stringsArg.kind != JNull: stringsArg
                    else: newJObject()
-      # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys)
+      # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys);
+      # an explicit JSON null for an optional object means "absent" (models
+      # habitually fill unused fields with null — bench evidence: t28-high's
+      # first fabric call was rejected for `strings: null`).
     if stringsJ.kind != JObject:
-      return %*{"error": "strings must be an object"}
+      return %*{"error": "strings must be an object, not " &
+                         $stringsJ.kind}
     if stringsJ.len > maxStringsEntries:
       return %*{"error": "strings exceeds " & $maxStringsEntries & " entries"}
     var stringsBytes = 0
     for key, value in stringsJ:
+      if value.kind == JNull: continue
       if value.kind != JString:
-        return %*{"error": "strings." & key & " must be a string"}
+        return %*{"error": "strings." & key & " must be a string, not " &
+                           $value.kind}
       stringsBytes += key.len + value.getStr().len
       if stringsBytes > maxStringsBytes:
         return %*{"error": "strings exceeds " & $maxStringsBytes & " bytes"}
     var schemas: JsonNode
-    let requestedTools = toolArgs{"tools"}
+    let toolsArg = toolArgs{"tools"}
+    let requestedTools = if toolsArg != nil and toolsArg.kind != JNull: toolsArg
+                         else: nil
     if requestedTools != nil:
       if requestedTools.kind != JArray or requestedTools.len == 0 or
           requestedTools.len > maxSelectedTools:

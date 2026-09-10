@@ -26,12 +26,17 @@ sandbox; approved code may import any std module and touch the OS directly).
 
 ```nim
 import fabricguest
-import std/json      # JsonNode, %*, getInt/getStr — everything is a node
+import std/[json, strutils, sequtils, tables, algorithm, math]
+# json: JsonNode/%*/getInt/getStr · strutils: split/strip/contains/join
+# sequtils: mapIt/filterIt/toSeq · tables: initTable/counts · algorithm: sorted
+# Unused imports are harmless — copy this whole line. Forgetting
+# sequtils/algorithm and then calling mapIt/sorted is the most common
+# compile error.
 
-# input payloads ride strings; file contents and long prompts go here
-let run = stringArg("run")
+let run = stringArg("run")     # "" when the key was not passed
 
-# drive tools with the structured call() — returns the parsed JsonNode
+# bash calls already start in the conversation workspace — no cd or root arg
+# is needed (read payloads with stringArg/inputs, never by guessing a path)
 let r = call("bash", %*{"command": "./test.sh", "timeoutMs": 60_000})
 if r{"exit_code"}.getInt(-1) != 0:
   finish(%*{"ok": false, "detail": r{"text"}.getStr("")})
@@ -40,11 +45,11 @@ if r{"exit_code"}.getInt(-1) != 0:
 finish(%*{"ok": true, "cells": 12})
 ```
 
-`import fabricguest` gives you `call`, `batch`, `finish`, `log`/`logg`,
-`stringArg`/`inputs`. `import std/json` gives you `%*`, `JsonNode`, and the
-accessors — guests are native like any other Nim program, so ordinary stdlib
-(`strutils`, `tables`, `sequtils`, `math`, `algorithm`) is available and
-unused imports are harmless.
+Guests are native Nim: ordinary stdlib works, and direct filesystem access
+via `std/os` is allowed (same trust class as bash). Prefer the tool surface
+(`call("bash", ...)`, `call("read", ...)`) when the call should be
+visible/auditable in the conversation; direct `std/os` is fine for bulk
+local work inside the program.
 
 ## Guest API (`import fabricguest`)
 
@@ -112,6 +117,7 @@ Use the structured fields (`exit_code`, `added_lines`, `ok`).
 | --- | --- | --- |
 | `undeclared identifier: 'call'/'finish'/'logg'` | missing `import fabricguest` | add it |
 | `undeclared identifier: '%*'/'JsonNode'` | missing `import std/json` | add it — guests are native, stdlib works |
+| `undeclared identifier: 'round'` / `undeclared routine: 'mapIt'` / `'sorted'` | forgot the std module | import it — copy the skeleton's `std/[json, strutils, sequtils, tables, algorithm, math]` line (unused imports are harmless) |
 | `type expected` on `JArray`/`JObject` | node *kinds*, not types | use `JsonNode`; build with `%*` or `newJArray()`/`newJObject()` |
 | `type mismatch` on `contains(r, "...")` | `r` is a `JsonNode` but you used string ops on it | `call` returns a node — use `r{"field"}.getStr("")`; legacy `callTool` returns a string, `parseJson` it |
 | `Guest compilation failed` with a real `guest.nim(N,C) Error:` | a Nim compile error | the reported line is your line (prelude line numbers are remapped); fix it |
