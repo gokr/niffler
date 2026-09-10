@@ -68,7 +68,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 .DEFAULT_GOAL := all
 
 .PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
-        test test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
+        test test-server test-ui test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp \
         test-retry-unit test-ctx-accounting \
@@ -90,7 +90,9 @@ help:
 	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
-	@echo 'make test      bus-contract suite: one test per component + smoke + go tests'
+	@echo 'make test      full gate: bus-contract suite + frontend tests'
+	@echo 'make test-server  bus-contract suite only (no node/UI toolchain)'
+	@echo 'make test-ui   frontend lib tests + typecheck (no NATS needed)'
 	@echo 'make dev       Svelte dev server in a browser (bridge stubbed)'
 	@echo 'make setup     install prerequisites for this platform'
 	@echo 'make doctor    check prerequisites and report what is missing'
@@ -349,11 +351,28 @@ var/bin/test_t_retry_unit: core/retry.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim
 
-test: build $(TEST_BINS) gotest
+test: test-ui test-server
+
+# The bus-contract suite: one test per component + smoke + the Go unit tests.
+# Everything that needs the node/UI toolchain lives in test-ui, so a
+# server-side change can be verified without it.
+test-server: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
 		env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./$$t || exit 1; \
 	done'
+
+# The frontend. The lib tests import the TypeScript sources directly (node
+# type stripping), so they need no dependencies; the typecheck does, and
+# fails loudly when ui/frontend/node_modules is missing (`make ui` installs
+# it). Neither touches the bus.
+test-ui:
+	@command -v node >/dev/null 2>&1 || { \
+		echo "node not found — install Node.js 20+ (make install-node)"; exit 1; }
+	@node -e 'if (Number(process.versions.node.split(".")[0]) < 20) { console.error("Node.js 20+ required by the frontend tests"); process.exit(1); }'
+	cd ui/frontend && npm test
+	@if [ -d ui/frontend/node_modules ]; then cd ui/frontend && npm run typecheck; \
+	else echo "ui/frontend/node_modules missing — run: cd ui/frontend && npm install (or make ui)"; exit 1; fi
 
 test-bash:    build var/bin/test_t_bash    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_bash
 test-store:   build var/bin/test_t_store   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_store

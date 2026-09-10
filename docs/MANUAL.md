@@ -1691,8 +1691,10 @@ do exactly that; use a temp `NIF_ROOT` copy for experiments).
 ## Testing
 
 ```bash
-make test        # the whole bus-contract suite (spawns its own NATS per test)
-make test-bash   # ... or just one: test-store, test-builder, test-console,
+make test           # the full gate: frontend tests, then the bus-contract suite
+make test-server    # ... server side only: one test-owned NATS per test, no node
+make test-ui        # ... frontend side only: lib unit tests + `npm run typecheck`
+make test-bash      # ... or just one: test-store, test-builder, test-console,
                  # test-plugins, test-skills, test-fetch, test-models,
                  # test-observe, test-logfile, test-core, test-cli,
                  # test-autostart, test-smoke
@@ -1701,6 +1703,12 @@ make test-bash   # ... or just one: test-store, test-builder, test-console,
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
 the envelope is the artifact, so one harness tests every SDK) and drives
 them over a private NATS server whose loopback ports are allocated by NATS.
+The frontend tests are the exception: they import the TypeScript lib modules
+(`ui/frontend/src/lib/*.ts`) and run on plain node with type stripping, so
+`make test-ui` needs neither dependencies nor a bus (`npm run typecheck`
+does need `ui/frontend/node_modules`, which `make ui` installs). `make test`
+is simply `make test-ui` + `make test-server`; use `make test-server` for
+server-side work and `make test-ui` for frontend work.
 Core-based tests snapshot their required binaries into a unique temporary
 `NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
 therefore isolated. Individual `make test-*` targets may run concurrently
@@ -1756,7 +1764,9 @@ make install        # PATH entries (niffler, niffler-cli, niffler-console,
                     # + niffler-tui wrapper on request — never component
                     # binaries, so PATH cannot shadow grep/git/...)
 make uninstall      # remove those PATH entries again
-make test           # the bus-contract suite (each test owns a private bus)
+make test           # the full gate: frontend tests + the bus-contract suite
+make test-server    # the bus-contract suite alone (each test owns a private bus)
+make test-ui        # frontend alone: lib unit tests + typecheck (no NATS)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
 make clean          # remove all build artifacts (var/, nimcache/, UI build)
