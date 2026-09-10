@@ -121,7 +121,17 @@ export class NifflerHarness {
         stdio: ["ignore", "ignore", "pipe"],
       },
     );
-    this.natsProc.stderr.on("data", () => {});
+    // Persist the bus's stderr: when it dies mid-run everything cascades
+    // (connection-closed publishes, PDEATHSIG) and without this log the
+    // cause is pure guesswork (seen: silent death at 01:19, 2026-09-10).
+    this.natsLog = fs.openSync(path.join(this.runRoot, "nats.log"), "a");
+    this.natsProc.stderr.on("data", (d) => fs.writeSync(this.natsLog, d));
+    this.natsProc.on("exit", (code, signal) =>
+      fs.writeSync(
+        this.natsLog,
+        `bench: private nats exited (code=${code} signal=${signal})\n`,
+      ),
+    );
     await new Promise((r) => setTimeout(r, 500));
 
     // 2. Harness in service mode, pinned to this bus + gateway env.
