@@ -1560,7 +1560,7 @@ guide with nudge phrasing and worked examples:
 
 | Tool | What it does |
 |---|---|
-| `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program in `var/bin/fabric-exec` (embedded Nim VM, fresh process per program). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. |
+| `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. |
 | `agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. Optional per-job budgets: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. |
 | `agent_spawn {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
@@ -1584,11 +1584,13 @@ guide with nudge phrasing and worked examples:
 - **Context economy**: intermediate results never enter the conversation;
   oversized `finish()` values spill to `var/fabric-artifacts/<run>.json`
   (mode 0600) and the tool result points at the path.
-- **Guest API**: `fabricguest.nim` provides the raw bridge (`callTool`,
-  `batch`, `finish`, `logg`, `stringArg`, and import-free `j*` helpers).
-  `fabricmeta.nim` turns pinned runtime schemas into input-typed wrappers;
-  results are `JsonNode` unless the tool declares a scalar `outputSchema`.
-  Worked examples: `components/fabric/examples/`.
+- **Guest API**: `import fabricguest` gives the structured `call(tool, JsonNode) ->
+  JsonNode`, `batch`, `finish(JsonNode)`, `log`/`logg`, `stringArg`/`inputs`
+  (plus the legacy `callTool`/`j*` string helpers). `fabricmeta.nim` turns
+  pinned runtime schemas into input-typed wrappers; results are `JsonNode`
+  unless the tool declares a scalar `outputSchema`. The `fabric_help` tool
+  returns the reference and example sources from inside the component,
+  without locating files. Worked examples: `components/fabric/examples/`.
 - **When to use what**: direct loop for judgment-per-step work; `fabric` for
   mechanical known-shape orchestration; `agent_run` for exploratory subtasks
   that need their own context; hybrid programs may call `agent_run`.

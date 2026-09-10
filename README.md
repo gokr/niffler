@@ -157,12 +157,13 @@ The project compiler configuration also discovers them for direct Nim builds,
 including components compiled by the runtime builder. Keep the exports above
 when installing Nimble packages directly from your shell.
 
-`fabric-exec` embeds the Nim VM and needs the matching compiler sources,
-including `dist/checksums`. Homebrew Nim 2.2.10 omits that directory;
-use choosenim or another complete Nim >= 2.2.10 distribution. This
-requirement applies on both platforms. `make install-nim`
-checks an existing toolchain and reports incompatibilities rather than
-replacing it.
+`fabric-exec` no longer needs the compiler sources: it just invokes
+`nim c` to compile each guest into a private process, and caches identical
+programs in `var/fabric-cache`. Any Nim >= 2.2.10 distribution works
+(choosenim, Homebrew with the nimble package, or a system install);
+the embedded-VM `dist/checksums` and compiler-module requirement is gone.
+`make install-nim` checks an existing toolchain and reports
+incompatibilities rather than replacing it.
 
 ### Nim packages
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# fabric-exec imports the compiler and its bundled checksums by relative path.
+# Native guest compilation needs the Nim compiler + a C toolchain only; the
+# embedded-VM compiler-source requirement is gone. checksums/sha1 is a nimble
+# package resolved by config.nims (pkgs2 scan) when building fabric-exec.
 set -euo pipefail
 
 fail() {
@@ -11,8 +13,9 @@ fail() {
 
 # Keep native/project configuration out of this toolchain-only probe.
 command -v nim >/dev/null 2>&1 || fail 'not found'
-compiler_dir=$(nim --skipProjCfg --skipParentCfg --skipUserCfg --verbosity:0 --hints:off --eval:'import std/os; doAssert (NimMajor, NimMinor, NimPatch) >= (2, 2, 10), "Nim >= 2.2.10 required"; echo getCurrentCompilerExe().parentDir.parentDir / "compiler"') || fail 'toolchain probe failed'
-for source in nimeval.nim vm.nim ../dist/checksums/src/checksums/md5.nim ../dist/checksums/src/checksums/sha1.nim; do
-  [[ -f "$compiler_dir/$source" ]] || fail "incomplete compiler sources: $compiler_dir/$source is missing"
-done
-echo "Nim compiler sources: OK ($compiler_dir)"
+nim --skipProjCfg --skipParentCfg --skipUserCfg --verbosity:0 --hints:off \
+  --eval:'import std/os; doAssert (NimMajor, NimMinor, NimPatch) >= (2, 2, 10), "Nim >= 2.2.10 required"' || fail 'toolchain probe failed'
+# C toolchain for the linker (the guest is compiled and linked, not VM-eval'd).
+command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || \
+  command -v clang >/dev/null 2>&1 || fail 'no C compiler (cc/gcc/clang)'
+echo "Nim toolchain: OK ($(nim --version 2>/dev/null | head -1))"
