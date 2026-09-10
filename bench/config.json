@@ -29,6 +29,21 @@
         "apiKeyEnv": "DEEPSEEK_API_KEY"
       }
     },
+    "deepseek-v4.1-flash": {
+      "label": "DeepSeek V4.1 Flash (DevPass / LLM Gateway)",
+      "niffler": {
+        "baseUrl": "https://api.llmgateway.io/v1",
+        "model": "deepseek-v4.1-flash",
+        "apiKeyEnv": "LLMGATEWAY_API_KEY",
+        "thinking": "low"
+      },
+      "pi": {
+        "provider": "llmgateway",
+        "model": "deepseek-v4.1-flash",
+        "apiKeyEnv": "LLMGATEWAY_API_KEY",
+        "thinking": "low"
+      }
+    },
     "syn-large": {
       "label": "Synthetic Large Text (GLM-5.3-Flash)",
       "niffler": {

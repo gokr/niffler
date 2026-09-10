@@ -52,6 +52,17 @@ export function setupPiConfig(runRoot, defaults) {
                 thinkingLevelMap: { xhigh: null, max: "max" },
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               },
+              {
+                id: "deepseek-v4.1-flash",
+                name: "DeepSeek V4.1 Flash",
+                reasoning: true,
+                input: ["text"],
+                contextWindow: 1050000,
+                maxTokens: 393216,
+                thinkingLevelMap: { xhigh: null, max: "max" },
+                // LLM Gateway catalog: $0.15/M in, $0.60/M out, $0.003/M cache read.
+                cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
+              },
             ],
           },
           // Synthetic (api.synthetic.new/openai/v1): OpenAI-compatible. The
