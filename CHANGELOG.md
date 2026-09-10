@@ -8,6 +8,55 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Web UI `/info` and `session_info` completion tokens** — core's
+  `session_info` now reports `completionTokens` (the sum of
+  `completion_tokens` over assistant messages with usage) alongside the
+  message role counts, and the desktop UI gains an `/info [id]` slash
+  command rendering that state (conversation id, title, model/provider,
+  thinking effort, created time, workspace, message counts by role,
+  context used/limit, input split cached/uncached, output). Builtin
+  slash commands that duplicate richer UI flows are marked as aliases
+  and hidden from `/help`, command descriptions move into locale
+  strings (`slash.*` keys, en/zh/zh-TW), and `/info` rendering has its
+  own localized strings.
+
+- **Bench: fan-out tier t28–t30, suite renamed full30** — three tasks
+  built so the mechanical work genuinely varies per item or the
+  intermediates are oversized — the two shapes where a single `sed`
+  fails and model-driven per-file edits burn a turn per file:
+  t28-docbackfill (Go: 27 files across 3 packages each need their exact
+  package doc comment inserted, replaced (drifted variants) or left
+  untouched — three states per file, pinned by a behavior test),
+  t29-logrollup (Python: 36 log files (~450KB) roll up into a
+  byte-exact `summary.json` with canonical key order), and t30-ifacedrift
+  (Node: 24 modules migrate to a new library API where each module's
+  own `// profile:`/`// width:` header directives determine the correct
+  arguments; the verifier carries an independent reference
+  implementation). All red at base, verified green with a reference
+  solution; task fixtures are deterministic and committed (t29's input
+  logs included) so fresh checkouts run them. Bench-validated with
+  syn-large: low tier solves all three with scripted bash (22–71s,
+  3–7.5k tokens); high tier passes all three and reaches for fabric on
+  t28 (recovering from three precise guest compile errors via
+  `firstError` diagnostics) and t30 (one program driving all 24 edits
+  plus verification in a single call, after reading
+  `components/fabric/docs/REFERENCE.md`). The launcher and READMEs
+  track the full27 → full30 rename; `REFERENCE.md` also gains a
+  tool-result-envelopes section (the exact bash/edit/grep/read JSON
+  shapes guests probe) and corrects the raising rule — a bash nonzero
+  exit is a normal result (check `exit_code`), only tool-level failures
+  raise.
+
+- **Bench: trimmed-prefix reports (low + high)** — post-diet full27
+  numbers on syn-large, niffler-only, against the pre-diet runs and pi
+  on the identical protocol. Low: 27/27 round-1 (pi 27/27 with one
+  2-round cell), avg 56s vs pi 74.5s, uncached input 3.1k vs pi 3.2k,
+  cost parity ($0.0016 vs $0.0015/cell), first prompt 1690 vs 2482
+  (`bench/reports/full27-syn-large-low-trimmed-report.md`). High:
+  27/27 round-1, avg 264s vs 281s pre-diet — wall time is model
+  reasoning, not footprint — uncached input −40% (10.5k → 6.4k), cost
+  −5% (`bench/reports/full27-syn-large-high-trimmed-report.md`).
+
 - **`make ram`: per-stack memory report (`scripts/niffler-ram.sh`)** — sums
   RSS/PSS over every process whose executable lives in a checkout's
   `var/bin` (harness, nats-server, all components, session runners,
@@ -864,6 +913,46 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **fabric: banned-import lint catches bracket imports, actionable
+  compile failures, run-tested examples, LLM reference doc** — the
+  token lint missed `import std/[os, strutils, sequtils]` (bench t13:
+  the VM compile then failed on stdlib internals, the agent saw
+  "closed its output before a complete response" and retried the
+  identical guest twice before falling back to bash). Lint now scans
+  `import`/`from` lines and matches each module against a banned-module
+  set (os, osproc, net, asyncnet, asyncdispatch, nativesockets,
+  selectors, posix, httpclient, asyncfile) — bracket lists, aliases and
+  from-imports included — skipping lines inside triple-quoted strings
+  (bench-selfreview's embedded Python walker tripped the line scan);
+  the rejection names the module and the sanctioned pattern
+  (`callTool("bash", ...)`). Guest compile failures surface `firstError`
+  (the actionable compiler line) plus an explicit hint when std/os is
+  the culprit — this enforces the documented contract that guests must
+  not touch the filesystem, processes or network directly, instead of
+  leaning on a stdlib accident (direct FS access in a guest would
+  bypass the per-call approval gate). The five examples
+  (fanout, pipeline, retry-loop, hybrid, bench-selfreview) — which had
+  never been executed by the test suite — are fixed (missing `std/json`
+  imports rendered as misleading type-mismatch errors) and now run in
+  `t_fabric` as scripted stub turns with real fixtures asserting their
+  finish values. New `components/fabric/docs/REFERENCE.md`: a dense LLM
+  reference (verified import preamble, tool args, guest API, result
+  flow with artifacts, common-errors table, patterns index); component
+  headers and the tool description point at it instead of the human
+  research doc. The baseprompt gloss and fabric's description also
+  raise the bar for reaching fabric at all — "mechanical fan-out beyond
+  one command": a single shell one-liner (bulk rename, a sed across
+  files) stays in bash (bench t13 burned ~30k tokens on a fabric
+  detour for one `sed` line; with the fixes the rerun solved in 16s
+  via direct bash).
+
+- **Session: per-turn round budget default 20 → 50** — `NIF_MAX_TURN_ROUNDS`
+  and the subagent `maxRounds` range (`agent_run`/`agent_spawn`) both
+  move to 50: the old default clipped long agentic turns (bench lanes
+  already ran at 100 for exactly that reason), and the cap exists to
+  bound runaway cost, not to shape normal work. `docs/MANUAL.md`
+  documents both.
+
 - **edit/read: unchanged full re-reads return a marker, edits guard
   against stale context** — reads and writes track a per-(session, file)
   digest of raw bytes, so an unchanged FULL re-read returns a compact
@@ -1094,6 +1183,52 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **discover: word-AND matching, compact empty-query directory** — query
+  matching required the whole query as a verbatim substring, so a
+  keyword phrase like "mechanical fan-out" (bench t13) matched nothing,
+  and the fallback `discover {query: ""}` serialized the entire bus
+  directory with 200-char teasers — 19KB into the conversation, twice.
+  Matching now splits on whitespace and requires every word to appear
+  in the component name or tool name/description (single-word behavior
+  unchanged), and an empty query returns tool names only (19KB → 3.4KB
+  measured); `component` and `tools` calls still return full
+  hints/schemas. discover's description states the semantics, and the
+  baseprompt Files paragraph restores the compact survey hint (bash
+  cat/ls usage had risen 31% → 44% after it was dropped).
+
+- **plugins: `plugin_update` pulls branch-tracked packages in place** —
+  a package with no GitHub releases (tracking a branch like main)
+  errored on `plugin_update`, forcing a manual `plugin_remove` +
+  `plugin_install` round-trip to pick up new commits. `plugin_update`
+  now falls back to an in-place `git pull --ff-only` of the existing
+  clone, rebuilding components only when the pull actually moved HEAD
+  (a no-op pull is reported without touching any component); tag-pinned
+  packages keep the existing remove/reinstall behavior.
+
+- **macOS builds: Linux-only Pdeathsig identifiers behind build tags** —
+  `unix.Prctl`/`unix.PR_SET_PDEATHSIG` (sdk/go, components/nats) and
+  `syscall.SysProcAttr.Pdeathsig` (mcp-bridge) were guarded only by a
+  runtime GOOS check, which cannot stop Go from compiling those
+  Linux-only identifiers for other targets — breaking every darwin
+  build (make failed on the first Go component, since every Go
+  component imports the SDK). Each is split into a `//go:build linux`
+  file with the real implementation and a `//go:build !linux`
+  no-op/degraded counterpart, mirroring the Nim SDK's existing
+  `when defined(linux)` guard; Linux behavior is unchanged. The
+  nats-server Makefile rule wildcards its `.go` files so the new
+  build-tagged files are tracked as build inputs.
+
+- **llm: syn-large context window; bench LLM timeout above the thinking
+  ceiling** — `syn:large:text` resolved to the 128k conservative
+  fallback (the models.dev catalog has no Synthetic entry, so the
+  lookup falls through) while the model serves 524288 — the
+  full27-syn-large runs executed with context 128000; `knownContext`
+  now carries `syn:large:text` and `zai-org/glm-5.3-flash` at 524288.
+  The niffler bench adapter now sets `NIF_LLM_TIMEOUT_MS` from the turn
+  budget + 120s margin: at the 300s default a 19m41s high-effort
+  thinking call died at the timeout and the bench retry re-did the
+  entire turn (274s of redone work, +900s wall).
 
 - **mcp-bridge boot crash-loop and eternal contract drift** — two field
   failures fed each other. The manifest listed `mcp-bridge` with an
