@@ -387,6 +387,35 @@ proc main() =
   check("read after undo dumps restored bytes",
         ru3.getStr("") == bigContent, $ru3)
 
+  # a read that observes different bytes persists the correction: without
+  # this, a stale persisted entry (restarted/duplicate process, resumed run
+  # against a re-prepared repo) keeps refusing edits that re-reads cannot
+  # clear even though the file on disk is current.
+  writeFile(tmp / "wedge.txt", bigContent)
+  discard call(nc, "edit", "write",
+               %*{"path": "wedge.txt", "content": bigContent,
+                  "__session": {"session": "s1"}})
+  writeFile(tmp / "wedge.txt", bigContent & "external tail\n")
+  discard call(nc, "edit", "read",
+               %*{"path": "wedge.txt", "force": true,
+                  "__session": {"session": "s1"}})
+  var persisted = false
+  let store = tmp / "config" / "niffler-edit" / "undo.json"
+  if fileExists(store):
+    for key, node in parseJson(readFile(store)){"seen"}:
+      if key.contains("wedge.txt") and
+          node{"bytes"}.getInt(0) == readFile(tmp / "wedge.txt").len:
+        persisted = true
+  check("changed read persists the observed bytes", persisted, store)
+  let rw = call(nc, "edit", "edit",
+                %*{"path": "wedge.txt",
+                   "edits": [{"old_string": "external tail",
+                              "new_string": "edited tail"}],
+                   "__session": {"session": "s1"}})
+  check("edit passes after the corrected read",
+        not rw.hasKey("error") and
+        readFile(tmp / "wedge.txt").contains("edited tail"), $rw)
+
   # seen-state persists across a restart (mutations persist alongside undo);
   # the restarted component serves the remaining tests
   e2.terminate()

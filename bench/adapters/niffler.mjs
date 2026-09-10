@@ -56,16 +56,28 @@ export class NifflerHarness {
   cliEnv() {
     // Inherit the parent env (keys, NIF_LLM_TIMEOUT_MS, proxies) and pin the
     // private bus/root last so a stray NIF_NATS_URL in the shell can't
-    // redirect the bench harness.
-    return {
+    // redirect the bench harness. XDG_CONFIG_HOME is the harness's own
+    // edit-state dir (undo + seen digests) so a boot never inherits the
+    // developer's store or a previous run's state for a reused session id.
+    const env = {
       ...process.env,
       NIF_NATS_URL: `nats://127.0.0.1:${this.natsPort}`,
       NIF_ROOT: this.root,
     };
+    if (this.xdgDir) env.XDG_CONFIG_HOME = this.xdgDir;
+    return env;
   }
 
   async start() {
     fs.mkdirSync(this.root, { recursive: true });
+    // Edit component state (undo history + per-session seen digests) lives
+    // under XDG_CONFIG_HOME; defaulting to ~/.config/niffler-edit would let
+    // one run leak into another (resume reuses session ids against
+    // re-prepared repos, which makes the first edits of the fresh repo
+    // E_STALE). Wipe a private dir per boot.
+    this.xdgDir = path.join(this.root, "var", "edit-config");
+    fs.rmSync(this.xdgDir, { recursive: true, force: true });
+    fs.mkdirSync(this.xdgDir, { recursive: true });
     // Symlink farm: everything from the worktree except git/, runtime state,
     // bench outputs and secrets; then a real var/ and a real .env.
     // AGENTS.md is Niffler's own contributor guide — injecting it into bench
@@ -359,6 +371,8 @@ export class NifflerHarness {
     // traffic.
     const PRICE = {
       "deepseek-v4-flash": { input: 0.283, output: 1.14, cacheRead: 0.028 },
+      // LLM Gateway catalog pricing, same as the pi adapter entry.
+      "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
       "syn:large:text": { input: 0.15, output: 0.5, cacheRead: 0.04 },
     };
     const usage = zeroUsage();

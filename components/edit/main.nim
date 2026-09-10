@@ -499,8 +499,11 @@ proc clearUndo(path: string) =
 
 proc observe(session, target, raw: string, full: bool, persist = false) =
   ## Record the state a conversation just observed. Read calls persist=false
-  ## (in-memory only: a restart merely loses stub/staleness hints, never
-  ## correctness); mutations persist alongside the undo store.
+  ## when they confirm what we already remembered (in-memory only: a restart
+  ## merely loses stub hints, never correctness); a read that observes
+  ## different bytes persists the correction, so a stale entry written by an
+  ## earlier run/process cannot wedge edits that re-reads would otherwise
+  ## never clear. Mutations persist alongside the undo store.
   if session.len == 0: return
   let (_, body) = stripBom(raw)
   gSeen[seenKey(session, target)] = SeenEntry(
@@ -881,7 +884,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     let key = seenKey(session, target)
     let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
     let same = prev.digest == dig
-    observe(session, target, raw, fullDelivered or (same and prev.full))
+    observe(session, target, raw, fullDelivered or (same and prev.full),
+            persist = not same)
   result = %text
 
 proc hReadMany(c: Component, args: JsonNode): JsonNode =
