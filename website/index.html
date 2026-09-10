@@ -228,8 +228,11 @@
     </article>
     <article class="card">
       <h3 data-i18n-html="bench.2h"><span class="num">02</span> harness bench</h3>
-      <p data-i18n-html="bench.2p">A harness-comparison framework — twenty-seven red-at-base
-        tasks (17 core + 10 mid-tier targeting 2–10 min/cell) tagged by
+      <p data-i18n-html="bench.2p">A harness-comparison framework — thirty red-at-base
+        tasks (17 core, 10 mid-tier targeting 2–10 min/cell, and a 3-task
+        fan-out tier whose mechanical work varies per item or carries
+        oversized intermediates — the shapes where guest programs and
+        scripted bulk work earn their keep) tagged by
         kind (general / fabric / expert / selfextend), each verified
         green by a reference implementation, with per-turn feedback
         loops, protected-file guards and provider token accounting —
@@ -240,11 +243,14 @@
         additional benchmarks; <code>bench/container</code> ships a Docker
         job image and <code>bench/launch.mjs</code> is a guided launcher.
         The full 17-task matrix ran green across all lanes (340/340);
-        the mid-tier set calibrated 20/20 (niffler vs pi, GLM low); the
-        first full27 run on the syn-large model (Synthetic's GLM-5.3-Flash,
-        thinking=low) is green in every cell — 27/27 on both the niffler
-        and pi lanes
-        (<code>bench/reports/full27-syn-large-low-report.md</code>).</p>
+        the mid-tier set calibrated 20/20 (niffler vs pi, GLM low); on
+        the syn-large model (Synthetic's GLM-5.3-Flash) the suite is
+        green in every cell — 27/27 on both the niffler and pi lanes at
+        thinking=low
+        (<code>bench/reports/full27-syn-large-low-report.md</code>), and
+        the post-diet trimmed-prefix runs stay 27/27 while uncached input
+        drops ~40% at high effort
+        (<code>bench/reports/full27-syn-large-{low,high}-trimmed-report.md</code>).</p>
     </article>
   </div>
 </section>
