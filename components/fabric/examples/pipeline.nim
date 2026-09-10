@@ -23,7 +23,7 @@ let hits = tools.grep(
 let head = tools.get(kind = "conversation", id = "nonexistent")
 
 # 3. finish with ONLY the digest — hits could be 50KB, this is not
-finish($(%*{
+finish(%*{
   "grepDone": hits.len > 0,
   "hitCount": hits.len,
-  "storeProbe": head}))
+  "storeProbe": head})

@@ -26,4 +26,4 @@ let agent = tools.agent_run(
 # the outer selected lease remains valid after the nested session-context call
 let after = tools.bash(command = "echo lease-restored")
 
-finish($(%*{"files": files, "agentReply": agent, "after": after}))
+finish(%*{"files": files, "agentReply": agent, "after": after})

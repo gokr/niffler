@@ -34,4 +34,4 @@ for d in dirs:
   parts.add(%*{"dir": d, "result": r})
   total += ($r).len
 
-finish($(%*{"count": dirs.len, "rawBytes": total, "dirs": parts}))
+finish(%*{"count": dirs.len, "rawBytes": total, "dirs": parts})

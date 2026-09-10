@@ -356,7 +356,7 @@ proc report(jid: string) =
                   "llmRounds": bestN})
       taken[rows[best]{"cell"}.getStr] = 1
 
-  finish($(%*{
+  finish(%*{
     "run": jid,
     "cellCount": rows.len,
     "expectedCellCount": combos.len * expectedTasks.len,
@@ -370,6 +370,6 @@ proc report(jid: string) =
       "footprintOverCells": fFpOver,
       "missingCells": fMissing
     }
-  }))
+  })
 
 report(stringArg("run"))

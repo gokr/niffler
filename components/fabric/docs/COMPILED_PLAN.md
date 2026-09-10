@@ -1,7 +1,10 @@
 # Fabric: compiled Nim transformation
 
-Status: implementation plan, not implemented.
-Branch: `feature/fabric-compiled-nim`.
+Status: phases 2-6 implemented on feature/fabric-compiled-nim.
+  - 2 native executor  3 executable cache  4 structured SDK + diagnostics
+    5 fabric_help discovery  6 reference/examples rewrite (+ examples migrated
+    to the structured finish). Remaining: 7 stored-program migration/native-only
+    cutover, 8 calibration. See git log for the incremental commits.
 Worktree: `/home/gokr/git/niffler-fabric-compiled`.
 Baseline: `be8d880`.
 
