@@ -12,18 +12,21 @@ import signal
 import subprocess
 import tempfile
 import time
+import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(code, *, schemas=None, inputs=None, replies=None):
+def run(code, *, schemas=None, inputs=None, replies=None, cache_dir=None,
+        compile_ms_budget=None):
     with tempfile.TemporaryDirectory(prefix="fabric-native-") as work:
         with tempfile.TemporaryFile() as stderr:
+            env = {"PATH": os.environ["PATH"], "HOME": work, "TMPDIR": work}
+            if cache_dir is not None:
+                env["FABRIC_CACHE_DIR"] = str(cache_dir)
             p = subprocess.Popen(
                 [str(ROOT / "var/bin/fabric-exec")], stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=stderr,
-                env={"PATH": os.environ["PATH"], "HOME": work, "TMPDIR": work},
-                cwd=work,
+                stdout=subprocess.PIPE, stderr=stderr, env=env, cwd=work,
             )
             ctx = {"code": code, "buildDir": work, "strings": inputs or {}}
             if schemas is not None:
@@ -32,7 +35,7 @@ def run(code, *, schemas=None, inputs=None, replies=None):
             p.stdin.flush()
             frames = []
             pending = b""
-            end = time.monotonic() + 30
+            end = time.monotonic() + (compile_ms_budget or 30)
             try:
                 with selectors.DefaultSelector() as sel:
                     sel.register(p.stdout, selectors.EVENT_READ)
@@ -130,6 +133,29 @@ finish(jobj(jpair("input", jesc(stringArg("name"))),
     result, _ = run('import fabricguest\ndiscard\n')
     assert not result["ok"] and "without calling finish" in result["diagnostics"]
     print("OK: missing finish is not success")
+
+    # ---- content-addressed executable cache: a second identical run hits ----
+    code = '''import fabricguest\nfinish(%*{"v": 1})\n'''
+    with tempfile.TemporaryDirectory(prefix="fabric-cache-") as cache:
+        cache_path = Path(cache)
+        first, f1 = run(code, cache_dir=cache)
+        assert first.get("ok"), first
+        phase1 = [f for f in f1 if f["t"] == "phase"]
+        assert phase1 and phase1[-1].get("cacheHit") is False, phase1
+        cold = phase1[-1].get("compileMs", 0)
+        second, f2 = run(code, cache_dir=cache)
+        assert second.get("ok"), second
+        phase2 = [f for f in f2 if f["t"] == "phase"]
+        assert phase2 and phase2[-1].get("cacheHit") is True, phase2
+        assert len(list(cache_path.iterdir())) == 1
+        print(f"OK: executable cache (cold {cold}ms, hit {phase2[-1].get('compileMs')}ms)")
+
+        # a DIFFERENT program is a distinct cache entry (correct keying)
+        other, _ = run('import fabricguest\nfinish(%*{"v": 2})\n', cache_dir=cache)
+        assert other.get("ok"), other
+        assert len(list(cache_path.iterdir())) == 2
+        print("OK: cache key distinguishes distinct programs")
+
     print("fabric native PASSED")
 
 

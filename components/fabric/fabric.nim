@@ -55,8 +55,12 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
     try: removeDir(buildDir)
     except CatchableError: discard
   let errFile = buildDir / "executor.err"
+  let cacheDir = rootVarDir("fabric-cache")
+  try: createDir(cacheDir)
+  except CatchableError: discard
   var env = newStringTable(modeCaseSensitive)
   env["PATH"] = getEnv("PATH")
+  env["FABRIC_CACHE_DIR"] = cacheDir
     # deliberately no NIF_* vars: the child has no bus and no credentials
   env["HOME"] = buildDir
   env["TMPDIR"] = buildDir
@@ -430,6 +434,38 @@ proc cleanupArtifacts(dir: string, incomingBytes: int64) =
   if retainedFiles >= maxArtifactFiles or retainedBytes > maxArtifactBytes:
     raise newException(ValueError, "fabric artifact quota cannot be reclaimed")
 
+const
+  maxCacheEntries = 64
+  maxCacheBytes = 128 * 1024 * 1024
+
+proc cleanupCache(dir: string) =
+  ## Bound the compiled-guest cache: evict least-recently-stored entries until
+  ## the retained set fits, but never touch an entry that is in use (a running
+  ## guest binary is mmap/file-backed; removal only breaks future cache hits).
+  if not dirExists(dir): return
+  var entries: seq[tuple[dir: string, modified: times.Time, size: int64]]
+  for kind, path in walkDir(dir):
+    if kind != pcDir: continue
+    try:
+      var size = 0'i64
+      for fKind, f in walkDir(path):
+        if fKind == pcFile: inc(size, getFileSize(f))
+      entries.add((path, getLastModificationTime(path), size))
+    except CatchableError:
+      discard
+  entries.sort(proc(a, b: auto): int = cmp(a.modified, b.modified))
+  var retainedBytes = 0'i64
+  for e in entries: retainedBytes += e.size
+  var first = 0
+  while first < entries.len and
+      (entries.len - first >= maxCacheEntries or retainedBytes > maxCacheBytes):
+    try:
+      removeDir(entries[first].dir)
+      retainedBytes -= entries[first].size
+    except CatchableError:
+      discard
+    inc first
+
 proc writePrivateFile(path, value: string) =
   ## O_EXCL plus mode 0600 avoids a world-readable creation window.
   let fd = posix.open(path.cstring, O_WRONLY or O_CREAT or O_EXCL,
@@ -594,6 +630,7 @@ discard comp.tool("fabric", fabSchema,
     # oversized result ever lands again
     try:
       cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+      cleanupCache(rootVarDir("fabric-cache"))
     except CatchableError: discard
     let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
@@ -646,5 +683,6 @@ discard comp.tool("fabric", fabSchema,
 # per-run sweep below keeps it bounded afterwards).
 try:
   cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+  cleanupCache(rootVarDir("fabric-cache"))
 except CatchableError: discard
 comp.run()
