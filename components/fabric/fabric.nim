@@ -10,8 +10,9 @@
 ## approval, budgets and audit apply exactly as for direct tool calls.
 ## The child holds no credentials and no NATS connection.
 
-import std/[algorithm, json, monotimes, os, osproc, posix, selectors, sequtils,
-            streams, strtabs, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, posix, selectors, streams,
+            strtabs, strutils, tables, tempfiles, times]
+import std/sequtils
 import natswrapper
 import niffler/sdk
 import framing
@@ -36,69 +37,6 @@ const
   maxSelectedTools = 16
   forbiddenSelectedTools = ["fabric", "agent", "chat", "session", "invoke",
                             "session_prepare"]
-
-const bannedTokens = ["staticExec", "staticRead", "gorge", "slurp",
-                      "importc", "osproc", "natswrapper", "std/os",
-                      "std/net", "std/selectors"]
-  ## source lint: auditable policy, not a sandbox claim (docs/research/FABRIC.md,
-  ## threat model). The VM itself also refuses FFI and gorge magics (the
-  ## executor is built without -d:nimcore).
-
-const bannedModules = ["os", "osproc", "net", "asyncnet", "asyncdispatch",
-                       "nativesockets", "selectors", "posix", "httpclient",
-                       "asyncfile"]
-  ## Modules whose import would hand a guest harness-level powers (filesystem,
-  ## processes, sockets) outside the per-call approval gate. The plain token
-  ## scan above misses import syntax that never spells "std/os" verbatim —
-  ## bench evidence (t13, syn-large): `import std/[os, strutils]` slipped
-  ## past it, the VM compile then failed on stdlib internals, and the agent
-  ## retried the identical guest twice on an unactionable first line.
-
-proc lint(code: string): string =
-  for b in bannedTokens:
-    if code.contains(b):
-      return "program rejected: '" & b & "' is not allowed in fabric programs"
-  # Import-line scan: `import a, std/[b, c] as d` and `from std/os import x`.
-  # Line-based and conservative — policy lint, not a parser.
-  # Lines inside triple-quoted strings ("""…""" — guests embed whole
-  # scripts, e.g. a python walker in a raw string) are skipped: their
-  # content lines can start with "import " without being Nim imports
-  # (bench evidence: bench-selfreview.nim's embedded python walker was
-  # false-positived on its own `import json, sys, glob, os`).
-  var inTriple = false
-  for raw in code.splitLines():
-    var n = 0
-    var i = 0
-    while true:
-      i = raw.find("\"\"\"", i)
-      if i < 0: break
-      inc n
-      inc i, 3
-    if n mod 2 == 1:
-      inTriple = not inTriple
-    if inTriple:
-      continue
-    let line = raw.strip()
-    var mods: seq[string] = @[]
-    if line.startsWith("import ") and line.len > 7:
-      for tok in line[7 .. ^1].replace('[', ',').replace(']', ',').split(','):
-        var m = tok.strip()
-        let asAt = m.find(" as ")
-        if asAt >= 0: m = m[0 ..< asAt]
-        m = m.strip()
-        if m.startsWith("std/"): m = m[4 .. ^1]
-        if m.len > 0: mods.add(m)
-    elif line.startsWith("from ") and " import " in line:
-      var m = line[5 ..< line.find(" import ")].strip()
-      if m.startsWith("std/"): m = m[4 .. ^1]
-      if m.len > 0: mods.add(m)
-    for m in mods:
-      if m in bannedModules:
-        return "program rejected: import of '" & m & "' is not allowed in " &
-          "fabric programs — guests must not touch the filesystem, processes " &
-          "or network directly; drive tools with callTool(\"bash\", ...) instead " &
-          "(see components/fabric/docs/REFERENCE.md)"
-  return ""
 
 # --- cancellation side-channel ----------------------------------------------
 # The session runner publishes cancel.<component> {sessionId, tool, ts} when a
@@ -170,12 +108,23 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   let bin = getAppDir() / "fabric-exec"
   if not fileExists(bin):
     return %*{"error": "fabric-exec binary missing — run `make build`"}
-  let errFile = getTempDir() / ("niffler-fabric-exec-" & runId & ".err")
+  let buildDir = createTempDir("fabric-" & runId & "-", "")
+  setFilePermissions(buildDir, {fpUserRead, fpUserWrite, fpUserExec})
+  defer:
+    try: removeDir(buildDir)
+    except CatchableError: discard
+  let errFile = buildDir / "executor.err"
+  let cacheDir = rootVarDir("fabric-cache")
+  try: createDir(cacheDir)
+  except CatchableError: discard
   var env = newStringTable(modeCaseSensitive)
   env["PATH"] = getEnv("PATH")
+  env["FABRIC_CACHE_DIR"] = cacheDir
     # deliberately no NIF_* vars: the child has no bus and no credentials
-  # stdout stays the framing pipe; stderr goes to a file so guest compile
-  # errors (the embedded VM prints and quits) become actionable diagnostics
+  env["HOME"] = buildDir
+  env["TMPDIR"] = buildDir
+  # stdout stays the framing pipe; native guest stdout is redirected to
+  # stderr by the executor so ordinary echo cannot corrupt the protocol.
   let sh = "exec " & quoteShell(bin) & " 2> " & quoteShell(errFile)
   # keep fabric-exec lean: without the sweep it inherits every fd this
   # component holds (supervisor-inherited pipes, NATS socket, ...)
@@ -186,9 +135,13 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   var selectorRegistered = false
   proc stopChild() =
     try:
+      # Executor creates its own process group before compiling. Signal the
+      # group even if its leader already exited (descendants can retain pipes).
+      discard posix.kill(-Pid(p.processID), SIGTERM)
       if p.running():
-        p.terminate()
+        p.terminate() # also covers cancellation before setsid completed
         discard p.waitForExit(1000)
+      discard posix.kill(-Pid(p.processID), SIGKILL)
       if p.running():
         p.kill()
         discard p.waitForExit(1000)
@@ -207,12 +160,15 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       try: removeFile(errFile)
       except CatchableError: discard
   var calls = 0
+  var executionPhase = "compile"
+  var compileMs = 0'i64
 
   proc diag(msg: string): JsonNode =
     ## Failure result with the guest's compiler/quit output as diagnostics.
     let e = if fileExists(errFile): readFile(errFile).strip()
             else: ""
-    result = %*{"error": msg, "calls": calls}
+    result = %*{"error": msg, "calls": calls, "phase": executionPhase,
+                "compileMs": compileMs}
     if e.len > 0:
       let capped = if e.len > 4000: e[e.len - 4000 .. ^1] else: e
       result["diagnostics"] = %capped
@@ -223,10 +179,6 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         if line.contains("Error:"):
           result["firstError"] = %line.strip()
           break
-      if "ospaths2" in capped or "undeclared identifier: 'cmpic'" in capped:
-        result["hint"] = %("std/os (or a VM-unsafe import) failed to compile: " &
-          "fabric guests must not import os/osproc/net — drive the filesystem " &
-          "through callTool(\"bash\", ...) (see components/fabric/examples/)")
   sel.registerHandle(p.outputHandle.SocketHandle, {Read}, p.outputHandle.cint)
   selectorRegistered = true
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
@@ -396,6 +348,11 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   proc handleFrame(frame: JsonNode): bool =
     ## One guest frame; true when the program's result arrived.
     case frame{"t"}.getStr("")
+    of "phase":
+      executionPhase = frame{"phase"}.getStr("execute")
+      compileMs = frame{"compileMs"}.getBiggestInt(0)
+      comp.emit("ev.fabric.phase", %*{"runId": runId, "sessionId": sessionId,
+        "phase": executionPhase, "compileMs": compileMs})
     of "log":
       let message = frame{"s"}.getStr("")
       inc logEvents
@@ -488,7 +445,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
         raise newException(CatchableError, "fabric-exec timed out")
 
   try:
-    var context = %*{"code": code, "strings": strings}
+    var context = %*{"code": code, "strings": strings, "buildDir": buildDir}
     if selectedMode: context["schemas"] = schemas
     p.inputStream.write($context & "\n")
     p.inputStream.flush()
@@ -499,9 +456,17 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
       if inFlight.len > 0:
         pumpInFlight()
       else:
-        # nothing in flight: block for the next frame
-        if handleFrame(parseJson(
-            reader.readFrame(p.outputHandle.cint, deadline, sel))):
+        # nothing in flight: wait for the next frame — bounded, so a session
+        # cancellation is noticed promptly even while the guest is silent. A
+        # compiled guest can compute for a long stretch without a frame (the
+        # VM-era executor emitted them often enough to hide this), and the
+        # blocking readFrame would swallow the whole deadline.
+        let framed = reader.readFrameWithin(p.outputHandle.cint, 200, sel)
+        if (deadline - getMonoTime()).inMilliseconds.int <= 0:
+          raise newException(CatchableError, "fabric-exec timed out")
+        if not framed.got:
+          continue
+        if handleFrame(parseJson(framed.line)):
           break
   except CancelledRun:
     # Session-turn cancellation: terminate the guest promptly, abandon the
@@ -531,6 +496,7 @@ proc runExecutor(subject, lease, code: string, strings: JsonNode,
   # every terminal path reports the real call count (lifecycle events and
   # budget accounting read it)
   resultJ["_calls"] = %calls
+  if resultJ{"compileMs"} == nil: resultJ["compileMs"] = %compileMs
   return resultJ
 
 proc cleanupArtifacts(dir: string, incomingBytes: int64) =
@@ -564,6 +530,38 @@ proc cleanupArtifacts(dir: string, incomingBytes: int64) =
     inc first
   if retainedFiles >= maxArtifactFiles or retainedBytes > maxArtifactBytes:
     raise newException(ValueError, "fabric artifact quota cannot be reclaimed")
+
+const
+  maxCacheEntries = 64
+  maxCacheBytes = 128 * 1024 * 1024
+
+proc cleanupCache(dir: string) =
+  ## Bound the compiled-guest cache: evict least-recently-stored entries until
+  ## the retained set fits, but never touch an entry that is in use (a running
+  ## guest binary is mmap/file-backed; removal only breaks future cache hits).
+  if not dirExists(dir): return
+  var entries: seq[tuple[dir: string, modified: times.Time, size: int64]]
+  for kind, path in walkDir(dir):
+    if kind != pcDir: continue
+    try:
+      var size = 0'i64
+      for fKind, f in walkDir(path):
+        if fKind == pcFile: inc(size, getFileSize(f))
+      entries.add((path, getLastModificationTime(path), size))
+    except CatchableError:
+      discard
+  entries.sort(proc(a, b: auto): int = cmp(a.modified, b.modified))
+  var retainedBytes = 0'i64
+  for e in entries: retainedBytes += e.size
+  var first = 0
+  while first < entries.len and
+      (entries.len - first >= maxCacheEntries or retainedBytes > maxCacheBytes):
+    try:
+      removeDir(entries[first].dir)
+      retainedBytes -= entries[first].size
+    except CatchableError:
+      discard
+    inc first
 
 proc writePrivateFile(path, value: string) =
   ## O_EXCL plus mode 0600 avoids a world-readable creation window.
@@ -620,9 +618,43 @@ let fabSchema = toolSchema(%*{
                "minimum": 1, "maximum": maxCallsLimit,
                "description": "Budget: reject tool calls beyond this count (default 200)"}
 }, required = @[],
-   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — read components/fabric/docs/REFERENCE.md before writing a program; worked examples live in components/fabric/examples/. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. Guests must not import os/osproc/net; the program is human-approved as a whole (bash's trust class).")
+   description = "Write and run a Nim program that drives Niffler tools itself. WHEN TO USE — direct loop: one step, or each result changes the plan; fabric: mechanical, known-shape work too multi-step for one command (sequential fan-out, search-then-read distillation, big intermediate data that must never enter the conversation, edit-then-verify in one program, polling loops) — a single shell one-liner (bulk rename, a sed across files) stays in bash; writing the program IS the thinking; agent_run: exploratory subtasks needing per-step judgment in a fresh context; hybrid: fabric programs may call agent_run. HOW — call fabric_help (empty topic) for the reference and the example index before writing a program; an example topic returns its source. Call tools with callTool(tool, jobj(jpair(name, value))) using jesc/jnum/jbool helpers; pass tools to pin an execution allowlist and its schemas. Big payloads go through strings and stringArg(key). Give either code or name — name runs a stored program from the model-curated library. Every call crosses the approval gate and counts against maxCalls. Only finish()'s value reaches the conversation. The program is human-approved as a whole (bash's trust class); approved native code can import any std module.")
 fabSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 300_000,
                             "sessionContext": true, "onDemand": true}
+
+const helpDir = currentSourcePath().parentDir()
+proc exampleIndex(): string =
+  var all: seq[string] = @[]
+  try:
+    for kind, path in walkDir(helpDir / "examples"):
+      if kind == pcFile and path.endsWith(".nim"):
+        all.add(path.extractFilename().splitFile.name)
+  except CatchableError: discard
+  all.sort()
+  all.mapIt("\n- `" & it & "`").join()
+
+proc fabricHelpContent(topic: string): string =
+  ## Component-local help, readable without guessing the harness root.
+  ## `topic` is empty (overview + reference) or one of the example names.
+  if topic.len == 0:
+    let refPath = helpDir / "docs" / "REFERENCE.md"
+    if fileExists(refPath):
+      return readFile(refPath) & "\n\n# Worked examples\n" & exampleIndex()
+    return "fabric: no REFERENCE.md bundled with this build"
+  let fx = helpDir / "examples" / (topic & ".nim")
+  if not fileExists(fx):
+    return "unknown example '" & topic & "' — try 'all'"
+  readFile(fx)
+
+let helpSchema = toolSchema(%*{
+  "topic": {"type": "string", "description": "One example name (e.g. fanout), or empty for the reference plus the example index"}},
+  required = @[],
+  description = "Read the Fabric guest reference and worked examples without locating component files. Empty topic returns the full reference plus the index; a topic returns that example's source. Read this before writing a fabric program.")
+helpSchema["x-harness"] = %*{"onDemand": true}
+discard comp.tool("fabric_help", helpSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let topic = toolArgs{"topic"}.getStr("")
+    return %*{"content": fabricHelpContent(topic)})
 discard comp.tool("fabric", fabSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
     let sess = toolArgs{"__session"}{"session"}.getStr("")
@@ -664,9 +696,6 @@ discard comp.tool("fabric", fabSchema,
       code = stored.value{"code"}.getStr("")
     if code.len > maxCodeBytes:
       return %*{"error": "fabric code exceeds " & $maxCodeBytes & " bytes"}
-    let lintMsg = lint(code)
-    if lintMsg.len > 0:
-      return %*{"error": lintMsg}
     let subject = sessionToolSubject(sess)
     let runId = newId()
     # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
@@ -683,22 +712,31 @@ discard comp.tool("fabric", fabSchema,
       return %*{"error": "fabric execution deadline expired"}
     let timeoutMs = min(requestedTimeoutMs, outerRemainingMs)
     let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
-    let stringsJ = if toolArgs{"strings"} != nil: toolArgs{"strings"}
+    let stringsArg = toolArgs{"strings"}
+    let stringsJ = if stringsArg != nil and stringsArg.kind != JNull: stringsArg
                    else: newJObject()
-      # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys)
+      # nil JsonNode in %* SIGSEGVs at toUgly (AGENTS.md: never assume keys);
+      # an explicit JSON null for an optional object means "absent" (models
+      # habitually fill unused fields with null — bench evidence: t28-high's
+      # first fabric call was rejected for `strings: null`).
     if stringsJ.kind != JObject:
-      return %*{"error": "strings must be an object"}
+      return %*{"error": "strings must be an object, not " &
+                         $stringsJ.kind}
     if stringsJ.len > maxStringsEntries:
       return %*{"error": "strings exceeds " & $maxStringsEntries & " entries"}
     var stringsBytes = 0
     for key, value in stringsJ:
+      if value.kind == JNull: continue
       if value.kind != JString:
-        return %*{"error": "strings." & key & " must be a string"}
+        return %*{"error": "strings." & key & " must be a string, not " &
+                           $value.kind}
       stringsBytes += key.len + value.getStr().len
       if stringsBytes > maxStringsBytes:
         return %*{"error": "strings exceeds " & $maxStringsBytes & " bytes"}
     var schemas: JsonNode
-    let requestedTools = toolArgs{"tools"}
+    let toolsArg = toolArgs{"tools"}
+    let requestedTools = if toolsArg != nil and toolsArg.kind != JNull: toolsArg
+                         else: nil
     if requestedTools != nil:
       if requestedTools.kind != JArray or requestedTools.len == 0 or
           requestedTools.len > maxSelectedTools:
@@ -738,6 +776,7 @@ discard comp.tool("fabric", fabSchema,
     # oversized result ever lands again
     try:
       cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+      cleanupCache(rootVarDir("fabric-cache"))
     except CatchableError: discard
     let fabricStart = epochTime()
     let r = runExecutor(subject, lease, code, stringsJ, schemas, maxCalls,
@@ -748,7 +787,8 @@ discard comp.tool("fabric", fabSchema,
       var ev = %*{"runId": runId, "sessionId": sess, "status": status,
                   "durationMs": ((epochTime() - fabricStart) * 1000.0).int,
                   "calls": r{"_calls"}.getInt(r{"calls"}.getInt(0)),
-                  "maxCalls": maxCalls}
+                  "maxCalls": maxCalls,
+                  "compileMs": r{"compileMs"}.getBiggestInt(0)}
       if extra != nil:
         for key, val in extra: ev[key] = val
       comp.emit("ev.fabric.done", ev)
@@ -793,5 +833,6 @@ discard comp.tool("fabric", fabSchema,
 # per-run sweep below keeps it bounded afterwards).
 try:
   cleanupArtifacts(rootVarDir("fabric-artifacts"), 0)
+  cleanupCache(rootVarDir("fabric-cache"))
 except CatchableError: discard
 comp.run()

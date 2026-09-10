@@ -49,6 +49,33 @@ proc readFrame*(reader: var FrameReader, fd: cint, deadline: MonoTime,
     for i in 0 ..< count:
       reader.buffer.add(chunk[i])
 
+proc readFrameWithin*(reader: var FrameReader, fd: cint, timeoutMs: int,
+                      selector: Selector[cint]): tuple[got: bool, line: string] =
+  ## Like readFrame, but gives up after timeoutMs and returns got=false so
+  ## the caller can run periodic work (e.g. poll the cancellation channel)
+  ## while the guest is silent. A compiled guest may compute for a long
+  ## stretch without emitting a frame — the VM-era executor was slow enough
+  ## that frames kept arriving, so a blocking read hid the gap (regression:
+  ## t_fabric_cancel's busy-loop guest logs 50 lines, then spins silently).
+  ## Never raises on timeout; a closed pipe still raises.
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  while true:
+    let buffered = reader.takeFrame()
+    if buffered.available:
+      return (true, buffered.line)
+    let left = (deadline - getMonoTime()).inMilliseconds.int
+    if left <= 0:
+      return (false, "")
+    if selector.select(min(left, 200)).len == 0:
+      continue
+    var chunk: array[4096, char]
+    let count = posix.read(fd, addr chunk[0], chunk.len)
+    if count <= 0:
+      raise newException(CatchableError, "fabric-exec closed its output before a " &
+        "complete response (the guest crashed or failed to compile — see diagnostics)")
+    for i in 0 ..< count:
+      reader.buffer.add(chunk[i])
+
 proc readReady*(reader: var FrameReader, fd: cint,
                 selector: Selector[cint]): bool =
   ## Non-blocking: read whatever bytes are ready right now into the buffer;

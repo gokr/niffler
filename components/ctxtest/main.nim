@@ -360,11 +360,11 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t19", "fabric", %*{
           "tools": ["bash"], "code": example, "strings": {"dirs": "."}})
       of 19:
-        # banned import via bracket module list: lint must reject before any
-        # executor spawn (bench evidence: this exact shape slipped past the
-        # token scan and crashed the VM compile twice)
-        let banned = "import std/[os, strutils, sequtils]\nfinish(\"{}\")\n"
-        return toolCall("t20", "fabric", %*{"code": banned})
+        # Native approved code can import normal stdlib modules. This is a
+        # trust-class change, not an OS sandbox claim or lint exception.
+        let native = "import fabricguest\nimport std/os\n" &
+          "finish(%*{\"nativeStdlib\": getCurrentDir().len > 0})\n"
+        return toolCall("t20", "fabric", %*{"code": native})
       of 20:
         # example fanout.nim: pinned typed bash + stringArg, aggregates
         let code = readFile(getEnv("NIF_REPO_ROOT") /

@@ -128,6 +128,18 @@ proc main() =
       if fabProc.running(): fabProc.kill()
     fabProc.close()
   check("fabric registered", waitComponent(nc, "fabric"))
+
+  # fabric_help is an on-demand tool readable without locating component files;
+  # it needs no session context, so it is directly callable over the bus.
+  let help = call(nc, "fabric", "fabric_help", %*{}, 10_000)
+  check("fabric_help returns the reference",
+        help{"content"}.getStr("").contains("import fabricguest") and
+        help{"content"}.getStr("").contains("## Guest API"), $help)
+  let helpTopic = call(nc, "fabric", "fabric_help", %*{"topic": "fanout"}, 10_000)
+  check("fabric_help returns one example source",
+        helpTopic{"content"}.getStr("").contains("Example 2 — fan-out") and
+        not helpTopic{"content"}.getStr("").contains("## Guest API"), $helpTopic)
+
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
                                  logFile = root / "var" / "test-logs" / "agent-fab.log")
   defer:
@@ -189,9 +201,8 @@ proc main() =
 
   check("guest bash call through the bridge succeeded",
         transcript.contains("fabric-ok"), transcript)
-  check("banned import via bracket list rejected with guidance",
-        transcript.contains("import of 'os' is not allowed in fabric programs") and
-        transcript.contains("callTool"), transcript)
+  check("approved native guest imports ordinary stdlib modules",
+        transcript.contains("\"nativeStdlib\":true"), transcript)
   check("compile errors surface an actionable firstError",
         transcript.contains("firstError"), transcript)
   check("maxCalls budget enforced",
