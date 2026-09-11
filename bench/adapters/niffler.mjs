@@ -447,7 +447,7 @@ export function transcriptShape(items) {
         try {
           a = JSON.parse(tc.function.arguments || "{}");
         } catch {}
-        if (a.paths) shape.readBatch += 1;
+        if (a.windows) shape.readBatch += 1;
         else shape.readSingle += 1;
       }
     }

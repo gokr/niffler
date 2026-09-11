@@ -186,7 +186,7 @@ patch instead of burning the remaining feedback rounds.
     instead of an absolute path — relative paths stay inside the workspace
     by construction, so no tool can wander into the harness root. Core
     resolves path-shaped tool args against that workspace at dispatch
-    (bash `cd`, edit/grep/read paths, git `repo`).
+    (bash `cd`, edit/grep/read windows, git `repo`).
   - **No prompt-context asymmetry**: Niffler's own `AGENTS.md` is excluded
     from the bench harness root, so the system prompt carries no contributor
     guidance other harnesses don't get.

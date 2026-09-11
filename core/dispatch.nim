@@ -983,7 +983,8 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
 proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
   ## workspace. Core knows no component names: components opt in with
-  ## x-harness.workspace {pathFields, defaultPathFields, cwdField}.
+  ## x-harness.workspace {pathFields, defaultPathFields, pathArrayFields
+  ## (string items), pathObjectArrayFields ([{field, pathField}]), cwdField}.
   if schema == nil or args == nil or args.kind != JObject or workspace.len == 0:
     return
   let policy = schema{"x-harness"}{"workspace"}
@@ -1015,6 +1016,20 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
         for item in mitems arr:
           if item.kind == JString:
             item = %resolve(item.getStr(""))
+  let objArrays = policy{"pathObjectArrayFields"}
+  if objArrays != nil and objArrays.kind == JArray:
+    for spec in objArrays:
+      if spec == nil or spec.kind != JObject: continue
+      let name = spec{"field"}.getStr("")
+      let pathField = spec{"pathField"}.getStr("path")
+      if name.len == 0: continue
+      if args{name} != nil and args{name}.kind == JArray:
+        var arr = args{name}  # JsonNode is a ref: iterate and patch in place
+        for item in mitems arr:
+          if item.kind != JObject: continue
+          let p = item{pathField}
+          if p != nil and p.kind == JString:
+            item[pathField] = %resolve(p.getStr(""))
   let cwdField = policy{"cwdField"}.getStr("")
   if cwdField.len > 0 and args{cwdField} == nil:
     args[cwdField] = %workspace

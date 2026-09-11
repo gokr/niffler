@@ -241,6 +241,12 @@ comp.tool(%*{"hidden": true}):
         # injected by the runner (t_core asserts the tool ran there)
         return toolCall("t1", "bash", %*{"command": "pwd"})
       return %*{"content": "workspace-done"}
+    if sessionId == "ws-read":
+      if stage == 0:
+        # core must rewrite windows[].path against the conversation
+        # workspace too (t_core asserts the read hit the workspace file)
+        return toolCall("t1", "read", %*{"windows": [{"path": "wsfile.txt"}]})
+      return %*{"content": "ws-read-done"}
     if sessionId == "fab-test":
       case stage
       of 0:

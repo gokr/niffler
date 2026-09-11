@@ -160,7 +160,7 @@ const expertFallbackKnowledge = """
 - Skills: skill_list / skill_load for reviewed workflow guides.
 - Self-extension: write source -> builder.build -> core.spawn -> discover.
 - File tools: read/edit/write/files are direct (read takes one path or up
-  to 12 paths in one call); grep is direct; the read-only git_* tools are
+  to 12 windows in one call); grep is direct; the read-only git_* tools are
   on-demand; bash remains right for builds, tests, pipelines and git
   mutations.
 - Context economy: agent_run subagents and fabric programs keep bulk work

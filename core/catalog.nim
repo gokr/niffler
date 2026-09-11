@@ -144,22 +144,22 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "discover", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Find live components and tools outside the fixed direct toolset. Every query word must match a component or tool name/description; component or tools (up to 16 names) return full schemas; an empty query lists tool names only.",
+      "description": "Find components/tools outside the fixed direct set. Query words must match a name/description; component or tools (≤16) return full schemas; an empty query lists names.",
       "properties": {
-        "query": {"type": "string", "description": "Case-insensitive component, tool-name, or description filter"},
-        "component": {"type": "string", "description": "Exact component name whose tools you want to inspect"},
+        "query": {"type": "string", "description": "Name/description filter (case-insensitive)"},
+        "component": {"type": "string", "description": "Component whose tools to inspect"},
         "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 16,
-                  "description": "Exact tool names whose full schemas to return"}
+                  "description": "Tool names whose full schemas to return"}
       }
     }))
   coreReg.tools.add(ToolReg(name: "invoke", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Call a non-hidden tool after discover returns its schema: put the target's arguments unchanged under arguments. Its normal approval and timeout policy applies.",
+      "description": "Call a non-hidden tool after discover returns its schema: put the target's arguments unchanged under arguments. Its approval/timeout policy applies.",
       "properties": {
-        "tool": {"type": "string", "description": "Exact tool name returned by discover"},
-        "arguments": {"type": "object", "description": "Arguments matching the discovered target schema"},
-        "sticky": {"type": "boolean", "description": "After a successful call, promote the tool into this conversation's direct toolset so later calls skip the invoke hop (one prefix re-read; capped by NIF_MAX_DIRECT_TOKENS; inert under a session allowlist)"}
+        "tool": {"type": "string", "description": "Tool name returned by discover"},
+        "arguments": {"type": "object", "description": "Arguments matching the target schema"},
+        "sticky": {"type": "boolean", "description": "Promote into this conversation's direct toolset after success (skips later invoke hops; one prefix re-read)"}
       },
       "required": ["tool", "arguments"]
     }))

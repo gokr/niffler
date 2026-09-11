@@ -94,7 +94,7 @@ for o in batch(jobs):
 | `edit` | `{"text": "Successfully applied N edit(s) to <path>.", "first_changed_line", "last_changed_line", "added_lines", "removed_lines"}` |
 | `grep` | `{"exit_code": N, "text": "path:line:match ..."}` — exit 1 with `"[no matches]"` means zero hits, not an error |
 | `read` (`path`) | the file content (a JSON string result) |
-| `read` (`paths`) | `{"text", "items": [{"path","content"} or {"path","error"}], "count"}` — per-item errors never abort the batch |
+| `read` (`windows`) | `{"text", "items": [{"path","content"} or {"path","error"}], "count"}` — per-item errors never abort the batch |
 
 Do not parse the human `text` `string` to decide success («edit applied»).
 Use the structured fields (`exit_code`, `added_lines`, `ok`).

@@ -888,100 +888,131 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
             persist = not same)
   result = %text
 
-proc hReadMany(c: Component, args: JsonNode): JsonNode =
-  ## Read several independent text files in one call. Each item reports its
-  ## own error so one missing/binary file does not hide the others; the
-  ## aggregate stays below the bus-friendly 512KB bound.
-  if args == nil or args.kind != JObject or args{"paths"} == nil or
-      args{"paths"}.kind != JArray:
+proc hReadWindows(c: Component, args: JsonNode): JsonNode =
+  ## Read several files/ranges in one call. Each item is {path, offset?,
+  ## limit?}; per-item errors never hide the others and the aggregate stays
+  ## below the bus-friendly 512KB bound.
+  if args == nil or args.kind != JObject or args{"windows"} == nil or
+      args{"windows"}.kind != JArray:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read requires a \"paths\" array (or a single \"path\").")
-  let paths = args{"paths"}
-  if paths.len == 0 or paths.len > 12:
+      "[E_BAD_SHAPE] read requires a \"windows\" array (or a single \"path\").")
+  let windows = args{"windows"}
+  if windows.len == 0 or windows.len > 12:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] paths must contain 1..12 files (got " &
-      $paths.len & ") — split into batches.")
-  let limit = args{"limit"}.getInt(MAX_READ_LINES)
-  if limit < 1:
-    raise newException(ValueError, "[E_BAD_SHAPE] limit must be positive.")
+      "[E_BAD_SHAPE] windows must contain 1..12 items (got " &
+      $windows.len & ") — split into batches.")
   let force = args{"force"}.getBool(false)
   var blocks: seq[string]
   var items = newJArray()
   var used = 0
-  for item in paths:
-    if item.kind != JString or item.getStr("").len == 0:
-      blocks.add("### <invalid path>\n[E_BAD_SHAPE] path must be a non-empty string")
-      items.add(%*{"path": "", "error": "path must be a non-empty string"})
+  for item in windows:
+    if item == nil or item.kind != JObject:
+      blocks.add("### <invalid item>\n[E_BAD_SHAPE] each windows item must be " &
+        "an object with a \"path\"")
+      items.add(%*{"path": "",
+                   "error": "each windows item must be an object with a \"path\""})
       continue
-    let path = item.getStr()
+    let pathNode = item{"path"}
+    if pathNode == nil or pathNode.kind != JString or pathNode.getStr("").len == 0:
+      blocks.add("### <invalid item>\n[E_BAD_SHAPE] windows[].path must be a " &
+        "non-empty string")
+      items.add(%*{"path": "",
+                   "error": "windows[].path must be a non-empty string"})
+      continue
+    let path = pathNode.getStr("")
+    let offN = item{"offset"}
+    let limN = item{"limit"}
+    if offN != nil and offN.kind != JNull and
+        (offN.kind != JInt or offN.getInt() < 1):
+      blocks.add("### " & path &
+        "\n[E_BAD_SHAPE] windows[].offset must be a positive integer")
+      items.add(%*{"path": path,
+                   "error": "windows[].offset must be a positive integer"})
+      continue
+    if limN != nil and limN.kind != JNull and
+        (limN.kind != JInt or limN.getInt() < 1):
+      blocks.add("### " & path &
+        "\n[E_BAD_SHAPE] windows[].limit must be a positive integer")
+      items.add(%*{"path": path,
+                   "error": "windows[].limit must be a positive integer"})
+      continue
+    let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
+    let limit = if limN != nil and limN.kind == JInt: limN.getInt()
+                else: MAX_READ_LINES
+    let heading = if offN != nil or limN != nil:
+                    path & ":" & $offset & "+" & $limit
+                  else: path
     try:
-      let content = hRead(c, %*{"path": path, "limit": limit, "force": force,
-                               "__session": args{"__session"}})
+      var itemArgs = %*{"path": path, "force": force,
+                        "__session": args{"__session"}}
+      if offN != nil and offN.kind == JInt: itemArgs["offset"] = %offN.getInt()
+      if limN != nil and limN.kind == JInt: itemArgs["limit"] = %limN.getInt()
+      let content = hRead(c, itemArgs)
       let text = content.getStr()
       if used + text.len > 512_000:
-        blocks.add("### " & path &
-          "\n[read limit: aggregate output exceeds 512000 bytes; read remaining files separately]")
-        items.add(%*{"path": path,
-                     "error": "aggregate read output exceeds 512000 bytes; read remaining files separately"})
+        blocks.add("### " & heading &
+          "\n[read limit: aggregate output exceeds 512000 bytes; read remaining items separately]")
+        items.add(%*{"path": path, "offset": offset, "limit": limit,
+                     "error": "aggregate read output exceeds 512000 bytes; read remaining items separately"})
         break
       used += text.len
-      blocks.add("### " & path & "\n" & text)
-      items.add(%*{"path": path, "content": content})
+      blocks.add("### " & heading & "\n" & text)
+      items.add(%*{"path": path, "offset": offset, "limit": limit,
+                   "content": content})
     except CatchableError as e:
-      blocks.add("### " & path & "\n" & e.msg)
-      items.add(%*{"path": path, "error": e.msg})
+      blocks.add("### " & heading & "\n" & e.msg)
+      items.add(%*{"path": path, "offset": offset, "limit": limit,
+                   "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
 var gReadNudge = initTable[string, int]()
-  ## session -> consecutive full single-file reads since the last nudge or
-  ## `paths` batch; the hint fires on the third and then rearms.
+  ## session -> consecutive single-item reads since the last nudge or
+  ## `windows` batch; the hint fires on the third and then rearms.
 
 proc noteBatchRead(args: JsonNode) =
   let session = args{"__session"}{"session"}.getStr("")
   if session.len > 0: gReadNudge[session] = 0
 
 proc nudgeSingleRead(args: JsonNode, node: JsonNode): JsonNode =
-  ## After three consecutive full single-file reads, append a batching hint
-  ## to the result; the counter rearms so the cue repeats at most every
-  ## third read. Windowed reads (paging one file) don't count.
+  ## After three consecutive single-item reads, append a batching hint to
+  ## the result; the counter rearms so the cue repeats at most every third
+  ## read. Windowed reads count too — a windows item carries its own range.
   let session = args{"__session"}{"session"}.getStr("")
   if session.len == 0 or node == nil or node.kind != JString: return node
-  if args{"offset"} != nil and args{"offset"}.kind != JNull: return node
   let n = gReadNudge.getOrDefault(session, 0) + 1
   if n >= 3:
     gReadNudge[session] = 0
-    return %(node.getStr("") & "\n[hint: several related files? one read call " &
-      "takes up to 12 paths — read {\"paths\": [f1, f2, ...]} — instead " &
-      "of one file per turn.]")
+    return %(node.getStr("") & "\n[hint: batching reads? read {\"windows\": " &
+      "[{path, offset?, limit?}, ...]} takes up to 12 files/ranges in one " &
+      "call — instead of one read per turn.]")
   gReadNudge[session] = n
   return node
 
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
-  ## Merged read entry point: one file via `path`, several via `paths`.
+  ## Merged read entry point: one file via `path`, several via `windows`.
   if args == nil or args.kind != JObject:
     raise newException(ValueError,
       "[E_BAD_SHAPE] Read request must be an object.")
-  let pathsNode = args{"paths"}
-  let pathNode = args{"path"}
-  let hasPaths = pathsNode != nil and pathsNode.kind != JNull
-  let hasPath = pathNode != nil and pathNode.kind != JNull
-  if hasPaths and hasPath:
+  if args{"paths"} != nil and args{"paths"}.kind != JNull:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read takes either \"path\" (one file) or \"paths\" " &
+      "[E_BAD_SHAPE] \"paths\" was replaced by \"windows\": read " &
+      "{\"windows\": [{\"path\": ...}, ...]} carries per-item offset/limit.")
+  let windowsNode = args{"windows"}
+  let pathNode = args{"path"}
+  let hasWindows = windowsNode != nil and windowsNode.kind != JNull
+  let hasPath = pathNode != nil and pathNode.kind != JNull
+  if hasWindows and hasPath:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read takes either \"path\" (one file) or \"windows\" " &
       "(several in one call), not both.")
-  if hasPaths:
-    if args{"offset"} != nil and args{"offset"}.kind != JNull:
-      raise newException(ValueError,
-        "[E_BAD_SHAPE] \"offset\" applies to a single \"path\"; a " &
-        "\"paths\" batch starts each file at line 1 — use limit, or " &
-        "read the one file you need to page.")
+  if hasWindows:
     noteBatchRead(args)
-    return hReadMany(c, args)
+    return hReadWindows(c, args)
   if hasPath:
     return nudgeSingleRead(args, hRead(c, args))
   raise newException(ValueError,
-    "[E_BAD_SHAPE] read requires \"path\" (one file) or \"paths\" " &
-    "(1..12 files in one call).")
+    "[E_BAD_SHAPE] read requires \"path\" (one file) or \"windows\" " &
+    "(1..12 files/ranges in one call).")
 
 # ---------------------------------------------------------------------------
 # write handler
@@ -1038,20 +1069,30 @@ loadStore()
 
 discard comp.tool("read", toolSchema(%*{
   "path": {"type": "string",
-           "description": "Single file to read"},
-  "paths": {"type": "array", "minItems": 1, "maxItems": 12,
-            "items": {"type": "string"},
-            "description": "Several files to read in one call (1..12) — batch known-relevant files (grep hits, imports, a module set) instead of one read per turn"},
+           "description": "Single file (page with offset/limit)"},
+  "windows": {"type": "array", "minItems": 1, "maxItems": 12,
+              "items": {"type": "object",
+                "properties": {
+                  "path": {"type": "string",
+                           "description": "File to read"},
+                  "offset": {"type": "integer", "minimum": 1,
+                             "description": "Start line (default 1)"},
+                  "limit": {"type": "integer", "minimum": 1,
+                            "description": "Max lines (default 2000)"}},
+                "required": ["path"], "additionalProperties": false},
+              "description": "Several files or ranges in one call (1..12) — batch known-relevant reads instead of one per turn"},
   "offset": {"type": "integer", "minimum": 1,
-             "description": "1-indexed start line (single path only)"},
+             "description": "Start line (path only)"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines per file (default 2000)"},
+            "description": "Max lines (path only; windows take their own)"},
   "force": {"type": "boolean",
-            "description": "Re-dump content even when unchanged since your last read/write"}
+            "description": "Re-dump even if unchanged since your last read/write"}
 }, @[],
-  "Read files: one with \"path\", or several with \"paths\" (up to 12 in one call — per-file errors, 512KB aggregate cap, content under a \"### path\" heading). Lines are verbatim — copy exactly into edit's old_string. Refuses binary and >100MB. Batch known-relevant files instead of one read per turn. An unchanged full re-read returns a compact [unchanged] confirmation instead of the bytes."), hReadTool,
+  "Read one file (\"path\"), or batch \"windows\": [{path, offset?, limit?}, ...] — up to 12 files/ranges in one call, per-item errors, content under a \"### path\" heading, 512KB cap. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
-     "workspace": {"pathFields": ["path"], "pathArrayFields": ["paths"]}})
+     "workspace": {"pathFields": ["path"],
+                   "pathObjectArrayFields": [{"field": "windows",
+                                              "pathField": "path"}]}})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",

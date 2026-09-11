@@ -15,9 +15,9 @@ live components and tools outside the fixed direct set;
 
 ## File tools (direct)
 
-- `read` — one file (`path`, pageable with offset/limit) or up to 12 in
-  one call (`paths`). Batch related reads; cut tool round trips when
-  inspecting several files at once.
+- `read` — one file (`path`) or up to 12 files/ranges in one call
+  (`windows`: `{path, offset?, limit?}` items). Batch related reads; cut
+  tool round trips when inspecting several files at once.
 - `files` — sorted file listing by path/glob. The listing tool.
 - `write` — atomic whole-file write (create or overwrite). Use for new files
   or full rewrites.

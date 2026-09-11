@@ -19,7 +19,7 @@ proc main() =
      not fileExists(repoRoot / "var" / "bin" / "cli"):
     fail("missing binaries — run `make build` first")
     quit(1)
-  let sandbox = newCoreSandbox("core", ["store", "bash", "builder", "plugins"])
+  let sandbox = newCoreSandbox("core", ["store", "bash", "builder", "plugins", "edit"])
   let root = sandbox.root
   let coreBin = sandbox.sandboxBin("niffler")
   let cliBin = sandbox.sandboxBin("cli")
@@ -317,6 +317,27 @@ proc main() =
         wsToolMsg{"value"}{"name"}.getStr("") == "bash" and
         wsToolMsg{"value"}{"content"}.getStr("").contains(root / "ws"),
         $wsToolMsg)
+
+  # windows workspace injection: core resolves windows[].path inside
+  # array objects against the conversation workspace too — the read must
+  # reach the edit component and return the workspace file's bytes.
+  writeFile(root / "ws" / "wsfile.txt", "ws-window-ok\n")
+  let wrNew = call(nc, "core", "session",
+                   %*{"sessionId": "ws-read", "cwd": "ws"}, 120_000)
+  check("windows workspace session created",
+        wrNew{"error"} == nil and wrNew{"cwd"}.getStr("") == root / "ws",
+        $wrNew)
+  let wrTurn = call(nc, "core", "session",
+                    %*{"sessionId": "ws-read", "content": "go"}, 120_000)
+  check("windows workspace turn completed",
+        wrTurn{"reply"}.getStr("") == "ws-read-done", $wrTurn)
+  let wrToolMsg = call(nc, "store", "get",
+                       %*{"kind": "message", "id": "ws-read:000003"}, 10_000)
+  check("read windows resolved inside the conversation workspace",
+        wrToolMsg{"error"} == nil and
+        wrToolMsg{"value"}{"name"}.getStr("") == "read" and
+        wrToolMsg{"value"}{"content"}.getStr("").contains("ws-window-ok"),
+        $wrToolMsg)
 
   # --- approval gating on a bus without NIF_AUTO_APPROVE --------------------
   # (core 1 must be fully down first: the store is single-writer)

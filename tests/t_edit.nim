@@ -182,29 +182,39 @@ proc main() =
   check("read returns verbatim content",
         rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
 
-  # read paths: several files in one call, per-item errors, bounds
+  # read windows: several files/ranges in one call, per-item errors, bounds
   writeFile(tmp / "m1.txt", "alpha\n")
   writeFile(tmp / "m2.txt", "beta\n")
+  writeFile(tmp / "m3.txt", "one\ntwo\nthree\n")
   let rm1 = call(nc, "edit", "read",
-                 %*{"paths": ["m1.txt", "missing.txt", "m2.txt"]})
+                 %*{"windows": [{"path": "m1.txt"}, {"path": "missing.txt"},
+                                {"path": "m2.txt"}]})
   let rm1s = rm1{"text"}.getStr("")
-  check("read paths returns files in order with per-item errors",
+  check("read windows returns items in order with per-item errors",
         rm1{"count"}.getInt(0) == 3 and
         rm1{"items"}[0]{"content"}.getStr("") == "alpha\n" and
         rm1{"items"}[1]{"error"} != nil and
         rm1{"items"}[2]{"content"}.getStr("") == "beta\n" and
         rm1s.find("### m1.txt") >= 0 and
         rm1s.find("### m2.txt") > rm1s.find("### m1.txt"), $rm1)
-  let rm2 = call(nc, "edit", "read", %*{"paths": []})
-  check("read refuses empty paths",
+  let rm2 = call(nc, "edit", "read", %*{"windows": []})
+  check("read refuses empty windows",
         rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..12"), $rm2)
   let rm3 = call(nc, "edit", "read",
-                 %*{"path": "m1.txt", "paths": ["m2.txt"]})
-  check("read refuses path+paths together",
+                 %*{"path": "m1.txt", "windows": [{"path": "m2.txt"}]})
+  check("read refuses path+windows together",
         rm3.hasKey("error") and rm3{"error"}.getStr("").contains("not both"), $rm3)
   let rm4 = call(nc, "edit", "read", %*{})
-  check("read refuses neither path nor paths",
+  check("read refuses neither path nor windows",
         rm4.hasKey("error") and rm4{"error"}.getStr("").contains("requires"), $rm4)
+  let rm5 = call(nc, "edit", "read",
+                 %*{"windows": [{"path": "m3.txt", "offset": 2, "limit": 1}]})
+  check("read windows honours per-item offset/limit",
+        rm5{"items"}[0]{"content"}.getStr("").startsWith("two\n") and
+        rm5{"text"}.getStr("").contains("m3.txt:2+1"), $rm5)
+  let rm6 = call(nc, "edit", "read", %*{"paths": ["m1.txt"]})
+  check("read names the removed paths field",
+        rm6.hasKey("error") and rm6{"error"}.getStr("").contains("windows"), $rm6)
   let rr2 = call(nc, "edit", "read",
                  %*{"path": "r.txt", "offset": 2, "limit": 1})
   check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)
@@ -358,8 +368,8 @@ proc main() =
   check("re-read after own edit is stubbed (full carried)",
         rse3.getStr("").startsWith("[unchanged]"), $rse3)
 
-  # read paths: first pass dumps (m1 unseen, m2 externally changed since its
-  # tracked write), second pass stubs both unchanged files per-item
+  # read windows: first pass dumps (m1 unseen, m2 externally changed since
+  # its tracked write), second pass stubs both unchanged files per-item
   writeFile(tmp / "m1.txt", bigContent)
   writeFile(tmp / "m2.txt", bigContent)
   discard call(nc, "edit", "write",
@@ -367,16 +377,16 @@ proc main() =
                   "__session": {"session": "s1"}})
   writeFile(tmp / "m2.txt", bigContent & "tail\n")
   let rm = call(nc, "edit", "read",
-                %*{"paths": ["m1.txt", "m2.txt"],
+                %*{"windows": [{"path": "m1.txt"}, {"path": "m2.txt"}],
                    "__session": {"session": "s1"}})
-  check("read paths dumps unseen and changed files",
+  check("read windows dumps unseen and changed files",
         rm{"text"}.getStr("").contains("### m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m2.txt"), $rm)
   let rmst = call(nc, "edit", "read",
-                 %*{"paths": ["m1.txt", "m2.txt"],
+                 %*{"windows": [{"path": "m1.txt"}, {"path": "m2.txt"}],
                     "__session": {"session": "s1"}})
-  check("read paths stubs unchanged files",
+  check("read windows stubs unchanged files",
         rmst{"text"}.getStr("").contains("[unchanged] m1.txt") and
         rmst{"text"}.getStr("").contains("[unchanged] m2.txt") and
         rmst{"items"}[0]{"content"}.getStr("").startsWith("[unchanged]"), $rmst)
@@ -440,12 +450,12 @@ proc main() =
   check("second read has no nudge", not n2.getStr("").contains("[hint:"), $n2)
   let n3 = call(nc, "edit", "read",
                 %*{"path": "n3.txt", "__session": {"session": "sn"}})
-  check("third read appends the paths hint",
-        n3.getStr("").contains("[hint:") and n3.getStr("").contains("paths"), $n3)
+  check("third read appends the windows hint",
+        n3.getStr("").contains("[hint:") and n3.getStr("").contains("windows"), $n3)
   let nb = call(nc, "edit", "read",
-                %*{"paths": ["n1.txt", "n2.txt"],
+                %*{"windows": [{"path": "n1.txt"}, {"path": "n2.txt"}],
                    "__session": {"session": "sn"}})
-  check("paths batch has no nudge",
+  check("windows batch has no nudge",
         not nb{"text"}.getStr("").contains("[hint:"), $nb)
   discard call(nc, "edit", "read",
                %*{"path": "n1.txt", "__session": {"session": "sn"}})

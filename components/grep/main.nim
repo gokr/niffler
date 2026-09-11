@@ -55,29 +55,19 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
             context: int = 0, case_insensitive: bool = false,
             hidden: bool = false, max_results: int = 200,
             timeoutMs: int = 30000): JsonNode =
-    ## Search file contents with ripgrep and return compact
-    ## path:line:match text (with file headings when several files match).
-    ## Your primary code-search tool — find definitions, call sites,
-    ## config keys, error strings. Faster and safer than bash, because the
-    ## pattern travels as an argument, not through a shell: quotes,
-    ## backslashes and spaces need no escaping. Skips .gitignore'd paths,
-    ## hidden files and binary files by default (a glob only narrows — it
-    ## never un-hides). Patterns are Rust regex
-    ## (no lookarounds/backreferences; for those use bash `grep -P`).
-    ## Prefer narrowing with path/glob over reading large outputs; broad
-    ## patterns can match thousands of lines and the result is capped
-    ## (max_results lines, 32KB total) — start narrow or pass a small
-    ## max_results. When output is truncated the marker says exactly what
-    ## to narrow.
-    ## - pattern: The regex to search for (no shell escaping needed)
-    ## - path: File or directory to search (default: the active conversation
-    ##   workspace, else the harness root)
-    ## - glob: Only search files matching this glob (e.g. "*.nim"), like rg -g
+    ## Search file contents with ripgrep (path:line:match). Prefer it over
+    ## bash grep: the pattern is an argument (no shell escaping), it skips
+    ## gitignored/hidden/binary files, and globs narrow without un-hiding.
+    ## Rust regex, no lookarounds (use bash grep -P for those). Narrow with
+    ## path/glob — broad patterns are capped (max_results lines, 32KB).
+    ## - pattern: Regex to search for (no shell escaping)
+    ## - path: File or directory to search (default: workspace, else root)
+    ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g
     ## - context: Lines of context around each match (rg -C)
     ## - case_insensitive: Case-insensitive matching (rg -i)
-    ## - hidden: Also search hidden files/directories (.gitignore still applies)
-    ## - max_results: Cap on result lines (default 200, max 10000)
-    ## - timeoutMs: Kill the search after this many ms (default 30000)
+    ## - hidden: Include hidden files/dirs (.gitignore still applies)
+    ## - max_results: Max result lines (default 200, max 10000)
+    ## - timeoutMs: Kill after this many ms (default 30000)
     var args = @["--color", "never", "-n", "-I", "--with-filename",
                  "--no-require-git", "--max-columns", "300"]
     if case_insensitive: args.add("-i")
