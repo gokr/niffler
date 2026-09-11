@@ -8,6 +8,104 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **fabric: compiled-Nim executor (native guests), content-addressed cache,
+  structured guest SDK** — the embedded Nim VM (nimeval) is gone:
+  `fabric-exec` now writes the guest and compiles it with `nim c` into a
+  private process (private HOME/TMPDIR, fresh nimcache), maps `guest.nim`
+  line numbers back onto the author's lines in compile diagnostics, then
+  execs in place. Approval still precedes compilation, and the trust class
+  is now stated explicitly: approved native code may import any std module
+  (bash-class trust, not a sandbox), so the banned-token/import lint is
+  removed. The executor setsid()s and kills the whole process group
+  (compiler, linker, guest, descendants) on timeout/cancel; RLIMIT_CPU/
+  FSIZE/AS/NOFILE bound runaway; fd 3 is the protocol pipe and guest stdout
+  is redirected to stderr so ordinary echo cannot inject frames. Guests get
+  a structured SDK (`import fabricguest`): `call(tool, JsonNode) →
+  JsonNode`, `toolCall`/`batch(openArray[FabricCall]) → seq[FabricOutcome]`
+  (auto-chunked, ordered, per-item errors preserved, inputs validated
+  before any mutation), `finish(JsonNode)` terminal with exactly-once
+  semantics, `inputs()`/`stringArg`, `logg`/`log`; the legacy
+  `callTool`/`batch(string)`/`finish(string)` forms remain as the compatible
+  path. Identical programs reuse a cached binary keyed by the compiled unit
+  (guest source with prelude + generated driver + guest SDK sources +
+  compiler identity + build flags) under `var/fabric-cache`, LRU-evicted at
+  boot and per run — a warm replay reports `compileMs: 0` and
+  `cacheHit: true` on the new `ev.fabric.phase` event (results also carry
+  `compileMs`, additively). A new on-demand `fabric_help` tool serves the
+  bundled `REFERENCE.md` and the worked-example index from component-local
+  assets, so models stop hunting the harness root for them (t30-high burned
+  ~7 calls locating the files); the `fabric` description points at it.
+  Optional `strings`/`tools` arguments accept an explicit JSON null as
+  absent (a wrong type still fails, naming the kind it saw).
+  `REFERENCE.md` is rewritten for the compiled structured style — skeleton
+  with the full import preamble, `call()`/`finish(%*{...})` as the
+  preferred API, tool-result envelopes, the corrected trust class, and an
+  error table anchored to real native diagnostics — and the five examples
+  are migrated to it (retry-loop probes `exit_code` instead of substring-
+  matching serialized text). Setup is lighter: the compiler sources
+  (nimeval/vm/dist-checksums) are no longer needed, so any Nim ≥ 2.2.10
+  distribution works (`scripts/check-nim-toolchain.sh` updated;
+  `fabricguest.nimble`, VM-only, dropped). Coverage: `tests/t_fabric_native.py`
+  (compilation, structured JSON round-trips, a 33-call auto-chunked batch,
+  cache hit and distinct-key behavior, legacy API, compile failure before
+  any tool dispatch, missing-finish) plus process-group reaping and
+  non-terminating-program stages, both wired into `make test-fabric`; the
+  migration plan and phase status live in
+  `components/fabric/docs/COMPILED_PLAN.md`.
+
+- **fabric: mid-run cancellation** — stopping the session turn that launched
+  a fabric program (or `agent_stop` on the job whose child runs it) now ends
+  the guest within seconds instead of letting fabric-exec run out its whole
+  deadline. Fabric subscribes `cancel.>` and polls it while the guest runs —
+  the wildcard matters, because a stop landing while a nested bridge call is
+  in flight is published on that call's component subject
+  (`cancel.bash`/...), and the guest must still end. On cancel the executor
+  is terminated, in-flight bridge calls are abandoned (inbox subscriptions
+  destroyed, queued calls never dispatched), and the run reports
+  `status: "cancelled"` (`ev.fabric.done`, tool result carries
+  `cancelled: true`) — distinct from success and from failure/timeout.
+  Cancels for other sessions are stashed so a queued run is skipped, not
+  started, and a queued run is untouched by another run's cancellation.
+  `agent_run` polls `cancel.agent` while it waits for its child, so a
+  stopped parent turn cancels the child turn (publishCancel) instead of
+  letting it burn its budget for a caller that is gone — this is what tears
+  down nested `agent_run` children of a cancelled fabric program.
+  `tests/t_fabric_cancel.nim` covers the busy-loop stop (cancelled outcome,
+  no orphaned fabric-exec), a queued second run completing unaffected, and a
+  guest blocked inside a nested bash call whose process tree is killed.
+
+- **docs/research: DeepSeek Harness (dsh) study + the DSH steal proposal** —
+  `docs/research/DEEPSEEK-HARNESS.md` surveys DeepSeek's open-source agent
+  harness (~170k LOC TypeScript, everything-is-a-plugin on the Cordis DI
+  framework, profiles/bundles/patch files, Landlock sandbox launcher) with
+  file:line citations — the event-sourced conversation surface with
+  provable deletions, the guarded tool pipeline, subagents. Companion
+  `docs/research/DSH-STEAL.md` distills four candidate steals made
+  Niffler-native (continuable subagents via activation epochs, forked
+  children seeded from the parent's history, typed tool declarations
+  delivered on demand as a tool result rather than prompt weight, and a
+  `team` component with named teammates and a durable mailbox), each checked
+  against the existing wire/topology/prompt-cache invariants. Explicitly a
+  proposal; nothing here is implemented.
+
+- **Bench: `deepseek-v4.1-flash` model + full30 reports** — the model is
+  wired through DevPass / LLM Gateway on both lanes (niffler: baseUrl +
+  model + `LLMGATEWAY_API_KEY`; pi: an llmgateway provider with
+  `reasoning: true` and a `thinkingLevelMap` so `--thinking` reaches a real
+  `reasoning_effort`; catalog ctx 1,050,000 / max out 393,216, runs pass
+  `NIF_OPENAI_CONTEXT=1050000` since no catalog entry exists for the id).
+  Reports: syn-large low — niffler 30/30 (56s, 26.8k tok avg) and pi 3/3 on
+  the t28–t30 fan-out tier, all 1-round
+  (`full30-syn-large-low-report.md`); deepseek-v4.1-flash low — both lanes
+  30/30 (niffler 24s vs pi 16s avg) and high — both lanes 30/30, where
+  niffler pays 3.4× pi's tokens and 2.8× the wall clock
+  (`full30-deepseek-v4.1-flash-{low,high}-report.md`); and a niffler-only
+  high rerun on the compiled-fabric build, 30/30 under the hardened t30
+  verifier, with an explicit variance caveat — single-run deltas against the
+  pre-fabric run are not attributable to the fabric change (cells with no
+  fabric in their path moved as much as fabric cells in both directions)
+  (`full30-deepseek-v4.1-flash-high-postfabric-report.md`).
+
 - **Web UI `/info` and `session_info` completion tokens** — core's
   `session_info` now reports `completionTokens` (the sum of
   `completion_tokens` over assistant messages with usage) alongside the
@@ -913,6 +1011,31 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`make test` split into `test-server` and `test-ui`** — `make test` is the
+  full gate and runs both, frontend first so a TypeScript break fails fast;
+  `test-server` is the bus-contract suite alone and `test-ui` the frontend
+  alone. Server-side work no longer needs the node toolchain, and frontend
+  work no longer needs a bus: the frontend lib tests import the TypeScript
+  sources directly (node type stripping, no dependencies, no NATS), while
+  the typecheck needs `ui/frontend/node_modules` and fails with a hint to
+  run `make ui` when it is missing (node 20+ checked the same way
+  install-node does). AGENTS.md and docs/MANUAL.md document both targets.
+
+- **Web UI: one registry for slash-command dispatch, help and completion** —
+  `slash.ts` declares what exists (names, params, built-in synonyms as
+  `aliasOf`, subcommands); `slashDispatch.ts` declares what happens, keyed
+  by those names; and `tests/slash.test.mjs` fails when the two sets diverge
+  in either direction — the drift that hid `/provider strip` behind a string
+  comparison and left the dispatch switch with no test coverage at all.
+  `/provider`'s environment/env/strip subcommands are declared, so `/help`
+  renders them from the registry and Tab completes them next to
+  `provider_list`'s nicknames; `/discover` declares its
+  `<component>|tool=NAME` argument shape; `commandUsage()` renders `/help`
+  usage lines from the declarations (moved out of Chat.svelte so it is
+  testable). The registry no longer imports the transport (`SendFn` is
+  injected), so it loads on plain node, and Chat.svelte keeps only an
+  adapter from component state to SlashContext.
+
 - **fabric: banned-import lint catches bracket imports, actionable
   compile failures, run-tested examples, LLM reference doc** — the
   token lint missed `import std/[os, strutils, sequtils]` (bench t13:
@@ -1183,6 +1306,34 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **plugins: untracked `go.work` so a manual `make` in a clone builds** —
+  Go plugin clones carry the sibling-checkout SDK replace
+  (`niffler.dev/sdk => ../niffler/sdk/go`), so a bare `make` in
+  `var/plugins/<pkg>@<ref>/` failed. Install/update now write an untracked
+  `go.work` redirecting the replace to this harness's `sdk/go` — `go.mod`
+  stays pristine so the next `git pull --ff-only` in `plugin_update` still
+  works; repos with their own committed `go.work` are left alone, and only
+  the modules the manifest actually builds enter the use list.
+  `plugin_update` also skips the GitHub release lookup for `file://` repos
+  (offline-safe, no 30s API hang). `t_plugins` covers the no-releases branch
+  path end to end: install at main, push a commit, update pulls in place and
+  rebuilds, a second update is a no-op, and a manual `make` in the clone
+  builds.
+
+- **Bench: t30 verifier pinned to the base module set; private nats stderr
+  logged** — the t30 verifier discovered modules from the mutable directory
+  and read each module's profile/width from its own (editable) header, so
+  deleting a module, adding one, or rewriting a header could shrink the
+  checked surface — or let an empty directory pass vacuously. All 24
+  filenames and their base profile/width values are now pinned; headers must
+  still declare those values, so the directive is part of the contract
+  rather than the agent's input (deleting a module and flipping a header
+  both fail; pristine fails, the reference solution passes). And when a
+  per-combo nats-server dies mid-run everything cascades
+  (connection-closed publishes, PDEATHSIG teardown) with the cause pure
+  guesswork — its stderr is now persisted to `<runRoot>/nats.log` with an
+  exit line carrying code/signal.
 
 - **discover: word-AND matching, compact empty-query directory** — query
   matching required the whole query as a verbatim substring, so a
