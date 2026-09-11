@@ -34,6 +34,17 @@ proc main() =
   let tmp = tempRoot("console")
   defer: removeDir(tmp)
   let outPath = tmp / "console.out"
+  # Install the observer server-side before spawning: startup announcements
+  # are not replayed to subscribers that arrive later.
+  var regSub: ptr natsSubscription
+  let regSt = natsConnection_SubscribeSync(addr regSub, nc.conn,
+                                           "reg.publish".cstring)
+  if not checkStatus(regSt):
+    raise newException(IOError, "subscribe reg.publish: " & getErrorString(regSt))
+  defer: natsSubscription_Destroy(regSub)
+  let flushSt = natsConnection_FlushTimeout(nc.conn, 2000)
+  if not checkStatus(flushSt):
+    raise newException(IOError, "flush reg.publish: " & getErrorString(flushSt))
   var env = newStringTable(modeCaseSensitive)
   for (k, v) in envPairs():
     env[k] = v
@@ -56,10 +67,20 @@ proc main() =
       sleep(100)
     return false
 
-# console should announce itself (reg.publish with name console)
-  var sub: ptr natsSubscription
-  discard natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
-  check("console registers on reg.publish", waitRegistered(nc, "console"))
+  check("console registers on reg.publish", waitRegisteredOn(regSub, "console"))
+
+  # Registration precedes the console's SUB >. Prove the viewer is receiving
+  # before sending the one-shot rendering fixtures; the banner alone is not
+  # a server-side subscription barrier.
+  let readyEnv = Envelope(v: 1, id: newId(), kind: ekEvent,
+                          payload: %*{"ready": true})
+  var ready = false
+  for attempt in 0 ..< 5:
+    nc.publish("ev.console.ready", readyEnv.encode())
+    if waitForOutput("ev.console.ready", 1):
+      ready = true
+      break
+  check("console subscription is ready", ready)
 
   # publish a call envelope and a result; console should render both
   let callEnv = callEnvelope("tping", %*{"hello": "world"})
@@ -70,7 +91,7 @@ proc main() =
                        payload: %*{"kind": "ev.example", "note": "hello bus"})
   nc.publish("ev.example", evEnv.encode())
 
-  sleep(500)
+  discard waitForOutput("ev.example", 5)
   let buf = if fileExists(outPath): readFile(outPath) else: ""
 
   check("console renders call with tool+args",

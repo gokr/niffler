@@ -36,8 +36,9 @@ be compared from the same source. No SDK change, no behavioural fork.
 Build and test with the client:
 
 ```bash
-make build      NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
-make test-server NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+make clean
+make build       NIMFLAGS="-d:nifflerNimNats --path:$HOME/git/natsnim/src"
+make test-server NIMFLAGS="-d:nifflerNimNats --path:$HOME/git/natsnim/src"
 ```
 
 `NIMFLAGS` is threaded through every `nim c` invocation the Makefile owns
@@ -51,7 +52,10 @@ Notes:
   `nim c` (e.g. `ctxtest` in `t_agent`, `t_fabric_cancel`) do **not** get
   `NIMFLAGS`. They keep using `natswrapper`, which is why mixed-client
   interop gets exercised for free in those tests.
-- Rollback is unsetting the flag; nothing else changes.
+- Make does not track changes to `NIMFLAGS` or the external client sources.
+  Clean and rebuild after changing either; rollback likewise requires a clean
+  rebuild without the flag. Use an isolated worktree: `make clean` removes
+  its runtime state and UI build dependencies too.
 
 ## What the shim must provide
 
@@ -69,7 +73,7 @@ Deliberate deviations from `nats.c`, each documented in the client repo:
 |---|---|
 | `natsSubscription_Destroy` returns void (nats.c returns a status) | matches `natswrapper`, and Niffler uses it in `defer:`; detaching cannot fail |
 | `natsConnection_Flush` is bounded by `defaultFlushTimeoutMs` | nats.c blocks on the connection default; this client never waits unbounded (no thread to interrupt it) |
-| handles are GC-managed, so `*Destroy` detaches rather than frees | Nim owns the memory; callers just drop the pointer, as they would after a C destroy |
+| handles are raw allocations with explicit Destroy/free semantics | ownership was rewritten in the client's hardening pass; leaks are pinned by regression tests |
 | one server URL, no TLS/nkeys/JetStream | scoped out; Niffler's bus is a loopback, plaintext, no-credentials bus by design |
 
 ## What P7 found
@@ -103,12 +107,36 @@ return an available message; a request with no responders must raise
 `NoRespondersError` in well under the timeout and leave the connection
 usable).
 
-## Remaining work (finishing P7)
+P7 also exposed two test-ordering bugs, both fixed by making the observation
+precede the spawn or the assertion order-insensitive:
+
+- `t_console` spawned the console before subscribing to its one-shot
+  registration. A server protocol trace showed the announcement preceding the
+  subscriptions used by the assertion. The test now subscribes and flushes
+  before spawning, then waits on that same subscription, and probes viewer
+  readiness before sending the rendering fixtures.
+- `t_nested` used the same post-spawn `waitRegistered` for its test
+  components; it now installs the `reg.publish` observer before spawning.
+- `t_observe` asserted a total probe count that silently depended on the
+  client's queue-drain order: with the pump draining the call subscription
+  before the `>` tap, the creating `observe_listen` call's own tap copy can
+  be captured after the probe exists (deterministic with this client,
+  order-dependent by construction). The probe only ever sees the tap, so the
+  real invariant — the send call is captured exactly once, never a call-sub
+  copy plus a tap copy — is now asserted by filtering captured items on the
+  tool name. The fixed test passes with both clients.
+
+The focused console test passes with these barriers. The flagged core and
+console binaries show no `libnats` dependency in `ldd`. The full server suite
+is still being validated; these checks do not establish complete compatibility.
+
+## Remaining work (P7 and follow-up)
 
 1. **Green suite on the flag.** `make test-server` with `-d:nifflerNimNats`,
    then the same for `make test-ui` if it touches the bus (it does not — the
    SPA goes through the Go bridge — but the target is part of `make test`).
-2. **Flip the default**: depend on `natsnim` in `niffler.nimble`, drop
+2. **After validation and ownership audit, consider flipping the default**:
+   depend on `natsnim` in `niffler.nimble`, drop
    `natswrapper` from `niffler.nimble` and from `config.nims`'s pkgs2 scan,
    drop `libnats` from `make setup`/`make doctor`, and collapse the `when`
    back to a plain import.
