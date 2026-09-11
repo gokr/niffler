@@ -1,0 +1,2 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens
+deepseek-v4-flash,niffler,sympy__sympy-13031,pass,468,418.8,1,4739963,59162,82017,4598784,0,0.239008,8,4,2669,false,0,0,0,0,0,0,0,0,0,0

@@ -106,6 +106,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fabric in their path moved as much as fabric cells in both directions)
   (`full30-deepseek-v4.1-flash-high-postfabric-report.md`).
 
+- **Merged `read` + `read_many`; `grep` is now direct** — one `read` tool
+  takes `path` (one file, pageable) or `paths` (up to 12 in one call,
+  per-file errors, 512KB aggregate cap); the separate `read_many` tool is
+  gone, so the direct toolset loses a schema and the batch shape is visible
+  at read time. The grep component's `grep` tool is promoted from on-demand
+  to the default direct set (ripgrep search without a discover+invoke round
+  trip); `files` stays on-demand. Baseprompt guidance now says "batch
+  known-relevant files (grep hits, imports, a module set)" instead of
+  conditioning `read_many` on the task naming files.
+
 - **Web UI `/info` and `session_info` completion tokens** — core's
   `session_info` now reports `completionTokens` (the sum of
   `completion_tokens` over assistant messages with usage) alongside the

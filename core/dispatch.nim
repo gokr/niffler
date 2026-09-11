@@ -1222,7 +1222,7 @@ proc dispatchToolCalls*(ct: CoreTools,
     if schema != nil:
       timeoutMs = schema{"x-harness"}{"timeoutMs"}.getInt(timeoutMs)
     # Workspace resolution happens here exactly like the serial path:
-    # parallel-safe tools (read, read_many, files, grep, git_*) resolve
+    # parallel-safe tools (read, files, grep, git_*) resolve
     # relative paths against the conversation workspace, never the harness
     # root.
     let callArgs = if call.args == nil: newJObject() else: call.args.copy()

@@ -59,7 +59,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `edit` | Nim | optional | the file tools: `read` (plain, pageable), `read_many` (up to 12 files in one call), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
+| `edit` | Nim | optional | the file tools: `read` (one `path` or up to 12 `paths` in one call, pageable), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
@@ -408,7 +408,7 @@ reports:
   `NIF_ROOT` (relative paths resolve against the root), immutable after
   creation and persisted in the header so resumed runners resolve context
   and paths identically. Session runners rewrite path-shaped tool arguments
-  at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read_many
+  at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
   resolve relative paths there, and git tools scope at the workspace repo.
   The system prompt component appends a workspace notice when it differs
   from the root. The default workspace is `NIF_ROOT` itself.
@@ -1086,8 +1086,8 @@ current discovery reflects that it is gone.
 With the complete shipped manifest, 8 tools are direct:
 
 - Core: `discover`, `invoke`.
-- Routine work: `bash`, `files`, and the file tools
-  `read`/`read_many`/`edit`/`write` (the `edit` component).
+- Routine work: `bash`, `grep`, `files`, and the file tools
+  `read`/`edit`/`write` (the `edit` component).
 
 The long tail is on demand:
 

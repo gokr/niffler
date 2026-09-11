@@ -7,7 +7,7 @@
   ],
   "models": {
     "deepseek-v4-flash": {
-      "label": "DeepSeek V4 Flash",
+      "label": "DeepSeek V4 Flash (direct API; serves 4.1)",
       "niffler": {
         "baseUrl": "https://api.deepseek.com/v1",
         "model": "deepseek-v4-flash",

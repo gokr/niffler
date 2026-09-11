@@ -1,6 +1,6 @@
 ---
 name: niffler-tools
-description: When-to-use guidance for every Niffler core component and tool — which tool fits which job, what stays in bash, and how progressive discovery works. Load when unsure whether a dedicated Niffler tool exists for a task, before hand-rolling an integration in bash, or when choosing between read/read_many/files/grep, edit/write, agent_run/fabric, or the self-extension path. The expert advisory peer embeds this skill verbatim in its knowledge prefix.
+description: When-to-use guidance for every Niffler core component and tool — which tool fits which job, what stays in bash, and how progressive discovery works. Load when unsure whether a dedicated Niffler tool exists for a task, before hand-rolling an integration in bash, or when choosing between read/files/grep, edit/write, agent_run/fabric, or the self-extension path. The expert advisory peer embeds this skill verbatim in its knowledge prefix.
 ---
 
 # Niffler core tools — when to use what
@@ -15,9 +15,9 @@ live components and tools outside the fixed direct set;
 
 ## File tools (direct)
 
-- `read` — single file, pageable (offset/limit). Use for one file.
-- `read_many` — up to 12 files in ONE call. Batch related reads; cut tool
-  round trips when inspecting several files at once.
+- `read` — one file (`path`, pageable with offset/limit) or up to 12 in
+  one call (`paths`). Batch related reads; cut tool round trips when
+  inspecting several files at once.
 - `files` — sorted file listing by path/glob. The listing tool.
 - `write` — atomic whole-file write (create or overwrite). Use for new files
   or full rewrites.

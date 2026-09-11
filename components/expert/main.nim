@@ -159,9 +159,10 @@ const expertFallbackKnowledge = """
 - Plugins: plugin_search before building an integration by hand.
 - Skills: skill_list / skill_load for reviewed workflow guides.
 - Self-extension: write source -> builder.build -> core.spawn -> discover.
-- File tools: read/read_many/edit/write/files are direct; grep and the
-  read-only git_* tools are on-demand; bash remains right for builds, tests,
-  pipelines and git mutations.
+- File tools: read/edit/write/files are direct (read takes one path or up
+  to 12 paths in one call); grep is direct; the read-only git_* tools are
+  on-demand; bash remains right for builds, tests, pipelines and git
+  mutations.
 - Context economy: agent_run subagents and fabric programs keep bulk work
   out of the transcript; oversized outputs are spilled to files. fabric is
   for mechanical, known-shape orchestration and context isolation (fan-out

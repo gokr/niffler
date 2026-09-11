@@ -182,22 +182,29 @@ proc main() =
   check("read returns verbatim content",
         rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
 
-  # read_many: several files in one call, per-item errors, bounds
+  # read paths: several files in one call, per-item errors, bounds
   writeFile(tmp / "m1.txt", "alpha\n")
   writeFile(tmp / "m2.txt", "beta\n")
-  let rm1 = call(nc, "edit", "read_many",
+  let rm1 = call(nc, "edit", "read",
                  %*{"paths": ["m1.txt", "missing.txt", "m2.txt"]})
   let rm1s = rm1{"text"}.getStr("")
-  check("read_many returns files in order with per-item errors",
+  check("read paths returns files in order with per-item errors",
         rm1{"count"}.getInt(0) == 3 and
         rm1{"items"}[0]{"content"}.getStr("") == "alpha\n" and
         rm1{"items"}[1]{"error"} != nil and
         rm1{"items"}[2]{"content"}.getStr("") == "beta\n" and
         rm1s.find("### m1.txt") >= 0 and
         rm1s.find("### m2.txt") > rm1s.find("### m1.txt"), $rm1)
-  let rm2 = call(nc, "edit", "read_many", %*{"paths": []})
-  check("read_many refuses empty paths",
+  let rm2 = call(nc, "edit", "read", %*{"paths": []})
+  check("read refuses empty paths",
         rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..12"), $rm2)
+  let rm3 = call(nc, "edit", "read",
+                 %*{"path": "m1.txt", "paths": ["m2.txt"]})
+  check("read refuses path+paths together",
+        rm3.hasKey("error") and rm3{"error"}.getStr("").contains("not both"), $rm3)
+  let rm4 = call(nc, "edit", "read", %*{})
+  check("read refuses neither path nor paths",
+        rm4.hasKey("error") and rm4{"error"}.getStr("").contains("requires"), $rm4)
   let rr2 = call(nc, "edit", "read",
                  %*{"path": "r.txt", "offset": 2, "limit": 1})
   check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)
@@ -350,7 +357,7 @@ proc main() =
   check("re-read after own edit is stubbed (full carried)",
         rse3.getStr("").startsWith("[unchanged]"), $rse3)
 
-  # read_many: first pass dumps (m1 unseen, m2 externally changed since its
+  # read paths: first pass dumps (m1 unseen, m2 externally changed since its
   # tracked write), second pass stubs both unchanged files per-item
   writeFile(tmp / "m1.txt", bigContent)
   writeFile(tmp / "m2.txt", bigContent)
@@ -358,17 +365,17 @@ proc main() =
                %*{"path": "m2.txt", "content": bigContent,
                   "__session": {"session": "s1"}})
   writeFile(tmp / "m2.txt", bigContent & "tail\n")
-  let rm = call(nc, "edit", "read_many",
+  let rm = call(nc, "edit", "read",
                 %*{"paths": ["m1.txt", "m2.txt"],
                    "__session": {"session": "s1"}})
-  check("read_many dumps unseen and changed files",
+  check("read paths dumps unseen and changed files",
         rm{"text"}.getStr("").contains("### m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m2.txt"), $rm)
-  let rmst = call(nc, "edit", "read_many",
+  let rmst = call(nc, "edit", "read",
                  %*{"paths": ["m1.txt", "m2.txt"],
                     "__session": {"session": "s1"}})
-  check("read_many stubs unchanged files",
+  check("read paths stubs unchanged files",
         rmst{"text"}.getStr("").contains("[unchanged] m1.txt") and
         rmst{"text"}.getStr("").contains("[unchanged] m2.txt") and
         rmst{"items"}[0]{"content"}.getStr("").startsWith("[unchanged]"), $rmst)

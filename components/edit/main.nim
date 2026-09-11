@@ -889,17 +889,17 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   result = %text
 
 proc hReadMany(c: Component, args: JsonNode): JsonNode =
-  ## Read up to eight independent text files in one structured call. Each
-  ## item reports its own error so one missing/binary file does not hide the
-  ## others; the aggregate stays below the bus-friendly 512KB bound.
+  ## Read several independent text files in one call. Each item reports its
+  ## own error so one missing/binary file does not hide the others; the
+  ## aggregate stays below the bus-friendly 512KB bound.
   if args == nil or args.kind != JObject or args{"paths"} == nil or
       args{"paths"}.kind != JArray:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read_many requires a paths array.")
+      "[E_BAD_SHAPE] read requires a \"paths\" array (or a single \"path\").")
   let paths = args{"paths"}
   if paths.len == 0 or paths.len > 12:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read_many paths must contain 1..12 files (got " &
+      "[E_BAD_SHAPE] paths must contain 1..12 files (got " &
       $paths.len & ") — split into batches.")
   let limit = args{"limit"}.getInt(MAX_READ_LINES)
   if limit < 1:
@@ -920,9 +920,9 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
       let text = content.getStr()
       if used + text.len > 512_000:
         blocks.add("### " & path &
-          "\n[read_many limit: aggregate output exceeds 512000 bytes; read remaining files separately]")
+          "\n[read limit: aggregate output exceeds 512000 bytes; read remaining files separately]")
         items.add(%*{"path": path,
-                     "error": "aggregate read_many output exceeds 512000 bytes; read remaining files separately"})
+                     "error": "aggregate read output exceeds 512000 bytes; read remaining files separately"})
         break
       used += text.len
       blocks.add("### " & path & "\n" & text)
@@ -931,6 +931,32 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
       blocks.add("### " & path & "\n" & e.msg)
       items.add(%*{"path": path, "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
+
+proc hReadTool(c: Component, args: JsonNode): JsonNode =
+  ## Merged read entry point: one file via `path`, several via `paths`.
+  if args == nil or args.kind != JObject:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] Read request must be an object.")
+  let pathsNode = args{"paths"}
+  let pathNode = args{"path"}
+  let hasPaths = pathsNode != nil and pathsNode.kind != JNull
+  let hasPath = pathNode != nil and pathNode.kind != JNull
+  if hasPaths and hasPath:
+    raise newException(ValueError,
+      "[E_BAD_SHAPE] read takes either \"path\" (one file) or \"paths\" " &
+      "(several in one call), not both.")
+  if hasPaths:
+    if args{"offset"} != nil and args{"offset"}.kind != JNull:
+      raise newException(ValueError,
+        "[E_BAD_SHAPE] \"offset\" applies to a single \"path\"; a " &
+        "\"paths\" batch starts each file at line 1 — use limit, or " &
+        "read the one file you need to page.")
+    return hReadMany(c, args)
+  if hasPath:
+    return hRead(c, args)
+  raise newException(ValueError,
+    "[E_BAD_SHAPE] read requires \"path\" (one file) or \"paths\" " &
+    "(1..12 files in one call).")
 
 # ---------------------------------------------------------------------------
 # write handler
@@ -987,30 +1013,20 @@ loadStore()
 
 discard comp.tool("read", toolSchema(%*{
   "path": {"type": "string",
-           "description": "File to read"},
-  "offset": {"type": "integer", "minimum": 1,
-             "description": "1-indexed start line"},
-  "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines (default 2000)"},
-  "force": {"type": "boolean",
-            "description": "Re-dump the full content even when unchanged since your last read/write"}
-}, @["path"],
-  "Read a text file. Lines are verbatim — copy exactly into edit's old_string. Refuses binary and >100MB. An unchanged full re-read returns a compact [unchanged] confirmation instead of the bytes."), hRead,
-  %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
-     "workspace": {"pathFields": ["path"]}})
-
-discard comp.tool("read_many", toolSchema(%*{
+           "description": "Single file to read"},
   "paths": {"type": "array", "minItems": 1, "maxItems": 12,
             "items": {"type": "string"},
-            "description": "Files to read, in order"},
+            "description": "Several files to read in one call (1..12) — batch known-relevant files (grep hits, imports, a module set) instead of one read per turn"},
+  "offset": {"type": "integer", "minimum": 1,
+             "description": "1-indexed start line (single path only)"},
   "limit": {"type": "integer", "minimum": 1,
             "description": "Max lines per file (default 2000)"},
   "force": {"type": "boolean",
-            "description": "Re-dump files even when unchanged since your last read/write"}
-}, @["paths"],
-  "Read up to 12 files in one call. Content under a \"### path\" heading; a bad file errors alone; 512KB total cap."),
-  hReadMany, %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
-                "workspace": {"pathArrayFields": ["paths"]}})
+            "description": "Re-dump content even when unchanged since your last read/write"}
+}, @[],
+  "Read files: one with \"path\", or several with \"paths\" (up to 12 in one call — per-file errors, 512KB aggregate cap, content under a \"### path\" heading). Lines are verbatim — copy exactly into edit's old_string. Refuses binary and >100MB. Batch known-relevant files instead of one read per turn. An unchanged full re-read returns a compact [unchanged] confirmation instead of the bytes."), hReadTool,
+  %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
+     "workspace": {"pathFields": ["path"], "pathArrayFields": ["paths"]}})
 
 discard comp.tool("edit", toolSchema(%*{
   "path": {"type": "string",

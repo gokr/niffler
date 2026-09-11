@@ -15,8 +15,10 @@ import niffler/sdk
 
 let comp = newComponent("grep", "0.1.0")
 
-const maxOutputBytes = 100_000
+const maxOutputBytes = 32_000
   ## Line-capped already (max_results, default 200 lines), so the byte cap
+  ## bounds how much of the conversation context one broad search can eat:
+  ## a few broad patterns must not cost more than the rest of the turn.
   ## only fires on pathological single lines (minified bundles).
 
 proc runRg(args: seq[string], timeoutMs: int): tuple[code: int, output: string] =
@@ -46,7 +48,7 @@ proc finish(code: int, output: string, maxResults: int): JsonNode =
                 maxOutputBytes,
                 hint = "narrow pattern/path/glob for the missing part")}
 
-comp.tool(%*{"timeoutMs": 60000, "parallel": true, "onDemand": true,
+comp.tool(%*{"timeoutMs": 60000, "parallel": true,
               "workspace": {"pathFields": ["path"],
                            "defaultPathFields": ["path"]}}):
   proc grep(pattern: string, path: string = ".", glob: string = "",
@@ -62,8 +64,11 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true, "onDemand": true,
     ## hidden files and binary files by default (a glob only narrows — it
     ## never un-hides). Patterns are Rust regex
     ## (no lookarounds/backreferences; for those use bash `grep -P`).
-    ## Prefer narrowing with path/glob over reading large outputs; when
-    ## output is truncated the marker says exactly what to narrow.
+    ## Prefer narrowing with path/glob over reading large outputs; broad
+    ## patterns can match thousands of lines and the result is capped
+    ## (max_results lines, 32KB total) — start narrow or pass a small
+    ## max_results. When output is truncated the marker says exactly what
+    ## to narrow.
     ## - pattern: The regex to search for (no shell escaping needed)
     ## - path: File or directory to search (default: the active conversation
     ##   workspace, else the harness root)

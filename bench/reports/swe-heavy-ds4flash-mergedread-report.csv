@@ -1,0 +1,9 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens
+deepseek-v4-flash,niffler,sympy__sympy-12419,pass,203.9,153.3,1,1238110,28687,26447,1182976,0,0.071391,2,2,2661,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,sympy__sympy-12489,pass,144.3,92.4,1,518729,17169,16568,484992,0,0.037326,32,30,2548,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,sympy__sympy-13031,pass,430.8,380.6,1,6099631,98877,73586,5927168,0,0.277831,8,4,2637,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,niffler,sympy__sympy-13551,pass,296.5,213.7,1,469351,15745,33254,420352,0,0.054135,10,6,2488,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,pi,sympy__sympy-12419,pass,281.3,223.1,1,1749272,30547,36933,1681792,0,0.097839,2,2,,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,pi,sympy__sympy-12489,pass,137,89.7,1,550068,19063,18877,512128,0,0.041254,29,29,,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,pi,sympy__sympy-13031,pass,249.8,208.9,1,1826741,30952,38349,1757440,0,0.101686,4,2,,false,0,0,0,0,0,0,0,0,0,0
+deepseek-v4-flash,pi,sympy__sympy-13551,pass,182.2,99,1,321916,13408,22300,286208,0,0.037230,6,4,,false,0,0,0,0,0,0,0,0,0,0
