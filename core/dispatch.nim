@@ -1243,6 +1243,13 @@ proc dispatchToolCalls*(ct: CoreTools,
     let callArgs = if call.args == nil: newJObject() else: call.args.copy()
     if ct.nested != nil:
       applyWorkspace(schema, callArgs, ct.nested.workspace)
+    # Session-scoped tools must see the live session id on this path too:
+    # dispatchToolCall injects it, but parallel-safe waves bypass that
+    # function — without this, read's seen-state (unchanged stubs, E_STALE,
+    # the batching hint) silently never engages (read is parallel: true).
+    if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
+      callArgs{"__session"} = %*{"session":
+        (if ct.nested != nil: ct.nested.session else: "")}
     let env = callEnvelope(call.tool, callArgs)
     let data = env.encode()
     let inbox = "_INBOX." & newId()

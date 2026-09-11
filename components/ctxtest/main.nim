@@ -246,6 +246,10 @@ comp.tool(%*{"hidden": true}):
         # core must rewrite windows[].path against the conversation
         # workspace too (t_core asserts the read hit the workspace file)
         return toolCall("t1", "read", %*{"windows": [{"path": "wsfile.txt"}]})
+      if stage == 1:
+        # parallel-wave tools must still see the live session: a complete
+        # re-read has to come back as an [unchanged] stub
+        return toolCall("t2", "read", %*{"path": "wsfile.txt"})
       return %*{"content": "ws-read-done"}
     if sessionId == "fab-test":
       case stage

@@ -321,7 +321,7 @@ proc main() =
   # windows workspace injection: core resolves windows[].path inside
   # array objects against the conversation workspace too — the read must
   # reach the edit component and return the workspace file's bytes.
-  writeFile(root / "ws" / "wsfile.txt", "ws-window-ok\n")
+  writeFile(root / "ws" / "wsfile.txt", repeat("ws-window-ok\n", 40))
   let wrNew = call(nc, "core", "session",
                    %*{"sessionId": "ws-read", "cwd": "ws"}, 120_000)
   check("windows workspace session created",
@@ -338,6 +338,13 @@ proc main() =
         wrToolMsg{"value"}{"name"}.getStr("") == "read" and
         wrToolMsg{"value"}{"content"}.getStr("").contains("ws-window-ok"),
         $wrToolMsg)
+  # parallel-wave session injection: a complete re-read of an unchanged
+  # file must stub as [unchanged], which needs __session on the wave path
+  let wrStub = call(nc, "store", "get",
+                    %*{"kind": "message", "id": "ws-read:000005"}, 10_000)
+  check("parallel read sees the live session (unchanged stub)",
+        wrStub{"error"} == nil and
+        wrStub{"value"}{"content"}.getStr("").contains("[unchanged]"), $wrStub)
 
   # --- approval gating on a bus without NIF_AUTO_APPROVE --------------------
   # (core 1 must be fully down first: the store is single-writer)
