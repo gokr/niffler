@@ -9,7 +9,14 @@
 ## the persisted transcript and the ev.fabric.log activity stream.
 
 import std/[json, os, osproc, strutils, times]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import helpers
 
 proc waitComponent(nc: NatsConnection, name: string, secs = 20): bool =

@@ -23,7 +23,14 @@
 ##                 must recover the turn and publish ev.session.retry events.
 
 import std/[json, os, osproc, strutils, times]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import envelope
 import helpers
 

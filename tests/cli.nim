@@ -12,7 +12,14 @@
 ## and no other harness running against this repo's var/barrel-db.
 
 import std/[json, net, os, osproc, strtabs, strutils, times]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import envelope
 
 var failures = 0
