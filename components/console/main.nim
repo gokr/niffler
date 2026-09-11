@@ -11,14 +11,7 @@
 ## discovery file, then defaults to the local bus, same as every component.)
 
 import std/[json, os, strutils, times]
-when defined(nifflerNimNats):
-  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
-  # call site below stays byte-identical. Enabled with
-  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
-  # See docs/research/NATSNIM.md.
-  import natsnim as natswrapper
-else:
-  import natswrapper
+import natsnim
 import envelope
 import dotenv
 import subjects

@@ -37,14 +37,7 @@ import std/[json, monotimes, os, osproc, strutils, strtabs, tables, times]
 import std/macros
 when defined(linux):
   import std/posix
-when defined(nifflerNimNats):
-  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
-  # call site below stays byte-identical. Enabled with
-  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
-  # See docs/research/NATSNIM.md.
-  import natsnim as natswrapper
-else:
-  import natswrapper
+import natsnim
 import ../envelope
 import ../dotenv
 import ../subjects
@@ -492,7 +485,7 @@ proc coreRoot*(url: string, timeoutMs = 500): string =
   ## root, so two clones can never mix.
   ensureLib()
   try:
-    var nc = natswrapper.connect(url)
+    var nc = natsnim.connect(url)
     defer: nc.close()
     let data = callEnvelope("catalog", %*{"op": "list"}).encode()
     var msg: ptr natsMsg
@@ -510,7 +503,7 @@ proc coreAnswers*(url: string, timeoutMs = 500): bool =
   ## Is a live core answering svc.core.call on this bus?
   ensureLib()
   try:
-    var nc = natswrapper.connect(url)
+    var nc = natsnim.connect(url)
     defer: nc.close()
     let data = callEnvelope("catalog", %*{"op": "list"}).encode()
     var msg: ptr natsMsg

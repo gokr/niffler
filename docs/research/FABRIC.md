@@ -69,7 +69,7 @@ explicit policy:
 1. Executor compiled **without** `nimcore`/`nimsuggest` (keeps the gorge gate).
 2. **Pre-eval source lint**: guest source is scanned before `evalScript`;
    banned tokens (`staticExec`, `gorge`, `slurp`, `staticRead`, `importc`,
-   `os`/`osproc`/`net` imports, `natswrapper`) reject the program with a clear
+   `os`/`osproc`/`net` imports, bus clients) reject the program with a clear
    error. A lint is not bulletproof — it is auditable policy, not a boundary.
 3. Executor child runs with a **cleared environment** (no `NIF_*` vars) and
    **no configured NATS connection** — the fabric parent owns the bus and

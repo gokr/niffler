@@ -4,15 +4,23 @@
 # when nimble.paths is stale.
 
 import std/[os, strutils]
+# Local natsnim checkout (client development): NATSNIM_SRC wins over the
+# nimble-installed copy when set.
+if existsEnv("NATSNIM_SRC"):
+  switch("path", getEnv("NATSNIM_SRC"))
+
 let pkgsDir = getHomeDir() / ".nimble" / "pkgs2"
 if dirExists(pkgsDir):
   for kind, path in walkDir(pkgsDir):
     let base = path.extractFilename()
     for prefix in ["lz4wrapper-", "crunchy-", "supersnappy-", "sunny-", "yaml-",
-                   "natswrapper-", "bitbarrel-", "futhark-", "htmlparser-",
+                   "natsnim-", "bitbarrel-", "htmlparser-",
                    "checksums-"]:
       if base.startsWith(prefix):
         switch("path", path)
+        # natsnim keeps its sources in src/ (srcDir in its nimble file).
+        if base.startsWith("natsnim-") and dirExists(path / "src"):
+          switch("path", path / "src")
 
 # HTTPS for std/httpclient in every build (shipped components, builder-built
 # tools, plugins, smoke, probes). Needs libssl-dev (Ubuntu) / Xcode CLT
@@ -48,9 +56,6 @@ when defined(macosx):
 # provide an explicit cache path keep overriding this setting.
 let cacheKey = projectPath().relativePath(thisDir()).changeFileExt("").replace(DirSep, '_')
 switch("nimcache", thisDir() / "var" / "nimcache" / cacheKey)
-
-# futhark (via natswrapper) emits a bogus FILE-size warning for the C header
-switch("warning", "User:off")
 
 when defined(release):
   switch("opt", "speed")

@@ -7,14 +7,14 @@ license       = "MIT"
 bin           = @[]
 
 # Dependencies — deliberately tiny: the envelope is std/json runtime data,
-# yaml for the bootstrap manifest, natswrapper for the bus, bitbarrel for
-# the store component's embedded KV (which brings its own transitive deps).
+# yaml for the bootstrap manifest, natsnim (pure Nim, no libnats) for the
+# bus, bitbarrel for the store component's embedded KV.
 
 requires "nim >= 2.2.10"
 requires "yaml"
 requires "htmlparser"
 requires "checksums"
-requires "https://github.com/gokr/natswrapper"
+requires "https://github.com/gokr/natsnim"
 requires "https://github.com/gokr/bitbarrel"
 
 # Tasks

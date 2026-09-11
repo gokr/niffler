@@ -170,7 +170,7 @@ The SPA is a NATS client, not a Wails client: it only talks to
 ## Environment and gotchas
 
 - **Nim packages come from nimble.** `niffler.nimble` requires `yaml`,
-  `gokr/natswrapper` and `gokr/bitbarrel` (GitHub URLs). Run `make setup`
+  `gokr/natsnim` and `gokr/bitbarrel` (GitHub URLs). Run `make setup`
   to install native prerequisites and Nim packages before building;
   `make build` does not install them. `config.nims` scans `~/.nimble/pkgs2` so plain
   `nim c` invocations (builder, smoke test) resolve them without nimble.paths.
@@ -260,7 +260,7 @@ Probe a session turn (uses core's own session service; no UI involved):
 
 ```nim
 import std/[json, os, times]
-import natswrapper
+import natsnim
 import niffler/sdk
 let nc = connect(getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222"))
 let data = callEnvelope("session",

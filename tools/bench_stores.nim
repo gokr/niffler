@@ -15,7 +15,7 @@
 ## contract latency callers actually see), not raw engine throughput.
 
 import std/[json, os, osproc, sequtils, strformat, strutils, tempfiles, times]
-import natswrapper
+import natsnim
 import envelope
 import helpers
 

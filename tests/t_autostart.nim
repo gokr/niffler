@@ -4,14 +4,7 @@
 ## ignores client churn entirely.
 
 import std/[json, os, osproc, strutils, times]
-when defined(nifflerNimNats):
-  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
-  # call site below stays byte-identical. Enabled with
-  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
-  # See docs/research/NATSNIM.md.
-  import natsnim as natswrapper
-else:
-  import natswrapper
+import natsnim
 import helpers
 import niffler/sdk
 
@@ -30,7 +23,7 @@ proc waitBusGone(url: string, secs: float): bool =
   let deadline = epochTime() + secs
   while epochTime() < deadline:
     try:
-      var bus = natswrapper.connect(url)
+      var bus = natsnim.connect(url)
       bus.close()
     except CatchableError:
       return true

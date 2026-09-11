@@ -5,14 +5,7 @@
 ## rendering and that the console announces itself on reg.publish.
 
 import std/[json, os, osproc, streams, strtabs, strutils, times]
-when defined(nifflerNimNats):
-  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
-  # call site below stays byte-identical. Enabled with
-  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
-  # See docs/research/NATSNIM.md.
-  import natsnim as natswrapper
-else:
-  import natswrapper
+import natsnim
 import envelope
 import helpers
 

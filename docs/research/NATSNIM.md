@@ -1,9 +1,11 @@
 # NATSNIM — the pure-Nim NATS client, and how to build Niffler on it
 
-Status: **P7 in progress** (branch `feat/natsnim-client`). The client itself is
+Status: **landed — natsnim is the default bus client**; `natswrapper`,
+`libnats`, `cnats`, libsodium and protobuf-c are gone from the prerequisite
+list. The client itself is
 [a separate repository](https://github.com/gokr/natsnim) — a pure-Nim
 translation of `nats-io/nats.go`, not a binding to `nats.c`. This document is
-the Niffler side: how the switch works, what it has found, and what is left.
+the Niffler side: how the switch was done, what it found, and what is left.
 Design rationale and the phase plan live in that repo's
 [ASSESSMENT.md](https://github.com/gokr/natsnim/blob/main/ASSESSMENT.md) and
 [PROVENANCE.md](https://github.com/gokr/natsnim/blob/main/PROVENANCE.md).
@@ -17,45 +19,32 @@ libsodium and protobuf-c host prerequisites — `make doctor` checks
 The pure-Nim client removes that dependency without changing the architecture:
 same wire protocol, same subjects, same bus.
 
-## How the flag works
+## How the switch was done
 
-Every Nim file that spoke to the bus had a single `import natswrapper` line.
-That line became:
+The migration ran behind a build flag (`-d:nifflerNimNats`) for its whole
+validation period: every bus-speaking file had a guarded import aliasing
+`natsnim` to the old `natswrapper` name, so call sites stayed byte-identical
+and both clients could be tested from the same source. The full server suite
+passed with the flag (twice, including after the client's hardening pass),
+the default suite passed unchanged, and the flagged binaries showed no
+`libnats` linkage — at which point the guards were collapsed to a plain
+`import natsnim` and `natswrapper` left the dependency graph.
 
-```nim
-when defined(nifflerNimNats):
-  import natsnim as natswrapper     # pure-Nim client, aliased to the old name
-else:
-  import natswrapper
-```
+Resolution today:
 
-The alias is the whole trick: **every call site stays byte-identical**, so the
-switch is a build flag rather than a refactor, and the two implementations can
-be compared from the same source. No SDK change, no behavioural fork.
+- `niffler.nimble` requires `https://github.com/gokr/natsnim`; `make
+  install-nim-deps` installs it (and `make doctor` verifies it landed).
+- `config.nims` scans `~/.nimble/pkgs2` and adds the package's `src/` for
+  natsnim, so plain `nim c` invocations resolve it like every other
+  dependency.
+- Client development: set `NATSNIM_SRC=/path/to/natsnim/src` to make a local
+  checkout win over the installed copy — no reinstall needed while iterating
+  on the client.
 
-Build and test with the client:
-
-```bash
-make clean
-make build       NIMFLAGS="-d:nifflerNimNats --path:$HOME/git/natsnim/src"
-make test-server NIMFLAGS="-d:nifflerNimNats --path:$HOME/git/natsnim/src"
-```
-
-`NIMFLAGS` is threaded through every `nim c` invocation the Makefile owns
-(components, core, session runner and the test binaries), so a single flag
-switches the whole harness. `--path` points at a local checkout; once the
-client is published to nimble the flag alone will do.
-
-Notes:
-
-- The *test-only* stub components that tests compile themselves with a raw
-  `nim c` (e.g. `ctxtest` in `t_agent`, `t_fabric_cancel`) do **not** get
-  `NIMFLAGS`. They keep using `natswrapper`, which is why mixed-client
-  interop gets exercised for free in those tests.
-- Make does not track changes to `NIMFLAGS` or the external client sources.
-  Clean and rebuild after changing either; rollback likewise requires a clean
-  rebuild without the flag. Use an isolated worktree: `make clean` removes
-  its runtime state and UI build dependencies too.
+`make doctor` no longer checks `libnats`, and `make install-native-deps` no
+longer installs it (nor `cnats` on macOS). What remains native: the C
+toolchain, OpenSSL (TLS for std/httpclient), liblz4 and pcre — the same list
+`make doctor` verifies.
 
 ## What the shim must provide
 
@@ -136,18 +125,16 @@ step.
 
 ## Remaining work (P7 and follow-up)
 
-1. ~~**Green suite on the flag.**~~ Done: `make test-server` with
-   `-d:nifflerNimNats` is green from a clean rebuild. (`make test-ui` does
-   not touch the bus — the SPA goes through the Go bridge — but it is part
-   of `make test`.)
-2. **After validation and ownership audit, consider flipping the default**:
-   depend on `natsnim` in `niffler.nimble`, drop
-   `natswrapper` from `niffler.nimble` and from `config.nims`'s pkgs2 scan,
-   drop `libnats` from `make setup`/`make doctor`, and collapse the `when`
-   back to a plain import.
-3. **Differential validation (P6)**, the rigor step: run the same operation
-   trace through both clients against the same server and compare. Cheaper
-   now that both are wired.
+1. ~~**Green suite on the flag.**~~ Done — twice, from clean rebuilds.
+2. ~~**Flip the default.**~~ Done: `niffler.nimble` requires natsnim,
+   `config.nims` resolves it from the pkgs2 scan (or `NATSNIM_SRC`), the
+   guarded imports collapsed to `import natsnim`, and `libnats`/`cnats`/
+   futhark/opir left `make doctor` and `make install-native-deps`.
+3. **Differential validation (P6)**, partially covered: `natsnim/bench/compare`
+   runs both clients against the same server and compares performance
+   (publisher parity with batching; subscriber ~1.3–1.5× behind). What
+   remains is the wire-level operation-trace diff for exact behavioral
+   equivalence.
 4. **Living with it**: the client's concurrency contract is one connection per
    thread (no threads in the Nim half today), and reconnect is lazy — driven
    by `nextMsg`/`flush`/`request` — rather than by a background thread. Both

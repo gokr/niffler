@@ -119,7 +119,7 @@ sudo snap install go --classic
 
 # Native build dependencies (install before Nim packages)
 sudo apt update
-sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev clang libclang-dev libnats-dev liblz4-dev libpcre3-dev
+sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev liblz4-dev libpcre3-dev
 
 # Complete Nim toolchain (Ubuntu's apt package is too old)
 curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
