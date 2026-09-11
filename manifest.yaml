@@ -173,7 +173,9 @@ components:
     restart: on-failure
 
   # Programmable tool calling (fabric Phase 2, docs/research/FABRIC.md): the fabric
-  # tool spawns var/bin/fabric-exec per program; guests run in the Nim VM.
+  # tool spawns var/bin/fabric-exec per program; guests are compiled with the
+  # system Nim toolchain and run as native binaries (identical programs are
+  # cached under var/fabric-cache).
   - name: fabric
     build: {lang: nim, src: components/fabric/fabric.nim}
     binary: var/bin/fabric

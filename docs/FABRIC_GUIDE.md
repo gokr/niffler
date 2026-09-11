@@ -9,9 +9,11 @@ explicitly deferred follow-ups are listed in [PLAN.md](PLAN.md).
 
 `fabric` is one tool with one unusual property: instead of the model calling
 tools one at a time — each result landing in your conversation — the model
-writes a small Nim program that does the legwork itself. The program runs in
-a disposable guest process, calls Niffler tools through a bridge, and returns
-**one value**. Only that value enters your chat.
+writes a small Nim program that does the legwork itself. The program is
+compiled with your system Nim toolchain and runs as a native binary in a
+disposable guest process (identical programs reuse a cached binary), calls
+Niffler tools through a bridge, and returns **one value**. Only that value
+enters your chat.
 
 ```
 your ask → model writes a program → one approval → program runs
@@ -109,7 +111,7 @@ The model calls fabric with `tools: ["grep", "read"]` and roughly:
 
 ```nim
 import fabricguest
-import std/strutils   # allowed in guests; std/os, std/net etc. are lint-banned
+import std/strutils   # guests may import any std module (bash-class trust)
 
 # typed wrappers: arguments are compile-checked against the pinned schema
 let hits = tools.grep(pattern = stringArg("symbol"), path = "core",
@@ -177,7 +179,7 @@ Ask: *"Wait until the build finishes, then report the last build line."*
 ```nim
 import fabricguest
 
-# guests may not import std/os (lint), so waiting is just a bash sleep
+# waiting is a bash sleep — the host stays idle between probes
 var attempt = 0
 var done = false
 while not done and attempt < 30:
@@ -337,11 +339,13 @@ whole run, and a call cannot outlive it.
   from success and from failure/timeout. One program's cancellation never
   touches other in-flight or queued fabric runs.
 - **The guest is trusted, not sandboxed.** It is in `bash`'s trust class —
-  approved once, by you, with its source readable at approval time. It has no
-  NATS connection and no credentials; every declared tool effect crosses the
-  audited bridge. But it shares your filesystem and user — reaching past the
-  bridge is a policy violation the lint discourages, not a technical
-  impossibility. That is governance, not a security boundary.
+  approved once, by you, with its source readable at approval time, and the
+  approval covers compilation too. Approved native code may import any std
+  module and touch the OS directly. The guest has no NATS connection and no
+  credentials; every declared tool effect crosses the audited bridge. But it
+  shares your filesystem and user — reaching past the bridge is a policy
+  violation, not a technical impossibility. That is governance, not a
+  security boundary.
 
 ## After a run: where to look
 
@@ -363,5 +367,8 @@ whole run, and a call cannot outlive it.
 - The guest API: `components/fabric/fabricguest/fabricguest.nim` (raw bridge
   + JSON helpers) and `fabricmeta.nim` (typed wrappers).
 - End-to-end coverage: `tests/t_fabric.nim` (typed runs, budgets, catalog
-  pinning, artifacts), `tests/t_nested.nim` (proxy admission), and
-  `tests/t_approval_manifest.nim` (approval manifests).
+  pinning, artifacts), `tests/t_fabric_native.py` (compilation, the
+  structured SDK, the binary cache, process-group reaping),
+  `tests/t_fabric_cancel.nim` (mid-run cancellation), `tests/t_nested.nim`
+  (proxy admission), and `tests/t_approval_manifest.nim` (approval
+  manifests).

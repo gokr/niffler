@@ -38,8 +38,8 @@ mechanism:
    store-backed records — today's logs are not an audit trail.
 4. **Sandboxing.** A separate milestone if and when *untrusted* guests are
    required (restricted VM, WASM, or OS isolation). Today the guest is
-   trusted code in `bash`'s trust class; approval plus source lint is the
-   boundary, not a technical impossibility of reaching past the bridge.
+   trusted code in `bash`'s trust class; approval is
+   the boundary, not a technical impossibility of reaching past the bridge.
 
 ## Quests — things Niffler should do itself (or that we do on a slow day)
 

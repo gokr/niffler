@@ -33,8 +33,9 @@ must never enter the conversation, edit-then-verify, polling loops.
 
 ```nim
 import fabricguest   # the ONLY required import; provides the bridge procs
-# std/strutils, std/json, std/tables … are allowed; std/os, std/net,
-# std/osproc are lint-banned — guests must not touch the host directly
+# guests are compiled with the system Nim toolchain and may import any std
+# module (approved native code is bash's trust class, not a sandbox) — but
+# prefer the tool surface so effects stay approved and audited
 
 # Typed mode: pass tools: [...] to pin an execution allowlist + schemas,
 # then call typed wrappers tools.<name>(...) — arguments compile-checked,
@@ -64,8 +65,9 @@ finish($(%*{"answer": ...}))     # the ONLY thing that reaches the conversation
 3. **Big data** — the program holds the volume (logs, large outputs); the
    chat sees only the final value. Data volume unbounded, answer small.
 4. **Poll until ready** — a while loop of `tools.bash(command = "sleep 2")`
-   plus the real check; `finish` the last status. Guests may not import
-   std/os, so waiting is a bash sleep.
+   plus the real check; `finish` the last status. Waiting is a bash sleep —
+   the host stays idle between probes (std/os is allowed, but the tool
+   surface is preferred).
 5. **Edit-then-verify** — `tools.edit(...)` then `tools.bash("make test …")`;
    if broken, edit again to revert before finishing. `finish` only the
    outcome.
@@ -91,8 +93,10 @@ finish($(%*{"answer": ...}))     # the ONLY thing that reaches the conversation
 
 - Only `finish()`'s value reaches the chat — everything else is invisible to
   the model. Distill deliberately; logg progress.
-- No mid-run cancellation: a runaway program runs until its deadline kills
-  it. Stopping the turn abandons the result, not the guest.
+- Mid-run cancellation works: stopping the turn that launched the program
+  (`agent_stop` on the job whose child runs it) ends the guest within
+  seconds and the run reports status `"cancelled"` — one program's
+  cancellation never touches other in-flight or queued runs.
 - A bad program returns real Nim compiler diagnostics — self-correct from
   them.
 - Typed mode pins the catalog: if a component changes mid-run the program

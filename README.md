@@ -554,9 +554,11 @@ Open work — deferred follow-ups and quests — is consolidated in
       clears stale modals); call envelopes carry a self-declared `caller` across
       all four SDKs; web UI acks + answers on the private subject
 - [x] **fabric + subagents** (docs/research/FABRIC.md) — programmable tool calling:
-      the `fabric` tool runs an LLM-written Nim program in a VM-embedding
-      executor child (fresh process per program, no NATS/credentials, RLIMIT
-      + kill timeout); the guest's tool calls cross a framed stdio bridge to
+      the `fabric` tool runs an LLM-written Nim program in a compiled native
+      guest (`var/bin/fabric-exec` writes it, compiles it with `nim c` and
+      execs it in a fresh private process per program — no NATS/credentials,
+      RLIMIT + kill timeout; identical programs reuse a cached binary in
+      `var/fabric-cache`); the guest's tool calls cross a framed stdio bridge to
       the parent and re-enter the single dispatch gate via the session
       nested-call proxy (`svc.session.<id>.tool`, live lease, hidden-tool and
       depth guards); monotonic deadlines, complete bounded schema validation,
@@ -569,12 +571,15 @@ Open work — deferred follow-ups and quests — is consolidated in
       artifacts); the `agent` tool turns sessions into subagents (delegated
       child runners; synchronous `agent_run` + steer, durable background
       jobs via `agent_spawn`/`agent_status`/`agent_wait`/`agent_stop` with
-      `ev.agent.*` events, dispatch-time depth guard); guests are lint-banned
-      from IO/network/FFI and the VM refuses FFI magics (import-free j* JSON
-      helpers, ~ms cold eval); correlated `ev.fabric.*` lifecycle events;
-      worked examples in `components/fabric/examples/`
+      `ev.agent.*` events, dispatch-time depth guard); guests get a structured
+      SDK (`import fabricguest`: `call`/`batch`/`finish`, `stringArg`, `logg`)
+      and approved native code is bash-class trust — any std import works, no
+      sandbox and no lint; a `fabric_help` tool serves the guest reference and
+      examples; correlated `ev.fabric.*` lifecycle events; worked examples in
+      `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
-      `tests/t_agent.nim`, `tests/t_fabric.nim`)
+      `tests/t_agent.nim`, `tests/t_fabric.nim`, `tests/t_fabric_native.py`,
+      `tests/t_fabric_cancel.nim`)
 - [x] **expert advisory peer** (docs/research/EXPERT.md) — one expert follows one or more working
       sessions concurrently: bounded per-session current-turn observation from
       `ev.session.*`, a

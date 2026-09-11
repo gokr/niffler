@@ -110,7 +110,9 @@ assume a tool you saw in one context exists in another:
   dispatch grants. Steer it toward what IT can call, not what the main
   session has.
 - **Fabric guest** — only the bridge (the pinned typed allowlist in typed
-  mode); std/os, std/net, std/osproc are lint-banned.
+  mode). The guest compiles as native code under bash's trust class, so
+  std imports are allowed — but every declared tool effect is meant to
+  cross the audited bridge.
 - The frozen direct set is **per conversation**: `discover` (or the
   session's `prompt_preview`) is the authority on what THIS session can
   call right now.

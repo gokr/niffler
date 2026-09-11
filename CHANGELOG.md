@@ -1011,6 +1011,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **niffler-tui wrapper: restart the client on its reserved exit code** —
+  the `/restart` command (gokr/niffler-tui) quits the client with exit code
+  85 to request a restart; the installed `niffler-tui` wrapper is what
+  actually re-runs the binary, so a running tui picks up a rebuilt
+  `var/bin/tui` after a plugin update instead of keeping its original build
+  until it is quit by hand. The loop re-runs the client only on 85 and
+  returns any other status as its own — clean quits, errors and signals
+  still end it — and replaces the previous `exec`, so the wrapper process
+  stays as the client's parent for the session
+  (`scripts/niffler-tui.in`).
+
 - **`make test` split into `test-server` and `test-ui`** — `make test` is the
   full gate and runs both, frontend first so a TypeScript break fails fast;
   `test-server` is the bus-contract suite alone and `test-ui` the frontend
