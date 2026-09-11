@@ -74,7 +74,7 @@
       <a class="shot-frame" href="img/niffler-tui.png" target="_blank" rel="noopener" data-lightbox="niffler-tui — the terminal chat client">
         <img src="img/niffler-tui.png" alt="niffler-tui — the terminal chat client" loading="lazy" width="1200" height="763">
       </a>
-      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — the installed niffler-tui wrapper boots the harness on demand)</span></figcaption>
+      <figcaption><span class="shot-name" data-i18n="screens.tui.name">niffler-tui</span> — <span data-i18n="screens.tui.desc">the terminal chat client (a plugin — the installed niffler-tui wrapper boots the harness on demand and re-runs the client after /restart)</span></figcaption>
     </figure>
   </div>
   <p class="screens-note" data-i18n-html="screens.note"><code>./var/bin/niffler</code> in a terminal is the admin shell — help/status/catalog/tools/sessions, no chat. Conversations live in <code>niffler-ui</code> and <code>niffler-tui</code>; scripting goes through <code>./var/bin/cli</code>.</p>
@@ -122,8 +122,9 @@
       tool call, and the LLM does it to itself mid-conversation. Community
       packages install the same way: <code>plugin_install</code> clones,
       compiles from source and spawns — approval-gated, always built from
-      the published code. <code>fabric</code> goes further: the LLM programs
-      whole control flows in an embedded Nim VM. External MCP servers join
+      the published code. <code>fabric</code> goes further: the LLM writes
+      whole control flows as Nim guest programs that compile to native
+      processes. External MCP servers join
       the same bus: the <code>mcp</code> manager spawns one bridge process
       per server, and its tools appear as ordinary catalog tools.</p>
     </article>
@@ -244,12 +245,13 @@
         job image and <code>bench/launch.mjs</code> is a guided launcher.
         The full 17-task matrix ran green across all lanes (340/340);
         the mid-tier set calibrated 20/20 (niffler vs pi, GLM low); on
-        the syn-large model (Synthetic's GLM-5.3-Flash) the suite is
-        green in every cell — 27/27 on both the niffler and pi lanes at
-        thinking=low
-        (<code>bench/reports/full27-syn-large-low-report.md</code>), and
-        the post-diet trimmed-prefix runs stay 27/27 while uncached input
-        drops ~40% at high effort
+        the full 30-task set the suite is green on both syn-large
+        (Synthetic's GLM-5.3-Flash) and deepseek-v4.1-flash — niffler
+        30/30 on both models at thinking=low, with pi 30/30 on deepseek
+        low and high
+        (<code>bench/reports/full30-{syn-large,deepseek-v4.1-flash}-*-report.md</code>),
+        and the post-diet trimmed-prefix runs stay green while uncached
+        input drops ~40% at high effort
         (<code>bench/reports/full27-syn-large-{low,high}-trimmed-report.md</code>).</p>
     </article>
   </div>
@@ -272,7 +274,7 @@
         <p><span class="p">$</span> niffler-tui        <span class="dim" data-i18n="qs.tui"># terminal chat — boots the harness on demand if none runs</span></p>
         <p><span class="p">$</span> ui/build/bin/niffler-ui <span class="dim" data-i18n="qs.run"># the desktop UI — autostarts the harness</span></p>
         <p><span class="p">$</span> make ui-install    <span class="dim" data-i18n="qs.uiinstall"># optional: puts niffler-ui on PATH + launcher/app icon (Linux)</span></p>
-        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># bus-contract suite — one test per component + smoke + go tests</span></p>
+        <p><span class="p">$</span> make test         <span class="dim" data-i18n="qs.test"># full gate — frontend suite first, then the bus-contract server suite</span></p>
         <p class="dim">│</p>
         <p class="dim" data-i18n="qs.see">└─ make run / recover / down / ram / uninstall / dev · see docs/MANUAL.md</p>
       </div>
