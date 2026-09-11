@@ -15,7 +15,14 @@
 ## against the real GitHub topic search.
 
 import std/[json, os, osproc, strutils]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import helpers
 
 proc commitRepo(repoDir: string) =

@@ -5,7 +5,14 @@
 ## so tests may overlap each other and a live development harness.
 
 import std/[json, os, osproc, streams, strtabs, strutils, tempfiles, times]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import envelope
 
 type TestFailure* = object of CatchableError
@@ -127,13 +134,13 @@ proc waitConnect*(url: string, tries = 40): NatsConnection =
       sleep(100)
   raise newException(IOError, "cannot connect to " & url)
 
-proc waitRegistered*(nc: NatsConnection, comp: string, secs = 15): bool =
-  ## Watch reg.publish until the named component registers.
-  var sub: ptr natsSubscription
-  let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
-  if not checkStatus(st):
-    fail("subscribe reg.publish: " & getErrorString(st))
-    return false
+proc waitRegisteredOn*(sub: ptr natsSubscription, comp: string,
+                       secs = 15): bool =
+  ## Watch an already-open reg.publish subscription until `comp` registers.
+  ##
+  ## Prefer this over `waitRegistered` when the component is started by the
+  ## test: a startup announcement can precede a subscription opened after
+  ## spawning. Subscribe and flush before spawning to avoid that race.
   let deadline = epochTime() + secs.float
   result = false
   while epochTime() < deadline:
@@ -145,6 +152,17 @@ proc waitRegistered*(nc: NatsConnection, comp: string, secs = 15): bool =
       if data.contains("\"" & comp & "\""):
         result = true
         break
+
+proc waitRegistered*(nc: NatsConnection, comp: string, secs = 15): bool =
+  ## Watch future reg.publish announcements; earlier ones are not replayed.
+  ## To observe startup reliably, subscribe and flush before spawning, then
+  ## use `waitRegisteredOn`.
+  var sub: ptr natsSubscription
+  let st = natsConnection_SubscribeSync(addr sub, nc.conn, "reg.publish".cstring)
+  if not checkStatus(st):
+    fail("subscribe reg.publish: " & getErrorString(st))
+    return false
+  result = waitRegisteredOn(sub, comp, secs)
   natsSubscription_Destroy(sub)
 
 proc call*(nc: NatsConnection, comp, tool: string, args: JsonNode,

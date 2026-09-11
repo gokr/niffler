@@ -8,7 +8,14 @@
 ## subject, and a sessionContext tool fails closed when no turn is running.
 
 import std/[json, os, osproc, strutils]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import helpers
 
 proc main() =
@@ -58,6 +65,17 @@ proc main() =
   doAssert checkStatus(eventSt)
   defer: natsSubscription_Destroy(eventSub)
 
+  # Observe reg.publish BEFORE starting components: each announces itself
+  # exactly once, so a subscription opened after the spawn can miss it (the
+  # pure-Nim client connects fast enough to make that the common case).
+  # See t_console for the original instance of this race.
+  var regSub: ptr natsSubscription
+  let regSt = natsConnection_SubscribeSync(addr regSub, nc.conn,
+                                           "reg.publish".cstring)
+  doAssert checkStatus(regSt)
+  defer: natsSubscription_Destroy(regSub)
+  doAssert checkStatus(natsConnection_FlushTimeout(nc.conn, 2000))
+
   var coreProc = startComponent(coreBin, url, root = root,
                                 extra = [("NIF_AUTO_APPROVE", "1")])
   defer:
@@ -85,7 +103,7 @@ proc main() =
       sleep(800)
       if ctxProc.running(): ctxProc.kill()
     ctxProc.close()
-  check("ctxtest registered", waitRegistered(nc, "ctxtest"))
+  check("ctxtest registered", waitRegisteredOn(regSub, "ctxtest"))
   let sinkProc = startComponent(sinkBin, url, root = root)
   defer:
     if sinkProc.running():
@@ -93,7 +111,7 @@ proc main() =
       sleep(800)
       if sinkProc.running(): sinkProc.kill()
     sinkProc.close()
-  check("ctxsink registered", waitRegistered(nc, "ctxsink"))
+  check("ctxsink registered", waitRegisteredOn(regSub, "ctxsink"))
 
   # --- session_prepare: delegated child-runner preparation -----------------
   let sessionId = "nested-test"

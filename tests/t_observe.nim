@@ -1,7 +1,14 @@
 ## observe tests - raw tap fidelity, bounded probes, tracing, safety, monitoring.
 
 import std/[base64, json, os, osproc, streams, strtabs, strutils, times]
-import natswrapper
+when defined(nifflerNimNats):
+  # Pure-Nim client (github.com/gokr/natsnim), aliased to `natswrapper` so every
+  # call site below stays byte-identical. Enabled with
+  #   make build NIMFLAGS='-d:nifflerNimNats --path:$HOME/git/natsnim/src'
+  # See docs/research/NATSNIM.md.
+  import natsnim as natswrapper
+else:
+  import natswrapper
 import envelope
 import helpers
 
@@ -254,11 +261,19 @@ proc main() =
     %*{"subject": "ev.test.sent", "payload": %*{"marker": "unique-own-marker"}})
   check("observe_send publishes an event", sent{"ok"}.getBool(false), $sent)
   var ownEvents = newJObject()
+  # Assert the invariant the broad-tap hazard is about: the send call is
+  # captured exactly once (never a call-subscription copy plus a tap copy).
+  # Whether the creating listen call is also captured depends on the client's
+  # queue-drain order, so filter by tool instead of asserting a total count.
+  proc sendCopies(e: JsonNode): int =
+    for item in e{"items"}:
+      if item{"envelope"}{"tool"}.getStr("") == "observe_send":
+        inc result
   let exactOnce = waitUntil(proc(): bool =
     ownEvents = call(nc, "observe", "observe_events", %*{"probeId": ownId})
-    ownEvents{"count"}.getInt(0) >= 1)
+    ownEvents.sendCopies >= 1)
   check("raw tap observes its own call exactly once",
-        exactOnce and ownEvents{"count"}.getInt(0) == 1, $ownEvents)
+        exactOnce and ownEvents.sendCopies == 1, $ownEvents)
   let invalidSend = call(nc, "observe", "observe_send",
                          %*{"subject": "svc.probe-target.call", "payload": %*{}})
   check("observe_send rejects service subjects", invalidSend{"error"} != nil,
