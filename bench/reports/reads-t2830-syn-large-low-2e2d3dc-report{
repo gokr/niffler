@@ -1,0 +1,4 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls
+syn-large,niffler,t28-docbackfill,pass,16.9,16.7,1,12182,5415,303,6464,0,0.001222,18,9,2074,false,0,0,0,0,0,0,0,0,0,0,4,3,0,0,,3,,
+syn-large,niffler,t29-logrollup,pass,34.7,34.5,1,7554,2707,239,4608,0,0.000710,436,0,2063,false,0,0,0,0,0,0,0,0,0,0,3,2,0,0,,2,,
+syn-large,niffler,t30-ifacedrift,pass,31.1,31,1,11721,3378,279,8064,0,0.000969,48,48,2061,false,0,0,0,0,0,0,0,0,0,0,4,3,0,0,,3,,
