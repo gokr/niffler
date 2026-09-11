@@ -330,7 +330,8 @@ proc main() =
                   "__session": {"session": "s1"}})
   let rt = call(nc, "edit", "read",
                 %*{"path": "tiny.txt", "__session": {"session": "s1"}})
-  check("tiny unchanged re-read dumps normally", rt.getStr("") == "small\n", $rt)
+  check("tiny unchanged re-read dumps normally",
+        rt.getStr("").startsWith("small\n"), $rt)
 
   # edit refuses stale content before matching, works after a fresh read
   writeFile(tmp / "stale.txt", bigContent)
@@ -422,6 +423,38 @@ proc main() =
   check("edit passes after the corrected read",
         not rw.hasKey("error") and
         readFile(tmp / "wedge.txt").contains("edited tail"), $rw)
+
+  # the read nudge: three consecutive full single-file reads append a
+  # batching hint, then it rearms; a paths batch resets the counter
+  discard call(nc, "edit", "write",
+               %*{"path": "n1.txt", "content": "a\n", "__session": {"session": "sn"}})
+  discard call(nc, "edit", "write",
+               %*{"path": "n2.txt", "content": "b\n", "__session": {"session": "sn"}})
+  discard call(nc, "edit", "write",
+               %*{"path": "n3.txt", "content": "c\n", "__session": {"session": "sn"}})
+  let n1 = call(nc, "edit", "read",
+                %*{"path": "n1.txt", "__session": {"session": "sn"}})
+  check("first read has no nudge", not n1.getStr("").contains("[hint:"), $n1)
+  let n2 = call(nc, "edit", "read",
+                %*{"path": "n2.txt", "__session": {"session": "sn"}})
+  check("second read has no nudge", not n2.getStr("").contains("[hint:"), $n2)
+  let n3 = call(nc, "edit", "read",
+                %*{"path": "n3.txt", "__session": {"session": "sn"}})
+  check("third read appends the paths hint",
+        n3.getStr("").contains("[hint:") and n3.getStr("").contains("paths"), $n3)
+  let nb = call(nc, "edit", "read",
+                %*{"paths": ["n1.txt", "n2.txt"],
+                   "__session": {"session": "sn"}})
+  check("paths batch has no nudge",
+        not nb{"text"}.getStr("").contains("[hint:"), $nb)
+  discard call(nc, "edit", "read",
+               %*{"path": "n1.txt", "__session": {"session": "sn"}})
+  discard call(nc, "edit", "read",
+               %*{"path": "n2.txt", "__session": {"session": "sn"}})
+  let n5 = call(nc, "edit", "read",
+                %*{"path": "n3.txt", "__session": {"session": "sn"}})
+  check("nudge rearms after a batch",
+        n5.getStr("").contains("[hint:"), $n5)
 
   # seen-state persists across a restart (mutations persist alongside undo);
   # the restarted component serves the remaining tests

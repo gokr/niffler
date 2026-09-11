@@ -429,4 +429,30 @@ export class NifflerHarness {
   }
 }
 
+// Assistant turns + tool-call counts from a persisted transcript —
+// turn-shape metrics next to usageFromTranscript (readSingle/readBatch
+// split the merged read tool's two shapes).
+export function transcriptShape(items) {
+  const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0 };
+  for (const it of items || []) {
+    const v = it.value || {};
+    if (v.role !== "assistant") continue;
+    shape.turns += 1;
+    for (const tc of v.tool_calls || []) {
+      const n = tc?.function?.name || "?";
+      shape.tools[n] = (shape.tools[n] || 0) + 1;
+      shape.toolCalls += 1;
+      if (n === "read") {
+        let a = {};
+        try {
+          a = JSON.parse(tc.function.arguments || "{}");
+        } catch {}
+        if (a.paths) shape.readBatch += 1;
+        else shape.readSingle += 1;
+      }
+    }
+  }
+  return shape;
+}
+
 export const name = "niffler";

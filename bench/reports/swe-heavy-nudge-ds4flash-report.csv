@@ -1,0 +1,5 @@
+model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls
+deepseek-v4-flash,niffler,sympy__sympy-12419,pass,527.9,486,1,4907201,50135,74474,4782592,0,0.233001,2,5,2693,false,0,0,0,0,0,0,0,0,0,0,80,81,6,0,1,66,4,4
+deepseek-v4-flash,niffler,sympy__sympy-12489,pass,238.9,192.1,1,1857402,31111,32371,1793920,0,0.095937,31,29,2580,false,0,0,0,0,0,0,0,0,0,0,49,62,31,0,1,25,5,
+deepseek-v4-flash,niffler,sympy__sympy-13031,pass,510.9,450.9,1,4867627,45898,71393,4750336,0,0.227387,8,4,2669,false,0,0,0,0,0,0,0,0,0,0,81,82,28,0,2,50,1,1
+deepseek-v4-flash,niffler,sympy__sympy-13551,pass,149.3,86.8,1,325647,15899,15476,294272,0,0.030382,7,5,2520,false,0,0,0,0,0,0,0,0,0,0,16,19,3,0,1,14,1,

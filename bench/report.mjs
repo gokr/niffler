@@ -80,17 +80,17 @@ const md = [];
 md.push(`# bench report — ${path.basename(runDir)}`);
 md.push("");
 md.push(
-  "| model | harness | task | verdict | time (s) | rounds | tok total | uncached in | tok out | cache r/w | cost $ | diff (+/-) |" +
+  "| model | harness | task | verdict | time (s) | rounds | turns | tok total | uncached in | tok out | cache r/w | cost $ | diff (+/-) |" +
     (hasExpert ? " expert judge/steer/accepted |" : ""),
 );
 md.push(
-  "|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---|" +
+  "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|" +
     (hasExpert ? "---|" : ""),
 );
 for (const r of results) {
   md.push(
     `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""} | ` +
-      `${r.totalTimeS} | ${r.rounds} | ${fmtTok(totalTokens(r))} | ` +
+      `${r.totalTimeS} | ${r.rounds} | ${r.shape?.turns ?? "-"} | ${fmtTok(totalTokens(r))} | ` +
       `${fmtTok(r.tokens?.input || 0)} | ${fmtTok(r.tokens?.output || 0)} | ` +
       `${fmtTok(r.tokens?.cacheRead || 0)}/${fmtTok(r.tokens?.cacheWrite || 0)} | ` +
       `${(r.tokens?.cost || 0).toFixed(4)} | ` +
@@ -103,8 +103,8 @@ for (const r of results) {
 md.push("");
 md.push("## Per-combo summary");
 md.push("");
-md.push("| model | harness | pass rate | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | avg diff (+/-) |");
-md.push("|---|---|---|---:|---:|---:|---:|---:|---|");
+md.push("| model | harness | pass rate | avg turns | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | avg diff (+/-) |");
+md.push("|---|---|---|---:|---:|---:|---:|---:|---:|---|");
 const groups = new Map();
 for (const r of results) {
   const k = `${r.model}|${r.harness}`;
@@ -117,7 +117,7 @@ for (const [k, rs] of groups) {
   const pass = rs.filter((r) => r.verdict === "pass").length;
   const avg = (f) => rs.reduce((s, r) => s + (f(r) || 0), 0) / n;
   md.push(
-    `| ${model} | ${harness} | ${pass}/${n} | ${avg((r) => r.totalTimeS).toFixed(0)} | ` +
+    `| ${model} | ${harness} | ${pass}/${n} | ${avg((r) => r.shape?.turns).toFixed(1)} | ${avg((r) => r.totalTimeS).toFixed(0)} | ` +
       `${fmtTok(avg(totalTokens))} | ${fmtTok(avg((r) => r.tokens?.input))} | ` +
       `${fmtTok(avg((r) => r.tokens?.cacheRead))} | ${fmtTok(avg((r) => r.tokens?.output))} | ` +
       `${avg((r) => r.diff?.insertions).toFixed(0)}/${avg((r) => r.diff?.deletions).toFixed(0)} |`,
@@ -138,7 +138,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens"];
+const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
 for (const r of results) {
   csv.push(
     [
@@ -169,6 +169,14 @@ for (const r of results) {
       r.expert?.tokens?.prompt || 0,
       r.expert?.tokens?.cached || 0,
       r.expert?.tokens?.completion || 0,
+      r.shape?.turns ?? "",
+      r.shape?.toolCalls ?? "",
+      r.shape?.readSingle ?? "",
+      r.shape?.readBatch ?? "",
+      r.shape?.tools?.grep ?? "",
+      r.shape?.tools?.bash ?? "",
+      r.shape?.tools?.edit ?? "",
+      r.shape?.tools?.write ?? "",
     ].join(","),
   );
 }

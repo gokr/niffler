@@ -593,6 +593,16 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   } catch (e) {
     usage.error = String(e);
   }
+  // Turn-shape telemetry: turns + tool mix next to tokens, so tool-surface
+  // and prompt experiments have a cheap shape probe (see bench/README.md).
+  let shape = null;
+  try {
+    if (combo.harness === "pi") shape = pi.sessionShape(adapterState.sessionFile);
+    else if (isNifflerHarness(combo.harness) && transcript)
+      shape = niffler.transcriptShape(transcript);
+  } catch (e) {
+    shape = { error: String(e) };
+  }
   // Prompt-size telemetry: the first assistant answer's prompt_tokens is
   // the cheapest cross-run proxy for system prompt + toolset bloat (see
   // bench/README.md — keep an eye on the first-call footprint).
@@ -670,6 +680,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     testTimeS: Number(testTimeS.toFixed(1)),
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
+    shape,
     firstPromptTokens,
     footprintOver,
     expert,

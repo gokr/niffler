@@ -202,4 +202,32 @@ export function usageFromSession(sessionFile) {
   return usage;
 }
 
+// Assistant turns + tool calls from the pi session JSONL — turn-shape
+// metrics next to usageFromSession (pi only has single-file read).
+export function sessionShape(sessionFile) {
+  const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0 };
+  if (!sessionFile || !fs.existsSync(sessionFile)) return shape;
+  for (const line of fs.readFileSync(sessionFile, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (rec.type !== "message") continue;
+    const m = rec.message || {};
+    if (m.role !== "assistant") continue;
+    shape.turns += 1;
+    for (const c of m.content || []) {
+      if (c.type !== "toolCall") continue;
+      const n = c.name || "?";
+      shape.tools[n] = (shape.tools[n] || 0) + 1;
+      shape.toolCalls += 1;
+      if (n === "read") shape.readSingle += 1;
+    }
+  }
+  return shape;
+}
+
 export const name = "pi";

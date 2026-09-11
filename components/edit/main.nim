@@ -932,6 +932,30 @@ proc hReadMany(c: Component, args: JsonNode): JsonNode =
       items.add(%*{"path": path, "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
+var gReadNudge = initTable[string, int]()
+  ## session -> consecutive full single-file reads since the last nudge or
+  ## `paths` batch; the hint fires on the third and then rearms.
+
+proc noteBatchRead(args: JsonNode) =
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len > 0: gReadNudge[session] = 0
+
+proc nudgeSingleRead(args: JsonNode, node: JsonNode): JsonNode =
+  ## After three consecutive full single-file reads, append a batching hint
+  ## to the result; the counter rearms so the cue repeats at most every
+  ## third read. Windowed reads (paging one file) don't count.
+  let session = args{"__session"}{"session"}.getStr("")
+  if session.len == 0 or node == nil or node.kind != JString: return node
+  if args{"offset"} != nil and args{"offset"}.kind != JNull: return node
+  let n = gReadNudge.getOrDefault(session, 0) + 1
+  if n >= 3:
+    gReadNudge[session] = 0
+    return %(node.getStr("") & "\n[hint: several related files? one read call " &
+      "takes up to 12 paths — read {\"paths\": [f1, f2, ...]} — instead " &
+      "of one file per turn.]")
+  gReadNudge[session] = n
+  return node
+
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
   ## Merged read entry point: one file via `path`, several via `paths`.
   if args == nil or args.kind != JObject:
@@ -951,9 +975,10 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
         "[E_BAD_SHAPE] \"offset\" applies to a single \"path\"; a " &
         "\"paths\" batch starts each file at line 1 — use limit, or " &
         "read the one file you need to page.")
+    noteBatchRead(args)
     return hReadMany(c, args)
   if hasPath:
-    return hRead(c, args)
+    return nudgeSingleRead(args, hRead(c, args))
   raise newException(ValueError,
     "[E_BAD_SHAPE] read requires \"path\" (one file) or \"paths\" " &
     "(1..12 files in one call).")
