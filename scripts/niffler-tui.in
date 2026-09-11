@@ -44,4 +44,16 @@ else
 fi
 
 export NIF_NATS_URL="$url"
-exec "$TUI" "$@"
+
+# /restart makes the client exit with 85 so this wrapper re-runs it — how a
+# running tui picks up a rebuilt var/bin/tui after a plugin update. Any other
+# status (clean quit, error, signal) ends the loop and becomes this script's
+# own exit status. Keep the code in step with the tui's restartExitCode.
+status=0
+while :; do
+  status=0
+  "$TUI" "$@" || status=$?
+  [ "$status" -eq 85 ] || break
+  echo "niffler-tui: restarting…" >&2
+done
+exit "$status"
