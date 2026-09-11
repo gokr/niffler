@@ -223,3 +223,55 @@ continues — no synthetic guidance.
 - **Wire simplicity**: one JSON envelope protocol vs dsh's capability-seam +
   waterfall + patch-YAML stack. When something breaks in Niffler you read the
   bus; in dsh you read the DI graph.
+
+## File tools slice: our edit component vs dsh (2026-09-11)
+
+A direct component-level read of dsh's file tooling against our
+`components/edit/main.nim` (edit 0.3.0), source-only, motivated by the
+question "what would dsh's model experience of editing look like next to
+ours". Studied `packages/fs/tool-fs` (`read`/`write`/`edit`/`read_image`),
+`packages/fs/fs-local` (the seam provider: matching, locking, atomic
+publish), `packages/fs/fs-observation-policy`, and the opt-in
+`packages/fs/tool-str-replace-editor`.
+
+**What dsh ships.** The default file toolset is the `tool-fs` suite — `read`,
+`write`, `edit` (+ `read_image` only when attachments are mounted) — plus
+`glob`/`grep` from `tool-fs-search`. The Anthropic-style
+`str_replace_editor` (`view`/`create`/`str_replace`/`insert`) exists as a
+separate package but is **opt-in**: their e2e presets assert it is *absent*
+by default (`apps/cli/tests/web-agent-presets.e2e.ts:350`), enabled only via
+a composition patch. Architecturally they split what we put in one
+component: the tools are thin adapters over a `FileSystem` seam (`ctx.fs`),
+the backend owns identity/version tokens, a per-target async lock, atomic
+publish and literal matching in one critical section
+(`fs-local/src/index.ts:230`), and a policy plugin derives CAS guards from
+observed state via the `fs/edit-intent`/`fs/write-intent` waterfalls.
+
+| Aspect | Niffler edit 0.3.0 | dsh |
+|---|---|---|
+| Edit matching | Exact + uniqueness, then fallback cascade: trailing-whitespace → indentation → unicode fold → block anchors (Levenshtein ≥ 0.65) → double-escape unescape; disproportionality guard | Strictly literal only — `old_str` must match EXACTLY ("Be mindful of whitespaces!"); 0 → `FS_EDIT_NOT_FOUND`, >1 → `FS_AMBIGUOUS_EDIT`. No fuzzy rescue (`fs-local/src/fsio.ts:797`) |
+| Multi-edit | `edits` array per call against one original, overlap refused | One replacement per call; no MultiEdit equivalent |
+| Insert | Via spans (or the hashline plugin) | Dedicated `insert` command — opt-in package only |
+| Freshness | Seen-state digest per (session, path); `E_STALE` only when bytes actually changed since the conversation last saw them; untracked callers edit freely | `FS_NOT_OBSERVED` — fails closed: must have read the file this session even if nothing changed; version re-checked under the per-target lock → `FS_STALE_VERSION` |
+| Undo | `undo_last_edit`: single-level per file, persisted across restarts, staleness-refused | None — they dropped the Anthropic `undo_edit` command; no revert tool anywhere |
+| Read | Verbatim lines, **no line numbers** (copies into `old_string`), 2000 lines / 256 KB / 200 KB-per-line, `windows` batching ×12, `[unchanged]` stub, batching nudge | `cat -n`-numbered, 2000 lines / 2000 chars-per-line / 50 KB per call, streaming ≥10 MB files, structured output + replay-safe UI meta |
+| Write | Atomic, 900 KB cap (NATS), mode-preserved, digest reported | Atomic staging dir + hard-link no-replace for `createIfAbsent`, Windows ReplaceFile/DACL handling, no content cap at the tool layer |
+| Result to model | Bounded diff excerpt + changed-line range + counts | One sentence ("updated successfully") — the diff goes to UI cards only |
+| No-op | `E_NO_CHANGE` detected post-match | `old_string === new_string` rejected up front |
+| Gates | `x-harness.approval: always` per tool | Sandbox escalation fields advertised only when the fs confines; approval presets live outside the tool |
+| Ambiguity error | Occurrence count | Count **plus the matching line numbers** (`tool-str-replace-editor/src/index.ts`, `lineNumbersAt`) |
+
+**Read of it.** Ours is strictly more forgiving on matching — dsh's model
+gets zero transcription-slip rescue, while our cascade keeps the
+ambiguity-safety property (every tier refuses on multiple matches). We also
+have undo, read batching and the `[unchanged]` stub; dsh has none of those.
+Their favoring points are structural, not semantic: storage-layer CAS
+versioning with per-target locks (multi-tenant safe by construction, where
+we lean on single-process NATS dispatch plus digests), streaming reads for
+huge files, and polished UI projection (diff cards, replayable meta).
+Their fail-closed `FS_NOT_OBSERVED` is the notable behavioral divergence:
+we deliberately chose the laxer rule (refuse only on actual byte change,
+`E_STALE`), which keeps cli/scripted edits working without a prior read.
+
+**Steal:** ambiguity errors that list the matching line numbers — cheap to
+add to our `E_AMBIGUOUS` path and strictly more actionable than a count.
