@@ -182,6 +182,8 @@ pre { font-family: var(--mono); }
 
 .hero-cta { margin-top: 28px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
+.release-line { margin-top: 16px; font-size: 0.92rem; color: var(--dim); }
+.release-line a { color: var(--amber); font-weight: 600; }
 .badges { margin-top: 28px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 .badge {
   border: 1px solid var(--border);

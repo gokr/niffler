@@ -4,6 +4,12 @@
 [website](https://gokr.github.io/niffler/) ·
 [Discord](https://discord.gg/ThJFEAJUAk)
 
+**[v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)** is out —
+the bus now runs on the pure-Nim [natsnim](https://github.com/gokr/natsnim)
+client (no `libnats` to install), and the release ships the `niffler-tui`
+terminal client alongside the desktop UI. See the
+[changelog](CHANGELOG.md).
+
 This is Niffler (reborn), a minimalistic, self-extending agent harness similar in philosophy
 to [Pi](https://pi.dev) or the new [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 Niffler takes a completely different approach to

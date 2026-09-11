@@ -6,7 +6,38 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-11
+
 ### Added
+
+- **bus: natsnim is the default NATS client — `natswrapper` and `libnats`
+  are gone** — the bus now runs on
+  [gokr/natsnim](https://github.com/gokr/natsnim), a pure-Nim translation of
+  `nats-io/nats.go`: the built binaries link libc alone, and `libnats-dev`,
+  `cnats`, futhark and `opir` have left the prerequisites entirely
+  (`make doctor` no longer checks them; `make install-native-deps` no longer
+  installs them). The migration ran behind a `-d:nifflerNimNats` flag with
+  the shim aliasing the new module to the old name — call sites
+  byte-identical, both clients testable from the same source — and the full
+  server suite passed with **each** client on the same commit before the
+  guards collapsed to `import natsnim`. Wiring it into a real harness caught
+  two client bugs the unit suites had missed (a 1 ms `NextMsg` that never
+  read the socket; missing no-responders, so probing an absent component
+  burned its whole timeout), and a subsequent review pass hardened the
+  transport: absolute deadlines on every operation (a stalled peer can no
+  longer hold a 20 ms request for 5 s), explicit handle ownership (destroyed
+  messages no longer leak ~1.1 KiB each), bounded parser and queue memory,
+  publish write-through with an opt-in batch API (`deferFlush`/`flushOutbound`
+  /the `batch` template), and `TCP_NODELAY` (a 20-request loopback probe
+  went from 829 ms to 3.5 ms). Head-to-head against `nats.go`
+  (`natsnim/bench/compare`): connect and small request/reply at parity or
+  faster; fan-out at publisher parity with the batch API (~1.5–1.7M msgs/s
+  into a Go subscriber vs ~1.6M for Go itself) and ~1.3–1.5× behind through
+  the pure-Nim subscriber (owned payload copies — a safety choice).
+  `niffler.nimble` requires the client by URL; `config.nims` resolves it
+  from the pkgs2 scan and honors `NATSNIM_SRC` for a local checkout while
+  iterating on the client. The full story lives in
+  `docs/research/NATSNIM.md`.
 
 - **fabric: compiled-Nim executor (native guests), content-addressed cache,
   structured guest SDK** — the embedded Nim VM (nimeval) is gone:
@@ -1022,6 +1053,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **edit: canonical reads shape** — reads adopt union semantics with no
+  exclusivity errors: overlap between explicit windows, line ranges and the
+  seen-state is a feature rather than a conflict, the speculative
+  read-batching nudge is dropped, and the bench counts canonical-reads
+  batches (`088826f`, `2e2d3dc`).
+
+- **read: window batches; frozen-prefix trim** — `read`'s batch mode is now
+  `windows` (items `{path, offset?, limit?}`, 1..12), replacing the
+  string-only `paths` form (shipped unreleased, no users): per-item ranges
+  let the grep-hit → read-each-window loop batch in one call instead of one
+  read per turn, and `x-harness.workspace` gained
+  `pathObjectArrayFields` so relative paths inside array objects resolve
+  against the conversation workspace. The frozen prefix is trimmed before it
+  reaches the model (`08bb603`).
+
 - **`make test` split into `test-server` and `test-ui`** — `make test` is the
   full gate and runs both, frontend first so a TypeScript break fails fast;
   `test-server` is the bus-contract suite alone and `test-ui` the frontend
@@ -1317,6 +1363,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as assistant events arrive; live token deltas stream into it.
 
 ### Fixed
+
+- **core: `__session` is injected on the parallel wave path** — parallel-safe
+  tools (`read` is `parallel: true`) go through `dispatchToolCalls`, which
+  resolved the workspace but never injected the live session id the way
+  `dispatchToolCall` does for `x-harness.sessionId` tools. Read's seen-state
+  was therefore inert in real turns: no `[unchanged]` stubs, no `E_STALE`
+  correction, no batching hint (the direct SWE run showed 0 stubs and 0
+  hints across 96 reads). The wave path now injects it exactly like the
+  serial one (`1e86d9c`).
 
 - **plugins: untracked `go.work` so a manual `make` in a clone builds** —
   Go plugin clones carry the sibling-checkout SDK replace
