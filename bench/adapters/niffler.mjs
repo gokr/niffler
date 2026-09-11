@@ -431,7 +431,8 @@ export class NifflerHarness {
 
 // Assistant turns + tool-call counts from a persisted transcript —
 // turn-shape metrics next to usageFromTranscript (readSingle/readBatch
-// split the merged read tool's two shapes).
+// split the read tool's single-file sugar from multi-file batches;
+// a 1-item "reads" array returns plain content, so it counts as single).
 export function transcriptShape(items) {
   const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0 };
   for (const it of items || []) {
@@ -447,7 +448,11 @@ export function transcriptShape(items) {
         try {
           a = JSON.parse(tc.function.arguments || "{}");
         } catch {}
-        if (a.windows) shape.readBatch += 1;
+        // canonical "reads" array and the legacy "windows" alias both batch
+        const batched =
+          (Array.isArray(a.reads) && a.reads.length > 1) ||
+          (Array.isArray(a.windows) && a.windows.length > 1);
+        if (batched) shape.readBatch += 1;
         else shape.readSingle += 1;
       }
     }

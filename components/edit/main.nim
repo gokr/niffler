@@ -1026,29 +1026,6 @@ proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
                    "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
-var gReadNudge = initTable[string, int]()
-  ## session -> consecutive single-item reads since the last nudge or
-  ## multi-item batch; the hint fires on the third and then rearms.
-
-proc noteBatchRead(args: JsonNode) =
-  let session = args{"__session"}{"session"}.getStr("")
-  if session.len > 0: gReadNudge[session] = 0
-
-proc nudgeSingleRead(args: JsonNode, node: JsonNode): JsonNode =
-  ## After three consecutive single-file reads, append a batching hint to
-  ## the result; the counter rearms so the cue repeats at most every third
-  ## read.
-  let session = args{"__session"}{"session"}.getStr("")
-  if session.len == 0 or node == nil or node.kind != JString: return node
-  let n = gReadNudge.getOrDefault(session, 0) + 1
-  if n >= 3:
-    gReadNudge[session] = 0
-    return %(node.getStr("") & "\n[hint: batching reads? read {\"reads\": " &
-      "[{\"path\": ...}, ...]} takes up to 12 files/ranges in one " &
-      "call — instead of one read per turn.]")
-  gReadNudge[session] = n
-  return node
-
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
   ## Canonical read entry point: "reads" [{path, offset?, limit?}, ...]
   ## (1..12) with single-file sugar "path" + top-level offset/limit.
@@ -1079,8 +1056,7 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
     if requests[0].hasRange:
       itemArgs["offset"] = %requests[0].offset
       itemArgs["limit"] = %requests[0].limit
-    return nudgeSingleRead(args, hRead(c, itemArgs))
-  noteBatchRead(args)
+    return hRead(c, itemArgs)
   return hReadBatch(c, args, requests, force)
 
 # ---------------------------------------------------------------------------

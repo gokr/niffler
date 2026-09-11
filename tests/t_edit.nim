@@ -481,37 +481,21 @@ proc main() =
         not rw.hasKey("error") and
         readFile(tmp / "wedge.txt").contains("edited tail"), $rw)
 
-  # the read nudge: three consecutive full single-file reads append a
-  # batching hint, then it rearms; a multi-item batch resets the counter
+  # the batching nudge was removed: under the canonical reads shape it
+  # converted 0/17 in the full30 reads run, and the schema description
+  # already teaches batching. Three consecutive single-file reads must not
+  # append any hint.
   discard call(nc, "edit", "write",
                %*{"path": "n1.txt", "content": "a\n", "__session": {"session": "sn"}})
   discard call(nc, "edit", "write",
                %*{"path": "n2.txt", "content": "b\n", "__session": {"session": "sn"}})
   discard call(nc, "edit", "write",
                %*{"path": "n3.txt", "content": "c\n", "__session": {"session": "sn"}})
-  let n1 = call(nc, "edit", "read",
-                %*{"path": "n1.txt", "__session": {"session": "sn"}})
-  check("first read has no nudge", not n1.getStr("").contains("[hint:"), $n1)
-  let n2 = call(nc, "edit", "read",
-                %*{"path": "n2.txt", "__session": {"session": "sn"}})
-  check("second read has no nudge", not n2.getStr("").contains("[hint:"), $n2)
-  let n3 = call(nc, "edit", "read",
-                %*{"path": "n3.txt", "__session": {"session": "sn"}})
-  check("third read appends the reads hint",
-        n3.getStr("").contains("[hint:") and n3.getStr("").contains("reads"), $n3)
-  let nb = call(nc, "edit", "read",
-                %*{"reads": [{"path": "n1.txt"}, {"path": "n2.txt"}],
-                   "__session": {"session": "sn"}})
-  check("reads batch has no nudge",
-        not nb{"text"}.getStr("").contains("[hint:"), $nb)
-  discard call(nc, "edit", "read",
-               %*{"path": "n1.txt", "__session": {"session": "sn"}})
-  discard call(nc, "edit", "read",
-               %*{"path": "n2.txt", "__session": {"session": "sn"}})
-  let n5 = call(nc, "edit", "read",
-                %*{"path": "n3.txt", "__session": {"session": "sn"}})
-  check("nudge rearms after a batch",
-        n5.getStr("").contains("[hint:"), $n5)
+  for i in 1 .. 3:
+    let nn = call(nc, "edit", "read",
+                  %*{"path": "n" & $i & ".txt", "__session": {"session": "sn"}})
+    check("single reads append no batching hint",
+          nn.kind == JString and not nn.getStr("").contains("[hint:"), $nn)
 
   # seen-state persists across a restart (mutations persist alongside undo);
   # the restarted component serves the remaining tests
