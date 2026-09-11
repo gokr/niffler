@@ -318,22 +318,22 @@ proc main() =
         wsToolMsg{"value"}{"content"}.getStr("").contains(root / "ws"),
         $wsToolMsg)
 
-  # windows workspace injection: core resolves windows[].path inside
+  # reads workspace injection: core resolves reads[].path inside
   # array objects against the conversation workspace too — the read must
   # reach the edit component and return the workspace file's bytes.
   writeFile(root / "ws" / "wsfile.txt", repeat("ws-window-ok\n", 40))
   let wrNew = call(nc, "core", "session",
                    %*{"sessionId": "ws-read", "cwd": "ws"}, 120_000)
-  check("windows workspace session created",
+  check("reads workspace session created",
         wrNew{"error"} == nil and wrNew{"cwd"}.getStr("") == root / "ws",
         $wrNew)
   let wrTurn = call(nc, "core", "session",
                     %*{"sessionId": "ws-read", "content": "go"}, 120_000)
-  check("windows workspace turn completed",
+  check("reads workspace turn completed",
         wrTurn{"reply"}.getStr("") == "ws-read-done", $wrTurn)
   let wrToolMsg = call(nc, "store", "get",
                        %*{"kind": "message", "id": "ws-read:000003"}, 10_000)
-  check("read windows resolved inside the conversation workspace",
+  check("read reads resolved inside the conversation workspace",
         wrToolMsg{"error"} == nil and
         wrToolMsg{"value"}{"name"}.getStr("") == "read" and
         wrToolMsg{"value"}{"content"}.getStr("").contains("ws-window-ok"),

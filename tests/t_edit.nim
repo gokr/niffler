@@ -182,39 +182,79 @@ proc main() =
   check("read returns verbatim content",
         rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
 
-  # read windows: several files/ranges in one call, per-item errors, bounds
+  # read: canonical "reads" array — several files/ranges in one call,
+  # per-item errors, bounds; union semantics, legacy aliases, the cap
   writeFile(tmp / "m1.txt", "alpha\n")
   writeFile(tmp / "m2.txt", "beta\n")
   writeFile(tmp / "m3.txt", "one\ntwo\nthree\n")
   let rm1 = call(nc, "edit", "read",
-                 %*{"windows": [{"path": "m1.txt"}, {"path": "missing.txt"},
-                                {"path": "m2.txt"}]})
+                 %*{"reads": [{"path": "m1.txt"}, {"path": "missing.txt"},
+                              {"path": "m2.txt"}]})
   let rm1s = rm1{"text"}.getStr("")
-  check("read windows returns items in order with per-item errors",
+  check("read reads returns items in order with per-item errors",
         rm1{"count"}.getInt(0) == 3 and
         rm1{"items"}[0]{"content"}.getStr("") == "alpha\n" and
         rm1{"items"}[1]{"error"} != nil and
         rm1{"items"}[2]{"content"}.getStr("") == "beta\n" and
         rm1s.find("### m1.txt") >= 0 and
         rm1s.find("### m2.txt") > rm1s.find("### m1.txt"), $rm1)
-  let rm2 = call(nc, "edit", "read", %*{"windows": []})
-  check("read refuses empty windows",
-        rm2.hasKey("error") and rm2{"error"}.getStr("").contains("1..12"), $rm2)
+  let rm2 = call(nc, "edit", "read", %*{"reads": []})
+  check("read refuses an empty reads array",
+        rm2.hasKey("error") and rm2{"error"}.getStr("").contains("requires"), $rm2)
   let rm3 = call(nc, "edit", "read",
-                 %*{"path": "m1.txt", "windows": [{"path": "m2.txt"}]})
-  check("read refuses path+windows together",
-        rm3.hasKey("error") and rm3{"error"}.getStr("").contains("not both"), $rm3)
+                 %*{"path": "m1.txt", "reads": [{"path": "m2.txt"}]})
+  check("read unions sugar path + reads (sugar first)",
+        rm3{"count"}.getInt(0) == 2 and
+        rm3{"items"}[0]{"content"}.getStr("") == "alpha\n" and
+        rm3{"items"}[1]{"content"}.getStr("") == "beta\n" and
+        rm3{"text"}.getStr("").find("### m1.txt") <
+          rm3{"text"}.getStr("").find("### m2.txt"), $rm3)
   let rm4 = call(nc, "edit", "read", %*{})
-  check("read refuses neither path nor windows",
+  check("read refuses an empty request",
         rm4.hasKey("error") and rm4{"error"}.getStr("").contains("requires"), $rm4)
   let rm5 = call(nc, "edit", "read",
-                 %*{"windows": [{"path": "m3.txt", "offset": 2, "limit": 1}]})
-  check("read windows honours per-item offset/limit",
+                 %*{"reads": [{"path": "m3.txt", "offset": 2, "limit": 1},
+                              {"path": "m1.txt"}]})
+  check("read reads honours per-item offset/limit",
         rm5{"items"}[0]{"content"}.getStr("").startsWith("two\n") and
-        rm5{"text"}.getStr("").contains("m3.txt:2+1"), $rm5)
-  let rm6 = call(nc, "edit", "read", %*{"paths": ["m1.txt"]})
-  check("read names the removed paths field",
-        rm6.hasKey("error") and rm6{"error"}.getStr("").contains("windows"), $rm6)
+        rm5{"text"}.getStr("").contains("m3.txt:2+1") and
+        rm5{"items"}[1]{"content"}.getStr("") == "alpha\n", $rm5)
+  let rm6 = call(nc, "edit", "read", %*{"paths": ["m1.txt", "m2.txt"]})
+  check("legacy paths alias still batches",
+        rm6{"count"}.getInt(0) == 2 and
+        rm6{"text"}.getStr("").contains("### m1.txt") and
+        rm6{"text"}.getStr("").contains("### m2.txt"), $rm6)
+  let rm7 = call(nc, "edit", "read",
+                 %*{"windows": [{"path": "m1.txt"}]})
+  check("legacy windows alias still reads (single item = plain content)",
+        rm7.kind == JString and rm7.getStr("") == "alpha\n", $rm7)
+  # the GPT-6 regression: path + a window on the same file was rejected as
+  # E_BAD_SHAPE; union semantics now honor it — full file plus the window
+  let rm8 = call(nc, "edit", "read",
+                 %*{"path": "m3.txt", "limit": 2000,
+                    "windows": [{"path": "m3.txt", "limit": 1}]})
+  check("union path+window works as intended (no exclusivity)",
+        rm8{"count"}.getInt(0) == 2 and
+        rm8{"items"}[0]{"content"}.getStr("").startsWith("one\n") and
+        rm8{"items"}[1]{"content"}.getStr("").startsWith("one\n"), $rm8)
+  let rm9 = call(nc, "edit", "read",
+                 %*{"path": "m1.txt", "reads": [{"path": "m1.txt"}]})
+  check("identical union items dedupe to a single read",
+        rm9.kind == JString and rm9.getStr("") == "alpha\n", $rm9)
+  let rm10 = call(nc, "edit", "read",
+                  %*{"reads": [{"path": 5}]})
+  check("malformed reads item becomes a per-item error",
+        rm10{"count"}.getInt(0) == 1 and rm10{"items"}[0]{"error"} != nil and
+        rm10{"text"}.getStr("").contains("[E_BAD_SHAPE]"), $rm10)
+  var many = newJArray()
+  for i in 1 .. 13: many.add(%*{"path": "f" & $i & ".txt"})
+  let rm11 = call(nc, "edit", "read", %*{"reads": many})
+  check("read caps batches at 12 items",
+        rm11.hasKey("error") and
+        rm11{"error"}.getStr("").contains("at most 12"), $rm11)
+  let rm12 = call(nc, "edit", "read", %*{"reads": "m1.txt"})
+  check("a bare string reads item is sugar for one file",
+        rm12.kind == JString and rm12.getStr("") == "alpha\n", $rm12)
   let rr2 = call(nc, "edit", "read",
                  %*{"path": "r.txt", "offset": 2, "limit": 1})
   check("read paginates", rr2.getStr("").startsWith("two\n\n[Showing lines 2-2 of 3"), $rr2)
@@ -368,7 +408,7 @@ proc main() =
   check("re-read after own edit is stubbed (full carried)",
         rse3.getStr("").startsWith("[unchanged]"), $rse3)
 
-  # read windows: first pass dumps (m1 unseen, m2 externally changed since
+  # read batch: first pass dumps (m1 unseen, m2 externally changed since
   # its tracked write), second pass stubs both unchanged files per-item
   writeFile(tmp / "m1.txt", bigContent)
   writeFile(tmp / "m2.txt", bigContent)
@@ -379,14 +419,14 @@ proc main() =
   let rm = call(nc, "edit", "read",
                 %*{"windows": [{"path": "m1.txt"}, {"path": "m2.txt"}],
                    "__session": {"session": "s1"}})
-  check("read windows dumps unseen and changed files",
+  check("read batch dumps unseen and changed files",
         rm{"text"}.getStr("").contains("### m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m1.txt") and
         not rm{"text"}.getStr("").contains("[unchanged] m2.txt"), $rm)
   let rmst = call(nc, "edit", "read",
-                 %*{"windows": [{"path": "m1.txt"}, {"path": "m2.txt"}],
+                 %*{"reads": [{"path": "m1.txt"}, {"path": "m2.txt"}],
                     "__session": {"session": "s1"}})
-  check("read windows stubs unchanged files",
+  check("read batch stubs unchanged files",
         rmst{"text"}.getStr("").contains("[unchanged] m1.txt") and
         rmst{"text"}.getStr("").contains("[unchanged] m2.txt") and
         rmst{"items"}[0]{"content"}.getStr("").startsWith("[unchanged]"), $rmst)
@@ -435,7 +475,7 @@ proc main() =
         readFile(tmp / "wedge.txt").contains("edited tail"), $rw)
 
   # the read nudge: three consecutive full single-file reads append a
-  # batching hint, then it rearms; a paths batch resets the counter
+  # batching hint, then it rearms; a multi-item batch resets the counter
   discard call(nc, "edit", "write",
                %*{"path": "n1.txt", "content": "a\n", "__session": {"session": "sn"}})
   discard call(nc, "edit", "write",
@@ -450,12 +490,12 @@ proc main() =
   check("second read has no nudge", not n2.getStr("").contains("[hint:"), $n2)
   let n3 = call(nc, "edit", "read",
                 %*{"path": "n3.txt", "__session": {"session": "sn"}})
-  check("third read appends the windows hint",
-        n3.getStr("").contains("[hint:") and n3.getStr("").contains("windows"), $n3)
+  check("third read appends the reads hint",
+        n3.getStr("").contains("[hint:") and n3.getStr("").contains("reads"), $n3)
   let nb = call(nc, "edit", "read",
-                %*{"windows": [{"path": "n1.txt"}, {"path": "n2.txt"}],
+                %*{"reads": [{"path": "n1.txt"}, {"path": "n2.txt"}],
                    "__session": {"session": "sn"}})
-  check("windows batch has no nudge",
+  check("reads batch has no nudge",
         not nb{"text"}.getStr("").contains("[hint:"), $nb)
   discard call(nc, "edit", "read",
                %*{"path": "n1.txt", "__session": {"session": "sn"}})

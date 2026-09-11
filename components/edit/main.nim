@@ -38,6 +38,7 @@ const
   MAX_DIFF_LINES = 200
   FUZZY_SIMILARITY = 0.65   # block-anchor middle-line similarity threshold
   MAX_READ_LINES = 2000     # default read cap per call
+  MAX_READ_ITEMS = 12       # read batch cap per call
   MAX_READ_BYTES = 256 * 1024
   MAX_READ_LINE_BYTES = 200 * 1024
   MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
@@ -888,131 +889,199 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
             persist = not same)
   result = %text
 
-proc hReadWindows(c: Component, args: JsonNode): JsonNode =
-  ## Read several files/ranges in one call. Each item is {path, offset?,
-  ## limit?}; per-item errors never hide the others and the aggregate stays
-  ## below the bus-friendly 512KB bound.
-  if args == nil or args.kind != JObject or args{"windows"} == nil or
-      args{"windows"}.kind != JArray:
-    raise newException(ValueError,
-      "[E_BAD_SHAPE] read requires a \"windows\" array (or a single \"path\").")
-  let windows = args{"windows"}
-  if windows.len == 0 or windows.len > 12:
-    raise newException(ValueError,
-      "[E_BAD_SHAPE] windows must contain 1..12 items (got " &
-      $windows.len & ") — split into batches.")
-  let force = args{"force"}.getBool(false)
+type ReadRequest = tuple[path: string, offset: int, limit: int,
+                         hasRange: bool, err: string]
+
+proc readRequestItem(item: JsonNode, label: string): ReadRequest =
+  ## One array item ({path, offset?, limit?}) — or a plain string, read as
+  ## {path: <item>} — normalized into a request or a per-item error.
+  if item == nil or item.kind == JNull or item.kind == JInt or
+      item.kind == JFloat or item.kind == JBool:
+    return (path: "", offset: 1, limit: MAX_READ_LINES, hasRange: false,
+            err: label & " items must be objects with a \"path\" " &
+                 "or plain strings")
+  if item.kind == JString:
+    if item.getStr("").len == 0:
+      return (path: "", offset: 1, limit: MAX_READ_LINES, hasRange: false,
+              err: label & "[] path strings must be non-empty")
+    return (path: item.getStr(""), offset: 1, limit: MAX_READ_LINES,
+            hasRange: false, err: "")
+  let pathNode = item{"path"}
+  if pathNode == nil or pathNode.kind != JString or pathNode.getStr("").len == 0:
+    return (path: "", offset: 1, limit: MAX_READ_LINES, hasRange: false,
+            err: label & "[].path must be a non-empty string")
+  let offN = item{"offset"}
+  let limN = item{"limit"}
+  if offN != nil and offN.kind != JNull and
+      (offN.kind != JInt or offN.getInt() < 1):
+    return (path: pathNode.getStr(""), offset: 1, limit: MAX_READ_LINES,
+            hasRange: false, err: label & "[].offset must be a positive integer")
+  if limN != nil and limN.kind != JNull and
+      (limN.kind != JInt or limN.getInt() < 1):
+    return (path: pathNode.getStr(""), offset: 1, limit: MAX_READ_LINES,
+            hasRange: false, err: label & "[].limit must be a positive integer")
+  let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
+  let limit = if limN != nil and limN.kind == JInt: limN.getInt()
+              else: MAX_READ_LINES
+  (path: pathNode.getStr(""), offset: offset, limit: limit,
+   hasRange: (offN != nil and offN.kind != JNull) or
+             (limN != nil and limN.kind != JNull), err: "")
+
+proc normalizeReadRequests(args: JsonNode): seq[ReadRequest] =
+  ## Union semantics: every read-shaped key is honored, none conflicts.
+  ## The sugar "path" (top-level offset/limit scope it) is the first item,
+  ## then the canonical "reads" array, then the legacy "windows" (object
+  ## items) and "paths" (string items) aliases. Identical (path, offset,
+  ## limit) triples dedupe; malformed items become per-item errors instead
+  ## of call failures. Only an empty request or the item cap raises.
+  result = newSeq[ReadRequest]()
+  var pathNode: JsonNode = nil
+  for key in ["path", "filePath", "file_path"]:
+    let n = args{key}
+    if n != nil and n.kind != JNull:
+      pathNode = n
+      break
+  let offN = args{"offset"}
+  let limN = args{"limit"}
+  let hasRange = (offN != nil and offN.kind != JNull) or
+                 (limN != nil and limN.kind != JNull)
+  let badRange = (offN != nil and offN.kind != JNull and
+                  (offN.kind != JInt or offN.getInt() < 1)) or
+                 (limN != nil and limN.kind != JNull and
+                  (limN.kind != JInt or limN.getInt() < 1))
+  if pathNode != nil:
+    if pathNode.kind != JString or pathNode.getStr("").len == 0:
+      result.add((path: "", offset: 1, limit: MAX_READ_LINES, hasRange: false,
+                  err: "\"path\" must be a non-empty string"))
+    elif badRange:
+      result.add((path: pathNode.getStr(""), offset: 1, limit: MAX_READ_LINES,
+                  hasRange: false,
+                  err: "the sugar \"path\" takes a positive integer " &
+                       "\"offset\"/\"limit\""))
+    else:
+      let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
+      let limit = if limN != nil and limN.kind == JInt: limN.getInt()
+                  else: MAX_READ_LINES
+      result.add((path: pathNode.getStr(""), offset: offset, limit: limit,
+                  hasRange: hasRange, err: ""))
+  for field in ["reads", "windows", "paths"]:
+    let node = args{field}
+    if node == nil or node.kind == JNull: continue
+    if node.kind == JArray:
+      for item in node:
+        let req = readRequestItem(item, field)
+        var already = false
+        if req.err.len == 0:
+          for prev in result:
+            if prev.err.len == 0 and prev.path == req.path and
+                prev.offset == req.offset and prev.limit == req.limit:
+              already = true
+              break
+        if not already: result.add(req)
+    elif node.kind == JString:
+      let req = readRequestItem(node, field)
+      if req.err.len == 0: result.add(req)
+    else:
+      result.add((path: "", offset: 1, limit: MAX_READ_LINES, hasRange: false,
+                  err: "\"" & field & "\" must be an array of " &
+                       "{path, offset?, limit?} objects"))
+
+proc hReadBatch(c: Component, args: JsonNode, requests: seq[ReadRequest],
+                force: bool): JsonNode =
+  ## Several files/ranges in one call. Per-item errors never hide the
+  ## others and the aggregate stays below the bus-friendly 512KB bound.
   var blocks: seq[string]
   var items = newJArray()
   var used = 0
-  for item in windows:
-    if item == nil or item.kind != JObject:
-      blocks.add("### <invalid item>\n[E_BAD_SHAPE] each windows item must be " &
-        "an object with a \"path\"")
-      items.add(%*{"path": "",
-                   "error": "each windows item must be an object with a \"path\""})
+  for req in requests:
+    if req.err.len > 0:
+      let name = if req.path.len > 0: req.path else: "<invalid item>"
+      blocks.add("### " & name & "\n[E_BAD_SHAPE] " & req.err)
+      items.add(%*{"path": req.path, "error": req.err})
       continue
-    let pathNode = item{"path"}
-    if pathNode == nil or pathNode.kind != JString or pathNode.getStr("").len == 0:
-      blocks.add("### <invalid item>\n[E_BAD_SHAPE] windows[].path must be a " &
-        "non-empty string")
-      items.add(%*{"path": "",
-                   "error": "windows[].path must be a non-empty string"})
-      continue
-    let path = pathNode.getStr("")
-    let offN = item{"offset"}
-    let limN = item{"limit"}
-    if offN != nil and offN.kind != JNull and
-        (offN.kind != JInt or offN.getInt() < 1):
-      blocks.add("### " & path &
-        "\n[E_BAD_SHAPE] windows[].offset must be a positive integer")
-      items.add(%*{"path": path,
-                   "error": "windows[].offset must be a positive integer"})
-      continue
-    if limN != nil and limN.kind != JNull and
-        (limN.kind != JInt or limN.getInt() < 1):
-      blocks.add("### " & path &
-        "\n[E_BAD_SHAPE] windows[].limit must be a positive integer")
-      items.add(%*{"path": path,
-                   "error": "windows[].limit must be a positive integer"})
-      continue
-    let offset = if offN != nil and offN.kind == JInt: offN.getInt() else: 1
-    let limit = if limN != nil and limN.kind == JInt: limN.getInt()
-                else: MAX_READ_LINES
-    let heading = if offN != nil or limN != nil:
-                    path & ":" & $offset & "+" & $limit
-                  else: path
+    let heading = if req.hasRange:
+                    req.path & ":" & $req.offset & "+" & $req.limit
+                  else: req.path
     try:
-      var itemArgs = %*{"path": path, "force": force,
+      var itemArgs = %*{"path": req.path, "force": force,
                         "__session": args{"__session"}}
-      if offN != nil and offN.kind == JInt: itemArgs["offset"] = %offN.getInt()
-      if limN != nil and limN.kind == JInt: itemArgs["limit"] = %limN.getInt()
+      if req.hasRange:
+        itemArgs["offset"] = %req.offset
+        itemArgs["limit"] = %req.limit
       let content = hRead(c, itemArgs)
       let text = content.getStr()
       if used + text.len > 512_000:
         blocks.add("### " & heading &
           "\n[read limit: aggregate output exceeds 512000 bytes; read remaining items separately]")
-        items.add(%*{"path": path, "offset": offset, "limit": limit,
+        items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                      "error": "aggregate read output exceeds 512000 bytes; read remaining items separately"})
         break
       used += text.len
       blocks.add("### " & heading & "\n" & text)
-      items.add(%*{"path": path, "offset": offset, "limit": limit,
+      items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                    "content": content})
     except CatchableError as e:
       blocks.add("### " & heading & "\n" & e.msg)
-      items.add(%*{"path": path, "offset": offset, "limit": limit,
+      items.add(%*{"path": req.path, "offset": req.offset, "limit": req.limit,
                    "error": e.msg})
   result = %*{"text": blocks.join("\n"), "items": items, "count": items.len}
 
 var gReadNudge = initTable[string, int]()
   ## session -> consecutive single-item reads since the last nudge or
-  ## `windows` batch; the hint fires on the third and then rearms.
+  ## multi-item batch; the hint fires on the third and then rearms.
 
 proc noteBatchRead(args: JsonNode) =
   let session = args{"__session"}{"session"}.getStr("")
   if session.len > 0: gReadNudge[session] = 0
 
 proc nudgeSingleRead(args: JsonNode, node: JsonNode): JsonNode =
-  ## After three consecutive single-item reads, append a batching hint to
+  ## After three consecutive single-file reads, append a batching hint to
   ## the result; the counter rearms so the cue repeats at most every third
-  ## read. Windowed reads count too — a windows item carries its own range.
+  ## read.
   let session = args{"__session"}{"session"}.getStr("")
   if session.len == 0 or node == nil or node.kind != JString: return node
   let n = gReadNudge.getOrDefault(session, 0) + 1
   if n >= 3:
     gReadNudge[session] = 0
-    return %(node.getStr("") & "\n[hint: batching reads? read {\"windows\": " &
-      "[{path, offset?, limit?}, ...]} takes up to 12 files/ranges in one " &
+    return %(node.getStr("") & "\n[hint: batching reads? read {\"reads\": " &
+      "[{\"path\": ...}, ...]} takes up to 12 files/ranges in one " &
       "call — instead of one read per turn.]")
   gReadNudge[session] = n
   return node
 
 proc hReadTool(c: Component, args: JsonNode): JsonNode =
-  ## Merged read entry point: one file via `path`, several via `windows`.
+  ## Canonical read entry point: "reads" [{path, offset?, limit?}, ...]
+  ## (1..12) with single-file sugar "path" + top-level offset/limit.
+  ## Union semantics — sugar and array combine (sugar first), the legacy
+  ## "windows"/"paths" aliases are honored, identical items dedupe — so no
+  ## combination of keys is a shape error; only an empty request and the
+  ## 12-item cap raise.
   if args == nil or args.kind != JObject:
     raise newException(ValueError,
       "[E_BAD_SHAPE] Read request must be an object.")
-  if args{"paths"} != nil and args{"paths"}.kind != JNull:
+  let requests = normalizeReadRequests(args)
+  if requests.len == 0:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] \"paths\" was replaced by \"windows\": read " &
-      "{\"windows\": [{\"path\": ...}, ...]} carries per-item offset/limit.")
-  let windowsNode = args{"windows"}
-  let pathNode = args{"path"}
-  let hasWindows = windowsNode != nil and windowsNode.kind != JNull
-  let hasPath = pathNode != nil and pathNode.kind != JNull
-  if hasWindows and hasPath:
+      "[E_BAD_SHAPE] read requires at least one file — {\"reads\": " &
+      "[{\"path\": ...}, ...]} (1..12, or the single-file \"path\" sugar).")
+  if requests.len > MAX_READ_ITEMS:
     raise newException(ValueError,
-      "[E_BAD_SHAPE] read takes either \"path\" (one file) or \"windows\" " &
-      "(several in one call), not both.")
-  if hasWindows:
-    noteBatchRead(args)
-    return hReadWindows(c, args)
-  if hasPath:
-    return nudgeSingleRead(args, hRead(c, args))
-  raise newException(ValueError,
-    "[E_BAD_SHAPE] read requires \"path\" (one file) or \"windows\" " &
-    "(1..12 files/ranges in one call).")
+      "[E_BAD_SHAPE] read takes at most " & $MAX_READ_ITEMS &
+      " files/ranges per call (got " & $requests.len &
+      ") — split into batches.")
+  let force = args{"force"}.getBool(false)
+  if requests.len == 1 and requests[0].err.len == 0:
+    # one item: plain content, no heading wrapper. Offset/limit are only
+    # forwarded when the caller supplied a range, so the unchanged-stub
+    # shortcut still keys off absent offset/limit.
+    var itemArgs = %*{"path": requests[0].path, "force": force,
+                      "__session": args{"__session"}}
+    if requests[0].hasRange:
+      itemArgs["offset"] = %requests[0].offset
+      itemArgs["limit"] = %requests[0].limit
+    return nudgeSingleRead(args, hRead(c, itemArgs))
+  noteBatchRead(args)
+  return hReadBatch(c, args, requests, force)
 
 # ---------------------------------------------------------------------------
 # write handler
@@ -1068,9 +1137,7 @@ let comp = newComponent("edit", "0.3.0")
 loadStore()
 
 discard comp.tool("read", toolSchema(%*{
-  "path": {"type": "string",
-           "description": "Single file (page with offset/limit)"},
-  "windows": {"type": "array", "minItems": 1, "maxItems": 12,
+  "reads": {"type": "array", "minItems": 1, "maxItems": 12,
               "items": {"type": "object",
                 "properties": {
                   "path": {"type": "string",
@@ -1080,18 +1147,23 @@ discard comp.tool("read", toolSchema(%*{
                   "limit": {"type": "integer", "minimum": 1,
                             "description": "Max lines (default 2000)"}},
                 "required": ["path"], "additionalProperties": false},
-              "description": "Several files or ranges in one call (1..12) — batch known-relevant reads instead of one per turn"},
+              "description": "1..12 files/ranges in one call — the canonical form; batch known-relevant reads (grep hits, imports) instead of one per turn"},
+  "path": {"type": "string",
+           "description": "Sugar for one file: same as \"reads\": [{\"path\": ...}]; given with \"reads\", it is read first"},
   "offset": {"type": "integer", "minimum": 1,
-             "description": "Start line (path only)"},
+             "description": "Start line for the sugar \"path\" (default 1)"},
   "limit": {"type": "integer", "minimum": 1,
-            "description": "Max lines (path only; windows take their own)"},
+            "description": "Max lines for the sugar \"path\" (default 2000)"},
   "force": {"type": "boolean",
             "description": "Re-dump even if unchanged since your last read/write"}
 }, @[],
-  "Read one file (\"path\"), or batch \"windows\": [{path, offset?, limit?}, ...] — up to 12 files/ranges in one call, per-item errors, content under a \"### path\" heading, 512KB cap. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
+  "Read files for editing. Canonical: \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges in one call, per-item errors, several items under a \"### path\" heading, 512KB cap; one \"reads\" item (or the sugar \"path\") returns plain content. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "workspace": {"pathFields": ["path"],
-                   "pathObjectArrayFields": [{"field": "windows",
+                   "pathArrayFields": ["paths"],
+                   "pathObjectArrayFields": [{"field": "reads",
+                                              "pathField": "path"},
+                                             {"field": "windows",
                                               "pathField": "path"}]}})
 
 discard comp.tool("edit", toolSchema(%*{
