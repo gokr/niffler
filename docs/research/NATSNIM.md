@@ -126,15 +126,20 @@ precede the spawn or the assertion order-insensitive:
   copy plus a tap copy — is now asserted by filtering captured items on the
   tool name. The fixed test passes with both clients.
 
-The focused console test passes with these barriers. The flagged core and
-console binaries show no `libnats` dependency in `ldd`. The full server suite
-is still being validated; these checks do not establish complete compatibility.
+The full flagged server suite (36 Nim suites plus the Go tests) passes with
+the flag from a clean rebuild, revalidated against the client's hardened
+transport (natsnim main, including write-through publishes, in-place parser
+scanning and the opt-in batch API). The flagged core and console binaries
+show no `libnats` dependency in `ldd`. A green suite does not establish
+complete compatibility — the differential validation (P6) remains the rigor
+step.
 
 ## Remaining work (P7 and follow-up)
 
-1. **Green suite on the flag.** `make test-server` with `-d:nifflerNimNats`,
-   then the same for `make test-ui` if it touches the bus (it does not — the
-   SPA goes through the Go bridge — but the target is part of `make test`).
+1. ~~**Green suite on the flag.**~~ Done: `make test-server` with
+   `-d:nifflerNimNats` is green from a clean rebuild. (`make test-ui` does
+   not touch the bus — the SPA goes through the Go bridge — but it is part
+   of `make test`.)
 2. **After validation and ownership audit, consider flipping the default**:
    depend on `natsnim` in `niffler.nimble`, drop
    `natswrapper` from `niffler.nimble` and from `config.nims`'s pkgs2 scan,
