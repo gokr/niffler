@@ -138,10 +138,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`full30-deepseek-v4.1-flash-high-postfabric-report.md`).
 
 - **Merged `read` + `read_many`; `grep` is now direct** — one `read` tool
-  takes `path` (one file, pageable) or `windows` (up to 12 files/ranges in
-  one call, each item `{path, offset?, limit?}`, per-file errors, 512KB
-  aggregate cap); the separate `read_many` tool is gone, so the direct
-  toolset loses a schema and the batch shape is visible at read time. The
+  takes the canonical `reads` array (1..12 files/ranges in one call, each
+  item `{path, offset?, limit?}`, per-item errors, identical items deduped,
+  512KB aggregate cap) with the single-file `path` sugar; the separate
+  `read_many` tool is gone, so the direct toolset loses a schema and the
+  batch shape is visible at read time. The
   grep component's `grep` tool is promoted from on-demand to the default
   direct set (ripgrep search without a discover+invoke round trip); `files`
   stays on-demand. Baseprompt guidance now says "batch known-relevant
