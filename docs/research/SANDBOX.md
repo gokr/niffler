@@ -1,6 +1,15 @@
 # Sandbox — component-level confinement for Niffler
 
-Status: **proposal** (nothing here is implemented). Explored 2026-09-12 against
+> **Historical proposal — superseded for implementation by
+> [SANDBOX-PLAN.md](SANDBOX-PLAN.md).** Review found that shared components,
+> unrestricted NATS access, inherited secrets and agent-writable control state
+> invalidate several security claims below. The revised plan starts with
+> opt-in per-command shell write protection, not universal agent containment.
+> It also replaces automatic fallback and broad remembered grants with
+> fail-closed guarded execution and narrowly scoped access. The network and
+> Boxlite availability claims below are not implementation guarantees.
+
+Status: **original proposal** (nothing here is implemented). Explored 2026-09-12 against
 refreshed local checkouts of dsh, CodeWhale, DeepSeek-Reasonix, pi, OpenHands
 (Agent Canvas), OpenCode (+ its archived Go original), and the Boxlite project
 notes. Companions: [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) §5 (dsh's
