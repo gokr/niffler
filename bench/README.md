@@ -1,7 +1,7 @@
 # bench — harness comparison framework
 
-Compares coding-agent **harnesses** (Niffler, pi, opencode, codewhale) on the
-same set of coding tasks with the same models, and measures:
+Compares coding-agent **harnesses** (Niffler, pi, opencode, codewhale,
+Claude Code) on the same set of coding tasks with the same models, and measures:
 
 - **time to green** — wall clock from the first agent turn until `./test.sh`
   exits 0 (multi-round: failing test output is fed back to the agent, exactly
@@ -20,7 +20,8 @@ bench/
   run.mjs              # orchestrator: combos → [turn → verify] loops → results
   report.mjs           # aggregates a run dir into report.md + report.csv
   lib/                 # util + key resolution (keys never stored/logged)
-  adapters/            # pi.mjs, opencode.mjs, niffler.mjs, codewhale.mjs
+  adapters/            # pi.mjs, opencode.mjs, niffler.mjs, codewhale.mjs,
+                       # claudecode.mjs
   tasks/t0*/           # prompt.md, meta.json, repo/ (pristine git repo, tag `base`)
   reports/             # committed aggregates (one *-report.{md,csv} per run)
   swe/                 # SWE-bench Verified importer (see swe/README.md)
@@ -172,6 +173,27 @@ patch instead of burning the remaining feedback rounds.
   holds startup locks that would otherwise pollute the diff. Usage = sum of
   `turn_usage` events (provider-reported, incl. reasoning + cache hit/miss);
   exit code 75 (EX_TEMPFAIL) maps to a retryable transport failure.
+- **claudecode** — one `claude -p <prompt> --output-format stream-json
+  --dangerously-skip-permissions` invocation per round in the repo dir.
+  Round 1 pins the session with `--session-id <uuid>`, round 2+ resume it
+  with `--resume <uuid>`. The gateway is Anthropic-compatible:
+  `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_MODEL` point at
+  Synthetic's `/anthropic` endpoint (`syn:large:text` speaks the Anthropic
+  Messages dialect there; the `/openai/v1` base used by niffler/pi does not
+  serve `/v1/messages`). Everything lives in an isolated `CLAUDE_CONFIG_DIR`
+  per combo — the developer's `~/.claude`/`~/.claude.json` are never touched,
+  and the agent writes nothing into the task repo. Telemetry/autoupdate are
+  disabled via env; thinking maps the bench profile to `MAX_THINKING_TOKENS`
+  (low 2048 / medium 8192 / high 16384 / max 30000 — the Anthropic dialect
+  expresses effort as a budget). Usage comes from the final `result` event
+  (verified against a controlled 2-call run: `input_tokens` there is
+  `Σ(prompt − cached_read)` across the invocation's calls, with cache
+  read/write summed alongside; per-call stream events zero the cache fields
+  on this gateway). `total_cost_usd` is ignored — Claude Code guesses
+  unknown models' prices — cost is computed from the same price table the
+  niffler adapter uses. `firstPromptTokens` is the first assistant event's
+  `input_tokens` (the first call's full prompt). Only models with a
+  `claudecode` section in config.json can select this harness.
 - **niffler** — one private harness per (model) combo: own `nats-server` on a
   free port + isolated `NIF_ROOT` (symlink farm over the bench worktree, real
   `var/`), pinned to the model gateway via `NIF_OPENAI_*` env. Each round is a
@@ -219,11 +241,12 @@ Both bench models are reached through OpenAI-compatible endpoints; keys are
 resolved at run time (env → niffler `.env` → opencode `auth.json`) and never
 written anywhere:
 
-| model | endpoint | niffler | pi | opencode |
-|-------|----------|---------|----|----------|
-| deepseek-v4-flash | api.deepseek.com/v1 | `NIF_OPENAI_*` | `--provider deepseek` (models.json override) | `-m deepseek/deepseek-v4-flash` |
-| glm-5.3-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | `-m llmgateway/glm-5.3-flash` |
-| syn-large (`syn:large:text`) | api.synthetic.new/openai/v1 | `NIF_OPENAI_*` | `--provider synthetic` (models.json) | — |
+| model | endpoint | niffler | pi | opencode | claudecode |
+|-------|----------|---------|----|----------|------------|
+| deepseek-v4-flash | api.deepseek.com/v1 | `NIF_OPENAI_*` | `--provider deepseek` (models.json override) | `-m deepseek/deepseek-v4-flash` | — |
+| deepseek-v4.1-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | — | — |
+| glm-5.3-flash | api.llmgateway.io/v1 | `NIF_OPENAI_*` | `--provider llmgateway` (models.json) | `-m llmgateway/glm-5.3-flash` | — |
+| syn-large (`syn:large:text`) | api.synthetic.new/openai/v1 | `NIF_OPENAI_*` | `--provider synthetic` (models.json) | — | `ANTHROPIC_BASE_URL=api.synthetic.new/anthropic` |
 
 `syn-large` is Synthetic's GLM-5.3-Flash (fp8): 512k context, 64k output,
 reasoning efforts low/high/max, $0.15/M in · $0.50/M out · $0.04/M cache-read.
@@ -253,6 +276,15 @@ The opencode zen gateway (`opencode-go/*`) is NOT usable here: it 403s
   cache read + cache write`. Pi and opencode already report that shape;
   OpenAI-style Niffler `prompt_tokens` includes cached tokens, so the adapter
   subtracts `prompt_tokens_details.cached_tokens` into `cacheRead`.
+- **Cache visibility is provider-side, not harness-side.** On syn-large the
+  OpenAI endpoint (niffler/pi lanes) returns no `prompt_tokens_details`, so
+  every prompt token is reported as uncached input there; the Anthropic
+  endpoint (claudecode lane) reports real cache read/write, and Synthetic
+  writes every prompt to cache (uncached input hovers near 0 — those tokens
+  bill at the write/read rate instead). Cross-harness `uncached in` and
+  `cost $` columns are therefore NOT directly comparable on syn-large;
+  compare `tok total` (prompt + output, gateway-independent) and verdicts.
+  claudecode `cost` uses the same price table as niffler (cache write free).
 - The verify step (`./test.sh`) runs outside the agent's turn and its duration
   is recorded separately (`testTimeS` vs `agentTimeS`).
 - A run is `invalid` when the diff touches protected files even if tests pass.

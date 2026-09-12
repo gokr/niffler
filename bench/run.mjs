@@ -17,6 +17,7 @@ import { resolveKeys } from "./lib/keys.mjs";
 import * as pi from "./adapters/pi.mjs";
 import * as oc from "./adapters/opencode.mjs";
 import * as cw from "./adapters/codewhale.mjs";
+import * as cc from "./adapters/claudecode.mjs";
 import * as niffler from "./adapters/niffler.mjs";
 
 const BENCH_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
@@ -168,6 +169,7 @@ async function preflight() {
   for (const model of models) {
     const mc = cfg.models[model];
     if (mc?.niffler) add(mc.niffler.baseUrl, mc.niffler.apiKeyEnv);
+    if (mc?.claudecode) add(mc.claudecode.baseUrl, mc.claudecode.apiKeyEnv);
   }
   if (harnessArg.split(",").includes("niffler-expert") && cfg.expertJudge) {
     add(cfg.expertJudge.baseUrl, cfg.expertJudge.apiKeyEnv || "SYNTHETIC_API_KEY");
@@ -349,6 +351,10 @@ const ADAPTERS = {
     mod: cw,
     needsKeys: ["DEEPSEEK_API_KEY", "LLMGATEWAY_API_KEY"],
   },
+  claudecode: {
+    mod: cc,
+    needsKeys: ["SYNTHETIC_API_KEY"],
+  },
   niffler: {
     mod: niffler,
     needsKeys: [],
@@ -473,6 +479,18 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
             turnTimeoutMs,
             thinking: thinkingFor("codewhale"),
           });
+        } else if (combo.harness === "claudecode") {
+          res = await cc.round({
+            repo,
+            prompt,
+            modelCfg: combo.modelCfg.claudecode,
+            keys,
+            turnTimeoutMs,
+            sessionId: adapterState.sessionId || null,
+            cfgDir: shared.ccCfgDir,
+            thinking: thinkingFor("claudecode"),
+          });
+          adapterState.sessionId = res.sessionId;
         } else if (isNifflerHarness(combo.harness)) {
           res = await shared.niffler.round({
             sessionId,
@@ -514,7 +532,12 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
         break;
 
       }
-      if (res.roundUsage) roundUsages.push(res.roundUsage);
+      if (res.roundUsage || res.roundShape) {
+        // Merged entry: usage fields at top level (addUsage/usageFromRounds
+        // read them directly), optional roundShape alongside for the
+        // claudecode shape aggregator.
+        roundUsages.push({ ...(res.roundUsage || zeroUsage()), roundShape: res.roundShape });
+      }
       if (res.raw) {
         fs.writeFileSync(
           path.join(workdir, `round-${r}.log`),
@@ -585,6 +608,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     if (combo.harness === "pi") usage = pi.usageFromSession(adapterState.sessionFile);
     else if (combo.harness === "opencode") usage = oc.usageFromRounds(roundUsages);
     else if (combo.harness === "codewhale") usage = cw.usageFromRounds(roundUsages);
+    else if (combo.harness === "claudecode") usage = cc.usageFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness)) {
       transcript = await shared.niffler.transcript(sessionId);
       writeJson(path.join(workdir, "transcript.json"), { sessionId, items: transcript });
@@ -598,6 +622,7 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   let shape = null;
   try {
     if (combo.harness === "pi") shape = pi.sessionShape(adapterState.sessionFile);
+    else if (combo.harness === "claudecode") shape = cc.shapeFromRounds(roundUsages);
     else if (isNifflerHarness(combo.harness) && transcript)
       shape = niffler.transcriptShape(transcript);
   } catch (e) {
@@ -607,6 +632,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
   // the cheapest cross-run proxy for system prompt + toolset bloat (see
   // bench/README.md — keep an eye on the first-call footprint).
   let firstPromptTokens = null;
+  if (combo.harness === "claudecode") {
+    // First API call's full prompt (system + tools + task), captured from
+    // the round-1 stream by the adapter — the cross-harness footprint proxy.
+    firstPromptTokens = roundUsages[0]?.firstPrompt ?? null;
+  }
   if (transcript) {
     const first = transcript.find(
       (it) => it.value?.role === "assistant" && it.value?.usage,
@@ -722,7 +752,10 @@ async function ensureCombo(combo) {
     st.booting = (async () => {
       const comboRoot = path.join(RESULTS, `_combo-${combo.harness}__${combo.model}`);
       fs.mkdirSync(comboRoot, { recursive: true });
-      const shared = { piCfgDir: pi.setupPiConfig(comboRoot, cfg) };
+      const shared = {
+        piCfgDir: pi.setupPiConfig(comboRoot, cfg),
+        ccCfgDir: cc.setupClaudeCodeConfig(comboRoot),
+      };
       if (isNifflerHarness(combo.harness)) {
         shared.niffler = new niffler.NifflerHarness({
           benchRoot: BENCH_ROOT,
@@ -783,6 +816,12 @@ async function main() {
       if (harness === "codewhale" && !cfg.models[model].codewhale) {
         console.error(
           `bench: model '${model}' has no codewhale section in config.json`,
+        );
+        process.exit(1);
+      }
+      if (harness === "claudecode" && !cfg.models[model].claudecode) {
+        console.error(
+          `bench: model '${model}' has no claudecode section in config.json`,
         );
         process.exit(1);
       }

@@ -57,6 +57,12 @@
         "model": "syn:large:text",
         "apiKeyEnv": "SYNTHETIC_API_KEY",
         "thinking": "low"
+      },
+      "claudecode": {
+        "baseUrl": "https://api.synthetic.new/anthropic",
+        "model": "syn:large:text",
+        "apiKeyEnv": "SYNTHETIC_API_KEY",
+        "thinking": "low"
       }
     },
     "glm-5.3-flash": {
@@ -114,25 +120,29 @@
         "niffler": "low",
         "pi": "low",
         "opencode": "low",
-        "codewhale": "low"
+        "codewhale": "low",
+        "claudecode": "low"
       },
       "medium": {
         "niffler": "medium",
         "pi": "medium",
         "opencode": "medium",
-        "codewhale": "medium"
+        "codewhale": "medium",
+        "claudecode": "medium"
       },
       "high": {
         "niffler": "high",
         "pi": "high",
         "opencode": "high",
-        "codewhale": "high"
+        "codewhale": "high",
+        "claudecode": "high"
       },
       "max": {
         "niffler": "max",
         "pi": "max",
         "opencode": "max",
-        "codewhale": "max"
+        "codewhale": "max",
+        "claudecode": "max"
       }
     }
   },
