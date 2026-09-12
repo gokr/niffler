@@ -5,12 +5,41 @@ contains 500 human-validated issues across 12 real repositories. The first
 Niffler pilot is deliberately smaller: the first 10 SymPy cards, one worker
 model, and the three plain harnesses (Niffler, Pi, OpenCode).
 
+A second pilot widens the surface to non-Python work:
+[SWE-bench Multilingual](https://huggingface.co/datasets/SWE-bench/SWE-bench_Multilingual)
+(300 tasks, 8 languages — Go, Rust, C, C++, JavaScript, TypeScript, Java,
+Ruby, PHP) contributes the 10-task `tasks-multi` set: caddy, gin, tokio,
+nushell, redis, jq, fmt, axios, docusaurus, rubocop. Its rows carry
+embedded eval specs (`eval_script`/`image`/`log_parser`), so it evaluates
+under a **second harness venv** — see "Two harness generations" below.
+
+## Two harness generations
+
+The two dataset generations need different swebench majors, so `setup.sh`
+builds two venvs and `verify.mjs` picks by dataset shape:
+
+- `var/bench/swe/.venv` — `swebench==4.1.0` (requirements.txt): classic
+  repo/version test specs and prebuilt `swebench/sweb.eval.*` images;
+  evaluates SWE-bench_Verified rows (the SymPy pilot). 5.x cannot evaluate
+  these (it dropped the classic specs).
+- `var/bench/swe/.venv-multi` — `swebench==5.0.2`
+  (requirements-multi.txt): evaluates rows whose JSONL carries an embedded
+  `eval_script` (SWE-bench_Multilingual). `verify.mjs` detects the field in
+  the dataset's first row and routes there automatically;
+  `NIF_SWEBENCH_PYTHON` overrides. 5.x removed `--cache_level`/`--clean`,
+  so verify.mjs only passes them on the classic path.
+
+Both pipelines were validated after the split: a known-resolved SymPy cell
+re-graded resolved under 4.1.0, and a Multilingual gold-patch run
+(`jqlang__jq-2235`) resolved under 5.0.2.
+
 ## Current status
 
 The old blocker is gone: `uv` and Docker are installed. The supported path now
 uses `swebench==4.1.0` and official `swebench/sweb.eval.*` images. Version 5.x
 expects a newer enriched task format and cannot directly evaluate the classic
-Verified rows used here.
+Verified rows used here (the multilingual pilot uses 5.x for exactly that
+reason — see "Two harness generations").
 
 The end-to-end evaluator has been proved on `sympy__sympy-11618`:
 
@@ -24,7 +53,8 @@ The end-to-end evaluator has been proved on `sympy__sympy-11618`:
 Everything generated or downloaded stays under `var/bench/swe/`.
 
 ```bash
-# Install the pinned official harness into var/bench/swe/.venv.
+# Install the pinned official harness into var/bench/swe/.venv, plus the
+# 5.x multilingual harness into var/bench/swe/.venv-multi.
 bench/swe/setup.sh
 
 # Import the first 10 SymPy cards. Gold/test patches remain outside agent repos.
@@ -37,6 +67,16 @@ node bench/swe/import.mjs \
 node bench/swe/prepare.mjs \
   --input var/bench/swe/tasks-sympy.jsonl \
   --out var/bench/swe/tasks \
+  --pull-images --workers 2
+
+# Multilingual pilot (separate task root; import all 300 rows, then trim to
+# the selected 10 — see the list in tasks-multi.jsonl's sibling import note).
+node bench/swe/import.mjs \
+  --dataset SWE-bench/SWE-bench_Multilingual \
+  --out var/bench/swe/tasks-multi-catalog.jsonl
+node bench/swe/prepare.mjs \
+  --input var/bench/swe/tasks-multi.jsonl \
+  --out var/bench/swe/tasks-multi \
   --pull-images --workers 2
 ```
 

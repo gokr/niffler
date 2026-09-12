@@ -20,7 +20,11 @@ function opt(name, dflt) {
 const out = opt("out", "bench/swe/tasks.jsonl");
 const repoFilter = String(opt("repos", "")).split(",").filter(Boolean);
 const limit = Number(opt("limit", 0));
-const DATASET = "princeton-nlp/SWE-bench_Verified";
+const DATASET = String(
+  opt("dataset", "princeton-nlp/SWE-bench_Verified"),
+);
+// SWE-bench_Multilingual et al: rows carry eval_script/image/log_parser
+// (dataset-embedded eval specs) — verified.mjs routes those to the 5.x venv.
 
 async function fetchPage(offset) {
   const url =

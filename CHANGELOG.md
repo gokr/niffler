@@ -8,6 +8,19 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **bench: SWE-bench Multilingual pilot (10 tasks, 7 languages) — Go
+  (caddy, gin), Rust (tokio, nushell), C (redis, jq), C++ (fmt), JS
+  (axios), TS (docusaurus), Ruby (rubocop); real OSS repos, real
+  issue→PR diffs.** The dataset embeds eval specs (`eval_script`/`image`/
+  `log_parser`), which the pinned swebench 4.1.0 cannot evaluate — setup.sh
+  now builds a second venv (`.venv-multi`, swebench 5.0.2) and verify.mjs
+  routes datasets carrying embedded specs there automatically (dropping the
+  5.x-removed `--cache_level`/`--clean` flags), while classic Verified rows
+  stay on 4.1.0. Both paths validated: SymPy cell re-graded resolved under
+  4.1.0; Multilingual gold-patch run (jq-2235) resolved under 5.0.2.
+  import.mjs gained `--dataset`; tasks live in `var/bench/swe/tasks-multi/`
+  via `prepare.mjs --input var/bench/swe/tasks-multi.jsonl`.
+
 - **lsp: language-server seam — one tool, registry is data.** A `lsp` tool
   (diagnostics without a test run, goToDefinition, findReferences,
   goToImplementation, hover) over any configured stdio language server, per

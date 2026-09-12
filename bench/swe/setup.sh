@@ -26,3 +26,16 @@ import swebench
 from importlib.metadata import version
 print(f"SWE-bench harness {version('swebench')} ready")
 PY
+
+# Multilingual harness (5.x — evaluates datasets with embedded eval_script
+# specs, e.g. SWE-bench_Multilingual; the pinned 4.x venv has no such specs).
+multi="$root/var/bench/swe/.venv-multi"
+if [[ ! -x "$multi/bin/python" ]]; then
+  uv venv --python 3.12 "$multi"
+fi
+uv pip install --python "$multi/bin/python" -r "$root/bench/swe/requirements-multi.txt"
+"$multi/bin/python" - <<'PY'
+import swebench
+from importlib.metadata import version
+print(f"SWE-bench multilingual harness {version('swebench')} ready")
+PY

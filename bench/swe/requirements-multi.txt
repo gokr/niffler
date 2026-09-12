@@ -1,0 +1,5 @@
+# Multilingual SWE-bench harness (5.x): evaluates datasets whose rows carry
+# embedded eval_script specs (SWE-bench_Multilingual et al). The classic
+# Verified pipeline stays on swebench==4.1.0 (requirements.txt) — 5.x dropped
+# the per-repo test specs those rows evaluate through.
+swebench==5.0.2

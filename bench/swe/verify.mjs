@@ -22,7 +22,25 @@ function tail(value, limit = 8000) {
 const instance = required("instance");
 const dataset = path.resolve(required("dataset"));
 const repo = path.resolve(required("repo"));
-const python = process.env.NIF_SWEBENCH_PYTHON || path.join(ROOT, "var/bench/swe/.venv/bin/python");
+// Harness generation follows the dataset: rows carrying an embedded
+// eval_script (SWE-bench_Multilingual et al) evaluate under the 5.x venv
+// (.venv-multi — dataset-embedded specs; the pinned 4.x package has no
+// multilingual specs), while classic Verified rows stay on the pinned 4.x
+// venv. NIF_SWEBENCH_PYTHON overrides either choice.
+let python =
+  process.env.NIF_SWEBENCH_PYTHON ||
+  path.join(ROOT, "var/bench/swe/.venv/bin/python");
+let classic = true;
+try {
+  const first = fs.readFileSync(dataset, "utf8").split("\n").find((l) => l.trim());
+  if (first && JSON.parse(first).eval_script) {
+    classic = false;
+    if (!process.env.NIF_SWEBENCH_PYTHON) {
+      const multi = path.join(ROOT, "var/bench/swe/.venv-multi/bin/python");
+      if (fs.existsSync(multi)) python = multi;
+    }
+  }
+} catch {}
 const runtimeBase = path.join(ROOT, "var/bench/swe/evaluations");
 const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
 const runId = `niffler-${instance}-${nonce}`.replaceAll(/[^A-Za-z0-9_.-]/g, "-");
@@ -73,8 +91,8 @@ try {
       "--instance_ids", instance,
       "--predictions_path", prediction,
       "--max_workers", "1",
-      "--cache_level", "instance",
-      "--clean", "false",
+      // 4.x-only flags: 5.x removed them (specs are dataset-embedded).
+      ...(classic ? ["--cache_level", "instance", "--clean", "false"] : []),
       "--timeout", process.env.NIF_SWEBENCH_TEST_TIMEOUT || "900",
       "--run_id", runId,
     ],
