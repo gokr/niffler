@@ -157,6 +157,22 @@ proc main() =
   check("tplug_ping callable", ping.code == 0 and
         ping.output.contains("\"pong\":true"), ping.output)
 
+  # The plugins component's slash surface (docs/WIRE.md): UI-facing commands
+  # bound to its tools, namespaced by component name (/plugins-*) like the
+  # MCP bridge's mcp-<server>-<prompt> — slash names are one global
+  # namespace, so generic verbs would collide across packages.
+  let slash = runCli(cliBin, url,
+                     @["call", "get", """{"kind":"slash","id":"slash"}"""],
+                     30_000, root = root)
+  for slashName in ["plugins-search", "plugins-install", "plugins-update",
+                    "plugins-remove"]:
+    check("slash /" & slashName & " registered",
+          slash.output.contains("\"name\":\"" & slashName & "\""),
+          slash.output)
+  check("slash /plugins registered and targets plugin_installed",
+        slash.output.contains("\"name\":\"plugins\"") and
+        slash.output.contains("plugin_installed"), slash.output)
+
   # A successful build/spawn is not a successful registration. This real
   # install broadcasts while CLI is running and must fail its verification.
   let conflict = runCli(cliBin, url, @["install", "file://" & conflictRepo],

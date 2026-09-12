@@ -417,10 +417,23 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   let (h2code, h2out) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
   let after = if h2code == 0: h2out.strip() else: before
   if after == before:
-    try:
-      writeGoWork(dest, readManifest(dest))
-    except CatchableError:
-      discard
+    # Nothing new, but persist a detected branch so a refless record becomes
+    # honest about what it tracks (and later updates take the fast path).
+    if branch != rec{"ref"}.getStr(""):
+      try:
+        let mf = readManifest(dest)
+        writeGoWork(dest, mf)
+        saveRecord(mf.name, %*{"name": mf.name, "repo": rec{"repo"}.getStr(""),
+                               "ref": branch, "dir": dest, "version": mf.version,
+                               "components": rec{"components"},
+                               "addedAt": rec{"addedAt"}.getFloat(epochTime())})
+      except CatchableError:
+        discard
+    else:
+      try:
+        writeGoWork(dest, readManifest(dest))
+      except CatchableError:
+        discard
     return okResult(%*{"updated": false, "ref": branch, "commit": after})
 
   let removed = removeComps(rec)
@@ -658,5 +671,46 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
                          "warning": "record not deleted (store down?): " & e.msg})
     return okResult(%*{"package": package, "removed": removed})
 
+
+# --------------------------------------------------------------------------
+# slash commands (docs/WIRE.md — declarative UI surface)
+#
+# Names share ONE global namespace (core rejects duplicates), so every
+# command is prefixed with the registering component's name — the same
+# convention the MCP bridge uses (mcp-<server>-<prompt>). Generic words
+# like /install would collide with another package's command and the loser
+# would be silently unregistered.
+
+discard comp.slashCommand("plugins", "List installed component packages",
+  tool = "plugin_installed")
+
+discard comp.slashCommand("plugins-search",
+  "Search GitHub for installable component packages",
+  parseJson("""
+    [{"name": "query", "kind": "string", "default": "",
+      "description": "search words, e.g. weather"}]
+  """), tool = "plugin_search")
+
+discard comp.slashCommand("plugins-install",
+  "Install a package (built from source; asks approval)",
+  parseJson("""
+    [{"name": "repo", "kind": "string",
+      "description": "owner/name, a github.com URL, or file://path"},
+     {"name": "version", "kind": "string", "default": "",
+      "description": "tag or branch (empty: latest release, else default branch)"}]
+  """), tool = "plugin_install")
+
+let packageParam = parseJson("""
+  [{"name": "package", "kind": "string",
+    "description": "installed package name (see /plugins)"}]
+""")
+
+discard comp.slashCommand("plugins-update",
+  "Update an installed package in place (asks approval)",
+  packageParam, tool = "plugin_update")
+
+discard comp.slashCommand("plugins-remove",
+  "Uninstall a package and delete its clone (asks approval)",
+  packageParam, tool = "plugin_remove")
 
 comp.run()
