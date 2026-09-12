@@ -32,27 +32,19 @@ what it entails" below for the two implementation options (hosted small model
 Effort: 1 day for option A (hosted model), weeks for option B (train our own).
 Measurable in bench: E_NOT_FOUND rescue rate + rounds-to-green on full30.
 
-### 2. History-time read dedup at prompt-build
+### 2. History-time read dedup at prompt-build — **shelved after measurement**
 
-Octo rewrites history when building each request (`compilers/optimize-files.ts`
-+ `octo-ir-prompts.ts`): every read of a path that was read earlier in the
-conversation is collapsed to the literal string `"File was successfully read."`
-— only the **latest** read per file keeps its content; every mutation echoes
-just `"$path was updated successfully."`.
-
-Niffler today: `[unchanged]` stubs fire at *execution* time (same-bytes
-re-reads), but every distinct-content read of a file keeps its full bytes in
-history forever. A long session that revisits files accumulates redundant
-copies on the wire.
-
-Borrow: post-process the message list before each LLM call — for `read` tool
-results, keep only the newest copy per resolved path, replace earlier ones with
-a one-liner. Niffler wrinkle: single-read results are bare strings (no path
-echo), so correlate `tool_call_id` → read args → resolved path while walking.
-Keep edit diffs in history (they're ground truth Octo throws away).
-
-Effort: ~1 day in core prompt-build + tests. Measurable via the ctx accounting
-events (prompt-token growth rate over turns).
+The idea: re-reads after byte changes accumulate full copies in history;
+Octo rewrites them ("File was successfully read.") at request-build. The
+full design was written — then the cache economics killed it: a rewrite
+busts the cached prefix from the rewrite point onward (the intervening
+history + tail re-uploaded once at input price) against a per-round saving
+of the removed bytes at ~1/10 price. Measured on the deepseek full30 run:
+2 supersede candidates, 1 KB, 0 profitable (breakeven 16–316 rounds vs 1–4
+actual). The seen-state stubs already ate the workload. Full analysis in
+"Steal 2" below; the surviving variant is **diff-on-re-read** (execution-
+time, zero cache bust) — deferred until a long-horizon workload shows the
+changed-re-read volume to pay for it.
 
 ### 3. Compaction-by-summary instead of whole-turn trim
 
@@ -240,82 +232,66 @@ option A's telemetry shows real volume. The pipeline is the valuable part:
 counters from the observe stream; the number that decides B is rescued-per-
 dollar on real traffic, not synthetic accuracy.
 
-## Steal 2 — history-time read dedup: full design
+## Steal 2 — history-time read dedup: **shelved — measured, not worth it**
 
-**The insight, restated for Niffler.** The seen-state already stubs
-*same-bytes* re-reads at execution time (`[unchanged]`). What still
-accumulates in history: re-reads after the bytes changed, `force` re-reads,
-and paginated reads of one file (each page is its own result). Unlike Octo,
-Niffler does not need an IR to fix this — `checkContext` (core/conversation.nim,
-called before every LLM round right where `trimContext` runs) already holds
-the live, in-memory `messages` list that goes to the provider. A sibling
-pass, `dedupStaleReads(p, messages, workspace)`, is a **request-time
-transform**: the store keeps the full transcript (audit, resume, transcripts
-untouched — exactly like trim), only the outgoing request gets the diet.
+The full design was written (request-time transform next to `checkContext`,
+tool_call_id → path correlation, full-read-supersedes rule, pointed stubs).
+Then the economics question killed it: **the bytes deduped must be weighed
+against the cached prefix the rewrite destroys — and the destroyed prefix is
+everything between the stale read and the end of the conversation, not the
+stale read itself.**
 
-**The correlation problem.** Single-read results are bare content strings —
-the path is not echoed. The mapping lives in the *assistant* messages:
-`tool_calls[].function.arguments` for `name == "read"` (all union forms:
-`path`, `reads[]`, `windows[]`, `paths[]`). Two wrinkles:
+### The trade, formalized
 
-- persisted args hold what the **model sent** — relative paths, pre-workspace-
-  resolution; re-resolve the way dispatch did (relative → workspace join).
-  Mismatch (symlinks, odd cwd) degrades safely: that read just never matches
-  and is left alone.
-- batch results persist as the JSON dump (`{"text", "items", "count"}`);
-  singles as the raw content string. Handle singles fully; batches only when
-  *every* item is superseded (rewrite the whole result), leave mixed batches
-  (rare) for a later pass.
+Rewriting a message at position P busts the provider prefix cache from P
+onward. Per rewrite:
 
-**Supersede rules — the part that must not lose information.** "Last read
-wins" is wrong for pagination: four pages of one file are four *distinct*
-needed views, and dropping pages 1–3 to keep page 4 is data loss. Rule set:
+- **one-time cost**: S tokens (everything after the stale read — the
+  intervening history *plus* the tail) re-uploaded at input price, once;
+- **per-round gain**: R tokens (the removed content) no longer uploaded as
+  cache-reads, at ~1/10 input price on DeepSeek-class providers.
 
-- a **full read** (no range args, or the result carries no "Showing lines"
-  footer) supersedes all earlier reads of the same path;
-- a **partial read** supersedes nothing (MVP — conservative; a later
-  enhancement can parse the `Showing lines X-Y of T` footers and supersede
-  only range-contained earlier reads);
-- `[unchanged]` stub results are already diet — never rewritten;
-- edit/write **diffs are never rewritten** (they are ground truth Octo
-  throws away; ours are cheaper than a re-read).
+Breakeven: `F × R > 10 × S`, where F = remaining LLM rounds. The dominant
+term is the intervening history — exactly "how much data there is between
+the first read and the read that supersedes it". A stale read from 30 rounds
+ago (S huge) behind a small re-read (R small) needs hundreds of future
+rounds to pay for its own bust.
 
-Rewritten content becomes a pointed stub, not Octo's bare "File was
-successfully read.":
+### Measured against the real run
 
-```
-[superseded read of src/foo.nim — a later read in this conversation has the
-current bytes; re-read if you need that view again]
-```
+Mined the 27-cell deepseek full30 transcripts for every supersede candidate
+(a full read followed by a later full read of the same path):
 
-**The cache trade — why this must be gated.** Rewriting any message busts the
-provider prefix cache from that point: one re-upload of the suffix at
-input-price, against a saving of removed-tokens × cache-read-price on every
-subsequent request. At DeepSeek's ~10:1 read:input pricing the breakeven is
-~10 subsequent rounds — so naive per-read rewriting *thrashes* (every new
-read moves the rewrite point and re-busts). Gates:
+- **2 candidates total, 1 KB removable, 0 profitable.**
+- S/R ratios: 1.6 and 31.6 (median n/a, sample too small); breakeven rounds
+  16 and 316 vs actual future rounds of 1 and 4.
 
-- only rewrite content ≥ ~2 KB (stubs-for-tiny-reads lose money);
-- apply rewrites only when **accumulated removable bytes ≥ ~16 KB** since the
-  last dedup pass — small sessions keep their cache, long sessions cash in;
-- each stale copy is rewritten at most once (idempotent; a later read creates
-  at most one new stale copy).
+The seen-state `[unchanged]` stubs already absorbed same-bytes re-reads, and
+short agentic sessions (avg 7.7 turns) barely re-read files at all. In-place
+dedup has no workload to pay for itself on current evidence.
 
-**Observability.** Emit the existing ctx event shape with `reason: "dedup"`,
-bytes removed and requests-affected, next to the trim event — when someone
-asks why `cacheHitRatio` dipped for one round, the stream answers.
+### What survives: diff-on-re-read (the variant with no bust)
 
-**Measurement.** Unit tests: synthetic conversation (read A, read B, re-read
-A-changed, paginate C) → exact expected message list; store untouched; resume
-rebuilds full history. Live: the ctx events give cacheHitRatio and
-prompt-token deltas per round; the bench A/B (full30, dedup on/off) gives the
-end-to-end token/cost line — expect a win only on the long, file-heavy cells
-(t20/t24/t27 in the last run), which is exactly where it should win.
+The trade above exists *only because* the rewrite happens at prompt-build
+time, mutating history. The execution-time variant escapes it entirely:
 
-**Effort**: ~1 day — the transform is ~100 lines plus tests; the gates and
-event plumbing are most of the rest. The risk is not correctness (worst case:
-a stub where content was — the model re-reads) but *economics*; the gates and
-the ctx events are what make it a measured feature instead of a guess.
+- when the model re-reads a file whose bytes changed since its last seen
+  digest, the component returns a **unified diff old→new** instead of the
+  full bytes (history stays append-only — zero cache bust, ever);
+- the seen-state (per session, per file) already keys and digests exactly
+  this; it would need to persist last-seen content (capped, e.g. ≤ 256 KB,
+  LRU-bounded per session) instead of just the digest;
+- the diff is often *more useful* than the full re-dump — "what changed
+  since you read it" is git-shaped input; `force` and offset/limit still
+  deliver full bytes when explicitly wanted.
+
+Caveat: the same full30 mining says changed-bytes re-reads are also rare on
+short tasks — this variant only earns its keep on long-horizon sessions
+(DeepSWE-class, real interactive sessions), where it should be measured via
+the ctx events before and after. So: **not built now**; revisit when a
+long-horizon workload shows changed-re-read volume. If built, it lives
+entirely in `components/edit` (seen-state + hRead) — no core changes, no
+prompt-build surgery, no cache trade.
 
 ## LSP component: requirements and prior art
 
