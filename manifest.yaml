@@ -118,6 +118,19 @@ components:
     required: false
     restart: on-failure
 
+  # Language-server seam (docs/OCTOFRIEND-STEAL.md): one `lsp` tool
+  # (diagnostics/definition/references/implementation/hover) over any
+  # configured stdio language server. The registry is data —
+  # $XDG_CONFIG_HOME/niffler-lsp/servers.json, defaults built in; adding a
+  # language is config or an lsp_registry add, never code. onDemand:
+  # discover/invoke keeps the frozen toolset small.
+  - name: lsp
+    build: {lang: nim, src: components/lsp/main.nim}
+    binary: var/bin/lsp
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Read-only git inspection (status/diff/log/show/blame): approval-free,
   # fixed argv, path-scoped to the harness root. Mutations stay in bash.
   - name: git
