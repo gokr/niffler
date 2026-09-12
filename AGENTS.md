@@ -51,6 +51,18 @@ anything structural.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
   underscores. Tool names are globally unique — core rejects duplicates at
   registration.
+- **Language-agnostic core; support for language X is always a plugin or
+  config.** General components (edit, grep, bash, git, ...) must not encode
+  knowledge of specific languages — no hardcoded language lists, grammars,
+  per-language heuristics, or `case language` branches in shared components.
+  Language support is added as **data** (declarative registries: server
+  commands, extension maps, patterns in config) or as a **plugin component**
+  implementing a generic seam — e.g. the planned `lsp` component: any language
+  server is one config entry; an exotic transport is a plugin that answers the
+  same normalized contract. When a feature seems to need per-language code in
+  a shared component, extract a registry or provider seam instead. The test:
+  adding support for language X must require zero edits outside new config
+  entries or a new plugin component.
 - Schema extensions core honors: `x-harness.hidden` (tool invisible to the LLM,
   e.g. `chat`), `x-harness.onDemand` (kept out of a conversation's frozen
   direct toolset; reachable via `discover` + `invoke` — docs/MANUAL.md,
