@@ -21,14 +21,15 @@ const maxOutputBytes = 32_000
   ## a few broad patterns must not cost more than the rest of the turn.
   ## only fires on pathological single lines (minified bundles).
 
-proc runRg(args: seq[string], timeoutMs: int): tuple[code: int, output: string] =
+proc runRg(args: seq[string], timeoutMs: int,
+           workingDir = ""): tuple[code: int, output: string] =
   if findExe("rg").len == 0:
     result.code = 127
     result.output = "ripgrep (rg) is not installed on this machine — " &
       "install it (e.g. `sudo apt install ripgrep`) or fall back to " &
       "bash: grep -rn <pattern> <path>"
     return
-  runArgv("rg", args, timeoutMs)
+  runArgv("rg", args, timeoutMs, workingDir)
 
 proc finish(code: int, output: string, maxResults: int): JsonNode =
   ## Shared result shape: rg exit code (0 matches / 1 none / 2 error / 124
@@ -62,7 +63,9 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
     ## path/glob — broad patterns are capped (max_results lines, 32KB).
     ## - pattern: Regex to search for (no shell escaping)
     ## - path: File or directory to search (default: workspace, else root)
-    ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g
+    ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g —
+    ##   matched relative to ``path`` ("dir/file.nim" finds dir/file.nim
+    ##   inside path, not relative to the process cwd)
     ## - context: Lines of context around each match (rg -C)
     ## - case_insensitive: Case-insensitive matching (rg -i)
     ## - hidden: Include hidden files/dirs (.gitignore still applies)
@@ -82,9 +85,16 @@ comp.tool(%*{"timeoutMs": 60000, "parallel": true,
         # back so the documented contract holds: globs narrow, never un-hide
         args.add(["-g", "!.*"])
     args.add(["--", pattern])
+    # rg matches slash-globs against the path relative to ITS cwd, so a
+    # glob like "dir/file.py" misses whenever a search root is passed
+    # (the walked path carries the root prefix). Chdir into the search
+    # root instead — globs become root-relative; pass the root absolutely
+    # so it still resolves from the new cwd and results stay absolute.
+    let workingDir = if path.len > 0 and dirExists(path): path else: ""
     if path.len > 0:
-      args.add(path)
-    let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
+      args.add(if workingDir.len > 0: absolutePath(path) else: path)
+    let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)),
+                               workingDir)
     return finish(code, output, min(max(1, max_results), 10_000))
 
 comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
@@ -95,7 +105,8 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
     ## List repo files sorted, one path per line — survey before searching
     ## or editing. Respects .gitignore; hidden only with hidden: true.
     ## - path: Directory (default: workspace, else harness root)
-    ## - glob: Only files matching this glob (e.g. "*.nim")
+    ## - glob: Only files matching this glob (e.g. "*.nim"), like rg -g —
+    ##   matched relative to ``path``
     ## - hidden: Include hidden files
     ## - max_results: Cap (default 500, max 10000)
     ## - timeoutMs: Kill after this many ms (default 30000)
@@ -106,9 +117,13 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
       if not hidden:
         # same rg semantics as grep: a positive -g can match hidden paths
         args.add(["-g", "!.*"])
+    let workingDir = if path.len > 0 and dirExists(path): path else: ""
     if path.len > 0:
-      args.add(path)
-    let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)))
+      # see grep above: chdir into the search root so slash-globs are
+      # root-relative; the absolute root keeps results absolute
+      args.add(absolutePath(path))
+    let (code, output) = runRg(args, max(1000, min(timeoutMs, 120_000)),
+                               workingDir)
     if code == 0 and output.strip().len == 0:
       return %*{"exit_code": 0, "text": "[no files]"}
     return finish(code, output, min(max(1, max_results), 10_000))

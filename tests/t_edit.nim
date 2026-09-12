@@ -46,6 +46,9 @@ proc main() =
         r1{"edits_applied"}.getInt(0) == 1 and
         r1{"text"}.getStr("").contains("Successfully applied 1 edit"), $r1)
 
+  check("edit response previews removed/added lines and context",
+        r1{"text"}.getStr("").contains("- hello\n+ hi\n    world"), $r1)
+
   # ambiguity refused, file untouched
   writeFile(tmp / "amb.txt", "same\nsame\n")
   let r2 = call(nc, "edit", "edit",
@@ -83,6 +86,12 @@ proc main() =
         r5{"edits_applied"}.getInt(0) == 2 and
         r5{"text"}.getStr("").contains("Successfully applied 2 edits"), $r5)
 
+  check("multi-edit response includes both changes",
+        r5{"text"}.getStr("").contains("- aaa") and
+        r5{"text"}.getStr("").contains("- ccc") and
+        r5{"text"}.getStr("").contains("+ AAA") and
+        r5{"text"}.getStr("").contains("+ CCC"), $r5)
+
   # overlapping edits refused
   let r6 = call(nc, "edit", "edit",
                 %*{"path": "multi.txt",
@@ -97,6 +106,24 @@ proc main() =
                 %*{"path": "del.txt",
                    "edits": [{"old_string": "drop\n", "new_string": ""}]})
   check("edit deletes lines", readFile(tmp / "del.txt") == "keep\nkeep2\n", $r7)
+
+  check("deletion preview exposes removed setup with surrounding uses",
+        r7{"text"}.getStr("").contains("    keep\n- drop\n    keep2"), $r7)
+
+  # Large replacements use the existing bounded preview, not full-file output.
+  let oldLarge = repeat("old line\n", 250)
+  let newLarge = repeat("new line\n", 250)
+  writeFile(tmp / "large-diff.txt", oldLarge)
+  let largeDiff = call(nc, "edit", "edit",
+    %*{"path": "large-diff.txt",
+       "edits": [{"old_string": oldLarge, "new_string": newLarge}]})
+  let preview = largeDiff{"text"}.getStr("")
+  check("large edit previews are line-bounded and explicitly truncated",
+        preview.contains("removed lines truncated") and
+        preview.contains("added lines truncated") and
+        preview.count("- old line") == 200 and
+        preview.count("+ new line") == 200 and
+        readFile(tmp / "large-diff.txt") == newLarge, $largeDiff)
 
   # CRLF endings preserved outside the edit
   writeFile(tmp / "crlf.txt", "a\r\nb\r\n")

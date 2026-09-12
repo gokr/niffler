@@ -6,6 +6,67 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **systemprompt: review rubric + skill-loading nudge — +3 lines net.** The
+  verify paragraph now requires tracing the failing input through the changed
+  code, checking the diff for removed setup and for overrides/callers a
+  changed convention affects, and reporting what was run vs. only expected
+  (a compiling edit or blocked check is not evidence). Skill guidance points
+  at the real flow (discover → skill_list → skill_load) for complex/unfamiliar
+  tasks. First measurement — Sym10 rerun (`swe-sympy10-niffler-v2`, niffler
+  syn-large one-shot, official Docker grading, same protocol as the cc-vs-
+  niffler baseline): **8/10 resolved vs 6/10 baseline** — the three diagnosed
+  failure modes (11618 wrong-fix, 12419 representation, 12481 deleted setup)
+  all resolved; 12489 flipped the other way (sampling noise candidate), 13091
+  still unresolved by either harness. Report:
+  `bench/reports/swe-sympy10-niffler-v2-report.md`.
+
+- **edit: successful edits now return a compact change preview** with removed
+  and added lines, surrounding context, and explicit truncation for large
+  changes. This is tool-result history only; frozen prompts and schemas are
+  unchanged. Regression coverage checks replacement, deletion, multiple edits,
+  and line-bounded output.
+
+- **grep: slash-globs now resolve against ``path``, not the process cwd.**
+  rg matches a glob like `dir/file.py` against the walked path relative to
+  rg's own cwd, so passing a search root made slash-globs silently miss
+  (seen in Sym10: a correct call returned `[no matches]` and the model
+  burned a turn falling back to bash). `runCmd`/`runArgv` gained an
+  optional `workingDir` (chdir in the forked child); grep/files chdir into
+  the search root and pass it absolutely, so globs are root-relative while
+  result paths stay absolute. Regression tests cover grep and files.
+
+- **bench: Claude Code harness (`claudecode`) — the framework now compares
+  Niffler against Anthropic's CLI agent too.** `bench/adapters/claudecode.mjs`
+  drives `claude -p` headless (stream-json, `--dangerously-skip-permissions`,
+  pinned `--session-id` on round 1 / `--resume` on feedback rounds, isolated
+  `CLAUDE_CONFIG_DIR` per combo so the developer's `~/.claude` is never
+  touched). On Synthetic the harness goes through the Anthropic-compatible
+  `api.synthetic.new/anthropic` endpoint with `syn:large:text` (GLM-5.3-Flash
+  fp8) — the OpenAI-compatible base niffler/pi use does not serve
+  `/v1/messages`. Usage is normalized from the result event (verified against
+  a controlled two-call run: `input = Σ(prompt − cached_read)`, cache
+  read/write summed; per-call stream events zero the cache fields on this
+  gateway), cost priced from the same table as the niffler adapter, thinking
+  profile mapped to `MAX_THINKING_TOKENS` budgets, and shape (turns + tool
+  mix) parsed from the assistant stream events. Wired into `bench/config.json`
+  (`syn-large.claudecode` + thinking profiles), `bench/run.mjs` (registry,
+  dispatch, preflight, config guard) and documented in `bench/README.md`,
+  including the cache-visibility asymmetry vs the OpenAI lanes. First run —
+  `full30`, syn-large (GLM-5.3-Flash), default low thinking, both lanes
+  fresh on the same commit: **claudecode 30/30 vs niffler 30/30**, avg 61 s
+  / 42.9k tokens vs 63 s / 38.9k tokens (niffler leaner per turn at 7.3 vs
+  9.7 avg turns; Claude Code steadier on the loop-heavy cells — t06 62k vs
+  340k, t20 53k vs 234k tokens). Report committed as
+  `bench/reports/full30-claudecode-vs-niffler-report.md`. Same pairing on the
+  **Sym10 SWE-bench Verified pilot** (10 SymPy instances, one-shot, official
+  4.1 Docker grading, fresh setup.sh/import/prepare): **claudecode 8/10 vs
+  niffler 6/10** — they split the misses (11618/12419/12481 only claudecode,
+  12489 only niffler; 13091 unresolved by both). Both resolved 13031, the
+  run's long-horizon outlier (niffler 5.9M tok / 74 turns, claudecode 1.6M /
+  129). Report: `bench/reports/swe-sympy10-cc-vs-niffler-report.md`.
+
 ## [0.2.0] — 2026-09-11
 
 ### Added

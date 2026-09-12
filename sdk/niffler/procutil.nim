@@ -68,7 +68,7 @@ proc killGroup(pid: Pid, sig: cint) =
   discard posix.kill(-pid, sig)
 
 proc runCmd*(cmd: string, timeoutMs: int = 120_000,
-             cancelled: proc(): bool = nil): RunResult =
+             cancelled: proc(): bool = nil, workingDir: string = ""): RunResult =
   ## Run `cmd` via bash -c and return its exit code plus the combined
   ## stdout+stderr, captured through a temp file (pipes deadlock chatty
   ## children). The command runs as the leader of its own process group, so
@@ -95,6 +95,8 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
     # parent's kill), then exec the command. execvp resolves bash via PATH;
     # exitnow is _exit — no Nim teardown in the forked child.
     discard posix.setpgid(0, 0)
+    if workingDir.len > 0 and posix.chdir(workingDir) != 0:
+      posix.exitnow(126)
     discard posix.execvp("bash", argv)
     posix.exitnow(127)
   if pid < 0:
@@ -130,11 +132,15 @@ proc runCmd*(cmd: string, timeoutMs: int = 120_000,
     result.code = if killedByCancel: 130 else: 124
   result.output = readCapture(tmpPath)
 
-proc runArgv*(exe: string, args: seq[string], timeoutMs: int = 120_000): RunResult =
+proc runArgv*(exe: string, args: seq[string], timeoutMs: int = 120_000,
+              workingDir: string = ""): RunResult =
   ## runCmd for a fixed executable + argv: every element is quoteShell'd,
   ## so arguments (patterns, refs, paths) travel byte-for-byte — the shell
   ## only joins words. Nothing ever needs escaping by the caller.
-  runCmd(exe & " " & args.mapIt(quoteShell(it)).join(" "), timeoutMs)
+  ## workingDir chdirs the child before exec (e.g. so tool-relative paths
+  ## and rg globs resolve against the search root).
+  runCmd(exe & " " & args.mapIt(quoteShell(it)).join(" "), timeoutMs,
+         workingDir = workingDir)
 
 proc pluralize(label: string, n: int): string =
   ## Naive last-word plural handling for the cap markers: "result lines"

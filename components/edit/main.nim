@@ -739,7 +739,9 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."
     else: ""
   result = %*{"text": "Successfully applied " & $planned.len & " " & noun &
-                       " to " & path & "." & lineSummary,
+                       " to " & path & "." & lineSummary &
+                       "\n\nChange preview (- removed, + added; context included):\n" &
+                       d.diff,
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
               "added_lines": addedTotal,

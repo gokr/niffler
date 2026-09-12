@@ -74,6 +74,20 @@ proc main() =
   check("grep glob filters", out4.contains("alpha.nim") and
         not out4.contains("nested.txt"), $r4)
 
+  # slash-glob is matched relative to path, not the process cwd
+  # (regression: rg walks paths with the root prefix, so glob
+  # "sub/nested.txt" + path "sub" used to return [no matches])
+  let r4b = call(nc, "grep", "grep", %*{"pattern": "hello nested",
+              "path": "sub", "glob": "nested.txt"})
+  check("grep slash-glob matches relative to path",
+        r4b{"exit_code"}.getInt(-1) == 0 and
+        r4b{"text"}.getStr("").contains("nested.txt"), $r4b)
+  let f4b = call(nc, "grep", "files", %*{"path": "sub",
+              "glob": "nested.txt"})
+  check("files slash-glob matches relative to path",
+        f4b{"exit_code"}.getInt(-1) == 0 and
+        f4b{"text"}.getStr("").contains("nested.txt"), $f4b)
+
   # case-insensitive matching
   let r5 = call(nc, "grep", "grep",
                 %*{"pattern": "hello", "case_insensitive": true,

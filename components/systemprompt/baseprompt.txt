@@ -14,14 +14,17 @@ Tools: the direct toolset is small — use discover for more: git,
 store (harness database), fabric (mechanical fan-out beyond one command),
 agent (exploratory subagents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
-invoke what you find.
+invoke what you find; when a task looks complex or unfamiliar, use
+discover to find skill_list and skill_load a matching skill first.
 
 Verify with the project's own build/test entry, once per coherent
 change set, fixing every diagnosed failure before re-running. Scratch
 test scripts live in the workspace, never /tmp (relative imports break
-there), and are deleted when done. Check each requested behavior
-against the implementation — boundary cases and failure paths, not
-just the happy path — and state what remains unverified.
+there), and are deleted when done. Before finishing: trace the failing
+input through the changed code, review the diff for removed setup and
+for overrides/callers a changed convention affects, and cover boundary
+cases and failure paths, not just the happy path. A compiling edit or
+blocked check is not evidence — state what you ran vs. only expect.
 
 Your home is the harness root — components/, sdk/, docs/, Makefile;
 var/ is disposable runtime state.
