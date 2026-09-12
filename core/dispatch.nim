@@ -985,6 +985,10 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## workspace. Core knows no component names: components opt in with
   ## x-harness.workspace {pathFields, defaultPathFields, pathArrayFields
   ## (string items), pathObjectArrayFields ([{field, pathField}]), cwdField}.
+  ## Path-shaped fields are resolved against the conversation workspace when
+  ## relative; cwdField is the same — a relative value is workspace-relative
+  ## ("components/models"), never cwd-relative, so it can bound the
+  ## pathFields it is paired with.
   if schema == nil or args == nil or args.kind != JObject or workspace.len == 0:
     return
   let policy = schema{"x-harness"}{"workspace"}
@@ -1031,8 +1035,15 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
           if p != nil and p.kind == JString:
             item[pathField] = %resolve(p.getStr(""))
   let cwdField = policy{"cwdField"}.getStr("")
-  if cwdField.len > 0 and args{cwdField} == nil:
-    args[cwdField] = %workspace
+  if cwdField.len > 0:
+    if args{cwdField} == nil or args{cwdField}.kind != JString or
+       args{cwdField}.getStr("") in ["", "."]:
+      args[cwdField] = %workspace
+    elif not args{cwdField}.getStr("").isAbsolute():
+      # Resolve like pathFields, not against the process cwd: a caller that
+      # sends a relative root ("components/models") means it relative to the
+      # workspace it also resolved `path` against.
+      args[cwdField] = %resolve(args{cwdField}.getStr(""))
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,

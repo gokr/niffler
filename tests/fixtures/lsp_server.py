@@ -19,8 +19,10 @@ implements just enough for the component tests:
   moment later (exercises the settle logic).
 - textDocument/implementation, etc. -> not advertised (capability refusal).
 
-Optional env: LSP_FIXTURE_LOG=<path> appends one line per initialize, so
-tests can assert instance reuse (a second query must not re-initialize).
+Optional env: LSP_FIXTURE_LOG=<path> appends one line per initialize,
+recording the rootUri it was given, so tests can assert instance reuse (a
+second query must not re-initialize) and root derivation (which directory
+the component chose without being told).
 """
 
 import json
@@ -73,7 +75,7 @@ def main():
         msg = read_frame()
         method = msg.get("method")
         if method == "initialize":
-            log("initialize")
+            log("initialize " + str(msg.get("params", {}).get("rootUri", "")))
             write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": {
                 "capabilities": {
                     "positionEncoding": "utf-16",
