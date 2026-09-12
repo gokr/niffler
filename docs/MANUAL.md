@@ -17,6 +17,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
+- [Language servers (`lsp`)](#language-servers-lsp)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -211,6 +212,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
+| `NIF_LSP_REGISTRY` | absolute path of the language-server user registry (`servers.json`) | `$XDG_CONFIG_HOME/niffler-lsp/servers.json` |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.retry`. Auth/quota/bad-request errors always fail fast | `2` |
@@ -716,6 +718,92 @@ The `fetch` component is the web access tool (a port of the old niffler
 - Errors (non-2xx, timeouts, oversized responses, invalid URLs/methods)
   come back as `ok: false` with the status and a body snippet.
 - Read-only network access — no approval gate (like `plugin_search`).
+
+## Language servers (`lsp`)
+
+Status: **implemented** (Nim component; deterministic fixture-tested; TUI
+picker in niffler-tui ≥ the /lsp commit).
+
+One generic seam over any stdio language server. The component knows no
+languages: which server handles which file extension is **data** — a registry
+with sane defaults built in. Adding a language is a config entry, never code
+(AGENTS.md invariant: language-agnostic core).
+
+### The tools
+
+| Tool | What it does |
+|---|---|
+| `lsp {operation, path, line?, character?}` | One query against the file's language server: `diagnostics` (compiler/lint errors without a test run), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` |
+| `lsp_servers {}` | List configured servers (read-only, approval-free) with provenance: `builtin` default or `user` registry entry |
+| `lsp_registry {action: add\|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name |
+
+The model sends one-based line/character (UTF-16, matching LSP's code-unit
+convention); `findReferences` always includes the declaration; results are
+capped (100 locations / 16 KB) with truncation metadata; structured
+`[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
+`E_LSP_SCOPE`, `E_NOT_FOUND`) let callers route on codes, not prose.
+
+All three tools are **on-demand** (`discover`/`invoke` — see [Progressive tool
+discovery](#progressive-tool-discovery-discoverinvoke)), keeping the frozen
+toolset small; the tool description is the model's when-to-use guide. The
+`lsp` tool is read-only and approval-free; `lsp_registry` writes the registry
+file and is approval-gated.
+
+### How the model uses it
+
+Typical turns:
+
+- Before editing unfamiliar code: `goToDefinition`/`hover` on the symbol
+  instead of guessing from grep matches.
+- After an edit to a compiled language: `diagnostics` on the touched file —
+  the compiler's verdict in one call instead of a full test round.
+- When a textual match is ambiguous: `findReferences` resolves the symbol
+  semantically.
+
+Queries open the document transiently (`didOpen` with the current bytes →
+request → `didClose`), so every query sees the file as it is on disk right
+now — including the agent's own just-written edits. One server process is
+kept per (server, workspace) and reused across queries; a timeout or protocol
+error tears that instance down so the next query starts fresh. Paths are
+confined to the conversation workspace (relative `path` arguments are
+resolved against it; `..` and absolute escapes are refused).
+
+Unconfigured languages degrade, never break: an extension with no server (or
+a missing binary) returns `E_LSP_UNAVAILABLE` with the fix in the message —
+"add one with the lsp_registry tool (or edit <registry path>)". The model
+falls back to grep/read on its own.
+
+### How the user adds a language
+
+Three routes, all writing the same file:
+
+1. **TUI picker** — `/lsp` in niffler-tui: browse configured servers, `a` to
+   add (name, command, extensions — e.g. `elixir-ls`, `elixir-ls`, `.ex,
+   .exs`), ctrl+s to save (human approval prompt, since it writes config);
+   `e` edits (a built-in opens as an override), `d` removes user entries.
+2. **Ask the agent** — "register elixir-ls for Elixir files" → the model calls
+   `lsp_registry add` itself (same approval gate).
+3. **Edit the file directly** — `$XDG_CONFIG_HOME/niffler-lsp/servers.json`:
+
+```json
+{
+  "elixir-ls": {
+    "command": ["elixir-ls"],
+    "extensions": {".ex": "elixir", ".exs": "elixir"}
+  }
+}
+```
+
+Every entry: `command` (argv array, or a plain string split on whitespace)
+plus an `extensions` map (leading-dot extension → LSP language id).
+Optional `initializationOptions` passes through to the server's `initialize`.
+Built-in defaults — gopls, nimlangserver, typescript-language-server, pyright,
+rust-analyzer, clangd, bash-language-server — work whenever the binary is on
+`PATH`; override one by adding an entry with the same name. The registry is
+re-read on every call, so edits take effect immediately.
+
+Set `NIF_LSP_REGISTRY` to an absolute path to relocate the user registry
+(tests, multi-harness setups).
 
 ## External MCP servers (`mcp`)
 
