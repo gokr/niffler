@@ -118,7 +118,7 @@ macOS 無需額外 GUI 依賴——Wails 使用系統 WebKit。請確保安裝�
 ### Nim 套件
 
 Niffler 的 Nim 依賴宣告在 `niffler.nimble` 中（`yaml`，以及來自 GitHub
-的 `gokr/natswrapper` 和 `gokr/bitbarrel`），首次建置（`make build`）
+的 `gokr/natsnim` 和 `gokr/bitbarrel`），首次建置（`make build`）
 時由 nimble 自動安裝。
 
 ## 執行

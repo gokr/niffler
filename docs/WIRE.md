@@ -126,6 +126,15 @@ target tool must be registered by the same component, at most 32 commands
 per component and 16 params per command. `source.tool` may live in another
 component and is not resolved at registration time.
 
+**Naming convention: namespace by the registering package.** Because the
+namespace is global and duplicates are rejected, a package prefixes its
+commands with its own component or package name — the MCP bridge registers
+`mcp-<server>-<prompt>`, the `synthetic` plugin registers `/synthetic`,
+`/synthetic-models` and `/synthetic-search`. A generic verb (`/install`,
+`/models`, `/search`) would collide with another installed package's
+command and the later registration is silently dropped, so keep the prefix
+root equal to the package name.
+
 Checkpoint: on every catalog change core persists the merged table
 *first* (store kind `slash`, id `slash`: `{updatedAt, commands: [{name,
 description, component, tool, params}]}`), then publishes `ev.catalog.updated`.

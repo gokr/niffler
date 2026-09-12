@@ -197,6 +197,11 @@ proc startComponent*(bin: string, url: string, root = "",
   env["NIF_ROOT"] = root2
   env["NIF_NATS_URL"] = url
   env["NIF_NATS_SPAWN"] = "0"
+  # A test core is never UI-autostarted. Without this, running the suite
+  # from inside a harness-spawned shell inherits NIF_AUTOSTART=1 and every
+  # test core self-terminates after the boot grace — mid-suite, at
+  # whatever check happens to land at second ~60.
+  env["NIF_AUTOSTART"] = ""
   env["NIF_MODELS_OFFLINE"] = "1"
   env["NIF_MODELS_CACHE_DIR"] = root2 / "var" / "models"
   env["NIF_LOGFILE_DIR"] = root2 / "var" / "logs"

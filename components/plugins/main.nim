@@ -389,13 +389,23 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   ## In-place update for a package pinned to a branch rather than a release
   ## tag (resolveTag found nothing to move to): `git pull --ff-only` the
   ## existing clone and rebuild only when the pull actually moved HEAD — no
-  ## remove/reinstall round-trip, so a no-op pull costs nothing.
+  ## remove/reinstall round-trip, so a no-op pull costs nothing. Local
+  ## file:// installs carry no recorded ref: the branch is read from the
+  ## clone's own HEAD (and persisted, so later updates skip re-detection).
   let dest = rec{"dir"}.getStr("")
-  let branch = rec{"ref"}.getStr("")
+  var branch = rec{"ref"}.getStr("")
   if dest.len == 0 or not dirExists(dest):
     return errResult("package directory missing: " & dest)
   if branch.len == 0:
-    return errResult("package has no tracked branch ref to pull")
+    # Refless install (file:// installs never record a ref): the clone's
+    # checked-out branch is the tracked one.
+    let (bcode, bout) = runCmd("git -C " & quoteShell(dest) &
+                               " rev-parse --abbrev-ref HEAD")
+    if bcode != 0:
+      return errResult("git rev-parse failed", extra = %*{"output": tailBytes(bout, 800)})
+    branch = bout.strip()
+    if branch.len == 0 or branch == "HEAD":
+      return errResult("clone is in detached-HEAD state — reinstall instead")
   let (hcode, hout) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
   if hcode != 0:
     return errResult("git rev-parse failed", extra = %*{"output": tailBytes(hout, 800)})
@@ -407,10 +417,23 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   let (h2code, h2out) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
   let after = if h2code == 0: h2out.strip() else: before
   if after == before:
-    try:
-      writeGoWork(dest, readManifest(dest))
-    except CatchableError:
-      discard
+    # Nothing new, but persist a detected branch so a refless record becomes
+    # honest about what it tracks (and later updates take the fast path).
+    if branch != rec{"ref"}.getStr(""):
+      try:
+        let mf = readManifest(dest)
+        writeGoWork(dest, mf)
+        saveRecord(mf.name, %*{"name": mf.name, "repo": rec{"repo"}.getStr(""),
+                               "ref": branch, "dir": dest, "version": mf.version,
+                               "components": rec{"components"},
+                               "addedAt": rec{"addedAt"}.getFloat(epochTime())})
+      except CatchableError:
+        discard
+    else:
+      try:
+        writeGoWork(dest, readManifest(dest))
+      except CatchableError:
+        discard
     return okResult(%*{"updated": false, "ref": branch, "commit": after})
 
   let removed = removeComps(rec)
@@ -591,7 +614,9 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     ## tracks a branch like main — does an in-place `git pull --ff-only` on
     ## the existing clone and only rebuilds components when the pull
     ## actually moved HEAD; a no-op pull is reported without touching any
-    ## component. Interactive components are rebuilt but not started.
+    ## component. Local file:// installs are the same branch case with the
+    ## branch read from the clone itself (they never record a ref).
+    ## Interactive components are rebuilt but not started.
     ## Reports updated:false when there was nothing new (latest release
     ## already pinned, or the branch pull was a no-op).
     ## - package: Installed package name (see plugin_installed)
@@ -646,5 +671,46 @@ comp.tool(%*{"approval": "always", "timeoutMs": 300000, "onDemand": true}):
                          "warning": "record not deleted (store down?): " & e.msg})
     return okResult(%*{"package": package, "removed": removed})
 
+
+# --------------------------------------------------------------------------
+# slash commands (docs/WIRE.md — declarative UI surface)
+#
+# Names share ONE global namespace (core rejects duplicates), so every
+# command is prefixed with the registering component's name — the same
+# convention the MCP bridge uses (mcp-<server>-<prompt>). Generic words
+# like /install would collide with another package's command and the loser
+# would be silently unregistered.
+
+discard comp.slashCommand("plugins", "List installed component packages",
+  tool = "plugin_installed")
+
+discard comp.slashCommand("plugins-search",
+  "Search GitHub for installable component packages",
+  parseJson("""
+    [{"name": "query", "kind": "string", "default": "",
+      "description": "search words, e.g. weather"}]
+  """), tool = "plugin_search")
+
+discard comp.slashCommand("plugins-install",
+  "Install a package (built from source; asks approval)",
+  parseJson("""
+    [{"name": "repo", "kind": "string",
+      "description": "owner/name, a github.com URL, or file://path"},
+     {"name": "version", "kind": "string", "default": "",
+      "description": "tag or branch (empty: latest release, else default branch)"}]
+  """), tool = "plugin_install")
+
+let packageParam = parseJson("""
+  [{"name": "package", "kind": "string",
+    "description": "installed package name (see /plugins)"}]
+""")
+
+discard comp.slashCommand("plugins-update",
+  "Update an installed package in place (asks approval)",
+  packageParam, tool = "plugin_update")
+
+discard comp.slashCommand("plugins-remove",
+  "Uninstall a package and delete its clone (asks approval)",
+  packageParam, tool = "plugin_remove")
 
 comp.run()

@@ -16,9 +16,8 @@ live components and tools outside the fixed direct set;
 ## File tools (direct)
 
 - `read` — one file (`path`) or up to 12 files/ranges in one call
-  (`windows`: `{path, offset?, limit?}` items). Batch related reads; cut
+  (`reads`: `{path, offset?, limit?}` items). Batch related reads; cut
   tool round trips when inspecting several files at once.
-- `files` — sorted file listing by path/glob. The listing tool.
 - `write` — atomic whole-file write (create or overwrite). Use for new files
   or full rewrites.
 - `edit` — surgical change: unique `old_string` → `new_string` per edit,
@@ -26,15 +25,19 @@ live components and tools outside the fixed direct set;
   the exact string is ambiguous. Use edit for small precise changes, write
   for whole files.
 - `undo_last_edit` — approval-gated revert of the last edit mutation.
+  ON-DEMAND: discover + invoke.
 
 Never `cat`, `sed -i` or `python -c` file edits in bash when edit/write exist.
 
 ## Search
 
 - `grep` — ripgrep-backed content search returning path:line:match,
-  .gitignore-aware, no shell quoting needed. ON-DEMAND: discover + invoke.
-- `files` lists, `grep` searches contents. Shell `grep -rn` is the
-  anti-pattern: slower, respects nothing, floods the transcript.
+  .gitignore-aware, no shell quoting needed. DIRECT: narrow with path/glob —
+  broad patterns are capped.
+- `files` — sorted file listing by path/glob. The listing tool.
+  ON-DEMAND: discover + invoke. `files` lists, `grep` searches contents.
+  Shell `grep -rn` is the anti-pattern: slower, respects nothing, floods
+  the transcript.
 
 ## Git (read-only, on-demand)
 

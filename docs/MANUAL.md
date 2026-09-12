@@ -65,7 +65,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
-| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `files` (sorted listing, direct) and `grep` (contents, path:line:match, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
+| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
@@ -1084,15 +1084,15 @@ current discovery reflects that it is gone.
 
 ### Shipped policy
 
-With the complete shipped manifest, 8 tools are direct:
+With the complete shipped manifest, 7 tools are direct:
 
 - Core: `discover`, `invoke`.
-- Routine work: `bash`, `grep`, `files`, and the file tools
+- Routine work: `bash`, `grep`, and the file tools
   `read`/`edit`/`write` (the `edit` component).
 
 The long tail is on demand:
 
-- Search and inspection: `grep` (ripgrep-backed, 4 replicas), the git
+- Search and inspection: `files` (sorted listing), the git
   tools, `undo_last_edit`, and the observe/logfile diagnostics.
 - State and introspection: store `get`/`list`, `session_info`, and the
   skill entry points `skill_list`/`skill_load` (a workflow guide is

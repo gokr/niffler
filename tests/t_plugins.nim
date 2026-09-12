@@ -157,6 +157,22 @@ proc main() =
   check("tplug_ping callable", ping.code == 0 and
         ping.output.contains("\"pong\":true"), ping.output)
 
+  # The plugins component's slash surface (docs/WIRE.md): UI-facing commands
+  # bound to its tools, namespaced by component name (/plugins-*) like the
+  # MCP bridge's mcp-<server>-<prompt> — slash names are one global
+  # namespace, so generic verbs would collide across packages.
+  let slash = runCli(cliBin, url,
+                     @["call", "get", """{"kind":"slash","id":"slash"}"""],
+                     30_000, root = root)
+  for slashName in ["plugins-search", "plugins-install", "plugins-update",
+                    "plugins-remove"]:
+    check("slash /" & slashName & " registered",
+          slash.output.contains("\"name\":\"" & slashName & "\""),
+          slash.output)
+  check("slash /plugins registered and targets plugin_installed",
+        slash.output.contains("\"name\":\"plugins\"") and
+        slash.output.contains("plugin_installed"), slash.output)
+
   # A successful build/spawn is not a successful registration. This real
   # install broadcasts while CLI is running and must fail its verification.
   let conflict = runCli(cliBin, url, @["install", "file://" & conflictRepo],
@@ -300,6 +316,78 @@ proc main() =
                       root = root)
   check("updatepkg record gone",
         not upGone.output.contains("updatepkg"), upGone.output)
+
+  # --- refless file:// package: update reads the branch from the clone ------
+  # Installing without an explicit ref records no branch (the clone lands at
+  # var/plugins/<slug>@head). plugin_update must detect the clone's own
+  # checked-out branch and pull in place instead of refusing with "no
+  # tracked branch ref" — this is exactly how local dev plugin repos are
+  # installed (file:// + no ref).
+  let hdRepo = pkgDir / "headrepo"
+  createDir(hdRepo / "ithd")
+  writeFile(hdRepo / "niffler.json", """{
+    "name": "updatehead",
+    "version": "1.0.0",
+    "components": [
+      {"name": "ithd", "lang": "go", "main": "ithd/main.go",
+       "sources": ["ithd/version.go"], "interactive": true}
+    ]
+  }
+  """)
+  writeFile(hdRepo / "go.mod", """
+    module ithd
+
+    go 1.24
+
+    require niffler.dev/sdk v0.0.0
+
+    replace niffler.dev/sdk => ../niffler/sdk/go
+    """.dedent())
+  writeFile(hdRepo / "Makefile",
+    "BIN := bin/ithd\n\nbuild:\n\tmkdir -p bin\n\tgo build -o $(BIN) ./ithd\n")
+  writeFile(hdRepo / "ithd" / "main.go", """
+    package main
+    import sdk "niffler.dev/sdk"
+    func main() {
+      comp := sdk.New("ithd", componentVersion())
+      if err := comp.Run(); err != nil { panic(err) }
+    }
+    """.dedent())
+  writeFile(hdRepo / "ithd" / "version.go", """
+    package main
+    func componentVersion() string { return "1.0.0" }
+    """.dedent())
+  commitRepo(hdRepo)
+
+  let hdInstall = runCli(cliBin, url, @["install", "file://" & hdRepo], 300_000,
+                         root = root)
+  check("refless file:// install ok", hdInstall.code == 0 and
+        hdInstall.output.contains("INSTALL OK"), hdInstall.output)
+
+  writeFile(hdRepo / "ithd" / "version.go",
+    "package main\nfunc componentVersion() string { return \"2.0.0\" }\n")
+  commitRepo(hdRepo)
+
+  let hdUpdate = runCli(cliBin, url,
+                        @["call", "plugin_update", """{"package":"updatehead"}"""],
+                        600_000, root = root)
+  check("refless plugin_update pulls and rebuilds", hdUpdate.code == 0 and
+        hdUpdate.output.contains("\"updated\":true"), hdUpdate.output)
+  let hdList = runCli(cliBin, url, @["call", "plugin_installed", "{}"], 60_000,
+                      root = root)
+  check("refless update persists the detected branch",
+        hdList.output.contains("updatehead") and
+        hdList.output.contains("\"ref\":\"main\""), hdList.output)
+  let hdNoop = runCli(cliBin, url,
+                      @["call", "plugin_update", """{"package":"updatehead"}"""],
+                      600_000, root = root)
+  check("refless second update is a no-op", hdNoop.code == 0 and
+        hdNoop.output.contains("\"updated\":false"), hdNoop.output)
+  let hdRem = runCli(cliBin, url,
+                     @["call", "plugin_remove", """{"package":"updatehead"}"""],
+                     120_000, root = root)
+  check("updatehead removed", hdRem.code == 0 and
+        hdRem.output.contains("\"ok\":true"), hdRem.output)
 
   # network-gated: real GitHub discovery
   if getEnv("NIF_TEST_NETWORK") == "1":
