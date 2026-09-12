@@ -741,6 +741,15 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
       resp = errorEnvelope(env.id, "boom", e.msg)
     ct.nc.publish(reply, resp.encode())
 
+proc streamPollMs*(ct: CoreTools): int64 =
+  ## Reply-wait timeout for a dispatch. The live token pump (pumpTokenStream)
+  ## only runs in the idle slot *between* waits, so the wait length is the
+  ## streaming cadence: a 100 ms wait batched deltas into 3-5-word chunks
+  ## every ~107 ms no matter how fast the model produced them. While a token
+  ## stream is attached (a streaming turn) poll tightly instead; idle
+  ## dispatches keep the cheap long wait.
+  if ct.tokenStream != nil and ct.tokenStream.sub != nil: 5 else: 100
+
 proc pumpTokenStream*(ct: CoreTools) =
   ## Drain ev.llm.token frames matching the active streaming turn and forward
   ## each parsed delta to the turn's callback. Called from the dispatch idle
@@ -952,7 +961,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   let deadline = epochTime() + timeoutMs.float / 1000.0
   while epochTime() < deadline:
     var msg: ptr natsMsg
-    let ns = natsSubscription_NextMsg(addr msg, sub, 100)
+    let ns = natsSubscription_NextMsg(addr msg, sub, streamPollMs(ct))
     if ns == NATS_OK:
       let resp = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
@@ -1317,7 +1326,7 @@ proc dispatchToolCalls*(ct: CoreTools,
           $pending[i].timeoutMs & "ms"
         continue
       var msg: ptr natsMsg
-      let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, 25)
+      let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, streamPollMs(ct))
       if ns == NATS_OK:
         let resp = decode($natsMsg_GetData(msg))
         natsMsg_Destroy(msg)
