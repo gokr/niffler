@@ -32,6 +32,7 @@
 import std/[algorithm, json, monotimes, os, osproc, posix, streams, strutils, tables, times]
 import std/syncio
 import niffler/sdk
+import roots
 
 const
   MAX_LOCATIONS = 100          # rendered locations before an omission marker
@@ -370,6 +371,7 @@ proc openCloseOk(caps: JsonNode): bool =
   return false
 
 proc getInstance(conf: ServerConf, root: string): Instance =
+  var conf = conf                     # local: command[0] may be repathed below
   let k = instKey(conf.name, root)
   if gInstances.hasKey(k):
     let h = gInstances[k]
@@ -377,11 +379,21 @@ proc getInstance(conf: ServerConf, root: string): Instance =
       return h
     h.dispose()                      # died since last use — drop and respawn
     gInstances.del(k)
-  if not conf.command[0].contains('/') and findExe(conf.command[0]).len == 0:
-    fail("E_LSP_UNAVAILABLE", "language server '" & conf.name &
-         "' is configured but '" & conf.command[0] &
-         "' was not found on PATH — install it, or change the registry (" &
-         registryPath() & ")")
+  if not conf.command[0].contains('/'):
+    # PATH first, then the per-user install dirs (fix: gopls lives in
+    # ~/go/bin, which a UI-autostarted harness's PATH routinely omits).
+    let onPath = findExe(conf.command[0])
+    let exe = if onPath.len > 0: onPath
+              else: resolveBinIn(conf.command[0],
+                                 fallbackBinDirs(getHomeDir(),
+                                                 getEnv("NIF_LSP_BIN_DIRS")))
+    if exe.len == 0:
+      fail("E_LSP_UNAVAILABLE", "language server '" & conf.name &
+           "' is configured but '" & conf.command[0] &
+           "' was not found on PATH or in " &
+           fallbackBinDirs(getHomeDir(), getEnv("NIF_LSP_BIN_DIRS")).join(", ") &
+           " — install it, or change the registry (" & registryPath() & ")")
+    conf.command[0] = exe
   evictIfNeeded()
   let h = Instance(name: conf.name, root: root, created: getMonoTime())
   try:
@@ -577,6 +589,15 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     if character == nil or character.kind != JInt or character.getInt() < 1:
       fail("E_BAD_SHAPE", "\"" & op & "\" requires a one-based \"character\" integer (UTF-16)")
   var workspaceRoot = args{"workspaceRoot"}.getStr("")
+  # A direct bus caller may hand us a relative root (the core workspace
+  # extension resolves `path` against the conversation workspace but leaves
+  # a caller-supplied root alone, and dispatch-issued calls are not the only
+  # way in). Resolve it against the harness root — the same base `path`
+  # resolves against — so the scope check below compares like with like
+  # instead of failing with "path is outside the workspace root".
+  if workspaceRoot.len > 0 and not workspaceRoot.isAbsolute():
+    workspaceRoot = rootDir() / workspaceRoot
+  let explicitRoot = workspaceRoot.len > 0
   if workspaceRoot.len == 0: workspaceRoot = rootDir()
   if not dirExists(workspaceRoot):
     fail("E_BAD_SHAPE", "workspace root does not exist: " & workspaceRoot)
@@ -596,6 +617,11 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     fail("E_NOT_TEXT", pathN.getStr() & " looks binary — language servers are for text")
 
   let ext = splitFile(path).ext.toLowerAscii()
+  if not explicitRoot:
+    # No root asked for: derive the nearest module root from the file
+    # instead of handing the server the whole harness clone (which makes
+    # gopls index every nested Go module before it answers).
+    workspaceRoot = deriveRoot(path, workspaceRoot, rootMarkersForExt(ext))
   let conf = serverFor(loadRegistry(), ext)
   if conf.name.len == 0:
     fail("E_LSP_UNAVAILABLE", "no language server configured for '" & ext &
@@ -753,12 +779,12 @@ discard comp.tool("lsp", toolSchema(%*{
   "character": {"type": "integer", "minimum": 1,
                 "description": "One-based UTF-16 character offset within the line; an off-symbol position may return no results"},
   "workspaceRoot": {"type": "string",
-                    "description": "Workspace root (defaults to the conversation workspace)"}
+                    "description": "Optional workspace root. Omit it and the server's root is derived from the file (nearest go.mod/package.json/Cargo.toml/...); a relative value resolves against the harness root"}
 }, @["operation", "path"],
-  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
+  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
   hLsp,
   %*{"timeoutMs": 90000, "onDemand": true, "effect": "read",
-     "workspace": {"pathFields": ["path"], "cwdField": "workspaceRoot"}})
+     "workspace": {"pathFields": ["path"]}})
 
 discard comp.tool("lsp_servers", toolSchema(%*{}, @[],
   "List configured language servers: name, launch command, extension map, and whether each entry is a user override or a built-in default. Read-only — use lsp_registry (add/remove) to change the registry, which takes effect on the next lsp call."),

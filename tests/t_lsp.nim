@@ -15,6 +15,7 @@
 import std/[json, os, osproc, sequtils, strutils]
 import natsnim
 import helpers
+import ../components/lsp/roots
 
 proc main() =
 
@@ -31,6 +32,13 @@ proc main() =
   let fixture = root / "tests" / "fixtures" / "lsp_server.py"
   let regFile = tmp / "lsp-registry.json"
   let fixtureLog = tmp / "fixture.log"
+  # A server command that exists only in a NIF_LSP_BIN_DIRS directory: the
+  # PATH fallback must find it there (gopls lives in ~/go/bin with no PATH
+  # entry on a UI-autostarted harness).
+  let fakeBin = tmp / "fakebin"
+  createDir(fakeBin)
+  writeFile(fakeBin / "fakels", "#!/bin/sh\nexec python3 " & quoteShell(fixture) & "\n")
+  discard execCmdEx("chmod +x " & quoteShell(fakeBin / "fakels"))
   writeFile(regFile, (%*{
     "nx": {"command": ["python3", fixture], "extensions": %*{".nx": "nx"}},
     "gone": {"command": ["definitely-not-a-binary-xyz"], "extensions": %*{".gone": "gone"}},
@@ -44,6 +52,7 @@ proc main() =
 
   let lspProc = startComponent(bin, url, root = tmp,
                                extra = [("NIF_LSP_REGISTRY", regFile),
+                                        ("NIF_LSP_BIN_DIRS", fakeBin),
                                         ("LSP_FIXTURE_LOG", fixtureLog)])
   defer:
     if lspProc.running():
@@ -51,6 +60,46 @@ proc main() =
       sleep(200)
     lspProc.close()
   check("lsp registers", waitRegistered(nc, "lsp"), "reg.publish")
+
+  # --- pure: root markers / derivation / bin fallback (no bus) -----------
+  let pure = tmp / "pure"
+  createDir(pure / "proj" / "sub" / "deep")
+  createDir(pure / "proj" / ".git")
+  writeFile(pure / "proj" / "go.mod", "module x\n")
+  let deepFile = pure / "proj" / "sub" / "deep" / "f.go"
+  writeFile(deepFile, "package main\n")
+  check("deriveRoot finds the nearest module marker",
+        deriveRoot(deepFile, pure, rootMarkersForExt(".go")) == pure / "proj")
+  check("deriveRoot falls back to the workspace when nothing matches",
+        deriveRoot(deepFile, pure, @["Cargo.toml"]) == pure)
+  check("deriveRoot never walks above the workspace",
+        deriveRoot(deepFile, pure / "proj" / "sub",
+                   rootMarkersForExt(".go")) == pure / "proj" / "sub")
+  check("deriveRoot keeps the workspace for a path outside it",
+        deriveRoot("/etc/hostname", pure, rootMarkersForExt(".go")) == pure)
+  check("unknown extensions fall back to repo markers",
+        ".git" in rootMarkersForExt(".zzz") and
+        "go.mod" in rootMarkersForExt(".go") and
+        "go.work" in rootMarkersForExt(".go"))
+  check("hasMarker globs *.nimble",
+        block:
+          createDir(pure / "nimproj")
+          writeFile(pure / "nimproj" / "thing.nimble", "#\n")
+          hasMarker(pure / "nimproj", rootMarkersForExt(".nim")))
+  check("resolveBinIn finds an executable",
+        resolveBinIn("fakels", @[fakeBin]) == fakeBin / "fakels")
+  let noExec = tmp / "noexec"
+  createDir(noExec)
+  writeFile(noExec / "plain", "#!/bin/sh\n")
+  check("resolveBinIn ignores non-executables and missing names",
+        resolveBinIn("plain", @[noExec]) == "" and
+        resolveBinIn("nope", @[noExec]) == "")
+  check("resolveBinIn leaves path-shaped commands alone",
+        resolveBinIn("./fakels", @[fakeBin]) == "")
+  check("fallbackBinDirs puts extras first and covers ~/go/bin",
+        fallbackBinDirs("/home/x", "/extra")[0] == "/extra" and
+        ("/home/x" / "go/bin") in fallbackBinDirs("/home/x") and
+        ("/home/x" / ".nimble/bin") in fallbackBinDirs("/home/x"))
 
   proc lspCall(args: JsonNode, timeoutMs = 30000): JsonNode =
     call(nc, "lsp", "lsp", args, timeoutMs)
@@ -191,6 +240,48 @@ proc main() =
   let removed = regCall(%*{"action": "remove", "name": "echo-nx"})
   check("remove deletes the user entry", removed{"ok"}.getBool(false) and
         not readFile(regFile).contains("echo-nx"), $removed)
+
+  # --- workspaceRoot forms + root derivation -----------------------------
+  # An absolute path with a relative root is what core's workspace extension
+  # produces when a caller passes workspaceRoot="sub": it resolves `path`
+  # against the conversation workspace but used to leave the root alone,
+  # which failed with "path is outside the workspace root (sub)".
+  createDir(tmp / "sub")
+  writeFile(tmp / "sub" / "rel.nx", "rel\n")
+  let relRoot = lspCall(%*{"operation": "hover", "path": tmp / "sub" / "rel.nx",
+                           "line": 1, "character": 1, "workspaceRoot": "sub"})
+  check("absolute path + relative workspaceRoot accepted",
+        relRoot{"ok"}.getBool(false) and
+        relRoot{"text"}.getStr("") == "hover at line 0 char 0", $relRoot)
+
+  # No workspaceRoot at all: the root must be derived from the file's
+  # nearest marker instead of defaulting to the whole harness clone. The
+  # fixture records the rootUri it was initialized with.
+  createDir(tmp / "modroot" / ".git")
+  writeFile(tmp / "modroot" / "d.nx", "d\n")
+  let derived = lspCall(%*{"operation": "hover", "path": "modroot/d.nx",
+                           "line": 1, "character": 1})
+  check("file in a nested repo answered without a workspaceRoot",
+        derived{"ok"}.getBool(false) and
+        derived{"text"}.getStr("") == "hover at line 0 char 0", $derived)
+  let rootLog = if fileExists(fixtureLog): readFile(fixtureLog) else: ""
+  check("derived root is the nearest marker directory",
+        rootLog.contains("initialize file://" & tmp / "modroot"), $rootLog)
+
+  # A command that is not on PATH but lives in NIF_LSP_BIN_DIRS.
+  let fallbackAdd = regCall(%*{"action": "add", "name": "fakels",
+                               "command": ["fakels"],
+                               "extensions": %*{".fk": "fk"}})
+  check("registry accepts a PATH-less command",
+        fallbackAdd{"ok"}.getBool(false), $fallbackAdd)
+  writeFile(tmp / "f.fk", "f\n")
+  let viaBinDirs = lspCall(%*{"operation": "hover", "path": "f.fk",
+                              "line": 1, "character": 1})
+  check("command resolved from the fallback bin dirs",
+        viaBinDirs{"ok"}.getBool(false) and
+        viaBinDirs{"text"}.getStr("") == "hover at line 0 char 0", $viaBinDirs)
+  check("registry cleanup",
+        regCall(%*{"action": "remove", "name": "fakels"}){"ok"}.getBool(false))
   let rmDef = regCall(%*{"action": "remove", "name": "gopls"})
   check("removing a built-in is refused", rmDef.hasKey("error"), $rmDef)
 

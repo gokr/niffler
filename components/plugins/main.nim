@@ -489,6 +489,20 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   return okResult(%*{"updated": true, "ref": branch, "from": before, "to": after,
                      "removed": removed, "components": components})
 
+proc pinsTag(rec: JsonNode): bool =
+  ## Does the record's ref name a tag in the install's clone? "Move the pin
+  ## to the newer release" only makes sense from tag to tag: a branch pin
+  ## (the user asked to track main) must keep following that branch — main
+  ## is routinely ahead of the newest release, so repointing it at a tag
+  ## would silently *downgrade* the install.
+  let dest = rec{"dir"}.getStr("")
+  let refName = rec{"ref"}.getStr("")
+  if dest.len == 0 or refName.len == 0 or not dirExists(dest): return false
+  let (code, _) = runCmd("git -C " & quoteShell(dest) &
+                         " rev-parse --verify -q " &
+                         quoteShell("refs/tags/" & refName))
+  code == 0
+
 proc toPkgs(items: JsonNode): JsonNode =
   ## GitHub search "items" -> compact package list (repo, description,
   ## stars, url) for plugin_search.
@@ -629,15 +643,17 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
 
 comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_update(package: string): JsonNode =
-    ## Update an installed package. When there is a newer release tag — or,
-    ## on a repo that publishes no releases, a newer version tag — moves the
-    ## pin to it: removes the current components and reinstalls fresh at the
-    ## new tag (each service removal and spawn asks the human for approval). Otherwise — no releases at all, i.e. the package
-    ## tracks a branch like main — does an in-place `git pull --ff-only` on
-    ## the existing clone and only rebuilds components when the pull
-    ## actually moved HEAD; a no-op pull is reported without touching any
-    ## component. Local file:// installs are the same branch case with the
-    ## branch read from the clone itself (they never record a ref).
+    ## Update an installed package. When a tag-pinned install has a newer
+    ## release tag — or, on a repo that publishes no releases, a newer
+    ## version tag — the pin moves to it: the current components are removed
+    ## and reinstalled fresh at the new tag (each service removal and spawn
+    ## asks the human for approval). A branch pin (or a refless file://
+    ## install) instead follows its branch in place, in-place
+    ## `git pull --ff-only` on the existing clone, and only rebuilds
+    ## components when the pull actually moved HEAD; a no-op pull is
+    ## reported without touching any component. Local file:// installs are
+    ## the same branch case with the branch read from the clone itself (they
+    ## never record a ref).
     ## Interactive components are rebuilt but not started.
     ## Reports updated:false when there was nothing new (latest release
     ## already pinned, or the branch pull was a no-op).
@@ -650,7 +666,7 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     # Local file:// repos have no GitHub releases; skip the API round-trip
     # (offline it would hang resolveTag's client for its full timeout).
     let latest = if repo.startsWith("file://"): "" else: resolveTag(repo)
-    if latest.len == 0:
+    if latest.len == 0 or not pinsTag(rec):
       return doUpdateBranch(package, rec)
     if latest == rec{"ref"}.getStr(""):
       let dir = rec{"dir"}.getStr("")
