@@ -290,7 +290,7 @@
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.wails">wails cli <span class="dim">(UI only)</span></span></li>
         <li><span class="check">✓</span> <span data-i18n-html="qs.req.trafilatura">trafilatura <span class="dim">(optional, richer HTML extraction)</span></span></li>
       </ul>
-      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, natswrapper, bitbarrel — installed automatically on first build.</p>
+      <p class="dim small" data-i18n="qs.note">all Nim deps come from nimble — yaml, htmlparser, natsnim, bitbarrel — installed automatically on first build.</p>
       <h3 data-i18n="qs.clonehome.h">one clone = one instance</h3>
       <p class="dim small" data-i18n-html="qs.clonehome.p">a harness claims its home bus (<code>.env</code>'s <code>NIF_NATS_URL</code>, default <code>nats://127.0.0.1:4222</code>) only when the answering core serves this root — every catalog response carries <code>root</code> + <code>gitHash</code> — and yields loudly to a foreign one. Dev clones set <code>NIF_NATS_SPAWN=1</code> for an isolated random-port bus, and no child (component, nats-server) outlives its harness.</p>
     </div>
