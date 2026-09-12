@@ -389,13 +389,23 @@ proc doUpdateBranch(pkg: string, rec: JsonNode): JsonNode =
   ## In-place update for a package pinned to a branch rather than a release
   ## tag (resolveTag found nothing to move to): `git pull --ff-only` the
   ## existing clone and rebuild only when the pull actually moved HEAD — no
-  ## remove/reinstall round-trip, so a no-op pull costs nothing.
+  ## remove/reinstall round-trip, so a no-op pull costs nothing. Local
+  ## file:// installs carry no recorded ref: the branch is read from the
+  ## clone's own HEAD (and persisted, so later updates skip re-detection).
   let dest = rec{"dir"}.getStr("")
-  let branch = rec{"ref"}.getStr("")
+  var branch = rec{"ref"}.getStr("")
   if dest.len == 0 or not dirExists(dest):
     return errResult("package directory missing: " & dest)
   if branch.len == 0:
-    return errResult("package has no tracked branch ref to pull")
+    # Refless install (file:// installs never record a ref): the clone's
+    # checked-out branch is the tracked one.
+    let (bcode, bout) = runCmd("git -C " & quoteShell(dest) &
+                               " rev-parse --abbrev-ref HEAD")
+    if bcode != 0:
+      return errResult("git rev-parse failed", extra = %*{"output": tailBytes(bout, 800)})
+    branch = bout.strip()
+    if branch.len == 0 or branch == "HEAD":
+      return errResult("clone is in detached-HEAD state — reinstall instead")
   let (hcode, hout) = runCmd("git -C " & quoteShell(dest) & " rev-parse HEAD")
   if hcode != 0:
     return errResult("git rev-parse failed", extra = %*{"output": tailBytes(hout, 800)})
@@ -591,7 +601,9 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
     ## tracks a branch like main — does an in-place `git pull --ff-only` on
     ## the existing clone and only rebuilds components when the pull
     ## actually moved HEAD; a no-op pull is reported without touching any
-    ## component. Interactive components are rebuilt but not started.
+    ## component. Local file:// installs are the same branch case with the
+    ## branch read from the clone itself (they never record a ref).
+    ## Interactive components are rebuilt but not started.
     ## Reports updated:false when there was nothing new (latest release
     ## already pinned, or the branch pull was a no-op).
     ## - package: Installed package name (see plugin_installed)
