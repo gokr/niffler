@@ -8,6 +8,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **lsp: language-server seam — one tool, registry is data.** A `lsp` tool
+  (diagnostics without a test run, goToDefinition, findReferences,
+  goToImplementation, hover) over any configured stdio language server, per
+  the dsh/Octo analysis in `docs/OCTOFRIEND-STEAL.md`: transient
+  didOpen→request→didClose per query, one instance per (server, workspace)
+  with poisoned-state teardown, one-based-model → zero-based-UTF-16-wire at
+  the boundary, findReferences always includes the declaration, capability
+  checks, result caps, structured `[E_LSP_*]` errors, workspace confinement.
+  The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`, defaults
+  for gopls/nimlangserver/tsserver/pyright/rust-analyzer/clangd/bash-LSP):
+  adding a language is a config entry or an approval-gated `lsp_registry add`
+  the agent makes itself — never code (AGENTS.md invariant:
+  language-agnostic core). Tools are onDemand (discover/invoke); the
+  baseprompt names lsp among the discoverable capabilities. Read-only
+  `lsp_servers` lists the merged registry with provenance for pickers.
+  Fixture-tested (24 checks: position conversion, includeDeclaration,
+  capability refusal, diagnostics settle, instance reuse, live
+  registry add→query→remove; `48b31a4`, `c6d3c93`, `3a4f933`). niffler-tui
+  gains `/lsp` — server browser, add/edit form (built-ins open as overrides),
+  two-stage delete — approval-gated saves, full i18n (`44a5a82`, `747c848`).
+  Manual chapter: docs/MANUAL.md "Language servers (`lsp`)" (`85a9836`).
+
 - **bench: DeepSeek V4.1 Flash on Synthetic (`syn-deepseek-v41`).** Synthetic
   serves `hf:deepseek-ai/DeepSeek-V4.1-Flash` on both the OpenAI-compatible
   and Anthropic-compatible endpoints (the latter returns real thinking
