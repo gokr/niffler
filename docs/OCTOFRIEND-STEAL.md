@@ -168,36 +168,154 @@ model switching across providers becomes a priority — not urgent.
 - **Cascade cost**: deterministic rescues are ~free; their repair always pays
   a model call per failed edit.
 
-## Repair-model hook: what it entails
+## Steal 1 — repair-model hook in `edit`: full design
 
-Option A — **hosted small model, no training** (~1 day):
-- `edit` gains a repair hook: cascade exhausted → build the repair prompt
-  (file bytes + broken edit, response = `{success, search}` or `{success:false}`,
-  ambiguity must refuse) → call a configurable flash model at temperature 0 →
-  validate → apply. Config: which provider/model, cost cap, enable flag.
-- Cost: one small-model call per *unrescued* failed edit (~0.5–2k tokens).
-  With the cascade ahead of it, that's rare.
-- This is a complete, shippable feature; the trained model can replace it later.
+**Trigger and insertion point.** `components/edit/main.nim` raises
+`[E_NOT_FOUND]` only after every deterministic fallback tier has failed
+(trailing whitespace, indentation drift, unicode punctuation, block anchors
+with Levenshtein, escaped text). That raise is the seam: instead of failing,
+hand the residue to a repair model. The cascade stays first — it is free and
+catches the common classes, so the model call pays only for genuinely novel
+transcription errors.
 
-Option B — **train a micro-model** (the Octo path; weeks, not trivial, but the
-pipeline is the interesting part and their template is committed):
-1. **Data**: generate broken edits synthetically from real repos — take valid
-   search/replace pairs that match, corrupt the search with the real failure
-   taxonomy (whitespace/tab drift, indentation shift, unicode punctuation,
-   truncation, double-escape, stale bytes), label with the ground-truth fix;
-   ~10% ambiguous → labeled `{success:false}` (teaching refusal matters).
-   Octo: up to 5 breaks, 90/10 train/eval, over their repo + a repos/ corpus.
-   Niffler corpora: this repo, bench task repos, and — uniquely — **real failed
-   edits mined from the store** (actual model transcription failures, not just
-   synthetic ones).
-2. **Training**: small base (1–7B), SFT/LoRA (axolotl / unsloth / HF TRL),
-   temperature 0, GPU time in the hours not days for this size.
-3. **Serving**: HF or any OpenAI-compatible host behind the same repair hook
-   as option A — the hook makes the swap trivial.
-4. **Eval**: unit eval on held-out broken edits + end-to-end in the bench
-   (rescue rate, rounds-to-green, added cost/latency per rescue).
+**Flow (option A — hosted small model, no training, ~1 day):**
 
-Verdict: do A now, decide on B with real rescue-rate data from the bench.
+1. Cascade exhausted → if a repair provider is configured, build one prompt
+   for the whole failed batch (not per edit): the file bytes (capped at
+   MAX_READ_BYTES), each failed `old_string` with its index, and the
+   contract below.
+2. Call the LLM the way `expert` does — `comp.request("llm", "chat", ...)`
+   with `stream: false`, a `NIF_LLM_PROVIDERS` nickname as `provider`, a
+   flash-class model, `temperature: 0`. Config: `NIF_EDIT_REPAIR_PROVIDER` +
+   `NIF_EDIT_REPAIR_MODEL`; unset = feature off (default off — opt-in until
+   measured).
+3. Response contract (typed, failure-first):
+   `{"success": true, "fixes": [{"index": 0, "search": "corrected text"}]}` or
+   `{"success": false, "reason": "ambiguous|no-match|..."}`. The prompt must
+   state the refusal duty explicitly: *if the intended region is ambiguous or
+   absent, refuse* — a confident wrong fix is the only way this feature makes
+   things worse.
+4. Re-validate every fix through the normal machinery before applying: the
+   corrected string must occur **exactly once** (the unique-match rule is the
+   real safety net — a repair that lands ambiguously is refused with the
+   ordinary occurrence-count error), plus two cheap guards:
+   - **similarity floor**: Levenshtein similarity between `old_string` and the
+     fix ≥ ~0.5 — the repair model may fix transcription, not invent a
+     different edit;
+   - the existing span-explosion guard still applies.
+5. Apply through the ordinary path; the result text notes the rescue
+   ("1 edit repaired by the repair model") and a counter lands in the observe
+   stream (rescues, refusals, cost) so the feature is measurable from day one.
+6. Any failure (parse, validation, refusal, timeout ~30s) → the existing
+   `E_NOT_FOUND`, message unchanged. The repair hook can only fail back to
+   today's behavior.
+
+Approval semantics are unchanged — the repair runs inside the already-gated
+`edit` call; the human approves the edit, not the rescue. Cost: one call per
+unrescued failed batch ≈ file-tokens (capped 64k) + ~300 output ≈ cents at
+flash pricing, and rare by construction.
+
+**Option B — train a micro-model (the Octo path, weeks):** only worth it if
+option A's telemetry shows real volume. The pipeline is the valuable part:
+
+- **Data, in order of value**: (1) *real failures mined from the store* —
+  Niffler persists every conversation; `E_NOT_FOUND` tool results plus the
+  eventually-successful edit (or the fresh re-read) give (broken, fixed)
+  pairs no synthetic generator can imagine; (2) synthetic corruption — take
+  valid diffs from bench-repo git history, apply, then corrupt the search
+  string with the failure taxonomy (whitespace/tab drift, indentation shift,
+  unicode punctuation, truncation, double-escape, stale bytes), ~10% labeled
+  ambiguous → refusal training matters as much as fix training; (3) Octo's
+  generators (`training/fix-json`, `training/fast-apply`) are committed and
+  readable as templates.
+- **Training**: 1–7B base, SFT/LoRA (axolotl/unsloth/TRL), temperature 0,
+  hours of GPU for this size; host behind the same `NIF_EDIT_REPAIR_*`
+  config so A→B is a config swap.
+- **Eval**: held-out rescue accuracy AND refusal precision (refusing fixable
+  edits is a silent quality loss); then the bench A/B — rescue rate,
+  rounds-to-green, cost per rescued edit, wrong-place incidents (should be
+  zero by construction; anything else means the similarity floor is too low).
+
+**Metrics plan (both options)**: full30 A/B with the hook on/off; per-run
+counters from the observe stream; the number that decides B is rescued-per-
+dollar on real traffic, not synthetic accuracy.
+
+## Steal 2 — history-time read dedup: full design
+
+**The insight, restated for Niffler.** The seen-state already stubs
+*same-bytes* re-reads at execution time (`[unchanged]`). What still
+accumulates in history: re-reads after the bytes changed, `force` re-reads,
+and paginated reads of one file (each page is its own result). Unlike Octo,
+Niffler does not need an IR to fix this — `checkContext` (core/conversation.nim,
+called before every LLM round right where `trimContext` runs) already holds
+the live, in-memory `messages` list that goes to the provider. A sibling
+pass, `dedupStaleReads(p, messages, workspace)`, is a **request-time
+transform**: the store keeps the full transcript (audit, resume, transcripts
+untouched — exactly like trim), only the outgoing request gets the diet.
+
+**The correlation problem.** Single-read results are bare content strings —
+the path is not echoed. The mapping lives in the *assistant* messages:
+`tool_calls[].function.arguments` for `name == "read"` (all union forms:
+`path`, `reads[]`, `windows[]`, `paths[]`). Two wrinkles:
+
+- persisted args hold what the **model sent** — relative paths, pre-workspace-
+  resolution; re-resolve the way dispatch did (relative → workspace join).
+  Mismatch (symlinks, odd cwd) degrades safely: that read just never matches
+  and is left alone.
+- batch results persist as the JSON dump (`{"text", "items", "count"}`);
+  singles as the raw content string. Handle singles fully; batches only when
+  *every* item is superseded (rewrite the whole result), leave mixed batches
+  (rare) for a later pass.
+
+**Supersede rules — the part that must not lose information.** "Last read
+wins" is wrong for pagination: four pages of one file are four *distinct*
+needed views, and dropping pages 1–3 to keep page 4 is data loss. Rule set:
+
+- a **full read** (no range args, or the result carries no "Showing lines"
+  footer) supersedes all earlier reads of the same path;
+- a **partial read** supersedes nothing (MVP — conservative; a later
+  enhancement can parse the `Showing lines X-Y of T` footers and supersede
+  only range-contained earlier reads);
+- `[unchanged]` stub results are already diet — never rewritten;
+- edit/write **diffs are never rewritten** (they are ground truth Octo
+  throws away; ours are cheaper than a re-read).
+
+Rewritten content becomes a pointed stub, not Octo's bare "File was
+successfully read.":
+
+```
+[superseded read of src/foo.nim — a later read in this conversation has the
+current bytes; re-read if you need that view again]
+```
+
+**The cache trade — why this must be gated.** Rewriting any message busts the
+provider prefix cache from that point: one re-upload of the suffix at
+input-price, against a saving of removed-tokens × cache-read-price on every
+subsequent request. At DeepSeek's ~10:1 read:input pricing the breakeven is
+~10 subsequent rounds — so naive per-read rewriting *thrashes* (every new
+read moves the rewrite point and re-busts). Gates:
+
+- only rewrite content ≥ ~2 KB (stubs-for-tiny-reads lose money);
+- apply rewrites only when **accumulated removable bytes ≥ ~16 KB** since the
+  last dedup pass — small sessions keep their cache, long sessions cash in;
+- each stale copy is rewritten at most once (idempotent; a later read creates
+  at most one new stale copy).
+
+**Observability.** Emit the existing ctx event shape with `reason: "dedup"`,
+bytes removed and requests-affected, next to the trim event — when someone
+asks why `cacheHitRatio` dipped for one round, the stream answers.
+
+**Measurement.** Unit tests: synthetic conversation (read A, read B, re-read
+A-changed, paginate C) → exact expected message list; store untouched; resume
+rebuilds full history. Live: the ctx events give cacheHitRatio and
+prompt-token deltas per round; the bench A/B (full30, dedup on/off) gives the
+end-to-end token/cost line — expect a win only on the long, file-heavy cells
+(t20/t24/t27 in the last run), which is exactly where it should win.
+
+**Effort**: ~1 day — the transform is ~100 lines plus tests; the gates and
+event plumbing are most of the rest. The risk is not correctness (worst case:
+a stub where content was — the model re-reads) but *economics*; the gates and
+the ctx events are what make it a measured feature instead of a guess.
 
 ## LSP component: requirements and prior art
 
