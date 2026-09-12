@@ -144,9 +144,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   toolset loses a schema and the batch shape is visible at read time. The
   grep component's `grep` tool is promoted from on-demand to the default
   direct set (ripgrep search without a discover+invoke round trip); `files`
-  stays on-demand. Baseprompt guidance now says "batch known-relevant
-  reads (grep hits, imports)" instead of conditioning batching on the task
-  naming files.
+  stays on-demand. `grep`'s output byte cap drops 100KB → 32KB: broad
+  patterns were doubling conversation context (an A/B cell fell 6.10M →
+  4.74M tokens, peak context 158k → 135k). Baseprompt guidance now says
+  "batch known-relevant reads (grep hits, imports)" instead of conditioning
+  batching on the task naming files.
 
 - **Web UI `/info` and `session_info` completion tokens** — core's
   `session_info` now reports `completionTokens` (the sum of
@@ -1372,6 +1374,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   correction, no batching hint (the direct SWE run showed 0 stubs and 0
   hints across 96 reads). The wave path now injects it exactly like the
   serial one (`1e86d9c`).
+
+- **edit: a read that observes different bytes persists the digest
+  correction** — re-reads previously updated only in-memory seen-state, so
+  a stale persisted digest survived restarts and other processes and
+  refused edits that re-reads could not clear (4 `E_STALE` errors on one
+  bench cell, 0 after the fix). The bench niffler adapter also boots a
+  private `XDG_CONFIG_HOME` under the harness root (`var/edit-config`,
+  wiped per boot) so undo/seen state never leaks across runs that reuse
+  session ids against re-prepared repos — the root cause of that wedge.
+  Regression checks in `tests/t_edit.nim`.
 
 - **plugins: untracked `go.work` so a manual `make` in a clone builds** —
   Go plugin clones carry the sibling-checkout SDK replace
