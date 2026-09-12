@@ -1,162 +1,183 @@
 {
-  "$comment": [
-    "Harness benchmark matrix. API keys are NEVER stored here: each entry's",
-    "apiKeyEnv names an environment variable that bench/lib/keys.mjs fills in",
-    "from your local key stores (env var > niffler .env > opencode auth.json).",
-    "Model ids must exist on the given endpoints; see bench/README.md."
-  ],
-  "models": {
-    "deepseek-v4-flash": {
-      "label": "DeepSeek V4 Flash (direct API; serves 4.1)",
-      "niffler": {
-        "baseUrl": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash",
-        "apiKeyEnv": "DEEPSEEK_API_KEY",
-        "thinking": "low"
-      },
-      "pi": {
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash",
-        "apiKeyEnv": "DEEPSEEK_API_KEY",
-        "thinking": "low"
-      },
-      "opencode": {
-        "model": "deepseek/deepseek-v4-flash"
-      },
-      "codewhale": {
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash",
-        "apiKeyEnv": "DEEPSEEK_API_KEY"
-      }
-    },
-    "deepseek-v4.1-flash": {
-      "label": "DeepSeek V4.1 Flash (DevPass / LLM Gateway)",
-      "niffler": {
-        "baseUrl": "https://api.llmgateway.io/v1",
-        "model": "deepseek-v4.1-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY",
-        "thinking": "low"
-      },
-      "pi": {
-        "provider": "llmgateway",
-        "model": "deepseek-v4.1-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY",
-        "thinking": "low"
-      }
-    },
-    "syn-large": {
-      "label": "Synthetic Large Text (GLM-5.3-Flash)",
-      "niffler": {
-        "baseUrl": "https://api.synthetic.new/openai/v1",
-        "model": "syn:large:text",
-        "apiKeyEnv": "SYNTHETIC_API_KEY",
-        "thinking": "low"
-      },
-      "pi": {
-        "provider": "synthetic",
-        "model": "syn:large:text",
-        "apiKeyEnv": "SYNTHETIC_API_KEY",
-        "thinking": "low"
-      },
-      "claudecode": {
-        "baseUrl": "https://api.synthetic.new/anthropic",
-        "model": "syn:large:text",
-        "apiKeyEnv": "SYNTHETIC_API_KEY",
-        "thinking": "low"
-      }
-    },
-    "glm-5.3-flash": {
-      "label": "GLM-5.3-Flash",
-      "niffler": {
-        "baseUrl": "https://api.llmgateway.io/v1",
-        "model": "glm-5.3-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY",
-        "thinking": "low"
-      },
-      "pi": {
-        "provider": "llmgateway",
-        "model": "glm-5.3-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY",
-        "thinking": "low"
-      },
-      "opencode": {
-        "model": "llmgateway/glm-5.3-flash"
-      },
-      "codewhale": {
-        "provider": "llmgateway",
-        "model": "glm-5.3-flash",
-        "apiKeyEnv": "LLMGATEWAY_API_KEY",
-        "providers": {
-          "llmgateway": {
-            "kind": "openai-compatible",
-            "base_url": "https://api.llmgateway.io/v1",
-            "api_key_env": "LLMGATEWAY_API_KEY",
-            "model": "glm-5.3-flash"
-          }
-        }
-      }
-    }
+ "$comment": [
+  "Harness benchmark matrix. API keys are NEVER stored here: each entry's",
+  "apiKeyEnv names an environment variable that bench/lib/keys.mjs fills in",
+  "from your local key stores (env var > niffler .env > opencode auth.json).",
+  "Model ids must exist on the given endpoints; see bench/README.md."
+ ],
+ "models": {
+  "deepseek-v4-flash": {
+   "label": "DeepSeek V4 Flash (direct API; serves 4.1)",
+   "niffler": {
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-flash",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "thinking": "low"
+   },
+   "pi": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "thinking": "low"
+   },
+   "opencode": {
+    "model": "deepseek/deepseek-v4-flash"
+   },
+   "codewhale": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "apiKeyEnv": "DEEPSEEK_API_KEY"
+   }
   },
-  "defaults": {
-    "rounds": 6,
-    "taskTimeoutMin": 25,
-    "turnTimeoutMin": 10,
-    "testTimeoutSec": 180,
-    "jobs": 2,
-    "$comment": "firstPromptBudget: warn (never fail) when a niffler first assistant prompt exceeds this many tokens — the direct-toolset + baseprompt footprint guard",
-    "firstPromptBudget": 7000
+  "deepseek-v4.1-flash": {
+   "label": "DeepSeek V4.1 Flash (DevPass / LLM Gateway)",
+   "niffler": {
+    "baseUrl": "https://api.llmgateway.io/v1",
+    "model": "deepseek-v4.1-flash",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY",
+    "thinking": "low"
+   },
+   "pi": {
+    "provider": "llmgateway",
+    "model": "deepseek-v4.1-flash",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY",
+    "thinking": "low"
+   }
   },
-  "thinking": {
-    "$comment": [
-      "Uniform reasoning-effort control across harnesses: `bench/run.mjs --thinking <profile>`",
-      "maps each harness to the strongest effort its own CLI can express. pi needs a",
-      "thinkingLevelMap on the model entries (adapters/pi.mjs) to send a real \"max\"; opencode uses --variant; codewhale writes reasoning_effort into its isolated",
-      "config.toml; niffler forwards it as the session's reasoning_effort. DeepSeek maps",
-      "low/medium to high server-side, so every harness's \"low\" lane is equivalent."
-    ],
-    "default": "low",
-    "profiles": {
-      "low": {
-        "niffler": "low",
-        "pi": "low",
-        "opencode": "low",
-        "codewhale": "low",
-        "claudecode": "low"
-      },
-      "medium": {
-        "niffler": "medium",
-        "pi": "medium",
-        "opencode": "medium",
-        "codewhale": "medium",
-        "claudecode": "medium"
-      },
-      "high": {
-        "niffler": "high",
-        "pi": "high",
-        "opencode": "high",
-        "codewhale": "high",
-        "claudecode": "high"
-      },
-      "max": {
-        "niffler": "max",
-        "pi": "max",
-        "opencode": "max",
-        "codewhale": "max",
-        "claudecode": "max"
-      }
-    }
-  },
-  "expertJudge": {
-    "$comment": [
-      "Judgment provider for the niffler-expert harness variant. Reached via",
-      "NIF_LLM_PROVIDERS (second provider next to the worker's gateway), so a",
-      "cheap flash model judges while the worker keeps its own. syn:small:text",
-      "= GLM-4.7-Flash ($0.10/M in, $0.02/M cache-read, $0.50/M out); use",
-      "syn:large:text (GLM-5.3-Flash) for stronger judgment at ~1.5x input cost."
-    ],
-    "provider": "synthetic",
-    "model": "syn:small:text",
+  "syn-large": {
+   "label": "Synthetic Large Text (GLM-5.3-Flash)",
+   "niffler": {
     "baseUrl": "https://api.synthetic.new/openai/v1",
-    "apiKeyEnv": "SYNTHETIC_API_KEY"
+    "model": "syn:large:text",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   },
+   "pi": {
+    "provider": "synthetic",
+    "model": "syn:large:text",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   },
+   "claudecode": {
+    "baseUrl": "https://api.synthetic.new/anthropic",
+    "model": "syn:large:text",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   }
+  },
+  "glm-5.3-flash": {
+   "label": "GLM-5.3-Flash",
+   "niffler": {
+    "baseUrl": "https://api.llmgateway.io/v1",
+    "model": "glm-5.3-flash",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY",
+    "thinking": "low"
+   },
+   "pi": {
+    "provider": "llmgateway",
+    "model": "glm-5.3-flash",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY",
+    "thinking": "low"
+   },
+   "opencode": {
+    "model": "llmgateway/glm-5.3-flash"
+   },
+   "codewhale": {
+    "provider": "llmgateway",
+    "model": "glm-5.3-flash",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY",
+    "providers": {
+     "llmgateway": {
+      "kind": "openai-compatible",
+      "base_url": "https://api.llmgateway.io/v1",
+      "api_key_env": "LLMGATEWAY_API_KEY",
+      "model": "glm-5.3-flash"
+     }
+    }
+   }
+  },
+  "syn-deepseek-v41": {
+   "label": "DeepSeek V4.1 Flash (Synthetic)",
+   "niffler": {
+    "baseUrl": "https://api.synthetic.new/openai/v1",
+    "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   },
+   "claudecode": {
+    "baseUrl": "https://api.synthetic.new/anthropic",
+    "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   },
+   "pi": {
+    "provider": "synthetic",
+    "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+    "apiKeyEnv": "SYNTHETIC_API_KEY",
+    "thinking": "low"
+   }
   }
+ },
+ "defaults": {
+  "rounds": 6,
+  "taskTimeoutMin": 25,
+  "turnTimeoutMin": 10,
+  "testTimeoutSec": 180,
+  "jobs": 2,
+  "$comment": "firstPromptBudget: warn (never fail) when a niffler first assistant prompt exceeds this many tokens \u2014 the direct-toolset + baseprompt footprint guard",
+  "firstPromptBudget": 7000
+ },
+ "thinking": {
+  "$comment": [
+   "Uniform reasoning-effort control across harnesses: `bench/run.mjs --thinking <profile>`",
+   "maps each harness to the strongest effort its own CLI can express. pi needs a",
+   "thinkingLevelMap on the model entries (adapters/pi.mjs) to send a real \"max\"; opencode uses --variant; codewhale writes reasoning_effort into its isolated",
+   "config.toml; niffler forwards it as the session's reasoning_effort. DeepSeek maps",
+   "low/medium to high server-side, so every harness's \"low\" lane is equivalent."
+  ],
+  "default": "low",
+  "profiles": {
+   "low": {
+    "niffler": "low",
+    "pi": "low",
+    "opencode": "low",
+    "codewhale": "low",
+    "claudecode": "low"
+   },
+   "medium": {
+    "niffler": "medium",
+    "pi": "medium",
+    "opencode": "medium",
+    "codewhale": "medium",
+    "claudecode": "medium"
+   },
+   "high": {
+    "niffler": "high",
+    "pi": "high",
+    "opencode": "high",
+    "codewhale": "high",
+    "claudecode": "high"
+   },
+   "max": {
+    "niffler": "max",
+    "pi": "max",
+    "opencode": "max",
+    "codewhale": "max",
+    "claudecode": "max"
+   }
+  }
+ },
+ "expertJudge": {
+  "$comment": [
+   "Judgment provider for the niffler-expert harness variant. Reached via",
+   "NIF_LLM_PROVIDERS (second provider next to the worker's gateway), so a",
+   "cheap flash model judges while the worker keeps its own. syn:small:text",
+   "= GLM-4.7-Flash ($0.10/M in, $0.02/M cache-read, $0.50/M out); use",
+   "syn:large:text (GLM-5.3-Flash) for stronger judgment at ~1.5x input cost."
+  ],
+  "provider": "synthetic",
+  "model": "syn:small:text",
+  "baseUrl": "https://api.synthetic.new/openai/v1",
+  "apiKeyEnv": "SYNTHETIC_API_KEY"
+ }
 }

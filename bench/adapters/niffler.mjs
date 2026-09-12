@@ -374,6 +374,9 @@ export class NifflerHarness {
       // LLM Gateway catalog pricing, same as the pi adapter entry.
       "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
       "syn:large:text": { input: 0.15, output: 0.5, cacheRead: 0.04 },
+      // DeepSeek V4.1 Flash on Synthetic (hf: id). Borrowed V4.1 list
+      // pricing — verify against Synthetic's catalog before trusting cost.
+      "hf:deepseek-ai/DeepSeek-V4.1-Flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
     };
     const usage = zeroUsage();
     if (!items) items = await this.transcript(sessionId);

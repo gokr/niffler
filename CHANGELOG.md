@@ -8,6 +8,17 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **bench: DeepSeek V4.1 Flash on Synthetic (`syn-deepseek-v41`).** Synthetic
+  serves `hf:deepseek-ai/DeepSeek-V4.1-Flash` on both the OpenAI-compatible
+  and Anthropic-compatible endpoints (the latter returns real thinking
+  blocks); `reasoning_effort` accepted. Niffler/pi/claudecode lanes wired to
+  SYNTHETIC_API_KEY. Cost uses borrowed V4.1 list pricing (0.15/0.6/0.003) —
+  unverified against Synthetic's catalog. First run — Sym10, one-shot,
+  `--thinking high`, official Docker grading: **niffler 10/10** (first perfect
+  pilot score; 13091 solved, previously unsolved by every GLM lane; 13031 in
+  392s vs 851-1122s) vs **claudecode 8/10** (11618, 13091). Report:
+  `bench/reports/swe-sympy10-dsv41-high-report.md`.
+
 - **systemprompt: review rubric + skill-loading nudge — +3 lines net.** The
   verify paragraph now requires tracing the failing input through the changed
   code, checking the diff for removed setup and for overrides/callers a
