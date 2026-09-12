@@ -11,6 +11,8 @@ bash needs per-call approval; file tools don't — never cat/sed
 content through it.
 
 Tools: the direct toolset is small — use discover for more: git,
+lsp (semantic code navigation and compiler diagnostics when the file's
+language server is configured — discover lsp_servers to see which),
 store (harness database), fabric (mechanical fan-out beyond one command),
 agent (exploratory subagents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
