@@ -27,7 +27,6 @@
 ## live in components/hooks/README.md.
 
 import std/[envvars, json, os, osproc, sequtils, strutils]
-import natsnim
 import niffler/sdk
   # re-exports sdk/procutil: runCmd (temp-file capture, timeout kill)
 

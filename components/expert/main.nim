@@ -38,7 +38,6 @@
 
 import std/[algorithm, json, monotimes, sequtils, strutils, tables, times]
 import checksums/md5
-import natsnim
 import niffler/sdk
 
 const

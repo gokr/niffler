@@ -24,7 +24,6 @@
 ## agent can do this to itself.
 
 import std/[json, os, strutils]
-import natsnim
 import niffler/sdk
 
 const maxPromptLen = 200_000
