@@ -1201,16 +1201,15 @@ proc deriveTitle(content: string): string =
   ""
 
 proc resolveWorkspace(root, requested: string): tuple[ok: bool, path, error: string] =
-  ## A conversation workspace is immutable and confined to NIF_ROOT. Keeping
-  ## it in the header makes resumed runners resolve context and paths exactly
-  ## as the original turn did.
+  ## A conversation workspace is immutable and persisted in the header so
+  ## resumed runners resolve context and paths exactly as the original turn
+  ## did. Any existing directory on the machine is allowed: NIF_ROOT is only
+  ## the default (and the base for relative requests). The harness root is
+  ## the installation/runtime home, not a sandbox for conversation workspaces.
   if requested.strip().len == 0:
     return (true, root, "")
   let candidate = normalizedPath(
     if requested.isAbsolute(): requested else: root / requested)
-  let cleanRoot = normalizedPath(root)
-  if candidate != cleanRoot and not candidate.startsWith(cleanRoot & DirSep):
-    return (false, "", "cwd must stay inside the harness root")
   if not dirExists(candidate):
     return (false, "", "cwd is not a directory: " & requested)
   (true, candidate, "")
@@ -1567,7 +1566,7 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
         if r{"error"} != nil:
           raise newException(ValueError, r{"error"}.getStr("session error"))
         resp = resultEnvelope(env.id, r)
-      of "spawn", "catalog", "kill", "remove", "status", "discover",
+      of "spawn", "catalog", "kill", "remove", "status", "discover", "ui",
           "session_prepare", "session_info", "prompt_preview", "doctor",
           "conversation_delete", "profile":
         let r = ct.handleCoreTool(env.tool, env.args)

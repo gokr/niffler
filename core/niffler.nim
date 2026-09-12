@@ -20,6 +20,7 @@ import conversation
 import dispatch
 import supervisor
 import tty
+import uireg
 
 const minimalComponents = ["store", "bash", "llm"]
 
@@ -445,7 +446,8 @@ proc main() =
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
-                     activeTurn: new(ActiveTurn))
+                     activeTurn: new(ActiveTurn),
+                     uiReg: newUiRegistry())
   # Slash registry checkpoint (docs/WIRE.md): every catalog change persists
   # the merged table to the store BEFORE ev.catalog.updated goes out, so a UI
   # reading store-first after the event never sees a stale table. Best effort:

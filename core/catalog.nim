@@ -201,6 +201,18 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "required": ["sessionId"],
       "x-harness": {"hidden": true}
     }))
+  coreReg.tools.add(ToolReg(name: "ui", component: "core",
+    schema: %*{
+      "type": "object",
+      "description": "Interactive-client registry: register a client UUID, renew its lease, claim/release conversations, query the owner. Core assigns display numbers ('Niffler 1', 'Niffler 2', ...). Coordination between cooperating UIs, not authentication.",
+      "properties": {
+        "op": {"type": "string", "enum": ["register", "renew", "release", "claim", "release_session", "owner"]},
+        "ui": {"type": "string", "description": "Client UUID (register/renew/release/claim/release_session)"},
+        "session": {"type": "string", "description": "Conversation id (claim/release_session/owner)"}
+      },
+      "required": ["op"],
+      "x-harness": {"hidden": true}
+    }))
   result.components["core"] = coreReg
   for t in coreReg.tools:
     result.toolIndex[t.name] = "core"

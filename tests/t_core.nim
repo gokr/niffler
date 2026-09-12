@@ -203,9 +203,11 @@ proc main() =
         si0{"messageCount"}.getInt(0) == 0, $si0)
 
   # --- conversation workspaces (cwd) ----------------------------------------
-  # A session may pin an immutable workspace inside NIF_ROOT: relative
-  # paths resolve there, escapes and missing dirs are refused, and the
-  # choice is persisted so resumed runners see the same cwd.
+  # A session may pin an immutable workspace: relative paths resolve
+  # against NIF_ROOT, any existing directory is allowed (in or outside the
+  # root — the root is the installation home, not a sandbox), missing dirs
+  # are refused, and the choice is persisted so resumed runners see the
+  # same cwd.
   createDir(root / "ws")
   let wsRel = call(nc, "core", "session",
                    %*{"sessionId": "ws-session", "cwd": "ws"}, 120_000)
@@ -216,11 +218,12 @@ proc main() =
                     %*{"sessionId": "ws-session"}, 10_000)
   check("session_info reports the persisted workspace",
         wsInfo{"cwd"}.getStr("") == root / "ws", $wsInfo)
-  let wsEscape = call(nc, "core", "session",
-                      %*{"sessionId": "ws-escape", "cwd": ".."}, 120_000)
-  check("session refuses a workspace outside the root",
-        wsEscape{"error"}.getStr("").contains("inside the harness root"),
-        $wsEscape)
+  let extWs = parentDir(root) / "ext-ws"
+  createDir(extWs)
+  let wsExt = call(nc, "core", "session",
+                   %*{"sessionId": "ws-ext", "cwd": extWs}, 120_000)
+  check("session accepts a workspace outside the root",
+        wsExt{"error"} == nil and wsExt{"cwd"}.getStr("") == extWs, $wsExt)
   let wsMissing = call(nc, "core", "session",
                        %*{"sessionId": "ws-missing", "cwd": "nope"}, 120_000)
   check("session refuses a nonexistent workspace",

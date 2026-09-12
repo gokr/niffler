@@ -15,6 +15,7 @@ import approval
 import catalog
 import schema_validation
 import supervisor
+import uireg
 
 type
   CoreTools* = object
@@ -47,6 +48,10 @@ type
       ## component (agent) can drive a subagent mid-turn — core's session
       ## tool would stash the request while a turn runs (pumpCoreWhileBusy:
       ## "turns must never nest") and deadlock the caller.
+    uiReg*: UiRegistry                   ## numbered interactive clients with
+                                         ## renewable leases (system core only;
+                                         ## nil in runners — they forward "ui"
+                                         ## over the bus like any core tool)
   TokenStream* = ref object
     sub*: ptr natsSubscription
     session*: string                ## "" = not streaming a turn
@@ -183,6 +188,14 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     if not ct.approval.ask(tool, args):
       return %*{"error": "approval denied for " & tool}
   case tool
+  of "ui":
+    ## Numbered interactive clients with renewable leases (core/uireg.nim).
+    ## UIs claim conversations so a second TUI is told who owns one instead
+    ## of silently joining its stream. Coordination only — see the module
+    ## comment for the trust boundary.
+    if ct.uiReg == nil:
+      return %*{"error": "ui registry is not available in this context"}
+    return handleUi(ct.uiReg, args)
   of "spawn":
     ## Register and start a built component binary; it announces itself on
     ## connect and becomes available through discover/invoke. Persisted via
@@ -856,7 +869,8 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   # internal and recursive surfaces are never reachable from a program:
   # chat/session are core wiring, invoke would bypass admission, and
   # fabric-in-fabric would recurse through the proxy.
-  if tool in ["fabric", "agent", "chat", "session", "invoke", "session_prepare"]:
+  if tool in ["fabric", "agent", "chat", "session", "invoke", "session_prepare",
+              "ui"]:
     return errorEnvelope(env.id, "denied",
       "tool '" & tool & "' is not reachable through nested calls")
   let comp = ct.cat.toolIndex.getOrDefault(tool)
@@ -1079,7 +1093,7 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
   # Core tools: executed locally by the system harness; in a session runner
   # they are forwarded over the bus (svc.core.call) — one implementation.
   if tool in ["spawn", "catalog", "kill", "remove", "status", "discover",
-              "session_info", "prompt_preview", "doctor",
+              "session_info", "prompt_preview", "doctor", "ui",
               "conversation_delete", "profile"] and
       not ct.runner:
     let r = ct.handleCoreTool(tool, args)

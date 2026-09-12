@@ -116,11 +116,15 @@ proc main() =
         except CatchableError:
           discard
 
-      # --- ancestor walk: cwd → harness root (inclusive) -----------------
-      # One file per directory, dedup by path. The walk stops AT the harness
-      # root: root is the global scope, and nothing above the deployment
-      # root (the machine's own layout, or the git worktree a bench harness
-      # happens to live in) may leak into the prompt.
+      # --- ancestor walk: cwd → the scope root (inclusive) ----------------
+      # One file per directory, dedup by path. For workspaces inside the
+      # harness root the walk stops AT the root: root is the global scope,
+      # and nothing above the deployment root (the machine's own layout, or
+      # the git worktree a bench harness happens to live in) may leak into
+      # the prompt. Workspaces outside the root stop at the workspace
+      # itself — walking to / would pick up stray machine-wide files (an
+      # AGENTS.md in $HOME), which is exactly what the root stop avoids.
+      let stopAbove = if cwd == root or cwd.startsWith(root & "/"): root else: cwd
       var files: seq[tuple[path, content: string]] = @[]
       var seen: seq[string] = @[]
       var count = 0
@@ -134,7 +138,7 @@ proc main() =
             seen.add(fid)
             files.add(f)
             if count >= maxFiles: break
-        if dir == "/" or dir.len <= 1 or dir == root: break
+        if dir == stopAbove or dir == "/" or dir.len <= 1: break
         dir = parentDir(dir)
 
       # --- compose: product prompt + wrapped context files -----------------
@@ -155,7 +159,11 @@ proc main() =
         prompt &= "\n\n<project_context>\n\n"
         prompt &= "Project-specific instructions and guidelines:\n\n"
         for f in files:
-          prompt &= "<project_instructions path=\"" & relativePath(f.path, root) & "\">\n"
+          # Inside the root: root-relative (byte-stable across machines).
+          # Outside: absolute — a relative path would be misleading ../ noise.
+          let shown = if f.path.startsWith(root & "/"): relativePath(f.path, root)
+                      else: f.path
+          prompt &= "<project_instructions path=\"" & shown & "\">\n"
           prompt &= f.content
           prompt &= "\n</project_instructions>\n\n"
         prompt &= "</project_context>\n"
