@@ -27,6 +27,7 @@
 
 import std/[httpclient, json, os, sequtils, strutils, times, uri]
 import niffler/sdk
+import versions
 
 let comp = newComponent("plugins", "0.1.0")
 
@@ -83,17 +84,38 @@ proc checkRef(r: string): string =
       raise newException(ValueError, "malformed ref: " & r)
 
 proc resolveTag(repo: string): string =
-  ## Latest release tag, or "" when the repo has no releases (or the API
-  ## is rate-limited). Fresh client per call: a stale pooled connection
-  ## (e.g. a 404 the server already closed) would hang the next read.
-  let client = ghClient()
-  defer: client.close()
-  try:
-    let rel = client.getContent(githubApi & "/repos/" & repo &
-                                "/releases/latest").parseJson()
-    result = rel{"tag_name"}.getStr("")
-  except CatchableError:
-    result = ""
+  ## Latest release tag; else the highest version tag — many component
+  ## packages tag without publishing GitHub releases (gokr/niffler-tui),
+  ## and without this fallback a tag-pinned install on such a repo could
+  ## never move forward; else "" when the repo has neither (or the API is
+  ## rate-limited).
+  ##
+  ## A fresh client per probe: a stale pooled connection (e.g. a 404 the
+  ## server already closed — the normal answer for a release-less repo)
+  ## would hang the next read on the same client.
+  block releases:
+    let client = ghClient()
+    defer: client.close()
+    try:
+      let rel = client.getContent(githubApi & "/repos/" & repo &
+                                  "/releases/latest").parseJson()
+      result = rel{"tag_name"}.getStr("")
+    except CatchableError:
+      result = ""
+  if result.len > 0: return
+  block tags:
+    let client = ghClient()
+    defer: client.close()
+    try:
+      let list = client.getContent(githubApi & "/repos/" & repo &
+                                   "/tags?per_page=100").parseJson()
+      var names: seq[string]
+      if list != nil and list.kind == JArray:
+        for t in list:
+          names.add(t{"name"}.getStr(""))
+      result = latestVersionTag(names)
+    except CatchableError:
+      result = ""
 
 proc defaultBranch(repo: string): string =
   let client = ghClient()
@@ -584,13 +606,13 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_install(repo: string, version: string = ""): JsonNode =
     ## Install a community component package from GitHub: clones the repo
     ## into var/plugins (pinned to version, else the latest release tag,
-    ## else the default branch), compiles every component from source via
-    ## the builder component, then spawns each service component — every
-    ## spawn asks the human for separate approval. Manifest components with
-    ## interactive:true are built but not spawned; the user starts their
-    ## binary in a terminal. Discover packages with plugin_search
-    ## first whenever possible; installs run third-party code on this
-    ## machine (source builds, so exactly the published code).
+    ## else the highest version tag, else the default branch), compiles
+    ## every component from source via the builder component, then spawns
+    ## each service component — every spawn asks the human for separate
+    ## approval. Manifest components with interactive:true are built but not
+    ## spawned; the user starts their binary in a terminal. Discover packages
+    ## with plugin_search first whenever possible; installs run third-party
+    ## code on this machine (source builds, so exactly the published code).
     ## - repo: "owner/name" or a github.com URL, e.g. "gokr/niffler-weather"
     ## - version: Git tag or branch to install (empty = latest release, else default branch)
     if findExe("git").len == 0:
@@ -607,10 +629,10 @@ comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
 
 comp.tool(%*{"approval": "always", "timeoutMs": 600000, "onDemand": true}):
   proc plugin_update(package: string): JsonNode =
-    ## Update an installed package. When GitHub has a newer release tag,
-    ## moves the pin to it: removes the current components and reinstalls
-    ## fresh at the new tag (each service removal and spawn asks the human
-    ## for approval). Otherwise — no releases at all, i.e. the package
+    ## Update an installed package. When there is a newer release tag — or,
+    ## on a repo that publishes no releases, a newer version tag — moves the
+    ## pin to it: removes the current components and reinstalls fresh at the
+    ## new tag (each service removal and spawn asks the human for approval). Otherwise — no releases at all, i.e. the package
     ## tracks a branch like main — does an in-place `git pull --ff-only` on
     ## the existing clone and only rebuilds components when the pull
     ## actually moved HEAD; a no-op pull is reported without touching any

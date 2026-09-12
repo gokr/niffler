@@ -17,6 +17,7 @@
 import std/[json, os, osproc, strutils]
 import natsnim
 import helpers
+import ../components/plugins/versions
 
 proc commitRepo(repoDir: string) =
   let g = startProcess("git", args = ["-C", repoDir, "init", "-q", "-b", "main"],
@@ -30,6 +31,22 @@ proc commitRepo(repoDir: string) =
   gc.close()
 
 proc main() =
+  # --- pure: version-tag selection (release-less repos) -----------------
+  # resolveTag falls back to /tags when a repo publishes no GitHub
+  # releases; this helper picks the pin from that list. Hermetic — no bus.
+  check("latest tag: highest version wins",
+        latestVersionTag(@["v0.2.0", "v0.3.0", "v0.1.9"]) == "v0.3.0")
+  check("latest tag: non-version tags ignored",
+        latestVersionTag(@["nightly", "release-2024", "v1.0.1"]) == "v1.0.1")
+  check("latest tag: zero-extended comparison",
+        latestVersionTag(@["v1.0", "v1.0.1", "v1.0.0"]) == "v1.0.1")
+  check("latest tag: plain tag beats pre-release",
+        latestVersionTag(@["v2.0.0-rc1", "v2.0.0"]) == "v2.0.0")
+  check("latest tag: pre-release alone is still usable",
+        latestVersionTag(@["v2.0.0-rc1"]) == "v2.0.0-rc1")
+  check("latest tag: no version-looking tags → empty",
+        latestVersionTag(@["nightly", "latest"]) == "" and
+        latestVersionTag(@[]) == "")
 
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
