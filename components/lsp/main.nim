@@ -647,17 +647,35 @@ proc atomicWrite(path, content: string) =
   f.close()
   moveFile(tmp, path)
 
+proc hLspServers(c: Component, args: JsonNode): JsonNode =
+  ## List the merged registry — read-only, approval-free: pickers (TUI) and
+  ## the model probe this before prompting a human.
+  var servers = newJArray()
+  let userPath = registryPath()
+  var userNames: seq[string]
+  if fileExists(userPath):
+    try:
+      let doc = parseJson(readFile(userPath))
+      if doc.kind == JObject:
+        for name in doc.keys: userNames.add(name)
+    except CatchableError: discard
+  var names: seq[string]
+  for name in loadRegistry().keys: names.add(name)
+  for name in sorted(names):
+    let conf = loadRegistry()[name]
+    var exts = newJObject()
+    for ext, lang in conf.extensions: exts[ext] = %lang
+    servers.add(%*{"name": name, "command": conf.command, "extensions": exts,
+                   "source": (if name in userNames: "user" else: "builtin")})
+  okResult(%*{"servers": servers, "path": userPath,
+              "note": "add/remove via lsp_registry (approval-gated); built-ins are overridden by adding the same name"})
+
 proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
-  let action = args{"action"}.getStr("list")
+  ## Mutate the user registry: add (also overrides a built-in of the same
+  ## name) and remove (user entries only). Approval-gated: persistent config
+  ## write.
+  let action = args{"action"}.getStr("add")
   case action
-  of "list":
-    var entries = newJObject()
-    for name, conf in loadRegistry():
-      var exts = newJObject()
-      for ext, lang in conf.extensions: exts[ext] = %lang
-      entries[name] = %*{"command": conf.command, "extensions": exts}
-    okResult(%*{"registry": entries, "path": registryPath(),
-                "note": "add takes {name, command (string or argv array), extensions: {\".ext\": languageId}}; remove deletes user entries — built-ins are overridden by re-adding the same name"})
   of "add":
     let name = args{"name"}.getStr("")
     if name.len == 0 or not name.allCharsInSet({'a'..'z', '0'..'9', '-'}):
@@ -713,7 +731,7 @@ proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
       fail("E_LSP_UNAVAILABLE", "'" & name & "' is not in the user registry (" & path &
            ") — built-in defaults are overridden by re-adding the same name")
   else:
-    fail("E_BAD_SHAPE", "\"action\" must be one of: list, add, remove")
+    fail("E_BAD_SHAPE", "\"action\" must be one of: add, remove")
 
 # ---------------------------------------------------------------------------
 # component
@@ -742,16 +760,21 @@ discard comp.tool("lsp", toolSchema(%*{
   %*{"timeoutMs": 90000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["path"], "cwdField": "workspaceRoot"}})
 
+discard comp.tool("lsp_servers", toolSchema(%*{}, @[],
+  "List configured language servers: name, launch command, extension map, and whether each entry is a user override or a built-in default. Read-only — use lsp_registry (add/remove) to change the registry, which takes effect on the next lsp call."),
+  hLspServers,
+  %*{"timeoutMs": 10000, "onDemand": true, "effect": "read"})
+
 discard comp.tool("lsp_registry", toolSchema(%*{
-  "action": {"type": "string", "enum": ["list", "add", "remove"],
-             "description": "list (default), add, or remove a language-server entry"},
+  "action": {"type": "string", "enum": ["add", "remove"],
+             "description": "add (or override a built-in of the same name), or remove a user entry"},
   "name": {"type": "string", "description": "Server name (add/remove)"},
   "command": {"description": "Server launch command (add): string (split on whitespace) or argv array, e.g. [\"gopls\"] or \"typescript-language-server --stdio\""},
   "extensions": {"type": "object",
                  "description": "Extension → LSP language id map (add), e.g. {\".go\": \"go\"}"},
   "initializationOptions": {"description": "Optional initialize options passed to the server (add)"}
 }, @[],
-  "The language-server registry: which server binary handles which file extension. list shows the merged registry (built-in defaults + user entries) and the file backing it; add/remove edit the user registry and take effect on the next lsp call. Use this when a file's extension has no language server configured — if the binary exists on PATH, adding it here is all that's needed. Writing the registry."),
+  "Mutate the language-server registry: which server binary handles which file extension. add takes {name, command (string or argv array), extensions: {\".ext\": \"languageId\"}} and overrides a built-in of the same name; remove deletes a user entry. Takes effect on the next lsp call. Use when a file's extension has no language server configured — if the binary exists on PATH, adding it here is all that's needed. Writing the registry (approval-gated); list with lsp_servers."),
   hLspRegistry,
   %*{"timeoutMs": 10000, "onDemand": true, "approval": "always"})
 

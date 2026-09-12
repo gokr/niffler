@@ -58,6 +58,9 @@ proc main() =
   proc regCall(args: JsonNode): JsonNode =
     call(nc, "lsp", "lsp_registry", args, 10000)
 
+  proc listCall(): JsonNode =
+    call(nc, "lsp", "lsp_servers", %*{}, 10000)
+
   # --- shape + scope + missing file refusals -----------------------------
   let bad = lspCall(%*{"operation": "teleport", "path": "x.nx"})
   check("unknown operation refused", bad.hasKey("error") and
@@ -155,18 +158,25 @@ proc main() =
         abs{"ok"}.getBool(false), $abs)
 
   # --- registry: list / add / remove ---------------------------------------
-  let listed = regCall(%*{"action": "list"})
-  check("registry lists defaults + user entries",
+  let listed = listCall()
+  check("registry lists defaults + user entries with source",
         listed{"ok"}.getBool(false) and
-        listed{"registry"}{"gopls"} != nil and
-        listed{"registry"}{"nx"} != nil and
-        listed{"registry"}{"nimlangserver"}{"extensions"}{".nim"}.getStr("") == "nim",
+        listed{"servers"} != nil and listed{"servers"}.len >= 9 and
+        listed{"path"}.getStr("").len > 0 and
+        (block:
+          var sawUser, sawBuiltin = false
+          for s in listed{"servers"}:
+            if s{"name"}.getStr("") == "nx" and s{"source"}.getStr("") == "user":
+              sawUser = true
+            if s{"name"}.getStr("") == "gopls" and s{"source"}.getStr("") == "builtin":
+              sawBuiltin = true
+          sawUser and sawBuiltin),
         $listed)
   let conflict = regCall(%*{"action": "add", "name": "other",
                             "command": "whatever", "extensions": %*{".nx": "nx2"}})
   check("extension conflict refused", conflict.hasKey("error") and
         conflict{"error"}.getStr("").contains("E_LSP_CONFLICT"), $conflict)
-  let added = regCall(%*{"action": "add", "name": "echo-nx",
+  let added = regCall(%*{"name": "echo-nx",
                          "command": ["python3", fixture],
                          "extensions": %*{".ezz": "ezz"}})
   check("add writes the user registry", added{"ok"}.getBool(false) and
