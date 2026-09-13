@@ -67,7 +67,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all build components components-inner ui ui-install ui-uninstall run down \
+.PHONY: help all build components components-inner ui ui-install ui-uninstall run down down-here \
         test test-server test-ui test-bash test-store test-store-sqlite test-store-tidb test-builder test-console test-plugins test-skills test-fetch \
         test-models test-provider test-observe test-logfile test-hooks test-core test-discover test-cli \
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
@@ -90,6 +90,7 @@ help:
 	@echo 'make run       run the harness in the terminal (admin shell)'
 	@echo 'make ram       RAM of running niffler stacks (harness + components + nats + clients)'
 	@echo 'make down      stop any running harness, components and nats-server'
+	@echo 'make down-here stop only THIS checkout's harness, components and bus'
 	@echo 'make test      full gate: bus-contract suite + frontend tests'
 	@echo 'make test-server  bus-contract suite only (no node/UI toolchain)'
 	@echo 'make test-ui   frontend lib tests + typecheck (no NATS needed)'
@@ -333,6 +334,14 @@ down:
 	 pkill -f "niffler-[u]i" 2>/dev/null; \
 	 pkill -x nats-server 2>/dev/null; \
 	 sleep 1; echo "down: harnesses, components and nats-server stopped"
+
+# down-here: the scoped variant — kills only processes whose executable
+# lives under this root's var/bin (plus this root's spawned bus via
+# var/nats-pid), so bench worktrees, other clones and their private buses
+# survive. See scripts/down-here.sh for the pinning rules; the global
+# `down` above stays for the stray-everything case.
+down-here:
+	@bash scripts/down-here.sh "$(ROOT)"
 
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim

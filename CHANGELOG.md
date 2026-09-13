@@ -8,6 +8,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **make down-here** — the scoped variant of `make down`: stops only this
+  checkout's harness, components and spawned bus, pinning every kill by
+  process tree + NIF_ROOT env + executable path (`scripts/down-here.sh`,
+  with `--dry-run`). The global `down` stays for the stray-everything case;
+  `down-here` leaves bench worktrees, other clones and their private buses
+  alone.
 - **bench: SWE-bench Multilingual pilot (10 tasks, 7 languages) — Go
   (caddy, gin), Rust (tokio, nushell), C (redis, jq), C++ (fmt), JS
   (axios), TS (docusaurus), Ruby (rubocop); real OSS repos, real
