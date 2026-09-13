@@ -16,6 +16,11 @@ type
     baseDelayMs*: float    ## first backoff
     maxDelayMs*: float     ## backoff ceiling
 
+  LlmFailureClass* = enum
+    lfcTransient   ## rate limits, outages, dropped connections — backoff applies
+    lfcOverflow    ## the request cannot fit the provider's context window
+    lfcPermanent   ## auth, quota, bad request — fail fast
+
 proc defaultRetryPolicy*(): RetryPolicy =
   RetryPolicy(maxRetries: 2, baseDelayMs: 500.0, maxDelayMs: 8000.0)
 
@@ -60,6 +65,52 @@ proc isRetryableLlmError*(msg: string): bool =
   # above). Anything unrecognized does not retry — an unknown failure mode
   # should surface to the human, not spin silently.
   false
+
+proc classifyLlmError*(msg: string): LlmFailureClass =
+  ## Three-way classification (docs/research/COMPACTION.md §6.5). Overflow is
+  ## its own class: it is a 400-family failure, so the phrase lists above
+  ## would call it permanent — and retrying it as transient would be wasted
+  ## latency against a deterministic refusal. It routes to bounded overflow
+  ## recovery instead: one attempt per logical request, only after a
+  ## validated reduction. The llm adapter normalizes provider errors to the
+  ## stable "context-overflow" prefix (the machine-readable signal); the
+  ## phrase fallbacks cover providers whose messages predate the adapter
+  ## wrap.
+  let lower = msg.toLowerAscii()
+  if lower.contains("context-overflow") or
+     lower.contains("context_length_exceeded") or
+     lower.contains("maximum context length") or
+     lower.contains("prompt is too long") or
+     lower.contains("input length exceeds") or
+     lower.contains("too many input tokens"):
+    return lfcOverflow
+  if isRetryableLlmError(msg): return lfcTransient
+  return lfcPermanent
+
+proc windowFromOverflow*(msg: string): int =
+  ## The provider's context window, parsed from the adapter's normalized
+  ## overflow text ("...; window <N> tokens"). The adapter's stable suffix is
+  ## the contract; scan from the END so an earlier mention of "window" in
+  ## free-form provider detail cannot shadow it. 0 when absent — the caller
+  ## keeps its current (unknown) capacity and recovery declines, since a
+  ## reduction cannot be validated against an unknown target. §6.1: unknown
+  ## capacity is reported as unknown, never zero.
+  let key = "window "
+  var i = msg.rfind(key)
+  while i >= 0:
+    var j = i + key.len
+    var digits = ""
+    while j < msg.len and msg[j] in {'0' .. '9'}:
+      digits.add(msg[j])
+      inc j
+    if digits.len > 0:
+      try:
+        return parseInt(digits)
+      except ValueError:
+        discard
+    if i == 0: break
+    i = msg[0 ..< i].rfind(key)
+  0
 
 proc retryDelayMs*(policy: RetryPolicy, attempt: int): int =
   ## Exponential backoff with jitter for attempt 0, 1, 2... 0 when the
