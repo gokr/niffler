@@ -547,6 +547,11 @@ install-go:
 	elif command -v snap >/dev/null 2>&1; then $(SUDO) snap install go --classic; \
 	else echo "Install Go from https://go.dev/dl (or use your package manager)"; fi
 
+install-lsp:
+	@# Language servers behind the lsp component defaults (gopls, pyright,
+	@# typescript-language-server, rust-analyzer, clangd, nimlangserver).
+	@bash scripts/install-lsp.sh
+
 install-native-deps:
 	@if [ -n "$(IS_MAC)" ]; then \
 		xcode-select -p >/dev/null 2>&1 || { echo "Install Xcode command-line tools: xcode-select --install"; exit 1; }; \
