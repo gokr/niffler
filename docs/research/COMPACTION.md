@@ -708,8 +708,8 @@ correctness, latency and cache rebuilds — not just token reduction.
 |---|---|---|
 | 0 | SQLite default + paged-read contract + importer + docs (§2, §6.4) | compaction's durability and reload depend on both — ☑ LANDED (merged with feat/store-sqlite-default) |
 | 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes — ☑ LANDED (CtxNode ledger 1:1 with the projection, ctxAppend growth path, canonicalHigh, loadStoredMessagesEx nodes + `after` cursor, ctxDigest; t_ctxcompact) |
-| 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components |
-| 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists |
+| 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components — ☑ LANDED (admission before every request; prune → trim → context-recovery-required ladder; stable context-overflow classification in the adapter + receipt-bounded recovery; §8 fixtures 1–3 + end-to-end overflow recovery) |
+| 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
 | 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam |
 | 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it |
 | 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam |
