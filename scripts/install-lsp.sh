@@ -90,8 +90,14 @@ elif have nimble; then nimble install nimlangserver -y >/dev/null 2>&1 \
 else skip "nimlangserver" "no nimble (make install-nim)"; fi
 
 echo "---"
-echo "$installed language server(s) newly installed; total on PATH/dirs:"
+echo "$installed language server(s) newly installed; total available:"
 for s in gopls pyright typescript-language-server tsserver rust-analyzer clangd nimlangserver; do
-  command -v "$s" >/dev/null 2>&1 && echo "  $s: $(command -v "$s")"
+  if have "$s"; then
+    p=$(command -v "$s" || true)
+    [ -z "$p" ] && for d in "$HOME/go/bin" "$BIN"; do
+      [ -x "$d/$s" ] && p="$d/$s" && break
+    done
+    echo "  $s: $p"
+  fi
 done
 exit 0
