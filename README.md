@@ -278,7 +278,9 @@ wins. Service mode (no tty): `NIF_NATS_URL=... NIF_OPENAI_API_KEY=...
 ```
 docs/                MANUAL.md (operating guide), WIRE.md (wire protocol),
                      ARCHITECTURE.md (core boundary), FABRIC_GUIDE.md,
-                     PLAN.md (open work), research/ (design history)
+                     PI-VS-NIFFLER.md (comparison with pi), PI-NEXT.md (what
+                     to do about it), PLAN.md (open work), research/ (design
+                     history)
 manifest.yaml        bootstrap component manifest
 sdk/envelope.nim     envelope codec (std/json, portable by design)
 sdk/niffler/         Nim component SDK (~250 lines)
@@ -575,9 +577,11 @@ Open work — deferred follow-ups and quests — is consolidated in
       artifacts); the `agent` tool turns sessions into subagents (delegated
       child runners; synchronous `agent_run` + steer, durable background
       jobs via `agent_spawn`/`agent_status`/`agent_wait`/`agent_stop` with
-      `ev.agent.*` events, dispatch-time depth guard); guests are lint-banned
-      from IO/network/FFI and the VM refuses FFI magics (import-free j* JSON
-      helpers, ~ms cold eval); correlated `ev.fabric.*` lifecycle events;
+      `ev.agent.*` events, dispatch-time depth guard); approved guests are
+      native Nim in bash's trust class — the old VM-era banned-import lint is
+      gone (guests may import any std module; import-free j* JSON helpers and
+      a content-addressed compiled-guest cache keep cold runs cheap);
+      correlated `ev.fabric.*` lifecycle events;
       worked examples in `components/fabric/examples/`
       (`tests/t_nested.nim`, `tests/t_schema_validation.nim`,
       `tests/t_agent.nim`, `tests/t_fabric.nim`)
