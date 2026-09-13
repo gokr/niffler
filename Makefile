@@ -180,6 +180,8 @@ var/bin/systemprompt: components/systemprompt/main.nim \
     components/systemprompt/baseprompt.txt $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/systemprompt/main.nim
 
+var/bin/recall: components/recall/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/recall/main.nim
 var/bin/fetch: components/fetch/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/fetch/main.nim
 
@@ -247,6 +249,7 @@ components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sq
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
 	var/bin/agent var/bin/expert var/bin/fabric var/bin/fabric-exec var/bin/systemprompt \
+	var/bin/recall \
 	var/bin/hooks var/bin/dialog var/bin/nats-server \
 	var/bin/mcp var/bin/mcp-bridge
 

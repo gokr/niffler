@@ -55,14 +55,14 @@ proc readRequests(path: string): tuple[accepted: seq[int], rejected: int] =
 proc runSandboxFixture(tag: string, window: int, rounds: int,
                        toolBytes: int, hideCtx: bool, reserve: string,
                        objective: string,
-                       verify: proc(nc: NatsConnection, sessionId: string) {.closure.} = nil):
-    tuple[reply, turnError: string, logPath: string] =
+                       verify: proc(nc: NatsConnection, sessionId: string) {.closure.} = nil,
+                       toolCmd = ""): tuple[reply, turnError: string, logPath: string] =
   ## Boot a sandbox core with the enforcing mock provider and drive one
   ## user turn. `verify` runs while the sandbox is still live (store
   ## assertions). Returns the session result plus the mock's request log.
   let repoRoot = getEnv("NIF_REPO_ROOT",
                         getEnv("NIF_ROOT", getAppDir().parentDir()))
-  let sandbox = newCoreSandbox(tag, ["store", "bash", "llm"])
+  let sandbox = newCoreSandbox(tag, ["store", "bash", "llm", "recall"])
   let root = sandbox.root
   # Replace the real llm with the test-only mock (t_expert pattern).
   let compProc = startProcess("nim", args = [
@@ -83,8 +83,8 @@ proc runSandboxFixture(tag: string, window: int, rounds: int,
     ("NIF_AUTO_APPROVE", "1"),
     ("NIF_MOCK_CTX", $window),
     ("NIF_MOCK_ROUNDS", $rounds),
-    ("NIF_MOCK_TOOLCMD", "head -c " & $toolBytes &
-      " /dev/zero | tr '\\0' 'x'"),
+    ("NIF_MOCK_TOOLCMD", if toolCmd.len > 0: toolCmd else:
+       "head -c " & $toolBytes & " /dev/zero | tr '\\0' 'x'"),
     ("NIF_MOCK_LOG", logPath)]
   if hideCtx: extra.add(("NIF_MOCK_HIDE_CTX", "1"))
   if reserve.len > 0: extra.add(("NIF_CTX_RESERVE", reserve))
@@ -316,6 +316,178 @@ proc main() =
     for a in accepted:
       if a > 3000: fits = false
     check("every accepted request fit the window", fits, $accepted)
+
+  # --- 10. §8 test 5 — recall: replaced content stays retrievable ---------
+  # One bash round emitting 20KB (over bash's 12KB transcript cap → spill +
+  # promotion) against a 3000-token window (the result is pruned at
+  # admission). Assert: the spill document holds the byte-identical capture,
+  # the pruned notice names a resolving ref, recall-spill returns the full
+  # original, recall-canonical returns the full stored body, match mode
+  # greps it, and a deliberately broken spill doc yields a clear error with
+  # the canonical body still intact.
+  block recall:
+    let objective = "Run the big command, then say DONE-RECALL-8K."
+    # 1000 distinct rows ≈ 19KB: over bash's 12KB transcript cap (spill +
+    # promotion) and over the 8KB prune threshold, with greppable lines.
+    let rows = "i=1; while [ $i -le 1000 ]; do echo \"row-$i xxxxxxxxxxxx\"; i=$((i+1)); done"
+    proc verifyRecall(nc: NatsConnection, sessionId: string) =
+      doAssert waitComponent(nc, "recall"), "recall did not register"
+      # the tool result message and its spill document
+      let msgs = call(nc, "store", "list",
+                      %*{"kind": "message", "idPrefix": sessionId & ":",
+                         "limit": 200}, 10_000)
+      var toolId = ""
+      var toolBody = ""
+      for item in msgs{"items"}:
+        let v = item{"value"}
+        if v{"role"}.getStr("") == "tool" and
+            v{"content"}.getStr("").contains("xxxxx"):
+          toolId = item{"id"}.getStr("")
+          toolBody = v{"content"}.getStr("")
+      check("tool result found in canonical history", toolId.len > 0)
+      if toolId.len == 0: return
+      let spillDoc = call(nc, "store", "get",
+                          %*{"kind": "spill", "id": toolId}, 10_000)
+      check("spill document promoted with the full capture",
+            spillDoc{"ok"}.getBool(false) and
+            spillDoc{"value"}{"text"}.getStr("").contains("row-1 ") and
+            spillDoc{"value"}{"text"}.getStr("").contains("row-1000 ") and
+            spillDoc{"value"}{"text"}.getStr("").len > 15_000,
+            "spill len " & $spillDoc{"value"}{"text"}.getStr("").len)
+      # the canonical body keeps the ORIGINAL un-pruned — the marker format
+      # itself is asserted at unit level below.
+      check("canonical body is the original (un-pruned, spill notice intact)",
+            toolBody.contains("[full output:") and
+            toolBody.contains("[recall: the full ") and
+            not toolBody.contains("[tool result middle pruned"),
+            toolBody[0 ..< 300])
+      # recall-spill: byte-identical original, from the notice's own ref
+      let recalled = call(nc, "recall", "context_recall",
+        %*{"ref": {"source": "spill", "id": toolId}}, 20_000)
+      var spillText = ""
+      if recalled{"refs"} != nil:
+        spillText = recalled{"refs"}[0]{"text"}.getStr("")
+      else:
+        spillText = recalled{"text"}.getStr("")
+      check("recall-spill returns the byte-identical original",
+            spillText.len > 15_000 and spillText.contains("row-1 ") and
+            spillText.contains("row-1000 "), "len " & $spillText.len)
+      # match mode greps without paging the whole document into context
+      let matched = call(nc, "recall", "context_recall",
+        %*{"ref": {"source": "spill", "id": toolId},
+           "mode": "match", "query": "row-42 "}, 20_000)
+      let matchText = block:
+        if matched{"refs"} != nil: matched{"refs"}[0]{"text"}.getStr("")
+        else: matched{"text"}.getStr("")
+      check("match mode returns only the matching line",
+            matchText.contains("row-42 xxxxxxxxxxxx") and
+            matchText.len < 200 and not matchText.contains("row-43"),
+            matchText)
+      # recall-canonical: the full stored body (un-pruned) — the prune is a
+      # projection edit; canonical never changed
+      let recalledCanonical = call(nc, "recall", "context_recall",
+        %*{"ref": {"source": "canonical", "id": toolId}}, 20_000)
+      let canonicalText = block:
+        if recalledCanonical{"refs"} != nil:
+          recalledCanonical{"refs"}[0]{"text"}.getStr("")
+        else: recalledCanonical{"text"}.getStr("")
+      check("recall-canonical returns the full stored body",
+            canonicalText == toolBody,
+            "canonical len " & $canonicalText.len & " vs " & $toolBody.len)
+      # a broken spill doc: clear error, original still in canonical history
+      discard call(nc, "store", "put",
+                   %*{"kind": "spill", "id": toolId,
+                      "value": {"oops": true}}, 10_000)
+      let broken = call(nc, "recall", "context_recall",
+        %*{"ref": {"source": "spill", "id": toolId}}, 20_000)
+      let brokenOk = broken{"ok"}.getBool(true)
+      let brokenErr = block:
+        if broken{"refs"} != nil: broken{"refs"}[0]{"error"}.getStr("")
+        else: broken{"error"}.getStr("")
+      check("broken spill doc yields a clear error",
+            (not brokenOk) and brokenErr.len > 0, $broken)
+      let still = call(nc, "store", "get",
+                       %*{"kind": "message", "id": toolId}, 10_000)
+      check("the original is still present in canonical history",
+            still{"value"}{"content"}.getStr("") == canonicalText)
+      # a checkpoint ref has nothing to resolve yet (step 4) — clear error
+      let ck = call(nc, "recall", "context_recall",
+        %*{"ref": {"source": "checkpoint", "id": sessionId & "#ck1"}},
+        20_000)
+      let ckErr = block:
+        if ck{"refs"} != nil: ck{"refs"}[0]{"error"}.getStr("")
+        else: ck{"error"}.getStr("")
+      check("checkpoint ref names what is unavailable",
+            (not ck{"ok"}.getBool(true)) and
+            ckErr.contains("no projection record"), $ck)
+
+    let r = runSandboxFixture("recallfixture", 3000, 1, 20_000, false, "400",
+                              objective, verifyRecall, toolCmd = rows)
+    check("recall fixture turn completes", r.turnError.len == 0, r.turnError)
+    # the provider's own view: round 2 carried the PRUNED projection, not
+    # the full ~12.6KB body (the un-pruned estimate would be ~4000+)
+    let (accepted, rejected) = readRequests(r.logPath)
+    check("the pruned projection was sent, not the full body",
+          accepted.len == 2 and accepted[1] < 3500 and rejected == 0,
+          $accepted & " rejected=" & $rejected)
+
+  # --- 5b. the prune marker names a resolving ref (§5.2/§5.3) --------------
+  # Spill-backed result: the gate verifies the spill doc and the marker
+  # names the SPILL ref (the full capture). Plain result: the canonical ref
+  # (canonical is the full body by construction). §5.4: never a notice
+  # larger than what it replaced.
+  block pruneMarker:
+    var mp = newPersister(ct)
+    mp.convId = "prune-marker"
+    mp.seqNo = 0
+    var mmsgs: seq[JsonNode] = @[]
+    mp.nodes = @[]
+    mp.canonicalHigh = 0
+    # a spill-backed tool result: transcript body carries bash's spill notice
+    let spillBody = "(exit 0)\n[full output: 20000 bytes, 1 lines → " &
+      "xxsomewhere] page with read\n" & repeat('x', 12_000)
+    mp.ctxAppend(mmsgs, %*{"role": "tool", "tool_call_id": "c1",
+                           "content": spillBody})
+    # its spill document — promotion already happened (gate must verify it)
+    discard ct.storePutRev("spill", mp.nodes[^1].id,
+      %*{"text": repeat('x', 20_000), "bytes": 20_000})
+    # a plain large tool result: canonical body IS the full output
+    mp.ctxAppend(mmsgs, %*{"role": "tool", "tool_call_id": "c2",
+                           "content": repeat('y', 12_000)})
+    let saved = mp.pruneContext(mmsgs)
+    check("both over-threshold results pruned", saved > 10_000, $saved)
+    let spillMarker = mmsgs[0]{"content"}.getStr("")
+    check("spill-backed marker names the spill ref",
+          spillMarker.contains("context_recall") and
+          spillMarker.contains("\"source\": \"spill\"") and
+          spillMarker.contains(mp.nodes[0].id), spillMarker[0 ..< 260])
+    let plainMarker = mmsgs[1]{"content"}.getStr("")
+    check("plain marker names the canonical ref",
+          plainMarker.contains("context_recall") and
+          plainMarker.contains("\"source\": \"canonical\"") and
+          plainMarker.contains(mp.nodes[1].id), plainMarker[0 ..< 260])
+    check("within-cap invariant (notice smaller than what it replaced)",
+          mmsgs[0]{"content"}.getStr("").len < spillBody.len and
+          mmsgs[1]{"content"}.getStr("").len < 12_000)
+    check("prune ledger recorded both",
+          mp.prunes.len == 2 and mp.prunes[0].bytesBefore > mp.prunes[0].bytesAfter,
+          $mp.prunes)
+    # idempotence: pruning again changes nothing
+    let saved2 = mp.pruneContext(mmsgs)
+    check("prune is idempotent", saved2 == 0, $saved2)
+    # the §5.3 gate: a spill-backed result with NO spill doc stays un-pruned
+    var gp = newPersister(ct)
+    gp.convId = "prune-gate"
+    gp.seqNo = 0
+    var gmsgs: seq[JsonNode] = @[]
+    gp.nodes = @[]
+    gp.ctxAppend(gmsgs, %*{"role": "tool", "tool_call_id": "c1",
+                           "content": "[full output: 9 bytes → gone]\n" &
+                                      repeat('z', 12_000)})
+    let savedGated = gp.pruneContext(gmsgs)
+    check("gate keeps the original when the spill doc is missing",
+          savedGated == 0 and
+          gmsgs[0]{"content"}.getStr("").contains("[full output:"), $savedGated)
 
   report("CTXCOMPACT")
 
