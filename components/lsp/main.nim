@@ -311,9 +311,13 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
       fail("E_LSP_TIMEOUT", "no response from '" & h.name & "' within " &
            $timeoutMs & "ms (server may still be indexing — retry)")
     if not pump(h, min(remaining, 250)):
-      if quiet: return nil
-      fail("E_LSP_TIMEOUT", "no response from '" & h.name & "' within " &
-           $timeoutMs & "ms (server may still be indexing — retry)")
+      # A pump slice only means "no bytes in this 250ms window" — servers that
+      # run a lint subprocess (bash-language-server + shellcheck) or index a
+      # big module legitimately stay silent far longer. Keep waiting until
+      # the caller's real deadline; the slice size exists so stderr keeps
+      # draining, not as a timeout. (A dead server is still caught instantly:
+      # pump raises E_LSP_PROTOCOL on stdout EOF.)
+      continue
 
 proc sendMsg(h: Instance, obj: JsonNode) =
   let s = $obj

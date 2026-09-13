@@ -31,6 +31,10 @@ import sys
 import time
 
 LOG = os.environ.get("LSP_FIXTURE_LOG")
+# Regression hook for the lsp component's diagnostics wait: delay the push
+# past a single poll slice (the old readFrame bug returned nil after ~250ms
+# instead of honoring the caller's deadline).
+DIAG_DELAY = float(os.environ.get("LSP_FIXTURE_DIAG_DELAY_MS", "0")) / 1000.0
 
 
 def log(msg):
@@ -95,6 +99,7 @@ def main():
         elif method == "textDocument/didOpen":
             uri = msg["params"]["textDocument"]["uri"]
             if "wobbly" not in uri:
+                time.sleep(DIAG_DELAY)
                 write_frame({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
                              "params": {"uri": uri, "diagnostics": []}})
                 continue

@@ -54,7 +54,8 @@ proc main() =
   let lspProc = startComponent(bin, url, root = tmp,
                                extra = [("NIF_LSP_REGISTRY", regFile),
                                         ("NIF_LSP_BIN_DIRS", fakeBin),
-                                        ("LSP_FIXTURE_LOG", fixtureLog)])
+                                        ("LSP_FIXTURE_LOG", fixtureLog),
+                                        ("LSP_FIXTURE_DIAG_DELAY_MS", "600")])
   defer:
     if lspProc.running():
       lspProc.terminate()
