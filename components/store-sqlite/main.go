@@ -393,11 +393,14 @@ func listSchema() map[string]any {
 				"description": "Only items whose id starts with this"},
 			"limit": map[string]any{"type": "integer",
 				"description": "Max items (default 100, cap 1000)"},
+			"after": map[string]any{"type": "string",
+				"description": "Exclusive id cursor from a previous page (default = first page)"},
 		},
 		"required": []string{"kind"},
 		"description": "List stored documents of a kind, ordered by id, optionally id-prefix filtered. " +
 			"Read-only. Enumerate conversations (kind conversation) or one conversation's messages " +
-			"(kind message, idPrefix <convId>:). Returns {ok, items: [{id, rev, value}]}.",
+			"(kind message, idPrefix <convId>:). Returns {ok, items: [{id, rev, value}], hasMore, nextAfter?}" +
+			" — pass nextAfter back as `after` to page past the 1000-item cap.",
 		"x-harness": map[string]any{"onDemand": true},
 	}
 }
@@ -420,6 +423,7 @@ func listHandler(db *sql.DB) sdk.ToolHandler {
 		}
 		kind := rawString(m, "kind")
 		prefix := rawString(m, "idPrefix")
+		after := rawString(m, "after")
 		limit := rawInt(m, "limit")
 		if limit == 0 {
 			limit = 100 // default when absent, as the barrel engine's macro default
@@ -432,10 +436,18 @@ func listHandler(db *sql.DB) sdk.ToolHandler {
 		if limit < 1 {
 			limit = 1
 		}
-		rows, err := db.Query(
-			`SELECT id, rev, value FROM docs
-			 WHERE kind = ? AND id LIKE ? ESCAPE '\' ORDER BY id LIMIT ?`,
-			kind, likeEscape(prefix)+"%", limit)
+		// Exclusive id cursor (barrel's keysByPrefix has the same semantics:
+		// `id <= after` is skipped). ORDER BY id matches the barrel engine's
+		// key order, so paging is stable across both engines.
+		query := `SELECT id, rev, value FROM docs
+			 WHERE kind = ? AND id LIKE ? ESCAPE '\' ORDER BY id LIMIT ?`
+		qargs := []any{kind, likeEscape(prefix) + "%", limit}
+		if after != "" {
+			query = `SELECT id, rev, value FROM docs
+			 WHERE kind = ? AND id LIKE ? ESCAPE '\' AND id > ? ORDER BY id LIMIT ?`
+			qargs = []any{kind, likeEscape(prefix) + "%", after, limit}
+		}
+		rows, err := db.Query(query, qargs...)
 		if err != nil {
 			return nil, fmt.Errorf("list: %w", err)
 		}
@@ -455,7 +467,16 @@ func listHandler(db *sql.DB) sdk.ToolHandler {
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("list: %w", err)
 		}
-		return sdk.OK(map[string]any{"items": items}), nil
+		// hasMore mirrors barrel's "the page came back full" bound: a full
+		// page may have successors, so the caller fetches one more page and
+		// stops when it is empty. nextAfter is the last returned id, and is
+		// present only when another page may exist.
+		hasMore := int64(len(items)) >= limit
+		out := map[string]any{"items": items, "hasMore": hasMore}
+		if hasMore && len(items) > 0 {
+			out["nextAfter"] = items[len(items)-1]["id"]
+		}
+		return sdk.OK(out), nil
 	}
 }
 
