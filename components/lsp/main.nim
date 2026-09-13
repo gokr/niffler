@@ -309,7 +309,8 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
     if remaining <= 0:
       if quiet: return nil
       fail("E_LSP_TIMEOUT", "no response from '" & h.name & "' within " &
-           $timeoutMs & "ms (server may still be indexing — retry)")
+           $timeoutMs & "ms (server may still be indexing — retry)" &
+           h.stderrHint())
     if not pump(h, min(remaining, 250)):
       # A pump slice only means "no bytes in this 250ms window" — servers that
       # run a lint subprocess (bash-language-server + shellcheck) or index a
@@ -507,7 +508,8 @@ proc opDiagnostics(h: Instance, uri, rel: string): JsonNode =
       latest = frame{"params"}
   if latest == nil:
     fail("E_LSP_TIMEOUT", "no diagnostics for " & rel & " within " &
-         $QUERY_TIMEOUT_MS & "ms — the server may still be indexing; retry")
+         $QUERY_TIMEOUT_MS & "ms — the server may still be indexing; retry" &
+         h.stderrHint())
   let diags = latest{"diagnostics"}
   if diags == nil or diags.kind != JArray or diags.len == 0:
     return %*{"ok": true, "text": rel & ": no diagnostics — clean.", "count": 0}
