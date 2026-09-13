@@ -623,14 +623,20 @@ Cache honesty: the summarization call may hit the warm prefix; the next
 conversation request is a rebuild. `ev.session.status`'s `cacheHitRatio`
 measures exactly that, per turn, as it does today.
 
-**Scheduling opportunity** (see [../PI-NEXT.md](../PI-NEXT.md) §3.4): a
-compaction cut invalidates the prefix by definition, so triggering it at a
-moment the cache has *already* expired is strictly cheaper than on a warm one.
-The two features share the same vocabulary (`reset:compact` here,
-`reset:expired` for an expiry-triggered rebuild) and the same state
-(`lastRequestAt` plus the effective TTL beside `cachePrompt`/`cacheRead` in the
-conversation header). Worth designing together, though compaction stands alone
-without it: the trigger there is context pressure, not cache state.
+**Cache relation** (see [../PI-NEXT.md](../PI-NEXT.md) §3.4): compaction is the
+one place Niffler gets real cache leverage, and step 3 above is the mechanism —
+the summarization call replays the conversation's exact prefix and appends only
+the instruction, so a second full-context request arrives as a near-total cache
+hit (dsh does exactly this, `compaction-basic/src/region.ts:518`). Note this
+works for automatic-caching providers too (DeepSeek and every OpenAI-compatible
+endpoint), which is why it is worth more than the explicit-breakpoint work in
+PI-NEXT §3.1.
+
+An earlier revision of this note also proposed scheduling compaction cuts at
+cache-expiry boundaries (`reset:expired`). That was **cut**: a compaction trigger
+is context pressure, and Niffler's other prefix resets are likewise forced or
+model-requested, so there is no population of deferrable mutations to schedule —
+and expiry is only knowable after the fact.
 
 ## 8. Tests and acceptance
 

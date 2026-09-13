@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | 1 | Context-overflow classification + recover-and-retry | compaction dependency | small | **[verified]** gap |
 | 2 | Shell session env injection into `bash` | ergonomics | hours | **[verified]** gap, zero found |
-| 3 | Cache **write** path: explicit breakpoints + write accounting, then retention and expiry-aware prefix surgery | doctrine-completing | small → medium | **[verified]** deeper than first thought |
+| 3 | Cache: breakpoints (conditional), write accounting (small, real), retention (sits on breakpoints) | doctrine-completing | small | **[verified]**, narrower than first assessed |
 | 4 | Image payloads across the wire (+ history normalization) | wire-level | medium | **[verified]** gap |
 | 5 | Session branching / derivation | cheap core, UX bet | medium | **[verified]** absent |
 
@@ -73,104 +73,132 @@ declaring `x-harness.sessionId`; injecting into session-dispatched `bash` calls
 is the narrow, sanctioned shape (component-to-component calls keep their
 explicit `__session`, never an ambient env).
 
-## 3. Cache write path: breakpoints, accounting, retention, expiry-aware surgery
+## 3. Cache: what is real here, and what is not
 
-This item grew during review. It started as "we lack Pi's `PI_CACHE_RETENTION`
-knob"; checking the request builders found that the *read* half of the cache
-economy is instrumented and the *write* half is absent. Three layers, in
-dependency order.
+This started as "we lack Pi's `PI_CACHE_RETENTION` knob". Two passes over the
+source inverted the framing: part of the item is real but narrower than first
+written, one layer was cut outright, and the dsh cache technique worth having
+turned out to be already planned — in [COMPACTION.md](research/COMPACTION.md),
+not here. What is left is small; the value of this section is mostly in
+recording what *not* to build and why.
 
-### 3.1 Explicit cache breakpoints (prerequisite)
+One vocabulary rule to take from the review
+([CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4): keep **mutation**
+(`compact`, `trim`, `tools`), **trigger** (`pressure`, `overflow`, `manual`,
+maybe `suspected-expiry`) and **observed cache outcome** as three separate
+dimensions. Conflating them is what produced the cut idea below, and it is the
+mistake to avoid when this work is actually done.
+
+### 3.1 Explicit cache breakpoints — conditional, not universal
 
 **[verified]** `components/llm/` emits no cache markers at all:
 `grep -rn "cache_control" components/ core/ sdk/ ui/frontend/src/` returns
 nothing. `anthropicRequest` (`components/llm/anthropic.go:200`) builds
-`system` blocks and `tools` as plain `{"type": "text", "text": …}` with no
-`cache_control` field; messages likewise (`anthropicMessages`, line 234).
+`system` blocks and `tools` as plain `{"type": "text", "text": …}`;
+messages likewise (`anthropicMessages`, line 234).
 
-Anthropic's prompt cache requires explicit breakpoints; the OpenAI-compatible
-endpoints Niffler mostly talks to cache implicitly. So the read-side numbers
-Niffler collects are largely *OpenAI-family implicit caching*, and the Anthropic
-protocol path — which the repo supports and which OAuth subscription logins
-use — has no caching being requested at all. (Asserted from the request shape,
-not probed live; a one-shot call against a real Anthropic endpoint is the
-confirmation step before building on it.)
+Whether that is a defect depends entirely on the provider, and the split is
+sharp:
 
-Pi does emit them, with a documented convention ("Anthropic-style
+| Provider family | Caching | Does §3.1 matter? |
+|---|---|---|
+| OpenAI-compatible (DeepSeek, Synthetic, llmgateway — every bench lane) | automatic; nothing to send | **no** |
+| Anthropic Messages (explicit `cache_control` breakpoints required) | needs markers | **yes** |
+
+Niffler supports the Anthropic protocol path (`components/llm/anthropic.go`,
+and Claude Pro/Max OAuth logins via `provider`) but **has never exercised it in
+bench**: `bench/config.json` points every niffler lane at an OpenAI-compatible
+`baseUrl`. So the non-zero cache reads in `bench/reports/*` are implicit
+OpenAI-family caching and say nothing about the Anthropic path. (Asserted from
+the request shape, not probed live; one call against a real Anthropic endpoint
+is the confirmation step before acting on it.)
+
+Pi emits markers, with a documented convention — "Anthropic-style
 `cache_control` markers to the system prompt, last tool definition, and last
-user, assistant, or tool-result text content", `packages/ai/src/types.ts:626`),
-including a compat flag for providers that reject markers on tool definitions.
+user, assistant, or tool-result text content" (`packages/ai/src/types.ts:626`)
+— plus a compat flag for endpoints that reject them on tool definitions.
 
-### 3.2 Cache **write** accounting
+dsh is the useful counter-example, and it argues against treating this as a
+defect at all. Its archived note *"Prune producer-less vocabulary variants"*
+(implemented 2026-07-04) **deleted** `CacheHint` and the `cache?: CacheHint`
+block fields: *"DeepSeek prompt caching is automatic, so the adapters map
+`prompt_cache_hit_tokens` OUT of responses without ever sending a hint IN. This
+was Anthropic-style `cache_control` surface with no provider that could honor
+it."* Their admission rule — a variant returns the day it gains a real producer
+— is the right lens for us too.
 
-**[verified]** Niffler cannot see what caching costs. `anthropic.go` parses
-`cache_creation_input_tokens` (line 32) and folds it into `PromptTokens`
-(line 181) but never forwards it as a distinct write figure; the usage payload
-(`main.go:826`) carries only `prompt_tokens_details.cached_tokens`. Core's
-metrics (`core/conversation.nim`) accumulate `cachePrompt`/`cacheRead` and
-derive `cacheHitRate` — reads only.
+So: **build 3.1 only if and when the Anthropic path is actually used.** Until
+then the correct state is the one dsh arrived at after shipping the wrong one:
+no dead cache vocabulary. The concrete trigger is a real Claude subscription
+session, at which point the fix is small and 3.2/3.3 become meaningful.
 
-The visible consequence is in `bench/reports/`: every niffler row shows
-`cache r/w` with a **zero write column** (`11.6k/0`, `115.9k/0`, …) while Pi
-reports `cacheWrite` and a separate `cacheWrite1h` (billed 2× input,
-`packages/ai/src/models.ts:903`). Without a write figure there is no way to
-evaluate whether a cache policy pays for itself — which is exactly the
-question §3.3 and §3.4 raise.
+### 3.2 Cache **write** accounting — small, real, unconditional
 
-Caveat on the bench evidence: the zero-write column is *not* proof that the
-OpenAI-family lanes fail to cache, since implicit writes are not reported in a
-comparable field. It is proof that Niffler's own reporting has no write axis.
+**[verified]** this one does not depend on the provider choice: Niffler cannot
+see what caching costs. `anthropic.go` parses `cache_creation_input_tokens`
+(line 32) and folds it into `PromptTokens` (line 181) but never forwards a
+distinct write figure; the usage payload (`main.go:826`) carries only
+`prompt_tokens_details.cached_tokens`. Core accumulates `cachePrompt`/
+`cacheRead` and derives `cacheHitRate` (`core/conversation.nim`) — reads only.
 
-### 3.3 Retention as an explicit TTL choice
+Visible consequence: every niffler row in `bench/reports/` shows `cache r/w`
+with a **zero write column** (`11.6k/0`, `115.9k/0`, …), while Pi reports
+`cacheWrite` and a separate `cacheWrite1h` (billed 2× input,
+`packages/ai/src/models.ts:903`).
 
-**[verified]** no `PI_CACHE_RETENTION` equivalent. Pi's is a **write-time TTL
-selection**, not an expiry watcher: `cacheRetention: "none" | "short" | "long"`
-(`packages/ai/src/types.ts:108`), lowered per provider to Anthropic
+Caveat, so the evidence is not overstated: a zero write column is *not* proof
+the OpenAI-family lanes fail to cache — implicit writes simply are not reported
+in a comparable field. It is proof that Niffler's own reporting has no write
+axis, which is the actual (and cheap) fix.
+
+### 3.3 Retention — Pi's knob, sitting on 3.1
+
+**[verified]** no `PI_CACHE_RETENTION` equivalent, and Pi's is a **write-time
+TTL selection**, not an expiry watcher: `cacheRetention: "none" | "short" |
+"long"` (`packages/ai/src/types.ts:108`), lowered per provider to Anthropic
 `cache_control.ttl: "1h"`, OpenAI `prompt_cache_retention: "24h"` or
 `prompt_cache_options.ttl: "30m"` on GPT-5.6+ (types.ts:634–651).
 
-Work: env + stored-provider field, mapped per protocol in `components/llm/`,
-surfaced through `ev.session.status` so cache metrics stay one source of truth.
-Small once 3.1/3.2 exist — and it is 3.1/3.2 that make it meaningful, since a
-TTL on a path with no breakpoints does nothing, and an expensive long-TTL
-write made invisible by 3.2 cannot be justified.
+**dsh gains nothing from this and is not its author.** dsh's `llm-pi-ai`
+package depends on `@earendil-works/pi-ai: ^0.85.1`; `cacheRetention` is
+imported from Pi (`config.ts:16`) and passed straight through to the adapter
+(`adapter.ts:125`). It is Pi's vocabulary surfaced in dsh's config schema —
+worth knowing so this is not re-derived as a dsh feature.
 
-### 3.4 Expiry-aware prefix surgery — a Niffler-only idea
+Work, if the Anthropic path is in play: env + stored-provider field, mapped per
+protocol in `components/llm/`, surfaced through `ev.session.status` so cache
+metrics stay one source of truth. A TTL on a path with no breakpoints does
+nothing, and a long-TTL write invisible to 3.2 cannot be justified — so this
+is strictly "after 3.1 and 3.2", and only for providers that honor it.
 
-Niffler's doctrine already says every prefix change must be *named*; there are
-exactly two today (`reset:trim`, `reset:tools`). This adds a third kind, and it
-exploits the fact that a cold cache is the only moment a prefix change is free:
+### 3.4 What dsh actually does about cache (already planned, elsewhere)
 
-> if the conversation's prefix cache has (probably) expired, any prefix
-> mutation we were deferring — a sticky `invoke` promotion, a compaction cut,
-> a tool-profile change — should happen **now**, because the rebuild is already
-> being paid for.
+Not retention. dsh's real technique is **making the auxiliary call
+prefix-reusing** — `packages/compaction/compaction-basic/src/region.ts:518`:
 
-The scheduling argument is clean and it composes with item 1: compaction
-invalidates the prefix by definition, so triggering it at a known-cold moment is
-strictly cheaper than on a warm one. Emitted as `reset:expired`, which carries
-its own meaning rather than borrowing `reset:tools`.
+> Reconstruct the last routed request's cacheable prefix for the shadowed
+> region: the system prompt …, the header's tool schemas, then the region's own
+> derived messages in surface order. The summarizer appends only the compaction
+> instruction after this, so the call is a genuine prefix of the conversation
+> and reuses the provider's KV cache.
 
-**[bet]** on knowability, and this is the honest caveat. Cache expiry is not
-observable in advance — providers do not guarantee the TTL and may evict
-earlier. What is available:
+The gain: the summarization call is a second full-context LLM request, and this
+makes it a near-total cache hit by replaying the conversation's exact prefix
+and appending only the instruction — for **automatic-caching providers too**,
+which is what makes it worth more than everything above.
 
-- **pre-hoc**: timestamp arithmetic against the configured TTL
-  (`lastRequestAt` plus the effective retention), a probabilistic guess;
-- **post-hoc ground truth only**: `cached_tokens == 0` on a byte-identical
-  prefix *is* evidence of expiry — but it arrives after the decision the policy
-  needed to make.
+Niffler already plans this: [COMPACTION.md](research/COMPACTION.md) §4.3 step 3
+— *"Try the prefix-reusing call: replay frozen system + tools + the covered
+messages, append only the compaction instruction (dsh's cache trick)."* It is
+filed in the right document for the right reason. Nothing to move; this section
+records the cross-link so the two discussions do not drift apart.
 
-So the policy is opportunistic, not deterministic: "we are probably cold, spend
-the change now", with the correctness of that guess learned on the next turn.
-State needed is cheap and belongs where `cachePrompt`/`cacheRead` already live
-— the conversation header, which persists across runner restarts: a
-`lastRequestAt`, the effective TTL, and a count of how often the guess was
-wrong (so the heuristic can be tuned rather than trusted).
-
-Sequencing: 3.1 → 3.2 → 3.3, and 3.4 only once the first three make the
-trade-off measurable. 3.1/3.2 are correctness/diagnosis work, not tuning; 3.4
-is the piece worth writing up on its own, because nothing in Pi has it.
+[CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4 refines the hedge: treat
+prefix-reusing summarization as an **optional measured strategy, not the
+compulsory first attempt on every cut**. A warm prefix can make the
+summarization call cheaper, which is exactly why the attempt is worth *trying* —
+but summaries cost tokens and latency and can lose information, so the decision
+belongs to measurement, and the docs should not promise a win either way.
 
 ## 4. Image payloads across the wire
 
@@ -234,6 +262,7 @@ time someone wants "redo that turn better"), skip (2) until a user asks.
 
 | Candidate | Why not now |
 |---|---|
+| Expiry-aware prefix surgery (`reset:expired`) | **Cut after review — and independently reached the same conclusion** ([CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4, written against the earlier revision of this file). No population of deferrable prefix mutations exists: `reset:trim` is forced by pressure, `reset:tools` is model-requested, profiles resolve before any cache exists. Expiry is uncertain, partial and provider-specific; a warm prefix can make the *summarization call itself* cheaper; and zero cached tokens is not uniquely evidence of expiry (thresholds, routing, unsupported caching and serialization changes all explain it). Keep mutation, trigger and observed cache outcome as **separate dimensions**, and never let `reset:expired` conceal a tool/profile mutation — a cold cache is not permission to violate the frozen-prefix contract |
 | Session tree navigation (labels, filters, `/tree` UI) | UX bet; branching-as-data covers the practical need, and branch summaries are redundant with store-backed replay |
 | Hooks with teeth (block/patch tool calls, rewrite results) | Deliberate design choice: `components/hooks` is observe-only, and a veto layer needs its own note on ordering, approval interaction and audit ownership |
 | Project trust gate | Real, but a safety-policy item (see [research/PI_FEATURE_SCAN.md](research/PI_FEATURE_SCAN.md) §2.3), not an architecture gap |
@@ -246,5 +275,6 @@ time someone wants "redo that turn better"), skip (2) until a user asks.
 
 The genuinely missing **architectural** piece is image payloads crossing the
 wire (with normalize-on-entry); the genuinely missing **high-leverage** pieces
-are overflow recovery, shell env injection, and the cache *write* path — none
-of which are expensive, and two of them are compaction dependencies.
+are overflow recovery, shell env injection, and — smaller than first assessed —
+cache write accounting. Two of those are compaction dependencies, and the cache
+item is conditional on running the Anthropic protocol path at all.
