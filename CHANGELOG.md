@@ -28,6 +28,15 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   60-min turn budget on tokio (empty patch, 268k output tokens) — the
   high-thinking profile is costly through pi's OpenAI dialect.
 
+- **bench: full30 re-run on the optimized stack (niffler-only, GLM low,
+  baseline protocol) — 30/30, avg 48s / 20.5k prompt tokens / 5.3 turns
+  vs baseline 63s / 38.9k / 7.3 turns: prompt volume −47%, time −24%,
+  turns −27% at an unchanged pass rate; run cost $0.046 at GLM catalog
+  pricing. The gain is the accumulated tool work — change preview (zero
+  post-edit re-reads), grep slash-glob fix, result caps — plus the review
+  rubric, now all on one commit. Report:
+  `bench/reports/full30-synlarge-low-niffler-report.md`.
+
 - **lsp: language-server seam — one tool, registry is data.** A `lsp` tool
   (diagnostics without a test run, goToDefinition, findReferences,
   goToImplementation, hover) over any configured stdio language server, per
