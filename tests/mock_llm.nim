@@ -15,11 +15,68 @@
 ##
 ## The mock replaces var/bin/llm inside the test sandbox only.
 
-import std/[json, strutils, tables]
+import std/[json, os, strutils, tables]
 import niffler/sdk
+
+# Env-gated test modes (all default off — unset env reproduces the historic
+# mock exactly, so t_expert and friends are untouched):
+# - NIF_MOCK_CTX: provider context window in tokens. Requests over it are
+#   REJECTED with the adapter's stable context-overflow text (the same
+#   normalization components/llm applies) — the enforcing fake provider of
+#   the §8 long-turn fixture. Reported back as usage.context so admission
+#   learns the window the way a real provider teaches it.
+# - NIF_MOCK_HIDE_CTX: omit the window from responses too — capacity stays
+#   unknown, so the first oversized request reaches the provider and the
+#   §6.5 overflow-recovery path is exercised end to end.
+# - NIF_MOCK_ROUNDS: scripted tool-call rounds before the final answer
+#   (drives many tool rounds through one user turn).
+# - NIF_MOCK_TOOLCMD: the bash command the scripted rounds call.
+# - NIF_MOCK_LOG: JSONL request log (one line per chat request) so tests
+#   assert sizes/rejections against the mock's own view.
+let mockCtx = block:
+  let v = getEnv("NIF_MOCK_CTX", "0")
+  try: parseInt(v)
+  except CatchableError: 0
+let mockHideCtx = getEnv("NIF_MOCK_HIDE_CTX", "").len > 0
+let mockRounds = block:
+  let v = getEnv("NIF_MOCK_ROUNDS", "0")
+  try: parseInt(v)
+  except CatchableError: 0
+let mockToolCmd = getEnv("NIF_MOCK_TOOLCMD",
+  "head -c 30000 /dev/zero | tr '\\0' 'x'")
+let mockLog = getEnv("NIF_MOCK_LOG", "")
+
+proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
+  ## Same chars/4 proxy core's estimateTokens uses (plus per-message
+  ## overhead), so the mock's reject line matches admission's arithmetic.
+  const overheadPerMessage = 8
+  if messages != nil and messages.kind == JArray:
+    for m in messages:
+      inc result, overheadPerMessage
+      result += m{"content"}.getStr("").len div 4
+      result += m{"reasoning"}.getStr("").len div 4
+      let tcs = m{"tool_calls"}
+      if tcs != nil:
+        for tc in tcs:
+          result += tc{"function"}{"name"}.getStr("").len div 4
+          result += tc{"function"}{"arguments"}.getStr("").len div 4 + 4
+  if tools != nil:
+    result += ($tools).len div 4
+
+proc logRequest(estimate: int, rejected: bool, note: string) =
+  if mockLog.len == 0: return
+  try:
+    let f = open(mockLog, fmAppend)
+    defer: f.close()
+    let line = %*{"estimate": estimate, "rejected": rejected,
+                  "note": note}
+    f.writeLine($line)
+  except CatchableError:
+    discard
 
 let comp = newComponent("llm", "0.1.0-mock")
 var workingFirstRound = initTable[string, bool]()
+var roundsServed = initTable[string, int]()
 
 discard comp.tool("chat", %*{
   "type": "object",
@@ -34,6 +91,15 @@ discard comp.tool("chat", %*{
 },
 proc(c: Component, args: JsonNode): JsonNode =
   let messages = args{"messages"}
+  let est = estimateTokens(messages, args{"tools"})
+  if mockCtx > 0 and est > mockCtx:
+    # The enforcing fake provider: same stable text the real adapter emits
+    # (core/retry.nim classifies on the prefix, recovery parses the window).
+    logRequest(est, true, "over-window")
+    raise newException(ValueError,
+      "context-overflow: request ~" & $est & " tokens exceeds the mock " &
+      "window of " & $mockCtx & "; window " & $mockCtx & " tokens")
+  logRequest(est, false, "")
   var last = ""
   if messages != nil and messages.kind == JArray and messages.len > 0:
     last = messages[^1]{"content"}.getStr("")
@@ -58,6 +124,31 @@ proc(c: Component, args: JsonNode): JsonNode =
                 "total_tokens": 930,
                 "prompt_tokens_details": {"cached_tokens": 800}}}
   let sessionId = args{"sessionId"}.getStr("")
+  if mockRounds > 0:
+    # Scripted multi-round fixture (§8 long-turn): N bash rounds emitting a
+    # large tool result, then a final answer echoing the first real user
+    # message — the assertion that the objective survived every reduction.
+    let served = roundsServed.getOrDefault(sessionId, 0)
+    if served < mockRounds:
+      roundsServed[sessionId] = served + 1
+      return %*{"content": "",
+                "tool_calls": [%*{"id": "c" & $served, "type": "function",
+                                  "function": {"name": "bash",
+                                               "arguments": $(%*{"command": mockToolCmd})}}],
+                "model": "mock-model"}
+    var objective = ""
+    if messages != nil and messages.kind == JArray:
+      for m in messages:
+        let c = m{"content"}.getStr("")
+        if m{"role"}.getStr("") == "user" and c.len > 0 and not c.startsWith("["):
+          objective = c
+          break
+    var usage = %*{"prompt_tokens": est, "completion_tokens": 10,
+                   "total_tokens": est + 10}
+    if mockCtx > 0 and not mockHideCtx:
+      usage["context"] = %mockCtx
+    return %*{"content": "done — " & objective, "model": "mock-model",
+              "usage": usage}
   if not workingFirstRound.getOrDefault(sessionId, false):
     workingFirstRound[sessionId] = true
     # The scripted bash call sleeps: it is the expert's delivery window. The
@@ -79,6 +170,13 @@ discard comp.tool("llm_resolve", %*{
   "x-harness": {"hidden": true, "timeoutMs": 10000}
 },
 proc(c: Component, args: JsonNode): JsonNode =
-  %*{"ok": true, "model": "mock-model"})
+  # The real llm component reports the resolved model's context window here;
+  # admission (§6.1) learns the capacity from it before the first request.
+  # NIF_MOCK_HIDE_CTX withholds it to exercise the §6.5 recovery path where
+  # capacity is unknown until the provider rejects.
+  var r = %*{"ok": true, "model": "mock-model"}
+  if mockCtx > 0 and not mockHideCtx:
+    r["context"] = %mockCtx
+  r)
 
 comp.run()

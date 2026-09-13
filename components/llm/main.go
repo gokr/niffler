@@ -483,22 +483,58 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	maybeProbeLiveModels(streamCtx, c, resolved)
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
-		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+		v, err := chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context)
+		return v, classifyProviderError(err, resolved.Context)
 	case protocolAnthropic:
-		return chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+		v, err := chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context, output)
+		return v, classifyProviderError(err, resolved.Context)
 	case "", protocolOpenAI:
 		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 		cfg.BaseURL = resolved.Provider.BaseURL
 		client := openai.NewClientWithConfig(cfg)
 		if args.Stream {
-			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
+			v, err := chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
+			return v, classifyProviderError(err, resolved.Context)
 		}
-		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
+		v, err := chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
+		return v, classifyProviderError(err, resolved.Context)
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
+}
+
+// classifyProviderError normalizes the provider failures the harness
+// reasons about (docs/research/COMPACTION.md §6.5). A context overflow is a
+// 400-family failure: retrying it as transient is wasted latency against a
+// deterministic refusal, and failing it as permanent strands the turn even
+// though pruning/trimming could make it fit. The stable "context-overflow"
+// prefix plus the resolved window are the contract core matches on — the
+// adapter knows the window (resolved.Context), so core never parses
+// provider phrasing. Detection is structured where the protocol exposes
+// status codes (openai.APIError) and falls back to the known refusal
+// phrases for protocols that surface plain error text.
+func classifyProviderError(err error, contextSize int) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode == 400 {
+		msg = apiErr.Message
+	}
+	lower := strings.ToLower(msg)
+	for _, pattern := range []string{
+		"context_length_exceeded", "maximum context length",
+		"prompt is too long", "input length exceeds",
+		"too many input tokens",
+	} {
+		if strings.Contains(lower, pattern) {
+			return fmt.Errorf("context-overflow: %s; window %d tokens", msg, contextSize)
+		}
+	}
+	return err
 }
 
 // stripModelPrefix returns the model id after the last "/" — the canonical

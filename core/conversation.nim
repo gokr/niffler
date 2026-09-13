@@ -142,6 +142,16 @@ type
     canonicalSeq*: int     ## seq number when canonical (0 otherwise)
     projectionIndex*: int  ## index into Session.messages of the entry this node describes
 
+  PruneRec* = object
+    ## §5.2: a prune is a projection edit, never a canonical rewrite. The
+    ## record feeds the projection record's `prunes` list (§6.2) once the
+    ## projection exists; until then the ledger is in-memory and a restart
+    ## simply reloads un-pruned canonical content (safe: admission
+    ## re-prunes when the next request needs it).
+    id*: string          ## canonical id of the pruned message
+    bytesBefore*: int
+    bytesAfter*: int
+
   Persister* = object
     ct: CoreTools
     convId*: string
@@ -166,6 +176,7 @@ type
     ## (§6.2), snapshots copy it.
     nodes*: seq[CtxNode]
     canonicalHigh*: int
+    prunes*: seq[PruneRec]
 
   ToolExposure* = object
     direct*: JsonNode
@@ -237,6 +248,22 @@ proc ctxAppend*(p: var Persister, messages: var seq[JsonNode],
   p.nodes.add(CtxNode(source: nsCanonical, id: key,
                       canonicalSeq: p.seqNo, projectionIndex: messages.high))
   p.canonicalHigh = p.seqNo
+
+proc writeContextReceipt*(p: var Persister, requestId, failureClass, outcome,
+                          detail: string) =
+  ## §6.5 request-scoped receipt (kind contextreceipt, id
+  ## <convId>:<requestId>): written BEFORE the overflow-recovery attempt is
+  ## spent, so a crash mid-recovery stays consumed on restart, and updated
+  ## with the outcome. Best-effort: an unreachable store must not block the
+  ## recovery itself — the transcript's error records are the second line.
+  try:
+    discard p.ct.storePutRev("contextreceipt", p.convId & ":" & requestId,
+      %*{"requestId": requestId, "failureClass": failureClass,
+         "outcome": outcome, "detail": detail,
+         "generation": 0,   # no projection record yet (step 4 wires the real one)
+         "canonicalHigh": p.canonicalHigh, "at": epochTime()})
+  except CatchableError as e:
+    echo "core: WARNING context receipt not persisted: " & e.msg
 
 proc ctxDigest*(nodes: openArray[CtxNode], messages: openArray[JsonNode],
                 fromIdx, toIdxIncl: int): string =
@@ -519,7 +546,10 @@ proc recordDiscovery(ct: CoreTools, sessionId: string,
 const
   ctxWarnRatio = 0.75  ## warn once when this fraction of the window is used
   ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
-  minKeepTurns = 2     ## never trim below this many user turns
+  minKeepTurns* = 2    ## never trim below this many user turns
+  pruneThreshold = 8192   ## chars — tool results over this get pruned (§5.2)
+  pruneHead = 4096        ## chars kept from the head
+  pruneTail = 1024        ## chars kept from the tail
   ctxOutputReserve = 16_384  ## tokens held back for the model's next reply
                              ## (pi compacts at window − reserve); env
                              ## NIF_CTX_RESERVE overrides, 0 disables
@@ -561,72 +591,177 @@ proc trimThreshold*(p: Persister): int =
   let reserved = max(p.ctxSize - outputReserve(), p.ctxSize div 2)
   return min(ratioBound, reserved)
 
-proc trimContext*(messages: var seq[JsonNode]): int =
-  ## Drop whole turns from the front, keeping the system prompt. A turn is
-  ## one user message plus everything up to the next user message (assistant
-  ## text, tool calls, tool results) — whole-turn drops keep tool_call_id
-  ## pairs intact. Returns the number of dropped messages.
+proc reindexNodes(p: var Persister) =
+  ## After any structural edit, restore the ledger invariant nodes[i] describes
+  ## messages[i]. Live appends set the index at insert; this is for deletes.
+  for i in 0 ..< p.nodes.len:
+    p.nodes[i].projectionIndex = i
+
+proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
+  ## §5.2 model-free prune: tool results only, whole-result boundaries.
+  ## Over-threshold result text becomes head + omission marker + tail, keeping
+  ## role, tool_call_id, name and every machine field intact. The marker names
+  ## the canonical id — the original stays in the store, so a prune costs one
+  ## recall call at worst and is "undone" by any reload from canonical.
+  ## Reasoning is out of scope: providers reject a modified reasoning field on
+  ## replay. Returns the bytes saved.
   result = 0
-  while messages.len > 2:
-    var turns = 0
-    for m in messages:
-      if m{"role"}.getStr("") == "user": inc turns
-    if turns <= minKeepTurns: break
-    # find the second user message; drop everything before it
-    var second = -1
-    var seen = 0
-    for i in 1 ..< messages.len:
-      if messages[i]{"role"}.getStr("") == "user":
-        inc seen
-        if seen == 2:
-          second = i
-          break
-    if second < 0: break
-    inc result, second - 1
-    messages.delete(1 .. second - 1)
+  for i in 0 ..< p.nodes.len:
+    let n = p.nodes[i]
+    if n.source != nsCanonical: continue
+    if i >= messages.len: break   # defensive: ledger must stay 1:1
+    let m = messages[i]
+    if m{"role"}.getStr("") != "tool": continue
+    let content = m{"content"}.getStr("")
+    if content.len <= pruneThreshold: continue
+    if content.contains("[tool result middle pruned"): continue  # idempotent
+    let head = content[0 ..< pruneHead]
+    let tail = content[^pruneTail .. ^1]
+    let omitted = content.len - pruneHead - pruneTail
+    let body = head & "\n[tool result middle pruned: " & $omitted &
+      " bytes omitted — recall the original from canonical history, id " &
+      n.id & "]\n" & tail
+    messages[i]["content"] = %body
+    p.prunes.add(PruneRec(id: n.id, bytesBefore: content.len,
+                          bytesAfter: body.len))
+    result += content.len - body.len
+
+proc latestUserIndex(p: Persister, messages: seq[JsonNode]): int =
+  ## Message index of the newest canonical user request — the turn being
+  ## worked on. A cut/trim must always keep it visible (§4.3).
+  for i in countdown(p.nodes.len - 1, 0):
+    if p.nodes[i].source == nsCanonical and i < messages.len and
+        messages[i]{"role"}.getStr("") == "user":
+      return i
+  -1
+
+proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
+                keepTurns: int): int =
+  ## §6.3 trim: drop the oldest complete turns from the projection, keeping
+  ## the system node, the newest `keepTurns` user requests and everything
+  ## after them (whole-turn drops keep tool_call_id pairs intact), with an
+  ## explicit "history omitted without summary" notice naming the covered
+  ## ids. Messages and the node ledger move in lockstep; canonicalHigh is
+  ## untouched (canonical docs are unaffected — the notice is a projection
+  ## edit, and a reload from canonical simply restores what was dropped).
+  ## Returns the number of dropped messages.
+  result = 0
+  var users: seq[int]
+  for i, n in p.nodes:
+    if n.source == nsCanonical and i < messages.len and
+        messages[i]{"role"}.getStr("") == "user":
+      users.add(i)
+  if users.len <= keepTurns: return 0
+  let dropEnd = users[users.len - keepTurns]   # first kept user request
+  if dropEnd <= 1: return 0             # nothing between system and the keep line
+  let coveredFrom = p.nodes[1].id
+  let coveredTo = p.nodes[dropEnd - 1].id
+  messages.delete(1 ..< dropEnd)
+  p.nodes.delete(1 ..< dropEnd)
+  result = dropEnd - 1
+  let notice = %*{"role": "system", "content":
+    "[history omitted without summary: dropped " & $result &
+    " earlier messages (" & coveredFrom & " .. " & coveredTo &
+    ") to fit the model window — the originals remain in canonical history]"}
+  messages.insert(notice, 1)
+  p.nodes.insert(CtxNode(source: nsNotice, id: "", projectionIndex: 1), 1)
+  p.reindexNodes()
+
+proc contextTarget(p: Persister): int =
+  ## The hard admission line (§6.1): the whole candidate request plus the
+  ## output reserve must fit the window. 0 when capacity is unknown —
+  ## admission then stands down and overflow recovery owns the failure.
+  if p.ctxSize <= 0: return 0
+  let target = p.ctxSize - outputReserve()
+  if target <= 0: return 0
+  target
+
+proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
+                        toolTokens: int,
+                        onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                        turnId = ""): bool =
+  ## §6.3 deterministic fallback ladder, no component required:
+  ## prune (tool results) → trim (oldest complete turns, down to keeping
+  ## only the latest user request). Returns true when the candidate now
+  ## fits the hard target. Reductions are re-measured, never claimed.
+  let target = p.contextTarget()
+  if target <= 0: return false
+  var used = estimateTokens(messages) + toolTokens
+  if used <= target: return true
+  # 1. prune — cheapest first: no history is lost, only bulk
+  let saved = p.pruneContext(messages)
+  if saved > 0:
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "reset:prune", "bytesSaved": saved,
+                            "pruned": p.prunes.len})
+    used = estimateTokens(messages) + toolTokens
+    if used <= target: return true
+  # 2. trim — oldest complete turns first, then down to the latest request
+  for keep in [minKeepTurns, 1]:
+    if used <= target: break
+    let dropped = p.trimTurns(messages, keep)
+    if dropped == 0: continue
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "promptTokens": p.promptTokens,
+                            "usedTokens": used, "context": p.ctxSize,
+                            "trimAt": trimThreshold(p),
+                            "reserveTokens": outputReserve(),
+                            "trimmed": dropped,
+                            "reason": "reset:trim",
+                            "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
+    used = estimateTokens(messages) + toolTokens
+  return used <= target
 
 proc checkContext*(p: var Persister, messages: var seq[JsonNode],
                    onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-                   turnId = "") =
-  ## Called before each chat request: warn once at ctxWarnRatio, trim whole
-  ## turns at ctxTrimRatio. Token accounting comes from the model's own
-  ## usage (persisted with assistant messages, restored on resume); before
-  ## the first response a chars/4 estimate stands in.
-  if p.ctxSize <= 0: return
-  let used =
+                   turnId = "", toolTokens = 0): string =
+  ## Admission (§6.1): runs before EVERY provider request, not just at
+  ## user-turn entry — a single turn with 40 tool rounds must be reduced
+  ## mid-turn. Computes the whole candidate request (projection + frozen
+  ## tools) against the hard target; runs the §6.3 ladder when over the
+  ## proactive threshold; returns "" when the request may go out, or a
+  ## context-recovery-required text naming the cause and sizes when even
+  ## the ladder cannot fit it (§6.3 step 3 — the caller fails the turn
+  ## explicitly instead of sending a request that cannot succeed).
+  if p.ctxSize <= 0: return ""   # unknown capacity — overflow recovery owns it
+  let used0 =
     if p.contextUsed > 0: p.contextUsed
     elif p.promptTokens > 0: p.promptTokens
-    else: estimateTokens(messages)
-  let pct = int(used.float * 100.0 / p.ctxSize.float)
+    else: estimateTokens(messages) + toolTokens
+  let pct = int(used0.float * 100.0 / p.ctxSize.float)
   let trimAt = trimThreshold(p)
-  if used >= trimAt:
-    let dropped = trimContext(messages)
-    if dropped > 0:
-      messages.insert(%*{"role": "system", "content":
-        "[context trimmed: dropped " & $dropped &
-        " earlier messages to fit the model window]"}, 1)
-      p.ctxWarned = false
-      echo "core: context at " & $pct & "% — trimmed " & $dropped &
-           " messages (trim level " & $trimAt & ")"
-      if onEvent != nil:
-        onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
-                              "promptTokens": p.promptTokens,
-                              "usedTokens": used, "context": p.ctxSize,
-                              "trimAt": trimAt,
-                              "reserveTokens": outputReserve(),
-                              "trimmed": dropped,
-                              "reason": "reset:trim",
-                              "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
-  elif pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
+  if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
     p.ctxWarned = true
     echo "core: WARNING context at " & $pct & "% — will trim at " &
          $(int(ctxTrimRatio * 100)) & "%"
     if onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "promptTokens": p.promptTokens,
-                            "usedTokens": used, "context": p.ctxSize,
+                            "usedTokens": used0, "context": p.ctxSize,
                             "warning": true,
                             "reason": "warn:threshold"})
+  var used = estimateTokens(messages) + toolTokens
+  if used >= trimAt:
+    discard p.runFallbackLadder(messages, toolTokens, onEvent, turnId)
+    used = estimateTokens(messages) + toolTokens
+  let target = p.contextTarget()
+  if used <= target: return ""
+  # Ladder exhausted (or nothing droppable): name the cause (§6.3).
+  let sysTokens = (if messages.len > 0: estimateTokens(@[messages[0]]) else: 0) +
+                  toolTokens
+  let lu = p.latestUserIndex(messages)
+  let tailTokens = if lu >= 0: estimateTokens(messages[lu .. ^1]) else: 0
+  var cause = "retained history does not fit"
+  if sysTokens > target:
+    cause = "frozen prefix (system prompt + tools) alone exceeds the window"
+  elif sysTokens + tailTokens > target:
+    cause = "newest indivisible tool group alone exceeds the window"
+  return "context-recovery-required: " & cause &
+    " — request ~" & $used & " tokens vs target " & $target &
+    " (window " & $p.ctxSize & "); enlarge the model context, compact " &
+    "explicitly, or continue from selected history"
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -978,10 +1113,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                            "error": msg})
       emitTurnDone(msg)
       return ""
-    checkContext(p, messages, onEvent, turnId)
     # Fold any steering messages the client injected mid-turn into the running
     # conversation before the next LLM call (Pi-style steering), plus any
-    # accepted advisor messages (pumpAdvise).
+    # accepted advisor messages (pumpAdvise). Admission runs AFTER the drains:
+    # it must measure the whole candidate request, steering included (§6.1).
     discard drainSteer(ct, p, messages, onEvent, turnId)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
@@ -995,8 +1130,22 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         if tool{"name"}.getStr("") in allowlist:
           filtered.add(tool)
       promptToolsJson = filtered
-    let llmArgs = %*{"messages": messages,
-                     "tools": promptToolsJson.formatToolsForLlm(),
+    let toolsJson = promptToolsJson.formatToolsForLlm()
+    let toolTokens = ($toolsJson).len div 4
+    # Admission (§6.1): prune/trim mid-turn, or fail the turn explicitly
+    # rather than send a request that cannot fit.
+    let recovery = checkContext(p, messages, onEvent, turnId, toolTokens)
+    if recovery.len > 0:
+      p.persistMsg(%*{"role": "error", "content": recovery,
+                      "error": "context-recovery-required", "turnId": turnId})
+      turnError = recovery
+      if onEvent != nil:
+        onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                           "error": recovery})
+      emitTurnDone(recovery)
+      return recovery
+    var llmArgs = %*{"messages": messages,
+                     "tools": toolsJson,
                      "sessionId": sessionId,
                      "stream": true}
     if selectedModel.len > 0:
@@ -1009,8 +1158,14 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     let llmStartedAt = epochTime()
     let llmStarted = getMonoTime()
     var attempt = 0
+    # §6.5: one logical request = one provider call target (transient backoff
+    # retries stay inside it). The overflow-recovery attempt is per logical
+    # request, independent of the transient budget.
+    let requestId = newId()
+    var overflowRecovered = false
     let retryPolicy = retryPolicyFromEnv()
     while true:
+      var failMsg = ""
       try:
         resp = ct.dispatchToolCall("chat", llmArgs, 300000)
         break
@@ -1022,29 +1177,67 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # cancellation, not an LLM failure, and is never retryable. Each
         # retry is announced so UIs can show the wait.
         let cancelled = e of TurnCancelled
-        if cancelled or attempt >= retryPolicy.maxRetries or
-            not isRetryableLlmError(e.msg):
-          let msg = if cancelled: "cancelled by request"
-                    else: "llm error: " & e.msg
-          let durationMs = (getMonoTime() - llmStarted).inMilliseconds
-          p.persistMsg(%*{"role": "error", "content": msg,
-                          "error": "llm", "turnId": turnId},
-                       %*{"startedAt": llmStartedAt,
-                          "durationMs": durationMs})
-          turnError = msg
+        let klass = classifyLlmError(e.msg)
+        if cancelled:
+          failMsg = "cancelled by request"
+        elif klass == lfcOverflow and not overflowRecovered:
+          # §6.5 bounded overflow recovery: the adapter normalized the
+          # failure to a stable class (no substring guessing here); write
+          # the receipt, reduce, and retry the same logical request exactly
+          # once. dsh's rule: durable progress authorizes the retry.
+          overflowRecovered = true
+          writeContextReceipt(p, requestId, "context-overflow", "attempted",
+                              e.msg)
+          if p.ctxSize <= 0:
+            let window = windowFromOverflow(e.msg)
+            if window > 0:
+              p.ctxSize = window
+              p.ctxWarned = false
+          if p.runFallbackLadder(messages, toolTokens, onEvent, turnId):
+            if onEvent != nil:
+              onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                                 "reason": "context-overflow",
+                                 "error": e.msg})
+            # the projection changed under the snapshot — rebuild the body
+            llmArgs["messages"] = %messages
+            llmArgs["tools"] = promptToolsJson.formatToolsForLlm()
+            continue
+          writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                              e.msg)
+          failMsg = "context-recovery-required: provider refused the request (" &
+                    e.msg & ") and the fallback ladder could not reduce it " &
+                    "below the window"
+        elif klass == lfcTransient and attempt < retryPolicy.maxRetries:
+          let delayMs = retryDelayMs(retryPolicy, attempt)
           if onEvent != nil:
-            onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                               "error": msg})
-          emitTurnDone(msg)
-          return msg
-        let delayMs = retryDelayMs(retryPolicy, attempt)
+            onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                               "attempt": attempt + 1,
+                               "maxRetries": retryPolicy.maxRetries,
+                               "delayMs": delayMs, "error": e.msg})
+          sleep(delayMs)
+          attempt += 1
+          continue
+        else:
+          if klass == lfcOverflow:
+            # the recovery retry itself overflowed again — terminal, persisted
+            writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                                e.msg)
+          failMsg = "llm error: " & e.msg
+      if failMsg.len > 0:
+        let durationMs = (getMonoTime() - llmStarted).inMilliseconds
+        p.persistMsg(%*{"role": "error", "content": failMsg,
+                        "error": "llm", "turnId": turnId},
+                     %*{"startedAt": llmStartedAt,
+                        "durationMs": durationMs})
+        turnError = failMsg
         if onEvent != nil:
-          onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
-                             "attempt": attempt + 1,
-                             "maxRetries": retryPolicy.maxRetries,
-                             "delayMs": delayMs, "error": e.msg})
-        sleep(delayMs)
-        attempt += 1
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": failMsg})
+        emitTurnDone(failMsg)
+        return failMsg
+    if overflowRecovered:
+      # the retried logical request succeeded — close out the receipt (§6.5)
+      writeContextReceipt(p, requestId, "context-overflow", "recovered", "")
     ct.cat.pump()
     if ct.sup != nil:
       ct.sup.pump(ct.cat)
