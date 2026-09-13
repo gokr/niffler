@@ -22,7 +22,7 @@
 ##                                  checkpoint of the merged slash-command
 ##                                  table (docs/WIRE.md); UIs read it first
 
-import std/[json, strutils]
+import std/[json, os, strutils, times]
 when defined(posix):
   import std/posix
   proc flock(fd: cint, operation: cint): cint {.importc: "flock", header: "<sys/file.h>".}
@@ -177,6 +177,58 @@ comp.tool(%*{"hidden": true}):
     discard db.delete(docKey(kind, id))
     discard db.delete(revKey(kind, id))
     return okResult()
+
+discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+  ## Self test (docs/WIRE.md): a full put/get/rev-cas/list/del roundtrip on
+  ## a throwaway document, deleted afterwards. Exercises the engine's whole
+  ## wire-relevant surface in a few ms; `deep` is accepted and ignored (the
+  ## roundtrip IS the live probe — there is nothing deeper to spawn).
+  let t0 = epochTime()
+  var checks = newJArray()
+  var allOk = true
+  let kind = "selftest"
+  let id = "probe-" & $getCurrentProcessId() & "-" & $int(epochTime() * 1000)
+  let engine = getAppFilename().lastPathPart
+
+  proc check(name: string, ok: bool, detail: string, t1: float) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                  "ms": int((epochTime() - t1) * 1000)})
+
+  block roundtrip:
+    let t1 = epochTime()
+    try:
+      # put → rev 1, value roundtrips verbatim
+      discard db.set(docKey(kind, id), """{"hello":"selftest","n":42}""")
+      discard db.set(revKey(kind, id), "1")
+      let got = db.get(docKey(kind, id))
+      check("put+get", got == """{"hello":"selftest","n":42}""",
+            (if got.len > 0: "value roundtrips verbatim" else: "empty read"), t1)
+      # optimistic-concurrency surface: the rev counter advanced
+      let t2 = epochTime()
+      check("rev counter", getRev(kind, id) == 1, "rev=1 after first put", t2)
+      # list sees the document under its kind prefix
+      let t3 = epochTime()
+      let (keys, _, _) = db.keysByPrefix(docKey(kind, id), 10, "")
+      var found = false
+      for k in keys:
+        if k == docKey(kind, id): found = true
+      check("list prefix", found, "document visible under kind prefix", t3)
+      # delete is immediate and complete (doc + rev)
+      let t4 = epochTime()
+      discard db.delete(docKey(kind, id))
+      discard db.delete(revKey(kind, id))
+      check("del", getRev(kind, id) == 0 and db.get(docKey(kind, id)).len == 0,
+            "document and rev gone", t4)
+    except CatchableError as e:
+      check("roundtrip", false, e.msg, t1)
+      try:
+        discard db.delete(docKey(kind, id))
+        discard db.delete(revKey(kind, id))
+      except CatchableError: discard
+  return %*{"ok": allOk,
+            "summary": "engine roundtrip ok (" & engine & ")",
+            "checks": checks})
 
 discard comp.onDrain(proc(c: Component) = db.close())
 comp.run()

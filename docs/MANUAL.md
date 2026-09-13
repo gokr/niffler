@@ -1130,8 +1130,16 @@ from, how many project context files feed it, the frozen direct tool names
 vs. schemas discovered so far, message/token counts — without sending
 anything. `doctor` (onDemand) is a one-shot machine-readable health report:
 store reachability, llm registration, active provider, systemprompt
-presence, catalog size, conversation count — all read-only probes, useful
-as a CI liveness gate or a first diagnostics step.
+presence, catalog size, conversation count, plus a self-test fan-out —
+every component that registers the standard `selftest` tool (docs/WIRE.md)
+is asked to check itself and its per-check results are collected in the
+report (components without one are listed as not implementing it). With
+`deep: true` the probes go live — the lsp component boots every configured
+language server against throwaway fixtures (clean file → 0 diagnostics,
+hover answers, broken file → errors), the store runs a full
+put/get/rev/list/del roundtrip on its engine. Quick mode stays cheap
+(binary resolution only); useful as a CI liveness gate or a first
+diagnostics step. The UIs expose it as `/doctor`.
 
 #### Explicit client commands
 

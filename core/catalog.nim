@@ -117,10 +117,16 @@ proc newCatalog*(nc: NatsConnection): Catalog =
   coreReg.tools.add(ToolReg(name: "doctor", component: "core",
     schema: %*{
       "type": "object",
-      "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count. All probes are read-only and never execute anything. Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
-      "properties": {},
+      "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count, plus a self-test fan-out — every component that registers the standard selftest tool (docs/WIRE.md) is asked to check itself and its checks are collected here. All probes are read-only (deep lsp selftest spawns real language servers against throwaway fixtures). Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
+      "properties": {
+        "deep": {"type": "boolean", "description": "Thorough mode: components run live end-to-end probes (lsp boots every configured language server). Slower — minutes are normal"}
+      },
       "x-harness": {"onDemand": true}
     }))
+  coreReg.slash.add(SlashCommand(name: "doctor", component: "core", tool: "doctor",
+    description: "Health report: core probes (store, llm/provider, systemprompt, catalog) plus a self-test fan-out to every component that registers one",
+    params: @[SlashParam(name: "deep", kind: "bool",
+                         description: "Live probes — boots every configured language server")]))
   coreReg.tools.add(ToolReg(name: "prompt_preview", component: "core",
     schema: %*{
       "type": "object",
@@ -656,7 +662,7 @@ proc handle(cat: Catalog, subject, data: string) =
           return
         names.incl(tname)
         let owner = cat.toolIndex.getOrDefault(tname)
-        if owner.len > 0 and owner != name:
+        if owner.len > 0 and owner != name and tname != "selftest":
           echo "catalog: rejecting " & name & " — tool '" & tname &
                "' already provided by " & owner &
                " (refused; use component-prefixed tool names)"
@@ -699,7 +705,12 @@ proc handle(cat: Catalog, subject, data: string) =
       cat.announce()
       return
     for t in reg.tools:
-      cat.toolIndex[t.name] = name
+      # the standard selftest tool (docs/WIRE.md) exists on every
+      # implementing component by design; it is addressed per subject by
+      # /doctor and never dispatched by bare name, so it stays out of the
+      # global tool index (which would make discover/invoke ambiguous)
+      if t.name != "selftest":
+        cat.toolIndex[t.name] = name
     # Slash commands: declarative UI surface (docs/WIRE.md). Validated here
     # so every catalog read and the store checkpoint is already sane.
     if node{"slash"} != nil and node{"slash"}.kind == JArray:

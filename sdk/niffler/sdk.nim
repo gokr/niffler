@@ -142,6 +142,20 @@ proc slashCommand*(c: Component, name, description: string,
   c.slashCommands.add(cmd)
   return c
 
+proc selfTest*(c: Component, handler: ToolHandler): Component =
+  ## Register the standard hidden `selftest` tool (docs/WIRE.md, "Self
+  ## tests"): input {deep: bool, default false}, result {ok, summary,
+  ## checks: [{name, ok, detail, ms}]}. Quick mode must stay cheap (no
+  ## spawns, < ~10s); deep may run real end-to-end probes and take
+  ## correspondingly longer — callers pick the timeout. /doctor fans out to
+  ## every component that registers one; components without it are
+  ## reported as not implementing a self test.
+  let schema = toolSchema(
+    %*{"deep": {"type": "boolean",
+                "description": "Thorough mode: live end-to-end probes (may spawn processes)"}},
+    description = "Component self test (hidden — used by /doctor): check the component's own wiring and report per-check results")
+  c.tool("selftest", schema, handler, %*{"hidden": true})
+
 proc tap*(c: Component, pattern: string, handler: TapHandler): Component =
   ## Raw wire tap (see TapHandler): receives full envelope bytes for every
   ## matching subject. Subscriptions join the same serialized pump loop.

@@ -29,7 +29,7 @@
 ## Read-only, approval-free, onDemand (discover/invoke — keeps the frozen
 ## toolset small; the description is the model's when-to-use guide).
 
-import std/[algorithm, json, monotimes, os, osproc, posix, streams, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, posix, sequtils, streams, strutils, tables, times]
 import std/syncio
 import natsnim
 import niffler/sdk
@@ -541,11 +541,12 @@ proc capText(s: string): string =
 # ---------------------------------------------------------------------------
 # operations
 
-proc opDiagnostics(h: Instance, uri, rel: string): JsonNode =
+proc opDiagnostics(h: Instance, uri, rel: string,
+                   timeoutMs = QUERY_TIMEOUT_MS): JsonNode =
   ## Wait for the first publishDiagnostics push, then a short quiet period
   ## for updates; no pull-diagnostics fallback in MVP.
   var latest: JsonNode = nil
-  let deadline = getMonoTime() + initDuration(milliseconds = QUERY_TIMEOUT_MS)
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
   while true:
     var waitMs = inMilliseconds(deadline - getMonoTime())
     if latest != nil: waitMs = min(waitMs, DIAG_SETTLE_MS)
@@ -557,7 +558,7 @@ proc opDiagnostics(h: Instance, uri, rel: string): JsonNode =
       latest = frame{"params"}
   if latest == nil:
     fail("E_LSP_TIMEOUT", "no diagnostics for " & rel & " within " &
-         $QUERY_TIMEOUT_MS & "ms — the server may still be indexing; retry" &
+         $timeoutMs & "ms — the server may still be indexing; retry" &
          h.stderrHint())
   let diags = latest{"diagnostics"}
   if diags == nil or diags.kind != JArray or diags.len == 0:
@@ -978,5 +979,344 @@ discard comp.tool("lsp_registry", toolSchema(%*{
   "Mutate the language-server registry: which server binary handles which file extension. add takes {name, command (string or argv array), extensions: {\".ext\": \"languageId\"}} and overrides a built-in of the same name; remove deletes a user entry. Takes effect on the next lsp call. Use when a file's extension has no language server configured — if the binary exists on PATH, adding it here is all that's needed. Writing the registry (approval-gated); list with lsp_servers."),
   hLspRegistry,
   %*{"timeoutMs": 10000, "onDemand": true, "approval": "always"})
+
+# ---------------------------------------------------------------------------
+# self test (docs/WIRE.md) — /doctor fans out to this
+
+type StFixture = tuple[good, bad, hover: string,
+                       extras: seq[tuple[path, content: string]],
+                       hoverLine, hoverCol: int]
+
+proc stFixtures(): Table[string, StFixture] =
+  ## Live-probe fixtures per extension, ported from the manual sweep that
+  ## validated the servers on real workspaces: good file must report 0
+  ## diagnostics and answer hover at the marked (one-based) spot; broken
+  ## file must report errors. Extensions without an entry (and whole
+  ## servers whose only extensions are unknown) get an initialize-only
+  ## probe — the canonical extension of a server covers it.
+  result = {
+    ".go": ("good/main.go", "bad/main.go", "hover/main.go",
+      @[("go.mod", "module sweepgo\n\ngo 1.21\n")], 5, 6),
+    ".nim": ("good.nim", "bad.nim", "hover.nim", @[], 1, 6),
+    ".ts": ("good.ts", "bad.ts", "hover.ts", @[], 1, 10),
+    ".py": ("good.py", "bad.py", "hover.py", @[], 1, 5),
+    ".rs": ("src/main.rs", "src/broken.rs", "src/hover.rs",
+      @[("Cargo.toml", "[package]\nname = \"selftest\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")], 1, 8),
+    ".c": ("good.c", "bad.c", "hover.c", @[], 3, 5),
+    ".cpp": ("good.cpp", "bad.cpp", "hover.cpp", @[], 3, 5),
+    ".sh": ("good.sh", "bad.sh", "hover.sh", @[], 5, 2),
+    ".java": ("Good.java", "Bad.java", "Hover.java", @[], 2, 16),
+    ".cs": ("Good.cs", "Bad.cs", "Hover.cs",
+      @[("selftest.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n")], 2, 16),
+  }.toTable
+
+proc stGoFile(): string =
+  """package main
+
+import "fmt"
+
+func add2(a, b int) int { return a + b }
+
+func main() { fmt.Println(add2(40, 2)) }
+"""
+
+proc stBadGoFile(): string =
+  """package main
+
+func main() { fmt.Println(undefined_symbol + 1) }
+"""
+
+proc stFile(ext, kind: string): string =
+  ## kind: "good" | "bad" | "hover" — fixture sources per extension. The
+  ## hover file is a separate never-saved document: bash-language-server's
+  ## hover context dies on didSave, and save-push servers must not have
+  ## their good-file save delayed behind a hover settle.
+  case ext
+  of ".go":
+    result = if kind == "bad": stBadGoFile() else: stGoFile()
+  of ".nim":
+    result = if kind == "bad":
+      "proc add2(a, b: int): int =\n  a + b\n\necho undeclared_xyz + 1\n"
+    else:
+      "proc add2(a, b: int): int =\n  a + b\n\necho add2(40, 2)\n"
+  of ".ts":
+    result = if kind == "bad":
+      "const value: number = \"not a number\";\nconsole.log(missingSymbol);\n"
+    else:
+      "function add2(a: number, b: number): number { return a + b }\nconsole.log(add2(40, 2));\n"
+  of ".py":
+    result = if kind == "bad":
+      "def f() -> int:\n    return undefined_name\n"
+    else:
+      "def add2(a: int, b: int) -> int:\n    return a + b\n\nprint(add2(40, 2))\n"
+  of ".rs":
+    result = case kind
+    of "bad": "fn main() { println!(\"{}\", undefined_symbol + 1); }\n"
+    of "hover": "pub fn add2(a: i64, b: i64) -> i64 { a + b }\n"
+    else: "fn add2(a: i64, b: i64) -> i64 { a + b }\n\nfn main() { println!(\"{}\", add2(40, 2)); }\n"
+  of ".c", ".cpp":
+    result = if kind == "bad":
+      "int main(void) { return undefined_symbol + 1; }\n"
+    else:
+      "#include <stdio.h>\n\nint add2(int a, int b) { return a + b; }\n\nint main(void) { printf(\"%d\\n\", add2(40, 2)); return 0; }\n"
+  of ".sh":
+    result = case kind
+    of "bad":
+      "greet() {\n  echo \"hello $name\"\n  if [ \"$1\" = \"x\" ]; then\n}\n\ngreet\n"
+    of "hover":
+      # hover answers at the command-position call (5,2); user-function
+      # definitions and direct builtins resolve to null hover here
+      "add2() {\n  echo $(( $1 + $2 ))\n}\n\nadd2 40 2\necho done\n"
+    else:
+      "add2() {\n  echo $(( $1 + $2 ))\n}\n\nadd2 40 2\n"
+  of ".java":
+    result = case kind
+    of "bad":
+      "public class Bad {\n    public static void main(String[] args) { System.out.println(undefined_symbol); }\n}\n"
+    of "hover":
+      "public class Hover {\n    static int add2(int a, int b) { return a + b; }\n}\n"
+    else:
+      "public class Good {\n    static int add2(int a, int b) { return a + b; }\n    public static void main(String[] args) { System.out.println(add2(40, 2)); }\n}\n"
+  of ".cs":
+    result = case kind
+    of "bad":
+      "static class Broken {\n    static int Nope() { return undefined_symbol + 1; }\n}\n"
+    of "hover":
+      "static class HoverCalc {\n    static int Add2(int a, int b) { return a + b; }\n}\n"
+    else:
+      "static class Calc {\n    static int Add2(int a, int b) { return a + b; }\n    static void Main() { System.Console.WriteLine(Add2(40, 2)); }\n}\n"
+  else:
+    result = ""
+
+proc hLspSelfTest(c: Component, args: JsonNode): JsonNode =
+  ## Component self test (docs/WIRE.md). quick (default): registry loads and
+  ## every configured server's binary resolves (PATH + fallback dirs).
+  ## deep: live end-to-end — boot each configured server against throwaway
+  ## fixtures (the same ones the manual sweep used): initialize, clean file
+  ## reports 0 diagnostics, hover answers, broken file reports errors.
+  let deep = args{"deep"}.getBool(false)
+  var checks = newJArray()
+  var allOk = true
+  let t0all = epochTime()
+
+  proc check(name: string, ok: bool, detail: string, ms: int) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail, "ms": ms})
+
+  var reg: Table[string, ServerConf]
+  try:
+    reg = loadRegistry()
+  except CatchableError as e:
+    check("registry", false, e.msg, 0)
+    return %*{"ok": false, "summary": "registry does not load: " & e.msg,
+              "checks": checks}
+  var userOverrides = 0
+  let regPath = registryPath()
+  if fileExists(regPath):
+    try:
+      let u = parseJson(readFile(regPath))
+      if u.kind == JObject: userOverrides = u.len
+    except CatchableError: discard
+  check("registry", true,
+        $reg.len & " server(s) configured" &
+        (if userOverrides > 0: " (" & $userOverrides & " user override(s))" else: ""),
+        int((epochTime() - t0all) * 1000))
+
+  proc resolve(conf: ServerConf): string =
+    ## mirror getInstance's resolution: PATH, then the fallback dirs
+    let bin = conf.command[0]
+    if bin.contains('/'):
+      return (if fileExists(bin): bin else: "")
+    let onPath = findExe(bin)
+    if onPath.len > 0: return onPath
+    resolveBinIn(bin, fallbackBinDirs(getHomeDir(), getEnv("NIF_LSP_BIN_DIRS")))
+
+  var names: seq[string]
+  for name in reg.keys: names.add(name)
+  names.sort()
+
+  if not deep:
+    for name in names:
+      let t0 = epochTime()
+      let exe = resolve(reg[name])
+      let exts = toSeq(reg[name].extensions.keys).join(" ")
+      if exe.len > 0:
+        check(name & ": binary", true, exe & " (" & exts & ")",
+              int((epochTime() - t0) * 1000))
+      else:
+        check(name & ": binary", false,
+              "not found on PATH or fallback dirs — make install-lsp, or " &
+              "fix the registry (" & registryPath() & ")",
+              int((epochTime() - t0) * 1000))
+    return %*{"ok": allOk,
+              "summary": $reg.len & " server(s), " &
+                (if allOk: "all binaries resolve (quick — pass deep for live probes)"
+                 else: "some binaries missing"),
+              "checks": checks}
+
+  # deep: live probe per server
+  let budget = epochTime() + 110.0   # inside /doctor's 120s fan-out timeout
+  let callMs = 15_000
+  var probed = 0
+  var stCounter = 0
+  for name in names:
+    let conf = reg[name]
+    let t0 = epochTime()
+    if epochTime() > budget - 20.0:
+      check(name & ": skipped", false, "self-test budget exhausted", 0)
+      continue
+    let exe = resolve(conf)
+    if exe.len == 0:
+      check(name & ": binary", false,
+            "not found on PATH or fallback dirs — make install-lsp, or " &
+            "fix the registry (" & registryPath() & ")",
+            int((epochTime() - t0) * 1000))
+      continue
+    # fixture: the server's extensions sorted, first one with live fixtures
+    var exts: seq[string]
+    for e in conf.extensions.keys: exts.add(e)
+    exts.sort()
+    var fixtureExt = ""
+    for e in exts:
+      if stFixtures().hasKey(e):
+        fixtureExt = e
+        break
+    if fixtureExt.len == 0:
+      # initialize-only probe: server spawns and completes the handshake
+      inc stCounter
+      let tmp = getTempDir() / ("niffler-lsp-selftest-" & $int(epochTime() * 1000) &
+                                "-" & $stCounter)
+      createDir(tmp)
+      var okInit = false; var detail = ""
+      try:
+        discard getInstance(conf, tmp)
+        okInit = true; detail = "initialize handshake answered"
+      except CatchableError as e:
+        detail = e.msg
+      finally:
+        let k = instKey(conf.name, tmp)
+        if gInstances.hasKey(k):
+          gInstances[k].dispose()
+          gInstances.del(k)
+        try: removeDir(tmp)
+        except CatchableError: discard
+      check(name & ": initialize", okInit, detail, int((epochTime() - t0) * 1000))
+      continue
+
+    # live probe: clean diagnostics + hover + broken diagnostics
+    inc stCounter
+    let tmp = getTempDir() / ("niffler-lsp-selftest-" & $int(epochTime() * 1000) &
+                              "-" & $stCounter)
+    createDir(tmp)
+    let fx = stFixtures()[fixtureExt]
+    let goodDir = splitFile(tmp / fx.good).dir
+    let badDir = splitFile(tmp / fx.bad).dir
+    let hoverDir = splitFile(tmp / fx.hover).dir
+    if goodDir.len > 0: createDir(goodDir)
+    if badDir.len > 0 and badDir != goodDir: createDir(badDir)
+    if hoverDir.len > 0 and hoverDir != goodDir and hoverDir != badDir:
+      createDir(hoverDir)
+    writeFile(tmp / fx.good, stFile(fixtureExt, "good"))
+    writeFile(tmp / fx.bad, stFile(fixtureExt, "bad"))
+    writeFile(tmp / fx.hover, stFile(fixtureExt, "hover"))
+    for extra in fx.extras:
+      writeFile(tmp / extra.path, extra.content)
+    var serverChecks = 0; var serverFails = 0
+    try:
+      let h = getInstance(conf, tmp)
+      let goodUri = pathToUri(tmp / fx.good)
+      let badUri = pathToUri(tmp / fx.bad)
+      let hoverUri = pathToUri(tmp / fx.hover)
+      # clean diagnostics first, listeners up before pushes can land:
+      # open-push servers publish on didOpen, save-push (all nimsuggest-
+      # based) on didSave — the settle loop catches either
+      h.notify("textDocument/didOpen", %*{"textDocument": {
+        "uri": goodUri, "languageId": conf.extensions[fixtureExt],
+        "version": 1, "text": stFile(fixtureExt, "good")}})
+      h.notify("textDocument/didSave", %*{"textDocument": {"uri": goodUri},
+                                          "text": stFile(fixtureExt, "good")})
+      block cleanCheck:
+        let t1 = epochTime()
+        try:
+          let d = opDiagnostics(h, goodUri, fx.good, callMs)
+          let n = d{"count"}.getInt(-1)
+          let ok = d{"ok"}.getBool(false) and n == 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": clean-diagnostics", ok,
+                (if ok: "0 diagnostics" else: d{"text"}.getStr("")),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": clean-diagnostics", false, e.msg,
+                int((epochTime() - t1) * 1000))
+      block hoverCheck:
+        # hover on a separate never-saved document: bash-language-server's
+        # hover context dies on didSave (even across close/re-open), and
+        # open-push servers publish their good-file push while we would
+        # otherwise be sleeping — a fresh open here needs a moment for the
+        # server's async analysis to attach symbol info
+        let t1 = epochTime()
+        var hover = ""
+        try:
+          h.notify("textDocument/didOpen", %*{"textDocument": {
+            "uri": hoverUri, "languageId": conf.extensions[fixtureExt],
+            "version": 1, "text": stFile(fixtureExt, "hover")}})
+          sleep(2500)
+          hover = normalizeHover(h.request("textDocument/hover",
+            %*{"textDocument": {"uri": hoverUri},
+               "position": {"line": fx.hoverLine - 1,
+                            "character": fx.hoverCol - 1}}, callMs))
+          h.notify("textDocument/didClose", %*{"textDocument": {"uri": hoverUri}})
+          let ok = hover.len > 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": hover", ok,
+                (if ok: hover[0 ..< min(hover.len, 80)] else: "no hover information"),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": hover", false, e.msg, int((epochTime() - t1) * 1000))
+      block brokenCheck:
+        let t1 = epochTime()
+        try:
+          h.notify("textDocument/didOpen", %*{"textDocument": {
+            "uri": badUri, "languageId": conf.extensions[fixtureExt],
+            "version": 1, "text": stFile(fixtureExt, "bad")}})
+          h.notify("textDocument/didSave", %*{"textDocument": {"uri": badUri},
+                                              "text": stFile(fixtureExt, "bad")})
+          let d = opDiagnostics(h, badUri, fx.bad, callMs)
+          let n = d{"count"}.getInt(0)
+          let ok = d{"ok"}.getBool(false) and n > 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": broken-diagnostics", ok,
+                (if ok: $n & " error(s) flagged" else: d{"text"}.getStr("no diagnostics — server broken?")),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": broken-diagnostics", false, e.msg,
+                int((epochTime() - t1) * 1000))
+      h.notify("textDocument/didClose", %*{"textDocument": {"uri": goodUri}})
+      h.notify("textDocument/didClose", %*{"textDocument": {"uri": badUri}})
+    except CatchableError as e:
+      inc serverFails
+      check(name & ": initialize", false, e.msg, int((epochTime() - t0) * 1000))
+    finally:
+      let k = instKey(conf.name, tmp)
+      if gInstances.hasKey(k):
+        gInstances[k].dispose()
+        gInstances.del(k)
+      try: removeDir(tmp)
+      except CatchableError: discard
+    if serverFails == 0 and serverChecks > 0:
+      inc probed
+  let probedWord = if deep: $probed & " server(s) probed live" else: ""
+  return %*{"ok": allOk,
+            "summary": $reg.len & " server(s) configured, " & probedWord &
+              (if allOk: " — all green" else: " — failures above"),
+            "checks": checks}
+
+discard comp.selfTest(hLspSelfTest)
 
 comp.run()
