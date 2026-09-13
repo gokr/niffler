@@ -33,12 +33,12 @@ proc diagLinesInRange*(text: string, first, last: int): seq[string] =
 
 proc renderDiagSection*(text: string, count, first, last: int): string =
   ## Render the scoped diagnostics section for an edit response: the
-  ## in-range errors/warnings, a one-line pointer when the file has
-  ## diagnostics elsewhere, and nothing when the file is clean.
+  ## in-range errors/warnings, a one-line pointer to the lsp tool when the
+  ## file has diagnostics elsewhere, and nothing when the file is clean.
   if count == 0: return ""
   let inRange = diagLinesInRange(text, first, last)
   if inRange.len == 0:
-    return "\n\n[LSP diagnostics: " & $count & " in this file, none in the changed range.]"
+    return "\n\n[LSP diagnostics: " & $count & " elsewhere in this file, none in the changed range — the lsp tool lists them all.]"
   var outp = "\n\n[LSP diagnostics in the changed range:\n" & inRange.join("\n")
   if inRange.len >= DIAG_PUSH_MAX_LINES:
     outp.add("\n  ... (capped — lsp diagnostics lists all)")

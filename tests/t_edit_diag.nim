@@ -27,8 +27,8 @@ src/greeter.py:99:3  info  hint only
 
   # Diagnostics elsewhere in the file produce a pointer, not the list.
   let secElsewhere = renderDiagSection(lspText, 2, 200, 210)
-  check("elsewhere pointer", secElsewhere.contains("none in the changed range") and
-        secElsewhere.contains("2 in this file"), secElsewhere)
+  check("elsewhere pointer", secElsewhere.contains("none in the changed range") and secElsewhere.contains("lsp tool") and
+        secElsewhere.contains("2 elsewhere in this file"), secElsewhere)
 
   # Clean file says nothing.
   check("clean file renders empty", renderDiagSection("", 0, 10, 20) == "")
