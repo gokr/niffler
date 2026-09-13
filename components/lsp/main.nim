@@ -64,9 +64,15 @@ type ServerConf = object
 
 proc defaultServers(): seq[ServerConf] =
   ## Sane defaults; all optional (absent binary → clear E_LSP_UNAVAILABLE).
+  ## Nim defaults to nimtortoise (github.com/music-theories/nimtortoise): all
+  ## three nimsuggest-based servers publish diagnostics only on save, and the
+  ## component save-echoes after didOpen — but nimlangserver additionally
+  ## never publishes for loose files (its "Found diagnostics file={}" bug),
+  ## while nimtortoise answered every check in the live sweep. The old
+  ## default remains user-registry-selectable by name.
   let defs = [
     ("gopls", @["gopls"], {".go": "go"}.toTable),
-    ("nimlangserver", @["nimlangserver"], {".nim": "nim", ".nims": "nim"}.toTable),
+    ("nimtortoise", @["nimtortoise"], {".nim": "nim", ".nims": "nim"}.toTable),
     ("typescript-language-server",
      @["typescript-language-server", "--stdio"],
      {".ts": "typescript", ".tsx": "typescriptreact", ".mts": "typescript",
@@ -80,6 +86,8 @@ proc defaultServers(): seq[ServerConf] =
       ".hpp": "cpp", ".hh": "cpp"}.toTable),
     ("bash-language-server", @["bash-language-server", "start"],
      {".sh": "shellscript", ".bash": "shellscript"}.toTable),
+    ("jdtls", @["jdtls"], {".java": "java"}.toTable),
+    ("csharp-ls", @["csharp-ls"], {".cs": "csharp"}.toTable),
   ]
   for (name, cmd, exts) in defs:
     result.add(ServerConf(name: name, command: cmd, extensions: exts))

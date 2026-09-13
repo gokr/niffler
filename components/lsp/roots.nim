@@ -80,7 +80,7 @@ proc fallbackBinDirs*(home: string, extra = ""): seq[string] =
     for part in extra.split(PathSep):
       if part.len > 0: result.add(part)
   if home.len > 0:
-    for rel in ["go/bin", ".nimble/bin", ".local/bin", "bin"]:
+    for rel in ["go/bin", ".nimble/bin", ".local/bin", ".dotnet/tools", "bin"]:
       result.add(home / rel)
 
 proc isExecutableFile(path: string): bool =
