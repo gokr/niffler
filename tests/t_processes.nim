@@ -41,8 +41,11 @@ proc main() =
 
   # spool cap low enough that the truncation test can trigger it naturally
   # (seq 1 5000 ≈ 24KB > 20KB cap, keep 10KB tail)
+  # spool cap 20KB (>10KB keep tail) and a 4KB poll chunk: the burst test
+  # below needs both the truncation path and a chunk cap the burst exceeds
   let procProc = startComponent(bin, url, root = tmp,
-                                extra = [("NIF_PROCESSES_SPOOL_CAP", "20000")])
+                                extra = [("NIF_PROCESSES_SPOOL_CAP", "20000"),
+                                         ("NIF_PROCESSES_POLL_CHUNK", "4096")])
   defer:
     if procProc.running():
       procProc.terminate()
@@ -196,15 +199,49 @@ proc main() =
         b4{"text"}.getStr("").contains(tmp.lastPathPart) or
         b4{"text"}.getStr("").contains(tmp), $b4)
 
+  # --- poll chunk cap: a burst larger than the chunk cap is split ---------
+  # Regression: the cut used rfind's start-only form, which searches to the
+  # chunk's end — one poll could return the whole burst, not the cap.
+  let s8 = pcall("process_start", %*{
+    "command": "seq 1 5000",
+    "label": "burst"})
+  let id8 = s8{"id"}.getStr("")
+  var burstPolls = 0
+  var burstBytes = 0
+  var maxPollBytes = 0
+  var burstDone = false
+  while burstPolls < 60 and not burstDone:
+    let p = pcall("process_poll", %*{"id": id8, "waitMs": 300})
+    inc burstPolls
+    let got = p{"new_bytes"}.getInt(0)
+    burstBytes += got
+    maxPollBytes = max(maxPollBytes, got)
+    if p{"status"}.getStr("") != "running" and got == 0:
+      burstDone = true
+  check("large burst needs several polls (poll chunk cap holds)",
+        burstPolls >= 2 and burstBytes >= 10_000, $burstBytes)
+  check("no single poll exceeded the poll chunk cap",
+        maxPollBytes <= 4096, $maxPollBytes)
+
   # --- spool truncation under the cap --------------------------------------
   let s6 = pcall("process_start", %*{"command": "seq 1 5000"})
   let id6 = s6{"id"}.getStr("")
-  let tr1 = pcall("process_poll", %*{"id": id6, "waitMs": 5000})
+  # drain fully: with the small poll chunk one call no longer returns the
+  # whole (truncated) tail
+  var tr1text = ""
+  var tr1 = pcall("process_poll", %*{"id": id6, "waitMs": 5000})
+  tr1text.add(tr1{"text"}.getStr(""))
+  var trGuard = 0
+  while (tr1{"status"}.getStr("") == "running" or
+         tr1{"new_bytes"}.getInt(0) > 0) and trGuard < 20:
+    tr1 = pcall("process_poll", %*{"id": id6, "waitMs": 2000})
+    tr1text.add(tr1{"text"}.getStr(""))
+    inc trGuard
   check("spool over the cap is truncated to its tail",
-        tr1{"text"}.getStr("").contains("5000") and
-        tr1{"text"}.getStr("").contains("truncated"), $tr1)
+        tr1text.contains("5000") and tr1text.contains("truncated"),
+        tr1text)
   check("truncated head did not leak into the result",
-        not tr1{"text"}.getStr("").contains("\n1\n"), $tr1)
+        not tr1text.contains("\n1\n"), tr1text)
 
   # --- boot sweep: SIGKILLed component leaves orphans; next life kills them
   let s7 = pcall("process_start",

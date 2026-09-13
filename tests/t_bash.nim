@@ -61,6 +61,13 @@ proc main() =
         r2b{"exit_code"}.getInt(-1) == 0 and
         r2b{"text"}.getStr("").contains("sub"), $r2b)
 
+  let marker = tmp / "must-not-run"
+  let badCwd = call(nc, "bash", "bash",
+    %*{"cwd": tmp / "missing", "command":
+      "true; touch " & quoteShell(marker) & " || echo fallback"})
+  check("failed cwd stops the entire compound command",
+    badCwd{"exit_code"}.getInt(0) != 0 and not fileExists(marker), $badCwd)
+
   # timeout: killed, exit 124, marked in output — and the WHOLE command
   # tree dies (a bare wrapper kill would orphan the sleep 30; the group
   # kill must reach it, proven by pgrep finding no process)

@@ -600,9 +600,11 @@ discard comp.tap("_INBOX.agentjob.>",
     if parts.len < 3: return
     let jobId = parts[2]
     let r = decode(data)
-    if r.kind != ekResult: return
+    if r.kind notin {ekResult, ekError}: return
     var status = "done"
-    let turnError = r.args{"turnError"}.getStr("")
+    let turnError = if r.kind == ekError:
+                      r.error{"message"}.getStr("child session failed")
+                    else: r.args{"turnError"}.getStr("")
     if turnError.len > 0: status = "failed"
     var value = %*{"sessionId": r.args{"sessionId"}.getStr(""),
                    "status": status,
@@ -622,6 +624,9 @@ discard comp.tap("_INBOX.agentjob.>",
       except CatchableError:
         prior = nil
       if prior != nil:
+        # never embed a possibly-nil JsonNode in value (SIGSEGVs at toUgly)
+        if prior{"sessionId"} != nil:
+          value["sessionId"] = prior{"sessionId"}
         value["parent"] = prior{"parent"}
         value["task"] = prior{"task"}
         value["startedAt"] = prior{"startedAt"}

@@ -13,7 +13,7 @@
 ## - fresh HttpClient per call: a stale pooled connection (server closed
 ##   it) would hang the next read forever (see plugins' resolveTag)
 
-import std/[hashes, httpclient, json, os, osproc, streams, strutils, tempfiles,
+import std/[httpclient, json, os, osproc, streams, strutils, tempfiles,
             times, uri, xmltree]
 import niffler/sdk
 import pkg/htmlparser
@@ -131,14 +131,13 @@ proc extractWithTrafilatura(html: string): string =
       except OSError:
         discard
 
-proc saveToFile(content: string, url: string): string =
-  ## Spill oversized content; returns the file path.
+proc saveToFile(content: string): string =
+  ## Spill to a unique file: repeated fetches must not overwrite a path
+  ## already returned to another call or conversation.
   createDir(fetchDir())
-  let stamp = $int(epochTime())
-  let hashText = $hash(url & stamp)
-  let urlHash = if hashText.len > 8: hashText[0 .. 7] else: hashText
-  let path = fetchDir() / ("fetch_" & stamp & "_" & urlHash & ".txt")
-  writeFile(path, content)
+  let (file, path) = createTempFile("fetch_", ".txt", fetchDir())
+  defer: file.close()
+  file.write(content)
   path
 
 comp.tool(%*{"onDemand": true}):
@@ -253,7 +252,7 @@ comp.tool(%*{"onDemand": true}):
       var savedToFile = false
       var filePath = ""
       if content.len > MaxInlineBytes:
-        filePath = saveToFile(content, url)
+        filePath = saveToFile(content)
         savedToFile = true
         content = "Content saved to file (over " & $MaxInlineBytes &
           " bytes after processing): " & filePath &

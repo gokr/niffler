@@ -45,6 +45,15 @@ proc spoolCap(): int =
     except ValueError: discard
   return SPOOL_CAP
 
+proc pollChunk(): int =
+  ## Max new bytes one poll returns per stream (NIF_PROCESSES_POLL_CHUNK
+  ## override, kept below the spool cap so a burst is always split).
+  let v = getEnv("NIF_PROCESSES_POLL_CHUNK", "")
+  if v.len > 0:
+    try: return clamp(parseInt(v), 1024, 1_048_576)
+    except ValueError: discard
+  return POLL_CHUNK
+
 type Status = enum
   stRunning, stExited, stKilled
 
@@ -214,11 +223,13 @@ proc readNew(path: string, cursor: var int): tuple[content: string, truncated: b
     f.close()
     let lastNl = chunk.rfind('\n')
     if lastNl < 0: return          # no complete line yet (keeps truncated)
-    var take = min(lastNl + 1, POLL_CHUNK)
+    let chunkCap = pollChunk()
+    var take = min(lastNl + 1, chunkCap)
     if take < lastNl + 1:
-      # one huge burst: cut at the last newline inside the chunk
-      take = chunk.rfind('\n', lastNl - (lastNl + 1 - POLL_CHUNK)) + 1
-      if take <= 0: take = POLL_CHUNK   # pathological single line: raw cut
+      # one huge burst: cut at the last newline inside the first chunkCap
+      # bytes (the bound is rfind's `last`, not its `start`)
+      take = chunk.rfind('\n', 0, chunkCap - 1) + 1
+      if take <= 0: take = chunkCap     # pathological single line: raw cut
     cursor += take
     return (chunk[0 ..< take], result.truncated)
   except CatchableError:

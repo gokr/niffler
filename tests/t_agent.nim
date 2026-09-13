@@ -10,6 +10,7 @@
 
 import std/[json, os, osproc, strutils, times]
 import natsnim
+import envelope
 import helpers
 
 proc waitComponent(nc: NatsConnection, name: string, secs = 20): bool =
@@ -101,6 +102,28 @@ proc main() =
       if agentProc.running(): agentProc.kill()
     agentProc.close()
   check("agent registered", waitComponent(nc, "agent"))
+
+  # A runner-level error (before a turn can start) is an error envelope,
+  # not a successful session result carrying turnError. It must terminalize
+  # a background job immediately, keeping its original session identity.
+  for stopping in [false, true]:
+    let jobId = "job-runner-error-" & $stopping
+    discard call(nc, "store", "put", %*{"kind": "agentjob", "id": jobId,
+      "value": {"sessionId": "runner-error-child", "parent": "test-parent",
+        "task": "test task", "startedAt": epochTime(),
+        "status": (if stopping: "stopping" else: "running")}})
+    nc.publish("_INBOX.agentjob." & jobId,
+      errorEnvelope("failed-call", "boom", "runner could not resume").encode())
+    var record: JsonNode
+    for i in 0 ..< 30:
+      record = call(nc, "store", "get", %*{"kind": "agentjob", "id": jobId})
+      if record{"value"}{"endedAt"} != nil: break
+      sleep(100)
+    check("background runner error terminalizes job (stopping=" & $stopping & ")",
+      record{"value"}{"status"}.getStr("") ==
+        (if stopping: "stopped" else: "failed") and
+      record{"value"}{"error"}.getStr("") == "runner could not resume" and
+      record{"value"}{"sessionId"}.getStr("") == "runner-error-child", $record)
 
   # --- one parent turn: stub LLM calls agent_run ----------------------------
   let parentId = "agt-parent"

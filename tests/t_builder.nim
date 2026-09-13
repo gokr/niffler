@@ -23,7 +23,7 @@ proc main() =
     fail(bin & " missing — run `make build` first")
     quit(1)
 
-  let tmp = tempRoot("builder")
+  let tmp = tempRoot("builder with spaces")
   defer: removeDir(tmp)
   # the builder compiles with --path:<root>/sdk and picks up config.nims
   # from its cwd (pkgs2 resolution) — mirror those from the real root
@@ -45,6 +45,12 @@ proc main() =
     builderProc.close()
 
   check("builder registers", waitRegistered(nc, "builder"))
+
+  let info = call(nc, "builder", "info", %*{})
+  let example = call(nc, "builder", "build",
+    %*{"lang": "go", "name": "documented-example", "source": info{"go"}}, 300_000)
+  check("builder's advertised Go example compiles in a root with spaces",
+    example{"ok"}.getBool(false), $example)
 
   const nimSrc = """
     import niffler/sdk

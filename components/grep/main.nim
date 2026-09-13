@@ -110,7 +110,7 @@ comp.tool(%*{"timeoutMs": 60000, "onDemand": true,
     ## - hidden: Include hidden files
     ## - max_results: Cap (default 500, max 10000)
     ## - timeoutMs: Kill after this many ms (default 30000)
-    var args = @["--files", "--no-require-git"]
+    var args = @["--files", "--no-require-git", "--sort", "path"]
     if hidden: args.add("--hidden")
     if glob.len > 0:
       args.add(["-g", glob])

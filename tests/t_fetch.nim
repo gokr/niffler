@@ -263,6 +263,18 @@ proc main() =
         readFile(big{"filePath"}.getStr("")).
           contains("Big content paragraph"))
 
+  var spillPaths = @[big{"filePath"}.getStr("")]
+  let originalSpill = readFile(spillPaths[0])
+  for i in 0 ..< 3:
+    let again = call(nc, "fetch", "fetch",
+      %*{"url": base & "/big", "convertToText": false})
+    let path = again{"filePath"}.getStr("")
+    check("repeated fetch spill has a unique path " & $i,
+      again{"ok"}.getBool(false) and path.len > 0 and path notin spillPaths, $again)
+    spillPaths.add(path)
+  check("later fetch does not replace earlier extracted content",
+    readFile(spillPaths[0]) == originalSpill)
+
   # --- redirect / custom headers / POST --------------------------------------
   let redir = call(nc, "fetch", "fetch", %*{"url": base & "/redirect"})
   check("redirect followed", redir{"ok"}.getBool(false) and

@@ -146,7 +146,7 @@ discard comp.tool("bash", bashSchema,
           "process (is the processes component running?): " & e.msg &
           " — run the command synchronously instead."}
     let scoped = if cwd.len > 0:
-                   "cd -- " & quoteShell(cwd) & " && " & command
+                   "cd -- " & quoteShell(cwd) & " || exit $?\n" & command
                  else: command
     let (code, captured) = runCmd(scoped, timeoutMs,
       proc(): bool = drainCancels(sessionId))

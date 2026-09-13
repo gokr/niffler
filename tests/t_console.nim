@@ -60,7 +60,15 @@ proc main() =
       sleep(100)
     return false
 
-  check("console registers on reg.publish", waitRegisteredOn(regSub, "console"))
+  var registration: ptr natsMsg
+  let registered = natsSubscription_NextMsg(addr registration, regSub, 15_000)
+  check("console registers on reg.publish", registered == NATS_OK)
+  if registered == NATS_OK:
+    let payload = parseJson($natsMsg_GetData(registration))
+    natsMsg_Destroy(registration)
+    check("console registration uses the catalog's raw payload contract",
+      payload{"name"}.getStr("") == "console" and
+      payload{"pid"}.getInt(0) > 0 and payload{"tools"} != nil, $payload)
 
   # Registration precedes the console's SUB >. Prove the viewer is receiving
   # before sending the one-shot rendering fixtures; the banner alone is not
