@@ -5,7 +5,7 @@
 > section ranks the ten highest-leverage items for Niffler.
 >
 > Source: a checkout of [DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix)
-> (Go, single binary) at `~/git/DeepSeek-Reasonix`, commit `6c2e845b8`
+> (Go, single binary) at `~/git/harnesses/DeepSeek-Reasonix`, commit `6c2e845b8`
 > (2026-09-07). All claims cite `docs/*.md`, `benchmarks/README.md`, or the
 > `internal/` package tree of that checkout. Niffler baseline checked against
 > this clone's `components/` + `core/` + `docs/MANUAL.md` (2026-09-07).

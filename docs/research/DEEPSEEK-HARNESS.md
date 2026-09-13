@@ -1,7 +1,7 @@
 # DeepSeek Harness (dsh) — research notes
 
 Studied 2026-07-15 via four Niffler subagents (one structural survey + three
-slice deep-reads) against `~/git/deepseek-harness` (~170k LOC TypeScript, 265
+slice deep-reads) against `~/git/harnesses/deepseek-harness` (~170k LOC TypeScript, 265
 workspace packages). All findings below carry the agents' file:line citations;
 I spot-checked five load-bearing quotes across five files — all exact.
 Unverified: cordis runtime waterfall semantics (taken from docs + code reads),

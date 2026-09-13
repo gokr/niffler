@@ -3,7 +3,7 @@
 Status: **proposal** (nothing here is implemented). Companion to
 [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) — read its §4 (guarded tool
 pipeline), §8 (subagents) and #12 (agent-team) for the provenance. All dsh
-citations below refer to `~/git/deepseek-harness`.
+citations below refer to `~/git/harnesses/deepseek-harness`.
 
 Four steals, selected by one rule: **the wire stays; the topology wins**.
 Each design must survive the sieve in §1, and none of them may quietly grow

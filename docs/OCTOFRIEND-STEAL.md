@@ -1,6 +1,6 @@
 # OCTOFRIEND-STEAL — what to borrow from Octo
 
-Analysis of [octofriend](https://github.com/synthetic-lab/octofriend) (`~/git/octofriend`),
+Analysis of [octofriend](https://github.com/synthetic-lab/octofriend) (`~/git/harnesses/octofriend`),
 Synthetic's coding assistant: single-process Bun/TS TUI, zero telemetry, any
 OpenAI-/Anthropic-compatible provider. Two marquee ideas: **provider-neutral
 conversation IR with "compiler" lowering**, and **custom-trained micro-models
@@ -69,7 +69,7 @@ same model at low effort, or a second flash provider).
 
 Two reference designs now exist. Octo ships per-server dynamic tools
 (`lsp-diagnostics`, `lsp-definition`, ... registered only when a server is
-detected; diagnostics included). DeepSeek's harness (`~/git/deepseek-harness`,
+detected; diagnostics included). DeepSeek's harness (`~/git/harnesses/deepseek-harness`,
 see the dsh addendum below) takes the opposite, and for us better, shape: **one
 `lsp` tool with an `operation` enum**, a provider registry keyed by file
 extension, and language support as **configuration, not code** — which matches
@@ -450,7 +450,7 @@ navigation, build/test invocation profiles.
 
 ## dsh addendum (deepseek-harness) — how DeepSeek does LSP
 
-`~/git/deepseek-harness` is DeepSeek's open-source agent harness (`dsh`): a
+`~/git/harnesses/deepseek-harness` is DeepSeek's open-source agent harness (`dsh`): a
 pnpm monorepo on Cordis ("everything-is-a-plugin", `ctx.<service>` seams).
 Its LSP subsystem (`packages/lsp/{lsp,lsp-stdio,tool-lsp}`, design doc
 `docs/subsystems/lsp.md`) is the cleanest reference design we found.

@@ -128,9 +128,13 @@ it."* Their admission rule — a variant returns the day it gains a real produce
 — is the right lens for us too.
 
 So: **build 3.1 only if and when the Anthropic path is actually used.** Until
-then the correct state is the one dsh arrived at after shipping the wrong one:
-no dead cache vocabulary. The concrete trigger is a real Claude subscription
-session, at which point the fix is small and 3.2/3.3 become meaningful.
+then the right state is the one dsh arrived at after shipping the wrong one: no
+dead cache vocabulary in our own core. Note the two dsh facts are consistent
+and both instructive — dsh *deleted* its own `CacheHint` (its native DeepSeek
+adapter caches implicitly and could never produce it), while for routed
+`anthropic-messages` protocols it opts into pi-ai's cache surface on purpose
+(§3.3). Own no unused cache vocabulary; enable the real one where a provider
+honors it.
 
 ### 3.2 Cache **write** accounting — small, real, unconditional
 
@@ -159,11 +163,36 @@ TTL selection**, not an expiry watcher: `cacheRetention: "none" | "short" |
 `cache_control.ttl: "1h"`, OpenAI `prompt_cache_retention: "24h"` or
 `prompt_cache_options.ttl: "30m"` on GPT-5.6+ (types.ts:634–651).
 
-**dsh gains nothing from this and is not its author.** dsh's `llm-pi-ai`
-package depends on `@earendil-works/pi-ai: ^0.85.1`; `cacheRetention` is
-imported from Pi (`config.ts:16`) and passed straight through to the adapter
-(`adapter.ts:125`). It is Pi's vocabulary surfaced in dsh's config schema —
-worth knowing so this is not re-derived as a dsh feature.
+**The vocabulary is Pi's; the decision to use it is dsh's.** dsh's `llm-pi-ai`
+package depends on `@earendil-works/pi-ai: ^0.85.1`, so `cacheRetention` is
+imported from Pi (`config.ts:16`) rather than authored by dsh — but the relay
+is not a blind passthrough. dsh classifies every compat field per protocol with
+a `CompatDisposition` gate, and for `anthropic-messages` it explicitly *opts in*
+(`catalog.ts:274`):
+
+```ts
+const ANTHROPIC_COMPAT_GATE = {
+  supportsEagerToolInputStreaming: 'offer',
+  supportsLongCacheRetention: 'offer',   // Anthropic cache_control.ttl: 1h
+  supportsCacheControlOnTools: 'offer',  // cache_control on tool definitions
+  supportsTemperature: 'offer',
+  forceAdaptiveThinking: 'offer',
+  allowEmptySignature: 'offer',
+  supportsStrictTools: 'offer',
+  sendSessionAffinityHeaders: 'withhold',   // cache-affinity routing
+  supportsToolReferences: 'withhold',
+  supportsMidConvoEffort: 'withhold',
+  allowedFallbackModels: 'withhold',
+} as const satisfies Record<keyof AnthropicMessagesCompat, CompatDisposition>
+```
+
+That is an active design position on Anthropic's cache extensions, not an
+inherited default: dsh ships a genuine `anthropic-messages` route with both
+long retention and tool-definition markers enabled, alongside its own native
+`llm-deepseek` adapter (which uses `/chat/completions` — DeepSeek caches
+implicitly, so that path needs none of this). Retained here so the distinction
+is not lost: **the field is Pi's, the opt-in is dsh's**, and dsh using it is
+evidence the Anthropic cache surface is worth having when that path is live.
 
 Work, if the Anthropic path is in play: env + stored-provider field, mapped per
 protocol in `components/llm/`, surfaced through `ev.session.status` so cache

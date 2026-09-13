@@ -1,7 +1,7 @@
 # Escalation — dynamic model and thinking selection
 
 Status: **proposal** (nothing here is implemented). Explored 2026-09-11 against
-niffler@HEAD and `~/git/deepseek-harness`@HEAD. Companions:
+niffler@HEAD and `~/git/harnesses/deepseek-harness`@HEAD. Companions:
 [EXPERT.md](EXPERT.md) (the observing peer), [CODEWHALE.md](CODEWHALE.md)
 (named cache-miss reasons, `--model auto` routing), and
 [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) / [DSH-STEAL.md](DSH-STEAL.md)
