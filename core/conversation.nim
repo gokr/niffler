@@ -1266,6 +1266,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     let workspace = resolveWorkspace(ct.root, requestedCwd)
     if not workspace.ok: return %*{"error": workspace.error}
     entry.workspace = workspace.path
+    # Announce the workspace (any directory — a conversation workspace need
+    # not be a git repo) so components can pre-warm against it; e.g. the lsp
+    # component starts servers for the languages present at bootstrap, not
+    # mid-turn. Fire-and-forget: warmup failures must never fail discovery.
+    try:
+      ct.nc.publish("ev.workspace.opened",
+        Envelope(v: 1, id: newId(), kind: ekEvent,
+                 payload: %*{"workspace": entry.workspace,
+                             "conversationId": sessionId}).encode())
+    except CatchableError as e:
+      echo "core: WARNING workspace.opened publish failed: " & e.msg
     var sp = header{"systemPrompt"}.getStr("")
     if sp.len == 0:
       sp = args{"systemPrompt"}.getStr("")

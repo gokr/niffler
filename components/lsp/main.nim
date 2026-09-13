@@ -31,6 +31,7 @@
 
 import std/[algorithm, json, monotimes, os, osproc, posix, streams, strutils, tables, times]
 import std/syncio
+import natsnim
 import niffler/sdk
 import roots
 
@@ -44,7 +45,7 @@ const
   STDERR_TAIL = 4096           # stderr tail kept for error messages
 
 const OPERATIONS = ["diagnostics", "goToDefinition", "findReferences",
-                    "goToImplementation", "hover"]
+                    "goToImplementation", "hover", "warmup"]
 
 type LspFailure = object of ValueError
   ## Raised for [E_LSP_*] failures; the bus turns it into an error envelope.
@@ -570,6 +571,75 @@ proc opLocations(h: Instance, op, uri: string, wireLine, wireChar: int,
   %*{"ok": true, "text": capText(outText), "count": locs.len}
 
 # ---------------------------------------------------------------------------
+# workspace warmup — census + pre-start (ev.workspace.opened)
+
+const
+  WARM_MAX_FILES = 5000        # census stops counting past this
+  WARM_BUDGET_SECS = 2.0       # census wall-clock budget
+  WARM_MAX_SERVERS = 2         # servers pre-started per workspace
+  WARM_SKIP_DIRS = ["node_modules", "vendor", "dist", "build", "target",
+                    "__pycache__", ".venv", "venv", "nimcache", "obj",
+                    ".gradle", ".next", ".cache", ".tox", "site-packages"]
+
+
+proc census(root: string): seq[tuple[ext: string, count: int]] =
+  ## Bounded extension census of a workspace (any directory — a conversation
+  ## workspace need not be a git repo). Hidden and known-junk dirs are
+  ## skipped; a file cap and wall-clock budget keep huge trees O(budget).
+  var counts = initCountTable[string]()
+  var seen = 0
+  let deadline = epochTime() + WARM_BUDGET_SECS
+  var stack = @[root]
+  while stack.len > 0 and seen < WARM_MAX_FILES and epochTime() < deadline:
+    let dir = stack.pop()
+    for kind, path in walkDir(dir, checkDir = true):
+      let name = splitFile(path).name
+      if name.len > 0 and name[0] == '.':
+        continue
+      case kind
+      of pcDir:
+        if path.lastPathPart.toLowerAscii() in WARM_SKIP_DIRS: continue
+        stack.add(path)
+      of pcFile:
+        let ext = splitFile(path).ext.toLowerAscii()
+        if ext.len > 1:
+          counts.inc(ext)
+          inc seen
+      else: discard
+  counts.sort()
+  for ext, count in counts:
+    result.add((ext, count))
+
+proc warmWorkspace(wsRoot: string): JsonNode =
+  ## Pre-start language-server instances for the workspace's most prevalent
+  ## languages, so the first real query doesn't pay cold-start mid-turn.
+  ## Initialize is cheap (seconds); the server keeps indexing in its own
+  ## process afterwards — by the time the model's first edit lands, a server
+  ## warmed at session start has had the whole conversation since.
+  let reg = loadRegistry()
+  let langs = census(wsRoot)
+  var picked: seq[tuple[conf: ServerConf, count: int]]
+  var seenNames: seq[string]
+  for (ext, count) in langs:
+    let conf = serverFor(reg, ext)
+    if conf.name.len == 0 or conf.name in seenNames: continue
+    seenNames.add(conf.name)
+    picked.add((conf, count))
+    if picked.len >= WARM_MAX_SERVERS: break
+  var warmed, skipped: seq[string]
+  for p in picked:
+    try:
+      discard getInstance(p.conf, wsRoot)  # reuses a live instance if any
+      warmed.add(p.conf.name)
+    except CatchableError as e:
+      skipped.add(p.conf.name & " (" & e.msg & ")")
+  var langList: JsonNode = newJArray()
+  for (ext, count) in langs[0 ..< min(langs.len, 5)]:
+    langList.add(%*{"ext": ext, "files": count})
+  %*{"ok": true, "workspace": wsRoot, "languages": langList,
+     "warmed": warmed, "skipped": skipped}
+
+# ---------------------------------------------------------------------------
 # tool handlers
 
 proc hLsp(c: Component, args: JsonNode): JsonNode =
@@ -578,6 +648,19 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   let op = args{"operation"}.getStr("")
   if op notin OPERATIONS:
     fail("E_BAD_SHAPE", "\"operation\" must be one of: " & OPERATIONS.join(", "))
+  if op == "warmup":
+    # Directory-based, not file-based: census the workspace and pre-start
+    # servers for its most prevalent languages. The core also fires this
+    # automatically on ev.workspace.opened; the op exists so callers (and
+    # tests) can trigger or re-run the same path explicitly.
+    var wsRoot = args{"workspaceRoot"}.getStr("")
+    if wsRoot.len == 0: wsRoot = args{"path"}.getStr("")
+    if wsRoot.len == 0:
+      fail("E_BAD_SHAPE", "warmup requires \"workspaceRoot\" (or \"path\")")
+    if not wsRoot.isAbsolute(): wsRoot = rootDir() / wsRoot
+    if not dirExists(wsRoot):
+      fail("E_BAD_SHAPE", "warmup workspace root does not exist: " & wsRoot)
+    return warmWorkspace(wsRoot)
   let pathN = args{"path"}
   if pathN == nil or pathN.kind != JString or pathN.getStr("").len == 0:
     fail("E_BAD_SHAPE", "lsp requires a non-empty \"path\" string")
@@ -764,6 +847,34 @@ proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
 
 let comp = newComponent("lsp", "0.1.0")
 
+discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
+                                          payload: JsonNode):
+  # Core announces every conversation workspace (any directory — a
+  # conversation workspace need not be a git repo) at bootstrap and resume.
+  # Fire-and-forget from core's side; we census and pre-start servers here
+  # so the first real lsp query later in the conversation hits warm
+  # instances instead of paying cold-start mid-turn.
+  let ws = payload{"workspace"}.getStr("")
+  if ws.len == 0 or not dirExists(ws): return
+  try:
+    let r = warmWorkspace(ws)
+    var parts: seq[string]
+    for w in r{"warmed"}: parts.add(w.getStr("") & " ready")
+    for s in r{"skipped"}: parts.add(s.getStr(""))
+    if parts.len > 0:
+      c.log("info", "workspace warmup: " & parts.join(", "))
+    # Readiness announcement — fire-and-forget (UIs can show which servers
+    # came up; tests assert on it).
+    try:
+      publish(c.nc, "ev.lsp.warm",
+        Envelope(v: 1, id: newId(), kind: ekEvent,
+                 payload: %*{"workspace": ws, "warmed": r{"warmed"},
+                             "skipped": r{"skipped"}}).encode())
+    except CatchableError:
+      discard
+  except CatchableError as e:
+    c.log("info", "workspace warmup failed: " & e.msg)
+
 discard comp.onDrain do (c: Component):
   for h in gInstances.values:
     h.dispose()
@@ -771,9 +882,9 @@ discard comp.onDrain do (c: Component):
 
 discard comp.tool("lsp", toolSchema(%*{
   "operation": {"type": "string", "enum": OPERATIONS,
-                "description": "diagnostics, goToDefinition, findReferences, goToImplementation, or hover"},
+                "description": "diagnostics, goToDefinition, findReferences, goToImplementation, hover, or warmup (pre-start servers for a workspace's languages)"},
   "path": {"type": "string",
-           "description": "File to query (inside the conversation workspace)"},
+           "description": "File to query (inside the conversation workspace); for warmup, a directory — with workspaceRoot taking precedence"},
   "line": {"type": "integer", "minimum": 1,
            "description": "One-based line at the cursor (required except for diagnostics)"},
   "character": {"type": "integer", "minimum": 1,

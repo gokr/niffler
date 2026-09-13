@@ -14,6 +14,7 @@
 
 import std/[json, os, osproc, sequtils, strutils]
 import natsnim
+import envelope
 import helpers
 import ../components/lsp/roots
 
@@ -284,6 +285,56 @@ proc main() =
         regCall(%*{"action": "remove", "name": "fakels"}){"ok"}.getBool(false))
   let rmDef = regCall(%*{"action": "remove", "name": "gopls"})
   check("removing a built-in is refused", rmDef.hasKey("error"), $rmDef)
+
+  # --- warmup: census + pre-start (the ev.workspace.opened path) ---------
+  # A directory (not a file) in, server instances pre-started out. Junk dirs
+  # (node_modules) must be skipped by the census: the only .go file lives
+  # inside one, so gopls must NOT be warmed even though .py warms pyright.
+  createDir(tmp / "warmws" / "src")
+  writeFile(tmp / "warmws" / "src" / "a.py", "x = 1\n")
+  writeFile(tmp / "warmws" / "src" / "b.py", "y = 2\n")
+  createDir(tmp / "warmws" / "node_modules")
+  writeFile(tmp / "warmws" / "node_modules" / "junk.go", "package junk\n")
+  if findExe("pyright").len > 0:
+    # Bus contract: core publishes ev.workspace.opened at bootstrap; the
+    # component answers with ev.lsp.warm listing what came up.
+    var warmEv: ptr natsSubscription
+    discard checkStatus(natsConnection_SubscribeSync(addr warmEv, nc.conn,
+                                                     "ev.lsp.warm".cstring))
+    let pub = Envelope(v: 1, id: newId(), kind: ekEvent,
+                       payload: %*{"workspace": tmp / "warmws"})
+    nc.publish("ev.workspace.opened", pub.encode())
+    var sawWarm = false
+    for i in 0 ..< 300:  # pyright cold initialize fits well inside 30s
+      var msg: ptr natsMsg
+      if natsSubscription_NextMsg(addr msg, warmEv, 100) == NATS_OK:
+        let data = $natsMsg_GetData(msg)
+        natsMsg_Destroy(msg)
+        let env = decode(data)
+        if env.payload{"workspace"}.getStr("") == tmp / "warmws":
+          sawWarm = env.payload{"warmed"}.getElems().mapIt(it.getStr("")) ==
+                    @["pyright"]
+          break
+    check("ev.workspace.opened triggers warmup and ev.lsp.warm announces it",
+          sawWarm)
+    natsSubscription_Destroy(warmEv)
+
+    let warm = lspCall(%*{"operation": "warmup",
+                          "workspaceRoot": tmp / "warmws"}, 60000)
+    let warmed = warm{"warmed"}.getElems().mapIt(it.getStr(""))
+    check("warmup censuses languages and pre-starts only the matching server",
+          warm{"ok"}.getBool(false) and warmed == @["pyright"], $warm)
+    let langs = warm{"languages"}.getElems().mapIt(it{"ext"}.getStr(""))
+    check("warmup reports the census", langs.len >= 1 and langs[0] == ".py",
+          $langs)
+    # warmup with a directory in "path" (workspaceRoot-less form) — the
+    # shape core's event handler relies on.
+    let warm2 = lspCall(%*{"operation": "warmup", "path": tmp / "warmws"}, 30000)
+    check("warmup accepts a directory via path",
+          warm2{"ok"}.getBool(false) and
+          warm2{"workspace"}.getStr("") == tmp / "warmws", $warm2)
+  else:
+    echo "  (pyright not installed — warmup checks skipped)"
 
   report("LSP TEST")
 
