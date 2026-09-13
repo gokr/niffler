@@ -37,7 +37,17 @@ This refines [PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) A1:
 - Summarization strategy stays replaceable; validation, persistence and final
   request admission belong to the runner.
 
-## 2. Prerequisite — SQLite becomes the default store
+## 2. Prerequisite — SQLite becomes the default store ☑ LANDED
+
+**Status: implemented** (branch `feat/store-sqlite-default`, three commits).
+`NIF_STORE_BACKEND` unset now means sqlite; barrel and tidb remain selectable;
+an un-migrated `var/barrel-db` makes core refuse to boot with the migration
+command. The `list` cursor shipped for all three engines, and every core
+full-kind read moved to `storeListAll`. `niffler-store-migrate` (a separate
+offline binary) moves a root between engines — verified against a real 43 MB
+production barrel (4309 documents, counts confirmed with sqlite3, harness
+booted on the migrated store). The remaining work in this document is §3
+onward.
 
 `docs/research/STORE_V2.md` set the switch condition: "barrel stays the default
 until comparison data says otherwise". Compaction supplies that data. The
@@ -50,11 +60,15 @@ corrupt a conversation's context, and it is exactly where the engines differ:
 | context-window read | `list` only: prefix + limit, no range cursor | same contract today, but `SELECT … ORDER BY id` makes a range/`after` read a one-line addition |
 | introspection | `strings` carving | `sqlite3 var/store.db 'select …'`, DuckDB attach |
 
-The second row matters as much as the first: §4.4's projection reload must read
-"messages after a boundary", and the current `list` contract cannot express it
-(the 1000-item cap truncates the oldest tail silently — the latent bug in
-`loadStoredMessagesEx`, `core/conversation.nim:196-247`). SQLite makes fixing
-that a contract addition rather than an engine rewrite.
+The second row mattered as much as the first: §4.4's projection reload must read
+"messages after a boundary", and the old `list` contract could not express it —
+the 1000-item cap silently truncated the oldest tail, which was not latent at
+all but a live bug: `loadStoredMessagesEx` resumed a long conversation with the
+first 1000 messages only, and because `lastSeqNo` came from the ids it actually
+saw, the next write targeted an id that already held history and overwrote it.
+That is fixed in this same change (tests/t_resume_long.nim demonstrates both
+failures), and the cursor is documented in `docs/WIRE.md` as part of the store
+contract.
 
 ### 2.1 Surface of the change
 

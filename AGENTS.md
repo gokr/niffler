@@ -137,10 +137,11 @@ make gotest           # Go unit tests + vet (+ `-race` for sdk/go, mcp,
 make recover          # stop everything, rebuild shipped binaries, wipe
                       # spawned-component records, restart (--recover)
 make down             # stop stray harnesses/components + nats-server (e.g. a
-                      # detached core holding var/barrel-db.lock so a fresh
-                      # store refuses to start; also check var/logs/<name>.log
-                      # — the supervisor writes child output there and shows
-                      # its tail when a child dies)
+                      # detached core holding the store's flock so a fresh
+                      # store refuses to start — var/store.db.lock for sqlite
+                      # (default) or var/barrel-db.lock for barrel; also check
+                      # var/logs/<name>.log — the supervisor writes child
+                      # output there and shows its tail when a child dies)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
 make dev              # Svelte dev server in a browser (bridge stubbed)
@@ -158,7 +159,8 @@ nimble smoke          # legacy: the original end-to-end script (bash + store).
   one `t_*.nim` per component) that exit non-zero on failure. Run
   `make test` after bus/SDK changes.
 - Binaries land in `var/bin/`; `var/` is gitignored runtime state (build cache,
-  `barrel-db` store file, `nats-url` of the last spawned bus).
+  the store data file — `var/store.db` by default, `var/barrel-db` for barrel
+  roots — and `nats-url` of the last spawned bus).
 - Lifecycle has no launcher script: any UI's first act is the SDK's
   `ensureHarness` — probe (env → `var/nats-url` → 127.0.0.1:4222) for a live
   core, else spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`.
@@ -205,24 +207,35 @@ The SPA is a NATS client, not a Wails client: it only talks to
   Core writes `var/nats-url`; standalone clients (`cli`, `console`)
   resolve it against their binary's clone, never the cwd.
 - The `store` component is single-writer: exactly one process owns its
-  database (barrel engine: `var/barrel-db` + flock; sqlite engine:
-  `var/store.db` + flock; tidb engine: `NIF_STORE_TIDB_DSN` cluster — no
-  flock, the DSN is shared network state and row locks arbitrate;
-  selected with `NIF_STORE_BACKEND` — see docs/research/STORE_V2.md).
-  Never run two file-backed stores against the same file.
+  database (sqlite engine, **default**: `var/store.db` + flock; barrel
+  engine: `var/barrel-db` + flock; tidb engine: `NIF_STORE_TIDB_DSN`
+  cluster — no flock, the DSN is shared network state and row locks
+  arbitrate; selected with `NIF_STORE_BACKEND` — see
+  docs/research/STORE_V2.md and docs/research/COMPACTION.md §2).
+  Never run two file-backed stores against the same file. Switching the
+  default does NOT migrate data: core refuses to boot over an un-migrated
+  `var/barrel-db` and prints `niffler-store-migrate` instructions.
+- `list` is a page, not a complete view: capped at 1000 items, with
+  `hasMore` + an `nextAfter` cursor (`after` to continue). Core's full-kind
+  reads use `storeListAll` (core/dispatch.nim) / `storeListAll`
+  (sdk/niffler) because a single capped list silently truncated long
+  transcripts on resume.
 - **Reading a conversation (session transcript) from the store**: the store
   keeps full history even though in-memory context gets trimmed. While the
-  harness that owns the barrel-db is on the bus:
+  harness that owns the database is on the bus:
   `./var/bin/cli call list '{"kind":"conversation"}'` enumerates sessions
   (id, title, model, createdAt), then
   `./var/bin/cli call list '{"kind":"message","idPrefix":"<convId>:","limit":1000}'`
-  returns the transcript in order and
+  returns the transcript in order (page with `after: <nextAfter>` for
+  conversations longer than 1000 messages) and
   `./var/bin/cli call get '{"kind":"conversation","id":"<convId>"}'` the
   header. Mind which store answers: the bus may host a different harness
-  (test or debug NIF_ROOT) — `readlink /proc/$(pgrep -f bin/store | head -1)/cwd`
-  shows which barrel-db the serving store owns. Offline (no harness), values
-  are plain JSON inside `var/barrel-db`, so `strings` carving works in a
-  pinch, but the cli path is the supported way.
+  (test or debug NIF_ROOT) — `readlink /proc/$(pgrep -f 'bin/store' | head -1)/cwd`
+  shows which root the serving store owns. Offline (no harness), values are
+  plain JSON inside `var/store.db` (sqlite is just SQLite — `sqlite3
+  var/store.db 'select kind, count(*) from docs group by kind'`) or inside
+  `var/barrel-db` for barrel roots, so carving works in a pinch; the cli
+  path is the supported way.
 - `llm` is Go (`sdk/go`); the builder gives agent-written Go components a
   `go.mod` with a `replace niffler.dev/sdk => <root>/sdk/go` automatically.
   It streams live tokens as `ev.llm.token` deltas; core re-emits them as
