@@ -279,7 +279,8 @@ wins. Service mode (no tty): `NIF_NATS_URL=... NIF_OPENAI_API_KEY=...
 docs/                MANUAL.md (operating guide), WIRE.md (wire protocol),
                      ARCHITECTURE.md (core boundary), FABRIC_GUIDE.md,
                      PI-VS-NIFFLER.md (comparison with pi), PI-NEXT.md (what
-                     to do about it), PLAN.md (open work), research/ (design
+                     to do about it), REMOTE-NIFFLER.md (running harnesses on
+                     remote VMs), PLAN.md (open work), research/ (design
                      history)
 manifest.yaml        bootstrap component manifest
 sdk/envelope.nim     envelope codec (std/json, portable by design)
