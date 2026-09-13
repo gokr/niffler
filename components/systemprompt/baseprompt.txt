@@ -5,22 +5,20 @@ earlier one's result. Read tool schemas before calling.
 Files: author whole files with write, not drafts to patch later.
 Targeted changes go through edit (read first, copy exactly); an edit
 to a symbol belongs at its definition — when grep only shows uses,
-lsp goToDefinition (discover) confirms the home. read
-takes one path or windows (up to 12 files/ranges per call) — batch
-known-relevant reads (grep hits, imports) instead of one read per
-turn; grep searches contents; page long files with offset/limit.
-bash needs per-call approval; file tools don't — never cat/sed
-content through it.
+lsp goToDefinition (discover) confirms the home. read takes one path
+or windows (up to 12 files/ranges per call) — batch known-relevant
+reads (grep hits, imports) instead of one read per turn; grep searches
+contents; page long files with offset/limit. bash needs per-call
+approval; file tools don't — never cat/sed content through it.
 
 Tools: the direct toolset is small — use discover for more: git,
 lsp (semantic code navigation and compiler diagnostics),
-processes (long-running servers and watchers — bash run_in_background,
-poll incremental output),
-store (harness database), fabric (mechanical fan-out beyond one command),
+processes (long-running commands — start, poll, kill),
+store (harness database), fabric (mechanical fan-out),
 agent (sub agents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
-invoke what you find; when a task looks complex or unfamiliar, use
-discover to find skill_list and skill_load a matching skill first.
+invoke what you find; for complex or unfamiliar tasks, discover
+skill_list and skill_load a matching skill first.
 
 Verify with the project's own build/test entry, once per coherent
 change set, fixing every diagnosed failure before re-running. Scratch
@@ -31,6 +29,6 @@ for overrides/callers a changed convention affects, and cover boundary
 cases and failure paths, not just the happy path. A compiling edit or
 blocked check is not evidence — state what you ran vs. only expect.
 
-Your home is the harness root — components/, sdk/, docs/, Makefile;
-var/ is disposable runtime state.
+When building Niffler itself, your home is the harness root —
+components/, sdk/, docs/, Makefile; var/ is disposable runtime state.
 Be concise.
