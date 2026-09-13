@@ -8,6 +8,42 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **core: UI registry + external workspaces.** Interactive clients
+  announce themselves through the hidden core tool `ui`
+  (`core/uireg.nim`; ops `register`/`renew`/`release`/`claim`/
+  `release_session`/`owner`): a client-supplied UUID gets a monotonic
+  display number ("Niffler 1", "Niffler 2", … — never reused) and renews
+  a 20s lease; expired entries are swept lazily on every registry
+  decision, so no timer thread is needed. Claims broker conversation
+  ownership — a second live UI resuming the same conversation is told who
+  holds it instead of silently joining its stream. Coordination between
+  cooperating UIs, not authentication; non-lease clients keep legacy
+  behavior. Conversation workspaces are no longer confined to `NIF_ROOT`:
+  any existing directory is allowed (root stays the default and the base
+  for relative requests), the systemprompt ancestor walk stops at the
+  harness root for internal workspaces but at the workspace itself for
+  external ones (no stray machine-wide `AGENTS.md` pickup), and external
+  context paths render absolute in `<project_instructions>`. Tests:
+  `t_uireg` (numbering, expiry, claims), `t_core` (external workspace
+  accepted, missing refused, immutability), `t_systemprompt` (walk),
+  `t_discover` (`ui` stays hidden).
+
+- **plugins: slash surface + update semantics.** The `plugins` component
+  registers `/plugins`, `/plugins-search`, `/plugins-install`,
+  `/plugins-update`, `/plugins-remove` — each bound to its tool, so UIs
+  route through the normal approval path; names follow the owner-prefix
+  convention documented in docs/WIRE.md (the slash namespace is global and
+  core rejects duplicates, so generic verbs would collide across
+  packages). `plugin_update` fixes: a tag move now requires the recorded
+  ref to actually name a tag in the install's clone, so a branch-pinned
+  install follows its branch in place instead of being silently
+  downgraded to the newest release; `resolveTag` falls back to the
+  highest version-looking tag from `/tags` when a repo publishes no
+  releases (e.g. `gokr/niffler-tui`), so tag pins on release-less repos
+  can move forward; refless `file://` installs read the clone's
+  checked-out branch and persist it, and a no-op update persists the
+  detected branch so the record stops showing an empty ref.
+
 - **bench: SWE-bench Multilingual pilot (10 tasks, 7 languages) — Go
   (caddy, gin), Rust (tokio, nushell), C (redis, jq), C++ (fmt), JS
   (axios), TS (docusaurus), Ruby (rubocop); real OSS repos, real

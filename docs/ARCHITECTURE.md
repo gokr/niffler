@@ -115,6 +115,7 @@ The mechanisms that *are* components, and the capability they carry:
 | `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
 | `edit` | file tools | `read` (one `path` or a batched `reads` array — up to 12 files/ranges, pageable) / `edit` (exact old_string/new_string, uniqueness enforced, guarded fallback cascade, `replace_all`) / `write` (atomic whole-file) / `undo_last_edit`; anchored block moves live in the niffler-hashline plugin |
 | `git` | repo inspection | read-only `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv; mutations stay in bash |
+| `lsp` | language-server seam | one `lsp` tool (`diagnostics`/`goToDefinition`/`findReferences`/`goToImplementation`/`hover`) over any configured stdio language server; the registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`), so adding a language is a config entry or an approval-gated `lsp_registry add` — never code |
 | `observe` | live introspection | bounded raw-bus ring, targeted probes/traces, and server monitoring |
 | `logfile` | diagnostic persistence | rotating best-effort JSONL sink; no JetStream/audit guarantee |
 
