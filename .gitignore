@@ -34,6 +34,9 @@ nimbledeps
 # swebench 4.x scratch (relative logs/ dir; tasks should run under var/)
 logs/
 
+# local scratch experiments (one-off scripts, e.g. lsp_sweep drafts)
+scratch/
+
 # codewhale agent state (npm package, not repo content)
 .codewhale/
 
