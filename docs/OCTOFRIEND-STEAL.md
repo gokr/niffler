@@ -354,6 +354,56 @@ start from `go.lsp.dev/protocol`; if Nim, hand-roll framing + copy dsh's
 seam/provider/tool split (see the dsh addendum below — it is the better
 template for us).
 
+## Steal 5 follow-up — how the other harnesses do background processes
+
+Surveyed dsh, Claude Code, and Pi before building. Three stances:
+
+**dsh — flag on the shell tool + a kind-agnostic job runtime.** `bash` and
+`pwsh` carry `run_in_background: true` (the call returns a job id
+immediately; no timeout applies), and *everything* backgroundable — bash
+commands, PTY sends, subagents — registers in one generic `ctx.jobs`
+runtime read through **three shared tools**: `job_output` (stream jobs
+return only output since the previous read; `wait: true` blocks up to a cap
+and reports `[status: ...]`), `job_list`, `job_kill`. Background completion
+notices arrive as injected messages. Plus a second tier: `terminal_*` (six
+tools) for **interactive PTY sessions** — send text, read a bounded page of
+retained output by offset, signal, close-waits-for-process-tree — and
+`bash-persistent` (cwd/env persist across calls).
+
+**Claude Code — the same family, smaller.** `Bash {run_in_background: true}`
+returns a shell id; `BashOutput {shell_id, filter?}` returns incremental
+output since the last read (filter = regex over new lines); `KillBash`.
+Completion surfaces as a notification.
+
+**Pi — deliberately nothing.** README: "No background bash. Use tmux. Full
+observability, direct interaction." The model drives tmux over ordinary
+bash: `new-session -d`, `send-keys`, `capture-pane`. The harness stays
+minimal and delegates lifecycle to a battle-tested external tool — at the
+cost of no ownership/reaping (tmux servers leak the same way nohup does),
+no drain cursors (the model re-captures scrollback and must track offsets
+itself), and tmux vocabulary the model has to know.
+
+**Niffler's design (settled): separate `processes` component, plus
+discoverability wiring.** The dsh/Claude-Code shape fits the bus best, with
+the drain-cursor semantic from both. Concretely:
+
+- `process_start {command, label?}` (approval: always, like bash-class
+  commands) · `process_poll {id, waitMs?}` (drain-since-cursor; effect read)
+  · `process_kill {id}` (approval: always) · `process_list {}`.
+- `runTurn`-independent: the component owns its children (own process
+  groups via `procutil.killGroup`), `onDrain` reaps, boot sweep kills
+  pids recorded in `var/processes.json` so crashes can't leak servers.
+- **Discoverability lands with the component, not before** (pointing the
+  model at a component that doesn't exist is worse than silence):
+  - baseprompt enumeration gains `processes (long-running servers and
+    watchers — start once, poll incrementally)`;
+  - the **bash description gains the pointer**: "long-running processes
+    (servers, watchers): discover the processes component — start once and
+    poll incremental output — instead of blocking this call or backgrounding
+    with &"; bash stays the synchronous one-shot;
+  - both are one-line edits shipped in the same commit as the component.
+
+
 ## Design principle: language X is always a plugin or config
 
 Now an architecture invariant (AGENTS.md, "Language-agnostic core"): shared
