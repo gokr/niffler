@@ -706,8 +706,8 @@ correctness, latency and cache rebuilds — not just token reduction.
 
 | # | Step | Why first |
 |---|---|---|
-| 0 | SQLite default + paged-read contract + importer + docs (§2, §6.4) | compaction's durability and reload depend on both |
-| 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes |
+| 0 | SQLite default + paged-read contract + importer + docs (§2, §6.4) | compaction's durability and reload depend on both — ☑ LANDED (merged with feat/store-sqlite-default) |
+| 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes — ☑ LANDED (CtxNode ledger 1:1 with the projection, ctxAppend growth path, canonicalHigh, loadStoredMessagesEx nodes + `after` cursor, ctxDigest; t_ctxcompact) |
 | 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components |
 | 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists |
 | 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam |
