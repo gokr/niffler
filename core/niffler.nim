@@ -387,6 +387,34 @@ proc main() =
   # --- 3. manifest → children --------------------------------------------
   let manifest = loadManifest(root)
   var required: seq[string] = @[]
+
+  # Un-migrated barrel guard (docs/research/COMPACTION.md §2, STORE_V2 migration):
+  # the default engine changed from barrel to sqlite, and switching does NOT
+  # migrate data. Booting sqlite over an existing barrel would open an empty
+  # database and look exactly like every conversation vanished, while the real
+  # history sat untouched in var/barrel-db. Refuse loudly with the command to
+  # run instead — a deliberate, recoverable stop, not silent data loss.
+  block storeGuard:
+    let requested = getEnv("NIF_STORE_BACKEND", "")
+    if requested in ["", "sqlite"]:
+      let sqlitePath = root / "var/bin/store-sqlite"
+      let sqliteDb = root / "var" / "store.db"
+      let barrelDb = root / "var" / "barrel-db"
+      # Only when the engine we are about to run is actually present (the
+      # missing-binary fallback below has its own, gentler handling) and the
+      # target database does not exist yet but old history does.
+      if fileExists(sqlitePath) and not fileExists(sqliteDb) and
+          fileExists(barrelDb):
+        let cmd = "niffler-store-migrate"
+        quit("core: this harness has conversation history in var/barrel-db, " &
+             "but the default store engine is now SQLite and no var/store.db " &
+             "exists yet.\n" &
+             "core: migrate first (nothing is moved automatically):\n" &
+             "core:     " & cmd & " --root " & root & "\n" &
+             "core: scan for other un-migrated roots (benchmarks, clones):\n" &
+             "core:     " & cmd & " --scan\n" &
+             "core: or keep using the old engine: NIF_STORE_BACKEND=barrel", 1)
+
   for c in manifest{"components"}:
     let name = c{"name"}.getStr("")
     if minimalMode and name notin minimalComponents:
