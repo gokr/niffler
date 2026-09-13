@@ -51,6 +51,12 @@ else
   else skip "typescript-language-server" "no npm"; fi
 fi
 
+# ---- Shell: bash-language-server -------------------------------------------
+if have bash-language-server; then ok "bash-language-server"
+elif have npm; then npm install -g bash-language-server >/dev/null 2>&1 \
+  && ok "bash-language-server" || fail "bash-language-server" "npm install failed"; \
+else skip "bash-language-server" "no npm"; fi
+
 # ---- Rust: rust-analyzer ---------------------------------------------------
 if have rust-analyzer; then ok "rust-analyzer"
 else
@@ -91,7 +97,7 @@ else skip "nimlangserver" "no nimble (make install-nim)"; fi
 
 echo "---"
 echo "$installed language server(s) newly installed; total available:"
-for s in gopls pyright typescript-language-server tsserver rust-analyzer clangd nimlangserver; do
+for s in gopls pyright typescript-language-server tsserver bash-language-server rust-analyzer clangd nimlangserver; do
   if have "$s"; then
     p=$(command -v "$s" || true)
     [ -z "$p" ] && for d in "$HOME/go/bin" "$BIN"; do
