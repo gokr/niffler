@@ -18,7 +18,7 @@ anything structural.
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
   `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
-  `logfile`, `models`, `provider`, `llm`, `mcp` are peers. Adding a
+  `logfile`, `models`, `provider`, `llm`, `mcp`, `lsp` are peers. Adding a
   capability = write source → `builder.build`
   → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
   coordinated components and uses their existing NATS queue group. Removing
@@ -57,7 +57,7 @@ anything structural.
   per-language heuristics, or `case language` branches in shared components.
   Language support is added as **data** (declarative registries: server
   commands, extension maps, patterns in config) or as a **plugin component**
-  implementing a generic seam — e.g. the planned `lsp` component: any language
+  implementing a generic seam — e.g. the `lsp` component: any language
   server is one config entry; an exotic transport is a plugin that answers the
   same normalized contract. When a feature seems to need per-language code in
   a shared component, extract a registry or provider seam instead. The test:

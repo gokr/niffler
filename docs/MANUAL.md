@@ -407,14 +407,14 @@ reports:
   Budget exhaustion ends the turn as a budget-exhausted error — subagent
   drivers (`agent_run`/`agent_spawn`) surface it as a failure, never a
   text reply.
-- `cwd` pins the conversation's **workspace**: an existing directory inside
-  `NIF_ROOT` (relative paths resolve against the root), immutable after
-  creation and persisted in the header so resumed runners resolve context
-  and paths identically. Session runners rewrite path-shaped tool arguments
-  at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
-  resolve relative paths there, and git tools scope at the workspace repo.
-  The system prompt component appends a workspace notice when it differs
-  from the root. The default workspace is `NIF_ROOT` itself.
+- `cwd` pins the conversation's **workspace**: any existing directory on the
+  machine (relative requests resolve against `NIF_ROOT`, which is also the
+  default workspace), immutable after creation and persisted in the header
+  so resumed runners resolve context and paths identically. Session runners
+  rewrite path-shaped tool arguments at dispatch: bash runs with `cwd` set
+  to the workspace, edit/grep/read resolve relative paths there, and git
+  tools scope at the workspace repo. The system prompt component appends a
+  workspace notice when it differs from the root.
 - After every chat call core records prompt tokens and uses
   `usage.total_tokens` (or prompt + completion fallback) as the best current
   occupancy. Provider, model, context, occupancy and the override are also
@@ -496,14 +496,16 @@ topic `niffler-component` are discoverable without any registry:
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |
 | `plugin_installed` | the packages installed on this harness |
 | `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build`, then `core.spawn` each service component (approved) |
-| `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt only when the pull moved HEAD |
+| `plugin_update {package}` | tag pins (the recorded ref names a tag in the clone) move to the newest tag: remove, reinstall at the new ref. Everything else — a branch pin, or a repo with no newer tag — is updated in place: `git pull --ff-only` of the tracked branch (the recorded ref; refless installs use the clone's checked-out branch, detached HEAD refuses) and rebuilt only when the pull moved HEAD. Branch pins keep following their branch instead of being silently downgraded to the newest release |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
 - Install/update/remove all carry `x-harness.approval: "always"` — they
   run third-party code, and every individual spawn/remove is approved
   again by core. Never run them with `NIF_AUTO_APPROVE=1` unless you trust
   the publisher.
-- The default ref is the latest release tag, else the default branch.
+- The default ref is the latest release tag, else the highest
+  version-looking tag (`/tags` — many packages tag without publishing
+  releases), else the default branch.
   `version` pins a tag or branch explicitly.
 - Components always build from source via the `builder` — the same path
   agent-written components take. Running Niffler already provides the
@@ -1434,9 +1436,12 @@ itself.
    - per directory, first hit wins: `AGENTS.override.md`, `AGENTS.md`,
      `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (one file per directory —
      `AGENTS.md` shadows a `CLAUDE.md` next to it; symlinks are followed);
-   - ancestor walk from the conversation's cwd up to `/`, harness root
-     first, deduplicated by path — nearer-to-cwd files appear later, so the
-     most specific instructions are the last thing the model reads;
+   - ancestor walk from the conversation's cwd up to the scope root:
+     the harness root for workspaces inside it, the workspace itself for
+     external ones (walking to `/` would pick up stray machine-wide files
+     — an `AGENTS.md` in `$HOME`); deduplicated by path, one file per
+     directory — context files outside the harness root render absolute in
+     `path`, inside ones stay root-relative;
    - worktree shadow rule: when the harness root is a `git worktree` under
      the main repo, the main repo root's context file is skipped — the
      ancestor walk would otherwise apply the same logical repo scope twice.
@@ -1841,6 +1846,17 @@ spawned bus with it; if none ever arrives it gives up after
 `NIF_AUTOSTART_BOOT_S` (default 60s). Closing a UI that attached to a
 *manually* started core changes nothing — the core stays up.
 `NIF_ENSURE_ATTACH=0` makes `ensureHarness` spawn unconditionally (tests).
+
+Interactive clients also announce themselves to core through the hidden
+`ui` tool (`core/uireg.nim`): a client-supplied UUID is registered with a
+monotonic display number ("Niffler 1", "Niffler 2", …, never reused) and a
+20s lease the client renews; the lease is the liveness signal, and expired
+entries are swept lazily on the next registry decision. Claims broker
+conversation ownership — one live UI holds a conversation at a time, so a
+second TUI resuming the same conversation is told who owns it instead of
+silently joining its stream. This is coordination against accidental
+interference between cooperating UIs, not authentication: clients that
+never register keep the legacy join behavior.
 
 ## Common tasks
 

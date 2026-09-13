@@ -222,7 +222,11 @@ ev.approval.resolved   # core → UIs: {id, ok} gate verdict; clients dismiss
 
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
-`kill`, `remove`. `catalog` ops: `list` (the name-sorted *direct*
+`kill`, `remove`, `ui` (hidden interactive-client registry: `register`/
+`renew`/`release`/`claim`/`release_session`/`owner` — a UI announces a
+UUID, gets a monotonic display number and renews a 20s lease; claims
+broker conversation ownership between cooperating UIs). `catalog` ops:
+`list` (the name-sorted *direct*
 projection — tools without `x-harness.onDemand`/`x-harness.hidden`),
 `components` (component→tools view over the full catalog for bus clients
 — the CLI reads this authoritative snapshot for catalog, tool lookup, and
