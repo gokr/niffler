@@ -355,9 +355,15 @@ var/bin/test_%: tests/%.nim tests/helpers.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 
 var/bin/test_t_schema_validation: core/schema_validation.nim
 
+var/bin/test_t_catalog: core/catalog.nim core/schema_validation.nim
+
+var/bin/test_t_core_requests: $(wildcard core/*.nim)
+
 var/bin/test_t_approval_manifest: core/approval.nim core/catalog.nim
 
 var/bin/test_t_retry_unit: core/retry.nim
+
+var/bin/test_t_supervisor_backoff: core/supervisor.nim core/catalog.nim
 
 var/bin/test_t_ctx_accounting: core/conversation.nim
 

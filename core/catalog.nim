@@ -49,7 +49,7 @@ type
     components*: Table[string, ComponentReg]
     toolIndex*: Table[string, string]   ## tool name -> component name
     slashIndex*: Table[string, string]  ## slash command name -> component name
-    ## onChange fires after ev.catalog.updated is published; the system core
+    ## onChange fires before ev.catalog.updated is published; the system core
     ## uses it to checkpoint the merged slash table into the store.
     onChange*: proc (cat: Catalog)
     sub*: ptr natsSubscription
@@ -587,12 +587,12 @@ proc slashList*(reg: ComponentReg): JsonNode =
 proc announce(cat: Catalog) =
   let env = Envelope(v: 1, id: newId(), kind: ekEvent,
                      payload: cat.promptTools())
-  cat.nc.publish("ev.catalog.updated", env.encode())
   if cat.onChange != nil:
     try:
       cat.onChange(cat)
     except CatchableError:
       discard  # checkpointing is best effort
+  cat.nc.publish("ev.catalog.updated", env.encode())
 
 proc dropRegistration(cat: Catalog, name, reason: string) =
   ## Remove one logical component and its tool/slash indexes.
@@ -643,10 +643,18 @@ proc handle(cat: Catalog, subject, data: string) =
     # refuses the ENTIRE registration, before any state changes: a component
     # that joins minus its colliding tool shows up "installed" while silently
     # doing nothing — a loud missing component beats a broken one.
-    if node{"tools"} != nil:
-      for t in node{"tools"}:
+    let tools = node{"tools"}
+    if tools != nil:
+      if tools.kind != JArray:
+        echo "catalog: rejecting " & name & " — tools must be an array"
+        return
+      var names = initHashSet[string]()
+      for t in tools:
         let tname = t{"name"}.getStr("")
-        if tname.len == 0: continue
+        if tname.len == 0 or tname in names:
+          echo "catalog: rejecting " & name & " — missing or duplicate tool name"
+          return
+        names.incl(tname)
         let owner = cat.toolIndex.getOrDefault(tname)
         if owner.len > 0 and owner != name:
           echo "catalog: rejecting " & name & " — tool '" & tname &

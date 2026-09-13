@@ -9,6 +9,7 @@
 
 import std/[json, os, osproc, strutils]
 import natsnim
+import envelope
 import helpers
 
 proc main() =
@@ -193,6 +194,19 @@ proc main() =
                     %*{"sessionId": "si-introspect", "model": ""}, 120_000)
   check("session status path works without an LLM",
         sessSt{"ok"}.getBool(false), $sessSt)
+
+  for data in ["not json", """{"id":"runner-invalid","kind":"event"}"""]:
+    var msg: ptr natsMsg
+    let st = natsConnection_Request(addr msg, nc.conn,
+      "svc.session.si-introspect.call", data.cstring, data.len.cint, 1000)
+    check("runner answers malformed request", st == NATS_OK, data)
+    if st == NATS_OK:
+      let response = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      check("runner returns bad-envelope", response.kind == ekError and
+        response.error{"code"}.getStr("") == "bad-envelope")
+      if data.contains("runner-invalid"):
+        check("runner preserves invalid request id", response.id == "runner-invalid")
 
   # fresh conversation: header fields present, zero messages
   let si0 = call(nc, "core", "session_info",

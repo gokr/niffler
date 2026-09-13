@@ -15,11 +15,11 @@
 ##                 checks real overlap instead of wall-clock timing)
 ## Every later working round returns the final reply "parallel-done".
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, tables]
 import niffler/sdk
 
 let comp = newComponent("llm", "0.1.0-mock")
-var workingRounds = 0
+var workingRounds = initTable[string, int]()
 let scenario = getEnv("NIF_MOCK_SCENARIO", "wave")
 
 ## NIF_MOCK_FAIL_FIRST (retry scenario): fail the first N chat calls with a
@@ -49,8 +49,25 @@ proc(c: Component, args: JsonNode): JsonNode =
     # Bus-level error envelope → the runner's dispatchToolCall raises with
     # this message, classified retryable (503).
     raise newException(ValueError, "llm HTTP 503: mock transient outage")
-  workingRounds += 1
-  if workingRounds == 1:
+  # Strict providers reject dangling assistant calls on the next request.
+  var outstanding: seq[string]
+  for message in args{"messages"}:
+    if message{"role"}.getStr("") == "tool":
+      let id = message{"tool_call_id"}.getStr("")
+      let idx = outstanding.find(id)
+      if idx < 0: raise newException(ValueError, "unmatched tool result")
+      outstanding.delete(idx)
+    else:
+      if outstanding.len > 0:
+        raise newException(ValueError, "missing tool results")
+      let calls = message{"tool_calls"}
+      if calls != nil and calls.kind == JArray:
+        for call in calls: outstanding.add(call{"id"}.getStr(""))
+  if outstanding.len > 0:
+    raise newException(ValueError, "missing tool results")
+  let sid = args{"sessionId"}.getStr("")
+  workingRounds[sid] = workingRounds.getOrDefault(sid) + 1
+  if workingRounds[sid] == 1:
     var calls = newJArray()
     var n = 0
     let fn = proc(name, arguments: string) =

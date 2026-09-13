@@ -154,7 +154,11 @@ proc main() =
     let reply = $natsMsg_GetReply(msg)
     natsMsg_Destroy(msg)
     let env = decode(data)
-    if env.kind != ekCall or reply.len == 0: continue
+    if reply.len == 0: continue
+    if env.kind != ekCall:
+      nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
+        "expected a call envelope").encode())
+      continue
     var resp: Envelope
     try:
       case env.tool

@@ -206,6 +206,41 @@ proc main() =
             tools[3]{"name"}.getStr("") == "files" and
             ($tools[3]).contains("a.txt"), $tools[3])
 
+    let scopedId = sessionId & "-scoped"
+    let scoped = call(nc, "core", "session",
+      %*{"sessionId": scopedId, "cwd": "sub", "tools": ["read"],
+         "content": "go"}, 120_000)
+    check("wave: scoped turn completes", scoped{"error"} == nil, $scoped)
+    let scopedTools = toolMessages(nc, scopedId)
+    check("wave: all scoped calls paired", scopedTools.len == 4)
+    if scopedTools.len == 4:
+      check("wave: allowlisted read executes",
+        scopedTools[0]{"content"}.getStr("").contains("AAA"), $scopedTools[0])
+      for i in 2 .. 3:
+        check("wave: unallowlisted tool denied " & $i,
+          scopedTools[i]{"content"}.getStr("").contains("tool allowlist"),
+          $scopedTools[i])
+
+    let budgetId = sessionId & "-budget"
+    let budget = call(nc, "core", "session",
+      %*{"sessionId": budgetId, "cwd": "sub", "maxCalls": 1,
+         "content": "go"}, 120_000)
+    check("wave: budget exhausted", budget{"turnError"}.getStr("").contains("budget"),
+      $budget)
+    let budgetTools = toolMessages(nc, budgetId)
+    check("wave: budget cutoff pairs all calls", budgetTools.len == 4)
+    if budgetTools.len == 4:
+      check("wave: remaining budget executes first call",
+        budgetTools[0]{"content"}.getStr("").contains("AAA"), $budgetTools[0])
+      for i in 1 .. 3:
+        check("wave: excess call skipped " & $i,
+          budgetTools[i]{"content"}.getStr("").contains("budget"), $budgetTools[i])
+    discard call(nc, "core", "kill", %*{"name": "session-" & budgetId}, 10_000)
+    let resumed = call(nc, "core", "session",
+      %*{"sessionId": budgetId, "content": "continue"}, 120_000)
+    check("wave: strict provider accepts resumed budget-cut transcript",
+      resumed{"reply"}.getStr("") == "parallel-done", $resumed)
+
   # ---- scenario: interleave (serial bash between two read waves) ---------
   block:
     let sandbox = newCoreSandbox("parallel-interleave",
@@ -249,6 +284,19 @@ proc main() =
             tools[2]{"tool_call_id"}.getStr("") == "c3" and
             tools[2]{"name"}.getStr("") == "read" and
             ($tools[2]).contains("needle hit"), $tools[2])
+
+    let budgetId = sessionId & "-budget"
+    let budget = call(nc, "core", "session",
+      %*{"sessionId": budgetId, "content": "go", "maxCalls": 2}, 120_000)
+    check("interleave: budget exhausted",
+      budget{"turnError"}.getStr("").contains("budget"), $budget)
+    let budgetTools = toolMessages(nc, budgetId)
+    check("interleave: budget cutoff pairs all calls", budgetTools.len == 3)
+    if budgetTools.len == 3:
+      check("interleave: serial call within budget executes",
+        budgetTools[1]{"content"}.getStr("").contains("serial-ok"), $budgetTools[1])
+      check("interleave: call beyond budget skipped",
+        budgetTools[2]{"content"}.getStr("").contains("budget"), $budgetTools[2])
 
   # ---- scenario: slow (cross-component concurrency timing) ----------------
   block:

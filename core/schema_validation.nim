@@ -1,6 +1,6 @@
 ## Bounded validation for the JSON Schema subset published by Niffler tools.
 
-import std/[json, sets]
+import std/[json, sets, unicode]
 
 const
   maxSchemaDepth = 32
@@ -80,12 +80,12 @@ proc validateNode(schema, value: JsonNode, path: string, depth: int,
         let name = field.getStr("")
         if name.len > 0:
           let child = value{name}
-          if child == nil or child.kind == JNull:
+          if child == nil:
             return path & "." & name & " is required"
     if value.len < schema{"minProperties"}.getInt(0):
       return path & " has too few properties"
-    let maxProperties = schema{"maxProperties"}.getInt(0)
-    if maxProperties > 0 and value.len > maxProperties:
+    let maxProperties = schema{"maxProperties"}.getInt(-1)
+    if maxProperties >= 0 and value.len > maxProperties:
       return path & " has too many properties"
     let properties = schema{"properties"}
     var known = initHashSet[string]()
@@ -110,8 +110,8 @@ proc validateNode(schema, value: JsonNode, path: string, depth: int,
   of JArray:
     if value.len < schema{"minItems"}.getInt(0):
       return path & " has too few items"
-    let maxItems = schema{"maxItems"}.getInt(0)
-    if maxItems > 0 and value.len > maxItems:
+    let maxItems = schema{"maxItems"}.getInt(-1)
+    if maxItems >= 0 and value.len > maxItems:
       return path & " has too many items"
     let items = schema{"items"}
     if items != nil:
@@ -120,10 +120,11 @@ proc validateNode(schema, value: JsonNode, path: string, depth: int,
                                depth + 1, nodes)
         if err.len > 0: return err
   of JString:
-    if value.getStr().len < schema{"minLength"}.getInt(0):
+    let length = value.getStr().runeLen
+    if length < schema{"minLength"}.getInt(0):
       return path & " is shorter than minLength"
-    let maxLength = schema{"maxLength"}.getInt(0)
-    if maxLength > 0 and value.getStr().len > maxLength:
+    let maxLength = schema{"maxLength"}.getInt(-1)
+    if maxLength >= 0 and length > maxLength:
       return path & " is longer than maxLength"
   of JInt, JFloat:
     let number = value.getFloat()

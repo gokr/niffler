@@ -724,7 +724,11 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
     let reply = $natsMsg_GetReply(msg)
     natsMsg_Destroy(msg)
     let env = decode(data)
-    if env.kind != ekCall or reply.len == 0: continue
+    if reply.len == 0: continue
+    if env.kind != ekCall:
+      ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
+        "expected a call envelope").encode())
+      continue
     if env.tool == "session":
       ct.pending.items.add((env: env, reply: reply))
       continue
@@ -1068,12 +1072,8 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
       # workspace it also resolved `path` against.
       args[cwdField] = %resolve(args{cwdField}.getStr(""))
 
-proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
-                       defaultTimeoutMs: int = 120000,
-                       deadlineMs: int = 0): JsonNode =
-  if tool == "invoke":
-    return invokeTool(ct, args, defaultTimeoutMs)
-
+proc checkToolAllowlist(ct: CoreTools, tool: string) =
+  ## Enforce the same session scope on serial and parallel dispatches.
   # Per-session tool allowlist (subagent scoping): a conversation frozen
   # with a tools list may dispatch only those tools. Exempt: "chat" (turn
   # machinery) and the store quartet the runner itself persists through
@@ -1087,6 +1087,13 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       tool notin ct.sessionAllowlist[]:
     raise newException(ValueError,
       "tool '" & tool & "' is not in this session's tool allowlist")
+
+proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
+                       defaultTimeoutMs: int = 120000,
+                       deadlineMs: int = 0): JsonNode =
+  if tool == "invoke":
+    return invokeTool(ct, args, defaultTimeoutMs)
+  ct.checkToolAllowlist(tool)
 
   # session_info / prompt_preview with no sessionId mean "my own
   # conversation": while a turn is live (ct.nested.session is set only
@@ -1260,6 +1267,11 @@ proc dispatchToolCalls*(ct: CoreTools,
   # Resolve every target and fire every request before waiting on any reply,
   # so all components start working at once.
   for i, call in calls:
+    try:
+      ct.checkToolAllowlist(call.tool)
+    except ValueError as e:
+      pending[i] = Pending(done: true, tool: call.tool, error: e.msg)
+      continue
     let comp = ct.cat.toolIndex.getOrDefault(call.tool)
     if comp.len == 0:
       pending[i] = Pending(done: true, tool: call.tool,

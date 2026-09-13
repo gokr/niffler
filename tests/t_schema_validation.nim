@@ -57,6 +57,29 @@ proc main() =
   check("additional property schema enforced",
         rejected(schema, changed(valid, "labels", %*{"team": 1}), "string"))
 
+  let nullable = %*{"required": ["value"],
+    "properties": {"value": {"type": "null"}}}
+  check("required means present, not non-null",
+    validateToolArgs(nullable, %*{"value": nil}).len == 0)
+  check("missing required null still rejected",
+    rejected(nullable, %*{}, "required"))
+  for spec in [%*{"type": "array", "maxItems": 0},
+               %*{"type": "object", "maxProperties": 0},
+               %*{"type": "string", "maxLength": 0}]:
+    let zeroSchema = %*{"properties": {"value": spec}}
+    let nonempty = case spec{"type"}.getStr()
+      of "array": %*[1]
+      of "object": %*{"x": 1}
+      else: %"x"
+    check("zero maximum enforced for " & spec{"type"}.getStr(),
+      validateToolArgs(zeroSchema, %*{"value": nonempty}).len > 0)
+  let unicodeSchema = %*{"properties": {
+    "value": {"type": "string", "minLength": 2, "maxLength": 2}}}
+  check("string length counts Unicode characters, not UTF-8 bytes",
+    validateToolArgs(unicodeSchema, %*{"value": "é🙂"}).len == 0)
+  check("multibyte character does not satisfy minLength two",
+    rejected(unicodeSchema, %*{"value": "é"}, "minLength"))
+
   var deepSchema = %*{"type": "object"}
   for i in 0 ..< 34:
     deepSchema = %*{"type": "object", "properties": {"x": deepSchema}}

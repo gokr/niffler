@@ -31,6 +31,13 @@ proc harnessGitHash*(root: string): string =
       gGitHash = "unknown"
   gGitHash
 
+proc backoffMs*(restarts: int): float =
+  ## Supervised-restart backoff: 1s after the first crash, doubling per
+  ## consecutive crash, capped at 8s. Pure so t_supervisor_backoff can pin
+  ## the schedule without launching processes.
+  if restarts <= 0: return 0.0
+  min(500.0 * float(1 shl min(restarts, 5)), 8000.0)
+
 proc parsePolicy*(s: string): RestartPolicy =
   ## Manifest/store policy strings → enum. Unknown values fall back to
   ## on-failure (the safe default: a crashed component comes back).
@@ -110,7 +117,10 @@ proc childLabel(c: Child): string =
 proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   ## Starts (or restarts) a child. An explicit argv overrides; otherwise the
   ## child's persisted args ride along, so a restart relaunches the same
-  ## instance (core.spawn records, session runners).
+  ## instance (core.spawn records, session runners). The restart counter
+  ## is owned by pump/removeChild (a successful start never resets it):
+  ## backoff must grow across a crash loop, or a child that dies at once
+  ## restarts ~2×/second forever.
   # env = nil inherits the parent environment (NIF_NATS_URL, PATH, API keys);
   # NIF_ROOT is set globally once so children know where the SDK lives.
   # Child output goes to var/logs/<name>.log: without a redirect, osproc
@@ -150,7 +160,6 @@ proc startChild*(sup: Supervisor, c: Child, args: seq[string] = @[]) =
   c.process = startProcess("/bin/sh", workingDir = sup.root, args = ["-c", cmd],
                            options = {poUsePath})
   echo "supervisor: started " & c.childLabel() & " (" & c.binary & ")"
-  c.restarts = 0
 
 proc addChild*(sup: Supervisor, name, binary: string,
                policy: RestartPolicy = rpOnFailure,
@@ -194,7 +203,7 @@ proc pump*(sup: Supervisor, cat: Catalog) =
     c.process.close()
     cat.dropReplica(c.name, pid)
     c.restarts += 1
-    let backoff = min(500.0 * float(1 shl min(c.restarts, 5)), 8000.0)
+    let backoff = backoffMs(c.restarts)
     c.nextStart = now + backoff / 1000.0
     echo "supervisor: " & c.childLabel() & " died (exit " & $code &
          ", restart #" & $c.restarts & ", backoff " & $backoff.int & "ms)"

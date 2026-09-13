@@ -1075,20 +1075,6 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # land in tool_calls order so strict backends keep call/result pairing.
     var items: seq[ToolCallItem] = @[]
     for tc in toolCalls:
-      # Per-turn call budget (subagent jobs): stop BEFORE dispatching past
-      # the cap, so a batch of tool_calls never overshoots it. The turn
-      # ends as budget-exhausted; the transcript keeps everything up to
-      # here so the caller can see exactly where the budget ran out.
-      if maxCalls > 0 and toolCallsMade >= maxCalls:
-        let msg = "turn tool-call budget exhausted (" & $maxCalls &
-          " tool calls)"
-        turnError = msg
-        if onEvent != nil:
-          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
-                             "error": msg})
-        emitTurnDone(msg)
-        return ""
-      inc toolCallsMade  # every dispatch attempt counts, success or error
       let id = tc{"id"}.getStr("")
       let name = tc{"function"}{"name"}.getStr("")
       let rawArgs = tc{"function"}{"arguments"}.getStr("{}")
@@ -1114,13 +1100,30 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     var idx = 0
     while idx < items.len:
-      # A wave is a maximal run of consecutive parallel-safe calls. Waves fan
-      # out; serial calls (or a parse failure) run alone, in order.
+      if maxCalls > 0 and toolCallsMade >= maxCalls:
+        let msg = "turn tool-call budget exhausted (" & $maxCalls &
+          " tool calls)"
+        # The assistant batch is already persisted. Pair every unexecuted
+        # call with an error result so follow-up turns and resumes remain
+        # valid for providers that require complete tool-call pairing.
+        for k in idx ..< items.len:
+          commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
+            turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+        turnError = msg
+        if onEvent != nil:
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": msg})
+        emitTurnDone(msg)
+        return ""
+      # A wave is a maximal run of consecutive parallel-safe calls, bounded
+      # by the remaining budget. Serial calls and parse failures run alone.
       var wave: seq[tuple[id, name: string, args: JsonNode]] = @[]
       while idx < items.len and isParallelSafeTool(ct, items[idx].name) and
-          not items[idx].parseFailed:
+          not items[idx].parseFailed and
+          (maxCalls <= 0 or toolCallsMade < maxCalls):
         wave.add((items[idx].id, items[idx].name, items[idx].args))
         inc idx
+        inc toolCallsMade
       if wave.len > 0:
         let waveStartedAt = epochTime()
         let waveStarted = getMonoTime()
@@ -1144,6 +1147,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         continue
       let it = items[idx]
       inc idx
+      inc toolCallsMade  # every dispatch attempt counts, success or error
       let toolStartedAt = epochTime()
       let toolStarted = getMonoTime()
       var oc: ToolCallOutcome
@@ -1557,7 +1561,11 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     let reply = $natsMsg_GetReply(msg)
     natsMsg_Destroy(msg)
     let env = decode(data)
-    if env.kind != ekCall or reply.len == 0: continue
+    if reply.len == 0: continue
+    if env.kind != ekCall:
+      ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
+        "expected a call envelope").encode())
+      continue
     var resp: Envelope
     try:
       case env.tool
