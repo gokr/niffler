@@ -8,6 +8,45 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **core: a hidden `ui` tool gives cooperating UIs a registry — display
+  numbers, leases, and conversation ownership.** Interactive clients
+  register a UUID and get a monotonic display number ("Niffler 1",
+  "Niffler 2", ...), renew a 20 s lease, and can claim a conversation —
+  a second live UI is now told who holds it instead of silently joining
+  its stream. The registry is swept lazily on every decision; numbers are
+  not reused. Coordination between cooperating UIs, not authentication:
+  clients that never take a lease keep the legacy behavior. Covered by
+  `tests/t_uireg` (numbering, expiry, claims) and a discover test that the
+  tool stays hidden (`c94ad1a`).
+
+- **plugins: a `/plugins` slash surface.** `/plugins` (list),
+  `/plugins-search`, `/plugins-install`, `/plugins-update`, and
+  `/plugins-remove`, each bound to its tool so UIs route through the normal
+  approval path. Names carry the component prefix — the owner-prefix
+  convention the MCP bridge already uses — because the slash namespace is
+  global and core rejects duplicates, so generic verbs would collide across
+  packages. The convention is documented in `docs/WIRE.md` and covered in
+  `tests/t_plugins.nim` (`111b971`).
+
+- **docs/research: sandbox research and a revised implementation plan.**
+  `docs/research/SANDBOX.md` surveys how dsh, CodeWhale,
+  DeepSeek-Reasonix, pi, OpenHands, OpenCode and Boxlite handle agent
+  sandboxing and proposes confining every component at the single spawn
+  point (`core/supervisor.nim`, Seatbelt on macOS, Landlock on Linux);
+  review found its security claims invalidated by shared components,
+  unrestricted NATS access and inherited secrets, so the file now carries a
+  superseded banner. `docs/research/SANDBOX-PLAN.md` is the revised plan
+  that supersedes it: first ship opt-in per-command shell write protection
+  with fail-closed guarded execution and one-shot path grants — explicitly
+  *not* containment of a malicious agent or component. Both marked
+  "nothing implemented" (`2ac4f81`, `871ae6f`).
+
+- **docs: OCTOFRIEND-STEAL full designs.** The repair-model hook in `edit`
+  and history-time read dedup now have full designs; read dedup was then
+  **shelved after measurement** against the real run — the prompt-cache
+  bust dominates the token savings, and the diff-on-re-read variant is what
+  survives (`7b46ccd`, `336111e`).
+
 - **bench: SWE-bench Multilingual pilot (10 tasks, 7 languages) — Go
   (caddy, gin), Rust (tokio, nushell), C (redis, jq), C++ (fmt), JS
   (axios), TS (docusaurus), Ruby (rubocop); real OSS repos, real
@@ -112,6 +151,47 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   12489 only niffler; 13091 unresolved by both). Both resolved 13031, the
   run's long-horizon outlier (niffler 5.9M tok / 74 turns, claudecode 1.6M /
   129). Report: `bench/reports/swe-sympy10-cc-vs-niffler-report.md`.
+
+### Changed
+
+- **workspaces: a conversation's cwd is no longer confined to `NIF_ROOT`.**
+  Any existing directory on the machine is now accepted — the root stays the
+  default and the base for relative requests, but it is the harness's
+  installation home, not a sandbox for workspaces. The systemprompt ancestor
+  walk still stops at the harness root for internal workspaces, but stops at
+  the workspace itself for external ones (walking to `/` would pick up stray
+  machine-wide files like an `AGENTS.md` in `$HOME`), and external paths
+  render absolute in `<project_instructions>`. Covered in `t_core`,
+  `t_systemprompt` (`c94ad1a`).
+
+- **streaming: token deltas are pumped at 5 ms while a stream is attached.**
+  The live token pump runs only in the idle slot between reply waits, so the
+  100 ms wait was the streaming cadence — `ev.llm.token` deltas batched into
+  3–5-word chunks every ~107 ms however fast the model produced them
+  (measured on a live turn: 28 frames/0.96 s, median gap 0, p90 107 ms), and
+  the wave path compounded it per pending call (25 ms × N). Reply waits now
+  use `streamPollMs()`: 5 ms while a token stream is attached (a streaming
+  turn), 100 ms otherwise, so idle dispatches keep the cheap wait. Runner
+  CPU measured at 0.2% with the tight poll engaged (`30d55e2`).
+
+### Fixed
+
+- **plugins: update/ref resolution.** A package installed at a branch (the
+  user asked to track main) was removed and reinstalled at the newest tag on
+  its first update, because the tag comparison ignored what the recorded ref
+  actually names — a silent downgrade whenever main is ahead of the newest
+  release, the normal state right after one; the tag move now requires the
+  recorded ref to name a tag in the install's clone, so branch pins follow
+  their branch in place (`28fcb07`). A tag-pinned install on a repo that
+  publishes no GitHub releases (releases 404 — e.g. gokr/niffler-tui) saw no
+  releases and re-pulled the pinned tag forever; `resolveTag` now falls back
+  to the highest version-looking tag from `/tags` (`efbe5d3`). Refless
+  installs (the `file://` dev path) refused to update with "no tracked
+  branch ref to pull"; the checked-out branch is now read from the clone and
+  persisted — including on the no-op path, so the record stops showing an
+  empty ref — while detached HEAD still refuses with a clear message
+  (`2488938`, `111b971`). The refless update cycle is covered end-to-end in
+  `tests/t_plugins.nim`.
 
 ## [0.2.0] — 2026-09-11
 
