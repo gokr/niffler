@@ -15,14 +15,9 @@ proc main() =
   # Engine under test: NIF_STORE_BIN overrides the default barrel binary
   # (make test-store-sqlite runs this exact contract against the SQLite
   # engine; docs/research/STORE_V2.md). Relative paths resolve against root.
-  let bin = block:
-    let override = getEnv("NIF_STORE_BIN", "")
-    if override.len == 0:
-      root / "var" / "bin" / "store"
-    elif override.isAbsolute():
-      override
-    else:
-      root / override
+  # NIF_STORE_BIN (explicit binary) → NIF_STORE_BACKEND → the shipped
+  # default engine (sqlite). See helpers.resolveStoreBin.
+  let bin = resolveStoreBin(root)
   if not fileExists(bin):
     fail(bin & " missing — run `make build` first")
     quit(1)

@@ -156,6 +156,45 @@ proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
     for item in items:
       result.add(item)
 
+proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
+                   pageLimit = 1000, timeoutMs = 5000): seq[JsonNode] =
+  ## List EVERY document of a kind (id order) by paging the store's cursor
+  ## to exhaustion. Use this instead of a single capped `list` whenever the
+  ## caller must see the whole kind — resume, migration, audit.
+  ##
+  ## A single `list` is capped at 1000 items, so a long transcript used to
+  ## resume silently truncated and its next write could target an existing
+  ## id (overwriting history). The cursor makes completeness explicit; this
+  ## helper loops until the store reports no further page.
+  ##
+  ## Null or non-array `items` is treated as end-of-data rather than an
+  ## error, matching storeListItems; an unreachable store still raises.
+  var after = ""
+  var pages = 0
+  while true:
+    var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageLimit}
+    if after.len > 0:
+      args["after"] = %after
+    let r = dispatchSubjectCall(ct, "svc.store.call", "list", args, timeoutMs)
+    if not r{"ok"}.getBool(false):
+      raise newException(IOError, r{"error"}.getStr("store list failed"))
+    let items = r{"items"}
+    if items != nil and items.kind == JArray:
+      for item in items:
+        result.add(item)
+    # Stop on: no further page, no cursor, or a cursor that failed to
+    # advance (a store that keeps handing back the same cursor must not
+    # spin forever).
+    let nextAfter = r{"nextAfter"}.getStr("")
+    if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
+        nextAfter == after:
+      break
+    after = nextAfter
+    inc pages
+    if pages > 10_000:
+      raise newException(IOError,
+        "store list page limit exhausted for kind " & kind)
+
 proc storeDel*(ct: CoreTools, kind, id: string, timeoutMs = 5000) =
   ## Delete a document; idempotent.
   discard dispatchSubjectCall(ct, "svc.store.call", "del",
@@ -336,9 +375,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     except CatchableError as e:
       echo "core: warning — conversation header not deleted: " & e.msg
     try:
-      let msgs = ct.dispatchToolCall("list",
-        %*{"kind": "message", "idPrefix": sessionId & ":", "limit": 10_000})
-      for item in msgs{"items"}:
+      # storeListAll pages: a single `list` clamps limit to 1000, so asking
+      # for 10_000 here silently left every message past the first 1000 in
+      # the store after a delete.
+      for item in ct.storeListAll("message", sessionId & ":"):
         try:
           discard ct.dispatchToolCall("del",
             %*{"kind": "message", "id": item{"id"}.getStr("")})
@@ -570,10 +610,12 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       # = message order). The store caps a list at 1000 items; flag the cut.
       # completionTotal is Σ completion_tokens over assistant messages with
       # reported usage — the session's total output (persisted per message).
+      # storeListAll pages the whole kind: a single capped list would undercount
+      # every conversation longer than the 1000-item cap.
       var byRole = newJObject()
       var total = 0
       var completionTotal = 0
-      for item in ct.storeListItems("message", sessionId & ":", 1000):
+      for item in ct.storeListAll("message", sessionId & ":"):
         inc total
         let v = item{"value"}
         let role = v{"role"}.getStr("")

@@ -210,13 +210,17 @@ proc loadStoredMessagesEx*(ct: CoreTools, convId: string,
   ## outgrew the bus max payload and the list reply never arrived).
   result.messages = @[]
   result.lastSeqNo = 0
-  # 1000 = the store's list cap: resume must see the full transcript,
-  # not the list tool's default 100 (fixed here; was truncating resumes)
-  for item in ct.storeListItems("message", convId & ":", 1000):
+  # Page the whole transcript (storeListAll): a single capped `list` saw
+  # only the first 1000 messages, so a long conversation resumed TRUNCATED
+  # and — because lastSeqNo is derived from the ids actually seen — the
+  # next persist targeted an id that already held history, overwriting it.
+  # tests/t_resume_long.nim demonstrates both failures against the capped
+  # read and asserts completeness here.
+  for item in ct.storeListAll("message", convId & ":"):
     let v = item{"value"}
-    # Continuation id: the highest stored id number wins — covers the
-    # 1000-cap truncation and error-role records alike (the loaded list
-    # excludes errors, so its length would collide with their ids).
+    # Continuation id: the highest stored id number wins — covers
+    # error-role records too (the loaded list excludes them, so its length
+    # would collide with their ids).
     let id = item{"id"}.getStr("")
     let dot = id.rfind(':')
     if dot >= 0:

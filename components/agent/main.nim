@@ -282,9 +282,13 @@ proc runnerAlive(sessionId: string): bool =
 proc lastTranscript(sessionId: string): tuple[role, content: string] =
   ## Last persisted message of the child conversation (best effort: any
   ## store failure returns empty, which reads as "no evidence").
+  ## storeListAll pages the transcript: with a single capped list this saw
+  ## only the first 1000 messages, so "the last message" could be a stale
+  ## one from the middle of a long child conversation — and job settlement
+  ## decisions were made from it.
   try:
     var last: JsonNode = nil
-    for item in comp.storeList("message", sessionId & ":", 1000, 10_000):
+    for item in comp.storeListAll("message", sessionId & ":", 1000, 10_000):
       if item.id.startsWith(sessionId & ":"):
         last = item.value
     if last != nil:
