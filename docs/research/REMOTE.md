@@ -1,14 +1,18 @@
-# Remote full harnesses — prior art and the Niffler shape
+# Remote full harnesses — prior art, and two paths for Niffler
 
 > Research note for the "fleet of alive agents" idea: full Nifflers running
 > remotely (EC2-like VMs), long-running, each with its own filesystem and repo
 > clones, controlled from a local client. What do the harnesses we track have,
-> what do they *not* have, and what would this mean for Niffler?
+> what do they *not* have, and what would this mean for Niffler? Concludes with
+> the two paths under consideration: **first-class Chetter support** (§6.1) and
+> a **native fleet component over a shared TiDB store** (§6.2).
 >
-> Basis: `~/git/harnesses/*` at the 2026-09-13 update (dsh `c291e7961a`, pi
-> `71dca871b`, OpenHands `28464621d`). Companion docs:
-> [PI-VS-NIFFLER.md](PI-VS-NIFFLER.md) (protocol support),
-> [research/REBOOT.md](research/REBOOT.md) (NATS topology notes).
+> Basis: `~/git/harnesses/*` and `~/git/chetter` at the 2026-09-13 update (dsh
+> `c291e7961a`, pi `71dca871b`, OpenHands `28464621d`, chetter `3df7479`).
+> Companion docs: [../PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md) (protocol
+> support), [REBOOT.md](REBOOT.md) (NATS topology notes),
+> [../PI-NEXT.md](../PI-NEXT.md) (the near-term list this extends),
+> [../MANUAL.md](../MANUAL.md) (bus identity, approvals, store engines).
 
 ## 0. The answer in one line
 
@@ -137,7 +141,7 @@ are **in-process by architecture**, which makes layer C expensive to retrofit:
   API — so layer C was the native architecture from day one.
 
 Niffler's position is the interesting one: **the bus already is a remote control
-plane** ([WIRE.md](WIRE.md) — `NIF_NATS_URL=nats://host:4222` "attach to any
+plane** ([../WIRE.md](../WIRE.md) — `NIF_NATS_URL=nats://host:4222` "attach to any
 bus, even a remote"; REBOOT.md listed leaf nodes/gateways as "multi-machine
 federation later, if ever wanted"). What is missing is not transport but
 *harness identity and placement discipline*, and a few honest gaps:
@@ -178,18 +182,158 @@ can be restarted or rebuilt *on the remote machine* by the agent itself
 bus). The failure mode to respect is the one the home-bus claim already solves
 locally: a fleet needs loud identity, never silent cross-attachment.
 
-## 6. Sizing
+## 6. Two paths for Niffler
+
+The survey says the primitive (a reachable, controllable full harness) is
+mostly there. Two concrete directions follow from that, and they are
+complementary rather than competing: Chetter is *operator-side, task-oriented*
+orchestration; a native fleet is *agent-side, persistent* cooperation.
+
+### 6.1 Path 1 — first-class Chetter support
+
+Chetter (`~/git/chetter`, Go) already does the operator half of this document:
+run autonomous dev agents from **standard harnesses** (OpenCode primary; Claude
+Code, CodeWhale, Pi, Codex supported) in Docker/Kubernetes, with task
+submission, live progress, pause/resume, cron/PR-review triggers, runner fleet
+health, usage/cost accounting, and a full ConnectRPC API **exposed as ~60 MCP
+tools** (`chetter_submit_task`, `chetter_task_events`, `chetter_runner_health`,
+`chetter_resume_agent_session`, …).
+
+How harness integration works there (`runner/harness/harness.go`): an adapter
+implements `Harness` (config/env/model), either `RPCHarness` (JSONL subprocess
+— that is how the pi adapter drives `pi --mode rpc`) or `ServeHarness` (HTTP
+session: ServeCommand/CreateSession/SendPrompt/AbortSession/ReadSessionExport/
+WatchEvents), plus optional `SessionContinuable`, `SessionStatusProbe`,
+`CompletionAwareHarness`. Chetter also **injects two MCP servers into every
+harness**: `chetter` (its API, bearer-tokened) and `runner-bridge` (progress
+events back to the runner, relayed via a tiny stdio→Unix-socket `mcp-bridge`).
+
+So "really good Chetter support" has three rungs, cheapest first:
+
+1. **Zero code (today):** Niffler's `mcp` component already manages external
+   MCP servers over stdio/HTTP/SSE with header injection — adding the Chetter
+   server makes every Niffler agent able to submit/track Chetter tasks and
+   read fleet health. Chetter injecting `runner-bridge` into Niffler works the
+   same way in reverse.
+2. **Chetter-side adapter** (`runner/harness/niffler/`, Go, mostly Chetter
+   work): Niffler is already drivable headless — service mode + `cli call
+   session` per prompt; conversations persist in the store, so
+   `SessionContinuable` is a second call with the same `sessionId`,
+   `SessionStatusProbe` maps to `session_info`/`ev.session.*`, and
+   `ReadSessionExport` is the store→markdown recipe already in AGENTS.md.
+   Niffler's "one clone = one instance" maps cleanly onto Chetter's per-task
+   workspace (the clone *is* the workspace; `var/` persists with it, so
+   pause/resume keeps the harness's brain).
+3. **A dedicated `chetter` component** (the interesting one): instead of the
+   agent round-tripping through generic MCP tools, a component speaks
+   Chetter's ConnectRPC natively — typed schemas instead of 60 flat tools,
+   `chetter_task_events` streamed onto the bus as `ev.chetter.*`, Chetter
+   tasks first-class like our own `agentjob`s (status/wait/stop semantics for
+   free), and progress reported to `runner-bridge` by watching `ev.session.*`
+   on the bus, with no agent turn spent on reporting.
+
+The honest comparison to keep in mind: Chetter orchestrates **tasks into
+ephemeral runner containers**; it does not host persistent agenthood. A Niffler
+under Chetter is a strong runner for discrete tasks; the *persistent* clone
+with its own repos, memory and self-extension is Path 2.
+
+### 6.2 Path 2 — a native fleet over a shared TiDB store
+
+The Niffler-native version: a `fleet` component that talks to *other complete
+Nifflers* — each a long-lived harness on its own VM with its own clone, its own
+bus, its own accumulated state. Prerequisites come straight from §5 (identity,
+bus auth, provisioning). The new design pieces:
+
+**Transport — NATS leaf nodes, not a new protocol.** REBOOT.md reserved this
+exact case ("Leaf nodes/gateways: multi-machine federation later, if ever
+wanted"). Each VM's `nats-server` runs as a **leaf node** dialing a hub: the
+local loopback bus stays exactly as it is (core never changes), the leaf
+connection exports only selected subjects (`fleet.>`, gathered approvals),
+subjects stay isolated per harness by default, and the leaf dials *out*, so NAT
+traversal is solved by topology rather than by code. The alternative — a fleet
+component holding N outbound connections — needs every remote bus reachable
+and authenticated and has no isolation boundary; leaf nodes are the NATS-native
+answer and are configuration, not code.
+
+**Identity and discovery — the shared store as the registry.** The TiDB engine
+was built for this: *"No flock — the cluster is shared state by design; row
+locks arbitrate writers and the rev counter stays the
+optimistic-concurrency check"* ([../MANUAL.md](../MANUAL.md) § Store engines).
+N harnesses can point `NIF_STORE_BACKEND=tidb` at one DSN today. What is
+missing is scoping discipline, because ids *will* collide: `message` ids are
+`<convId>:<seq>`, `component` records, `<sessionId>:tools` snapshots, the
+`slash` table and the provider `active` marker are all singletons today.
+
+- **Private scope per harness** (store-level prefix from `NIF_NAME`, invisible
+  to components) for everything harness-owned — component records, provider
+  credentials, session snapshots, conversations.
+- **A shared `fleet` scope** for coordination records written only by the
+  fleet component: `peer` docs (`{name, revision, busHint, capabilities,
+  lastSeen}` with rev-bump heartbeats), delegation/task records, shared
+  artifacts.
+- **Do not share harness-internal state by default.** The bus already makes
+  every store reachable — a peer's `store` is just a component on its bus, so
+  cross-harness read visibility is a routing question, not a schema question.
+  The shared DB earns its keep for records that must *outlive any single
+  harness* and for fleet-wide rich queries (the STORE_V2 FTS/vector quest over
+  the shared scope becomes literal shared memory).
+
+**Coordination patterns** (what `fleet` actually does):
+
+- `fleet_delegate {peer, task, budgets?}` — write a task record in the shared
+  scope, signal `fleet.<peer>.task` over the hub; the peer's fleet component
+  runs it as a child session (reusing `agent_run` machinery cross-harness).
+  Lineage/depth guards extend across hops via shared-scope records.
+- `fleet_status` / `fleet_wait` — durable records, so a late reader never sees
+  a lying "running" (same lazy-restart-recovery rule as `agent_status`).
+- Approvals gather to the hub; the operator's UI acks from anywhere. A
+  headless VM still fails closed when no human is reachable.
+- Steering and stop map over the same gathered subjects.
+
+**Security posture:** per-peer bus tokens, TLS on leaf links, per-harness store
+credentials (shared-DB writes limited to the fleet scope), and the rule that an
+approval arriving from a peer is never auto-answered by the peer itself.
+
+### 6.3 How the paths compose
+
+They are different points in one design space, not rivals:
+
+| | Chetter (Path 1) | Native fleet (Path 2) |
+|---|---|---|
+| Unit | a **task** in an ephemeral runner container | a **persistent harness** with its own clone/memory |
+| Orchestrator | operator + GitHub events + crons | the agents themselves (peer delegation) |
+| State | workspace dir + Chetter server DB | per-harness stores + one shared TiDB scope |
+| Strength | exists today, mature ops surface (fleet health, usage, audit, pause/resume) | long-lived agenthood, self-extension, agent-to-agent cooperation |
+
+And they stack: a Chetter-managed Niffler runner gets the `chetter` component
+(1a/1c) and can *also* be a fleet peer; a fleet Niffler can delegate discrete
+decoupled work into Chetter runners. If the near-term goal is "operator drives
+many agents from GitHub and timers", Path 1 rung 1 is a same-day experiment and
+rung 2 is the real work. If the goal is "agents that live for weeks and
+cooperate", Path 2's registry + leaf-node slice is the first milestone, and it
+depends on the §5 prerequisites (identity, auth, provisioning) either way.
+
+## 7. Sizing
 
 | Piece | Effort | Notes |
 |---|---|---|
 | SSH-tunnel remote harness (no code) | ~0 | `ssh -L 4222:localhost:4222 host`, set `NIF_NATS_URL`; approvals reach the local UI over the tunnel. Works today. |
+| Chetter rung 1: `mcp_add` the Chetter server (and accept `runner-bridge`) | ~0 | Niffler's `mcp` component already does stdio/HTTP/SSE + header auth; 60 tools arrive in the catalog on demand. |
 | `--auth` + non-loopback bind option | small | The bundled server already supports the flags; core never passes them. WIRE/MANUAL update + tests. |
-| `NIF_NAME` + fleet identity in `core.status`/UI | small | Catalog already carries root+revision; add an operator-chosen name. |
+| `NIF_NAME` + fleet identity in `core.status`/UI | small | Catalog already carries root+revision; add an operator-chosen name. Also the store-scope key. |
+| Chetter rung 2: Niffler adapter in `runner/harness/niffler/` | medium | Go, Chetter-side; RPCHarness via service mode + `cli`; export from the store; pause/resume rides the persisted clone. |
 | `niffler-init` VM provisioning (or compose file) | medium | Mostly a script around clone/build/.env/start; container image exists for bench. |
-| Fleet UI (backends list, flip, aggregate `ev.session.>`) | medium | OpenHands' backend specs (BM-001..003) are a good spec to steal. |
-| NATS leaf nodes for many-VMs-one-plane | large, optional | The REBOOT "if ever wanted" line; only if one *shared* bus for many harnesses becomes a goal (it conflicts with per-VM isolation). |
+| Store scoping (`NIF_STORE_SCOPE` prefix; private + `fleet` scopes) | medium | TiDB engine is already multi-writer by design; this is convention + tests, not a new engine. |
+| Dedicated `chetter` component (ConnectRPC, `ev.chetter.*`, runner-bridge reporting) | medium | Rung 3; replaces generic MCP round-trips with typed, streaming integration. |
+| `fleet` component MVP (registry + delegate/status/wait over leaf subjects) | medium–large | Reuses `agent_run` machinery cross-harness; depth guards extend via shared-scope lineage. |
+| Leaf-node topology + fleet UI (backends list, aggregate `ev.session.>`) | medium | Server config, not core code; OpenHands' backend specs (BM-001..003) are a good spec to steal. |
+| Shared memory: FTS/vector over the shared scope | large, later | Rides the STORE_V2 TiDB quest; this is what makes the fleet's shared store *memory* rather than a registry. |
 
-Recommendation: do not build layer C as a feature; ship 1–3 so that "run a full
-Niffler on a VM" is a supported configuration, then let the UI fleet view be
-the product. That keeps the architecture's one-wire promise intact and avoids
-the OpenHands/REST split-brain between local and remote control paths.
+Recommendation: the paths are sequenced, not exclusive. Ship the small pieces
+first — they are shared by both paths (identity, auth, provisioning), and rung
+1 of Chetter is a same-day experiment that needs none of them. Then choose by
+goal: operator-driven task fleets → Chetter rung 2/3; long-lived cooperating
+agents → fleet registry + leaf nodes over the shared TiDB scope. Do not build
+layer C as a bespoke feature; the bus plus these pieces already compose it, and
+that keeps the architecture's one-wire promise intact (no OpenHands/REST
+split-brain between local and remote control paths).
