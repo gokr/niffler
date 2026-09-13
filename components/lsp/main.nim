@@ -250,6 +250,55 @@ proc stderrHint(h: Instance): string =
   let lines = h.errTail.strip().split('\n')
   " — server stderr: " & lines[^1]
 
+proc clientCaps(): JsonNode =
+  ## Client capabilities declared at initialize. Deliberately minimal — only
+  ## what this component actually honors — but never empty: servers gate
+  ## features on what the client declares, and an empty blob makes
+  ## typescript-language-server skip its entire diagnostic push (it never
+  ## even asks workspace/configuration). Declaring only supported features
+  ## keeps servers from relying on anything we will not do (no file
+  ## watching, no dynamic registration, no edits).
+  %*{
+    "textDocument": {
+      "synchronization": {"didSave": true},
+      "publishDiagnostics": {"relatedInformation": true, "versionSupport": true},
+      "hover": {"contentFormat": ["markdown", "plaintext"]},
+      "definition": {},
+      "implementation": {},
+      "references": {}
+    },
+    "workspace": {"configuration": true, "workspaceFolders": true}
+  }
+
+proc sendMsg(h: Instance, obj: JsonNode) =
+  let s = $obj
+  let frame = "Content-Length: " & $s.len & "\r\n\r\n" & s
+  try:
+    h.p.inputStream.write(frame)
+    h.p.inputStream.flush()
+  except CatchableError as e:
+    fail("E_LSP_PROTOCOL", "write to '" & h.name & "' failed: " & e.msg & h.stderrHint())
+
+
+proc answerServerRequest(h: Instance, frame: JsonNode) =
+  ## Reply to a server→client request so gate-keeping servers are never left
+  ## waiting: typescript-language-server publishes no diagnostics until its
+  ## workspace/configuration request is answered. The only meaningful reply
+  ## is configuration — one empty settings object per item (server defaults);
+  ## everything else (client/registerCapability, window/workDoneProgress/
+  ## create, …) gets a null result, the legal "not supported" that unblocks
+  ## the server without promising behavior the component does not have.
+  let resultNode =
+    if frame{"method"}.getStr("") == "workspace/configuration":
+      var arr = newJArray()
+      let asked = frame{"params"}{"items"}
+      let n = if asked != nil and asked.kind == JArray: asked.len else: 0
+      for _ in 0 ..< n:
+        arr.add(newJObject())
+      arr
+    else: newJNull()
+  h.sendMsg(%*{"jsonrpc": "2.0", "id": frame{"id"}, "result": resultNode})
+
 proc pump(h: Instance, timeoutMs: int): bool =
   ## Poll stdout (draining stderr on the way). Returns true when stdout has
   ## bytes, false on timeout. Raises E_LSP_PROTOCOL when the server died.
@@ -302,9 +351,16 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
       if h.buf.len >= total:
         let body = h.buf[hdrEnd + 4 ..< total]
         h.buf = h.buf[total ..^ 1]
-        try: return parseJson(body)
+        var frame: JsonNode
+        try: frame = parseJson(body)
         except ValueError as e:
           fail("E_LSP_PROTOCOL", "malformed JSON from '" & h.name & "': " & e.msg)
+        # A server→client request must be answered or the server may stall
+        # its whole push pipeline; swallow it here so no caller has to know.
+        if frame{"method"} != nil and frame{"id"} != nil:
+          h.answerServerRequest(frame)
+          continue
+        return frame
     let remaining = inMilliseconds(deadline - getMonoTime())
     if remaining <= 0:
       if quiet: return nil
@@ -320,14 +376,6 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
       # pump raises E_LSP_PROTOCOL on stdout EOF.)
       continue
 
-proc sendMsg(h: Instance, obj: JsonNode) =
-  let s = $obj
-  let frame = "Content-Length: " & $s.len & "\r\n\r\n" & s
-  try:
-    h.p.inputStream.write(frame)
-    h.p.inputStream.flush()
-  except CatchableError as e:
-    fail("E_LSP_PROTOCOL", "write to '" & h.name & "' failed: " & e.msg & h.stderrHint())
 
 proc request(h: Instance, meth: string, params: JsonNode,
              timeoutMs: int): JsonNode =
@@ -346,14 +394,7 @@ proc request(h: Instance, meth: string, params: JsonNode,
              frame{"error"}{"message"}.getStr("unknown server error") & h.stderrHint())
       return frame{"result"}
     if frame.hasKey("id") and frame.hasKey("method"):
-      if frame{"method"}.getStr("") == "workspace/configuration":
-        var items = newJArray()
-        let asked = frame{"params"}{"items"}
-        let n = if asked != nil and asked.kind == JArray: asked.len else: 0
-        for i in 0 ..< n: items.add(newJObject())
-        h.sendMsg(%*{"jsonrpc": "2.0", "id": frame["id"], "result": items})
-      else:
-        h.sendMsg(%*{"jsonrpc": "2.0", "id": frame["id"], "result": newJNull()})
+      h.answerServerRequest(frame)
 
 proc notify(h: Instance, meth: string, params: JsonNode) =
   h.sendMsg(%*{"jsonrpc": "2.0", "method": meth, "params": params})
@@ -414,7 +455,7 @@ proc getInstance(conf: ServerConf, root: string): Instance =
     "processId": nil,
     "rootUri": pathToUri(root),
     "workspaceFolders": [{"uri": pathToUri(root), "name": root.lastPathPart}],
-    "capabilities": {}
+    "capabilities": clientCaps()
   }
   if conf.initializationOptions != nil:
     params["initializationOptions"] = conf.initializationOptions
@@ -738,6 +779,15 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   try:
     h.notify("textDocument/didOpen", %*{"textDocument": {
       "uri": uri, "languageId": languageId, "version": 1, "text": text}})
+    # All three Nim servers (nimlangserver, nimlsp, nimtortoise — all built
+    # on nimsuggest) publish diagnostics only after a save, never on
+    # didOpen/didChange; the transient lifecycle above never saves, so the
+    # settle loop below times out at 60s even though nimsuggest found the
+    # errors. Echoing the just-opened bytes as didSave is a no-op for
+    # open-push servers (pyright, clangd, bash) and unlocks save-push ones;
+    # the settle loop keeps whichever push lands last.
+    h.notify("textDocument/didSave", %*{"textDocument": {"uri": uri},
+                                       "text": text})
     var reply: JsonNode
     case op
     of "diagnostics": reply = opDiagnostics(h, uri, relPath(path, workspaceRoot))
