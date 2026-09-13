@@ -131,7 +131,7 @@ trimmed history stays reachable),
 [CODEWHALE.md](CODEWHALE.md) (reset vocabulary; §D-family notes already name the
 "large tool outputs enter context and stay forever" failure class),
 [PI_EFFICIENCY_FINDINGS.md §2.1](PI_EFFICIENCY_FINDINGS.md) (iterative update,
-file-op tracking), [OCTOFRIEND-STEAL.md §3](OCTOFRIEND-STEAL.md) (same-provider
+file-op tracking), [OCTOFRIEND-STEAL.md §3](../OCTOFRIEND-STEAL.md) (same-provider
 summarization, "resume where you left off"). [DSH-STEAL.md](DSH-STEAL.md) is
 orchestration, not compaction.
 
@@ -622,6 +622,15 @@ availability per replaced node. Never publish checkpoint inputs.
 Cache honesty: the summarization call may hit the warm prefix; the next
 conversation request is a rebuild. `ev.session.status`'s `cacheHitRatio`
 measures exactly that, per turn, as it does today.
+
+**Scheduling opportunity** (see [../PI-NEXT.md](../PI-NEXT.md) §3.4): a
+compaction cut invalidates the prefix by definition, so triggering it at a
+moment the cache has *already* expired is strictly cheaper than on a warm one.
+The two features share the same vocabulary (`reset:compact` here,
+`reset:expired` for an expiry-triggered rebuild) and the same state
+(`lastRequestAt` plus the effective TTL beside `cachePrompt`/`cacheRead` in the
+conversation header). Worth designing together, though compaction stands alone
+without it: the trigger there is context pressure, not cache state.
 
 ## 8. Tests and acceptance
 

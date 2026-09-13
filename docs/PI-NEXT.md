@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | 1 | Context-overflow classification + recover-and-retry | compaction dependency | small | **[verified]** gap |
 | 2 | Shell session env injection into `bash` | ergonomics | hours | **[verified]** gap, zero found |
-| 3 | Prompt cache retention knob | doctrine-completing | trivial | **[verified]** gap, volume **[bet]** |
+| 3 | Cache **write** path: explicit breakpoints + write accounting, then retention and expiry-aware prefix surgery | doctrine-completing | small → medium | **[verified]** deeper than first thought |
 | 4 | Image payloads across the wire (+ history normalization) | wire-level | medium | **[verified]** gap |
 | 5 | Session branching / derivation | cheap core, UX bet | medium | **[verified]** absent |
 
@@ -73,23 +73,104 @@ declaring `x-harness.sessionId`; injecting into session-dispatched `bash` calls
 is the narrow, sanctioned shape (component-to-component calls keep their
 explicit `__session`, never an ambient env).
 
-## 3. Prompt cache retention knob
+## 3. Cache write path: breakpoints, accounting, retention, expiry-aware surgery
 
-**[verified]** Niffler has no equivalent of `PI_CACHE_RETENTION=long` (Pi:
-Anthropic 1h, OpenAI 24h). Niffler's entire doctrine is built on cache
-*stability* — frozen prefix, append-only history, exactly two named prefix
-resets, `cacheHitRatio` surfaced per turn — but the prefix is stable across
-idle gaps no provider cache will survive, so a conversation resumed after lunch
-pays a full rebuild with no policy to prevent it.
+This item grew during review. It started as "we lack Pi's `PI_CACHE_RETENTION`
+knob"; checking the request builders found that the *read* half of the cache
+economy is instrumented and the *write* half is absent. Three layers, in
+dependency order.
 
-Work: a provider/llm-level retention setting (env + stored-provider field),
-mapped per protocol in `components/llm/` (Anthropic cache-control TTL, OpenAI
-extended retention where available), reported in `ev.session.status` so the
-existing cache metrics stay the single source of truth.
+### 3.1 Explicit cache breakpoints (prerequisite)
 
-**[bet]** the size of the win. This repo has no idle-gap measurements; the
-correct move is instrumenting `cacheHitRatio` on resumed conversations before
-building the policy. The knob is trivial either way.
+**[verified]** `components/llm/` emits no cache markers at all:
+`grep -rn "cache_control" components/ core/ sdk/ ui/frontend/src/` returns
+nothing. `anthropicRequest` (`components/llm/anthropic.go:200`) builds
+`system` blocks and `tools` as plain `{"type": "text", "text": …}` with no
+`cache_control` field; messages likewise (`anthropicMessages`, line 234).
+
+Anthropic's prompt cache requires explicit breakpoints; the OpenAI-compatible
+endpoints Niffler mostly talks to cache implicitly. So the read-side numbers
+Niffler collects are largely *OpenAI-family implicit caching*, and the Anthropic
+protocol path — which the repo supports and which OAuth subscription logins
+use — has no caching being requested at all. (Asserted from the request shape,
+not probed live; a one-shot call against a real Anthropic endpoint is the
+confirmation step before building on it.)
+
+Pi does emit them, with a documented convention ("Anthropic-style
+`cache_control` markers to the system prompt, last tool definition, and last
+user, assistant, or tool-result text content", `packages/ai/src/types.ts:626`),
+including a compat flag for providers that reject markers on tool definitions.
+
+### 3.2 Cache **write** accounting
+
+**[verified]** Niffler cannot see what caching costs. `anthropic.go` parses
+`cache_creation_input_tokens` (line 32) and folds it into `PromptTokens`
+(line 181) but never forwards it as a distinct write figure; the usage payload
+(`main.go:826`) carries only `prompt_tokens_details.cached_tokens`. Core's
+metrics (`core/conversation.nim`) accumulate `cachePrompt`/`cacheRead` and
+derive `cacheHitRate` — reads only.
+
+The visible consequence is in `bench/reports/`: every niffler row shows
+`cache r/w` with a **zero write column** (`11.6k/0`, `115.9k/0`, …) while Pi
+reports `cacheWrite` and a separate `cacheWrite1h` (billed 2× input,
+`packages/ai/src/models.ts:903`). Without a write figure there is no way to
+evaluate whether a cache policy pays for itself — which is exactly the
+question §3.3 and §3.4 raise.
+
+Caveat on the bench evidence: the zero-write column is *not* proof that the
+OpenAI-family lanes fail to cache, since implicit writes are not reported in a
+comparable field. It is proof that Niffler's own reporting has no write axis.
+
+### 3.3 Retention as an explicit TTL choice
+
+**[verified]** no `PI_CACHE_RETENTION` equivalent. Pi's is a **write-time TTL
+selection**, not an expiry watcher: `cacheRetention: "none" | "short" | "long"`
+(`packages/ai/src/types.ts:108`), lowered per provider to Anthropic
+`cache_control.ttl: "1h"`, OpenAI `prompt_cache_retention: "24h"` or
+`prompt_cache_options.ttl: "30m"` on GPT-5.6+ (types.ts:634–651).
+
+Work: env + stored-provider field, mapped per protocol in `components/llm/`,
+surfaced through `ev.session.status` so cache metrics stay one source of truth.
+Small once 3.1/3.2 exist — and it is 3.1/3.2 that make it meaningful, since a
+TTL on a path with no breakpoints does nothing, and an expensive long-TTL
+write made invisible by 3.2 cannot be justified.
+
+### 3.4 Expiry-aware prefix surgery — a Niffler-only idea
+
+Niffler's doctrine already says every prefix change must be *named*; there are
+exactly two today (`reset:trim`, `reset:tools`). This adds a third kind, and it
+exploits the fact that a cold cache is the only moment a prefix change is free:
+
+> if the conversation's prefix cache has (probably) expired, any prefix
+> mutation we were deferring — a sticky `invoke` promotion, a compaction cut,
+> a tool-profile change — should happen **now**, because the rebuild is already
+> being paid for.
+
+The scheduling argument is clean and it composes with item 1: compaction
+invalidates the prefix by definition, so triggering it at a known-cold moment is
+strictly cheaper than on a warm one. Emitted as `reset:expired`, which carries
+its own meaning rather than borrowing `reset:tools`.
+
+**[bet]** on knowability, and this is the honest caveat. Cache expiry is not
+observable in advance — providers do not guarantee the TTL and may evict
+earlier. What is available:
+
+- **pre-hoc**: timestamp arithmetic against the configured TTL
+  (`lastRequestAt` plus the effective retention), a probabilistic guess;
+- **post-hoc ground truth only**: `cached_tokens == 0` on a byte-identical
+  prefix *is* evidence of expiry — but it arrives after the decision the policy
+  needed to make.
+
+So the policy is opportunistic, not deterministic: "we are probably cold, spend
+the change now", with the correctness of that guess learned on the next turn.
+State needed is cheap and belongs where `cachePrompt`/`cacheRead` already live
+— the conversation header, which persists across runner restarts: a
+`lastRequestAt`, the effective TTL, and a count of how often the guess was
+wrong (so the heuristic can be tuned rather than trusted).
+
+Sequencing: 3.1 → 3.2 → 3.3, and 3.4 only once the first three make the
+trade-off measurable. 3.1/3.2 are correctness/diagnosis work, not tuning; 3.4
+is the piece worth writing up on its own, because nothing in Pi has it.
 
 ## 4. Image payloads across the wire
 
@@ -165,5 +246,5 @@ time someone wants "redo that turn better"), skip (2) until a user asks.
 
 The genuinely missing **architectural** piece is image payloads crossing the
 wire (with normalize-on-entry); the genuinely missing **high-leverage** pieces
-are overflow recovery, shell env injection, and cache retention — none of which
-are expensive, and two of them are compaction dependencies.
+are overflow recovery, shell env injection, and the cache *write* path — none
+of which are expensive, and two of them are compaction dependencies.
