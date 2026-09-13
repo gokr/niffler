@@ -139,6 +139,7 @@ model switching across providers becomes a priority — not urgent.
   graceful omission notes. Niffler refuses binaries outright.
 - **Web-search tool** with typed highlights/published dates; dynamic tool
   presence driven by config.
+- **Deterministic JSON-repair tier for tool arguments** (the cheap half of Octo's fix-json): malformed-JSON tool calls (trailing commas, unquoted keys, single quotes, prose around a valid prefix) currently fail at parse and bounce back to the model as an error round. A bounded repair pass in core before schema validation — attempt strict parse, then a few known-safe fixups, re-parse, and only then error — rescues the common classes for free. Octo goes further with a trained micro-model; the deterministic tier is the 80% at zero cost, and the model tier can slot in behind it later (same seam as the repair-model hook, issue #50).
 - **Strict SKILL.md frontmatter validation** (name pattern must match
   directory, description length caps) — niffler skills are comparable; steal
   the validation strictness.
