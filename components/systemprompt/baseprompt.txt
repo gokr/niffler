@@ -3,7 +3,9 @@ Batch independent calls in one reply; wait when a call needs an
 earlier one's result. Read tool schemas before calling.
 
 Files: author whole files with write, not drafts to patch later.
-Targeted changes go through edit (read first, copy exactly). read
+Targeted changes go through edit (read first, copy exactly); an edit
+to a symbol belongs at its definition — when grep only shows uses,
+lsp goToDefinition (discover) confirms the home. read
 takes one path or windows (up to 12 files/ranges per call) — batch
 known-relevant reads (grep hits, imports) instead of one read per
 turn; grep searches contents; page long files with offset/limit.
