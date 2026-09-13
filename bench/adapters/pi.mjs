@@ -91,7 +91,10 @@ export function setupPiConfig(runRoot, defaults) {
                 // DeepSeek V4.1 Flash on Synthetic — without this entry pi
                 // discovers the model itself and prices it with fallback
                 // rates (observed 0.15/0.50/0.04, reasoning unbilled).
-                // Cost per Synthetic's published catalog (0.8/1.2/0.16/0).
+                // Cost per Synthetic's published catalog (0.8/1.2/0.16);
+                // cache writes bill at the prompt rate — the catalog's
+                // input_cache_writes=0 reads as "no separate write SKU"
+                // (OpenRouter-style), not free writes (see claudecode.mjs).
                 id: "hf:deepseek-ai/DeepSeek-V4.1-Flash",
                 name: "DeepSeek V4.1 Flash (Synthetic)",
                 reasoning: true,
@@ -99,7 +102,7 @@ export function setupPiConfig(runRoot, defaults) {
                 contextWindow: 524288,
                 maxTokens: 65536,
                 thinkingLevelMap: { xhigh: null, max: "max" },
-                cost: { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0 },
+                cost: { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0.8 },
               },
             ],
           },

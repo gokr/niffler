@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
+import { pricingFor, costOnBasis } from "./lib/pricing.mjs";
 
 const BENCH_DIR = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)));
 // Raw run output lives under var/ (disposable runtime state, wiped by
@@ -80,20 +81,26 @@ const md = [];
 md.push(`# bench report — ${path.basename(runDir)}`);
 md.push("");
 md.push(
-  "| model | harness | task | verdict | time (s) | rounds | turns | tok total | uncached in | tok out | cache r/w | cost $ | diff (+/-) |" +
+  "| model | harness | task | verdict | time (s) | rounds | turns | tok total | uncached in | tok out | cache r/w | cost $ | official $ | diff (+/-) |" +
     (hasExpert ? " expert judge/steer/accepted |" : ""),
 );
 md.push(
-  "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|" +
+  "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|" +
     (hasExpert ? "---|" : ""),
 );
 for (const r of results) {
+  const pricing = pricingFor(r.model);
+  const providerCost = pricing
+    ? (costOnBasis(pricing.provider, r.tokens) ?? (r.tokens?.cost || 0))
+    : (r.tokens?.cost || 0);
+  const officialCost = costOnBasis(pricing?.official, r.tokens);
   md.push(
     `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""} | ` +
       `${r.totalTimeS} | ${r.rounds} | ${r.shape?.turns ?? "-"} | ${fmtTok(totalTokens(r))} | ` +
       `${fmtTok(r.tokens?.input || 0)} | ${fmtTok(r.tokens?.output || 0)} | ` +
       `${fmtTok(r.tokens?.cacheRead || 0)}/${fmtTok(r.tokens?.cacheWrite || 0)} | ` +
-      `${(r.tokens?.cost || 0).toFixed(4)} | ` +
+      `${providerCost.toFixed(4)} | ` +
+      `${officialCost === null ? "—" : officialCost.toFixed(4)} | ` +
       `${r.diff?.insertions || 0}/${r.diff?.deletions || 0} |` +
       (hasExpert
         ? ` ${r.expert ? `${r.expert.judgments || 0}/${r.expert.steers || 0}/${r.expert.accepted || 0}` : "-"} |`
@@ -103,8 +110,8 @@ for (const r of results) {
 md.push("");
 md.push("## Per-combo summary");
 md.push("");
-md.push("| model | harness | pass rate | avg turns | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | avg diff (+/-) |");
-md.push("|---|---|---|---:|---:|---:|---:|---:|---:|---|");
+md.push("| model | harness | pass rate | avg turns | avg time (s) | avg tok total | avg uncached in | avg cache read | avg tok out | run cost $ (provider) | run cost $ (official) | avg diff (+/-) |");
+md.push("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|");
 const groups = new Map();
 for (const r of results) {
   const k = `${r.model}|${r.harness}`;
@@ -116,15 +123,33 @@ for (const [k, rs] of groups) {
   const n = rs.length;
   const pass = rs.filter((r) => r.verdict === "pass").length;
   const avg = (f) => rs.reduce((s, r) => s + (f(r) || 0), 0) / n;
+  const pricing = pricingFor(model);
+  const sumProvider = rs.reduce(
+    (s, r) => s + (pricing ? (costOnBasis(pricing.provider, r.tokens) ?? (r.tokens?.cost || 0)) : (r.tokens?.cost || 0)),
+    0,
+  );
+  const sumOfficial = rs.reduce(
+    (s, r) => s + (costOnBasis(pricing?.official, r.tokens) ?? 0),
+    0,
+  );
   md.push(
     `| ${model} | ${harness} | ${pass}/${n} | ${avg((r) => r.shape?.turns).toFixed(1)} | ${avg((r) => r.totalTimeS).toFixed(0)} | ` +
       `${fmtTok(avg(totalTokens))} | ${fmtTok(avg((r) => r.tokens?.input))} | ` +
       `${fmtTok(avg((r) => r.tokens?.cacheRead))} | ${fmtTok(avg((r) => r.tokens?.output))} | ` +
+      `${sumProvider.toFixed(4)} | ${sumOfficial.toFixed(4)} | ` +
       `${avg((r) => r.diff?.insertions).toFixed(0)}/${avg((r) => r.diff?.deletions).toFixed(0)} |`,
   );
 }
 md.push("");
 md.push("*`invalid*` = tests pass but protected files (tests) were modified.*");
+if (results.some((r) => pricingFor(r.model))) {
+  md.push("");
+  md.push(
+    "*Cost bases — provider: the used endpoint's published catalog (Synthetic; cache writes bill at the prompt rate — the catalog's input_cache_writes=0 means \"no separate write SKU\", not free). " +
+      "official: the same token volumes at the model's first-party API list prices (DeepSeek peak tier; off-peak is half). " +
+      "Models without a verified first-party reference show —.*",
+  );
+}
 if (runMeta.corrections?.length) {
   md.push("");
   md.push("## Corrections");
@@ -138,7 +163,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
+const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
 for (const r of results) {
   csv.push(
     [
@@ -155,6 +180,7 @@ for (const r of results) {
       r.tokens?.cacheRead || 0,
       r.tokens?.cacheWrite || 0,
       (r.tokens?.cost || 0).toFixed(6),
+      (costOnBasis(pricingFor(r.model)?.official, r.tokens) ?? "").toString(),
       r.diff?.insertions || 0,
       r.diff?.deletions || 0,
       r.firstPromptTokens ?? "",

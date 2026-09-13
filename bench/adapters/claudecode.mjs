@@ -42,9 +42,14 @@ const PRICE = {
   "syn:large:text": { input: 0.15, output: 0.5, cacheRead: 0.04, cacheWrite: 0 },
   // DeepSeek V4.1 Flash on Synthetic (hf: id) — per Synthetic's published
   // model catalog (GET /openai/v1/models → pricing, $/M): prompt 0.8,
-  // completion 1.2, input_cache_reads 0.16, input_cache_writes 0.
+  // completion 1.2, input_cache_reads 0.16. The catalog lists
+  // input_cache_writes as 0, which on OpenRouter-style schemas means "no
+  // separate write SKU" — DeepSeek's own convention bills cache-populating
+  // tokens as ordinary input, and the OpenAI dialect does exactly that
+  // (first-seen tokens arrive as plain prompt). So we bill writes at the
+  // prompt rate rather than trusting a literal free-write reading.
   "hf:deepseek-ai/DeepSeek-V4.1-Flash":
-    { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0 },
+    { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0.8 },
 };
 
 export async function round(opts) {

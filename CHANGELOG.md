@@ -55,16 +55,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and Anthropic-compatible endpoints (the latter returns real thinking
   blocks); `reasoning_effort` accepted. Niffler/pi/claudecode lanes wired to
   SYNTHETIC_API_KEY. Cost uses Synthetic's published model catalog (0.8/1.2/
-  0.16/0 per M — see the pricing correction below; the earlier 0.15/0.6/0.003
-  figures were borrowed LLM-Gateway rates and undercounted ~7-14x). First
-  run — Sym10, one-shot, `--thinking high`, official Docker grading:
+  0.16 per M, writes at the prompt rate — see the pricing correction below;
+  the earlier 0.15/0.6/0.003 figures were borrowed LLM-Gateway rates, i.e.
+  DeepSeek's off-peak list, and undercounted ~5-50x depending on cache mix).
+  First run — Sym10, one-shot, `--thinking high`, official Docker grading:
   **niffler 10/10** (first perfect
   pilot score; 13091 solved, previously unsolved by every GLM lane; 13031 in
   392s vs 851-1122s) vs **claudecode 8/10** (11618, 13091). Catalog-priced:
-  niffler $0.81 run, claudecode $1.15. Report:
-  `bench/reports/swe-sympy10-dsv41-high-report.md` (cost columns predate the
-  correction — see `swe-multi10-dsv41-high-report.md` addendum in the
-  changelog below for the method).
+  niffler $0.81 run, claudecode $1.37. Report:
+  `bench/reports/swe-sympy10-dsv41-high-report.md` (regenerated with dual
+  cost bases).
 
 - **bench: cost tables corrected to Synthetic's published catalog; pi
   fallback-pricing bug fixed.** Synthetic publishes per-model pricing on its
