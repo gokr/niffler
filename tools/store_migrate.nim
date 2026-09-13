@@ -21,11 +21,10 @@
 ##
 ## Refs: docs/research/COMPACTION.md §2, docs/research/STORE_V2.md.
 
-import std/[algorithm, json, os, osproc, sets, strformat,
-            strtabs, strutils, tables, tempfiles, times]
+import std/[json, os, osproc, sets,
+            strtabs, strutils, tempfiles, times]
 import natsnim
 import envelope
-import dotenv
 
 const
   toolVersion = "0.1.0"
