@@ -61,7 +61,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
-| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimlangserver, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
+| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
@@ -840,9 +840,13 @@ Three routes, all writing the same file:
 Every entry: `command` (argv array, or a plain string split on whitespace)
 plus an `extensions` map (leading-dot extension → LSP language id).
 Optional `initializationOptions` passes through to the server's `initialize`.
-Built-in defaults — gopls, nimlangserver, typescript-language-server, pyright,
-rust-analyzer, clangd, bash-language-server — work whenever the binary is on
-`PATH`; override one by adding an entry with the same name. The registry is
+Built-in defaults — gopls, nimtortoise, typescript-language-server, pyright,
+rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls — work whenever
+the binary is on `PATH` or in a fallback dir (`~/go/bin`, `~/.nimble/bin`,
+`~/.local/bin`, `~/.dotnet/tools`); `make install-lsp` installs them (Go, Nim
+and TS are mandatory — Niffler is built from those — the rest are y/n
+prompts, `--all` for unattended installs). Override one by adding an entry
+with the same name. The registry is
 re-read on every call, so edits take effect immediately.
 
 Set `NIF_LSP_REGISTRY` to an absolute path to relocate the user registry
