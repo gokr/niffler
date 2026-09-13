@@ -157,10 +157,15 @@ proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
       result.add(item)
 
 proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
-                   pageLimit = 1000, timeoutMs = 5000): seq[JsonNode] =
+                   pageLimit = 1000, timeoutMs = 5000, after = ""): seq[JsonNode] =
   ## List EVERY document of a kind (id order) by paging the store's cursor
   ## to exhaustion. Use this instead of a single capped `list` whenever the
   ## caller must see the whole kind — resume, migration, audit.
+  ##
+  ## `after` starts the read at an exclusive id cursor: everything up to
+  ## and including that id is skipped. Compaction's projection reload uses
+  ## it to read only the span its checkpoint does not already represent
+  ## (docs/research/COMPACTION.md §6.2 reload step 4).
   ##
   ## A single `list` is capped at 1000 items, so a long transcript used to
   ## resume silently truncated and its next write could target an existing
@@ -169,12 +174,12 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
   ##
   ## Null or non-array `items` is treated as end-of-data rather than an
   ## error, matching storeListItems; an unreachable store still raises.
-  var after = ""
+  var cursor = after
   var pages = 0
   while true:
     var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageLimit}
-    if after.len > 0:
-      args["after"] = %after
+    if cursor.len > 0:
+      args["after"] = %cursor
     let r = dispatchSubjectCall(ct, "svc.store.call", "list", args, timeoutMs)
     if not r{"ok"}.getBool(false):
       raise newException(IOError, r{"error"}.getStr("store list failed"))
@@ -187,9 +192,9 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
     # spin forever).
     let nextAfter = r{"nextAfter"}.getStr("")
     if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
-        nextAfter == after:
+        nextAfter == cursor:
       break
-    after = nextAfter
+    cursor = nextAfter
     inc pages
     if pages > 10_000:
       raise newException(IOError,
