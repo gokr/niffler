@@ -40,8 +40,11 @@ const
   MAX_READ_LINES = 2000     # default read cap per call
   MAX_READ_ITEMS = 12       # read batch cap per call
   MAX_READ_BYTES = 256 * 1024
-  MAX_READ_LINE_BYTES = 200 * 1024
+  MAX_READ_LINE_BYTES = 2 * 1024  # minified lines must not flood context
   MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
+  DIAG_PUSH_TIMEOUT_MS = 25_000  # lsp diagnostics push (server cold starts)
+  DIAG_CONTEXT_LINES = 3    # diagnostics just outside the diff still matter
+  DIAG_PUSH_MAX_LINES = 8   # cap on in-range diagnostics per edit response
 
 # ---------------------------------------------------------------------------
 # line helpers + normalization
@@ -607,6 +610,29 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     "unicode punctuation, block anchors, escaped text) all failed. Read " &
     "the file and copy the text verbatim.")
 
+import diagformat
+
+proc lspDiagnosticsSection(c: Component, target: string,
+                           first, last: int): string =
+  ## After a successful edit, query the lsp component (only useful when a
+  ## language server is configured for the edited file's type) and attach
+  ## diagnostics scoped to the changed range (renderDiagSection in
+  ## diagformat.nim). Every failure mode is silent or a one-line note — a
+  ## missing, slow or crashed language server must never fail or
+  ## meaningfully stall an edit that already succeeded.
+  var resp: JsonNode
+  try:
+    resp = c.request("lsp", "lsp",
+      %*{"operation": "diagnostics", "path": target}, DIAG_PUSH_TIMEOUT_MS)
+  except CatchableError as e:
+    if "E_LSP_TIMEOUT" in e.msg:
+      return "\n\n[LSP diagnostics: server busy or still indexing — the lsp tool can retry.]"
+    return ""  # no server for this extension / lsp down: fully silent
+  if resp{"ok"}.getBool(false):
+    return renderDiagSection(resp{"text"}.getStr(""),
+                             resp{"count"}.getInt(0), first, last)
+  return "\n\n[LSP diagnostics: server busy or still indexing — the lsp tool can retry.]"
+
 proc hEdit(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
     raise newException(ValueError, "[E_BAD_SHAPE] Edit request must be an object.")
@@ -734,6 +760,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
             file.bom & restoreEnding(applied, file.ending), prevFull,
             persist = true)
   let d = compactDiff(content, applied)
+  let diagNote = lspDiagnosticsSection(c, file.absPath, d.firstLine, d.lastLine)
   let noun = if planned.len == 1: "edit" else: "edits"
   let lineSummary = if addedTotal > 0 or removedTotal > 0:
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."
@@ -741,7 +768,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
   result = %*{"text": "Successfully applied " & $planned.len & " " & noun &
                        " to " & path & "." & lineSummary &
                        "\n\nChange preview (- removed, + added; context included):\n" &
-                       d.diff,
+                       d.diff & diagNote,
               "first_changed_line": d.firstLine,
               "last_changed_line": d.lastLine,
               "added_lines": addedTotal,
