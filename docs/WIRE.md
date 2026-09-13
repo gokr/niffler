@@ -415,6 +415,10 @@ write then targeted an existing id.
 - One envelope still has to fit the NATS `max_payload`. Core spawns the
   bundled `components/nats` build with `--max_payload 8388608` (8MiB — a
   Niffler flag extension; the official binary only accepts it via config
-  file) because an `llm` `chat` request carries the whole conversation; a
-  PATH `nats-server` keeps the official 1MiB default. A publish over the
-  cap fails and reports the size against the server's `max_payload`.
+  file) because an `llm` `chat` request carries the whole conversation. A
+  PATH `nats-server` fallback (hand-compiled dev runs) gets the same 8MiB
+  via a generated config file — verified against the official binary; a
+  stock 1MiB cap makes oversized publishes time out instead of failing
+  loudly. Core also checks the connected bus's cap at boot and warns when
+  it is below the harness's 8MiB. A publish over the cap fails and
+  reports the size against the server's `max_payload`.

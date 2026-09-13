@@ -43,15 +43,33 @@ proc openNatsLib() =
       raise newException(IOError, "nats_Open: " & getErrorString(st))
     natsLib = true
 
+const natsMaxPayload = 8388608
+  ## LLM requests carry whole conversations; the official 1MiB default caps
+  ## usable context at ~250k tokens. 8MiB ≈ 2M tokens of JSON — above it
+  ## nats-server only warns, so this is the sanctioned max.
+
 proc natsServerBinary(): tuple[binary: string, ours: bool] =
   ## The nats-server component (components/nats) builds into var/bin beside
   ## this binary and wins when present — `make build` alone satisfies the bus
   ## dependency, no PATH install (pure desktop). PATH remains the fallback for
   ## hand-compiled dev runs without a full build. `ours` marks the component
-  ## build: only it understands the harness's --max_payload extension.
+  ## build: only it understands the harness's `--max_payload` flag
+  ## extension.
   let local = getAppDir() / "nats-server"
   if fileExists(local): return (local, true)
   ("nats-server", false)
+
+proc writeNatsConfig(dir: string): string =
+  ## Config file raising max_payload for a nats-server that cannot take the
+  ## flag. The official binary accepts `max_payload` only from a config file
+  ## (its own help says so) — without this, a PATH fallback silently runs at
+  ## the 1MiB default and every reply over that size never arrives: the
+  ## caller waits out its full timeout and it looks like a store hang
+  ## instead of a bus limit. Verified against nats-server v2.11: a 2MB
+  ## publish returns "payload exceeds server max_payload" without this file
+  ## and succeeds with it, and CLI flags compose with the config.
+  result = dir / "nats-max-payload.conf"
+  writeFile(result, "max_payload: " & $natsMaxPayload & "\n")
 
 proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUrl, binary: string] =
   ## NATS owns port allocation, so concurrent harnesses cannot win the same
@@ -63,13 +81,17 @@ proc spawnNats(ports: openArray[string]): tuple[process: Process, url, monitorUr
   try:
     let (bin, ours) = natsServerBinary()
     result.binary = bin
+    if not ours:
+      # A foreign nats-server: say so once, and raise its payload cap via the
+      # config-file route it does support.
+      echo "core: WARNING using " & bin & " from PATH (" & getAppDir() /
+           "nats-server not built) — run `make build` for the bundled bus"
     for port in ports:
       var args = @["-a", "127.0.0.1", "-p", port, "-m", "-1"]
       if ours:
-        # LLM requests carry whole conversations; the official 1MiB default
-        # caps usable context at ~250k tokens. 8MiB ≈ 2M tokens of JSON —
-        # above it nats-server only warns, so this is the sanctioned max.
-        args.add(["--max_payload", "8388608"])
+        args.add(["--max_payload", $natsMaxPayload])
+      else:
+        args.add(["-c", writeNatsConfig(portsDir)])
       args.add(["--ports_file_dir", portsDir])
       result.process = startProcess(result.binary,
         args = args,
@@ -143,16 +165,32 @@ proc probeBus(url, root: string): tuple[kind: BusProbeKind, owner: string] =
   except CatchableError:
     (bkFree, "")
 
+proc commOf(pid: int): string =
+  ## The kernel's name for the process at pid (trimmed executable name).
+  try:
+    readFile("/proc/" & $pid & "/comm").strip()
+  except CatchableError:
+    ""
+
 proc reclaimOwnNats(root: string): bool =
   ## A bare nats-server squatting on our home port is usually our own
   ## leftover (a SIGKILLed core — the kernel's PDEATHSIG makes this rare).
-  ## var/nats-pid names it: if alive, stop it and reclaim the port.
+  ## var/nats-pid names it: if alive AND still verifiably a nats-server,
+  ## stop it and reclaim the port.
   let pidFile = root / "var" / "nats-pid"
   if not fileExists(pidFile):
     return false
   let pid = try: parseInt(readFile(pidFile).strip())
             except CatchableError: return false
   if pid <= 0 or kill(Pid(cint(pid)), 0) != 0:
+    return false
+  # kill(pid, 0) only proves some process holds the pid — after a crash the
+  # kernel may have recycled it onto an unrelated process, and this is the
+  # one place the harness signals something it did not spawn this run.
+  # Anything un-verifyable (no /proc, vanished between check and signal)
+  # counts as not-ours: reclaim is an optimization, and the safe fallback
+  # (probe yields, core spawns an isolated bus) already exists.
+  if commOf(pid) != "nats-server":
     return false
   discard kill(Pid(cint(pid)), SIGTERM)
   for i in 0 ..< 40:
@@ -357,6 +395,21 @@ proc main() =
     stopSpawnedBus(serverProc)
     raise
   echo "core: connected to " & natsUrl
+  # Bus capacity check: a request carrying a whole conversation must fit the
+  # bus. The bundled bus is started with 8MiB; an attached foreign bus (a
+  # user's NIF_NATS_URL pointing at a stock nats-server, a remote gateway, an
+  # older harness) may still be at the official 1MiB default, where a large
+  # reply is rejected at publish time and the caller silently waits out its
+  # full timeout — a long-conversation failure that looks like a component
+  # hang. Warn at boot, where it is diagnosable, instead of
+  # mid-conversation.
+  block busCapacity:
+    let actual = natsConnection_GetMaxPayload(nc.conn).int
+    if actual > 0 and actual < natsMaxPayload:
+      stderr.writeLine("core: WARNING bus at " & natsUrl & " caps messages at " &
+        $actual & " bytes (harness uses up to " & $natsMaxPayload &
+        "); long conversations may fail to publish — raise max_payload on " &
+        "that server or leave NIF_NATS_URL unset so core spawns its own bus")
   # Publish discovery only after the bus is reachable; failed starts must not
   # leave a plausible but stale monitor endpoint behind. The spawned-bus PID
   # lets an operator (or a later cleanup) stop exactly this server if core
