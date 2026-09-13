@@ -387,20 +387,38 @@ itself), and tmux vocabulary the model has to know.
 discoverability wiring.** The dsh/Claude-Code shape fits the bus best, with
 the drain-cursor semantic from both. Concretely:
 
-- `process_start {command, label?}` (approval: always, like bash-class
-  commands) · `process_poll {id, waitMs?}` (drain-since-cursor; effect read)
-  · `process_kill {id}` (approval: always) · `process_list {}`.
+- `bash {command, run_in_background: true}` — the shell tool is a thin
+  **producer**: the flag forwards the command to the processes component and
+  returns the id immediately (dsh's split — producers register, the job
+  runtime owns). The flag lives in the always-present bash schema, so the
+  most common flow needs zero discover steps; the processes component keeps
+  sole ownership of children, registry, drain cursors and reaping.
+  `process_start` remains for discovered use.
+- `process_poll {id, waitMs?, filter?, tail?}` — drain-since-cursor, and the
+  cursor advances past filtered lines too (a projection, not a peek —
+  otherwise polls repeat). The **filter never hides permanently**: each
+  stream keeps a bounded raw tail (last ~64 KB), so `tail: true` re-reads
+  recent unfiltered output — filtering for `FAIL` can't silently eat the
+  crash two lines above it. Regex via `std/re`; every response ends with
+  `[status: running|exited(code)]` so the model never guesses liveness
+  (dsh's `[status: ...]` contract).
+- `process_kill {id}` (approval: always — graceful terminate, then
+  escalate via the existing killGroup) · `process_list {}` (id, label,
+  command, status, byte counters).
 - `runTurn`-independent: the component owns its children (own process
   groups via `procutil.killGroup`), `onDrain` reaps, boot sweep kills
   pids recorded in `var/processes.json` so crashes can't leak servers.
 - **Discoverability lands with the component, not before** (pointing the
   model at a component that doesn't exist is worse than silence):
-  - baseprompt enumeration gains `processes (long-running servers and
-    watchers — start once, poll incrementally)`;
-  - the **bash description gains the pointer**: "long-running processes
-    (servers, watchers): discover the processes component — start once and
-    poll incremental output — instead of blocking this call or backgrounding
-    with &"; bash stays the synchronous one-shot;
+  - the **bash description gains the teacher line**: "set
+    `run_in_background: true` for long-running commands (servers, watchers):
+    returns an id immediately; poll incremental output with `process_poll`
+    (filter for patterns; `tail: true` re-reads recent raw output), stop
+    with `process_kill`" — the flag in the frozen bash schema carries
+    discovery by itself;
+  - the baseprompt clause teaches the loop, not discovery: `processes
+    (long-running servers and watchers — start with bash's
+    run_in_background, poll incremental output)`;
   - both are one-line edits shipped in the same commit as the component.
 
 
