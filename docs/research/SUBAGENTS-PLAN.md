@@ -1,7 +1,15 @@
 # Subagents v2 — implementation plan
 
-Status: **planned, nothing started.** Branch `feat/subagents-v2`, worktree
+Status: **in progress.** Branch `feat/subagents-v2`, worktree
 `~/git/niffler-subagents-v2` (from `main` @ `3ad367c`).
+
+| phase | state |
+|---|---|
+| P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, `tests/t_agentnotice.nim` — 30 checks) |
+| P0.2 `agent_list` | not started |
+| P1.3 continuation | not started |
+| P1.4 fork | not started |
+| P2–P4 | not started |
 
 Design rationale and the comparison that produced it:
 [SUBAGENTS.md](SUBAGENTS.md) (kept in this branch). Provenance for the two
@@ -83,9 +91,31 @@ first commit:
 
 Commit message: `docs: subagent vs DSH study (SUBAGENTS.md) + plan branch seed`.
 
+**Implementation notes (found while building it):**
+
+- The compaction branch (`feat/compaction`) replaced the individual append
+  sites in `core/conversation.nim` with a single `ctxAppend` (persist +
+  append + ledger). `drainNotices` was written against pre-compaction main;
+  when compaction lands it must call `ctxAppend(p, messages, noticeMsg)`
+  instead of `messages.add` + `p.persistMsg` — a bare add is exactly what the
+  ledger discipline forbids.
+- `catalog {op: "running"}` does not exist, so "is the parent mid-turn" is
+  answered by tapping `ev.session.turn` (`phase: start|done`) rather than by
+  probing core. The tap's staleness is harmless by construction: a stale
+  *presence* only delays delivery to the next turn (the record stays pending
+  until a lane marks it), and a stale *absence* costs at most a deferred
+  notice.
+
 ---
 
 ## P0.1 — Settlement notice
+
+**Shipped.** Record (`agentnotice`), two-lane delivery, the `agent_notices`
+drain tool, core's per-turn drain, and `tests/t_agentnotice.nim` (30 checks,
+all green). Files touched: `components/agent/main.nim`,
+`core/conversation.nim`, `core/dispatch.nim` (a `notices` queue on
+`SteerStream`), `components/ctxtest/main.nim` (`ntc-*` script),
+`docs/WIRE.md`, `docs/MANUAL.md`, `AGENTS.md`.
 
 **Why.** `ev.agent.done` currently reaches only interactive UIs (an activity
 line in `ui/frontend/src/App.svelte:316`; nothing in the TUI). The parent

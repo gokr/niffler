@@ -229,6 +229,18 @@ comp.tool(%*{"hidden": true}):
                         %*{"task": "BIG_TOKENS report",
                            "maxTokens": 15000})
       return %*{"content": "agent-turn-done"}
+    if sessionId.startsWith("ntc-"):
+      # settlement-notice parents (tests/t_agentnotice.nim): spawn a
+      # background child, then finish the turn. The child settles after the
+      # parent's turn is over, so the notice takes the pull lane.
+      # ntc-fail spawns a child whose LLM explodes: a job with NO reply, so
+      # its notice must carry no fabricated summary.
+      if stage == 0:
+        let task = if sessionId == "ntc-fail":
+                     "FORCE_LLM_FAILURE then report"
+                   else: "echo agent-ok via a background subagent"
+        return toolCall("t1", "agent_spawn", %*{"task": task})
+      return %*{"content": "notice-parent-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must

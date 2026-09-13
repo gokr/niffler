@@ -51,6 +51,130 @@ proc sanitizeSessionId(s: string): string =
   for c in s:
     result.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '_'}: c else: '-')
 
+# --- settlement notices -----------------------------------------------------­
+# A background child that settles has to reach its PARENT CONVERSATION, not
+# just the UI: ev.agent.done is an observe-only event, so without a notice the
+# parent must burn a turn polling agent_status. Design:
+# docs/research/SUBAGENTS-PLAN.md P0.1.
+#
+# A notice is a durable record first and a delivery second — the record is
+# written before any delivery is attempted, so a parent that is down, retired
+# or mid-turn still gets it. Delivery is two-lane by PARENT state:
+#   * parent runner mid-turn -> the steer channel (immediate, folded in)
+#   * otherwise              -> pending, drained by the parent's next turn
+#
+# The notice is a POINTER, not the reply. The full reply is already durable in
+# the agentjob record (agent_status returns it), so the notice carries a
+# bounded summary plus an explicitly named recourse — a model that does not
+# know to make the second call will not make one.
+const noticeSummaryBytes = 400
+  ## Bounded head of the reply carried in the notice. The full text is one
+  ## agent_status call away, so this is a pointer's excerpt, not the payload.
+
+const noticeFullReplyIn = "agent_status"
+  ## Named recourse. Present so the model learns there is more AND how to get
+  ## it, from the notice alone.
+
+var liveTurns = initHashSet[string]()
+  ## Sessions whose runner has a turn in flight, maintained by the
+  ## ev.session.turn tap below. This is the ONLY state that lets the steer
+  ## lane deliver immediately; everything else is queued for the pull lane.
+  ## Conservative by design: a stale entry (missed "done") means we publish
+  ## into a runner that may not be draining — the notice then ALSO stays
+  ## pending, and the parent's next turn delivers it. A stale ABSENCE only
+  ## ever costs a deferred delivery, never a lost one.
+
+proc replySummary(reply: string; replyBytes: int): string =
+  ## Head/tail split for a reply over the cap (the tool-spill convention:
+  ## bash/mcp/fetch all return "content over cap + how to read it"). A mid-
+  ## truncation would hide the shape of a long structured reply.
+  if reply.len <= noticeSummaryBytes:
+    return reply
+  let head = noticeSummaryBytes div 2
+  let tail = noticeSummaryBytes - head
+  let omitted = reply.len - noticeSummaryBytes
+  result = reply[0 ..< head] & "\n...[" & $omitted & " bytes omitted]...\n" &
+           reply[^tail .. ^1]
+
+proc parentMidTurn(parent: string): bool =
+  ## True when the parent's runner is holding a turn, so the steer lane can
+  ## fold the notice in immediately. Fed by the ev.session.turn tap (core
+  ## emits phase start/done for every turn), not by a catalog probe — the
+  ## catalog has no turn state.
+  parent in liveTurns
+
+proc nextNoticeSeq(parent: string): int =
+  ## Next zero-padded-free sequence for a parent's notices. Derived from the
+  ## stored records (no counter to lose): store key order is id order, so the
+  ## highest existing suffix + 1 is the next value.
+  result = 0
+  try:
+    for item in comp.storeList("agentnotice", parent & ":", 1000, 10_000):
+      let id = item.id
+      let dot = id.rfind(':')
+      if dot >= 0:
+        try: result = max(result, parseInt(id[dot + 1 .. ^1]))
+        except ValueError: discard
+  except CatchableError:
+    discard
+  inc result
+
+proc deliverNotice(notice: var JsonNode, immediate: bool) =
+  ## Publish (steer lane) or leave pending (pull lane). Either way the record
+  ## is already written; a failed publish degrades to the pull lane, which is
+  ## why the publish is best-effort and never raises.
+  if not immediate: return
+  let parent = notice{"parent"}.getStr("")
+  if parent.len == 0: return
+  try:
+    # Build the payload field by field: %* is a literal constructor, it does
+    # not interpolate JsonNode values from scope. Only non-nil fields are
+    # copied, so a replyless notice carries no empty `summary` key.
+    var payload = newJObject()
+    payload["kind"] = %"subagent-settled"
+    payload["parent"] = %parent
+    for f in ["jobId", "child", "status", "summary", "replyBytes",
+              "fullReplyIn"]:
+      if notice{f} != nil:
+        payload[f] = notice{f}
+    comp.emit("svc.session." & sanitizeSessionId(parent) & ".steer",
+              %*{"notice": payload})
+    notice["deliveredAt"] = %epochTime()
+    notice["deliveredVia"] = %"wake"
+  except CatchableError:
+    discard  # stays pending; the next turn's drain delivers it
+
+proc emitNotice(c: Component, jobId, parent, child, status,
+                reply: string) =
+  ## The single writer of a settlement notice.
+  ##
+  ## Best-effort by construction: a notice is a convenience for the parent,
+  ## and a store failure must never turn a completed job into a failed call.
+  ## The `agentjob` record remains the authority on the job's outcome.
+  if parent.len == 0 or child.len == 0: return
+  var notice = %*{
+    "v": 1,
+    "parent": parent,
+    "jobId": jobId,
+    "child": child,
+    "status": status,
+    "replyBytes": reply.len,
+    "fullReplyIn": noticeFullReplyIn,
+    "createdAt": epochTime()}
+  if reply.len > 0:
+    notice["summary"] = %replySummary(reply, reply.len)
+  try:
+    let seqNo = nextNoticeSeq(parent)
+    let id = parent & ":" & align($seqNo, 6, '0')
+    discard c.storePut("agentnotice", id, notice, timeoutMs = 10_000)
+    deliverNotice(notice, parentMidTurn(parent))
+    if notice{"deliveredAt"} != nil:
+      discard c.storePut("agentnotice", id, notice, timeoutMs = 10_000)
+  except CatchableError as e:
+    stderr.writeLine(c.name & ": notice for " & jobId & " failed: " & e.msg)
+  c.emit("ev.agent.notice", %*{"jobId": jobId, "parent": parent,
+                                "child": child, "status": status})
+
 proc publishCancel(c: Component, child: string) =
   ## Two-channel turn cancellation: the llm side-channel aborts an in-flight
   ## streaming request; a __cancel control message on the proven steer
@@ -346,6 +470,9 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
     discard comp.storePut("agentjob", jobId, updated, timeoutMs = 10_000)
   except CatchableError:
     return nil  # cannot persist — leave the record alone rather than lie
+  emitNotice(comp, jobId, updated{"parent"}.getStr(""),
+             updated{"sessionId"}.getStr(""), updated{"status"}.getStr(""),
+             updated{"reply"}.getStr(""))
   comp.emit("ev.agent.done", %*{"jobId": jobId,
                                 "sessionId": updated{"sessionId"},
                                 "status": updated{"status"}})
@@ -595,6 +722,43 @@ comp.tool(%*{"onDemand": true}):
               %*{"content": message})
     return okResult(%*{"published": true})
 
+let noticesSchema = toolSchema(%*{
+  "session": {"type": "string",
+               "description": "Conversation to drain (defaults to the calling one)"},
+  "peek": {"type": "boolean",
+            "description": "Report pending notices without marking them delivered"}
+}, description = "Drain the pending settlement notices for a conversation: one entry per background child that finished, was stopped, or failed. Each entry carries jobId, the child session id, a bounded summary of the child's final reply, how many bytes the full reply has, and where to get the rest (agent_status {jobId}). Notices are delivered automatically while your turn is running; this drains the ones that arrived while you were idle. Draining marks them delivered — pass peek to look without consuming.")
+noticesSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+discard comp.tool("agent_notices", noticesSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    var target = toolArgs{"session"}.getStr("")
+    if target.len == 0:
+      target = toolArgs{"__session"}{"session"}.getStr("")
+    if target.len == 0:
+      return errResult("agent_notices needs a session (no live session context)")
+    let peek = toolArgs{"peek"}.getBool(false)
+    var pending = newJArray()
+    try:
+      for item in c.storeList("agentnotice", target & ":", 1000, 10_000):
+        let value = item.value
+        if value{"deliveredAt"} != nil: continue
+        pending.add(value)
+        if peek: continue
+        var delivered = value
+        delivered["deliveredAt"] = %epochTime()
+        delivered["deliveredVia"] = %"pull"
+        try:
+          discard c.storePut("agentnotice", item.id, delivered,
+                             timeoutMs = 10_000)
+        except CatchableError:
+          # cannot mark it: report it anyway rather than hiding it, and let
+          # the next drain try again (at-least-once, never silently lost)
+          discard
+      return okResult(%*{"session": target, "notices": pending,
+                         "count": pending.len, "peek": peek})
+    except CatchableError as e:
+      return errResult("cannot read notices (store unreachable): " & e.msg))
+
 # Terminal job recording: the runner replies on the job's reply inbox; this
 # tap is the single writer of the terminal state, so status lookups and
 # waits see the same durable record no matter when they run.
@@ -642,9 +806,36 @@ discard comp.tap("_INBOX.agentjob.>",
       discard c.storePut("agentjob", jobId, value, timeoutMs = 10_000)
     except CatchableError:
       discard  # the durable record stays "running"; status reports it
+    # The notice is written outside the storePut's try: a notice failure or
+    # a store hiccup while recording the job must not suppress the event,
+    # and emitNotice is itself best-effort (it never raises). The parent is
+    # only known once `prior` was read, so a job whose record vanished
+    # before its completion tap produces an event but no notice.
+    if value{"parent"}.getStr("").len > 0:
+      emitNotice(c, jobId, value{"parent"}.getStr(""),
+                 value{"sessionId"}.getStr(""),
+                 value{"status"}.getStr(""), value{"reply"}.getStr(""))
     c.emit("ev.agent.done", %*{"jobId": jobId,
                                 "sessionId": value{"sessionId"},
                                 "status": value{"status"}}))
+
+discard comp.tap("ev.session.turn",
+  proc(c: Component, subject: string, data: string) =
+    ## Track which sessions hold a live turn, so a settlement notice can pick
+    ## the steer lane when the parent is mid-turn. Observe-only and
+    ## best-effort: this tap must never affect a turn.
+    var env: Envelope
+    try:
+      env = decode(data)
+    except CatchableError:
+      return
+    if env.kind != ekEvent or env.payload == nil: return
+    let sessionId = env.payload{"sessionId"}.getStr("")
+    if sessionId.len == 0: return
+    case env.payload{"phase"}.getStr("")
+    of "start": liveTurns.incl(sessionId)
+    of "done": liveTurns.excl(sessionId)
+    else: discard)
 
 reconcileAll()
 comp.run()

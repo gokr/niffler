@@ -66,6 +66,7 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+    notices*: seq[JsonNode]  # settlement notices (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
   # Raised from a dispatch's idle slot when a turn cancellation arrives
@@ -839,6 +840,14 @@ proc pumpSteer*(ct: CoreTools) =
     if env.payload{"__cancel"}.getBool(false):
       ct.steerStream.cancelRequested = true
       ct.steerStream.cancelAt = epochTime()
+      continue
+    # A settlement notice rides the same subject but is NOT user content:
+    # it is runtime machinery about a subagent, delivered structurally so the
+    # transcript can tell it apart from something the human typed. Queued
+    # separately and folded in by drainNotices as a marked message.
+    if env.payload{"notice"} != nil and
+        env.payload{"notice"}.kind == JObject:
+      ct.steerStream.notices.add(env.payload{"notice"})
       continue
     let content = env.payload{"content"}.getStr("")
     if content.len > 0:

@@ -1709,6 +1709,25 @@ guide with nudge phrasing and worked examples:
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
 | `agent_stop {jobId}` | Cancel a running job for real: the child's LLM request is aborted, its turn ends promptly, and an in-flight bash command is killed (whole process tree). The terminal record says "stopped". |
 | `agent_steer {session_id, message}` | Inject a message into a running background job's turn (drained between LLM rounds). |
+| `agent_notices {session?, peek?}` | Drain this conversation's pending subagent **settlement notices** — one entry per background child that finished, was stopped, or failed. Notices are delivered automatically (see below); this is for notices that arrived while the conversation was idle, and `peek` looks without consuming. |
+
+### Settlement notices
+
+A background child that reaches a terminal state tells its **parent
+conversation**, not just the UI (`ev.agent.done` is observe-only). The notice
+is a durable `agentnotice` record written before any delivery is attempted,
+and it is a *pointer*, not the reply:
+
+- while the parent's turn is running, the notice is folded in immediately
+  (steer lane) as a structurally marked user message;
+- otherwise it waits, and the parent's next turn pulls every pending notice
+  at the top of the turn (pull lane) — so the model never has to poll;
+- either way the notice carries a bounded `summary`, `replyBytes` (the
+  untruncated length) and `fullReplyIn: "agent_status"`, because the full
+  reply is already durable in the `agentjob` record and one call away.
+
+Notices are best-effort: an unreachable store or agent component costs a
+notice, never a turn.
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call
@@ -1816,6 +1835,7 @@ Kinds in use by core:
 | `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discoverydiscoverinvoke)) |
 | `slash` | `slash` | the merged slash-command table UIs render (see [WIRE.md](WIRE.md)) |
 | `agentjob` | `<jobId>` | durable background `agent_spawn` job records |
+| `agentnotice` | `<parentSession>:<seq>` | subagent settlement notices (summary + recourse to the full reply; `deliveredAt`/`deliveredVia` mark delivery) |
 | `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata |
 | `fabricprog` | program name | the model-curated fabric program library (`fabric {name}` runs one) |
 

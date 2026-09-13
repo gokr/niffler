@@ -187,6 +187,11 @@ ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
 ev.session.steer       # {sessionId, turnId?, content} a steer message was folded in
 ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
+ev.session.notice      # {sessionId, turnId?, jobId, child, status} a subagent
+                       #   settlement notice was folded in (the durable
+                       #   agentnotice record is what carries the summary and
+                       #   the recourse to the full reply; see "Settlement
+                       #   notices" below)
 ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)
@@ -307,6 +312,51 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   request/reply callers that stop waiting only abandon the reply; the target
   work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
   possible future addition.
+
+## Settlement notices (subagents → parent)
+
+A background subagent (`agent_spawn`) that reaches a terminal state writes a
+durable `agentnotice` record and delivers it to its **parent conversation** —
+not just to UIs (`ev.agent.done` is observe-only). Rationale and design:
+docs/research/SUBAGENTS-PLAN.md P0.1.
+
+Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
+
+```json
+{ "v": 1, "parent": "conv-…", "jobId": "job-…", "child": "agent-…",
+  "status": "done|failed|stopped",
+  "summary": "<bounded head of the reply, ≤400 chars; absent when the job
+                produced no reply>",
+  "replyBytes": 12345,
+  "fullReplyIn": "agent_status",
+  "createdAt": 1765400000.0,
+  "deliveredAt": 1765400001.0, "deliveredVia": "wake|pull" }
+```
+
+The notice is a **pointer, not the reply**: `replyBytes` counts the
+untruncated reply and `fullReplyIn` names the tool that returns it, because
+the full reply is already durable in the `agentjob` record (`agent_status`
+returns it). A model told only "your subagent finished" does not know to make
+a second call; the pointer is what makes the summary a delegation rather
+than a loss. Same convention as the tool-spill paths (`bash`, `mcp`, `fetch`).
+
+Delivery is two-lane by **parent state**, and the durable record is written
+before either is attempted:
+
+- **parent runner mid-turn** → the steer subject
+  (`svc.session.<parent>.steer`) with a `notice` payload object instead of a
+  `content` string. The runner queues it separately from user steer and
+  folds it in as a structurally marked user message — it is runtime
+  machinery about a subagent, never something the human typed.
+- **otherwise** (idle, retired, or no runner) → pending; the parent's next
+  turn pulls every pending notice at the top of the turn (alongside steer
+  and advisories) and marks it `deliveredVia: "pull"`.
+
+Taking the pushed lane first is what prevents double delivery. Notices are
+best-effort throughout: a store or agent-component failure costs a notice,
+never a turn, and a completed job is never turned into a failed call.
+`agent_notices {session?, peek?}` drains manually (on demand) for callers
+that want to look without waiting for a turn.
 
 ## Approvals
 

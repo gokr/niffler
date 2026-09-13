@@ -91,8 +91,9 @@ anything structural.
   system prompt (persisted in the conversation header,
   `core/conversation.nim:resolveSystemPrompt`) plus the frozen direct tool
   schemas (`<sessionId>:tools` store doc) — must stay byte-stable for the
-  conversation's lifetime; history only grows (steer, advice, and discover
-  schemas all enter as appended messages). Any new contributor to the
+  conversation's lifetime; history only grows (steer, advice, discover
+  schemas and subagent settlement notices all enter as appended messages).
+  Any new contributor to the
   session context must state its effect: **frozen prefix** or **append-only
   history**. Never splice a volatile fact (time, a file edit, a catalog
   change) into the head; append it as a user/tool-role message instead. Tool

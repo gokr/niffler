@@ -638,6 +638,75 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
     result += 1
   ct.adviseStream.queue.setLen(0)
 
+proc drainNotices(ct: CoreTools, p: var Persister,
+                  messages: var seq[JsonNode],
+                  onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                  turnId = ""): int =
+  ## Fold pending subagent settlement notices into the running conversation
+  ## (docs/research/SUBAGENTS-PLAN.md P0.1). A background child that settled
+  ## while this conversation was idle left an `agentnotice` record; without
+  ## this drain the parent would have to poll agent_status to learn about it.
+  ##
+  ## Fetched at the top of every turn (like steer and advisories) so the
+  ## pull lane is invisible to the model — it never has to remember to ask.
+  ## The notice is written as a structurally marked user message: the
+  ## `notice` field is the provenance, so rendering, trimming and compaction
+  ## can treat it as runtime machinery rather than something the user said
+  ## (the lesson from OpenHands' prefix-matched goal prompts).
+  ##
+  ## Best-effort: a missing/unreachable agent component costs a notice, not
+  ## the turn.
+  ##
+  ## TWO lanes, one place: notices pushed over the steer channel while this
+  ## turn was running (the parent was mid-turn when the child settled) are
+  ## consumed from the queue first; anything still pending in the store is
+  ## then pulled (the child settled while this conversation was idle).
+  ## Taking the queue first is what keeps a wake-delivered notice from being
+  ## delivered twice.
+  let sessionId = p.convId
+  # Fold the two lanes in order: what the steer channel pushed while this
+  # turn was live (Lane 1), then whatever is still pending in the store
+  # (Lane 2, the idle parent). Lane 1 first is what keeps a wake-delivered
+  # notice from also arriving through the pull drain.
+  var inbound = newJArray()
+  if ct.steerStream != nil and ct.steerStream.notices.len > 0:
+    for n in ct.steerStream.notices: inbound.add(n)
+    ct.steerStream.notices.setLen(0)
+  var pending: JsonNode
+  try:
+    pending = ct.dispatchToolCall("agent_notices",
+      %*{"session": sessionId, "peek": false}, 5_000)
+  except CatchableError:
+    pending = nil
+  let pulled = if pending != nil: pending{"notices"} else: nil
+  if pulled != nil and pulled.kind == JArray:
+    for n in pulled: inbound.add(n)
+  for n in inbound:
+    let status = n{"status"}.getStr("")
+    if status.len == 0: continue
+    let jobId = n{"jobId"}.getStr("")
+    let child = n{"child"}.getStr("")
+    let summary = n{"summary"}.getStr("")
+    let replyBytes = n{"replyBytes"}.getInt(0)
+    var content = "[subagent " & child & " " & status & "]"
+    if summary.len > 0:
+      content.add("\n" & summary)
+    if replyBytes > summary.len:
+      content.add("\n(full reply: " & $replyBytes & " bytes — " &
+                  n{"fullReplyIn"}.getStr("agent_status") &
+                  " {jobId: \"" & jobId & "\"})")
+    let noticeMsg = %*{"role": "user", "content": content,
+                       "notice": {"kind": "subagent-settled",
+                                  "jobId": jobId, "child": child,
+                                  "status": status}}
+    messages.add(noticeMsg)
+    p.persistMsg(noticeMsg)
+    if onEvent != nil:
+      onEvent("notice", %*{"sessionId": sessionId, "turnId": turnId,
+                            "jobId": jobId, "child": child,
+                            "status": status})
+    result += 1
+
 # A parsed tool call from an assistant message, ready for the wave scheduler.
 # parseFailed calls were garbled/truncated at the source and are neutralized
 # (never dispatched) — their history entry carries valid {} args for strict
@@ -900,6 +969,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # accepted advisor messages (pumpAdvise).
     discard drainSteer(ct, p, messages, onEvent, turnId)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
+    discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
     # An allowlisted conversation sees only its frozen tools in the prompt;
