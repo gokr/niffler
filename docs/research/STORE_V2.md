@@ -1,15 +1,14 @@
 # Store v2 — three stores, one contract, SDK tightening, DuckDB as observer
 
 > Plan for the `feat/code-hygiene` branch. Status: design; SDK additions in
-> progress. Revision 2: SQLite and TiDB stores are **additional** engines —
-> the barrel store stays and remains the default until comparison data says
-> otherwise.
+> progress. Revision 3: **the SQLite engine is now the default** — see M7.
+> The barrel store remains fully supported and selectable.
 >
-> Progress: **M3 and M4 landed on `main`** — `components/store-sqlite` and
-> `components/store-tidb` (both Go, goose migrations, `NIF_STORE_BACKEND`
+> Progress: **M3, M4 and the default flip landed** — `components/store-sqlite`
+> and `components/store-tidb` (both Go, goose migrations, `NIF_STORE_BACKEND`
 > boot switch in core, `make test-store-sqlite` / `test-store-tidb` running
 > the same contract; TiDB verified live against v8.5.0). The SDK refactor
-> pass (M2) and the default-flip decision (M7) remain open.
+> pass (M2) remains open.
 
 Two entangled goals, one branch:
 
@@ -61,9 +60,12 @@ is a boot-time choice:
 - Trying a store = `NIF_STORE_BACKEND=sqlite make run`. Comparing two
   stores = boot twice against the same dataset. Nothing else moves.
 
-Default remains barrel — the working shape must never change under a
-hygiene branch until the alternatives prove themselves on the same tests
-and the same data.
+~~Default remains barrel~~ — **superseded (M7)**: the alternatives proved
+themselves on the same tests and the same data, and compaction added a
+correctness requirement (atomic doc+rev put) that barrel's two-key write
+cannot meet. The default is now **sqlite**; see M7 for the evidence and
+for the boot guard that keeps the switch from silently stranding barrel
+history.
 
 ## Document store vs SQL store — the tradeoffs
 
@@ -252,7 +254,8 @@ green at every commit, and `t_store` runs against all three engines.
   `make test` green.
 - [x] **M3** — `store-sqlite` (Go, goose embedded, flock, byte-identical
   results) as an *additional* engine; `NIF_STORE_BACKEND` boot switch in
-  core; `t_store` green against barrel and sqlite; barrel stays default.
+  core; `t_store` green against barrel and sqlite. **Later became the
+  default** (M7).
   Shipped: JSON-in-TEXT stored verbatim, single atomic put (BEGIN
   IMMEDIATE upsert/compare-and-set), flock on `var/store.db.lock`,
   schema mirrored from the barrel engine's tool schemas. Deviations,
@@ -268,9 +271,15 @@ green at every commit, and `t_store` runs against all three engines.
   `NIF_STORE_TIDB_DSN` (session forced to UTC unless the DSN picks a
   zone). Verified live: TiDB v8.5.0 in docker (single-node), full
   contract + unit tests + core boot probe.
-- [ ] **M5** — `tools/store-copy.nim` (JSONL export/import) so datasets
-  move between engines; a small comparison script (same synthetic load,
-  wall-clock + file size per engine). *Partial: comparison shipped as
+- [x] **M5** — dataset movement between engines. Shipped as
+  `niffler-store-migrate` (tools/store_migrate.nim) rather than the planned
+  `store-copy.nim`: it runs a private bus + store processes offline, probes
+  a candidate kind list, replays every document through the contract (so
+  any engine pair works), verifies per-kind counts, and refuses to overlay
+  an existing target. `--scan` finds un-migrated roots (sibling clones and
+  `var/bench/**/niffler-root`). Verified against a real 43 MB production
+  barrel: 4309 documents, counts confirmed independently via sqlite3, and
+  the harness booted on the migrated store. Comparison shipped earlier as
   `tools/bench_stores.nim` (bus-contract bench, both engines). Measured on
   the dev box, end-to-end over NATS — sqlite leads every phase ~2-6x, but
   the gap is dominated by per-request overhead of the component stacks
@@ -278,11 +287,23 @@ green at every commit, and `t_store` runs against all three engines.
   ~27 µs/item vs sqlite's similar batch cost), not document I/O. Disk:
   barrel 0.4-0.5 MB, sqlite 1.4 MB (+WAL high-water during writes,
   checkpointed away on clean close). Boot to registered: 22 ms vs 7 ms.
-  Both are far beyond the harness's needs; the copy tool itself remains
-  open.*
+  Both are far beyond the harness's needs.
 - [ ] **M6** — DuckDB observer: `observe` sink mode (or sibling component)
   materializing `ev.*` into `var/observe.db`; stock queries shipped as
   examples.
-- [ ] **M7** — README milestone table + docs/MANUAL.md persistence
-  section rewritten for the three engines; decide (with data) whether the
-  default flips.
+- [x] **M7** — docs rewritten for the three engines **and the default
+  flipped to SQLite**. Deciding evidence: (a) context compaction's store
+  kind needs an atomic doc+rev write — SQLite's `put` is one statement
+  where barrel's is a two-key sequence with a crash window (this is the
+  "comparison data" the revision-2 note asked for, and it is a
+  correctness difference, not a throughput one); (b) the M5 bench shows
+  sqlite ahead in every phase; (c) SQLite is introspectable
+  (`sqlite3 var/store.db …`) and gives the range-readable list that long
+  transcripts need. Safety: switching does not migrate, so core refuses to
+  boot over an un-migrated `var/barrel-db` and prints the
+  `niffler-store-migrate` command; `NIF_STORE_BACKEND=barrel` remains the
+  escape hatch. Docs touched: MANUAL (engine table, env table, store
+  section, troubleshooting, migration section), AGENTS.md (store bullet,
+  transcript-reading path, make-down note), README, WIRE.md (a new Store
+  contract section documenting the `list` cursor), manifest.yaml and
+  Makefile comments.

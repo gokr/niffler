@@ -119,8 +119,9 @@ var/bin/store: components/store/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/store/main.nim
 
 # store-sqlite — the SQLite engine of the store contract (docs/research/
-# STORE_V2.md M3). Same component name/tools; selected at boot via
-# NIF_STORE_BACKEND=sqlite. Pure-Go driver: no cgo, no build prerequisites.
+# STORE_V2.md M3). Same component name/tools; the DEFAULT engine, selected
+# at boot via NIF_STORE_BACKEND=sqlite (unset means sqlite). Pure-Go driver:
+# no cgo, no build prerequisites.
 var/bin/store-sqlite: components/store-sqlite/main.go components/store-sqlite/go.mod components/store-sqlite/go.sum \
     $(wildcard components/store-sqlite/migrations/*.sql) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/store-sqlite && go build -o ../../var/bin/store-sqlite .'
@@ -131,6 +132,12 @@ var/bin/store-sqlite: components/store-sqlite/main.go components/store-sqlite/go
 var/bin/store-tidb: components/store-tidb/main.go components/store-tidb/go.mod components/store-tidb/go.sum \
     $(wildcard components/store-tidb/migrations/*.sql) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/store-tidb && go build -o ../../var/bin/store-tidb .'
+
+# store migration: copy a root's data between engines (barrel -> sqlite).
+# A separate offline binary: it starts its own bus and store processes, so
+# no harness needs to be running. See docs/research/COMPACTION.md §2.
+var/bin/niffler-store-migrate: tools/store_migrate.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tools/store_migrate.nim
 
 var/bin/bash: components/bash/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/bash/main.nim
@@ -234,7 +241,7 @@ var/bin/dialog: components/dialog/dialog.sh | var/bin
 components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
-components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/bash \
+components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/niffler-store-migrate var/bin/bash \
 	var/bin/edit var/bin/lsp var/bin/processes var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
@@ -402,7 +409,7 @@ test-ui:
 test-bash:    build var/bin/test_t_bash    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_bash
 test-store:   build var/bin/test_t_store   ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_store
 # Same bus-contract test against the SQLite engine (t_store picks the binary
-# up from NIF_STORE_BIN; the target above runs the barrel default).
+# up from NIF_STORE_BIN; `make test-store` runs the default engine, sqlite).
 test-store-sqlite: build var/bin/test_t_store ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" NIF_STORE_BIN="$(ROOT)/var/bin/store-sqlite" ./var/bin/test_t_store
 # Same bus-contract test against the TiDB engine — needs a live server:
 # NIF_STORE_TIDB_DSN=root@tcp(127.0.0.1:4000)/test (docker run -p 4000:4000 pingcap/tidb).

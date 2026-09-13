@@ -414,7 +414,7 @@ proc main() =
   var nc3 = waitConnect(url3)
   defer: nc3.close()
 
-  var seedStore = startComponent(minimalSandbox.sandboxBin("store"), url3,
+  var seedStore = startComponent(minimalSandbox.sandboxStoreBin(), url3,
                                  root = minimalSandbox.root)
   defer:
     if seedStore != nil:

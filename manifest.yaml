@@ -5,11 +5,13 @@
 # shipped components. Agent-written components go through builder + spawn.
 
 components:
-  # Store engines: barrel (default), store-sqlite, store-tidb all register
+  # Store engines: store-sqlite (default), barrel, store-tidb all register
   # as component "store" with identical tools. NIF_STORE_BACKEND picks the
-  # engine at boot (core resolves this entry's binary): unset/barrel →
-  # var/bin/store, sqlite → var/bin/store-sqlite, tidb → var/bin/store-tidb
-  # (docs/research/STORE_V2.md).
+  # engine at boot (core resolves this entry's binary): unset/sqlite →
+  # var/bin/store-sqlite, barrel → var/bin/store, tidb → var/bin/store-tidb
+  # (docs/research/STORE_V2.md, docs/research/COMPACTION.md §2). An
+  # un-migrated var/barrel-db makes core refuse to boot — run
+  # `niffler-store-migrate --root <path>` or set NIF_STORE_BACKEND=barrel.
   - name: store
     build: {lang: nim, src: components/store/main.nim}
     binary: var/bin/store

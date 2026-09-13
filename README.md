@@ -300,11 +300,16 @@ var/                 runtime: binaries, build cache (gitignored)
 ## Persistence
 
 `store` is a component like any other — a dumb document store over the bus
-(`put/get/list/del`, rev-based optimistic concurrency). Backed by an
-**embedded BitBarrel** (Bitcask KV, critbit index) in critbit mode; exactly
-one process owns the barrel file (`var/barrel-db`), everything else talks
-envelopes — so backend choice is contained and swappable (a store-tidb
-variant with FTS/vector later is a drop-in with the same tools).
+(`put/get/list/del`, rev-based optimistic concurrency). The default engine
+is **SQLite** (`var/store.db`, atomic put, introspectable; see Store
+engines in [docs/MANUAL.md](docs/MANUAL.md)); the original **embedded
+BitBarrel** (Bitcask KV, critbit index) remains selectable with
+`NIF_STORE_BACKEND=barrel` and keeps its history in `var/barrel-db`.
+Whichever engine runs, exactly one process owns the data file and
+everything else talks envelopes — so backend choice is contained and
+swappable (a store-tidb variant with FTS/vector later is a drop-in with
+the same tools). `niffler-store-migrate` moves a root between engines
+(the switch does not move data by itself).
 
 Barrel's pubsub is deliberately **not** used — NATS is the one and only
 bus. Kind keys: `component`, `conversation`, `message`, `plugin` (the
@@ -401,14 +406,21 @@ Open work — deferred follow-ups and quests — is consolidated in
 - [x] typed tool definitions (nimcp-inspired: schema + handler from a proc)
 - [x] **agent adds itself a tool end-to-end** (docs/research/REBOOT.md milestone, live
       test with DeepSeek: wrote → built → spawned → called `greet`)
-- [x] **store component** — barrel-backed document store over the bus
+- [x] **store component** — document store over the bus
       (put/get/list/del, rev-based optimistic concurrency); core persists
       conversations, messages and spawned components; spawned components
       restore on boot (persistence of shape, verified live across restarts)
+- [x] **sqlite store default + migration** (docs/research/COMPACTION.md §2)
+      — SQLite is the default engine (atomic doc+rev write, range-readable
+      list); `list` gained an `after`/`hasMore` cursor so long transcripts
+      stop truncating at 1000 items on resume; a boot guard refuses to
+      start over an un-migrated `var/barrel-db`, and
+      `niffler-store-migrate` moves a root between engines (verified on a
+      real 43MB barrel: 4309 documents)
 - [ ] **code hygiene + store v2** — `feat/code-hygiene` branch
       (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
       duplication cleanup; three interchangeable store engines behind one
-      contract (barrel stays default; Go SQLite + TiDB engines with goose
+      contract (sqlite default, barrel + TiDB engines with goose
       migrations, picked via NIF_STORE_BACKEND); DuckDB as a bus observer.
       **SQLite + TiDB engines landed**: `components/store-sqlite` and
       `components/store-tidb` (Go, goose, `NIF_STORE_BACKEND=sqlite|tidb`,

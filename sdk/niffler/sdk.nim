@@ -314,7 +314,11 @@ proc storeGet*(c: Component, kind, id: string,
 proc storeList*(c: Component, kind: string, idPrefix = "", limit = 100,
                 timeoutMs = 5000): seq[StoreItem] =
   ## List documents of a kind, ordered by id, optionally filtered by an id
-  ## prefix. limit is capped by the store itself.
+  ## prefix. limit is capped by the store itself (1000).
+  ##
+  ## A single call is a PAGE, not a complete view: for anything that must
+  ## see the whole kind (a transcript, a migration, an audit) use
+  ## storeListAll, which pages the cursor to exhaustion.
   let r = storeCall(c, "list", kind, idPrefix, %*{"kind": kind,
                     "idPrefix": idPrefix, "limit": limit}, timeoutMs)
   let items = r{"items"}
@@ -323,6 +327,39 @@ proc storeList*(c: Component, kind: string, idPrefix = "", limit = 100,
       result.add(StoreItem(id: item{"id"}.getStr(""),
                            rev: item{"rev"}.getInt(0),
                            value: item{"value"}))
+
+proc storeListAll*(c: Component, kind: string, idPrefix = "",
+                   pageLimit = 1000, timeoutMs = 5000): seq[StoreItem] =
+  ## List EVERY document of a kind by paging the store's `after` cursor to
+  ## exhaustion. Prefer this over storeList whenever completeness matters.
+  ##
+  ## A single list call is capped at 1000 items, so callers that assumed a
+  ## full view silently saw only the first page (this is how a long
+  ## transcript resumed truncated and how conversation_delete left messages
+  ## behind). The loop stops on no-more-pages, a missing cursor, or a
+  ## cursor that failed to advance — it can neither truncate nor spin.
+  var after = ""
+  var pages = 0
+  while true:
+    var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageLimit}
+    if after.len > 0:
+      args["after"] = %after
+    let r = storeCall(c, "list", kind, idPrefix, args, timeoutMs)
+    let items = r{"items"}
+    if items != nil and items.kind == JArray:
+      for item in items:
+        result.add(StoreItem(id: item{"id"}.getStr(""),
+                             rev: item{"rev"}.getInt(0),
+                             value: item{"value"}))
+    let nextAfter = r{"nextAfter"}.getStr("")
+    if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
+        nextAfter == after:
+      break
+    after = nextAfter
+    inc pages
+    if pages > 10_000:
+      raise newException(IOError,
+        "storeListAll page limit exhausted for kind " & kind)
 
 proc storeDel*(c: Component, kind, id: string, timeoutMs = 5000) =
   ## Delete a document; idempotent (missing target is not an error).

@@ -127,16 +127,28 @@ comp.tool(%*{"onDemand": true}):
     return okResult(%*{"rev": rev, "value": parseJson(db.get(docKey(kind, id)))})
 
 comp.tool(%*{"onDemand": true}):
-  proc list(kind: string, idPrefix: string = "", limit: int = 100): JsonNode =
+  proc list(kind: string, idPrefix: string = "", limit: int = 100,
+            after: string = ""): JsonNode =
     ## List stored documents of a kind, ordered by id, optionally
     ## id-prefix filtered. Read-only. Enumerate conversations (kind
     ## conversation) or one conversation's messages (kind message,
     ## idPrefix <convId>:). Returns {ok, items: [{id, rev, value}]}.
+    ##
+    ## `after` is an exclusive id cursor: pass the last id of the previous
+    ## page to continue past it (the store keeps full histories, which can
+    ## exceed the 1000-item cap). `hasMore` reports whether another page
+    ## exists; absence of `nextAfter` with hasMore true is impossible.
     ## - kind: Document kind
     ## - idPrefix: Only items whose id starts with this
     ## - limit: Max items (default 100, cap 1000)
+    ## - after: Exclusive id cursor from a previous page (default = first page)
     let prefix = "d:" & kind & ":" & idPrefix
-    let (keys, _, _) = db.keysByPrefix(prefix, min(limit, 1000))
+    # Cursor semantics (verified against bitbarrel/critbitindex.nim: the
+    # cursor is strictly exclusive — `key <= cursor` is skipped). The cursor
+    # is the full document id without the "d:" key prefix, so callers pass
+    # items[^1].id straight back.
+    let cursor = if after.len == 0: "" else: "d:" & kind & ":" & after
+    let (keys, _, hasMore) = db.keysByPrefix(prefix, min(limit, 1000), cursor)
     var items = newJArray()
     for key in keys:
       let id = key[len("d:" & kind & ":" ) .. ^1]
@@ -144,7 +156,17 @@ comp.tool(%*{"onDemand": true}):
       if rev == 0: continue  # tombstoned
       items.add(%*{"id": id, "rev": rev,
                    "value": parseJson(db.get(docKey(kind, id)))})
-    return okResult(%*{"items": items})
+    # nextAfter must come from the last returned *key*, never from the last
+    # item: a page whose documents are all tombstoned still advances the
+    # cursor, otherwise a caller would silently skip every later page.
+    # (keysByPrefix can report a spurious trailing hasMore; the follow-up
+    # page then comes back empty and the loop terminates — harmless.)
+    # The `tool` macro assigns this proc's `result` from its return value,
+    # so build the envelope in a local and return it.
+    var reply = %*{"items": items, "hasMore": hasMore}
+    if hasMore and keys.len > 0:
+      reply["nextAfter"] = %keys[^1][len("d:" & kind & ":" ) .. ^1]
+    return okResult(reply)
 
 comp.tool(%*{"hidden": true}):
   proc del(kind: string, id: string): JsonNode =

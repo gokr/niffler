@@ -362,6 +362,31 @@ keys:
   default SDK pump remains serial. The NATS queue group on
   `svc.<component>.call` distributes one call per process subscriber.
 
+## Store contract (`svc.store.call`)
+
+The store's bus contract is the artifact; every engine implements exactly
+these tools (docs/MANUAL.md "Store engines"). `put` / `get` / `del` carry
+`{kind, id, value?, expectRev?}`; docs are opaque JSON, ids sort
+lexicographically, and `expectRev` gives optimistic concurrency
+(`rev-conflict` on mismatch).
+
+`list` takes `{kind, idPrefix?, limit?, after?}` and returns
+`{ok, items: [{id, rev, value}], hasMore, nextAfter?}`.
+
+**`list` is a page, not a complete view.** `limit` is capped at 1000. When
+more documents follow, the reply carries `hasMore: true` and `nextAfter`
+(the last returned id); pass it back as `after` to continue. `after` is a
+strictly exclusive cursor — the id equal to `after` is never returned — and
+it advances by *key*, so a page whose documents are all tombstoned still
+moves forward rather than stranding the caller. A caller that needs the
+whole kind loops until `hasMore` is false or `nextAfter` is absent.
+
+Core's own full-kind reads (session resume, `session_info`,
+`conversation_delete`) use `storeListAll` (core/dispatch.nim; the SDK
+exposes the same helper) rather than a single call, because a capped read
+silently truncated a resumed transcript at 1000 messages and the next
+write then targeted an existing id.
+
 ## Conventions
 
 - Component names: lowercase, hyphens (`hashline-edit`). Tool names: lowercase,

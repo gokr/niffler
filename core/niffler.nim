@@ -387,6 +387,34 @@ proc main() =
   # --- 3. manifest → children --------------------------------------------
   let manifest = loadManifest(root)
   var required: seq[string] = @[]
+
+  # Un-migrated barrel guard (docs/research/COMPACTION.md §2, STORE_V2 migration):
+  # the default engine changed from barrel to sqlite, and switching does NOT
+  # migrate data. Booting sqlite over an existing barrel would open an empty
+  # database and look exactly like every conversation vanished, while the real
+  # history sat untouched in var/barrel-db. Refuse loudly with the command to
+  # run instead — a deliberate, recoverable stop, not silent data loss.
+  block storeGuard:
+    let requested = getEnv("NIF_STORE_BACKEND", "")
+    if requested in ["", "sqlite"]:
+      let sqlitePath = root / "var/bin/store-sqlite"
+      let sqliteDb = root / "var" / "store.db"
+      let barrelDb = root / "var" / "barrel-db"
+      # Only when the engine we are about to run is actually present (the
+      # missing-binary fallback below has its own, gentler handling) and the
+      # target database does not exist yet but old history does.
+      if fileExists(sqlitePath) and not fileExists(sqliteDb) and
+          fileExists(barrelDb):
+        let cmd = "niffler-store-migrate"
+        quit("core: this harness has conversation history in var/barrel-db, " &
+             "but the default store engine is now SQLite and no var/store.db " &
+             "exists yet.\n" &
+             "core: migrate first (nothing is moved automatically):\n" &
+             "core:     " & cmd & " --root " & root & "\n" &
+             "core: scan for other un-migrated roots (benchmarks, clones):\n" &
+             "core:     " & cmd & " --scan\n" &
+             "core: or keep using the old engine: NIF_STORE_BACKEND=barrel", 1)
+
   for c in manifest{"components"}:
     let name = c{"name"}.getStr("")
     if minimalMode and name notin minimalComponents:
@@ -394,16 +422,32 @@ proc main() =
     # Store engine selection (docs/research/STORE_V2.md): all engines
     # register as component "store" with identical tools — the manifest
     # keeps its single entry and core resolves the binary at boot.
-    # barrel (default) | sqlite | tidb; anything else refuses to boot.
+    # sqlite (default) | barrel | tidb; anything else refuses to boot.
+    # SQLite is the default because compaction's context projection needs an
+    # atomic doc+rev write (barrel's put is a two-key sequence) and a
+    # range-readable list (docs/research/COMPACTION.md §2).
     var binary = c{"binary"}.getStr("")
+    let manifestBinary = binary
     if name == "store":
-      case getEnv("NIF_STORE_BACKEND", "barrel")
-      of "", "barrel": discard
-      of "sqlite": binary = "var/bin/store-sqlite"
+      let requested = getEnv("NIF_STORE_BACKEND", "")
+      case requested
+      of "", "sqlite": binary = "var/bin/store-sqlite"
+      of "barrel": discard  # the manifest's own entry (var/bin/store)
       of "tidb": binary = "var/bin/store-tidb"
       else:
-        quit("core: unknown NIF_STORE_BACKEND '" &
-          getEnv("NIF_STORE_BACKEND") & "' (barrel|sqlite|tidb) — refusing to boot", 1)
+        quit("core: unknown NIF_STORE_BACKEND '" & requested &
+          "' (sqlite|barrel|tidb) — refusing to boot", 1)
+      # An unset NIF_STORE_BACKEND is a default, not a demand: a checkout
+      # that built only the Nim components has no store-sqlite, and booting
+      # without a store is worse than using the previously shipped engine.
+      # An explicit request is a demand — it must never silently write to a
+      # different database, so a missing binary falls through to the
+      # missing-binary warning below.
+      if requested.len == 0 and not fileExists(root / binary) and
+          binary != manifestBinary and fileExists(root / manifestBinary):
+        echo "core: WARNING " & binary & " missing — using " &
+             manifestBinary & " (run `make build` for the sqlite engine)"
+        binary = manifestBinary
     let binaryPath = root / binary
     if not fileExists(binaryPath):
       echo "core: WARNING missing binary for " & name & " — run `nimble build` (" & binaryPath & ")"
