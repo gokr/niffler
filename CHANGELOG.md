@@ -19,7 +19,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stay on 4.1.0. Both paths validated: SymPy cell re-graded resolved under
   4.1.0; Multilingual gold-patch run (jq-2235) resolved under 5.0.2.
   import.mjs gained `--dataset`; tasks live in `var/bench/swe/tasks-multi/`
-  via `prepare.mjs --input var/bench/swe/tasks-multi.jsonl`.
+  via `prepare.mjs --input var/bench/swe/tasks-multi.jsonl`. First run —
+  `swe-multi10-dsv41-high` (DSV4.1 Flash, `--thinking high`, niffler/pi/
+  claudecode lanes, official 5.x grading): **6/10 / 6/10 / 6/10 official**
+  (pi 5/10 self-reported; its gin patch resolved despite the agent's own
+  fail verdict). Perfect cross-lane agreement on 9 tasks; caddy-6115,
+  fmt-1683, jq-2235, tokio-4384 unsolved by every lane. pi burned the
+  60-min turn budget on tokio (empty patch, 268k output tokens) — the
+  high-thinking profile is costly through pi's OpenAI dialect.
 
 - **lsp: language-server seam — one tool, registry is data.** A `lsp` tool
   (diagnostics without a test run, goToDefinition, findReferences,
