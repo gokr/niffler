@@ -615,12 +615,34 @@ proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
     let content = m{"content"}.getStr("")
     if content.len <= pruneThreshold: continue
     if content.contains("[tool result middle pruned"): continue  # idempotent
+    # §5.3 gate — failure is never worse than the status quo. A result
+    # carrying a spill pointer (the tool capped its transcript body) depends
+    # on its spill document for the FULL capture: verify it exists before
+    # pruning, and name it as the recall target. A store failure or a
+    # missing document abandons the prune for this result — the original
+    # stays. Plain results are always safe: the canonical body is the full
+    # output by construction and canonical is never rewritten.
+    var spillBacked = false
+    if content.contains("[full output:"):
+      try:
+        let item = p.ct.storeGetItem("spill", n.id, 5_000)
+        if item.value == nil or item.value{"text"}.getStr("").len == 0:
+          continue
+        spillBacked = true
+      except CatchableError:
+        continue
     let head = content[0 ..< pruneHead]
     let tail = content[^pruneTail .. ^1]
     let omitted = content.len - pruneHead - pruneTail
+    let refJson = if spillBacked:
+      "{\"ref\": {\"source\": \"spill\", \"id\": \"" & n.id & "\"}}"
+    else:
+      "{\"ref\": {\"source\": \"canonical\", \"id\": \"" & n.id & "\"}}"
     let body = head & "\n[tool result middle pruned: " & $omitted &
-      " bytes omitted — recall the original from canonical history, id " &
-      n.id & "]\n" & tail
+      " bytes omitted — recall the original with context_recall " & refJson &
+      "]\n" & tail
+    if body.len >= content.len:
+      continue   # §5.4: a notice larger than what it replaces is forbidden
     messages[i]["content"] = %body
     p.prunes.add(PruneRec(id: n.id, bytesBefore: content.len,
                           bytesAfter: body.len))
@@ -912,6 +934,39 @@ proc promoteSticky(ct: CoreTools, sessionId: string,
     if oc.value != nil and oc.value.kind == JObject:
       oc.value["sticky"] = %"deferred: could not persist toolset promotion"
 
+proc nextMsgKey(p: Persister): string =
+  ## Peek the key persistMsg will allocate next — spill promotion needs the
+  ## canonical id BEFORE the tool message is persisted, so the notice naming
+  ## the ref is part of the stored body from birth (no rewrite).
+  p.convId & ":" & align($(p.seqNo + 1), 6, '0')
+
+proc promoteSpill(ct: CoreTools, p: Persister, sessionId: string,
+                  value: JsonNode, content: var string) =
+  ## §5.1 execution-time spill promotion: a tool that capped its transcript
+  ## body (bash's transcriptCapBytes) leaves a spill pointer naming a temp
+  ## file. v1 promotes the full capture into a store document (kind: spill,
+  ## id = the tool result's canonical key) so it survives runner restarts
+  ## and is addressable by context_recall, not only by file path. Best-
+  ## effort: a failed promotion keeps today's behavior (file pointer + read
+  ## paging) and no ref line is added — a missing ref never lies.
+  if value == nil or value.kind != JObject: return
+  let path = value{"spill"}{"path"}.getStr("")
+  if path.len == 0 or not fileExists(path): return
+  try:
+    let full = readFile(path)
+    if full.len == 0: return
+    let key = p.nextMsgKey()
+    discard ct.storePutRev("spill", key,
+      %*{"text": full, "bytes": full.len,
+         "path": path, "session": sessionId,
+         "tool": value{"tool"}.getStr(""), "createdAt": epochTime()})
+    content &= "\n[recall: the full " & $full.len & "-byte output is " &
+      "retrievable with context_recall {\"ref\": {\"source\": \"spill\", " &
+      "\"id\": \"" & key & "\"}} — this transcript holds a capped copy]"
+  except CatchableError as e:
+    echo "core: WARNING spill promotion failed (keeping the file pointer): " &
+         e.msg
+
 proc commitToolItem(ct: CoreTools, p: var Persister,
                     messages: var seq[JsonNode],
                     exposure: var ToolExposure,
@@ -948,8 +1003,10 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
       ""
   let toolMsg =
     if oc.ok:
+      var body = content
+      promoteSpill(ct, p, sessionId, oc.value, body)
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
-         "content": content}
+         "content": body}
     else:
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
          "content": "ERROR: " & oc.error}

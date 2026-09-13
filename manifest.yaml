@@ -58,6 +58,18 @@ components:
     required: false
     restart: on-failure
 
+  # context_recall (docs/research/COMPACTION.md §5.3): resolves the
+  # replaced-content reference space — canonical messages, spill documents
+  # (execution-time captures promoted by the runner), and compaction
+  # checkpoints. Hidden from the LLM's direct toolset; every prune/spill
+  # notice names its ref verbatim, which makes recall discoverable.
+  - name: recall
+    build: {lang: nim, src: components/recall/main.nim}
+    binary: var/bin/recall
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: fetch
     build: {lang: nim, src: components/fetch/main.nim}
     binary: var/bin/fetch
