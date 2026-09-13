@@ -103,7 +103,8 @@ capability gap.
    kind "agentnotice", id = <parentSession> ":" <zero-padded seq>
      { "v": 1, "parent": "<parentSession>", "jobId": "job-…",
        "child": "agent-…", "status": "done|failed|stopped",
-       "summary": "<bounded, ≤2 KB>", "replyBytes": 12345,
+       "summary": "<bounded head, ≤400 chars>", "replyBytes": 12345,
+       "fullReplyIn": "agent_status",
        "createdAt": …, "deliveredAt": …, "deliveredVia": "wake|pull" }
    ```
 
@@ -111,14 +112,44 @@ capability gap.
    message-id convention). The record is **durable before any delivery is
    attempted** — a parent that is down, retired or mid-turn still gets it.
 
-2. **The notice is not the reply.** DSH pastes the child's final assistant
-   content into the notice; Niffler should not. Carry a bounded `summary`
-   (first ~400 chars of the reply, newline-collapsed) plus the child session
-   id — the parent reads the full reply with `agent_status {jobId}` (already
-   returns it) or the session transcript. Rationale: a 5 KB child reply
-   re-injected into every subsequent parent turn is a silent context tax, and
-   the child transcript is already addressable. **This is the one place this
-   plan deliberately diverges from DSH**; §9 Q1 records it as revisitable.
+2. **The notice is a pointer, and the pointer names its recourse.** DSH pastes
+   the child's final assistant content into the notice; Niffler should not — a
+   5 KB child reply re-injected into every subsequent parent request is a
+   permanent context tax with no opt-out. But a summary that *loses* the reply
+   would be worse than either, so the record must say where the rest lives.
+
+   **The full reply is already durable and requires no new mechanism.** The
+   completion tap writes it into the `agentjob` record
+   (`components/agent/main.nim:619`: `value["reply"] = %r.args{"reply"}`), and
+   `agent_status` / `agent_wait` return the whole record (`:503`). So the
+   notice carries:
+
+   - `summary` — a bounded head (~400 chars) of the reply, newline-collapsed;
+   - `replyBytes` — how much more there is, so the model can judge whether to
+     bother;
+   - `fullReplyIn: "agent_status"` — **the recourse named explicitly**, with
+     `jobId` already in the notice. A model that does not know to make a second
+     call will not make one; this field is what turns a summary from a lossy
+     excerpt into a delegating pointer.
+
+   The same shape as the existing spill convention (over-cap content → a path
+   plus how to read it), which `bash`/`mcp`/`fetch` already follow — this is a
+   Niffler pattern, not an invention.
+
+   **When the reply is large and the parent never had an inline channel**: the
+   summary becomes a head/tail split (like the tool-spill helper) rather than a
+   mid-truncation, so a 200 KB JSON reply still shows its shape. And note the
+   asymmetry that makes this safe: notices only exist on the **background**
+   path (`agent_spawn`), where the parent explicitly was not waiting. A
+   continuation (`agent_run {session}`, `agent_ask`) returns its reply inline
+   and produces no notice at all.
+
+   Remaining routes for the parent that wants more than the reply:
+   `agent_status`/`agent_wait` (full reply, `onDemand`, no prefix cost), or the
+   child transcript via `discover {component: "store"}` + `store.list {kind:
+   "message", idPrefix: "<child>:"}` (the child's full working history, one
+   extra round trip). **This is the one place this plan deliberately diverges
+   from DSH**; §9 Q1 records it as revisitable.
 
 3. **Delivery is two-lane, and the lanes are chosen by parent state (not by
    notice state).**
@@ -184,6 +215,12 @@ structural `notice` field.
   double-delivers (steer lane + pull drain must not both fire);
 - a stopped job with no reply produces a notice with no `summary` rather than
   a fabricated one;
+- **the recourse is reachable from the notice alone**: after a notice lands
+  with `replyBytes` > 0, `agent_status {jobId}` (taken straight from the
+  notice) returns the byte-identical full reply — assert the two agree on
+  length, and that a truncated summary's `replyBytes` is the *untruncated*
+  length;
+- an oversized reply yields a head/tail summary (assert both ends present);
 - `subagentNotify: "wake"` starts a parent turn (sub-step 4; separate case).
 
 **Risks.** The double-delivery case in lane selection (a parent that was
@@ -826,9 +863,14 @@ bench: subagent scenarios (delegate/follow-up/fork/interrupt)
 
 ## 9. Open questions (decide at implementation)
 
-1. **Notice content.** Bounded summary vs. full final reply. Recommendation:
-   summary + id; revisit if the live run shows parents always reading the
-   reply anyway (§6.1).
+1. **Notice content.** Bounded summary vs. full final reply. **Settled in
+   P0.1 point 2**: the notice carries a bounded `summary` + `replyBytes` +
+   `fullReplyIn: "agent_status"`, because the full reply is *already durable*
+   in the `agentjob` record (`agent/main.nim:619`) and `agent_status` returns it
+   for free. A summary would be a loss only if the recourse were unnamed —
+   hence the explicit pointer field. Revisit only if the live run shows parents
+   reading the reply on essentially every notice anyway (at which point carry
+   it behind a size cap, §6.1).
 2. **Concurrent activations.** Two `agent_run {session: X}` at once: return
    `busy` from a cheap catalog probe, or queue and document the timeout
    arithmetic (DSH-STEAL §7.1's v1 answer)? The **schema text depends on the
