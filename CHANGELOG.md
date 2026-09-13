@@ -54,12 +54,32 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   serves `hf:deepseek-ai/DeepSeek-V4.1-Flash` on both the OpenAI-compatible
   and Anthropic-compatible endpoints (the latter returns real thinking
   blocks); `reasoning_effort` accepted. Niffler/pi/claudecode lanes wired to
-  SYNTHETIC_API_KEY. Cost uses borrowed V4.1 list pricing (0.15/0.6/0.003) —
-  unverified against Synthetic's catalog. First run — Sym10, one-shot,
-  `--thinking high`, official Docker grading: **niffler 10/10** (first perfect
+  SYNTHETIC_API_KEY. Cost uses Synthetic's published model catalog (0.8/1.2/
+  0.16/0 per M — see the pricing correction below; the earlier 0.15/0.6/0.003
+  figures were borrowed LLM-Gateway rates and undercounted ~7-14x). First
+  run — Sym10, one-shot, `--thinking high`, official Docker grading:
+  **niffler 10/10** (first perfect
   pilot score; 13091 solved, previously unsolved by every GLM lane; 13031 in
-  392s vs 851-1122s) vs **claudecode 8/10** (11618, 13091). Report:
-  `bench/reports/swe-sympy10-dsv41-high-report.md`.
+  392s vs 851-1122s) vs **claudecode 8/10** (11618, 13091). Catalog-priced:
+  niffler $0.81 run, claudecode $1.15. Report:
+  `bench/reports/swe-sympy10-dsv41-high-report.md` (cost columns predate the
+  correction — see `swe-multi10-dsv41-high-report.md` addendum in the
+  changelog below for the method).
+
+- **bench: cost tables corrected to Synthetic's published catalog; pi
+  fallback-pricing bug fixed.** Synthetic publishes per-model pricing on its
+  own `/openai/v1/models` endpoint (prompt/completion/input_cache_reads/
+  input_cache_writes). The `hf:deepseek-ai/DeepSeek-V4.1-Flash` entries in
+  the niffler and claudecode adapters used borrowed LLM-Gateway rates
+  (0.15/0.6/0.003) instead of the catalog's 0.8/1.2/0.16/0 (cache writes are
+  $0 — so the claudecode lane's write treatment is correct as-is). pi was
+  worse: the generated models.json lacked the hf: entry entirely, so pi
+  discovered the model and priced it with fallback rates (observed
+  0.15/0.50/0.04, reasoning unbilled) — setupPiConfig now injects the entry
+  with catalog cost. Corrected totals at catalog rates: Multi10
+  (niffler/claudecode/pi) $0.74/$0.41/$1.57 per run (was $0.10/$0.04/$0.49);
+  Sym10 dsv41 niffler $0.81, claudecode $1.15 (was $0.10/$0.08). The GLM
+  `syn:large:text` entry already matched the catalog (0.15/0.5/0.04/0).
 
 - **systemprompt: review rubric + skill-loading nudge — +3 lines net.** The
   verify paragraph now requires tracing the failing input through the changed

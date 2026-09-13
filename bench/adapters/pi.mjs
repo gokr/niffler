@@ -87,6 +87,20 @@ export function setupPiConfig(runRoot, defaults) {
                 thinkingLevelMap: { xhigh: null, max: "max" },
                 cost: { input: 0.15, output: 0.5, cacheRead: 0.04, cacheWrite: 0 },
               },
+              {
+                // DeepSeek V4.1 Flash on Synthetic — without this entry pi
+                // discovers the model itself and prices it with fallback
+                // rates (observed 0.15/0.50/0.04, reasoning unbilled).
+                // Cost per Synthetic's published catalog (0.8/1.2/0.16/0).
+                id: "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+                name: "DeepSeek V4.1 Flash (Synthetic)",
+                reasoning: true,
+                input: ["text"],
+                contextWindow: 524288,
+                maxTokens: 65536,
+                thinkingLevelMap: { xhigh: null, max: "max" },
+                cost: { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0 },
+              },
             ],
           },
         },

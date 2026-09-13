@@ -40,10 +40,11 @@ const THINKING_BUDGET = { low: 2048, medium: 8192, high: 16384, max: 30000 };
 // pi entry's synthetic cost row). Keyed by the gateway model id.
 const PRICE = {
   "syn:large:text": { input: 0.15, output: 0.5, cacheRead: 0.04, cacheWrite: 0 },
-  // DeepSeek V4.1 Flash on Synthetic (hf: id) — borrowed V4.1 list pricing;
-  // verify against Synthetic's catalog before trusting cost.
+  // DeepSeek V4.1 Flash on Synthetic (hf: id) — per Synthetic's published
+  // model catalog (GET /openai/v1/models → pricing, $/M): prompt 0.8,
+  // completion 1.2, input_cache_reads 0.16, input_cache_writes 0.
   "hf:deepseek-ai/DeepSeek-V4.1-Flash":
-    { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 },
+    { input: 0.8, output: 1.2, cacheRead: 0.16, cacheWrite: 0 },
 };
 
 export async function round(opts) {
