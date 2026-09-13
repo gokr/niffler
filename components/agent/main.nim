@@ -212,6 +212,28 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
+proc childModel(c: Component, parentSession, requested: string): tuple[
+    ok: bool, model, error: string] =
+  ## Resolve the model a child should use. An explicit child override wins;
+  ## otherwise inherit the parent's persisted effective model instead of
+  ## silently falling back to the provider's (possibly different) default.
+  ## An empty inherited model is valid: it means the parent's provider default
+  ## was also unresolved, so the child may resolve its provider normally.
+  if requested.len > 0:
+    return (true, requested, "")
+  try:
+    let info = c.request("core", "session_info",
+                         %*{"sessionId": parentSession}, 10_000)
+    if info{"error"} != nil:
+      return (false, "", "parent session_info failed: " &
+        info{"error"}.getStr("unknown error"))
+    let override = info{"modelOverride"}.getStr("").strip()
+    if override.len > 0:
+      return (true, override, "")
+    return (true, info{"model"}.getStr("").strip(), "")
+  except CatchableError as e:
+    return (false, "", "cannot resolve parent model: " & e.msg)
+
 proc childSessArgs(child, task, model, thinking: string,
                    toolArgs: JsonNode = nil): JsonNode =
   ## The child session call: task preamble, optional model override and
@@ -392,8 +414,12 @@ discard comp.tool("agent_run", runSchema,
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
       return errResult("agent_run needs task")
+    let requestedModel = toolArgs{"model"}.getStr("")
+    let resolvedModel = childModel(c, parentSession, requestedModel)
+    if not resolvedModel.ok:
+      return errResult(resolvedModel.error)
     let prep = prepareChild(parentSession, task,
-                            toolArgs{"model"}.getStr(""))
+                            resolvedModel.model)
     if not prep.ok:
       return errResult(prep.error)
     if wasCancelled(parentSession):
@@ -403,7 +429,7 @@ discard comp.tool("agent_run", runSchema,
       return errResult("cancelled by request")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+      childSessArgs(prep.child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let resp = requestChildTurn(c, prep.subject, env, timeoutMs,
@@ -449,8 +475,12 @@ discard comp.tool("agent_spawn", spawnSchema,
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
       return errResult("agent_spawn needs task")
+    let requestedModel = toolArgs{"model"}.getStr("")
+    let resolvedModel = childModel(c, parentSession, requestedModel)
+    if not resolvedModel.ok:
+      return errResult(resolvedModel.error)
     let prep = prepareChild(parentSession, task,
-                            toolArgs{"model"}.getStr(""))
+                            resolvedModel.model)
     if not prep.ok:
       return errResult(prep.error)
     let jobId = "job-" & newId()
@@ -469,7 +499,7 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("cannot record job (store unreachable): " & e.msg,
                        extra = %*{"sessionId": prep.child})
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
+      childSessArgs(prep.child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs),
       originalCaller(toolArgs))
     let data = env.encode()
