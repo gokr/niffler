@@ -110,10 +110,12 @@ let bashSchema = toolSchema(%*{
               "description": "The command line to run"},
   "timeoutMs": {"type": "integer",
                 "description": "Kill after this many ms (default 30000)"},
+  "run_in_background": {"type": "boolean",
+    "description": "Start as a background process instead of blocking: returns an id immediately (no timeout applies). Long-running commands — servers, watchers, databases. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; filter regex supported, tail re-reads raw), stop with process_kill."},
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c). Fresh shell per call: cd does not persist; pass cwd or use absolute paths.")
+  description = "Run a shell command (bash -c). Fresh shell per call: cd does not persist; pass cwd or use absolute paths. Set run_in_background for long-running commands (servers, watchers): the call returns an id at once and the process keeps running across turns — collect its incremental output with process_poll and stop it with process_kill.")
 bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
@@ -126,6 +128,23 @@ discard comp.tool("bash", bashSchema,
     let command = toolArgs{"command"}.getStr("")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(30_000)
     let cwd = toolArgs{"cwd"}.getStr("")
+    if toolArgs{"run_in_background"}.getBool(false):
+      # thin producer: the processes component spawns, owns, drains and
+      # reaps — bash never blocks on (or orphans) a long-running child.
+      try:
+        var startArgs = %*{"command": command}
+        if cwd.len > 0: startArgs["workdir"] = %cwd
+        let resp = c.request("processes", "process_start", startArgs, 15000)
+        var payload = resp
+        payload["text"] = %("Started in background as " &
+          resp{"id"}.getStr("") & " (" & resp{"label"}.getStr("") & ") — " &
+          "poll incremental output with process_poll {id: \"" &
+          resp{"id"}.getStr("") & "\"}, stop with process_kill.")
+        return payload
+      except CatchableError as e:
+        return %*{"error": "[E_BACKGROUND] could not start the background " &
+          "process (is the processes component running?): " & e.msg &
+          " — run the command synchronously instead."}
     let scoped = if cwd.len > 0:
                    "cd -- " & quoteShell(cwd) & " && " & command
                  else: command

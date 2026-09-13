@@ -14,6 +14,8 @@ content through it.
 
 Tools: the direct toolset is small — use discover for more: git,
 lsp (semantic code navigation and compiler diagnostics),
+processes (long-running servers and watchers — bash run_in_background,
+poll incremental output),
 store (harness database), fabric (mechanical fan-out beyond one command),
 agent (sub agents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
