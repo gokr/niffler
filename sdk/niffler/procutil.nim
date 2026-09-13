@@ -60,7 +60,7 @@ proc cloexecInheritedFds*() =
   except CatchableError:
     discard
 
-proc killGroup(pid: Pid, sig: cint) =
+proc killGroup*(pid: Pid, sig: cint) =
   ## Signal the command's whole process group. The forked child made itself
   ## the group leader via setpgid(0, 0), so a negative-pid kill reaches the
   ## bash wrapper AND every descendant (a bare kill(pid) would orphan
