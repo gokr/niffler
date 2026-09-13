@@ -289,7 +289,7 @@ proc migrateRoot(root: string, toEngine: string, dryRun: bool,
   ## Refuses when the target database already exists (use --force to overlay).
   let srcEngine = block:
     let d = describeRoot(root)
-    if d{"hasSqlite"}.getBool(false) and d{"hasBarrel"}.getBool(false):
+    if not d{"hasSqlite"}.getBool(false) and not d{"hasBarrel"}.getBool(false):
       die("no store data found in " & root & "/var")
     if d{"hasSqlite"}.getBool(false) and not d{"hasBarrel"}.getBool(false):
       die("root already uses sqlite (" & root & "/var/store.db) — nothing to migrate")
@@ -474,10 +474,13 @@ proc main() =
       echo ""
       var failed = 0
       for r in roots:
-        let (ok, docs) = migrateRoot(r, opts.toEngine, false, opts.quiet)
+        let (ok, docs) = migrateRoot(r, opts.toEngine, opts.dryRun, opts.quiet)
         if not ok: inc failed
         if not opts.quiet:
-          echo (if ok: "  OK   " else: "  FAIL "), r, "  ", docs, " documents"
+          let verdict = if not ok: "  FAIL "
+                        elif opts.dryRun: "  PLAN "
+                        else: "  OK   "
+          echo verdict, r, "  ", docs, " documents"
           echo ""
       if failed > 0: die($failed & " root(s) failed to migrate")
     quit(0)
