@@ -922,7 +922,7 @@ func main() {
 			"provider": map[string]any{"type": "string", "description": "Optional stored or NIF_LLM_PROVIDERS nickname"},
 			"model":    map[string]any{"type": "string", "description": "Optional model override"},
 		},
-		"x-harness": map[string]any{"hidden": true, "timeoutMs": 10000},
+		"x-harness": map[string]any{"hidden": true, "runner": true, "timeoutMs": 10000},
 	}, resolveHandler)
 	// Live model discovery (option B): the models component discovers this
 	// hidden tool via reg.publish and calls it on its refresh cycle. The
@@ -963,7 +963,7 @@ func main() {
 				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
 		"required":  []string{"messages"},
-		"x-harness": map[string]any{"hidden": true, "timeoutMs": chatTimeoutMs()},
+		"x-harness": map[string]any{"hidden": true, "runner": true, "timeoutMs": chatTimeoutMs()},
 	}, chatHandler)
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "llm:", err)

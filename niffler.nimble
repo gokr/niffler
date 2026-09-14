@@ -28,6 +28,8 @@ task all_internal, "Unlocked internal build — invoke through all (or the Makef
   exec "nim c --hints:off --path:sdk -o:var/bin/plugins components/plugins/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/skills components/skills/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/systemprompt components/systemprompt/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/recall components/recall/main.nim"
+  exec "nim c --hints:off --path:sdk -o:var/bin/compaction components/compaction/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/fetch components/fetch/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/edit components/edit/main.nim"
   exec "nim c --hints:off --path:sdk -o:var/bin/grep components/grep/main.nim"

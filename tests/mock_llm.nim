@@ -45,6 +45,7 @@ let mockRounds = block:
 let mockToolCmd = getEnv("NIF_MOCK_TOOLCMD",
   "head -c 30000 /dev/zero | tr '\\0' 'x'")
 let mockLog = getEnv("NIF_MOCK_LOG", "")
+let mockHistoryMarker = getEnv("NIF_MOCK_HISTORY_MARKER", "")
 
 proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
   ## Same chars/4 proxy core's estimateTokens uses (plus per-message
@@ -63,13 +64,30 @@ proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
   if tools != nil:
     result += ($tools).len div 4
 
-proc logRequest(estimate: int, rejected: bool, note: string) =
+proc containsText(messages: JsonNode, needle: string): bool =
+  if needle.len == 0 or messages == nil or messages.kind != JArray: return false
+  for m in messages:
+    if m{"content"}.getStr("").contains(needle): return true
+
+proc markerStart(messages: JsonNode, needle: string): int =
+  ## Canonical fixture marker, excluding a checkpoint that summarizes and
+  ## therefore legitimately quotes that marker later in its rendered body.
+  if needle.len == 0 or messages == nil or messages.kind != JArray: return -1
+  for i in 0 ..< messages.len:
+    if messages[i]{"content"}.getStr("").startsWith(needle): return i
+  -1
+
+proc logRequest(estimate: int, rejected: bool, note: string,
+                messages: JsonNode) =
   if mockLog.len == 0: return
   try:
     let f = open(mockLog, fmAppend)
     defer: f.close()
     let line = %*{"estimate": estimate, "rejected": rejected,
-                  "note": note}
+                  "note": note,
+                  "checkpoint": containsText(messages, "<context_checkpoint"),
+                  "historyMarker": markerStart(messages, mockHistoryMarker) >= 0,
+                  "historyMarkerIndex": markerStart(messages, mockHistoryMarker)}
     f.writeLine($line)
   except CatchableError:
     discard
@@ -87,7 +105,7 @@ discard comp.tool("chat", %*{
     "stream": {"type": "boolean"}
   },
   "required": ["messages"],
-  "x-harness": {"hidden": true, "timeoutMs": 120000}
+  "x-harness": {"hidden": true, "runner": true, "timeoutMs": 120000}
 },
 proc(c: Component, args: JsonNode): JsonNode =
   let messages = args{"messages"}
@@ -95,14 +113,40 @@ proc(c: Component, args: JsonNode): JsonNode =
   if mockCtx > 0 and est > mockCtx:
     # The enforcing fake provider: same stable text the real adapter emits
     # (core/retry.nim classifies on the prefix, recovery parses the window).
-    logRequest(est, true, "over-window")
+    logRequest(est, true, "over-window", messages)
     raise newException(ValueError,
       "context-overflow: request ~" & $est & " tokens exceeds the mock " &
       "window of " & $mockCtx & "; window " & $mockCtx & " tokens")
-  logRequest(est, false, "")
+  logRequest(est, false, "", messages)
   var last = ""
   if messages != nil and messages.kind == JArray and messages.len > 0:
     last = messages[^1]{"content"}.getStr("")
+  if last.contains("[COMPACTION INSTRUCTION]"):
+    # Deterministic structured checkpoint for compaction fixtures. Echo the
+    # first covered user entry: on generation 1 that is the objective; on a
+    # later generation it is the rendered previous checkpoint, proving the
+    # new checkpoint actually absorbed (rather than stacked beside) it.
+    var seed = "Compacted conversation"
+    if messages != nil and messages.kind == JArray:
+      for i in 0 ..< max(messages.len - 1, 0):
+        let m = messages[i]
+        let body = m{"content"}.getStr("")
+        if m{"role"}.getStr("") == "user" and body.len > 0:
+          seed = body
+          break
+    if seed.len > 3500: seed = seed[0 ..< 3500]
+    let excerpt = if seed.len > 240: seed[0 ..< 240] else: seed
+    let checkpoint = %*{
+      "objective": seed,
+      "constraints": ["Keep canonical history unchanged"],
+      "decisions": ["Install only a runner-validated checkpoint"],
+      "completedWork": [excerpt],
+      "currentBlocker": newJNull(),
+      "nextSteps": ["Continue from the retained tail"]
+    }
+    return %*{"content": $checkpoint, "model": "mock-summary-model",
+      "usage": {"prompt_tokens": est, "completion_tokens": 120,
+                "total_tokens": est + 120}}
   if last.contains("expert-observation"):
     # The tools value is markdown-decorated on purpose ("`git_diff`"):
     # judges habitually wrap names in backticks and the expert must
@@ -125,11 +169,20 @@ proc(c: Component, args: JsonNode): JsonNode =
                 "prompt_tokens_details": {"cached_tokens": 800}}}
   let sessionId = args{"sessionId"}.getStr("")
   if mockRounds > 0:
-    # Scripted multi-round fixture (§8 long-turn): N bash rounds emitting a
-    # large tool result, then a final answer echoing the first real user
-    # message — the assertion that the objective survived every reduction.
+    # Scripted multi-round fixture (§8 long-turn): N bash rounds per actual
+    # user request, then a final answer echoing the first real user message.
+    # Checkpoint/instruction user-role nodes are runner machinery and do not
+    # start another scripted batch.
+    var userTurns = 0
+    if messages != nil and messages.kind == JArray:
+      for m in messages:
+        let body = m{"content"}.getStr("")
+        if m{"role"}.getStr("") == "user" and
+            not body.startsWith("<context_checkpoint") and
+            not body.startsWith("[COMPACTION INSTRUCTION]"):
+          inc userTurns
     let served = roundsServed.getOrDefault(sessionId, 0)
-    if served < mockRounds:
+    if served < mockRounds * max(userTurns, 1):
       roundsServed[sessionId] = served + 1
       return %*{"content": "",
                 "tool_calls": [%*{"id": "c" & $served, "type": "function",
@@ -140,7 +193,9 @@ proc(c: Component, args: JsonNode): JsonNode =
     if messages != nil and messages.kind == JArray:
       for m in messages:
         let c = m{"content"}.getStr("")
-        if m{"role"}.getStr("") == "user" and c.len > 0 and not c.startsWith("["):
+        if m{"role"}.getStr("") == "user" and c.len > 0 and
+            not c.startsWith("[") and
+            not c.startsWith("<context_checkpoint"):
           objective = c
           break
     var usage = %*{"prompt_tokens": est, "completion_tokens": 10,
@@ -167,7 +222,7 @@ discard comp.tool("llm_resolve", %*{
   "type": "object",
   "description": "Mock resolve (test only)",
   "properties": {},
-  "x-harness": {"hidden": true, "timeoutMs": 10000}
+  "x-harness": {"hidden": true, "runner": true, "timeoutMs": 10000}
 },
 proc(c: Component, args: JsonNode): JsonNode =
   # The real llm component reports the resolved model's context window here;

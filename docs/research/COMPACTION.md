@@ -329,10 +329,13 @@ Rules:
 - `provenance`/diagnostics never enter model context. Unknown usage is
   `unknown`, never zero. Claimed savings are advisory; the runner re-measures.
 - `cutBefore` must be one of the runner's permitted boundaries, and `covered`
-  must be exactly the range the checkpoint absorbs (which includes any prior
-  checkpoint node when one is present). A component may not pick a boundary the
-  runner did not offer, may not edit the system prompt or tool schemas, and may
-  not fabricate tool results.
+  must be exactly the contiguous span newly absorbed. Prefix cuts include a
+  prior checkpoint node directly. An autonomous-turn middle cut keeps the
+  latest user request outside that span; the snapshot supplies the prior
+  normalized checkpoint separately and the new generation supersedes it, so
+  checkpoints never stack. A component may not pick a boundary the runner did
+  not offer, replace the latest actual user request, edit the system prompt or
+  tool schemas, or fabricate tool results.
 - `status: "declined"` with a stable reason (`no-useful-cut`,
   `input-budget-exceeded`, `indivisible`) is a first-class answer. Exceptions,
   malformed replies, timeouts and no-responders all enter the same bounded
@@ -342,7 +345,11 @@ Rules:
 
 1. Read and verify the snapshot. Choose a permitted cut leaving a priced recent
    tail (~15–20% of the usable input budget, clamped by the budget's
-   `preferredTailTokens`).
+   `preferredTailTokens`). Ordinarily this replaces an old prefix before the
+   latest user request. In a single autonomous turn, the runner may instead
+   offer a balanced middle span of completed tool groups after that request;
+   retained canonical ids then contain the verbatim request prefix plus the
+   recent tail.
 2. Merge the previous checkpoint with the newly covered span. Preserve exact
    requirements, user corrections, decisions with rationale, file paths,
    verification results and unresolved uncertainty. Never promote a guess into
@@ -710,7 +717,7 @@ correctness, latency and cache rebuilds — not just token reduction.
 | 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes — ☑ LANDED (CtxNode ledger 1:1 with the projection, ctxAppend growth path, canonicalHigh, loadStoredMessagesEx nodes + `after` cursor, ctxDigest; t_ctxcompact) |
 | 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components — ☑ LANDED (admission before every request; prune → trim → context-recovery-required ladder; stable context-overflow classification in the adapter + receipt-bounded recovery; §8 fixtures 1–3 + end-to-end overflow recovery) |
 | 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
-| 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam |
+| 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam — ☑ LANDED (contract-v1 snapshots/pages/digests, strict candidate validator, runner-owned checkpoint renderer, optimistic `context_projection` commit/reload, `x-harness.runner` allowlist seam, shipped `compaction_propose`; restart/second-generation/recall/corrupt-projection fixtures) |
 | 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it |
 | 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam |
 

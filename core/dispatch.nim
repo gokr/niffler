@@ -1182,18 +1182,30 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
 proc checkToolAllowlist(ct: CoreTools, tool: string) =
   ## Enforce the same session scope on serial and parallel dispatches.
   # Per-session tool allowlist (subagent scoping): a conversation frozen
-  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
-  # machinery) and the store quartet the runner itself persists through
-  # (transcript, headers, exposure) — without them an allowlisted session
-  # would silently lose its own history. Trade-off: a model in an
-  # allowlisted session can still read/write the shared KV store directly;
-  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
-  # transcript store the session needs to exist.
-  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
-      tool notin ["chat", "put", "get", "list", "del"] and
-      tool notin ct.sessionAllowlist[]:
-    raise newException(ValueError,
-      "tool '" & tool & "' is not in this session's tool allowlist")
+  # with a tools list may dispatch only those tools. Exempt: the runner
+  # machinery a session needs to exist — "chat" (turns) and the store
+  # quartet the runner itself persists through (transcript, headers,
+  # exposure) — plus any hidden tool whose schema declares
+  # x-harness.runner: true (§4.1, docs/research/COMPACTION.md). Requiring
+  # hidden makes the claim enforceable: it is never offered to the model,
+  # so a differently-named compactor
+  # or recall tool works in allowlisted sessions without a core edit.
+  # Trade-off: a model in an allowlisted session can still read/write the
+  # shared KV store directly; scoping targets capabilities (bash, edit,
+  # git, fabric, agent), not the transcript store the session needs to
+  # exist.
+  if ct.sessionAllowlist == nil or ct.sessionAllowlist[].len == 0:
+    return
+  if tool in ct.sessionAllowlist[]:
+    return
+  if tool in ["chat", "put", "get", "list", "del"]:
+    return
+  let schema = ct.cat.toolSchema(tool)
+  if schema != nil and schema{"x-harness"}{"runner"}.getBool(false) and
+      schema{"x-harness"}{"hidden"}.getBool(false):
+    return
+  raise newException(ValueError,
+    "tool '" & tool & "' is not in this session's tool allowlist")
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,

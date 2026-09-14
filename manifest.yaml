@@ -70,6 +70,17 @@ components:
     required: false
     restart: on-failure
 
+  # Replaceable context summarizer (COMPACTION.md §4): the runner writes a
+  # temporary verified snapshot and validates/commits the returned candidate.
+  # This component owns only cut choice + summary quality and may be replaced
+  # by selecting another NIF_COMPACTION_TOOL implementation.
+  - name: compaction
+    build: {lang: nim, src: components/compaction/main.nim}
+    binary: var/bin/compaction
+    autostart: true
+    required: false
+    restart: on-failure
+
   - name: fetch
     build: {lang: nim, src: components/fetch/main.nim}
     binary: var/bin/fetch

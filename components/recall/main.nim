@@ -14,7 +14,7 @@
 ## content whose original it first durably kept (canonical body or spill
 ## document), so a broken spill doc can never cost the last copy.
 
-import std/[json, os, strutils]
+import std/[json, strutils]
 import niffler/sdk
 
 const
@@ -137,10 +137,11 @@ proc resolveRef(c: Component, refNode: JsonNode, mode, query: string,
         try: parseInt(id[hash + 1 .. ^1].replace("ck", ""))
         except CatchableError: -1
       else: -1
-    if gen >= 0 and item.value{"generation"}.getInt(0) < gen:
+    let currentGen = item.value{"generation"}.getInt(0)
+    if gen >= 0 and currentGen != gen:
       raise newException(ValueError,
         "checkpoint " & id & " is superseded (current generation " &
-        $item.value{"generation"}.getInt(0) & ")")
+        $currentGen & "; its state has been absorbed into the current checkpoint)")
     result = %*{"ref": refNode, "checkpoint": item.value{"checkpoint"},
                 "generation": item.value{"generation"}.getInt(0)}
   else:
@@ -162,7 +163,8 @@ proc main() =
     "limit": {"type": "integer", "minimum": 1,
               "description": "full mode: max lines (default 2000, read's cap); match mode: max matching lines (default 50)"}
   }, description = "Retrieve original content that was replaced in this conversation's context (pruned tool results, spilled command output, compaction checkpoints). Every notice naming replaced content carries its ref verbatim — pass it back here unchanged. Use it when exact wording or the full body of a large result matters; mode:match greps a large document for specific lines without paging it all into context.")
-  schema["x-harness"] = %*{"hidden": true, "timeoutMs": 15_000}
+  schema["x-harness"] = %*{"hidden": true, "runner": true,
+                           "timeoutMs": 15_000, "effect": "read"}
 
   discard comp.tool("context_recall", schema,
     proc(c: Component, args: JsonNode): JsonNode =
