@@ -88,6 +88,8 @@ proc main() =
     ["store", "bash", "llm", "compaction", "recall"])
   let root = sandbox.root
   defer: removeDir(root)
+  var fixtureProc: Process
+  defer: stopHard(fixtureProc)
   # Replace llm in the immutable binary snapshot with the deterministic mock.
   let compiler = startProcess("nim", args = [
     "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
@@ -97,6 +99,15 @@ proc main() =
     fail("mock llm failed to compile")
     quit(1)
   compiler.close()
+  let fixtureCompiler = startProcess("nim", args = [
+    "c", "--hints:off", "--warnings:off", "--path:" & repoRoot / "sdk",
+    "-o:" & sandbox.sandboxBin("fixture-compaction"),
+    repoRoot / "tests" / "compaction_contract" / "fixture.nim"],
+    options = {poUsePath, poStdErrToStdOut})
+  if waitForExit(fixtureCompiler, 120_000) != 0:
+    fail("contract fixture compactor failed to compile")
+    quit(1)
+  fixtureCompiler.close()
 
   let logPath = root / "mock-requests.log"
   let (server, url) = startNats()
@@ -358,6 +369,53 @@ proc main() =
         "took " & $cancelDuration & "s: " & cancelOutput[0 ..< min(cancelOutput.len, 500)])
   check("cancelled compaction leaves no projection",
         getDoc(nc, "context_projection", cancelConv) == nil)
+
+  # Interchangeability/conformance: keep the projection produced by the
+  # default implementation, replace the selected tool with the deterministic
+  # fixture under another name, restart the runner, and compact the same
+  # conversation again. The fixture owns no store/projection writes; the
+  # runner must still enforce the identical commit/reload contract.
+  coreProc.stopHard()
+  var fixtureExtra = extra
+  fixtureExtra.add(("NIF_COMPACTION_TOOL", "fixture_compaction_propose"))
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = fixtureExtra,
+    logFile = root / "var" / "test-logs" / "core-compaction-fixture.log")
+  doAssert waitComponent(nc, "store"), "store did not register for fixture conformance"
+  doAssert waitComponent(nc, "llm"), "llm did not register for fixture conformance"
+  fixtureProc = startComponent(sandbox.sandboxBin("fixture-compaction"), url,
+    root = root, extra = @[],
+    logFile = root / "var" / "test-logs" / "fixture-compaction.log")
+  doAssert waitComponent(nc, "fixture-compaction"),
+    "fixture compactor did not register after restart; running=" & $fixtureProc.running() &
+    " log=" & (if fileExists(root / "var" / "test-logs" / "fixture-compaction.log"):
+      readFile(root / "var" / "test-logs" / "fixture-compaction.log") else: "<missing>")
+  var conformanceHigh = 0
+  for item in listDocs(nc, "message", convId & ":"):
+    let id = item{"id"}.getStr("")
+    let colon = id.rfind(':')
+    if colon >= 0:
+      try: conformanceHigh = max(conformanceHigh,
+                                 parseInt(id[colon + 1 .. ^1]))
+      except ValueError: discard
+  discard seedMessages(nc, convId, conformanceHigh + 1, 7, 2200,
+                       markFirst = false)
+  let fixtureTurn = call(nc, "core", "session",
+    %*{"sessionId": convId, "content": "FIXTURE-COMPACTOR-TURN",
+       "tools": ["bash"]}, 180_000)
+  let fixtureProjection = getDoc(nc, "context_projection", convId)
+  check("fixture compactor passes the same runner contract",
+        fixtureTurn{"turnError"}.getStr("").len == 0 and
+        fixtureProjection != nil and
+        fixtureProjection{"generation"}.getInt(0) == 3 and
+        fixtureProjection{"provenance"}{"tool"}.getStr("") ==
+          "fixture_compaction_propose" and
+        fixtureProjection{"checkpoint"}{"objective"}.getStr("") ==
+          "fixture-compactor-installed",
+        $fixtureTurn & " / " & $fixtureProjection)
+  check("projection written by the default compactor reloads under fixture",
+        fixtureProjection{"renderer"}.getStr("") == "checkpoint-v1" and
+        fixtureProjection{"covered"}{"from"}.getStr("").len > 0)
 
   echo "COMPACTION TEST PASSED"
 
