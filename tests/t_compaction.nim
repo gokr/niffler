@@ -5,8 +5,9 @@
 ## snapshot cleanup, canonical immutability, projection reload after a runner
 ## crash, and a second compaction that absorbs the first checkpoint.
 
-import std/[json, os, osproc, strutils, times]
+import std/[json, os, osproc, streams, strtabs, strutils, times]
 import natsnim
+import ../sdk/envelope
 import helpers
 
 const oldMarker = "OLD-CANONICAL-BULK-7Q"
@@ -138,6 +139,21 @@ proc main() =
         (if projection1 == nil: "projection missing" else: $projection1))
   check("projection records the default replaceable tool",
         projection1{"provenance"}{"tool"}.getStr("") == "compaction_propose")
+  let firstLog = requestLog(logPath)
+  check("auxiliary compaction chat uses a distinct cancellation id", block:
+    var found = false
+    for row in firstLog:
+      if row{"purpose"}.getStr("") == "compaction":
+        found = row{"sessionId"}.getStr("").startsWith("compaction.") and
+          row{"cancelId"}.getStr("") == row{"sessionId"}.getStr("") and
+          not row{"emitTokens"}.getBool(true)
+    found)
+  check("auxiliary compaction chat is marked for telemetry",
+        block:
+          var found = false
+          for row in firstLog:
+            if row{"purpose"}.getStr("") == "compaction": found = true
+          found)
   check("checkpoint is structured and runner-renderable",
         projection1{"checkpoint"}{"objective"}.getStr("").len > 0 and
         projection1{"renderer"}.getStr("") == "checkpoint-v1")
@@ -302,6 +318,46 @@ proc main() =
         autonomousReload{"error"}.getStr("").len == 0 and
         autonomousReload{"turnError"}.getStr("").len == 0,
         $autonomousReload)
+
+  # Cancellation during the auxiliary stream: the core publishes
+  # cancel.compaction, the default component relays it to the distinct
+  # llm.cancel.<cancelId>, and no projection is committed.
+  coreProc.stopHard()
+  var cancelExtra = extra
+  cancelExtra.add(("NIF_MOCK_COMPACTION_SLEEP_MS", "8000"))
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = cancelExtra,
+    logFile = root / "var" / "test-logs" / "core-compaction-cancel.log")
+  doAssert waitComponent(nc, "store"), "store did not register for cancel fixture"
+  doAssert waitComponent(nc, "llm"), "llm did not register for cancel fixture"
+  doAssert waitComponent(nc, "compaction"), "compaction did not register for cancel fixture"
+  let cancelConv = "conv-compaction-cancel-" & $int(epochTime())
+  putDoc(nc, "conversation", cancelConv,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  discard seedMessages(nc, cancelConv, 1, 8, 2200)
+  var cancelEnv = newStringTable()
+  cancelEnv["NIF_NATS_URL"] = url
+  cancelEnv["NIF_ROOT"] = root
+  cancelEnv["PATH"] = getEnv("PATH")
+  let cancelCall = startProcess(sandbox.sandboxBin("cli"),
+    args = @["call", "session", $ %*{
+      "sessionId": cancelConv, "content": "CANCEL-ME",
+      "tools": ["bash"]}], env = cancelEnv,
+    options = {poStdErrToStdOut, poUsePath})
+  sleep(1200)
+  let cancelAt = epochTime()
+  nc.publish("svc.session." & cancelConv & ".steer",
+    Envelope(v: 1, id: "cancel-compaction", kind: ekEvent,
+      payload: %*{"__cancel": true}).encode())
+  discard cancelCall.waitForExit(10_000)
+  let cancelOutput = cancelCall.outputStream.readAll()
+  let cancelDuration = epochTime() - cancelAt
+  cancelCall.close()
+  check("compaction cancellation aborts the auxiliary call promptly",
+        cancelDuration < 6.0 and cancelOutput.contains("cancel"),
+        "took " & $cancelDuration & "s: " & cancelOutput[0 ..< min(cancelOutput.len, 500)])
+  check("cancelled compaction leaves no projection",
+        getDoc(nc, "context_projection", cancelConv) == nil)
 
   echo "COMPACTION TEST PASSED"
 

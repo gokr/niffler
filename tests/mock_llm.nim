@@ -46,6 +46,13 @@ let mockToolCmd = getEnv("NIF_MOCK_TOOLCMD",
   "head -c 30000 /dev/zero | tr '\\0' 'x'")
 let mockLog = getEnv("NIF_MOCK_LOG", "")
 let mockHistoryMarker = getEnv("NIF_MOCK_HISTORY_MARKER", "")
+let mockCompactionSleepMs = block:
+  try: parseInt(getEnv("NIF_MOCK_COMPACTION_SLEEP_MS", "0"))
+  except CatchableError: 0
+var currentSessionId = ""
+var currentCancelId = ""
+var currentEmitTokens = true
+var currentPurpose = ""
 
 proc estimateTokens(messages: JsonNode, tools: JsonNode): int =
   ## Same chars/4 proxy core's estimateTokens uses (plus per-message
@@ -87,7 +94,11 @@ proc logRequest(estimate: int, rejected: bool, note: string,
                   "note": note,
                   "checkpoint": containsText(messages, "<context_checkpoint"),
                   "historyMarker": markerStart(messages, mockHistoryMarker) >= 0,
-                  "historyMarkerIndex": markerStart(messages, mockHistoryMarker)}
+                  "historyMarkerIndex": markerStart(messages, mockHistoryMarker),
+                  "sessionId": currentSessionId,
+                  "cancelId": currentCancelId,
+                  "emitTokens": currentEmitTokens,
+                  "purpose": currentPurpose}
     f.writeLine($line)
   except CatchableError:
     discard
@@ -102,12 +113,19 @@ discard comp.tool("chat", %*{
   "properties": {
     "messages": {"type": "array"},
     "sessionId": {"type": "string"},
-    "stream": {"type": "boolean"}
+    "cancelId": {"type": "string"},
+    "stream": {"type": "boolean"},
+    "emitTokens": {"type": "boolean"},
+    "purpose": {"type": "string"}
   },
   "required": ["messages"],
   "x-harness": {"hidden": true, "runner": true, "timeoutMs": 120000}
 },
 proc(c: Component, args: JsonNode): JsonNode =
+  currentSessionId = args{"sessionId"}.getStr("")
+  currentCancelId = args{"cancelId"}.getStr("")
+  currentEmitTokens = args{"emitTokens"}.getBool(true)
+  currentPurpose = args{"purpose"}.getStr("")
   let messages = args{"messages"}
   let est = estimateTokens(messages, args{"tools"})
   if mockCtx > 0 and est > mockCtx:
@@ -118,6 +136,8 @@ proc(c: Component, args: JsonNode): JsonNode =
       "context-overflow: request ~" & $est & " tokens exceeds the mock " &
       "window of " & $mockCtx & "; window " & $mockCtx & " tokens")
   logRequest(est, false, "", messages)
+  if currentPurpose == "compaction" and mockCompactionSleepMs > 0:
+    sleep(mockCompactionSleepMs)
   var last = ""
   if messages != nil and messages.kind == JArray and messages.len > 0:
     last = messages[^1]{"content"}.getStr("")

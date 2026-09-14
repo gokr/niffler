@@ -410,9 +410,8 @@ admission (approval, timeouts, workspace resolution); the compactor needs
 none of that, because its only nested call is to a concurrent, hidden,
 non-approved LLM tool.
 
-What still must change in `components/llm/main.go` before the default component
-can land, because today an auxiliary call with the conversation's own
-`sessionId` would corrupt the live turn:
+The default component now uses the following explicit auxiliary-call fields
+(they are part of the `chat` contract, not hidden conventions):
 
 - `cancelId` (string, optional) — subscribe `llm.cancel.<cancelId>` instead of
   `llm.cancel.<sessionId>`; the compactor passes
@@ -425,6 +424,11 @@ can land, because today an auxiliary call with the conversation's own
   `sessionId` is what makes both behaviors intentional.)
 - `purpose: "compaction"` — telemetry/accounting only; the runner's budget
   check stays authoritative.
+
+The default compactor streams internally so cancellation can interrupt the
+provider request, but sets `emitTokens: false`; its request loop relays
+`cancel.compaction` to the distinct `llm.cancel.<cancelId>` subject. Ordinary
+turns retain the old `cancelId` fallback and publish tokens by default.
 
 Deadlines are the runner's; the compactor may request a *smaller* one, never a
 larger one.
@@ -718,7 +722,7 @@ correctness, latency and cache rebuilds — not just token reduction.
 | 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components — ☑ LANDED (admission before every request; prune → trim → context-recovery-required ladder; stable context-overflow classification in the adapter + receipt-bounded recovery; §8 fixtures 1–3 + end-to-end overflow recovery) |
 | 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
 | 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam — ☑ LANDED (contract-v1 snapshots/pages/digests, strict candidate validator, runner-owned checkpoint renderer, optimistic `context_projection` commit/reload, `x-harness.runner` allowlist seam, shipped `compaction_propose`; restart/second-generation/recall/corrupt-projection fixtures) |
-| 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it |
+| 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it — ☑ LANDED (distinct cancellation relay, internal streaming with suppressed token frames, purpose telemetry, end-to-end cancellation fixture) |
 | 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam |
 
 Steps 0–3 are shippable independently and already improve reliability; step 4
@@ -738,9 +742,10 @@ component's multi-call path possible.
   exist before.
 - **Prune is now first-class** (§5.2, §6.3): deterministic, model-free, applied
   at execution time and at compaction time, never rewriting canonical records.
-- **Auxiliary LLM plumbing is an explicit prerequisite** (§4.7): `chat` today
-  routes cancel and stream by `sessionId`, so compactor calls would publish
-  tokens into the live turn and be cancellable by the user's stop.
+- **Auxiliary LLM plumbing is explicit** (§4.7): `chat` carries a distinct
+  `cancelId`, suppressible token frames and a `purpose` field, so compactor
+  calls cannot publish partial output into the live turn or share its cancel
+  subject.
 - **Overflow classification named as a prerequisite** (§6.5): `core/retry.nim`
   treats `400` as permanent, so overflow recovery cannot work until the adapter
   emits a stable code.

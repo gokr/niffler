@@ -7,8 +7,9 @@
 ## never executes tool calls found in history, and uses a distinct auxiliary
 ## session id so cancellation/accounting cannot alias the parent turn.
 
-import std/[json, math, strutils]
+import std/[json, math, strutils, times]
 import checksums/sha2
+import natsnim
 import niffler/sdk
 
 proc digest(s: string): string =
@@ -119,6 +120,84 @@ proc decline(args: JsonNode, reason: string): JsonNode =
   %*{"version": 1, "status": "declined",
      "attemptId": args{"attemptId"}.getStr(""), "reason": reason}
 
+proc wireData(msg: ptr natsMsg): string =
+  let data = natsMsg_GetData(msg)
+  let length = natsMsg_GetDataLength(msg).int
+  if data != nil and length > 0:
+    result = newString(length)
+    copyMem(addr result[0], data, length)
+
+proc publishCancel(c: Component, cancelId: string) =
+  if cancelId.len == 0: return
+  try:
+    c.nc.publish("llm.cancel." & cancelId,
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"purpose": "compaction"}).encode())
+  except CatchableError:
+    discard
+
+proc cancelRequested(sub: ptr natsSubscription, sessionId: string): bool =
+  if sub == nil: return false
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, sub, 0)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    var payload = newJObject()
+    try:
+      let env = decode(wireData(msg))
+      if env.kind == ekEvent and env.payload != nil: payload = env.payload
+    except CatchableError:
+      discard
+    natsMsg_Destroy(msg)
+    if payload{"sessionId"}.getStr("") == sessionId:
+      return true
+  false
+
+proc auxiliaryChat(c: Component, args: JsonNode, sessionId, cancelId: string,
+                   timeoutMs: int): JsonNode =
+  ## Component.request cannot pump cancel.compaction while its handler is
+  ## blocked. This small request loop keeps the cancellation boundary local:
+  ## it relays a parent-turn cancellation to llm.cancel.<cancelId>, then
+  ## waits for the concurrent llm handler to unwind.
+  let env = callEnvelope("chat", args, c.name)
+  let data = env.encode()
+  let inbox = "_INBOX.compaction." & newId()
+  var replySub, cancelSub: ptr natsSubscription
+  var st = natsConnection_SubscribeSync(addr replySub, c.nc.conn, inbox.cstring)
+  if not checkStatus(st):
+    raise newException(IOError, "compaction reply subscription failed: " & getErrorString(st))
+  defer: natsSubscription_Destroy(replySub)
+  st = natsConnection_SubscribeSync(addr cancelSub, c.nc.conn,
+                                    "cancel.compaction")
+  if not checkStatus(st):
+    raise newException(IOError, "compaction cancel subscription failed: " & getErrorString(st))
+  defer: natsSubscription_Destroy(cancelSub)
+  st = natsConnection_PublishRequest(c.nc.conn, "svc.llm.call".cstring,
+                                     inbox.cstring, data.cstring, data.len.cint)
+  if not checkStatus(st):
+    raise newException(IOError, "compaction chat publish failed: " & getErrorString(st))
+  let deadline = epochTime() + timeoutMs.float / 1000.0
+  while epochTime() < deadline:
+    if cancelRequested(cancelSub, sessionId):
+      publishCancel(c, cancelId)
+      raise newException(IOError, "compaction cancelled")
+    var msg: ptr natsMsg
+    let ns = natsSubscription_NextMsg(addr msg, replySub, 25)
+    if ns == NATS_OK:
+      let reply = decode(wireData(msg))
+      natsMsg_Destroy(msg)
+      if reply.kind == ekError:
+        raise newException(IOError,
+          reply.error{"message"}.getStr("auxiliary chat failed"))
+      if reply.kind != ekResult:
+        raise newException(IOError, "auxiliary chat returned an unexpected envelope")
+      return reply.args
+    if ns != NATS_TIMEOUT and not checkStatus(ns):
+      raise newException(IOError, "compaction reply wait failed: " & getErrorString(ns))
+  publishCancel(c, cancelId)
+  raise newException(IOError, "auxiliary chat timed out after " & $timeoutMs & "ms")
+
 proc main() =
   let comp = newComponent("compaction", "0.1.0")
   let schema = toolSchema(%*{
@@ -192,13 +271,19 @@ proc main() =
           approxInput > maxInput.getInt(0):
         return decline(args, "input-budget-exceeded")
       let maxOutput = max(args{"budget"}{"maxSummaryTokens"}.getInt(2048), 128)
-      let reply = c.requestOk("llm", "chat", %*{
+      let cancelId = "compaction." & args{"sessionId"}.getStr("") &
+        "." & attemptId
+      let reply = auxiliaryChat(c, %*{
         "messages": llmMessages,
         "tools": formatTools(loaded.meta{"tools"}),
-        "sessionId": "compact-" & attemptId,
-        "stream": false,
+        "sessionId": cancelId,
+        "cancelId": cancelId,
+        "stream": true,
+        "emitTokens": false,
+        "purpose": "compaction",
         "maxTokens": maxOutput
-      }, args{"budget"}{"timeoutMs"}.getInt(90_000))
+      }, args{"sessionId"}.getStr(""), cancelId,
+         args{"budget"}{"timeoutMs"}.getInt(90_000))
       let calls = reply{"tool_calls"}
       if calls != nil and calls.kind == JArray and calls.len > 0:
         raise newException(ValueError,
