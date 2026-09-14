@@ -389,8 +389,10 @@ keys:
   the runner injects `__session` context and a nested-call lease.
 - `sessionId`: the runner injects `__session.session` (the live session id,
   `""` for non-session callers) so the component can match
-  `cancel.<component>` events against its in-flight work (see Cancellation);
-  core overwrites any client-supplied `__session` for such tools at
+  `cancel.<component>` events against its in-flight work (see Cancellation).
+  Carries no lease and does not fail closed, so a read-only tool may also use
+  it purely to learn its caller (`agent_list`, `agent_notices` do); core
+  overwrites any client-supplied `__session` for such tools at
   dispatch — the key is core-owned private context, never caller data.
 - `effect`: `"read"` or `"write"` (default) — how the fabric batch host
   schedules items (reads fill the concurrency cap together, writes run

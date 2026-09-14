@@ -241,6 +241,26 @@ comp.tool(%*{"hidden": true}):
                    else: "echo agent-ok via a background subagent"
         return toolCall("t1", "agent_spawn", %*{"task": task})
       return %*{"content": "notice-parent-done"}
+    if sessionId == "lst-multi":
+      # roster parent (tests/t_agentnotice.nim): three children so the
+      # listing has a running one and two finished ones; the last stage
+      # calls agent_list from INSIDE the turn, which is the only context
+      # that has __session injected.
+      case stage
+      of 0: return toolCall("t1", "agent_spawn",
+                            %*{"task": "SLOW_CHILD take your time"})
+      of 1: return toolCall("t2", "agent_spawn",
+                            %*{"task": "echo agent-ok via a background subagent"})
+      of 2: return toolCall("t3", "agent_spawn",
+                            %*{"task": "echo agent-ok via a background subagent"})
+      of 3: return toolCall("t4", "agent_list", %*{})
+      of 4: return toolCall("t5", "agent_list", %*{"scope": "descendants"})
+      of 5: return %*{"content": "list-parent-done"}
+      # listing again in a LATER turn (the test's second session call) is
+      # round 6+: by then the children have settled and their runners retired,
+      # so the roster must report them as ready (storage only), not running.
+      of 6: return toolCall("t6", "agent_list", %*{})
+      else: return %*{"content": "list-settled-done"}
     if sessionId == "si-live":
       if stage == 0:
         # current-session introspection: no sessionId arg — the runner must

@@ -34,7 +34,7 @@
 ## the original interactive caller. Idle child runners retire themselves
 ## (NIF_RUNNER_IDLE_S) and re-ensure on demand.
 
-import std/[json, monotimes, os, sequtils, sets, strutils, times]
+import std/[json, monotimes, os, sequtils, sets, strutils, tables, times]
 import natsnim
 import niffler/sdk
 
@@ -758,6 +758,113 @@ discard comp.tool("agent_notices", noticesSchema,
                          "count": pending.len, "peek": peek})
     except CatchableError as e:
       return errResult("cannot read notices (store unreachable): " & e.msg))
+
+# --- the roster -------------------------------------------------------------
+# agent_list derives the caller's children from the DURABLE relation
+# (sessionmeta.parent) joined with their job records — nothing new is stored,
+# so continuation and fork add no roster state. Design:
+# docs/research/SUBAGENTS-PLAN.md P0.2.
+
+proc liveRunnerSet(c: Component): HashSet[string] =
+  ## The sanitized ids of every live session runner, in ONE catalog read.
+  ## Returned empty on any failure: every child then reads as not-resident,
+  ## which is honest (a missing runner cannot be steered) and never blocks
+  ## the listing.
+  try:
+    let snap = c.request("core", "catalog", %*{"op": "components"}, 10_000)
+    let comps = snap{"components"}
+    if comps == nil or comps.kind != JObject: return
+    for name in comps.keys:
+      if name.startsWith("session-"):
+        result.incl(name["session-".len .. ^1])
+  except CatchableError:
+    discard
+
+let listSchema = toolSchema(%*{
+  "scope": {"type": "string",
+            "description": "children (default) lists direct children only; descendants walks the whole tree below you",
+            "enum": ["children", "descendants"]}
+}, description = "List your subagent children by durable session id, with what each is doing. Entries carry the child session id, its status, the jobId of its last activation, and the task it was given. Status is running (working right now), idle (resident between turns), or ready (exists in storage only — resumable, NOT finished and not a result waiting to be collected). Use it to remember which children you started and to decide how to reach one: agent_steer for a running turn, agent_wait/agent_status for a job's result, agent_spawn/agent_run with session to give it more work. You are told when a child settles (see the settlement notices), so this is for orientation, not for polling.")
+listSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+discard comp.tool("agent_list", listSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let caller = toolArgs{"__session"}{"session"}.getStr("")
+    if caller.len == 0:
+      return errResult("agent_list needs a live session context")
+    let wantDescendants = toolArgs{"scope"}.getStr("children") == "descendants"
+    var metas: seq[JsonNode]
+    var readError = ""
+    try:
+      for item in c.storeListAll("sessionmeta", "", 1000, 10_000):
+        metas.add(%*{"id": item.id, "value": item.value})
+    except CatchableError as e:
+      readError = e.msg
+    if readError.len > 0:
+      return errResult("cannot list children (store unreachable): " &
+                       readError)
+    # childrenByParent: parent session id -> its children's session ids.
+    var childrenByParent = initTable[string, seq[string]]()
+    for m in metas:
+      let parent = m{"value"}{"parent"}.getStr("")
+      if parent.len == 0: continue
+      childrenByParent.mgetOrPut(parent, @[]).add(m{"id"}.getStr(""))
+    # Walk from the caller. `descendants` recurses; `children` is depth 1.
+    # Depth is bounded by construction (a cycle would need a self-parent
+    # record, which the lineage write cannot produce), but walk with a seen
+    # set anyway so a hand-edited store cannot hang the component.
+    var rows = newJArray()
+    var seen = initHashSet[string]()
+    var frontier = @[caller]
+    var depth = 0
+    while frontier.len > 0:
+      inc depth
+      var next: seq[string]
+      for parent in frontier:
+        for child in childrenByParent.getOrDefault(parent, @[]):
+          if child in seen: continue
+          seen.incl(child)
+          rows.add(%*{"sessionId": child, "parent": parent, "depth": depth})
+          if wantDescendants: next.add(child)
+      frontier = next
+    # Join the live-runner view ONCE for the whole listing.
+    let live = liveRunnerSet(c)
+    # Join each child's most recent activation. The jobId is the agentjob
+    # record's ID, not a field inside its value — carry both.
+    var lastJob = initTable[string, tuple[id: string, value: JsonNode]]()
+    try:
+      for item in c.storeList("agentjob", "", 1000, 10_000):
+        let child = item.value{"sessionId"}.getStr("")
+        if child.len == 0: continue
+        let at = item.value{"startedAt"}.getFloat(0)
+        if not lastJob.hasKey(child) or
+            lastJob[child].value{"startedAt"}.getFloat(0) <= at:
+          lastJob[child] = (id: item.id, value: item.value)
+    except CatchableError:
+      discard  # status falls back to ready; the roster still lists
+    var listing = newJArray()
+    for row in rows:
+      let child = row{"sessionId"}.getStr("")
+      var entry = %*{"sessionId": child, "parent": row{"parent"},
+                     "depth": row{"depth"}}
+      # Status is derived from residency + the last activation's outcome.
+      # `ready` means STORAGE ONLY (resumable), never terminal — the wording
+      # matters, because a parent choosing between verbs must not read it as
+      # "this child is finished".
+      if lastJob.hasKey(child):
+        let (jobId, job) = lastJob[child]
+        entry["jobId"] = %jobId
+        if job{"status"} != nil: entry["lastStatus"] = job{"status"}
+        if job{"task"} != nil: entry["task"] = job{"task"}
+      if child in liveTurns:
+        entry["status"] = %"running"
+      elif sanitizeSessionId(child) in live:
+        entry["status"] = %"idle"
+      else:
+        entry["status"] = %"ready"
+      listing.add(entry)
+    let scopeName = if wantDescendants: "descendants" else: "children"
+    return okResult(%*{"scope": scopeName, "children": listing,
+                       "count": listing.len}))
 
 # Terminal job recording: the runner replies on the job's reply inbox; this
 # tap is the single writer of the terminal state, so status lookups and

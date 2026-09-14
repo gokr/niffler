@@ -6,7 +6,7 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 | phase | state |
 |---|---|
 | P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, `tests/t_agentnotice.nim` — 30 checks) |
-| P0.2 `agent_list` | not started |
+| P0.2 `agent_list` | **shipped** (derived roster, residency status vocabulary, `agent_list {scope?}`, 9 more checks in `tests/t_agentnotice.nim`) |
 | P1.3 continuation | not started |
 | P1.4 fork | not started |
 | P2–P4 | not started |
@@ -264,6 +264,27 @@ documented, not pretended away — same posture as DSH-STEAL §5's team mailbox.
 ---
 
 ## P0.2 — `list_agents`
+
+**Shipped.** `agent_list {scope?}` on the `agent` component; the roster is
+derived from `sessionmeta.parent` joined with `agentjob` records (so P1.3/P1.4
+add no roster state). Tests in `tests/t_agentnotice.nim`.
+
+**Implementation notes (found while building it):**
+
+- The tool needs the caller's session id but must NOT be
+  `x-harness.sessionContext` (that would exclude it from parallel dispatch and
+  hand out a nested-call lease). `x-harness.sessionId` is the right key: it
+  injects `__session.session` on BOTH dispatch paths (serial and the parallel
+  wave) with no lease, and a non-session caller simply sees `""`.
+- **`jobId` is the `agentjob` record's ID, not a field in its value.** The
+  first implementation read `value{jobId}` and produced rows with no jobId at
+  all; the join must carry `item.id` alongside `item.value`.
+- Residency and *outcome* are different questions and the vocabulary keeps
+  them apart: `status` is residency (`running`/`idle`/`ready`) while
+  `lastStatus` is how the last activation ended (`done`/`failed`/`stopped`).
+  Conflating them is what makes a finished-but-resident child unreadable.
+- The live-runner view is fetched ONCE for the whole listing
+  (`liveRunnerSet`), not per child.
 
 **Why.** The IanTheReal checklist's "list_agents() — check who's doing what".
 Today only per-job `agent_status` exists, so a parent cannot enumerate its

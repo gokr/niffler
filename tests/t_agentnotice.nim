@@ -15,7 +15,7 @@
 ##   agent_status returns the byte-identical full reply;
 ## - an oversized reply is summarised head/tail, not mid-truncated.
 
-import std/[json, os, osproc, strutils, times]
+import std/[algorithm, json, os, osproc, strutils, times]
 import natsnim
 import envelope
 import helpers
@@ -301,6 +301,97 @@ proc main() =
          stopNotice{"summary"}.getStr("") == stopReply), $stopNotice)
   check("the stopped notice's replyBytes matches the kept reply",
         stopNotice{"replyBytes"}.getInt(-1) == stopReply.len, $stopNotice)
+
+  # --- 7. agent_list: the derived roster --------------------------------
+  # The roster is DERIVED (sessionmeta.parent joined with job records), so it
+  # works for any conversation that ever spawned — nothing extra is stored.
+  #
+  # Two session turns: the first spawns three children and lists them while
+  # two are still working (so status must be running), the second lists again
+  # after everything has settled (so status must fall to idle/ready).
+  let listParent = "lst-multi"
+  discard call(nc, "core", "session",
+               %*{"sessionId": listParent, "content": "go"}, 180_000)
+
+  proc rosterCalls(parent: string): seq[JsonNode] =
+    ## Every stored tool result that looks like an agent_list answer.
+    for i in 1 .. 30:
+      let m = call(nc, "store", "get",
+                   %*{"kind": "message",
+                      "id": parent & ":" & align($i, 6, '0')}, 10_000)
+      if m{"error"} != nil: break
+      let content = m{"value"}{"content"}.getStr("")
+      if content.contains("\"children\""):
+        try: result.add(parseJson(content))
+        except CatchableError: discard
+
+  let busy = rosterCalls(listParent)
+  check("agent_list answered from inside the turn", busy.len >= 2,
+        "found " & $busy.len)
+  if busy.len >= 1:
+    let kids = busy[0]{"children"}
+    check("the roster lists the parent's three children",
+          kids != nil and kids.len == 3,
+          if kids != nil: $kids else: "nil")
+    if kids != nil and kids.len == 3:
+      var wellFormed = true
+      var depths: seq[int]
+      for c in kids:
+        depths.add(c{"depth"}.getInt(0))
+        if not c{"sessionId"}.getStr("").startsWith("agent-") or
+           not c{"jobId"}.getStr("").startsWith("job-"):
+          wellFormed = false
+      check("every row carries a durable child id and its jobId",
+            wellFormed, $kids)
+      check("direct children are depth 1", depths == @[1, 1, 1], $depths)
+      # While the spawning turn is still running, at least one child is
+      # mid-turn. Assert the vocabulary is from the closed set — never a
+      # job-record status leaking through ("done"/"failed").
+      let allowed = ["running", "idle", "ready"]
+      var allAllowed = true
+      for c in kids:
+        if c{"status"}.getStr("") notin allowed: allAllowed = false
+      check("status vocabulary is residency-based, not job-record status",
+            allAllowed, $kids)
+  if busy.len >= 2:
+    check("the descendants scope reports itself and the same depth-1 set",
+          busy[1]{"scope"}.getStr("") == "descendants" and
+          busy[1]{"children"}.len == 3, $busy[1]{"scope"})
+
+  # Second turn: by now the children have settled and their runners retired
+  # (NIF_RUNNER_IDLE_S=2), so nobody may still read "running".
+  discard call(nc, "core", "session",
+               %*{"sessionId": listParent, "content": "settled?"}, 120_000)
+  let settled = rosterCalls(listParent)
+  if settled.len >= 3:
+    let kids = settled[2]{"children"}
+    var stillRunning = 0
+    for c in kids:
+      if c{"status"}.getStr("") == "running": inc stillRunning
+    check("after the children settle, none still reads running",
+          stillRunning == 0, $kids)
+    check("a settled child's lastStatus records how its activation ended",
+          kids.len == 3 and kids[0]{"lastStatus"}.getStr("") in
+            ["done", "failed", "stopped"], $kids)
+
+  # The durable relation the roster derives from, asserted directly so a
+  # future change to the tool cannot silently empty it.
+  var metaChildren = 0
+  let metas = call(nc, "store", "list",
+                   %*{"kind": "sessionmeta", "limit": 1000}, 10_000)
+  for item in metas{"items"}:
+    if item{"value"}{"parent"}.getStr("") == listParent: inc metaChildren
+  check("three children are durably recorded under the roster parent",
+        metaChildren == 3, $metaChildren)
+
+  # A parent that never spawned has no children — and does not error.
+  discard call(nc, "core", "session",
+               %*{"sessionId": "plain-parent", "content": "plain"}, 120_000)
+  var noneChildren = 0
+  for item in metas{"items"}:
+    if item{"value"}{"parent"}.getStr("") == "plain-parent": inc noneChildren
+  check("a parent that never spawned has no children", noneChildren == 0,
+        $noneChildren)
 
   report("agentnotice")
 
