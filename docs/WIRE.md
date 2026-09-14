@@ -368,6 +368,38 @@ keys:
   default SDK pump remains serial. The NATS queue group on
   `svc.<component>.call` distributes one call per process subscriber.
 
+## Self tests (`selftest`) and `/doctor`
+
+Every component may register a hidden tool **`selftest`** (SDK: `selfTest()`,
+both SDKs) — a component checking its own wiring, on core's behalf:
+
+- input: `{deep: bool, default false}` — quick mode must stay cheap (no
+  spawns, under ~10s: configuration, binary resolution, own-store sanity);
+  `deep` runs live end-to-end probes and may spawn real processes (e.g. the
+  lsp component boots every configured language server against fixtures).
+  Callers pick the timeout: `deep` legitimately takes minutes.
+- result: `{ok: bool, summary: string, checks: [{name, ok, detail, ms}]}` —
+  one entry per check, `ms` the per-check duration; `ok` is false when any
+  check failed. The canonical `{ok, error}` envelope conventions still apply
+  for transport-level failures.
+
+Components without a selftest tool are not broken — the mechanism is
+opt-in; `/doctor` reports them as not implementing one.
+
+Catalog note: tool names are unique across the harness (discover/invoke
+dispatch by bare name), but `selftest` is deliberately exempt — it exists
+on every implementing component by design, is hidden, and is addressed
+per subject (`svc.<component>.call`) by `/doctor`, never by bare name.
+
+**`/doctor`** (core tool `doctor`, also a declarative slash command) is the
+user entry point: core's own read-only probes (bus, store, llm/provider,
+systemprompt, catalog size, conversations) plus a **self-test fan-out** —
+a `selftest` request to every registered component that implements one
+(skipping core itself and UI clients), results collected under
+`selftest: [{component, ok, summary, checks}]`. The fan-out is sequential
+(core serves one call at a time) with a per-component timeout (10s quick /
+120s deep); a timeout or transport error is a failed check, never a crash.
+
 ## Store contract (`svc.store.call`)
 
 The store's bus contract is the artifact; every engine implements exactly
@@ -421,6 +453,10 @@ write then targeted an existing id.
 - One envelope still has to fit the NATS `max_payload`. Core spawns the
   bundled `components/nats` build with `--max_payload 8388608` (8MiB — a
   Niffler flag extension; the official binary only accepts it via config
-  file) because an `llm` `chat` request carries the whole conversation; a
-  PATH `nats-server` keeps the official 1MiB default. A publish over the
-  cap fails and reports the size against the server's `max_payload`.
+  file) because an `llm` `chat` request carries the whole conversation. A
+  PATH `nats-server` fallback (hand-compiled dev runs) gets the same 8MiB
+  via a generated config file — verified against the official binary; a
+  stock 1MiB cap makes oversized publishes time out instead of failing
+  loudly. Core also checks the connected bus's cap at boot and warns when
+  it is below the harness's 8MiB. A publish over the cap fails and
+  reports the size against the server's `max_payload`.

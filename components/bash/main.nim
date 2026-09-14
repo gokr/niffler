@@ -184,4 +184,34 @@ discard comp.tool("bash", bashSchema,
     payload["text"] = %text
     return payload)
 
+discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
+  ## Self test (docs/WIRE.md): exercise the component's real exec path
+  ## (process-group leader, temp-file capture, timeout kill) on a trivial
+  ## command, plus the timeout machinery at a 1s budget. `deep` accepted,
+  ## same probes — there is nothing deeper to run.
+  var checks = newJArray()
+  var allOk = true
+  let t0 = epochTime()
+
+  proc check(name: string, ok: bool, detail: string, t1: float) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail,
+                  "ms": int((epochTime() - t1) * 1000)})
+
+  block execPath:
+    let t1 = epochTime()
+    let (code, outp) = runCmd("echo doctor-ok", 10_000)
+    check("exec", code == 0 and "doctor-ok" in outp,
+          (if code == 0: "echo answered via the real runCmd path (exit 0)" else:
+            "exit " & $code & ": " & outp[0 ..< min(outp.len, 80)]), t1)
+  block timeout:
+    let t1 = epochTime()
+    let (code, _) = runCmd("sleep 30", 1_000)
+    check("timeout kill", code == 124,
+          (if code == 124: "1s budget killed a 30s sleep (exit 124, tree reaped)" else:
+            "expected exit 124, got " & $code), t1)
+  return %*{"ok": allOk,
+            "summary": (if allOk: "exec + timeout-kill paths green" else: "failures above"),
+            "checks": checks})
+
 comp.run()

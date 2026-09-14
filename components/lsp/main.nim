@@ -1,8 +1,9 @@
 ## lsp component — language-server intelligence behind one generic seam.
 ##
-## One tool, `lsp`, exposes five read-only operations (diagnostics,
-## goToDefinition, findReferences, goToImplementation, hover) against any
-## configured stdio language server. The component knows no languages: which
+## One tool, `lsp`, exposes six read-only operations (diagnostics,
+## goToDefinition, findReferences, goToImplementation, hover, documentSymbol)
+## against any configured stdio language server. The component knows no
+## languages: which
 ## server handles which file extension is **data** — the registry at
 ## `$XDG_CONFIG_HOME/niffler-lsp/servers.json` (override path:
 ## `NIF_LSP_REGISTRY`), with sane defaults built in. Adding language X is a
@@ -29,7 +30,7 @@
 ## Read-only, approval-free, onDemand (discover/invoke — keeps the frozen
 ## toolset small; the description is the model's when-to-use guide).
 
-import std/[algorithm, json, monotimes, os, osproc, posix, streams, strutils, tables, times]
+import std/[algorithm, json, monotimes, os, osproc, posix, sequtils, streams, strutils, tables, times]
 import std/syncio
 import natsnim
 import niffler/sdk
@@ -44,7 +45,7 @@ const
   INIT_TIMEOUT_MS = 30000      # initialize handshake budget
   STDERR_TAIL = 4096           # stderr tail kept for error messages
 
-const OPERATIONS = ["diagnostics", "goToDefinition", "findReferences",
+const OPERATIONS = ["diagnostics", "documentSymbol", "goToDefinition", "findReferences",
                     "goToImplementation", "hover", "warmup"]
 
 type LspFailure = object of ValueError
@@ -64,9 +65,15 @@ type ServerConf = object
 
 proc defaultServers(): seq[ServerConf] =
   ## Sane defaults; all optional (absent binary → clear E_LSP_UNAVAILABLE).
+  ## Nim defaults to nimtortoise (github.com/music-theories/nimtortoise): all
+  ## three nimsuggest-based servers publish diagnostics only on save, and the
+  ## component save-echoes after didOpen — but nimlangserver additionally
+  ## never publishes for loose files (its "Found diagnostics file={}" bug),
+  ## while nimtortoise answered every check in the live sweep. The old
+  ## default remains user-registry-selectable by name.
   let defs = [
     ("gopls", @["gopls"], {".go": "go"}.toTable),
-    ("nimlangserver", @["nimlangserver"], {".nim": "nim", ".nims": "nim"}.toTable),
+    ("nimtortoise", @["nimtortoise"], {".nim": "nim", ".nims": "nim"}.toTable),
     ("typescript-language-server",
      @["typescript-language-server", "--stdio"],
      {".ts": "typescript", ".tsx": "typescriptreact", ".mts": "typescript",
@@ -80,6 +87,8 @@ proc defaultServers(): seq[ServerConf] =
       ".hpp": "cpp", ".hh": "cpp"}.toTable),
     ("bash-language-server", @["bash-language-server", "start"],
      {".sh": "shellscript", ".bash": "shellscript"}.toTable),
+    ("jdtls", @["jdtls"], {".java": "java"}.toTable),
+    ("csharp-ls", @["csharp-ls"], {".cs": "csharp"}.toTable),
   ]
   for (name, cmd, exts) in defs:
     result.add(ServerConf(name: name, command: cmd, extensions: exts))
@@ -250,6 +259,55 @@ proc stderrHint(h: Instance): string =
   let lines = h.errTail.strip().split('\n')
   " — server stderr: " & lines[^1]
 
+proc clientCaps(): JsonNode =
+  ## Client capabilities declared at initialize. Deliberately minimal — only
+  ## what this component actually honors — but never empty: servers gate
+  ## features on what the client declares, and an empty blob makes
+  ## typescript-language-server skip its entire diagnostic push (it never
+  ## even asks workspace/configuration). Declaring only supported features
+  ## keeps servers from relying on anything we will not do (no file
+  ## watching, no dynamic registration, no edits).
+  %*{
+    "textDocument": {
+      "synchronization": {"didSave": true},
+      "publishDiagnostics": {"relatedInformation": true, "versionSupport": true},
+      "hover": {"contentFormat": ["markdown", "plaintext"]},
+      "definition": {},
+      "implementation": {},
+      "references": {}
+    },
+    "workspace": {"configuration": true, "workspaceFolders": true}
+  }
+
+proc sendMsg(h: Instance, obj: JsonNode) =
+  let s = $obj
+  let frame = "Content-Length: " & $s.len & "\r\n\r\n" & s
+  try:
+    h.p.inputStream.write(frame)
+    h.p.inputStream.flush()
+  except CatchableError as e:
+    fail("E_LSP_PROTOCOL", "write to '" & h.name & "' failed: " & e.msg & h.stderrHint())
+
+
+proc answerServerRequest(h: Instance, frame: JsonNode) =
+  ## Reply to a server→client request so gate-keeping servers are never left
+  ## waiting: typescript-language-server publishes no diagnostics until its
+  ## workspace/configuration request is answered. The only meaningful reply
+  ## is configuration — one empty settings object per item (server defaults);
+  ## everything else (client/registerCapability, window/workDoneProgress/
+  ## create, …) gets a null result, the legal "not supported" that unblocks
+  ## the server without promising behavior the component does not have.
+  let resultNode =
+    if frame{"method"}.getStr("") == "workspace/configuration":
+      var arr = newJArray()
+      let asked = frame{"params"}{"items"}
+      let n = if asked != nil and asked.kind == JArray: asked.len else: 0
+      for _ in 0 ..< n:
+        arr.add(newJObject())
+      arr
+    else: newJNull()
+  h.sendMsg(%*{"jsonrpc": "2.0", "id": frame{"id"}, "result": resultNode})
+
 proc pump(h: Instance, timeoutMs: int): bool =
   ## Poll stdout (draining stderr on the way). Returns true when stdout has
   ## bytes, false on timeout. Raises E_LSP_PROTOCOL when the server died.
@@ -302,9 +360,16 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
       if h.buf.len >= total:
         let body = h.buf[hdrEnd + 4 ..< total]
         h.buf = h.buf[total ..^ 1]
-        try: return parseJson(body)
+        var frame: JsonNode
+        try: frame = parseJson(body)
         except ValueError as e:
           fail("E_LSP_PROTOCOL", "malformed JSON from '" & h.name & "': " & e.msg)
+        # A server→client request must be answered or the server may stall
+        # its whole push pipeline; swallow it here so no caller has to know.
+        if frame{"method"} != nil and frame{"id"} != nil:
+          h.answerServerRequest(frame)
+          continue
+        return frame
     let remaining = inMilliseconds(deadline - getMonoTime())
     if remaining <= 0:
       if quiet: return nil
@@ -320,14 +385,6 @@ proc readFrame(h: Instance, timeoutMs: int, quiet = false): JsonNode =
       # pump raises E_LSP_PROTOCOL on stdout EOF.)
       continue
 
-proc sendMsg(h: Instance, obj: JsonNode) =
-  let s = $obj
-  let frame = "Content-Length: " & $s.len & "\r\n\r\n" & s
-  try:
-    h.p.inputStream.write(frame)
-    h.p.inputStream.flush()
-  except CatchableError as e:
-    fail("E_LSP_PROTOCOL", "write to '" & h.name & "' failed: " & e.msg & h.stderrHint())
 
 proc request(h: Instance, meth: string, params: JsonNode,
              timeoutMs: int): JsonNode =
@@ -346,14 +403,7 @@ proc request(h: Instance, meth: string, params: JsonNode,
              frame{"error"}{"message"}.getStr("unknown server error") & h.stderrHint())
       return frame{"result"}
     if frame.hasKey("id") and frame.hasKey("method"):
-      if frame{"method"}.getStr("") == "workspace/configuration":
-        var items = newJArray()
-        let asked = frame{"params"}{"items"}
-        let n = if asked != nil and asked.kind == JArray: asked.len else: 0
-        for i in 0 ..< n: items.add(newJObject())
-        h.sendMsg(%*{"jsonrpc": "2.0", "id": frame["id"], "result": items})
-      else:
-        h.sendMsg(%*{"jsonrpc": "2.0", "id": frame["id"], "result": newJNull()})
+      h.answerServerRequest(frame)
 
 proc notify(h: Instance, meth: string, params: JsonNode) =
   h.sendMsg(%*{"jsonrpc": "2.0", "method": meth, "params": params})
@@ -414,7 +464,7 @@ proc getInstance(conf: ServerConf, root: string): Instance =
     "processId": nil,
     "rootUri": pathToUri(root),
     "workspaceFolders": [{"uri": pathToUri(root), "name": root.lastPathPart}],
-    "capabilities": {}
+    "capabilities": clientCaps()
   }
   if conf.initializationOptions != nil:
     params["initializationOptions"] = conf.initializationOptions
@@ -492,11 +542,12 @@ proc capText(s: string): string =
 # ---------------------------------------------------------------------------
 # operations
 
-proc opDiagnostics(h: Instance, uri, rel: string): JsonNode =
+proc opDiagnostics(h: Instance, uri, rel: string,
+                   timeoutMs = QUERY_TIMEOUT_MS): JsonNode =
   ## Wait for the first publishDiagnostics push, then a short quiet period
   ## for updates; no pull-diagnostics fallback in MVP.
   var latest: JsonNode = nil
-  let deadline = getMonoTime() + initDuration(milliseconds = QUERY_TIMEOUT_MS)
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
   while true:
     var waitMs = inMilliseconds(deadline - getMonoTime())
     if latest != nil: waitMs = min(waitMs, DIAG_SETTLE_MS)
@@ -508,7 +559,7 @@ proc opDiagnostics(h: Instance, uri, rel: string): JsonNode =
       latest = frame{"params"}
   if latest == nil:
     fail("E_LSP_TIMEOUT", "no diagnostics for " & rel & " within " &
-         $QUERY_TIMEOUT_MS & "ms — the server may still be indexing; retry" &
+         $timeoutMs & "ms — the server may still be indexing; retry" &
          h.stderrHint())
   let diags = latest{"diagnostics"}
   if diags == nil or diags.kind != JArray or diags.len == 0:
@@ -575,6 +626,65 @@ proc opLocations(h: Instance, op, uri: string, wireLine, wireChar: int,
     outText.add("\n... and " & $(locs.len - MAX_LOCATIONS) &
                 " more — narrow the query (references on a more specific symbol)")
   %*{"ok": true, "text": capText(outText), "count": locs.len}
+
+const
+  SYMBOL_KINDS = ["file", "module", "namespace", "package", "class",
+    "method", "property", "field", "constructor", "enum", "interface",
+    "function", "variable", "constant", "string", "number", "boolean",
+    "array", "object", "key", "null", "enum member", "struct", "event",
+    "operator", "type parameter"]   # LSP SymbolKind, 1-based
+
+proc opDocumentSymbol(h: Instance, uri, rel, root: string): JsonNode =
+  ## The file's outline: every symbol with kind, name and one-based position.
+  ## Handles the hierarchical DocumentSymbol[] form (name/kind/range/children)
+  ## and the deprecated flat SymbolInformation[] form (name/kind/location)
+  ## some servers still return. Positions anchor at the name token
+  ## (selectionRange) when the server provides one — the precise jump target.
+  let raw = h.request("textDocument/documentSymbol",
+      %*{"textDocument": {"uri": uri}}, QUERY_TIMEOUT_MS)
+  if raw == nil or raw.kind != JArray or raw.len == 0:
+    return %*{"ok": true, "text": rel & ": no symbols reported.", "count": 0}
+  var lines: seq[string]
+  var total = 0
+
+  proc kindLabel(k: JsonNode): string =
+    let i = k.getInt(0)
+    if i >= 1 and i <= SYMBOL_KINDS.len: SYMBOL_KINDS[i - 1] else: "symbol"
+
+  proc walk(nodes: JsonNode, depth: int) =
+    if nodes == nil or nodes.kind != JArray: return
+    for s in nodes:
+      if s.kind != JObject: continue
+      let name = s{"name"}.getStr("")
+      if name.len == 0: continue
+      inc total
+      let kind = kindLabel(s{"kind"})
+      if s{"range"} != nil and s{"range"}.kind == JObject:
+        # hierarchical DocumentSymbol — all symbols live in the queried file
+        let sel = s{"selectionRange"}{"start"}
+        let pos = if sel != nil and sel.kind == JObject: sel
+                  else: s{"range"}{"start"}
+        lines.add("  ".repeat(depth) & rel & ":" &
+                  $(pos{"line"}.getInt(0) + 1) & ":" &
+                  $(pos{"character"}.getInt(0) + 1) & "  " & kind & "  " & name)
+        walk(s{"children"}, depth + 1)
+      elif s{"location"} != nil and s{"location"}.kind == JObject:
+        # deprecated flat SymbolInformation — location may leave the file
+        let loc = s{"location"}
+        let pos = loc{"range"}{"start"}
+        lines.add("  ".repeat(depth) &
+                  renderLocation(uriToPath(loc{"uri"}.getStr(uri)), root,
+                                 pos{"line"}.getInt(0),
+                                 pos{"character"}.getInt(0)) &
+                  "  " & kind & "  " & name)
+  walk(raw, 0)
+  if lines.len == 0:
+    return %*{"ok": true, "text": rel & ": no symbols reported.", "count": 0}
+  var outText = lines[0 ..< min(lines.len, MAX_LOCATIONS)].join("\n")
+  if lines.len > MAX_LOCATIONS:
+    outText.add("\n... and " & $(lines.len - MAX_LOCATIONS) &
+                " more — use goToDefinition/findReferences on a known symbol instead")
+  %*{"ok": true, "text": capText(outText), "count": total}
 
 # ---------------------------------------------------------------------------
 # workspace warmup — census + pre-start (ev.workspace.opened)
@@ -670,7 +780,7 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   let pathN = args{"path"}
   if pathN == nil or pathN.kind != JString or pathN.getStr("").len == 0:
     fail("E_BAD_SHAPE", "lsp requires a non-empty \"path\" string")
-  if op != "diagnostics":
+  if op notin ["diagnostics", "documentSymbol"]:
     let line = args{"line"}
     let character = args{"character"}
     if line == nil or line.kind != JInt or line.getInt() < 1:
@@ -721,11 +831,13 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     fail("E_LSP_UNSUPPORTED", "language server '" & conf.name &
          "' does not support transient textDocument/didOpen")
   if op != "diagnostics":
-    let capKey = case op
-                 of "goToDefinition": "definitionProvider"
-                 of "goToImplementation": "implementationProvider"
-                 of "findReferences": "referencesProvider"
-                 else: "hoverProvider"
+    var capKey: string
+    case op
+    of "goToDefinition": capKey = "definitionProvider"
+    of "goToImplementation": capKey = "implementationProvider"
+    of "findReferences": capKey = "referencesProvider"
+    of "documentSymbol": capKey = "documentSymbolProvider"
+    else: capKey = "hoverProvider"
     if not capOk(h.caps, capKey):
       fail("E_LSP_UNSUPPORTED", "language server '" & conf.name &
            "' does not advertise " & capKey)
@@ -738,9 +850,20 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   try:
     h.notify("textDocument/didOpen", %*{"textDocument": {
       "uri": uri, "languageId": languageId, "version": 1, "text": text}})
+    # All three Nim servers (nimlangserver, nimlsp, nimtortoise — all built
+    # on nimsuggest) publish diagnostics only after a save, never on
+    # didOpen/didChange; the transient lifecycle above never saves, so the
+    # settle loop below times out at 60s even though nimsuggest found the
+    # errors. Echoing the just-opened bytes as didSave is a no-op for
+    # open-push servers (pyright, clangd, bash) and unlocks save-push ones;
+    # the settle loop keeps whichever push lands last.
+    h.notify("textDocument/didSave", %*{"textDocument": {"uri": uri},
+                                       "text": text})
     var reply: JsonNode
     case op
     of "diagnostics": reply = opDiagnostics(h, uri, relPath(path, workspaceRoot))
+    of "documentSymbol":
+      reply = opDocumentSymbol(h, uri, relPath(path, workspaceRoot), workspaceRoot)
     of "hover":
       reply = opHover(h, uri, args{"line"}.getInt() - 1,
                       args{"character"}.getInt() - 1, workspaceRoot)
@@ -888,17 +1011,17 @@ discard comp.onDrain do (c: Component):
 
 discard comp.tool("lsp", toolSchema(%*{
   "operation": {"type": "string", "enum": OPERATIONS,
-                "description": "diagnostics, goToDefinition, findReferences, goToImplementation, hover, or warmup (pre-start servers for a workspace's languages)"},
+                "description": "diagnostics, documentSymbol (file outline — every symbol with kind, name and one-based position), goToDefinition, findReferences, goToImplementation, hover, or warmup (pre-start servers for a workspace's languages)"},
   "path": {"type": "string",
            "description": "File to query (inside the conversation workspace); for warmup, a directory — with workspaceRoot taking precedence"},
   "line": {"type": "integer", "minimum": 1,
-           "description": "One-based line at the cursor (required except for diagnostics)"},
+           "description": "One-based line at the cursor (required except for diagnostics and documentSymbol)"},
   "character": {"type": "integer", "minimum": 1,
-                "description": "One-based UTF-16 character offset within the line; an off-symbol position may return no results"},
+                "description": "One-based UTF-16 character offset within the line; an off-symbol position may return no results (required except for diagnostics and documentSymbol)"},
   "workspaceRoot": {"type": "string",
                     "description": "Optional workspace root. Omit it and the server's root is derived from the file (nearest go.mod/package.json/Cargo.toml/...); a relative value resolves against the harness root"}
 }, @["operation", "path"],
-  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
+  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), documentSymbol maps an unfamiliar file's outline (names, kinds, positions) so a big file can be read selectively, goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
   hLsp,
   %*{"timeoutMs": 90000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["path"]}})
@@ -920,5 +1043,344 @@ discard comp.tool("lsp_registry", toolSchema(%*{
   "Mutate the language-server registry: which server binary handles which file extension. add takes {name, command (string or argv array), extensions: {\".ext\": \"languageId\"}} and overrides a built-in of the same name; remove deletes a user entry. Takes effect on the next lsp call. Use when a file's extension has no language server configured — if the binary exists on PATH, adding it here is all that's needed. Writing the registry (approval-gated); list with lsp_servers."),
   hLspRegistry,
   %*{"timeoutMs": 10000, "onDemand": true, "approval": "always"})
+
+# ---------------------------------------------------------------------------
+# self test (docs/WIRE.md) — /doctor fans out to this
+
+type StFixture = tuple[good, bad, hover: string,
+                       extras: seq[tuple[path, content: string]],
+                       hoverLine, hoverCol: int]
+
+proc stFixtures(): Table[string, StFixture] =
+  ## Live-probe fixtures per extension, ported from the manual sweep that
+  ## validated the servers on real workspaces: good file must report 0
+  ## diagnostics and answer hover at the marked (one-based) spot; broken
+  ## file must report errors. Extensions without an entry (and whole
+  ## servers whose only extensions are unknown) get an initialize-only
+  ## probe — the canonical extension of a server covers it.
+  result = {
+    ".go": ("good/main.go", "bad/main.go", "hover/main.go",
+      @[("go.mod", "module sweepgo\n\ngo 1.21\n")], 5, 6),
+    ".nim": ("good.nim", "bad.nim", "hover.nim", @[], 1, 6),
+    ".ts": ("good.ts", "bad.ts", "hover.ts", @[], 1, 10),
+    ".py": ("good.py", "bad.py", "hover.py", @[], 1, 5),
+    ".rs": ("src/main.rs", "src/broken.rs", "src/hover.rs",
+      @[("Cargo.toml", "[package]\nname = \"selftest\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")], 1, 8),
+    ".c": ("good.c", "bad.c", "hover.c", @[], 3, 5),
+    ".cpp": ("good.cpp", "bad.cpp", "hover.cpp", @[], 3, 5),
+    ".sh": ("good.sh", "bad.sh", "hover.sh", @[], 5, 2),
+    ".java": ("Good.java", "Bad.java", "Hover.java", @[], 2, 16),
+    ".cs": ("Good.cs", "Bad.cs", "Hover.cs",
+      @[("selftest.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n")], 2, 16),
+  }.toTable
+
+proc stGoFile(): string =
+  """package main
+
+import "fmt"
+
+func add2(a, b int) int { return a + b }
+
+func main() { fmt.Println(add2(40, 2)) }
+"""
+
+proc stBadGoFile(): string =
+  """package main
+
+func main() { fmt.Println(undefined_symbol + 1) }
+"""
+
+proc stFile(ext, kind: string): string =
+  ## kind: "good" | "bad" | "hover" — fixture sources per extension. The
+  ## hover file is a separate never-saved document: bash-language-server's
+  ## hover context dies on didSave, and save-push servers must not have
+  ## their good-file save delayed behind a hover settle.
+  case ext
+  of ".go":
+    result = if kind == "bad": stBadGoFile() else: stGoFile()
+  of ".nim":
+    result = if kind == "bad":
+      "proc add2(a, b: int): int =\n  a + b\n\necho undeclared_xyz + 1\n"
+    else:
+      "proc add2(a, b: int): int =\n  a + b\n\necho add2(40, 2)\n"
+  of ".ts":
+    result = if kind == "bad":
+      "const value: number = \"not a number\";\nconsole.log(missingSymbol);\n"
+    else:
+      "function add2(a: number, b: number): number { return a + b }\nconsole.log(add2(40, 2));\n"
+  of ".py":
+    result = if kind == "bad":
+      "def f() -> int:\n    return undefined_name\n"
+    else:
+      "def add2(a: int, b: int) -> int:\n    return a + b\n\nprint(add2(40, 2))\n"
+  of ".rs":
+    result = case kind
+    of "bad": "fn main() { println!(\"{}\", undefined_symbol + 1); }\n"
+    of "hover": "pub fn add2(a: i64, b: i64) -> i64 { a + b }\n"
+    else: "fn add2(a: i64, b: i64) -> i64 { a + b }\n\nfn main() { println!(\"{}\", add2(40, 2)); }\n"
+  of ".c", ".cpp":
+    result = if kind == "bad":
+      "int main(void) { return undefined_symbol + 1; }\n"
+    else:
+      "#include <stdio.h>\n\nint add2(int a, int b) { return a + b; }\n\nint main(void) { printf(\"%d\\n\", add2(40, 2)); return 0; }\n"
+  of ".sh":
+    result = case kind
+    of "bad":
+      "greet() {\n  echo \"hello $name\"\n  if [ \"$1\" = \"x\" ]; then\n}\n\ngreet\n"
+    of "hover":
+      # hover answers at the command-position call (5,2); user-function
+      # definitions and direct builtins resolve to null hover here
+      "add2() {\n  echo $(( $1 + $2 ))\n}\n\nadd2 40 2\necho done\n"
+    else:
+      "add2() {\n  echo $(( $1 + $2 ))\n}\n\nadd2 40 2\n"
+  of ".java":
+    result = case kind
+    of "bad":
+      "public class Bad {\n    public static void main(String[] args) { System.out.println(undefined_symbol); }\n}\n"
+    of "hover":
+      "public class Hover {\n    static int add2(int a, int b) { return a + b; }\n}\n"
+    else:
+      "public class Good {\n    static int add2(int a, int b) { return a + b; }\n    public static void main(String[] args) { System.out.println(add2(40, 2)); }\n}\n"
+  of ".cs":
+    result = case kind
+    of "bad":
+      "static class Broken {\n    static int Nope() { return undefined_symbol + 1; }\n}\n"
+    of "hover":
+      "static class HoverCalc {\n    static int Add2(int a, int b) { return a + b; }\n}\n"
+    else:
+      "static class Calc {\n    static int Add2(int a, int b) { return a + b; }\n    static void Main() { System.Console.WriteLine(Add2(40, 2)); }\n}\n"
+  else:
+    result = ""
+
+proc hLspSelfTest(c: Component, args: JsonNode): JsonNode =
+  ## Component self test (docs/WIRE.md). quick (default): registry loads and
+  ## every configured server's binary resolves (PATH + fallback dirs).
+  ## deep: live end-to-end — boot each configured server against throwaway
+  ## fixtures (the same ones the manual sweep used): initialize, clean file
+  ## reports 0 diagnostics, hover answers, broken file reports errors.
+  let deep = args{"deep"}.getBool(false)
+  var checks = newJArray()
+  var allOk = true
+  let t0all = epochTime()
+
+  proc check(name: string, ok: bool, detail: string, ms: int) =
+    if not ok: allOk = false
+    checks.add(%*{"name": name, "ok": ok, "detail": detail, "ms": ms})
+
+  var reg: Table[string, ServerConf]
+  try:
+    reg = loadRegistry()
+  except CatchableError as e:
+    check("registry", false, e.msg, 0)
+    return %*{"ok": false, "summary": "registry does not load: " & e.msg,
+              "checks": checks}
+  var userOverrides = 0
+  let regPath = registryPath()
+  if fileExists(regPath):
+    try:
+      let u = parseJson(readFile(regPath))
+      if u.kind == JObject: userOverrides = u.len
+    except CatchableError: discard
+  check("registry", true,
+        $reg.len & " server(s) configured" &
+        (if userOverrides > 0: " (" & $userOverrides & " user override(s))" else: ""),
+        int((epochTime() - t0all) * 1000))
+
+  proc resolve(conf: ServerConf): string =
+    ## mirror getInstance's resolution: PATH, then the fallback dirs
+    let bin = conf.command[0]
+    if bin.contains('/'):
+      return (if fileExists(bin): bin else: "")
+    let onPath = findExe(bin)
+    if onPath.len > 0: return onPath
+    resolveBinIn(bin, fallbackBinDirs(getHomeDir(), getEnv("NIF_LSP_BIN_DIRS")))
+
+  var names: seq[string]
+  for name in reg.keys: names.add(name)
+  names.sort()
+
+  if not deep:
+    for name in names:
+      let t0 = epochTime()
+      let exe = resolve(reg[name])
+      let exts = toSeq(reg[name].extensions.keys).join(" ")
+      if exe.len > 0:
+        check(name & ": binary", true, exe & " (" & exts & ")",
+              int((epochTime() - t0) * 1000))
+      else:
+        check(name & ": binary", false,
+              "not found on PATH or fallback dirs — make install-lsp, or " &
+              "fix the registry (" & registryPath() & ")",
+              int((epochTime() - t0) * 1000))
+    return %*{"ok": allOk,
+              "summary": $reg.len & " server(s), " &
+                (if allOk: "all binaries resolve (quick — pass deep for live probes)"
+                 else: "some binaries missing"),
+              "checks": checks}
+
+  # deep: live probe per server
+  let budget = epochTime() + 110.0   # inside /doctor's 120s fan-out timeout
+  let callMs = 15_000
+  var probed = 0
+  var stCounter = 0
+  for name in names:
+    let conf = reg[name]
+    let t0 = epochTime()
+    if epochTime() > budget - 20.0:
+      check(name & ": skipped", false, "self-test budget exhausted", 0)
+      continue
+    let exe = resolve(conf)
+    if exe.len == 0:
+      check(name & ": binary", false,
+            "not found on PATH or fallback dirs — make install-lsp, or " &
+            "fix the registry (" & registryPath() & ")",
+            int((epochTime() - t0) * 1000))
+      continue
+    # fixture: the server's extensions sorted, first one with live fixtures
+    var exts: seq[string]
+    for e in conf.extensions.keys: exts.add(e)
+    exts.sort()
+    var fixtureExt = ""
+    for e in exts:
+      if stFixtures().hasKey(e):
+        fixtureExt = e
+        break
+    if fixtureExt.len == 0:
+      # initialize-only probe: server spawns and completes the handshake
+      inc stCounter
+      let tmp = getTempDir() / ("niffler-lsp-selftest-" & $int(epochTime() * 1000) &
+                                "-" & $stCounter)
+      createDir(tmp)
+      var okInit = false; var detail = ""
+      try:
+        discard getInstance(conf, tmp)
+        okInit = true; detail = "initialize handshake answered"
+      except CatchableError as e:
+        detail = e.msg
+      finally:
+        let k = instKey(conf.name, tmp)
+        if gInstances.hasKey(k):
+          gInstances[k].dispose()
+          gInstances.del(k)
+        try: removeDir(tmp)
+        except CatchableError: discard
+      check(name & ": initialize", okInit, detail, int((epochTime() - t0) * 1000))
+      continue
+
+    # live probe: clean diagnostics + hover + broken diagnostics
+    inc stCounter
+    let tmp = getTempDir() / ("niffler-lsp-selftest-" & $int(epochTime() * 1000) &
+                              "-" & $stCounter)
+    createDir(tmp)
+    let fx = stFixtures()[fixtureExt]
+    let goodDir = splitFile(tmp / fx.good).dir
+    let badDir = splitFile(tmp / fx.bad).dir
+    let hoverDir = splitFile(tmp / fx.hover).dir
+    if goodDir.len > 0: createDir(goodDir)
+    if badDir.len > 0 and badDir != goodDir: createDir(badDir)
+    if hoverDir.len > 0 and hoverDir != goodDir and hoverDir != badDir:
+      createDir(hoverDir)
+    writeFile(tmp / fx.good, stFile(fixtureExt, "good"))
+    writeFile(tmp / fx.bad, stFile(fixtureExt, "bad"))
+    writeFile(tmp / fx.hover, stFile(fixtureExt, "hover"))
+    for extra in fx.extras:
+      writeFile(tmp / extra.path, extra.content)
+    var serverChecks = 0; var serverFails = 0
+    try:
+      let h = getInstance(conf, tmp)
+      let goodUri = pathToUri(tmp / fx.good)
+      let badUri = pathToUri(tmp / fx.bad)
+      let hoverUri = pathToUri(tmp / fx.hover)
+      # clean diagnostics first, listeners up before pushes can land:
+      # open-push servers publish on didOpen, save-push (all nimsuggest-
+      # based) on didSave — the settle loop catches either
+      h.notify("textDocument/didOpen", %*{"textDocument": {
+        "uri": goodUri, "languageId": conf.extensions[fixtureExt],
+        "version": 1, "text": stFile(fixtureExt, "good")}})
+      h.notify("textDocument/didSave", %*{"textDocument": {"uri": goodUri},
+                                          "text": stFile(fixtureExt, "good")})
+      block cleanCheck:
+        let t1 = epochTime()
+        try:
+          let d = opDiagnostics(h, goodUri, fx.good, callMs)
+          let n = d{"count"}.getInt(-1)
+          let ok = d{"ok"}.getBool(false) and n == 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": clean-diagnostics", ok,
+                (if ok: "0 diagnostics" else: d{"text"}.getStr("")),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": clean-diagnostics", false, e.msg,
+                int((epochTime() - t1) * 1000))
+      block hoverCheck:
+        # hover on a separate never-saved document: bash-language-server's
+        # hover context dies on didSave (even across close/re-open), and
+        # open-push servers publish their good-file push while we would
+        # otherwise be sleeping — a fresh open here needs a moment for the
+        # server's async analysis to attach symbol info
+        let t1 = epochTime()
+        var hover = ""
+        try:
+          h.notify("textDocument/didOpen", %*{"textDocument": {
+            "uri": hoverUri, "languageId": conf.extensions[fixtureExt],
+            "version": 1, "text": stFile(fixtureExt, "hover")}})
+          sleep(2500)
+          hover = normalizeHover(h.request("textDocument/hover",
+            %*{"textDocument": {"uri": hoverUri},
+               "position": {"line": fx.hoverLine - 1,
+                            "character": fx.hoverCol - 1}}, callMs))
+          h.notify("textDocument/didClose", %*{"textDocument": {"uri": hoverUri}})
+          let ok = hover.len > 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": hover", ok,
+                (if ok: hover[0 ..< min(hover.len, 80)] else: "no hover information"),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": hover", false, e.msg, int((epochTime() - t1) * 1000))
+      block brokenCheck:
+        let t1 = epochTime()
+        try:
+          h.notify("textDocument/didOpen", %*{"textDocument": {
+            "uri": badUri, "languageId": conf.extensions[fixtureExt],
+            "version": 1, "text": stFile(fixtureExt, "bad")}})
+          h.notify("textDocument/didSave", %*{"textDocument": {"uri": badUri},
+                                              "text": stFile(fixtureExt, "bad")})
+          let d = opDiagnostics(h, badUri, fx.bad, callMs)
+          let n = d{"count"}.getInt(0)
+          let ok = d{"ok"}.getBool(false) and n > 0
+          if ok: inc serverChecks
+          else: inc serverFails
+          check(name & ": broken-diagnostics", ok,
+                (if ok: $n & " error(s) flagged" else: d{"text"}.getStr("no diagnostics — server broken?")),
+                int((epochTime() - t1) * 1000))
+        except CatchableError as e:
+          inc serverFails
+          check(name & ": broken-diagnostics", false, e.msg,
+                int((epochTime() - t1) * 1000))
+      h.notify("textDocument/didClose", %*{"textDocument": {"uri": goodUri}})
+      h.notify("textDocument/didClose", %*{"textDocument": {"uri": badUri}})
+    except CatchableError as e:
+      inc serverFails
+      check(name & ": initialize", false, e.msg, int((epochTime() - t0) * 1000))
+    finally:
+      let k = instKey(conf.name, tmp)
+      if gInstances.hasKey(k):
+        gInstances[k].dispose()
+        gInstances.del(k)
+      try: removeDir(tmp)
+      except CatchableError: discard
+    if serverFails == 0 and serverChecks > 0:
+      inc probed
+  let probedWord = if deep: $probed & " server(s) probed live" else: ""
+  return %*{"ok": allOk,
+            "summary": $reg.len & " server(s) configured, " & probedWord &
+              (if allOk: " — all green" else: " — failures above"),
+            "checks": checks}
+
+discard comp.selfTest(hLspSelfTest)
 
 comp.run()

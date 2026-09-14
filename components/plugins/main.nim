@@ -607,12 +607,21 @@ comp.tool(%*{"onDemand": true}):
 comp.tool(%*{"onDemand": true}):
   proc plugin_installed(): JsonNode =
     ## List the third-party component packages installed on this harness
-    ## (name, repo, pinned ref and the components each provides). Use this
-    ## to answer "what plugins do we have?" and to find the package name
-    ## for plugin_update / plugin_remove.
+    ## (name, repo, pinned ref, current checkout commit, and the components
+    ## each provides). Use this to answer "what plugins do we have?" and to
+    ## find the package name for plugin_update / plugin_remove.
     var pkgs = newJArray()
     for item in comp.storeList("plugin", "", 100, 10_000):
-      pkgs.add(item.value)
+      # Store records carry no commit field: derive it from the checkout
+      # at read time so /status and other clients get truthful provenance
+      # without requiring a reinstall or a store migration.
+      var value = item.value
+      let dir = value{"dir"}.getStr("")
+      if dir.len > 0 and dirExists(dir):
+        let rev = runCmd("git -C " & quoteShell(dir) & " rev-parse HEAD", 15_000)
+        if rev.code == 0 and rev.output.strip().len > 0:
+          value["commit"] = %rev.output.strip()
+      pkgs.add(value)
     return okResult(%*{"packages": pkgs})
 
 

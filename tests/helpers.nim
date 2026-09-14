@@ -49,9 +49,18 @@ proc startNatsImpl(monitoring: bool): tuple[prc: Process, url, monitorUrl: strin
     let repoRoot = getEnv("NIF_REPO_ROOT", "")
     if repoRoot.len > 0 and fileExists(repoRoot / "var" / "bin" / "nats-server"):
       natsBin = repoRoot / "var" / "bin" / "nats-server"
-      # the component build understands the harness's --max_payload
-      # extension (the PATH fallback official binary would reject it)
+      # the component build understands the harness's --max_payload flag
       args.add(["--max_payload", "8388608"])
+    else:
+      # The official binary rejects --max_payload as a flag but honors it
+      # from a config file (verified against v2.11: without this a 2MB
+      # publish fails with "payload exceeds server max_payload" and the
+      # caller sees a timeout that looks like a store hang). Store replies
+      # exceed 1MiB in long-session tests, so the fallback must raise the
+      # cap or the suite degrades silently.
+      let cfgPath = portsDir / "nats-max-payload.conf"
+      writeFile(cfgPath, "max_payload: 8388608\n")
+      args.add(["-c", cfgPath])
     var cmd = "exec " & quoteShell(natsBin)
     for a in args:
       cmd.add(" " & quoteShell(a))

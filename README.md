@@ -610,6 +610,21 @@ Open work — deferred follow-ups and quests — is consolidated in
       tool-selection corrections — component + exact tool to invoke, or a
       fabric program sketch; silent by default, fail-closed
       (`tests/t_expert.nim` with a scripted mock llm)
+- [x] **language-server seam (`lsp`)** — one `lsp` tool (diagnostics without
+      a test run, goToDefinition, findReferences, goToImplementation, hover,
+      warmup) over any configured stdio language server; the registry is
+      data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`), so adding a
+      language is a config entry or an approval-gated `lsp_registry add` —
+      never code (docs/MANUAL.md "Language servers (`lsp`)");
+      `make install-lsp` installs the default servers, core warms them on
+      workspace open
+- [x] **background processes (`processes` component)** — long-running
+      commands with an owner: bash's `run_in_background` flag forwards to
+      `process_start` (detached, own process group, spool files under
+      `var/processes/`), `process_poll` drains incremental output,
+      `process_kill` stops the group, `process_list` shows the registry;
+      `registry.json` drives a boot sweep against orphans
+      (docs/MANUAL.md "Background processes (`processes`)")
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [x] Web UI TUI-parity features: slash commands (built-ins + the plugin
   registry, Tab completion, did-you-mean), thinking/tool display cycles

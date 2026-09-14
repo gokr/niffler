@@ -750,6 +750,43 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     doc["tools"] = %nTools
     check("catalog", true, $ct.cat.components.len & " component(s), " &
       $nTools & " tool(s)")
+    # self-test fan-out (docs/WIRE.md, "Self tests"): every component that
+    # registers the standard hidden selftest tool is asked to check itself.
+    # Sequential on purpose — core serves one call at a time — with a
+    # per-component timeout; a timeout is a failed check, not a crash.
+    let deep = args{"deep"}.getBool(false)
+    let stTimeout = if deep: 120_000 else: 10_000
+    doc{"selftest"} = newJArray()
+    var stNames: seq[string]
+    for name, reg in ct.cat.components:
+      if name == "core" or reg.client: continue
+      for t in reg.tools:
+        if t.name == "selftest":
+          stNames.add(name)
+          break
+    stNames.sort()
+    var stFailed = 0
+    for name in stNames:
+      let t0 = epochTime()
+      var entry = %*{"component": name}
+      try:
+        let r = dispatchSubjectCall(ct, "svc." & name & ".call", "selftest",
+                                    %*{"deep": deep}, stTimeout, caller = "doctor")
+        entry["summary"] = %r{"summary"}.getStr("")
+        entry["checks"] = (if r{"checks"} != nil: r{"checks"} else: newJArray())
+        entry["ok"] = %r{"ok"}.getBool(false)
+        if not entry["ok"].getBool(false): inc stFailed
+      except CatchableError as e:
+        entry["ok"] = %false
+        entry["summary"] = %("no answer within " & $stTimeout & "ms: " & e.msg)
+      entry["ms"] = %int((epochTime() - t0) * 1000)
+      doc{"selftest"}.add(entry)
+    doc["selftestComponents"] = %stNames.len
+    check("selftest", stFailed == 0,
+          (if stNames.len == 0: "no component registers a self test"
+           else: $stNames.len & " component(s) probed" &
+             (if deep: " (deep)" else: " (quick)")) &
+             (if stFailed > 0: " — " & $stFailed & " failed" else: ""))
     return doc
   else:
     return %*{"error": "core has no tool '" & tool & "'"}

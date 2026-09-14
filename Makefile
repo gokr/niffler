@@ -572,9 +572,11 @@ install-go:
 	else echo "Install Go from https://go.dev/dl (or use your package manager)"; fi
 
 install-lsp:
-	@# Language servers behind the lsp component defaults (gopls, pyright,
-	@# typescript-language-server, rust-analyzer, clangd, nimlangserver).
-	@bash scripts/install-lsp.sh
+	@# Language servers behind the lsp component defaults (gopls, nimtortoise,
+	@# typescript-language-server, pyright, rust-analyzer, clangd,
+	@# bash-language-server, jdtls, csharp-ls). Go/Nim/TS mandatory, rest y/n;
+	@# `make install-lsp ALL=1` installs everything unattended.
+	@bash scripts/install-lsp.sh $(if $(filter 1,$(ALL)),--all,)
 
 install-native-deps:
 	@if [ -n "$(IS_MAC)" ]; then \
