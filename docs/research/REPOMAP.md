@@ -132,15 +132,32 @@ zero extra cost. A `focus` parameter on the tool covers the explicit case.
 
 ```
 repomap component (feat/repomap)
-  onDemand tool  repo_map {workspace, focus?, budget?}
   consumes: tags seam — per-file defs+refs from whichever provider
             (tree-sitter first; ctags breadth; regex floor)
   cache: var/repomap-tags (mtime-keyed) + in-memory map cache
   output: append-only tool result, deterministic, budget-capped
 ```
 
-Baseprompt line only after the bench A/B proves the economics (full30 +
-Multi10 with map on/off, same protocol as the read-outline change).
+**How it enters the conversation — auto-append, not discovery.** On
+`ev.workspace.opened`, the component builds the workspace's map once and the
+session runner appends it to history (append-only, cache-safe — never the
+frozen prefix). The model is oriented from turn one with zero discovery:
+bench evidence says onDemand tools never activate on their own (zero
+discover calls across 58 Multi10 cells), so the map must arrive, not be
+sought. The full surface:
+
+| Path | When | Cost |
+|---|---|---|
+| auto-append on `ev.workspace.opened` | once per conversation | ~300–1k tokens, once |
+| `repo_map {workspace?, focus?, budget?}` (onDemand tool) | refresh after big refactors, explicit pulls | same, model-initiated |
+| personalization | files the conversation read/edited (store seen-state, recency-decayed) + grep-hit idents | free — we know, aider guesses |
+
+Rules: empty/failed map appends nothing; subagents excluded in v1; a trim
+may drop the map — re-requestable (compaction should treat it as a keeper);
+the baseprompt mentions only the refresh tool, not "use the map" — it is
+already on the page. Bench A/B: conversations with/without the auto-append,
+measuring time-to-first-correct-file and total tokens (full30 regression +
+Multi10 unfamiliar-repo spot-check).
 
 ## Port plan
 
