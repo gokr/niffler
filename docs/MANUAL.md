@@ -17,7 +17,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
 - [Provider registry (`provider`)](#provider-registry-provider) · [Fetch](#fetch)
 - [External MCP servers (`mcp`)](#external-mcp-servers-mcp)
-- [Language servers (`lsp`)](#language-servers-lsp)
+- [Language servers (`lsp`)](#language-servers-lsp) · [Background processes (`processes`)](#background-processes-processes)
 - [Progressive tool discovery (`discover`/`invoke`)](#progressive-tool-discovery)
 - [Model catalog (`models`)](#model-catalog-models)
 - [System prompt (`systemprompt`)](#system-prompt-systemprompt)
@@ -52,7 +52,8 @@ reference chapters for the shipped components. Design rationale lives in
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
 | `store` | Nim/Go | required | document store over the bus (`put/get/list/del`, rev-based concurrency). Engines register under the same name with identical tools: `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
-| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a temp file pageable with `read` |
+| `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a temp file pageable with `read`. `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
+| `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
 | `builder` | Nim | required | compiles agent-written Nim/Go source into binaries |
 | `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
@@ -255,6 +256,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
+| `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll | `33554432` |
+| `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split) | `65536` |
 | `NIF_LSP_REGISTRY` | absolute path of the language-server user registry (`servers.json`) | `$XDG_CONFIG_HOME/niffler-lsp/servers.json` |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
@@ -776,7 +779,7 @@ with sane defaults built in. Adding a language is a config entry, never code
 
 | Tool | What it does |
 |---|---|
-| `lsp {operation, path, line?, character?}` | One query against the file's language server: `diagnostics` (compiler/lint errors without a test run), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` |
+| `lsp {operation, path, line?, character?}` | One query against the file's language server: `diagnostics` (compiler/lint errors without a test run), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — or `warmup`: with a directory as `path` (or `workspaceRoot`), census its languages and pre-start their servers |
 | `lsp_servers {}` | List configured servers (read-only, approval-free) with provenance: `builtin` default or `user` registry entry |
 | `lsp_registry {action: add\|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name |
 
@@ -784,7 +787,9 @@ The model sends one-based line/character (UTF-16, matching LSP's code-unit
 convention); `findReferences` always includes the declaration; results are
 capped (100 locations / 16 KB) with truncation metadata; structured
 `[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,
-`E_LSP_SCOPE`, `E_NOT_FOUND`) let callers route on codes, not prose.
+`E_LSP_SCOPE`, `E_NOT_FOUND`) let callers route on codes, not prose —
+timeout and protocol errors append the server's last stderr line, which
+names the actual failure (missing binary, crash, indexing).
 
 All three tools are **on-demand** (`discover`/`invoke` — see [Progressive tool
 discovery](#progressive-tool-discovery-discoverinvoke)), keeping the frozen
@@ -810,6 +815,12 @@ kept per (server, workspace) and reused across queries; a timeout or protocol
 error tears that instance down so the next query starts fresh. Paths are
 confined to the conversation workspace (relative `path` arguments are
 resolved against it; `..` and absolute escapes are refused).
+
+Core fires a **warmup** automatically when a conversation workspace is
+announced (`ev.workspace.opened`): the component runs a bounded extension
+census (stops at 5 000 files or a 2 s budget) and pre-starts servers for
+the most prevalent languages, so the first real query does not pay server
+startup. The `warmup` operation re-runs the same path explicitly.
 
 Unconfigured languages degrade, never break: an extension with no server (or
 a missing binary) returns `E_LSP_UNAVAILABLE` with the fix in the message —
@@ -842,11 +853,48 @@ plus an `extensions` map (leading-dot extension → LSP language id).
 Optional `initializationOptions` passes through to the server's `initialize`.
 Built-in defaults — gopls, nimlangserver, typescript-language-server, pyright,
 rust-analyzer, clangd, bash-language-server — work whenever the binary is on
-`PATH`; override one by adding an entry with the same name. The registry is
+`PATH`; `make install-lsp` installs them idempotently (a failure is
+non-fatal per language: the lsp tool just skips it with `E_LSP_UNAVAILABLE`).
+Override a default by adding an entry with the same name. The registry is
 re-read on every call, so edits take effect immediately.
 
 Set `NIF_LSP_REGISTRY` to an absolute path to relocate the user registry
 (tests, multi-harness setups).
+
+## Background processes (`processes`)
+
+Status: **implemented** (Nim component; `tests/t_processes.nim`).
+
+bash is synchronous by design — servers, watchers and test loops need a
+different contract: start once, poll incremental output, kill explicitly.
+
+| Tool | What it does |
+|---|---|
+| `process_start {command, label?, workdir?}` | Spawn the command detached (own process group, stdin from /dev/null, stdout/stderr appended to spool files under `var/processes/`) and return its id immediately. Approval-gated |
+| `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Read-effect |
+| `process_kill {id}` | Terminate the whole process group. Approval-gated |
+| `process_list {}` | Show the registry — running and recently finished entries with exit codes. Read-effect |
+
+Details:
+
+- The child writes append-mode to spool files (never a pipe it could
+  deadlock on); the component reads from per-stream cursors, so the OS
+  absorbs output bursts. A spool beyond the cap (32 MiB,
+  `NIF_PROCESSES_SPOOL_CAP`) is truncated to its tail on the next poll;
+  one poll returns at most `NIF_PROCESSES_POLL_CHUNK` new bytes per stream
+  (default 64 KiB).
+- Caps: 32 concurrent processes; the 50 most recent finished entries stay
+  in the registry.
+- Crash-safe: children are process-group leaders, so a SIGKILLed component
+  leaves them running — `registry.json` (pid + /proc starttime, defeating
+  pid reuse) drives a boot sweep that kills orphans from a previous life
+  before serving. Processes die with the harness.
+
+All four tools are on-demand (`discover`/`invoke`). The bash tool's
+`run_in_background` flag is a thin producer over this component: the call
+returns the id at once (no timeout applies) and the transcript line points
+at `process_poll`/`process_kill`. If the component is not running, bash
+answers `[E_BACKGROUND]` and suggests running the command synchronously.
 
 ## External MCP servers (`mcp`)
 
@@ -1897,11 +1945,14 @@ make install        # PATH entries (niffler, niffler-cli, niffler-console,
                     # + niffler-tui wrapper on request — never component
                     # binaries, so PATH cannot shadow grep/git/...)
 make uninstall      # remove those PATH entries again
+make install-lsp    # install the lsp component's default language servers
 make test           # the full gate: frontend tests + the bus-contract suite
 make test-server    # the bus-contract suite alone (each test owns a private bus)
 make test-ui        # frontend alone: lib unit tests + typecheck (no NATS)
 make doctor         # check prerequisites
 make ram            # RAM of running stacks (harness + components + nats + clients)
+make down-here      # stop this checkout's harness, components and spawned bus
+                    # only — bench worktrees and other clones survive
 make clean          # remove all build artifacts (var/, nimcache/, UI build)
 ```
 

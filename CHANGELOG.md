@@ -14,6 +14,74 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with `--dry-run`). The global `down` stays for the stray-everything case;
   `down-here` leaves bench worktrees, other clones and their private buses
   alone.
+
+- **background processes (`processes` component + bash `run_in_background`).**
+  bash is synchronous by design; servers, watchers and test loops need a
+  different contract: start once, poll incremental output, kill explicitly.
+  `process_start` spawns the command detached (own process group, stdin from
+  /dev/null, stdout/stderr appended to spool files under `var/processes/`)
+  and returns an id immediately; `process_poll` drains output appended since
+  the last poll (never re-injects old bytes; `waitMs` blocks for new output
+  or exit, `filter` regex over the new lines, `tail` re-reads the raw
+  ~64 KB tail); `process_kill` stops the whole group; `process_list` shows
+  the registry. Spool files are the drain buffer — the child writes
+  append-mode, the component reads from per-stream cursors, so the OS
+  absorbs bursts (`NIF_PROCESSES_SPOOL_CAP` truncates an oversized spool to
+  its tail, `NIF_PROCESSES_POLL_CHUNK` splits bursts). Crash-safe: children
+  are process-group leaders, so a SIGKILLed component leaves them running —
+  `registry.json` (pid + /proc starttime, defeating pid reuse) drives a boot
+  sweep that kills orphans from a previous life before serving. Caps: 32
+  concurrent processes, 50 finished entries kept. All four tools are
+  onDemand; `process_start`/`process_kill` approval-gated, polls read-effect.
+  bash's `run_in_background` flag is a thin producer: it forwards to
+  `process_start` and returns the id (no timeout applies); without the
+  component it answers `[E_BACKGROUND]` and suggests the synchronous path
+  (`tests/t_processes.nim`).
+
+- **store: SQLite becomes the default engine — boot guard,
+  `niffler-store-migrate`, list cursor, full-kind paging.** The default of
+  `NIF_STORE_BACKEND` flips from `barrel` to `sqlite` (atomic doc+rev write,
+  range-readable list). Switching does not move data: core now refuses to
+  boot over an un-migrated `var/barrel-db` with conversation history and
+  prints the migration instructions instead of opening an empty
+  `var/store.db` and looking like every conversation vanished.
+  `niffler-store-migrate` (`var/bin`) moves a root between engines offline —
+  it starts its own private NATS + store processes, reads every document
+  over the bus contract (any engine pair works, including TiDB), replays
+  into the fresh target and verifies per-kind counts; `--scan`/`--all`
+  cover sibling clones and bench trees, `--dry-run` works with `--all`.
+  Verified on a real 43 MB barrel (4309 documents). `list` gained an
+  `after`/`hasMore`/`nextAfter` cursor contract across all three engines,
+  and core's full-kind reads page through it (`storeListAll`) because a
+  single capped list silently truncated long transcripts on resume.
+
+- **make install-lsp + lsp warmup.** `make install-lsp` (`scripts/install-lsp.sh`)
+  idempotently installs the language servers behind the lsp component's
+  built-in defaults (gopls, pyright, typescript-language-server + tsserver,
+  rust-analyzer, clangd, nimlangserver, bash-language-server); failures are
+  non-fatal per language (the lsp tool skips it with `E_LSP_UNAVAILABLE`).
+  The lsp component gained a `warmup` operation: a bounded extension census
+  of a workspace (stops at 5000 files or 2 s) that pre-starts servers for
+  its most prevalent languages — core fires it automatically on
+  `ev.workspace.opened` so the first real query does not pay server startup.
+  `readFrame` now honors the caller's full operation deadline instead of
+  giving up after the first silent 250 ms pump slice (servers that run a
+  lint subprocess or index a big module legitimately stay silent longer), and
+  `E_LSP_TIMEOUT`/protocol errors append the server's last stderr line so
+  the message names the actual failure. bash-language-server joins the
+  built-in defaults.
+
+- **nats bus safety.** A PATH `nats-server` fallback (hand-compiled dev
+  runs) now gets the same 8 MiB payload cap as the bundled build via a
+  generated config file — the official binary rejects `--max_payload` as a
+  flag but honors it from `-c`; without it a stock 1 MiB bus makes oversized
+  publishes time out instead of failing loudly, indistinguishable from a
+  component hang. Core also reads `natsConnection_GetMaxPayload` at boot and
+  warns when an attached foreign bus caps below the harness's 8 MiB, and
+  `reclaimOwnNats` verifies `/proc/<pid>/comm` is nats-server before
+  signalling a recorded pid (a recycled pid after a crash is no longer
+  signalled; un-verifiable falls back to the safe yield-and-isolate path).
+
 - **bench: SWE-bench Multilingual pilot (10 tasks, 7 languages) — Go
   (caddy, gin), Rust (tokio, nushell), C (redis, jq), C++ (fmt), JS
   (axios), TS (docusaurus), Ruby (rubocop); real OSS repos, real
