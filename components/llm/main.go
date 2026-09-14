@@ -12,12 +12,13 @@
 // provider.
 //
 // Protocol (evolved from llm-openai, same result shape):
-//   chat {messages, tools?, model?, provider?, sessionId?, stream?}
+//   chat {messages, tools?, model?, provider?, sessionId?, stream?,
+//         cancelId?, emitTokens?, purpose?}
 //   → result {content, reasoning?, tool_calls?, model, context, usage?}
 //   stream: true additionally emits ev.llm.token {sessionId, content,
-//   reasoning} frames (deltas) while generating.
-//   Cancellation: publish an envelope to llm.cancel.<sessionId> to abort
-//   the in-flight streaming call.
+//   reasoning} frames unless emitTokens is false.
+//   Cancellation: publish an envelope to llm.cancel.<cancelId> (or the
+//   session id when cancelId is omitted) to abort the in-flight call.
 
 package main
 
@@ -86,9 +87,9 @@ const defaultOutput = 32768
 // fallback applies to a 512k model (bench: full27-syn-large-* ran with
 // context 128000; the model serves 524288 per Synthetic's catalog).
 var knownContext = map[string]int{
-	"deepseek-chat":          1000000,
-	"deepseek-reasoner":      1000000,
-	"syn:large:text":         524288,
+	"deepseek-chat":         1000000,
+	"deepseek-reasoner":     1000000,
+	"syn:large:text":        524288,
 	"zai-org/glm-5.3-flash": 524288,
 }
 
@@ -418,7 +419,18 @@ type chatArgs struct {
 	Model     string        `json:"model"`
 	Provider  string        `json:"provider"`
 	SessionID string        `json:"sessionId"`
-	Stream    bool          `json:"stream"`
+	// CancelID is the cancellation correlation id. It is deliberately separate
+	// from SessionID so an auxiliary compaction request cannot be cancelled by
+	// the user's turn stop (or cancel that turn itself).
+	CancelID string `json:"cancelId"`
+	Stream   bool   `json:"stream"`
+	// EmitTokens controls publication of ev.llm.token frames. Auxiliary calls
+	// stream internally for cancellation but set this false so their partial
+	// output never appears as assistant text in the live conversation.
+	EmitTokens *bool `json:"emitTokens"`
+	// Purpose is telemetry/accounting metadata only; it never changes provider
+	// behavior or tool exposure.
+	Purpose string `json:"purpose"`
 	// ReasoningEffort forwards a per-turn thinking-effort selection
 	// ("low"|"medium"|"high"|"max"); empty = provider default. Only sent to the
 	// API when set — providers that do not support reasoning_effort
@@ -428,6 +440,10 @@ type chatArgs struct {
 	// JSON verdicts). It only ever lowers the provider/catalog default,
 	// never raises it; 0 = no cap.
 	MaxTokens int `json:"maxTokens"`
+}
+
+func (a chatArgs) emitTokens() bool {
+	return a.EmitTokens == nil || *a.EmitTokens
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -446,13 +462,18 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 
 	// The cancellation side-channel is subscribed before provider/model/context
 	// resolution: a cancel published during that window must still abort the
-	// stream (NATS events are not durable).
+	// stream (NATS events are not durable). cancelId keeps auxiliary calls
+	// independent from the live conversation turn.
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
 	var unsub func()
-	if args.Stream && args.SessionID != "" {
+	cancelID := args.CancelID
+	if cancelID == "" {
+		cancelID = args.SessionID
+	}
+	if args.Stream && cancelID != "" {
 		var err error
-		unsub, err = c.Subscribe("llm.cancel."+args.SessionID, func(subject string, payload json.RawMessage) {
+		unsub, err = c.Subscribe("llm.cancel."+cancelID, func(subject string, payload json.RawMessage) {
 			streamCancel()
 		})
 		if err != nil {
@@ -483,22 +504,58 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	maybeProbeLiveModels(streamCtx, c, resolved)
 	switch resolved.Provider.Protocol {
 	case protocolCodex:
-		return chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+		v, err := chatCodex(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context)
+		return v, classifyProviderError(err, resolved.Context)
 	case protocolAnthropic:
-		return chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
+		v, err := chatAnthropic(streamCtx, c, resolved.Provider, model, resolved.ProviderName, args,
 			resolved.Context, output)
+		return v, classifyProviderError(err, resolved.Context)
 	case "", protocolOpenAI:
 		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 		cfg.BaseURL = resolved.Provider.BaseURL
 		client := openai.NewClientWithConfig(cfg)
 		if args.Stream {
-			return chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
+			v, err := chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
+			return v, classifyProviderError(err, resolved.Context)
 		}
-		return chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
+		v, err := chatOnce(client, model, resolved.ProviderName, args, resolved.Context, output)
+		return v, classifyProviderError(err, resolved.Context)
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
+}
+
+// classifyProviderError normalizes the provider failures the harness
+// reasons about (docs/research/COMPACTION.md §6.5). A context overflow is a
+// 400-family failure: retrying it as transient is wasted latency against a
+// deterministic refusal, and failing it as permanent strands the turn even
+// though pruning/trimming could make it fit. The stable "context-overflow"
+// prefix plus the resolved window are the contract core matches on — the
+// adapter knows the window (resolved.Context), so core never parses
+// provider phrasing. Detection is structured where the protocol exposes
+// status codes (openai.APIError) and falls back to the known refusal
+// phrases for protocols that surface plain error text.
+func classifyProviderError(err error, contextSize int) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode == 400 {
+		msg = apiErr.Message
+	}
+	lower := strings.ToLower(msg)
+	for _, pattern := range []string{
+		"context_length_exceeded", "maximum context length",
+		"prompt is too long", "input length exceeds",
+		"too many input tokens",
+	} {
+		if strings.Contains(lower, pattern) {
+			return fmt.Errorf("context-overflow: %s; window %d tokens", msg, contextSize)
+		}
+	}
+	return err
 }
 
 // stripModelPrefix returns the model id after the last "/" — the canonical
@@ -625,8 +682,8 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 	if resp.Usage.CompletionTokens > 0 && total > 0 {
 		tps = float64(resp.Usage.CompletionTokens) / total.Seconds()
 	}
-	log.Printf("INFO chat provider=%s model=%s effort=%s ttft=n/a dur=%s prompt=%d completion=%d tok/s=%.1f status=ok",
-		providerName, usedModel, effort, total.Truncate(time.Millisecond),
+	log.Printf("INFO chat purpose=%s provider=%s model=%s effort=%s ttft=n/a dur=%s prompt=%d completion=%d tok/s=%.1f status=ok",
+		args.Purpose, providerName, usedModel, effort, total.Truncate(time.Millisecond),
 		resp.Usage.PromptTokens, resp.Usage.CompletionTokens, tps)
 	return resultJSON(providerName, usedModel, contextSize, msg.Content,
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
@@ -705,8 +762,8 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		if effort == "" {
 			effort = "default"
 		}
-		log.Printf("INFO chat provider=%s model=%s effort=%s ttft=%s dur=%s prompt=%d completion=%d tok/s=%.1f reasoning_chars=%d status=%s",
-			providerName, model, effort, ttft.Truncate(time.Millisecond), total.Truncate(time.Millisecond),
+		log.Printf("INFO chat purpose=%s provider=%s model=%s effort=%s ttft=%s dur=%s prompt=%d completion=%d tok/s=%.1f reasoning_chars=%d status=%s",
+			args.Purpose, providerName, model, effort, ttft.Truncate(time.Millisecond), total.Truncate(time.Millisecond),
 			usage.PromptTokens, usage.CompletionTokens, tps, reasoningChars, status)
 	}
 
@@ -753,7 +810,8 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 			ttft = time.Since(startedAt)
 		}
 		// one token frame per chunk with anything to show
-		if args.SessionID != "" && (delta.Content != "" || delta.reasoning() != "") {
+		if args.emitTokens() && args.SessionID != "" &&
+			(delta.Content != "" || delta.reasoning() != "") {
 			_ = c.Emit("ev.llm.token", map[string]any{
 				"sessionId": args.SessionID,
 				"content":   delta.Content,
@@ -886,7 +944,7 @@ func main() {
 			"provider": map[string]any{"type": "string", "description": "Optional stored or NIF_LLM_PROVIDERS nickname"},
 			"model":    map[string]any{"type": "string", "description": "Optional model override"},
 		},
-		"x-harness": map[string]any{"hidden": true, "timeoutMs": 10000},
+		"x-harness": map[string]any{"hidden": true, "runner": true, "timeoutMs": 10000},
 	}, resolveHandler)
 	// Live model discovery (option B): the models component discovers this
 	// hidden tool via reg.publish and calls it on its refresh cycle. The
@@ -918,16 +976,22 @@ func main() {
 			"provider": map[string]any{"type": "string",
 				"description": "Provider nickname from NIF_LLM_PROVIDERS (default: the provider component's active provider, else NIF_OPENAI_*)"},
 			"sessionId": map[string]any{"type": "string",
-				"description": "Session handle for ev.llm.token routing and llm.cancel.<sessionId> cancellation"},
+				"description": "Session handle for token routing and provider correlation"},
+			"cancelId": map[string]any{"type": "string",
+				"description": "Optional cancellation subject suffix; defaults to sessionId. Auxiliary callers use a distinct id."},
 			"stream": map[string]any{"type": "boolean",
-				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
+				"description": "Stream internally while generating (default false)"},
+			"emitTokens": map[string]any{"type": "boolean",
+				"description": "Publish ev.llm.token frames (default true; false for auxiliary calls)"},
+			"purpose": map[string]any{"type": "string",
+				"description": "Telemetry purpose only, for example compaction"},
 			"reasoning_effort": map[string]any{"type": "string",
 				"description": "Backend reasoning effort (low/medium/high/max); omitted when empty = provider default"},
 			"maxTokens": map[string]any{"type": "integer",
 				"description": "Per-call output cap in tokens; only lowers the provider default (used for small structured replies, e.g. judge verdicts)"},
 		},
 		"required":  []string{"messages"},
-		"x-harness": map[string]any{"hidden": true, "timeoutMs": chatTimeoutMs()},
+		"x-harness": map[string]any{"hidden": true, "runner": true, "timeoutMs": chatTimeoutMs()},
 	}, chatHandler)
 	if err := comp.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "llm:", err)

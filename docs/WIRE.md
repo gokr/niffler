@@ -458,6 +458,12 @@ keys:
 - `hidden`: tool invisible to the LLM catalog (e.g. `chat`, `session`).
 - `onDemand`: kept out of a conversation's frozen direct toolset; reachable
   via `discover` + `invoke` (docs/MANUAL.md, "Progressive tool discovery").
+- `runner`: when `true` on a `hidden` tool, exempts internal runner machinery
+  from a conversation's frozen tool allowlist. This is how replaceable
+  `chat`, model-resolution, compaction, and recall tools remain available to
+  restricted subagent sessions without hardcoding their names in core.
+  `runner` does not expose the tool and is ignored unless `hidden` is also
+  true.
 - `sessionContext`: the call runs in the live conversation (fabric, agent);
   the runner injects `__session` context and a nested-call lease.
 - `sessionId`: the runner injects `__session.session` (the live session id,

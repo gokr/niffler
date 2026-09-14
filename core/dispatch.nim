@@ -158,10 +158,15 @@ proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
       result.add(item)
 
 proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
-                   pageLimit = 1000, timeoutMs = 5000): seq[JsonNode] =
+                   pageLimit = 1000, timeoutMs = 5000, after = ""): seq[JsonNode] =
   ## List EVERY document of a kind (id order) by paging the store's cursor
   ## to exhaustion. Use this instead of a single capped `list` whenever the
   ## caller must see the whole kind — resume, migration, audit.
+  ##
+  ## `after` starts the read at an exclusive id cursor: everything up to
+  ## and including that id is skipped. Compaction's projection reload uses
+  ## it to read only the span its checkpoint does not already represent
+  ## (docs/research/COMPACTION.md §6.2 reload step 4).
   ##
   ## A single `list` is capped at 1000 items, so a long transcript used to
   ## resume silently truncated and its next write could target an existing
@@ -170,12 +175,12 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
   ##
   ## Null or non-array `items` is treated as end-of-data rather than an
   ## error, matching storeListItems; an unreachable store still raises.
-  var after = ""
+  var cursor = after
   var pages = 0
   while true:
     var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageLimit}
-    if after.len > 0:
-      args["after"] = %after
+    if cursor.len > 0:
+      args["after"] = %cursor
     let r = dispatchSubjectCall(ct, "svc.store.call", "list", args, timeoutMs)
     if not r{"ok"}.getBool(false):
       raise newException(IOError, r{"error"}.getStr("store list failed"))
@@ -188,9 +193,9 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
     # spin forever).
     let nextAfter = r{"nextAfter"}.getStr("")
     if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
-        nextAfter == after:
+        nextAfter == cursor:
       break
-    after = nextAfter
+    cursor = nextAfter
     inc pages
     if pages > 10_000:
       raise newException(IOError,
@@ -699,6 +704,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## alive, we answered), store, llm provider/model, systemprompt,
     ## catalog size, conversations. Each probe reports ok plus a short
     ## detail string; the whole report never executes anything.
+    ## `ask` rides the userMessage convention (docs/WIRE.md): the client
+    ## renders the report and submits the interpretation prompt as a user
+    ## turn — core stays a read-only health provider and never writes
+    ## conversation history.
     var doc = %*{"at": epochTime(), "checks": newJArray()}
     proc check(name: string, ok: bool, detail: string) =
       doc{"checks"}.add(%*{"name": name, "ok": ok, "detail": detail})
@@ -786,6 +795,25 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
            else: $stNames.len & " component(s) probed" &
              (if deep: " (deep)" else: " (quick)")) &
              (if stFailed > 0: " — " & $stFailed & " failed" else: ""))
+    var markdown: seq[string] = @[
+      "# Niffler doctor",
+      "",
+      "| Check | Status | Details |",
+      "|---|---|---|"]
+    for item in doc{"checks"}:
+      let name = item{"name"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"detail"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| " & name & " | " & state & " | " & detail & " |")
+    for item in doc{"selftest"}:
+      let name = item{"component"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"summary"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| selftest/" & name & " | " & state & " | " & detail & " |")
+    let report = markdown.join("\n")
+    doc["text"] = %report
+    if args{"ask"}.getBool(false):
+      doc["userMessage"] = %("Interpret this Niffler doctor report. Explain any failed or suspicious checks, distinguish real failures from unavailable optional components, and give concrete next steps. Use only the report as evidence; do not claim to have run additional checks.\n\n" & report)
     return doc
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
@@ -1166,18 +1194,30 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
 proc checkToolAllowlist(ct: CoreTools, tool: string) =
   ## Enforce the same session scope on serial and parallel dispatches.
   # Per-session tool allowlist (subagent scoping): a conversation frozen
-  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
-  # machinery) and the store quartet the runner itself persists through
-  # (transcript, headers, exposure) — without them an allowlisted session
-  # would silently lose its own history. Trade-off: a model in an
-  # allowlisted session can still read/write the shared KV store directly;
-  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
-  # transcript store the session needs to exist.
-  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
-      tool notin ["chat", "put", "get", "list", "del"] and
-      tool notin ct.sessionAllowlist[]:
-    raise newException(ValueError,
-      "tool '" & tool & "' is not in this session's tool allowlist")
+  # with a tools list may dispatch only those tools. Exempt: the runner
+  # machinery a session needs to exist — "chat" (turns) and the store
+  # quartet the runner itself persists through (transcript, headers,
+  # exposure) — plus any hidden tool whose schema declares
+  # x-harness.runner: true (§4.1, docs/research/COMPACTION.md). Requiring
+  # hidden makes the claim enforceable: it is never offered to the model,
+  # so a differently-named compactor
+  # or recall tool works in allowlisted sessions without a core edit.
+  # Trade-off: a model in an allowlisted session can still read/write the
+  # shared KV store directly; scoping targets capabilities (bash, edit,
+  # git, fabric, agent), not the transcript store the session needs to
+  # exist.
+  if ct.sessionAllowlist == nil or ct.sessionAllowlist[].len == 0:
+    return
+  if tool in ct.sessionAllowlist[]:
+    return
+  if tool in ["chat", "put", "get", "list", "del"]:
+    return
+  let schema = ct.cat.toolSchema(tool)
+  if schema != nil and schema{"x-harness"}{"runner"}.getBool(false) and
+      schema{"x-harness"}{"hidden"}.getBool(false):
+    return
+  raise newException(ValueError,
+    "tool '" & tool & "' is not in this session's tool allowlist")
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,

@@ -62,13 +62,15 @@ reference chapters for the shipped components. Design rationale lives in
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
-| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
+| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
+| `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections |
+| `recall` | Nim | optional | hidden `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
@@ -263,7 +265,11 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
 | `NIF_LLM_MAX_RETRIES` | additional attempts for transient LLM failures (429/5xx/overloaded/connection drop) with exponential backoff; each retry announces `ev.session.retry`. Auth/quota/bad-request errors always fail fast | `2` |
 | `NIF_LLM_TIMEOUT_MS` | ceiling for one `llm` `chat` completion; slow reasoning models (e.g. GLM thinking=max via llmgateway) can exceed the default on a single response | `300000` |
-| `NIF_CTX_RESERVE` | output tokens held back when deciding to trim context: the trim level is min(90% of window, window − reserve); `0` disables the reserve | `16384` |
+| `NIF_CTX_RESERVE` | output tokens held back by context admission; `0` disables the reserve | `16384` |
+| `NIF_COMPACTION_TOOL` | contract-v1 proposal tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
+| `NIF_COMPACTION_TIMEOUT_MS` | whole proposal-call deadline (minimum 5000 ms) | `90000` |
+| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt | `4` |
+| `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap | `2048` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
 | `NIF_OBSERVE_ENTRY_BYTES` | maximum retained bytes per observed message | `65536` |
@@ -477,24 +483,37 @@ reports:
 - Persisted messages carry audit metadata that never reaches the LLM:
   `createdAt` on every message, `turnId` everywhere, and `startedAt` /
   `durationMs` on assistant, tool and error records (an `error` record is
-  persisted when the LLM call itself fails, and replay skips error roles).- At **75%** of the window, core warns once (terminal log; the UI shows a
-  note) — `ev.session.context {warning: true, reason: "warn:threshold"}`.
-- At **90%**, core trims: whole turns are dropped from the front of the
-  conversation (system prompt stays; never below 2 user turns; a note
-  message tells the model history was cut). Whole-turn drops keep
-  `tool_call_id` pairs intact. `ev.session.context {trimmed: n, reason:
-  "reset:trim"}` — a trim is the one ordinary full prompt-cache miss, and
-  the reason names it. The only other sanctioned prefix change is
-  `invoke {sticky: true}` promotion: it appends one schema to the persisted
-  direct toolset and reports `ev.session.context {reason: "reset:tools",
-  directToolCount, estimatedToolTokens}`.
-- Before the model has reported usage (fresh or resumed session), a
-  rough chars/4 estimate stands in.
-- The **store keeps the full history** — trimming is in-memory per
-  session, so nothing is lost; a resumed session simply re-trims.
-- If the API still rejects an over-limit request, the error surfaces as
-  a normal llm error (existing behavior). Thresholds are constants in
-  `core/conversation.nim` (`ctxWarnRatio`, `ctxTrimRatio`, `minKeepTurns`).
+  persisted when the LLM call itself fails, and replay skips error roles).
+- Admission runs before **every** provider request, including each tool-loop
+  round. Before reported usage exists, it prices the whole request (messages
+  plus frozen tool schemas) with a conservative chars/4 estimate. At **75%**
+  core warns once (`ev.session.context {reason: "warn:threshold"}`). At the
+  90% pressure line / hard input target it executes a bounded ladder:
+  deterministic tool-result prune → configured compactor → oldest complete-
+  turn trim → explicit `context-recovery-required`. It never knowingly sends
+  an over-window request.
+- The shipped `compaction_propose` is replaceable: set
+  `NIF_COMPACTION_TOOL=<tool>` to select another contract-v1 implementation,
+  or set it to empty to disable summarization while keeping the deterministic
+  guard. `NIF_COMPACTION_TIMEOUT_MS`, `NIF_COMPACTION_MAX_LLM_CALLS`, and
+  `NIF_COMPACTION_MAX_SUMMARY_TOKENS` bound each attempt. The runner writes a
+  temporary paged `compaction_input` snapshot, validates the candidate's
+  generation/digest/cut/schema/size and strict reduction, then commits one
+  `context_projection` document with optimistic `expectRev`. The component
+  never writes conversation or projection records.
+- A successful projection emits `reason: "reset:compact"`; model-free pruning
+  emits `reset:prune`; lossy fallback emits `reset:trim`. `reset:tools` remains
+  reserved for an actual sticky tool-schema promotion. These are the only
+  intentional prompt-prefix rebuilds and make cache misses attributable.
+- Canonical `message` documents are immutable and append-only. Prune and
+  compaction change only the provider projection; a restarted runner validates
+  and reloads the durable checkpoint plus retained canonical tail, while
+  `context_recall` resolves canonical/spill/current-checkpoint refs. Missing or
+  corrupt projection refs fail explicitly instead of silently replaying an
+  oversized span.
+- A provider-reported `context-overflow` gets exactly one receipt-backed
+  recovery attempt. The same prune → compactor → trim order is re-measured;
+  a second overflow is terminal, never an unbounded retry loop.
 
 ## Self-extension and component lifecycle
 
@@ -779,7 +798,7 @@ with sane defaults built in. Adding a language is a config entry, never code
 
 | Tool | What it does |
 |---|---|
-| `lsp {operation, path, line?, character?}` | One query against the file's language server: `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position — no line/character needed), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — or `warmup`: with a directory as `path` (or `workspaceRoot`), census its languages and pre-start their servers |
+| `lsp {operation, path, line?, character?}` | One query against the file's language server: `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position — no line/character needed), `workspaceSymbol` (repo-wide symbol search — a fuzzy `query` string; the server builds its index after warmup, so the first call may need a retry), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — or `warmup`: with a directory as `path` (or `workspaceRoot`), census its languages and pre-start their servers |
 | `lsp_servers {}` | List configured servers (read-only, approval-free) with provenance: `builtin` default or `user` registry entry |
 | `lsp_registry {action: add\|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name |
 
@@ -1139,7 +1158,10 @@ language server against throwaway fixtures (clean file → 0 diagnostics,
 hover answers, broken file → errors), the store runs a full
 put/get/rev/list/del roundtrip on its engine. Quick mode stays cheap
 (binary resolution only); useful as a CI liveness gate or a first
-diagnostics step. The UIs expose it as `/doctor`.
+diagnostics step. The UIs expose it as `/doctor`. The report also carries a
+rendered Markdown table in `text` (what `/doctor` displays), and `ask: true`
+adds a `userMessage` (the docs/WIRE.md convention) so the client submits an
+interpretation request as a user turn.
 
 #### Explicit client commands
 
