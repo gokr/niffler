@@ -202,11 +202,23 @@ if want "C# (csharp-ls)"; then
 if have csharp-ls; then ok "csharp-ls"
 elif have dotnet || [ -x "$HOME/.dotnet/dotnet" ]; then
   dotnet_bin=$(command -v dotnet || echo "$HOME/.dotnet/dotnet")
-  if "$dotnet_bin" tool install --global csharp-ls >/dev/null 2>&1; then
-    ok "csharp-ls (~/.dotnet/tools — covered by the lsp fallback dirs)"
-  else fail "csharp-ls" "dotnet tool install failed"; fi
+  # latest csharp-ls targets the newest .NET; an older SDK cannot even read its
+  # package ("DotnetToolSettings.xml was not found"), so pin per SDK major:
+  #   0.16.0 -> net8.0, 0.20.0 -> net9.0, unpinned -> net10.0
+  sdk_major=$("$dotnet_bin" --version 2>/dev/null | cut -d. -f1)
+  pin=""
+  case "$sdk_major" in
+    [0-8]) pin=0.16.0 ;;
+    9)     pin=0.20.0 ;;
+  esac
+  err=$($dotnet_bin tool install --global csharp-ls ${pin:+--version "$pin"} 2>&1 >/dev/null)
+  if [ $? -eq 0 ]; then
+    ok "csharp-ls ${pin:+v$pin }(~/.dotnet/tools — covered by the lsp fallback dirs)"
+  else
+    fail "csharp-ls" "dotnet tool install failed: $(echo "$err" | tail -1)"
+  fi
 else
-  fail "csharp-ls" "needs the .NET SDK 8+ (curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 — installs to ~/.dotnet)"
+  fail "csharp-ls" "needs the .NET SDK 10+ (curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 — installs to ~/.dotnet; add ~/.dotnet/tools to PATH)"
 fi
 fi
 
