@@ -1,8 +1,9 @@
 ## lsp component — language-server intelligence behind one generic seam.
 ##
-## One tool, `lsp`, exposes five read-only operations (diagnostics,
-## goToDefinition, findReferences, goToImplementation, hover) against any
-## configured stdio language server. The component knows no languages: which
+## One tool, `lsp`, exposes six read-only operations (diagnostics,
+## goToDefinition, findReferences, goToImplementation, hover, documentSymbol)
+## against any configured stdio language server. The component knows no
+## languages: which
 ## server handles which file extension is **data** — the registry at
 ## `$XDG_CONFIG_HOME/niffler-lsp/servers.json` (override path:
 ## `NIF_LSP_REGISTRY`), with sane defaults built in. Adding language X is a
@@ -44,7 +45,7 @@ const
   INIT_TIMEOUT_MS = 30000      # initialize handshake budget
   STDERR_TAIL = 4096           # stderr tail kept for error messages
 
-const OPERATIONS = ["diagnostics", "goToDefinition", "findReferences",
+const OPERATIONS = ["diagnostics", "documentSymbol", "goToDefinition", "findReferences",
                     "goToImplementation", "hover", "warmup"]
 
 type LspFailure = object of ValueError
@@ -626,6 +627,65 @@ proc opLocations(h: Instance, op, uri: string, wireLine, wireChar: int,
                 " more — narrow the query (references on a more specific symbol)")
   %*{"ok": true, "text": capText(outText), "count": locs.len}
 
+const
+  SYMBOL_KINDS = ["file", "module", "namespace", "package", "class",
+    "method", "property", "field", "constructor", "enum", "interface",
+    "function", "variable", "constant", "string", "number", "boolean",
+    "array", "object", "key", "null", "enum member", "struct", "event",
+    "operator", "type parameter"]   # LSP SymbolKind, 1-based
+
+proc opDocumentSymbol(h: Instance, uri, rel, root: string): JsonNode =
+  ## The file's outline: every symbol with kind, name and one-based position.
+  ## Handles the hierarchical DocumentSymbol[] form (name/kind/range/children)
+  ## and the deprecated flat SymbolInformation[] form (name/kind/location)
+  ## some servers still return. Positions anchor at the name token
+  ## (selectionRange) when the server provides one — the precise jump target.
+  let raw = h.request("textDocument/documentSymbol",
+      %*{"textDocument": {"uri": uri}}, QUERY_TIMEOUT_MS)
+  if raw == nil or raw.kind != JArray or raw.len == 0:
+    return %*{"ok": true, "text": rel & ": no symbols reported.", "count": 0}
+  var lines: seq[string]
+  var total = 0
+
+  proc kindLabel(k: JsonNode): string =
+    let i = k.getInt(0)
+    if i >= 1 and i <= SYMBOL_KINDS.len: SYMBOL_KINDS[i - 1] else: "symbol"
+
+  proc walk(nodes: JsonNode, depth: int) =
+    if nodes == nil or nodes.kind != JArray: return
+    for s in nodes:
+      if s.kind != JObject: continue
+      let name = s{"name"}.getStr("")
+      if name.len == 0: continue
+      inc total
+      let kind = kindLabel(s{"kind"})
+      if s{"range"} != nil and s{"range"}.kind == JObject:
+        # hierarchical DocumentSymbol — all symbols live in the queried file
+        let sel = s{"selectionRange"}{"start"}
+        let pos = if sel != nil and sel.kind == JObject: sel
+                  else: s{"range"}{"start"}
+        lines.add("  ".repeat(depth) & rel & ":" &
+                  $(pos{"line"}.getInt(0) + 1) & ":" &
+                  $(pos{"character"}.getInt(0) + 1) & "  " & kind & "  " & name)
+        walk(s{"children"}, depth + 1)
+      elif s{"location"} != nil and s{"location"}.kind == JObject:
+        # deprecated flat SymbolInformation — location may leave the file
+        let loc = s{"location"}
+        let pos = loc{"range"}{"start"}
+        lines.add("  ".repeat(depth) &
+                  renderLocation(uriToPath(loc{"uri"}.getStr(uri)), root,
+                                 pos{"line"}.getInt(0),
+                                 pos{"character"}.getInt(0)) &
+                  "  " & kind & "  " & name)
+  walk(raw, 0)
+  if lines.len == 0:
+    return %*{"ok": true, "text": rel & ": no symbols reported.", "count": 0}
+  var outText = lines[0 ..< min(lines.len, MAX_LOCATIONS)].join("\n")
+  if lines.len > MAX_LOCATIONS:
+    outText.add("\n... and " & $(lines.len - MAX_LOCATIONS) &
+                " more — use goToDefinition/findReferences on a known symbol instead")
+  %*{"ok": true, "text": capText(outText), "count": total}
+
 # ---------------------------------------------------------------------------
 # workspace warmup — census + pre-start (ev.workspace.opened)
 
@@ -720,7 +780,7 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   let pathN = args{"path"}
   if pathN == nil or pathN.kind != JString or pathN.getStr("").len == 0:
     fail("E_BAD_SHAPE", "lsp requires a non-empty \"path\" string")
-  if op != "diagnostics":
+  if op notin ["diagnostics", "documentSymbol"]:
     let line = args{"line"}
     let character = args{"character"}
     if line == nil or line.kind != JInt or line.getInt() < 1:
@@ -771,11 +831,13 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     fail("E_LSP_UNSUPPORTED", "language server '" & conf.name &
          "' does not support transient textDocument/didOpen")
   if op != "diagnostics":
-    let capKey = case op
-                 of "goToDefinition": "definitionProvider"
-                 of "goToImplementation": "implementationProvider"
-                 of "findReferences": "referencesProvider"
-                 else: "hoverProvider"
+    var capKey: string
+    case op
+    of "goToDefinition": capKey = "definitionProvider"
+    of "goToImplementation": capKey = "implementationProvider"
+    of "findReferences": capKey = "referencesProvider"
+    of "documentSymbol": capKey = "documentSymbolProvider"
+    else: capKey = "hoverProvider"
     if not capOk(h.caps, capKey):
       fail("E_LSP_UNSUPPORTED", "language server '" & conf.name &
            "' does not advertise " & capKey)
@@ -800,6 +862,8 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     var reply: JsonNode
     case op
     of "diagnostics": reply = opDiagnostics(h, uri, relPath(path, workspaceRoot))
+    of "documentSymbol":
+      reply = opDocumentSymbol(h, uri, relPath(path, workspaceRoot), workspaceRoot)
     of "hover":
       reply = opHover(h, uri, args{"line"}.getInt() - 1,
                       args{"character"}.getInt() - 1, workspaceRoot)
@@ -947,17 +1011,17 @@ discard comp.onDrain do (c: Component):
 
 discard comp.tool("lsp", toolSchema(%*{
   "operation": {"type": "string", "enum": OPERATIONS,
-                "description": "diagnostics, goToDefinition, findReferences, goToImplementation, hover, or warmup (pre-start servers for a workspace's languages)"},
+                "description": "diagnostics, documentSymbol (file outline — every symbol with kind, name and one-based position), goToDefinition, findReferences, goToImplementation, hover, or warmup (pre-start servers for a workspace's languages)"},
   "path": {"type": "string",
            "description": "File to query (inside the conversation workspace); for warmup, a directory — with workspaceRoot taking precedence"},
   "line": {"type": "integer", "minimum": 1,
-           "description": "One-based line at the cursor (required except for diagnostics)"},
+           "description": "One-based line at the cursor (required except for diagnostics and documentSymbol)"},
   "character": {"type": "integer", "minimum": 1,
-                "description": "One-based UTF-16 character offset within the line; an off-symbol position may return no results"},
+                "description": "One-based UTF-16 character offset within the line; an off-symbol position may return no results (required except for diagnostics and documentSymbol)"},
   "workspaceRoot": {"type": "string",
                     "description": "Optional workspace root. Omit it and the server's root is derived from the file (nearest go.mod/package.json/Cargo.toml/...); a relative value resolves against the harness root"}
 }, @["operation", "path"],
-  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
+  "Query a language server for precise, semantic code intelligence. Prefer grep/read for ordinary navigation; use lsp when textual matches are ambiguous, or before an edit needs exact ground truth: diagnostics shows compiler/lint errors for a file (no test run needed), documentSymbol maps an unfamiliar file's outline (names, kinds, positions) so a big file can be read selectively, goToDefinition/findReferences/goToImplementation resolve symbols text search cannot, hover gives type documentation. Positions are one-based line and character (UTF-16). The server's root defaults to the file's nearest module marker, and a server command missing from PATH is also looked for in ~/go/bin and ~/.nimble/bin. findReferences always includes the declaration. Falls back with a clear error when no language server is configured for the file's extension."),
   hLsp,
   %*{"timeoutMs": 90000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["path"]}})

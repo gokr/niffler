@@ -182,6 +182,25 @@ proc main() =
   check("findReferences includes the declaration",
         refs{"ok"}.getBool(false) and refs{"count"}.getInt(0) == 2, $refs)
 
+  # --- documentSymbol: hierarchical outline, no position required --------
+  let ds = lspCall(%*{"operation": "documentSymbol", "path": "main.nx"})
+  check("documentSymbol renders the hierarchical outline one-based",
+        ds{"ok"}.getBool(false) and ds{"count"}.getInt(0) == 4 and
+        ds{"text"}.getStr("") ==
+          "main.nx:1:7  class  Klass\n" &
+          "  main.nx:2:8  method  method1\n" &
+          "  main.nx:4:7  field  field\n" &
+          "main.nx:6:4  function  top_fn", $ds)
+
+  # --- documentSymbol: flat SymbolInformation fallback --------------------
+  writeFile(tmp / "flat.nx", "let flatA = 1\nconst flatB = 2\n")
+  let dsf = lspCall(%*{"operation": "documentSymbol", "path": "flat.nx"})
+  check("documentSymbol renders the flat SymbolInformation fallback",
+        dsf{"ok"}.getBool(false) and dsf{"count"}.getInt(0) == 2 and
+        dsf{"text"}.getStr("") ==
+          "flat.nx:1:5  variable  flatA\n" &
+          "flat.nx:7:1  constant  flatB", $dsf)
+
   # --- capability refusal --------------------------------------------------
   let impl = lspCall(%*{"operation": "goToImplementation", "path": "main.nx",
                         "line": 1, "character": 1})
