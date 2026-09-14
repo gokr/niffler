@@ -218,6 +218,13 @@ proc main() =
                     root = root)
   check("plugin_installed lists testpkg",
         list.output.contains("testpkg"), list.output)
+  # Records store no commit field; the listing derives provenance from the
+  # clone at read time, so it must report the fixture's own HEAD.
+  let (headRaw, _) = execCmdEx("git -C " & repoDir & " rev-parse HEAD")
+  let head = headRaw.strip()
+  check("plugin_installed reports checkout commit",
+        head.len == 40 and
+        list.output.contains("\"commit\":\"" & head & "\""), list.output)
 
   # An interactive-only package is installed by building its binary, but it
   # is not core.spawned and therefore never appears in the live catalog.
