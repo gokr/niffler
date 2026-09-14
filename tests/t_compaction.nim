@@ -370,6 +370,117 @@ proc main() =
   check("cancelled compaction leaves no projection",
         getDoc(nc, "context_projection", cancelConv) == nil)
 
+  # §8 negative case: a concurrent projection writer wins the optimistic
+  # commit. A foreign generation lands during the auxiliary window; the
+  # runner must decline (never overwrite), leave the foreign record
+  # byte-identical, clean the snapshot, and still finish the turn on the
+  # deterministic trim rung.
+  let conflictConv = "conv-compaction-conflict-" & $int(epochTime())
+  putDoc(nc, "conversation", conflictConv,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  discard seedMessages(nc, conflictConv, 1, 8, 2200)
+  var conflictEnv = newStringTable()
+  conflictEnv["NIF_NATS_URL"] = url
+  conflictEnv["NIF_ROOT"] = root
+  conflictEnv["PATH"] = getEnv("PATH")
+  let conflictCall = startProcess(sandbox.sandboxBin("cli"),
+    args = @["call", "session", $ %*{
+      "sessionId": conflictConv, "content": "CONFLICT-ME",
+      "tools": ["bash"]}], env = conflictEnv,
+    options = {poStdErrToStdOut, poUsePath})
+  var conflictWindow = false
+  for i in 0 ..< 100:
+    if listDocs(nc, "compaction_input", conflictConv & ":").len > 0:
+      conflictWindow = true
+      break
+    sleep(100)
+  check("conflict scenario reached the compaction window", conflictWindow)
+  let foreignRecord = %*{"generation": 7, "renderer": "checkpoint-v1",
+                         "note": "foreign concurrent writer"}
+  putDoc(nc, "context_projection", conflictConv, foreignRecord)
+  discard conflictCall.waitForExit(120_000)
+  let conflictOutput = conflictCall.outputStream.readAll()
+  conflictCall.close()
+  let conflictAfter = getDoc(nc, "context_projection", conflictConv)
+  var conflictResult: JsonNode
+  try: conflictResult = parseJson(conflictOutput)
+  except CatchableError: discard
+  check("concurrent projection writer wins; runner declines without overwrite",
+        conflictAfter != nil and conflictAfter == foreignRecord and
+        conflictAfter{"generation"}.getInt(0) == 7,
+        $conflictAfter)
+  check("conflicted turn still completed on the trim rung",
+        conflictResult != nil and
+        conflictResult{"reply"}.getStr("").len > 0 and
+        not conflictOutput.contains("context-recovery-required"),
+        conflictOutput[0 ..< min(conflictOutput.len, 400)])
+  check("conflicted attempt cleaned its snapshot input",
+        listDocs(nc, "compaction_input", conflictConv & ":").len == 0)
+
+  # §8 negative case: a real steering message (content, not __cancel)
+  # published while the auxiliary call is in flight. It is append-only
+  # history: folded after settlement, re-admitted with the checkpoint, and
+  # never covered by the projection's cut.
+  let steerConv = "conv-compaction-steer-" & $int(epochTime())
+  putDoc(nc, "conversation", steerConv,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  discard seedMessages(nc, steerConv, 1, 8, 2200)
+  var steerEnv = newStringTable()
+  steerEnv["NIF_NATS_URL"] = url
+  steerEnv["NIF_ROOT"] = root
+  steerEnv["PATH"] = getEnv("PATH")
+  let steerCall = startProcess(sandbox.sandboxBin("cli"),
+    args = @["call", "session", $ %*{
+      "sessionId": steerConv, "content": "STEER-HOST-TURN",
+      "tools": ["bash"]}], env = steerEnv,
+    options = {poStdErrToStdOut, poUsePath})
+  var steerWindow = false
+  for i in 0 ..< 100:
+    if listDocs(nc, "compaction_input", steerConv & ":").len > 0:
+      steerWindow = true
+      break
+    sleep(100)
+  check("steer scenario reached the compaction window", steerWindow)
+  nc.publish("svc.session." & steerConv & ".steer",
+    Envelope(v: 1, id: "steer-during-compaction", kind: ekEvent,
+      payload: %*{"content": "focus on the summary metrics"}).encode())
+  discard steerCall.waitForExit(120_000)
+  let steerOutput = steerCall.outputStream.readAll()
+  steerCall.close()
+  var steerResult: JsonNode
+  try: steerResult = parseJson(steerOutput)
+  except CatchableError: discard
+  var steerMsgId = ""
+  for item in listDocs(nc, "message", steerConv & ":"):
+    if item{"value"}{"content"}.getStr("").startsWith(
+        "Steer: focus on the summary metrics"):
+      steerMsgId = item{"id"}.getStr("")
+  let steerProjection = getDoc(nc, "context_projection", steerConv)
+  check("steer published during compaction is folded canonically",
+        steerMsgId.len > 0 and steerResult != nil and
+        steerResult{"reply"}.getStr("").len > 0,
+        "steerId=" & steerMsgId & " out=" &
+        steerOutput[0 ..< min(steerOutput.len, 300)])
+  check("steering did not block the compaction commit",
+        steerProjection != nil and
+        steerProjection{"generation"}.getInt(0) == 1 and
+        steerProjection{"renderer"}.getStr("") == "checkpoint-v1",
+        $steerProjection)
+  check("projection cut excludes the folded steer message",
+        steerMsgId > steerProjection{"covered"}{"to"}.getStr(""),
+        steerMsgId & " vs " & $steerProjection{"covered"})
+  block:
+    var foldedInProviderRequest = false
+    for entry in requestLog(logPath):
+      if entry{"sessionId"}.getStr("") == steerConv and
+          entry{"purpose"}.getStr("") == "" and
+          entry{"steer"}.getBool(false) and
+          entry{"checkpoint"}.getBool(false) and
+          not entry{"rejected"}.getBool(false):
+        foldedInProviderRequest = true
+    check("post-compaction provider request carries checkpoint and steer",
+          foldedInProviderRequest)
+
   # Interchangeability/conformance: keep the projection produced by the
   # default implementation, replace the selected tool with the deterministic
   # fixture under another name, restart the runner, and compact the same
@@ -416,6 +527,41 @@ proc main() =
   check("projection written by the default compactor reloads under fixture",
         fixtureProjection{"renderer"}.getStr("") == "checkpoint-v1" and
         fixtureProjection{"covered"}{"from"}.getStr("").len > 0)
+
+  # §8 negative case: a component that ignores its granted auxiliary budget.
+  # The fixture reports provenance.llmCalls = 99 against a budget of 4; the
+  # runner must reject the candidate as invalid, commit nothing, and still
+  # complete the turn on the deterministic trim rung.
+  stopHard(fixtureProc)
+  coreProc.stopHard()
+  var liarExtra = extra
+  liarExtra.add(("NIF_COMPACTION_TOOL", "fixture_compaction_propose"))
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = liarExtra,
+    logFile = root / "var" / "test-logs" / "core-compaction-liar.log")
+  doAssert waitComponent(nc, "store"), "store did not register for liar fixture"
+  doAssert waitComponent(nc, "llm"), "llm did not register for liar fixture"
+  fixtureProc = startComponent(sandbox.sandboxBin("fixture-compaction"), url,
+    root = root, extra = @[("NIF_FIXTURE_LLM_CALLS", "99")],
+    logFile = root / "var" / "test-logs" / "fixture-compaction-liar.log")
+  doAssert waitComponent(nc, "fixture-compaction"),
+    "lying fixture compactor did not register; running=" & $fixtureProc.running() &
+    " log=" & (if fileExists(root / "var" / "test-logs" / "fixture-compaction-liar.log"):
+      readFile(root / "var" / "test-logs" / "fixture-compaction-liar.log") else: "<missing>")
+  let liarConv = "conv-compaction-liar-" & $int(epochTime())
+  putDoc(nc, "conversation", liarConv,
+    %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt"})
+  discard seedMessages(nc, liarConv, 1, 8, 2200)
+  let liarTurn = call(nc, "core", "session",
+    %*{"sessionId": liarConv, "content": "LIAR-COMPACTOR-TURN",
+       "tools": ["bash"]}, 180_000)
+  check("candidate exceeding maxLlmCalls is rejected",
+        liarTurn{"turnError"}.getStr("").len == 0 and
+        getDoc(nc, "context_projection", liarConv) == nil,
+        $liarTurn)
+  check("budget-rejected attempt still completed the turn",
+        liarTurn{"reply"}.getStr("").len > 0,
+        $liarTurn)
 
   echo "COMPACTION TEST PASSED"
 

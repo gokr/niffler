@@ -554,7 +554,10 @@ projection nodes + output reserve. A proposal is accepted only if:
   (compaction runs between complete tool batches, never while tools run);
 - the rendered checkpoint, framed by one runner-owned versioned template,
   strictly reduces the request and fits `targetInputTokens`;
-- `sum(granted auxiliary calls) ≤ maxLlmCalls` and the deadline was honored.
+- the candidate's reported `provenance.llmCalls` does not exceed the granted
+  `maxLlmCalls` — the runner cannot observe the component's calls directly,
+  so the claim is the enforceable boundary (a candidate claiming more is
+  `compact:invalid`); the deadline is honored by the request timeout.
 
 Steering/advice arriving during the attempt is queued, appended **after**
 commit/decline, and the budget re-checked before the request goes out.
@@ -700,12 +703,21 @@ fixture family (`tests/mock_llm.nim` pattern, `newCoreSandbox`):
    checkpoint is absorbed, not lost.
 7. **Interchangeability, enforced by a published conformance fixture.**
    `tests/compaction_contract/` ships a fixture compactor (trivial, deterministic,
-   LLM-free) **plus** the assertions as a reusable script, so a third-party
-author can run their implementation against the same contract without reading
-   `core/`. `t_ctxcompact` runs gradient 1 against both the default and the
-   fixture compactor under different tool names, asserts identical runner
-   behavior, and asserts a projection stored by compactor A reloads when B is
-   configured. This fixture is the actual guarantee behind "alternative
+   LLM-free) **plus** the assertions as a reusable runner,
+   `tests/t_compaction_conformance.nim` (`make test-conformance`, or
+   `--bin:PATH --tool:NAME` for a third-party implementation), so an author
+can run their implementation against the same contract without reading
+   `core/`: propose → strict validation → checkpoint-v1 commit → canonical
+   immutability → snapshot cleanup → restart reload → second generation.
+   `t_compaction` runs the fixture under a different tool name, asserts a
+   projection stored by the default compactor reloads when the fixture is
+   configured, and closes the §8 negative cases `maxLlmCalls` exhaustion
+   (the fixture reports an over-budget call count and the runner rejects the
+   candidate), steering during compaction (a real steer is folded after
+   settlement and stays outside the cut), and the store-put conflict (a
+   concurrent projection writer wins; the runner declines without
+   overwrite and finishes the turn on the trim rung). This fixture is the
+   actual guarantee behind "alternative
    compactors plug in easily" — without it, the contract is prose.
 8. **Allowlisted subagent.** A conversation frozen with `tools: [...]` still
    compacts (the §4.1 exemption).
@@ -732,7 +744,7 @@ correctness, latency and cache rebuilds — not just token reduction.
 | 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
 | 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam — ☑ LANDED (contract-v1 snapshots/pages/digests, strict candidate validator, runner-owned checkpoint renderer, optimistic `context_projection` commit/reload, `x-harness.runner` allowlist seam, shipped `compaction_propose`; restart/second-generation/recall/corrupt-projection fixtures) |
 | 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it — ☑ LANDED (distinct cancellation relay, internal streaming with suppressed token frames, purpose telemetry, end-to-end cancellation fixture) |
-| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam — ☑ LANDED (LLM-free fixture under a second tool name, projection reload across implementations, cancellation/crash/recovery coverage) |
+| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam — ☑ LANDED (LLM-free fixture under a second tool name, projection reload across implementations, reusable conformance runner `make test-conformance`, maxLlmCalls/steering/put-conflict negative cases) |
 
 Steps 0–3 are shippable independently and already improve reliability; step 4
 is the summarization upgrade; step 5 is the plumbing that makes the default

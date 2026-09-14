@@ -463,6 +463,10 @@ test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_RE
 test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction
+# §8.7 conformance runner: suite run proves the shipped component; point
+# third-party implementations at it with
+#   ./var/bin/test_t_compaction_conformance --bin:PATH --tool:NAME
+test-conformance: build var/bin/test_t_compaction_conformance ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction_conformance
 
 smoke: test-smoke  # legacy alias
 

@@ -268,7 +268,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_CTX_RESERVE` | output tokens held back by context admission; `0` disables the reserve | `16384` |
 | `NIF_COMPACTION_TOOL` | contract-v1 proposal tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
 | `NIF_COMPACTION_TIMEOUT_MS` | whole proposal-call deadline (minimum 5000 ms) | `90000` |
-| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt | `4` |
+| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt; a candidate reporting more calls than granted is rejected as invalid | `4` |
 | `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap | `2048` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |

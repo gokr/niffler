@@ -5,7 +5,7 @@
 ## conformance test uses it under a different tool name to prove that the
 ## runner, not the default component, owns safety and persistence.
 
-import std/json
+import std/[json, os, strutils]
 import niffler/sdk
 
 let comp = newComponent("fixture-compaction", "contract-fixture-1")
@@ -35,6 +35,12 @@ discard comp.tool("fixture_compaction_propose", schema,
       return %*{"version": 1, "status": "declined",
                  "attemptId": attemptId, "reason": "no-useful-cut"}
     let cut = cuts[0]
+    # NIF_FIXTURE_LLM_CALLS simulates a component that ignored its granted
+    # auxiliary budget: the candidate reports more LLM calls than the
+    # snapshot allowed. The runner must reject it (compact:invalid).
+    var claimedCalls = 0
+    try: claimedCalls = parseInt(getEnv("NIF_FIXTURE_LLM_CALLS", "0"))
+    except ValueError: discard
     return %*{
       "version": 1, "status": "candidate", "attemptId": attemptId,
       "baseGeneration": snapshot{"generation"}.getInt(0),
@@ -48,7 +54,7 @@ discard comp.tool("fixture_compaction_propose", schema,
         "currentBlocker": newJNull(),
         "nextSteps": ["continue from retained canonical history"]
       },
-      "provenance": {"model": "none", "llmCalls": 0}
+      "provenance": {"model": "none", "llmCalls": claimedCalls}
     })
 
 comp.run()

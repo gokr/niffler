@@ -1289,6 +1289,20 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     return false
   of csCandidate:
     discard
+  # The granted auxiliary budget is part of the snapshot contract (§4.7):
+  # a candidate claiming more LLM calls than maxLlmCalls is invalid. The
+  # runner cannot observe the component's calls directly, so the reported
+  # provenance is the enforceable boundary — same trust model as the
+  # strict-reduction check, which also prices the candidate's own claim.
+  let claimedCalls = cand{"provenance"}{"llmCalls"}.getInt(0)
+  if claimedCalls > cfg.maxLlmCalls:
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:invalid",
+                            "detail": "auxiliary call budget exceeded: " &
+                              $claimedCalls & " claimed > " &
+                              $cfg.maxLlmCalls & " granted"})
+    return false
   if coveredFrom < 1 or cutIdx <= coveredFrom: return false
   # Covered nodes must still be byte-identical to the persisted snapshot.
   # A concurrent steer may append outside the cut, but replacement never
