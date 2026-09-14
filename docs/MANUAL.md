@@ -1139,7 +1139,10 @@ language server against throwaway fixtures (clean file → 0 diagnostics,
 hover answers, broken file → errors), the store runs a full
 put/get/rev/list/del roundtrip on its engine. Quick mode stays cheap
 (binary resolution only); useful as a CI liveness gate or a first
-diagnostics step. The UIs expose it as `/doctor`.
+diagnostics step. The UIs expose it as `/doctor`. The report also carries a
+rendered Markdown table in `text` (what `/doctor` displays), and `ask: true`
+adds a `userMessage` (the docs/WIRE.md convention) so the client submits an
+interpretation request as a user turn.
 
 #### Explicit client commands
 

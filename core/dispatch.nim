@@ -695,6 +695,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## alive, we answered), store, llm provider/model, systemprompt,
     ## catalog size, conversations. Each probe reports ok plus a short
     ## detail string; the whole report never executes anything.
+    ## `ask` rides the userMessage convention (docs/WIRE.md): the client
+    ## renders the report and submits the interpretation prompt as a user
+    ## turn — core stays a read-only health provider and never writes
+    ## conversation history.
     var doc = %*{"at": epochTime(), "checks": newJArray()}
     proc check(name: string, ok: bool, detail: string) =
       doc{"checks"}.add(%*{"name": name, "ok": ok, "detail": detail})
@@ -782,6 +786,25 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
            else: $stNames.len & " component(s) probed" &
              (if deep: " (deep)" else: " (quick)")) &
              (if stFailed > 0: " — " & $stFailed & " failed" else: ""))
+    var markdown: seq[string] = @[
+      "# Niffler doctor",
+      "",
+      "| Check | Status | Details |",
+      "|---|---|---|"]
+    for item in doc{"checks"}:
+      let name = item{"name"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"detail"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| " & name & " | " & state & " | " & detail & " |")
+    for item in doc{"selftest"}:
+      let name = item{"component"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"summary"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| selftest/" & name & " | " & state & " | " & detail & " |")
+    let report = markdown.join("\n")
+    doc["text"] = %report
+    if args{"ask"}.getBool(false):
+      doc["userMessage"] = %("Interpret this Niffler doctor report. Explain any failed or suspicious checks, distinguish real failures from unavailable optional components, and give concrete next steps. Use only the report as evidence; do not claim to have run additional checks.\n\n" & report)
     return doc
   else:
     return %*{"error": "core has no tool '" & tool & "'"}

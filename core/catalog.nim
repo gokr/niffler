@@ -119,14 +119,17 @@ proc newCatalog*(nc: NatsConnection): Catalog =
       "type": "object",
       "description": "Machine-readable one-shot health report: bus and store reachability, llm availability (component registered + active provider/model), systemprompt component presence, catalog size, conversation count, plus a self-test fan-out — every component that registers the standard selftest tool (docs/WIRE.md) is asked to check itself and its checks are collected here. All probes are read-only (deep lsp selftest spawns real language servers against throwaway fixtures). Use it to diagnose a harness before debugging anything else, or from scripts/CI as a cheap liveness gate.",
       "properties": {
-        "deep": {"type": "boolean", "description": "Thorough mode: components run live end-to-end probes (lsp boots every configured language server). Slower — minutes are normal"}
+        "deep": {"type": "boolean", "description": "Thorough mode: components run live end-to-end probes (lsp boots every configured language server). Slower — minutes are normal"},
+        "ask": {"type": "boolean", "description": "After producing the report, ask the conversation's LLM to interpret it. The report is appended as a user message; default false"}
       },
       "x-harness": {"onDemand": true}
     }))
   coreReg.slash.add(SlashCommand(name: "doctor", component: "core", tool: "doctor",
     description: "Health report: core probes (store, llm/provider, systemprompt, catalog) plus a self-test fan-out to every component that registers one",
     params: @[SlashParam(name: "deep", kind: "bool",
-                         description: "Live probes — boots every configured language server")]))
+                         description: "Live probes — boots every configured language server"),
+             SlashParam(name: "ask", kind: "bool",
+                         description: "Ask the LLM to interpret the report")]))
   coreReg.tools.add(ToolReg(name: "prompt_preview", component: "core",
     schema: %*{
       "type": "object",
