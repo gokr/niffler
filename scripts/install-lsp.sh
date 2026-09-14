@@ -68,6 +68,32 @@ else
         && ln -sf "$HOME/.local/ts5/node_modules/.bin/tsserver" "$BIN/tsserver" \
         && ok "tsserver (classic TS5 bridge)" \
         || fail "tsserver" "npm install failed"
+      # Pin the classic tsserver into the user registry: the language server
+      # resolves typescript from the workspace, then tsserver.path, then the
+      # global module — and a global TS7 (tsgo) install has a layout it
+      # cannot load, so every plain workspace would fail initialize.
+      if [ -x "$HOME/.local/ts5/node_modules/typescript/lib/tsserver.js" ]; then
+        python3 - "${XDG_CONFIG_HOME-$HOME/.config}/niffler-lsp/servers.json" <<'PYEOF' 2>/dev/null \
+          && ok "tsserver.path pinned in the user registry"
+import json, os, sys
+p = sys.argv[1]
+os.makedirs(os.path.dirname(p), exist_ok=True)
+try: doc = json.load(open(p))
+except Exception: doc = {}
+if not isinstance(doc, dict): doc = {}
+ts5 = os.path.expanduser("~/.local/ts5/node_modules/typescript/lib/tsserver.js")
+if not os.path.exists(ts5): sys.exit(1)
+e = doc.get("typescript-language-server") or {}
+if not isinstance(e, dict): e = {}
+e.setdefault("command", ["typescript-language-server", "--stdio"])
+e.setdefault("extensions", {".ts": "typescript", ".tsx": "typescriptreact",
+  ".mts": "typescript", ".cts": "typescript", ".js": "javascript",
+  ".jsx": "javascriptreact", ".mjs": "javascript", ".cjs": "javascript"})
+e["initializationOptions"] = {"tsserver": {"path": ts5}}
+doc["typescript-language-server"] = e
+json.dump(doc, open(p, "w"), indent=2)
+PYEOF
+      fi
     else ok "tsserver"; fi
     have typescript-language-server && ok "typescript-language-server"
   else fail "typescript-language-server" "no npm"; fi

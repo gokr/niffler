@@ -536,6 +536,33 @@ proc prepareChild(parentSession, task, model: string;
                     e.msg, "", "", 0, "")
   result = (true, "", subject, child, forkCopied, forkUpto)
 
+# Model inheritance (main's ac14d02): an explicit child override wins;
+# otherwise the child inherits the parent's persisted effective model.
+# Applies at BIRTH only — a continuation's model is frozen at its first
+# turn and the caller's model argument is ignored by design (P1.3), so the
+# continuation path never consults this.
+proc childModel(c: Component, parentSession, requested: string): tuple[
+    ok: bool, model, error: string] =
+  ## Resolve the model a child should use. An explicit child override wins;
+  ## otherwise inherit the parent's persisted effective model instead of
+  ## silently falling back to the provider's (possibly different) default.
+  ## An empty inherited model is valid: it means the parent's provider default
+  ## was also unresolved, so the child may resolve its provider normally.
+  if requested.len > 0:
+    return (true, requested, "")
+  try:
+    let info = c.request("core", "session_info",
+                         %*{"sessionId": parentSession}, 10_000)
+    if info{"error"} != nil:
+      return (false, "", "parent session_info failed: " &
+        info{"error"}.getStr("unknown error"))
+    let override = info{"modelOverride"}.getStr("").strip()
+    if override.len > 0:
+      return (true, override, "")
+    return (true, info{"model"}.getStr("").strip(), "")
+  except CatchableError as e:
+    return (false, "", "cannot resolve parent model: " & e.msg)
+
 # --- continuation ------------------------------------------------------------
 # A continuation is a NEW TURN in an EXISTING child conversation, not a new
 # child: the conversation already persists, its runner re-ensures on demand,
@@ -867,6 +894,15 @@ discard comp.tool("agent_run", runSchema,
       return errResult("fork only applies to a fresh child — drop it when " &
                        "continuing an existing session",
                        extra = %*{"sessionId": target})
+    # Model inheritance on the fresh path only: a continuation's model was
+    # frozen at its first turn (the result's effectiveControls reports it).
+    var resolvedModel = (ok: true, model: "", error: "")
+    if isFresh:
+      let requestedModel = toolArgs{"model"}.getStr("")
+      let cm = childModel(c, parentSession, requestedModel)
+      if not cm.ok:
+        return errResult(cm.error)
+      resolvedModel = cm
     # Resolve the target FIRST (authorization fail-closed), THEN apply the
     # busy check: a mid-turn refusal is only meaningful for a target we may
     # actually continue — and the caller itself is always "mid-turn" while
@@ -881,8 +917,7 @@ discard comp.tool("agent_run", runSchema,
     var forkCopied = 0
     var forkUpto = ""
     if isFresh:
-      let prep = prepareChild(parentSession, task,
-                              toolArgs{"model"}.getStr(""),
+      let prep = prepareChild(parentSession, task, resolvedModel.model,
                               forkMode, forkK, forkChars)
       (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
@@ -906,7 +941,7 @@ discard comp.tool("agent_run", runSchema,
       return errResult("cancelled by request")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
-      childSessArgs(child, task, toolArgs{"model"}.getStr(""),
+      childSessArgs(child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs,
                     fresh = isFresh),
       originalCaller(toolArgs))
@@ -992,6 +1027,14 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("fork only applies to a fresh child — drop it when " &
                        "continuing an existing session",
                        extra = %*{"sessionId": target})
+    # Model inheritance on the fresh path only (see agent_run).
+    var resolvedModel = (ok: true, model: "", error: "")
+    if isFresh:
+      let requestedModel = toolArgs{"model"}.getStr("")
+      let cm = childModel(c, parentSession, requestedModel)
+      if not cm.ok:
+        return errResult(cm.error)
+      resolvedModel = cm
     # No busy check here, by design: a background job promises the work
     # HAPPENS, not that it starts now. A turn queued behind the child's
     # current one is what a queue is for (the child's runner serializes
@@ -1004,8 +1047,7 @@ discard comp.tool("agent_spawn", spawnSchema,
     var forkCopied = 0
     var forkUpto = ""
     if isFresh:
-      let prep = prepareChild(parentSession, task,
-                              toolArgs{"model"}.getStr(""),
+      let prep = prepareChild(parentSession, task, resolvedModel.model,
                               forkMode, forkK, forkChars)
       (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
@@ -1037,7 +1079,7 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("cannot record job (store unreachable): " & e.msg,
                        extra = %*{"sessionId": child})
     let env = callEnvelope("session",
-      childSessArgs(child, task, toolArgs{"model"}.getStr(""),
+      childSessArgs(child, task, resolvedModel.model,
                     toolArgs{"thinking"}.getStr(""), toolArgs,
                     fresh = isFresh),
       originalCaller(toolArgs))

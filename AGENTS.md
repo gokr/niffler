@@ -17,8 +17,8 @@ anything structural.
   (`sdk/envelope.nim`) is pure `std/json` runtime data — keep it that way so SDKs
   stay portable (~200 lines; the Go SDK mirrors the Nim one 1:1).
 - Everything is a separate process component: `bash`, `builder`, `store`,
-  `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `observe`,
-  `logfile`, `models`, `provider`, `llm`, `mcp` are peers. Adding a
+  `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `lsp`, `processes`,
+  `observe`, `logfile`, `models`, `provider`, `llm`, `mcp` are peers. Adding a
   capability = write source → `builder.build`
   → `core.spawn`; `replicas: N` (1–16) is only for stateless or externally
   coordinated components and uses their existing NATS queue group. Removing
@@ -57,7 +57,7 @@ anything structural.
   per-language heuristics, or `case language` branches in shared components.
   Language support is added as **data** (declarative registries: server
   commands, extension maps, patterns in config) or as a **plugin component**
-  implementing a generic seam — e.g. the planned `lsp` component: any language
+  implementing a generic seam — e.g. the `lsp` component: any language
   server is one config entry; an exotic transport is a plugin that answers the
   same normalized contract. When a feature seems to need per-language code in
   a shared component, extract a registry or provider seam instead. The test:
@@ -165,6 +165,12 @@ make down             # stop stray harnesses/components + nats-server (e.g. a
                       # (default) or var/barrel-db.lock for barrel; also check
                       # var/logs/<name>.log — the supervisor writes child
                       # output there and shows its tail when a child dies)
+make down-here        # the scoped variant: only this checkout's harness,
+                      # components and spawned bus (bench worktrees and other
+                      # clones survive; the global `down` stays for the
+                      # stray-everything case)
+make install-lsp      # idempotent installer for the lsp component's default
+                      # language servers (failures non-fatal per language)
 make setup            # install prerequisites for the platform (Ubuntu/macOS)
 make doctor           # check prerequisites, report what's missing
 make dev              # Svelte dev server in a browser (bridge stubbed)

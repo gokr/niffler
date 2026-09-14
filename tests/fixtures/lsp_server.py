@@ -12,6 +12,10 @@ implements just enough for the component tests:
   one-based(wire)->zero-based conversion exactly.
 - textDocument/definition   -> a fixed Location in sibling.nx (line 4,
   character 2, zero-based -> rendered as sibling.nx:5:3).
+- textDocument/documentSymbol -> hierarchical DocumentSymbol[] (a class with
+  two children + a top-level function) for any file; for a file named
+  *flat*.nx, the deprecated flat SymbolInformation[] form instead, to
+  exercise the fallback rendering.
 - textDocument/references   -> declaration location + one more iff
   context.includeDeclaration is true (proves the component always sends it).
 - textDocument/didOpen      -> pushes two publishDiagnostics notifications
@@ -87,6 +91,7 @@ def main():
                     "hoverProvider": True,
                     "definitionProvider": True,
                     "referencesProvider": True,
+                    "documentSymbolProvider": True,
                     # implementationProvider deliberately ABSENT:
                     # t_lsp asserts the component refuses with E_LSP_UNSUPPORTED.
                 }}})
@@ -143,6 +148,40 @@ def main():
                              "range": {"start": {"line": 1, "character": 0},
                                        "end": {"line": 1, "character": 3}}})
             write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": locs})
+        elif method == "textDocument/documentSymbol":
+            uri = msg["params"]["textDocument"]["uri"]
+            if "flat" in uri:
+                # deprecated flat SymbolInformation[] form (name/kind/location)
+                write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                    {"name": "flatA", "kind": 13,
+                     "location": {"uri": uri,
+                                  "range": {"start": {"line": 0, "character": 4},
+                                            "end": {"line": 0, "character": 9}}}},
+                    {"name": "flatB", "kind": 14,
+                     "location": {"uri": uri,
+                                  "range": {"start": {"line": 6, "character": 0},
+                                            "end": {"line": 6, "character": 12}}}}]})
+            else:
+                # hierarchical DocumentSymbol[]: a class with two children
+                # plus a top-level function
+                write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                    {"name": "Klass", "kind": 5,
+                     "range": {"start": {"line": 0, "character": 0},
+                               "end": {"line": 3, "character": 0}},
+                     "selectionRange": {"start": {"line": 0, "character": 6}},
+                     "children": [
+                         {"name": "method1", "kind": 6,
+                          "range": {"start": {"line": 1, "character": 2},
+                                    "end": {"line": 2, "character": 2}},
+                          "selectionRange": {"start": {"line": 1, "character": 7}}},
+                         {"name": "field", "kind": 8,
+                          "range": {"start": {"line": 3, "character": 2},
+                                    "end": {"line": 3, "character": 10}},
+                          "selectionRange": {"start": {"line": 3, "character": 6}}}]},
+                    {"name": "top_fn", "kind": 12,
+                     "range": {"start": {"line": 5, "character": 0},
+                               "end": {"line": 5, "character": 20}},
+                     "selectionRange": {"start": {"line": 5, "character": 3}}}]})
         elif "id" in msg and "method" in msg:
             # any other server->client request: answer empty
             write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": None})
