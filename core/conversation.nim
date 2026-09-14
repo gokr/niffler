@@ -987,8 +987,10 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                        "notice": {"kind": "subagent-settled",
                                   "jobId": jobId, "child": child,
                                   "status": status}}
-    messages.add(noticeMsg)
-    p.persistMsg(noticeMsg)
+    # ctxAppend, not a bare messages.add: compaction's node ledger must stay
+    # 1:1 with the projection, and notices are runtime machinery it may
+    # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
+    ctxAppend(p, messages, noticeMsg)
     if onEvent != nil:
       onEvent("notice", %*{"sessionId": sessionId, "turnId": turnId,
                             "jobId": jobId, "child": child,
