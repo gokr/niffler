@@ -534,10 +534,69 @@ proc main() =
   check("seen-state persists across restart",
         rp2.getStr("").startsWith("[unchanged]"), $rp2)
 
-  # drain: the (twice-restarted) component exits
+  # --- read outline: whole-reads of large files swap for the lsp outline ---
+  # e3 out (default threshold); an outline-configured instance takes over,
+  # with the lsp component + fixture server (.nx) on the same bus
+  e3.terminate()
+  sleep(400)
+  let lspBin = root / "var" / "bin" / "lsp"
+  if not fileExists(lspBin):
+    fail(lspBin & " missing — run `make build` first")
+    quit(1)
+  let lspFixture = root / "tests" / "fixtures" / "lsp_server.py"
+  let lspReg = tmp / "lsp-registry.json"
+  writeFile(lspReg, (%*{"nx": {"command": ["python3", lspFixture],
+                               "extensions": %*{".nx": "nx"}}}).pretty())
+  let lspProc = startComponent(lspBin, url, root = tmp,
+                               extra = [("NIF_LSP_REGISTRY", lspReg)])
+  defer:
+    if lspProc.running():
+      lspProc.terminate()
+      sleep(200)
+    lspProc.close()
+  check("lsp registers", waitRegistered(nc, "lsp"))
+  let e4 = startComponent(bin, url, root = tmp,
+                          extra = [("XDG_CONFIG_HOME", tmp / "config"),
+                                   ("NIF_READ_OUTLINE_LINES", "5")])
+  defer:
+    if e4.running():
+      e4.terminate()
+      sleep(200)
+    e4.close()
+  check("edit re-registers with outline config", waitRegistered(nc, "edit"))
+
+  # whole-read above the threshold: outline instead of content
+  writeFile(tmp / "big.nx", repeat("line\n", 8))
+  let ro = call(nc, "edit", "read", %*{"path": "big.nx"})
+  check("whole-read above threshold returns the outline",
+        ro.kind == JString and
+        ro.getStr("").contains("big.nx is 8 lines. Outline") and
+        ro.getStr("").contains("class  Klass") and
+        ro.getStr("").contains("function  top_fn") and
+        ro.getStr("").contains("offset/limit"), $ro)
+  check("outline read does not leak the bytes",
+        not ro.getStr("").contains("line\nline"), $ro)
+
+  # the documented escape hatch: explicit offset=1 reads whole anyway
+  let rd = call(nc, "edit", "read", %*{"path": "big.nx", "offset": 1})
+  check("offset=1 bypasses the outline", rd.getStr("") == repeat("line\n", 8), $rd)
+
+  # at the threshold: normal content
+  writeFile(tmp / "small.nx", repeat("line\n", 5))
+  let rsm = call(nc, "edit", "read", %*{"path": "small.nx"})
+  check("whole-read at the threshold returns content",
+        rsm.getStr("") == repeat("line\n", 5), $rsm)
+
+  # no server for the extension: silent instant fallthrough to content
+  writeFile(tmp / "big.zzz", repeat("line\n", 8))
+  let rz = call(nc, "edit", "read", %*{"path": "big.zzz"})
+  check("unconfigured extension reads content as usual",
+        rz.getStr("") == repeat("line\n", 8), $rz)
+
+  # drain: the outline-configured component exits
   drain(nc)
   sleep(700)
-  check("edit drains and exits", not e3.running())
+  check("edit drains and exits", not e4.running())
 
   report("EDIT TEST")
 
