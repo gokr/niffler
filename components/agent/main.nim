@@ -304,37 +304,237 @@ proc hasParent(sessionId: string): bool =
   except StoreNotFoundError:
     return false
 
-proc prepareChild(parentSession, task, model: string): tuple[
-    ok: bool, error: string, subject: string, child: string] =
+# --- fork --------------------------------------------------------------------
+# A fork is a BIRTH that inherits the CALLER's transcript: the child's message
+# log is seeded with the parent's completed turns before its first request, so
+# the model has READ the conversation instead of being told about it. Design:
+# docs/research/SUBAGENTS-PLAN.md P1.4 (DSH-STEAL §3, with the toolset-snapshot
+# correction).
+
+proc parseForkSpec(toolArgs: JsonNode): tuple[ok: bool, error: string,
+    mode: string, lastK: int, maxChars: int] =
+  ## `fork: true | {"lastK": n} | {"maxChars": n}` — absent/nil means no fork.
+  let f = toolArgs{"fork"}
+  if f == nil or f.kind == JNull:
+    return (true, "", "", 0, 0)
+  if f.kind == JBool:
+    if f.getBool(false):
+      return (true, "", "all", 0, 0)
+    return (true, "", "", 0, 0)   # fork: false = no fork
+  if f.kind == JObject:
+    let k = f{"lastK"}
+    let c = f{"maxChars"}
+    if k != nil and c != nil:
+      return (false, "fork takes lastK OR maxChars, not both", "", 0, 0)
+    if k != nil:
+      let n = k.getInt(0)
+      if n < 1:
+        return (false, "fork.lastK must be >= 1", "", 0, 0)
+      return (true, "", "lastK", n, 0)
+    if c != nil:
+      let n = c.getInt(0)
+      if n < 1:
+        return (false, "fork.maxChars must be >= 1", "", 0, 0)
+      return (true, "", "maxChars", 0, n)
+    return (false, "fork object takes lastK or maxChars", "", 0, 0)
+  return (false, "fork must be true, {lastK: n} or {maxChars: n}", "", 0, 0)
+
+type TurnBlock = tuple[start, stop: int]
+  ## A half-open [start, stop) range of transcript indices forming one
+  ## COMPLETED turn: it opens at a user message and closes at an assistant
+  ## message with no tool_calls. A trailing assistant-with-tool_calls (or a
+  ## dangling user message) never closes — the in-flight turn is excluded,
+  ## so the child never resumes with a dangling tool_call_id.
+
+proc balancedPrefixLen(msgs: seq[StoreItem]): int =
+  ## The length of the longest TRANSCRIPT PREFIX that replays as a valid
+  ## provider message list: every assistant tool_calls is answered by its
+  ## tool records before anything else, and no tool record is orphaned.
+  ## The seed is contiguous-from-0 (DSH-STEAL §3), so the FIRST invalid
+  ## record ends the forkable range — a crash left a dangling turn in the
+  ## middle, everything after it is unreachable without copying the
+  ## dangling tool_calls. summary/error records are not replayed
+  ## (loadStoredMessagesEx skips error; summaries are derivations) and are
+  ## neutral to validity.
+  result = 0
+  var pending = 0   # unanswered tool_calls in the open provider prefix
+  for i, item in msgs:
+    let role = item.value{"role"}.getStr("")
+    case role
+    of "assistant":
+      let tc = item.value{"tool_calls"}
+      if tc != nil and tc.kind == JArray and tc.len > 0:
+        inc pending, tc.len
+      elif pending > 0:
+        return i          # a closing assistant over unanswered tool_calls
+    of "tool":
+      if pending == 0:
+        return i          # orphaned tool record — prefix ends before it
+      dec pending
+    of "user":
+      if pending > 0:
+        return i          # unanswered tool_calls before the next turn
+    else:
+      discard             # summary/error: not replayed, validity-neutral
+    result = i + 1
+  # a prefix that ends with unanswered tool_calls is itself unbalanced —
+  # the dangling assistant must not be copied
+  if pending > 0:
+    var last = result
+    for i in countdown(msgs.len - 1, 0):
+      if msgs[i].value{"role"}.getStr("") == "assistant":
+        last = i
+        break
+    return last
+
+proc forkBlocks(msgs: seq[StoreItem]): seq[TurnBlock] =
+  ## Completed-turn blocks within the BALANCED prefix (a steer folds extra
+  ## user messages into the open block; the block closes only on an
+  ## assistant message with no tool_calls).
+  let limit = balancedPrefixLen(msgs)
+  var cur = -1
+  for i in 0 ..< limit:
+    let role = msgs[i].value{"role"}.getStr("")
+    case role
+    of "user":
+      if cur < 0: cur = i
+    of "assistant":
+      let tc = msgs[i].value{"tool_calls"}
+      if (tc == nil or tc.kind != JArray or tc.len == 0) and cur >= 0:
+        result.add((cur, i + 1))
+        cur = -1
+    else:
+      discard  # tool/summary/error records belong to the open block
+
+proc forkHistory(parent, child: string; mode: string, lastK,
+                 maxChars: int): tuple[ok: bool, error: string,
+                                       copied: int, uptoId: string] =
+  ## Copy the caller's completed turns into the child's message log, under
+  ## dense child-side ids, so its first request replays the inherited
+  ## history plus the new task. OWNERSHIP EXCEPTION, deliberate and
+  ## documented: `agent` writes `message` records here, which core otherwise
+  ## owns. Safe because it is a one-time COPY written before the child's
+  ## runner exists — no concurrent writer for that session id, no
+  ## lost-update window — and the child's seqNo continues AFTER the copied
+  ## ids (loadStoredMessagesEx derives it from the highest stored id).
+  var msgs: seq[StoreItem]
+  try:
+    msgs = comp.storeListAll("message", parent & ":")
+  except CatchableError as e:
+    return (false, "cannot read this conversation's history (store " &
+                   "unreachable): " & e.msg, 0, "")
+  let blocks = forkBlocks(msgs)
+  if blocks.len == 0:
+    return (false, "nothing to fork: this conversation has no completed " &
+                   "turn yet", 0, "")
+  # Select blocks per the budget. The cut ALWAYS lands on block boundaries —
+  # never mid-tool-round — and a selection that drops everything fails
+  # closed rather than minting an empty child.
+  var keep: seq[TurnBlock]
+  case mode
+  of "all": keep = blocks
+  of "lastK":
+    keep = blocks[^min(lastK, blocks.len) .. ^1]
+  of "maxChars":
+    var total = 0
+    var i = blocks.len - 1
+    while i >= 0:
+      var blockChars = 0
+      for j in blocks[i].start ..< blocks[i].stop:
+        blockChars += ($msgs[j].value{"content"}).len
+      if total + blockChars > maxChars: break
+      total += blockChars
+      dec i
+    # blocks[i+1 .. ^1] fit; if even the last block did not, nothing fits
+    if i + 1 > blocks.len - 1:
+      return (false, "fork.maxChars " & $maxChars & " is smaller than the " &
+                     "last completed turn — nothing fits", 0, "")
+    keep = blocks[i + 1 .. ^1]
+  else:
+    return (false, "unknown fork mode", 0, "")
+  # Write the selected records under the child id. Per-message `usage` is
+  # dropped (the child's token accounting is its own; copying the parent's
+  # meters would lie twice), `summary`/`error` roles are skipped (a summary
+  # is a derivation of records also being copied; error records are the
+  # parent's turn audit), and conversationId is rewritten. Everything else —
+  # role, content, tool_calls/tool_call_id/name, createdAt — is preserved so
+  # the replay is byte-faithful where it matters.
+  var seqNo = 0
+  var upto = ""
+  for b in keep:
+    for j in b.start ..< b.stop:
+      let src = msgs[j].value
+      let role = src{"role"}.getStr("")
+      if role in ["summary", "error"]: continue
+      inc seqNo
+      var rec = src.copy()
+      # json.delete raises KeyError ("key not in object") on an absent key —
+      # user/tool messages carry no usage at all
+      if rec.hasKey("usage"):
+        rec.delete("usage")
+      rec["conversationId"] = %child
+      try:
+        discard comp.storePut("message", child & ":" & align($seqNo, 6, '0'),
+                              rec, timeoutMs = 10_000)
+      except CatchableError as e:
+        return (false, "cannot seed the child's history (store " &
+                       "unreachable): " & e.msg, 0, "")
+      upto = msgs[j].id
+  if seqNo == 0:
+    return (false, "nothing to fork: the selection excluded every record",
+            0, "")
+  return (true, "", seqNo, upto)
+
+proc prepareChild(parentSession, task, model: string;
+                  forkMode = "", forkK = 0, forkChars = 0): tuple[
+    ok: bool, error: string, subject: string, child: string,
+    forkCopied: int, forkUpto: string] =
   ## Depth-guarded child-runner preparation + fail-closed lineage.
   var isChild = false
   try:
     isChild = hasParent(parentSession)
   except CatchableError as e:
     return (false, "cannot verify subagent lineage (store unreachable): " &
-                    e.msg, "", "")
+                    e.msg, "", "", 0, "")
   if isChild:
-    return (false, "subagents cannot spawn subagents (depth limit)", "", "")
+    return (false, "subagents cannot spawn subagents (depth limit)", "",
+            "", 0, "")
   let child = "agent-" & newId()
+  # The fork copy happens BEFORE the runner exists: the child's runner (and
+  # its conversation header) are created around the seeded history —
+  # ensureConversationHeader is idempotent, so messages-before-header is the
+  # supported order.
+  var forkCopied = 0
+  var forkUpto = ""
+  if forkMode.len > 0:
+    let (ok, err, copied, upto) = forkHistory(parentSession, child,
+                                              forkMode, forkK, forkChars)
+    if not ok:
+      return (false, err, "", "", 0, "")
+    forkCopied = copied
+    forkUpto = upto
   # prepare the runner directly (core's session tool would stash mid-turn)
   var prep: JsonNode
   try:
     prep = comp.request("core", "session_prepare",
                         %*{"sessionId": child}, 60_000)
   except CatchableError as e:
-    return (false, "session_prepare failed: " & e.msg, "", "")
+    return (false, "session_prepare failed: " & e.msg, "", "", 0, "")
   let subject = prep{"subject"}.getStr("")
   if subject.len == 0:
-    return (false, "session_prepare returned no subject", "", "")
+    return (false, "session_prepare returned no subject", "", "", 0, "")
   # lineage before the turn, fail closed: an unrecorded child would pass
   # its own depth guard and could spawn grandchildren
+  var meta = %*{"parent": parentSession}
+  if forkCopied > 0:
+    meta["fork"] = %*{"source": parentSession, "uptoId": forkUpto,
+                      "copied": forkCopied}
   try:
-    discard comp.storePut("sessionmeta", child,
-                          %*{"parent": parentSession}, timeoutMs = 10_000)
+    discard comp.storePut("sessionmeta", child, meta, timeoutMs = 10_000)
   except CatchableError as e:
     return (false, "cannot record subagent lineage (store unreachable): " &
-                    e.msg, "", "")
-  result = (true, "", subject, child)
+                    e.msg, "", "", 0, "")
+  result = (true, "", subject, child, forkCopied, forkUpto)
 
 # --- continuation ------------------------------------------------------------
 # A continuation is a NEW TURN in an EXISTING child conversation, not a new
@@ -640,7 +840,9 @@ let runSchema = toolSchema(%*{
   "session": {"type": "string",
               "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
   "close": {"type": "boolean",
-            "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."}
+            "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."},
+  "fork": {"type": ["boolean", "object"],
+           "description": "FRESH RUNS ONLY: seed the child with this conversation's COMPLETED turns, so it has READ the discussion instead of being told about it. true copies every completed turn; {lastK: n} copies only the last n; {maxChars: n} copies the newest turns that fit. The cut never lands mid-tool-round, and usage meters are NOT copied (the child is born cold — its first request replays the history uncached; warm from the second turn). Use this when the child must exercise judgment over the discussion; for bulk mechanical transfer with no judgment, use fabric instead. Fails closed if nothing fits."}
 }, required = @["task"],
    description = "Run a task in a subagent session and return only its final reply. Without `session` it starts a FRESH child with its own context (include everything it needs — it does not see this conversation). With `session` it gives an EXISTING child another turn, keeping everything it already knows (send only the new task). Use for subtasks needing exploratory judgment per step — search, debugging, reading code — whose intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool; for background work use agent_spawn. The subagent cannot spawn further subagents.")
 runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
@@ -656,6 +858,15 @@ discard comp.tool("agent_run", runSchema,
       return errResult("agent_run needs task")
     let target = toolArgs{"session"}.getStr("")
     let isFresh = target.len == 0
+    let (forkOk, forkErr, forkMode, forkK, forkChars) = parseForkSpec(toolArgs)
+    if not forkOk:
+      return errResult(forkErr)
+    if not isFresh and forkMode.len > 0:
+      # A fork is a birth, not a continuation: the child to continue already
+      # has its history, and re-seeding it would duplicate it.
+      return errResult("fork only applies to a fresh child — drop it when " &
+                       "continuing an existing session",
+                       extra = %*{"sessionId": target})
     # Resolve the target FIRST (authorization fail-closed), THEN apply the
     # busy check: a mid-turn refusal is only meaningful for a target we may
     # actually continue — and the caller itself is always "mid-turn" while
@@ -667,10 +878,13 @@ discard comp.tool("agent_run", runSchema,
     var subject = ""
     var child = ""
     var activation = 0
+    var forkCopied = 0
+    var forkUpto = ""
     if isFresh:
       let prep = prepareChild(parentSession, task,
-                              toolArgs{"model"}.getStr(""))
-      (ok, failure, subject, child) = prep
+                              toolArgs{"model"}.getStr(""),
+                              forkMode, forkK, forkChars)
+      (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
       let cont = continuable(target, parentSession)
       child = target
@@ -708,6 +922,9 @@ discard comp.tool("agent_run", runSchema,
     var answer = %*{"sessionId": child,
                     "reply": resp.args{"reply"}.getStr(""),
                     "model": resp.args{"modelOverride"}.getStr("")}
+    if forkCopied > 0:
+      answer["fork"] = %*{"source": parentSession, "uptoId": forkUpto,
+                          "copied": forkCopied}
     if not isFresh:
       # Report what the child is ACTUALLY running with, since the caller's
       # model/thinking/tools/budget arguments were ignored by design.
@@ -748,7 +965,9 @@ let spawnSchema = toolSchema(%*{
   "session": {"type": "string",
               "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
   "close": {"type": "boolean",
-            "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."}
+            "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."},
+  "fork": {"type": ["boolean", "object"],
+           "description": "FRESH JOBS ONLY: seed the child with this conversation's COMPLETED turns (true = all; {lastK: n}; {maxChars: n}). The child has READ the discussion; it is born cold (uncached first request). The cut never lands mid-tool-round; fails closed if nothing fits."}
 }, required = @["task"],
    description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately; you are told when it settles (settlement notice), so there is no need to poll. agent_status checks it without blocking, agent_wait blocks, agent_steer injects into the live turn, agent_stop cancels it. Without `session` it starts a FRESH child (give it everything: it does not see this conversation); with `session` it queues another turn for an EXISTING child that already has the context. Start independent delegations together in one message and keep working while they run. Use agent_run instead when your next action depends on the result. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
@@ -764,6 +983,15 @@ discard comp.tool("agent_spawn", spawnSchema,
       return errResult("agent_spawn needs task")
     let target = toolArgs{"session"}.getStr("")
     let isFresh = target.len == 0
+    let (forkOk, forkErr, forkMode, forkK, forkChars) = parseForkSpec(toolArgs)
+    if not forkOk:
+      return errResult(forkErr)
+    if not isFresh and forkMode.len > 0:
+      # A fork is a birth, not a continuation: the child to continue already
+      # has its history, and re-seeding it would duplicate it.
+      return errResult("fork only applies to a fresh child — drop it when " &
+                       "continuing an existing session",
+                       extra = %*{"sessionId": target})
     # No busy check here, by design: a background job promises the work
     # HAPPENS, not that it starts now. A turn queued behind the child's
     # current one is what a queue is for (the child's runner serializes
@@ -773,10 +1001,13 @@ discard comp.tool("agent_spawn", spawnSchema,
     var subject = ""
     var child = ""
     var activation = 0
+    var forkCopied = 0
+    var forkUpto = ""
     if isFresh:
       let prep = prepareChild(parentSession, task,
-                              toolArgs{"model"}.getStr(""))
-      (ok, failure, subject, child) = prep
+                              toolArgs{"model"}.getStr(""),
+                              forkMode, forkK, forkChars)
+      (ok, failure, subject, child, forkCopied, forkUpto) = prep
     else:
       let cont = continuable(target, parentSession)
       child = target
@@ -829,6 +1060,9 @@ discard comp.tool("agent_spawn", spawnSchema,
                               sanitizeSessionId(child) & ".steer"}
     if toolArgs{"close"}.getBool(false):
       started["close"] = %true
+    if forkCopied > 0:
+      started["fork"] = %*{"source": parentSession, "uptoId": forkUpto,
+                           "copied": forkCopied}
     return okResult(started))
 
 let statusSchema = toolSchema(%*{

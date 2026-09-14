@@ -119,6 +119,13 @@ anything structural.
   stamp `continued`/`activation` on their `agentjob` record; `close: true`
   sets `sessionmeta.closed` after the turn (records survive; only further
   continuation refuses).
+- **Fork is the one store-ownership exception** (docs/WIRE.md "Subagent
+  fork"): `agent` writes `message` records when seeding a forked child — a
+  one-time copy performed before the child's runner exists, so there is no
+  concurrent writer for that session id and no lost-update window. The copy
+  site states the exception in a comment. Everything else about the fork is
+  append-only and derived: provenance (`sessionmeta.fork`), the balanced
+  contiguous-from-0 cut, no usage/summary/error/toolset carry-over.
 
 ## Commands
 

@@ -393,6 +393,44 @@ testing: docs/research/SUBAGENTS-PLAN.md P1.3.
   tap in `agent_spawn`. Nothing is deleted (record + transcript survive for
   forensics); only further continuation refuses.
 
+## Subagent fork (`fork: true | {lastK} | {maxChars}`)
+
+On fresh spawns only — a fork is a birth, not a continuation (`fork` +
+`session` is refused). The child's message log is seeded with the CALLER's
+completed turns before its first request, so the child has READ the
+conversation instead of being told about it. Design and testing:
+docs/research/SUBAGENTS-PLAN.md P1.4 (DSH-STEAL §3).
+
+- **The seed is contiguous-from-0 and replay-valid**: `balancedPrefixLen`
+  walks the transcript with a pending-tool_calls count and stops at the
+  first record that breaks the provider invariants (a user message over
+  unanswered calls, an orphaned tool record, a closing assistant over
+  unanswered calls); a tail ending with pending calls is cut before the
+  dangling assistant. Blocks within that prefix open at a user message and
+  close at an assistant with no `tool_calls` — a steered turn's extra user
+  messages fold into the same block. The fork copies whole blocks only, so
+  the child's first request can never carry a dangling `tool_call_id`.
+- **The one store-ownership exception**: this is the documented case where
+  `agent` writes `message` records (core otherwise owns that kind). Safe
+  because it is a one-time COPY written before the child's runner exists —
+  no concurrent writer for that session id, no lost-update window — and the
+  child's `seqNo` continues AFTER the copied ids (`loadStoredMessagesEx`
+  derives it from the highest stored id). The copy site in
+  `components/agent/main.nim` carries the ownership comment.
+- **Not copied**: per-message `usage` (the child's meters are its own —
+  born cold), `summary`/`error` roles (a summary is a derivation of records
+  copied raw; errors are the parent's audit), the `<session>:tools` toolset
+  snapshot, and the header's control fields. The forked child's frozen
+  controls come from THIS call (a birth), not from the source conversation.
+- **Provenance before the first turn, fail-closed**:
+  `sessionmeta[child] = {parent, fork: {source, uptoId, copied}}`, surfaced
+  by `session_info` as `fork`. A budget (`lastK`/`maxChars`) that drops
+  everything fails closed — never an empty child.
+- **Cache effect**: born cold (the first request replays the history
+  uncached; warm from the second turn). The tool descriptions say this,
+  because the cost is otherwise surprising — and point bulk mechanical
+  transfer at `fabric`.
+
 ## Approvals
 
 Dispatch honors `x-harness.approval` on the tool schema (docs/research/REBOOT.md,

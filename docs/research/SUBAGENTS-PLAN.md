@@ -8,7 +8,7 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 | P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, `tests/t_agentnotice.nim` — 30 checks) |
 | P0.2 `agent_list` | **shipped** (derived roster, residency status vocabulary, `agent_list {scope?}`, 9 more checks in `tests/t_agentnotice.nim`) |
 | P1.3 continuation | **shipped** (t_agentcont: 59 checks) |
-| P1.4 fork | not started |
+| P1.4 fork | **shipped** (t_agentfork: 32 checks) |
 | P2–P4 | not started |
 
 Design rationale and the comparison that produced it:
@@ -531,7 +531,8 @@ judgment needed is what `fabric` is for; the fork contract is "the model needs
 to have **read** the conversation, not been told about it." The tool
 description must say this, because the cost is otherwise surprising.
 
-**Tests** (`tests/t_agent.nim`):
+**Tests** (shipped in `tests/t_agentfork.nim` — same isolation pattern as
+P0.1/P1.3, not `t_agent.nim`):
 
 - copy → run proves adoption: messages exist before the header, the header is
   created (not clobbered) by the first turn, and the child's first request
@@ -554,6 +555,49 @@ before the child's runner exists, so there is no concurrent writer for that
 session id and no lost-update window. Mitigate by (a) a header comment stating
 the ownership exception at the write site, and (b) a store-level check in the
 test that the child's message ids are dense and start at `:0000000001`.
+
+### Implementation notes (found while building it)
+
+Shipped on `feat/subagents-v2`; tests in `tests/t_agentfork.nim` (32 checks,
+own sandbox, scripted `frk-*` parents in `components/ctxtest`).
+
+- **The balanced cut needed to be TWO passes, not one.** The planned
+  "scan for the last message that closes a turn" merges a crash-dangling
+  turn (user → assistant-with-tool_calls → no results) into the NEXT
+  completed turn when the block scanner keeps the first unclosed user open —
+  and the copied prefix would then contain a dangling `tool_call_id`,
+  exactly the rejection the design exists to prevent. The shipped rule is
+  DSH's contiguous-from-0 made literal: `balancedPrefixLen` walks the
+  transcript with a pending-calls count and stops at the FIRST record that
+  breaks provider validity (a user over unanswered calls, an orphaned tool
+  record, a closing assistant over unanswered calls, or a tail that ends
+  with pending calls — cut before the dangling assistant); blocks are then
+  built only within that prefix. Consequence worth knowing: a crash left
+  dangling MID-history truncates the fork at the corruption (everything
+  after is unreachable) and a parent whose whole prefix is unbalanced
+  fails closed with "nothing to fork" — both asserted.
+- **`json.delete` raises KeyError ("key not in object") on an absent key** —
+  the first fork run died on the first user message (no `usage` to delete).
+  Guard with hasKey.
+- **The steer/user ambiguity inside a block**: a steered turn legitimately
+  contains several user messages (task, then folded steers). Blocks open at
+  the FIRST user message and only close on an assistant with no
+  tool_calls — do not "reset" the open block on every user message, or
+  steered turns lose their task message from the copy.
+- **The test fixture for the dangling tail must be planted at the TAIL**
+  (after completed turns) — at the head it makes the entire transcript
+  unforkable, which is a different (also tested) shape. And the copied
+  prefix's assistant-with-tool_calls is NOT dangling when its tool records
+  follow: the test walks the copied prefix with the same pending count the
+  implementation uses instead of grepping for tool_calls.
+- **The ctxtest stub's stage counter is per-session-id and shared by every
+  scripted parent with the same prefix** — `frk-cut`/`frk-cut2` needed
+  dedicated branches because the shared `frk-` script's stages advance
+  regardless of which parent is talking. Two stub chat calls are consumed
+  per parent turn (tool call + closing content); plan scripts accordingly.
+- `session_info` now surfaces `fork` alongside `parent` (the one core touch,
+  four lines in `core/dispatch.nim`; everything else stayed in the agent
+  component).
 
 ---
 

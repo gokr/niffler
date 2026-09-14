@@ -607,6 +607,9 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       let meta = ct.storeGetItem("sessionmeta", sessionId)
       if meta.value != nil and meta.value{"parent"} != nil:
         info["parent"] = meta.value{"parent"}
+      if meta.value != nil and meta.value{"fork"} != nil:
+        # fork provenance (P1.4): where this conversation's history came from
+        info["fork"] = meta.value{"fork"}
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
       # completionTotal is Σ completion_tokens over assistant messages with

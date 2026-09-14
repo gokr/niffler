@@ -1703,8 +1703,8 @@ guide with nudge phrasing and worked examples:
 | Tool | What it does |
 |---|---|
 | `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. |
-| `agent_run {task, session?, close?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
-| `agent_spawn {task, session?, close?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
+| `agent_run {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
+| `agent_spawn {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
 | `agent_stop {jobId}` | Cancel a running job for real: the child's LLM request is aborted, its turn ends promptly, and an in-flight bash command is killed (whole process tree). The terminal record says "stopped". |
@@ -1754,6 +1754,35 @@ prefix survives. Each turn advances the child's activation ledger
 continuations stamp `continued`/`activation` on their `agentjob` record.
 `close: true` retires a child after its turn (`sessionmeta.closed`) — the
 record and transcript survive; only further continuation refuses.
+
+### Fork (a child that has read the discussion)
+
+`fork: true | {"lastK": n} | {"maxChars": n}` — on **fresh spawns only** (a
+fork is a birth, not a continuation; `fork` + `session` is refused) — seeds
+the child's message log with this conversation's **completed turns** before
+its first request, so the child has *read* the discussion instead of being
+told about it. The result and `session_info` carry the provenance
+(`{source, uptoId, copied}`).
+
+- **The cut is balanced and contiguous-from-0**: it lands on completed-turn
+  boundaries only — never mid-tool-round — and the seed is the longest
+  transcript prefix that replays as a valid provider message list (every
+  `tool_calls` answered by its tool records, no orphaned tool records). An
+  in-flight turn at the tail is excluded; a crash left dangling mid-history
+  truncates the fork there (fail-closed beats copying an unbalanced prefix).
+- **Budgets cut on turn boundaries** and a selection that drops everything
+  fails closed — an empty child would look like success while being wrong.
+- **What is not copied**: per-message `usage` meters (the child's accounting
+  is its own), `summary`/`error` role records (a summary is a derivation of
+  records that are copied raw; error records are the parent's audit), the
+  toolset snapshot (`<session>:tools`), and the header's control fields —
+  a fork is a birth: the caller's `tools`/`maxRounds`/… arguments freeze the
+  child's controls from this call, never the parent's.
+- **Born cold**: the child's first request replays the inherited history
+  uncached; warm from the second turn. That is the price of *judgment*
+  inheritance, and the right trade only when the preamble would otherwise
+  have to narrate the context. Bulk transfer with no judgment needed is
+  what `fabric` is for.
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call

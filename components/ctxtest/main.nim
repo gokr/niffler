@@ -353,6 +353,72 @@ comp.tool(%*{"hidden": true}):
                         %*{"task": "echo agent-ok via a subagent",
                            "close": true})
       return %*{"content": "spawncont-parent-done"}
+    if sessionId == "frk-cut":
+      # dedicated balanced-cut parent (tests/t_agentfork.nim): stage 0 is a
+      # plain completed turn; stage 2 forks lastK(1) — the test plants a
+      # dangling in-flight turn in between.
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "FRKCUT a plain completed turn"})
+      if stage == 2:
+        return toolCall("t2", "agent_run",
+                        %*{"task": "FRKCUT fork the last completed turn",
+                           "fork": {"lastK": 1}})
+      return %*{"content": "cut-done"}
+    if sessionId == "frk-cut2":
+      # a fresh parent whose transcript STARTS with planted dangling
+      # records (the test writes them): its fork must fail closed
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "FRKCUT2 plain completed turn"})
+      if stage == 2:
+        return toolCall("t2", "agent_run",
+                        %*{"task": "FRKCUT2 fork the corrupted history",
+                           "fork": {"lastK": 1}})
+      return %*{"content": "cut2-done"}
+    if sessionId.startsWith("frk-"):
+      # fork parents (tests/t_agentfork.nim). Turn 1 builds history: the
+      # marker task gives the transcript a known needle; the reply proves the
+      # turn completed. Later turns fork per the script.
+      cntChild = lastChildSession(messages)
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "FRKORIGIN the lighthouse burns amber " &
+                                        "and the ledger disagrees " &
+                                        "with the tide table"})
+      if stage == 2:
+        # turn 2: a SECOND completed turn, so lastK/maxChars have something
+        # to cut against; its task carries a second needle.
+        return toolCall("t2", "agent_run",
+                        %*{"task": "FRKSECOND recount the harbor fees " &
+                                        "against the manifest"})
+      if stage == 4:
+        # turn 3: the fork itself — full history
+        return toolCall("t3", "agent_run",
+                        %*{"task": "FRKFORKED summarize what you inherited",
+                           "fork": true})
+      if stage == 6:
+        return toolCall("t4", "agent_run",
+                        %*{"task": "FRKLASTK report the last two turns only",
+                           "fork": {"lastK": 1}})
+      if stage == 8:
+        # maxChars too small for even one turn → fail closed
+        return toolCall("t5", "agent_run",
+                        %*{"task": "FRKTINY try a tiny fork",
+                           "fork": {"maxChars": 10}})
+      if stage == 10:
+        # fork + session → refused (a fork is a birth, not a continuation);
+        # frkChild is the forked child from stage 4
+        return toolCall("t6", "agent_run",
+                        %*{"task": "FRKCONT try continuing with a fork",
+                           "session": cntChild, "fork": true})
+      if stage == 12:
+        # forked child with a scoped toolset: the allowlist must come from
+        # THIS call, not from the parent conversation
+        return toolCall("t7", "agent_run",
+                        %*{"task": "FRKTOOLS run with a scoped toolset",
+                           "fork": true, "tools": ["bash"]})
+      return %*{"content": "fork-parent-done"}
     if sessionId.startsWith("ntc-"):
       # settlement-notice parents (tests/t_agentnotice.nim): spawn a
       # background child, then finish the turn. The child settles after the
