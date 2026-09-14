@@ -16,6 +16,10 @@ implements just enough for the component tests:
   two children + a top-level function) for any file; for a file named
   *flat*.nx, the deprecated flat SymbolInformation[] form instead, to
   exercise the fallback rendering.
+- workspace/symbol -> flat SymbolInformation[] across two files (sibling.nx
+  + the last-opened document), filtered by the query substring
+  (case-insensitive); an empty query returns all three. Proves the query
+  passes through and cross-file relative rendering.
 - textDocument/references   -> declaration location + one more iff
   context.includeDeclaration is true (proves the component always sends it).
 - textDocument/didOpen      -> pushes two publishDiagnostics notifications
@@ -79,6 +83,7 @@ def write_frame(obj):
 
 def main():
     initialized = False
+    last_open_uri = ""
     while True:
         msg = read_frame()
         method = msg.get("method")
@@ -92,6 +97,7 @@ def main():
                     "definitionProvider": True,
                     "referencesProvider": True,
                     "documentSymbolProvider": True,
+                    "workspaceSymbolProvider": True,
                     # implementationProvider deliberately ABSENT:
                     # t_lsp asserts the component refuses with E_LSP_UNSUPPORTED.
                 }}})
@@ -103,6 +109,7 @@ def main():
                          "params": {"items": [{"section": "nx"}]}})
         elif method == "textDocument/didOpen":
             uri = msg["params"]["textDocument"]["uri"]
+            last_open_uri = uri
             if "wobbly" not in uri:
                 time.sleep(DIAG_DELAY)
                 write_frame({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
@@ -182,6 +189,24 @@ def main():
                      "range": {"start": {"line": 5, "character": 0},
                                "end": {"line": 5, "character": 20}},
                      "selectionRange": {"start": {"line": 5, "character": 3}}}]})
+        elif method == "workspace/symbol":
+            q = msg["params"].get("query", "")
+            docdir = os.path.dirname(last_open_uri.replace("file://", ""))
+            docname = os.path.basename(last_open_uri.replace("file://", ""))
+
+            def wssym(name, kind, fname, line, ch):
+                return {"name": name, "kind": kind,
+                        "location": {"uri": "file://" + os.path.join(docdir, fname),
+                                     "range": {"start": {"line": line, "character": ch},
+                                               "end": {"line": line, "character": ch + 5}}}}
+            all_syms = [
+                wssym("helperProc", 12, "sibling.nx", 1, 4),
+                wssym("HelperClass", 5, "sibling.nx", 4, 6),
+                wssym("mainProc", 12, docname, 0, 3),
+            ]
+            if q:
+                all_syms = [s for s in all_syms if q.lower() in s["name"].lower()]
+            write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": all_syms})
         elif "id" in msg and "method" in msg:
             # any other server->client request: answer empty
             write_frame({"jsonrpc": "2.0", "id": msg["id"], "result": None})

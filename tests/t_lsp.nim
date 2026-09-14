@@ -201,6 +201,19 @@ proc main() =
           "flat.nx:1:5  variable  flatA\n" &
           "flat.nx:7:1  constant  flatB", $dsf)
 
+  # --- workspaceSymbol: repo-wide search on the server's index ------------
+  let ws1 = lspCall(%*{"operation": "workspaceSymbol", "path": "main.nx",
+                        "query": "helper"})
+  check("workspaceSymbol filters by query and renders cross-file",
+        ws1{"ok"}.getBool(false) and ws1{"count"}.getInt(0) == 2 and
+        ws1{"text"}.getStr("") ==
+          "sibling.nx:2:5  function  helperProc\n" &
+          "sibling.nx:5:7  class  HelperClass", $ws1)
+  let ws2 = lspCall(%*{"operation": "workspaceSymbol", "path": "main.nx"})
+  check("workspaceSymbol empty query lists all",
+        ws2{"ok"}.getBool(false) and ws2{"count"}.getInt(0) == 3 and
+        ws2{"text"}.getStr("").contains("main.nx:1:4  function  mainProc"), $ws2)
+
   # --- capability refusal --------------------------------------------------
   let impl = lspCall(%*{"operation": "goToImplementation", "path": "main.nx",
                         "line": 1, "character": 1})
