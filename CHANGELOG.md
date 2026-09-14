@@ -155,6 +155,201 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run's long-horizon outlier (niffler 5.9M tok / 74 turns, claudecode 1.6M /
   129). Report: `bench/reports/swe-sympy10-cc-vs-niffler-report.md`.
 
+- **store: sqlite is the default engine, list is a page, and migration is a
+  tool.** Three linked changes required by `docs/research/COMPACTION.md`
+  (§2/§6.4). First the list cursor contract (`after`/`hasMore`/`nextAfter`)
+  across all three engines, with `nextAfter` taken from the last returned
+  *key* so a page whose documents are all tombstoned still advances
+  (`7047947`, `tests/t_store_paging.nim`). Then every full-kind read goes
+  through `storeListAll`, which pages to exhaustion — before it, the capped
+  1000-item list silently truncated long-conversation resumes (and the
+  truncated `lastSeqNo` made the next persist overwrite later history), left
+  every later message behind on delete, undercounted `session_info`, and let
+  job settlement read a mid-conversation message as the last one (`39b63a0`,
+  `tests/t_resume_long.nim`). With those in place, sqlite becomes the
+  default engine: compaction's context projection needs an atomic doc+rev
+  write (barrel's put is a two-key sequence) and a range-readable list.
+  Unset `NIF_STORE_BACKEND` is a default, not a demand — when store-sqlite
+  is absent core warns loudly and uses the manifest's engine; an explicit
+  request never degrades silently. Switching the default does not move data,
+  so two safety nets ship with it (`c5bac07`): a boot guard that refuses to
+  start sqlite over an existing `var/barrel-db` (exit 1, printing the exact
+  migration command, the `--scan` hint, and the `NIF_STORE_BACKEND=barrel`
+  escape hatch), and `niffler-store-migrate` (new binary), which migrates by
+  plain bus replay — its own private NATS server and store processes, a
+  kind-agnostic copy, per-kind count verification, `--root`/`--scan`/`--all`/
+  `--dry-run`. Verified end to end against a copy of the live 42MB
+  production barrel (4309 documents; the harness booted on the migrated
+  store and restored its spawned components from the migrated records).
+  Docs updated: `docs/MANUAL.md` (engine table, migration + troubleshooting),
+  `docs/WIRE.md` ("Store contract"), `AGENTS.md`, `docs/research/STORE_V2.md`
+  (`26fe134`).
+
+- **processes: long-running commands with an owner** — servers, watchers and
+  test loops no longer have to fit bash's synchronous contract. The new
+  processes component spawns commands detached (own process group, stdin
+  from /dev/null, stdout/stderr appended to spool files under
+  `var/processes/`) and owns the child for its whole life:
+  `process_start {command, label?}` returns an id immediately
+  (approval-gated, like the bash call that produces it); `process_poll`
+  drains only what was appended since the last poll (`waitMs` to block for
+  new output or exit, `filter` to project matching lines with the cursor
+  advancing past all of it, `tail` to re-read the bounded ~64KB raw tail
+  without moving the cursor); `process_kill` terminates the whole group
+  (SIGTERM → SIGKILL); `process_list` shows state. Spool files are the drain
+  buffer — the child never blocks on a full pipe, there is no reader thread,
+  and a spool over the 32MB cap (`NIF_PROCESSES_SPOOL_CAP`) truncates to its
+  tail on the next poll with the cursor adjusted. Children survive a
+  SIGKilled component by design, so a registry (pid + /proc starttime to
+  defeat pid reuse) drives a boot sweep that kills orphans from a previous
+  life before serving. bash grows `run_in_background` as a thin producer
+  (forwards to `process_start`, returns the id with poll/kill guidance);
+  baseprompt gains the processes clause. `tests/t_processes.nim`, 35 checks
+  (`e347037`).
+
+- **lsp: workspace warmup + `make install-lsp`.** Core now publishes
+  `ev.workspace.opened` at conversation bootstrap (any directory, fires on
+  resume too when instances are cold again); lsp responds with a bounded
+  extension census (hidden/junk dirs skipped, 5k files / 2s budget), matches
+  the top-2 languages against the registry and pre-starts their servers so
+  the first real query does not pay cold-start mid-turn, announcing
+  `ev.lsp.warm {workspace, warmed, skipped}` and exposing the same path as
+  lsp op `warmup` (`644d91f`). `make install-lsp` (`scripts/install-lsp.sh`)
+  idempotently installs the registry defaults — gopls, pyright,
+  typescript-language-server plus the TS5 tsserver bridge (TS7 dropped
+  tsserver; installed out of the way in `~/.local/ts5`), rust-analyzer,
+  clangd, nimlangserver and bash-language-server — arch-aware standalone
+  downloads, fallback-bin-dir aware, per-language failures non-fatal, with a
+  summary at the end (`0302317`, `4917b0f`, `697d4df`).
+
+- **edit: language-server diagnostics ride the change preview.** After a
+  successful edit, edit requests diagnostics from the lsp component over the
+  bus and appends errors/warnings scoped to the changed range (±3 lines,
+  capped at 8, else a one-line pointer that names the lsp tool for
+  "elsewhere in this file" cases) to the preview. The push happens where the
+  signal already flows, because named-but-onDemand lsp tools never activated
+  on their own (zero discover calls across 58 Multi10 cells). Every lsp
+  failure mode is silent or a one-line note — a missing, slow or crashed
+  language server never fails or stalls an edit that already succeeded.
+  Formatting is pure and unit-tested (`tests/t_edit_diag.nim`) (`d64f437`,
+  `5f22fb2`).
+
+- **bench: Multi10 v2 official re-run + autopsy** — niffler 4/8 attempted,
+  claudecode 7/10, pi 3/8 (four no-start cells were Synthetic 429s). jq and
+  tokio were eval-environment bugs (a dirty-tree artifact breaks the
+  container build; the getrandom manifest parse fails), not harness
+  failures; caddy was a convergent wrong fix (all lanes set `Secure:true`,
+  the hidden test pins `Secure:false` for non-secure requests); fmt is a
+  minimalism lesson (all lanes fixed the new test while the upstream-style
+  fill/numeric handling regressed `PrintfTest.ZeroFlag`). Full
+  token/cache/time/tools tables; first graded run with the lsp tool
+  invoked. Report: `bench/reports/swe-multi10-v2-autopsy.md` (`1f228a4`).
+
+- **docs/research: harness survey sweep.** New under `docs/research/`:
+  `COMPACTION.md` — replaceable-compaction proposal (a peer component
+  proposes, the runner validates, applies and persists), with
+  sqlite-as-default as its stated prerequisite (`8e2248a`); `AIDER.md` —
+  ranked steals from Aider, grounded in source paths (the tree-sitter repo
+  map with personalized PageRank as an onDemand, cache-safe tool result; the
+  typed edit-parse/lint/test reflection loop budgeted by maxRounds/maxCalls;
+  the weak/editor model split) (`22c285e`); `PI-VS-NIFFLER.md` +
+  `PI-NEXT.md` — an honest map of what pi has that Niffler does not (session
+  tree, compaction, hooks with teeth, image reads) with evidence tables, and
+  the follow-up ranking: overflow classification + recover-and-retry and
+  image payloads are the real gaps, with the cache section later expanded to
+  the write path after correcting the dsh cache-retention claim
+  (`0cd100c`, `1329b7e`, `e86176c`, `b3e7dd0`); `REMOTE.md` — prior art for
+  running full harnesses on remote VMs (OpenHands Agent Server is the only
+  real runtime+fleet precedent) and the two-path conclusion — first-class
+  Chetter support vs a custom fleet — moved from `docs/REMOTE-NIFFLER.md`
+  (`bcad0ee`, `65eedab`); `CONTEXT-REVIEW.md` — prompt-context audit
+  (`b71540b`). The processes design settled in `docs/OCTOFRIEND-STEAL.md`
+  before the component shipped (`adff562`, `f673b7e`), and the DSH steals
+  implementation plan merged docs-only (`412347c`).
+
+### Changed
+
+- **baseprompt: placement triggers and scoping.** One sentence ties
+  `lsp goToDefinition` to the failure moment — an edit to a symbol belongs
+  at its definition, and when grep only shows uses, the tool confirms the
+  home (tokio-4384: the edit landed in the wrong file after 23 bash
+  calls) (`0e3b3dd`). The processes entry is compressed to its siblings'
+  density, fabric and the skill sentence tightened, and the harness-root
+  home line is scoped to building Niffler itself — bench agents working in
+  foreign repos were reading harness-development guidance as their own
+  (`84888e9`).
+
+- **edit: per-line read cap 200KB → 2KB** (Claude Code parity) — one
+  minified-line read could previously flood the history with ~50k tokens
+  (`d64f437`).
+
+### Fixed
+
+- **core: four review-found defects, each with a regression test**
+  (`0e4f5fd`): supervisor restart backoff never engaged (startChild reset
+  the counter on every launch, so a fast-crashing child relaunched every
+  ~500ms forever instead of backing off to 8s); the parallel wave path
+  (`x-harness.parallel`) never applied the frozen session tool allowlist, so
+  an allowlisted subagent could run unlisted parallel-marked tools; the
+  per-turn maxCalls cutoff ran while building the call batch, leaving
+  unpaired tool_calls in the transcript that strict providers reject on
+  resume (the cutoff now runs during execution and pairs every unexecuted
+  call with an error result); and core's idle pump, mid-turn pump and the
+  session runner silently dropped non-call envelopes despite docs/WIRE.md
+  promising a bad-envelope reply (all three now answer, preserving the
+  decodable id). Hardened along the way: catalog registration refuses a
+  non-array "tools" and duplicate tool names before mutating state, and runs
+  onChange before publishing `ev.catalog.updated` as documented;
+  schema_validation accepts a JSON null for plain "required" (required means
+  present, not non-null), enforces maxItems/maxProperties/maxLength of 0,
+  and counts string bounds in Unicode characters rather than bytes.
+
+- **components: seven review fixes** (`8f86434`): processes never enforced
+  the per-poll chunk cap (rfind searched to end-of-string, so one poll could
+  return an entire multi-hundred-KB burst); agent background jobs never
+  terminalized on a runner-level error envelope, leaving
+  agent_status/agent_wait blocked forever on a job stuck "running"; bash ran
+  a compound command's later `;`/`||` clauses from the harness root when
+  `cd <cwd>` failed — the wrong directory with no visible error; builder
+  generated an unquoted `replace niffler.dev/sdk => ...` in go.mod (breaking
+  every Go build in a harness root containing a space) and advertised a Go
+  example that did not compile; fetch spill files could collide within the
+  same second and overwrite a path already handed to the model (now
+  createTempFile); console registered with a doubly-wrapped envelope, so
+  core never saw its name/pid/tools and it never entered the catalog; and
+  grep's `files` returned rg's unsorted walk order despite the documented
+  "sorted, one path per line" contract.
+
+- **bus: three safety fixes, all verified against a live nats-server**
+  (`c2ef6ee`): the PATH-fallback spawn now raises max_payload to 8MiB via
+  config file (the official nats-server rejects `--max_payload` as a flag —
+  without this a hand-compiled dev run silently got a 1MiB bus and every
+  oversized reply timed out, indistinguishable from a component hang), with
+  a one-time core warning; core reads `natsConnection_GetMaxPayload` at boot
+  and warns loudly when an attached foreign bus (NIF_NATS_URL) caps below
+  what the harness needs instead of failing mid-conversation; and
+  `reclaimOwnNats` verifies `/proc/<pid>/comm` is nats-server before
+  signalling the pid from `var/nats-pid` — after a crash the kernel may
+  recycle that pid onto an unrelated process, and this was the one place the
+  harness signalled something it did not spawn this run.
+
+- **lsp: readFrame honors the operation budget, not the first 250ms pump
+  slice** — both the quiet and non-quiet paths gave up after a single empty
+  pump slice, so a reported "60000ms" budget actually waited ~250ms and
+  every bash-language-server query (shellcheck pushes diagnostics 300–500ms+
+  after didOpen) failed with a fake timeout; both paths now keep pumping
+  (stderr still drains every slice) until the caller's real deadline, and a
+  dead server is still caught instantly (`d3562cc`). The readFrame and
+  diagnostics timeout messages also append the server's last stderr line, so
+  a "still indexing" complaint carries evidence (`1dbd4f2`).
+
+- **store-migrate: `--dry-run --all` really migrated** — the `--all` loop
+  hardcoded dryRun=false (all seven niffler bench roots got written that
+  way); the flag now passes through and per-root verdicts read PLAN on a dry
+  run. Also fixes an inverted source-engine guard: a root holding both
+  stores died with the "no store data" message while the truly-empty case
+  slipped through to a confusing engineFor failure (`4faec8a`).
+
 ## [0.2.0] — 2026-09-11
 
 ### Added
