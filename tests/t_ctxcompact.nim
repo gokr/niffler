@@ -17,7 +17,7 @@
 
 import std/[json, os, osproc, strutils, times]
 import natsnim
-import ../core/[catalog, conversation, dispatch]
+import ../core/[catalog, compaction, conversation, dispatch]
 import helpers
 
 proc waitComponent(nc: NatsConnection, name: string, secs = 25): bool =
@@ -223,7 +223,113 @@ proc main() =
   check("empty range digests deterministically",
         ctxDigest(p.nodes, msgs, 3, 2) == ctxDigest(p.nodes, msgs, 3, 2))
 
-  # --- 5. resume round-trip: appends continue after canonicalHigh ----------
+  # --- 5. contract v1: cuts, paging and strict validation -----------------
+  let cutIds = @["", conv & ":000001", conv & ":000002",
+                 conv & ":000003", conv & ":000004"]
+  let cutSources = @["system", "canonical", "canonical", "canonical",
+                     "canonical"]
+  let cutRoles = @["system", "user", "assistant", "tool", "user"]
+  let declared = @["", "", "call-1", "", ""]
+  let answered = @["", "", "", "call-1", ""]
+  let cuts = permittedCuts(cutIds, cutSources, cutRoles, declared, answered)
+  check("cut fold rejects a boundary inside a tool pair",
+        cuts.len == 2 and cuts[0].index == 2 and cuts[1].index == 4,
+        $cuts.len)
+  check("newest user request remains in the retained tail",
+        cuts[^1].id == conv & ":000004")
+  let autoIds = @["", conv & ":000001", conv & ":000002",
+                  conv & ":000003", conv & ":000004",
+                  conv & ":000005", conv & ":000006"]
+  let autoCuts = permittedCuts(autoIds,
+    @["system", "canonical", "canonical", "canonical", "canonical",
+      "canonical", "canonical"],
+    @["system", "user", "assistant", "tool", "assistant", "tool", "assistant"],
+    @["", "", "a", "", "b", "", ""],
+    @["", "", "", "a", "", "b", ""])
+  check("one autonomous turn exposes balanced middle-span cuts",
+        autoCuts.len == 2 and autoCuts[0].fromIndex == 2 and
+        autoCuts[0].index == 4 and autoCuts[1].index == 6,
+        $autoCuts.len)
+  let hugeSnapshot = repeat("snapshot-byte-", 90_000)
+  let snapshotPages = chunkSnapshotContent(hugeSnapshot)
+  check("snapshot content pages stay under the byte cap", block:
+    var ok = snapshotPages.len > 1
+    for page in snapshotPages:
+      if page.len > compactionSnapshotPageBytes: ok = false
+    ok, $snapshotPages.len)
+  check("snapshot pages concatenate byte-identically",
+        snapshotPages.join("") == hugeSnapshot)
+  check("runner rejects a non-shrinking checkpoint",
+        not strictlyReduces(500, 500) and not strictlyReduces(500, 700) and
+        strictlyReduces(500, 499))
+
+  let checkpoint = %*{
+    "objective": "Keep the contract replaceable",
+    "constraints": ["Canonical history is immutable"],
+    "decisions": ["Runner validates before commit"],
+    "completedWork": ["Added contract v1"],
+    "currentBlocker": newJNull(),
+    "nextSteps": ["Exercise restart reload"]
+  }
+  let candidate = %*{
+    "version": 1, "status": "candidate", "attemptId": "attempt-1",
+    "baseGeneration": 0, "snapshotDigest": "sha256:test",
+    "cutBefore": {"source": "canonical", "id": conv & ":000004"},
+    "covered": {
+      "from": {"source": "canonical", "id": conv & ":000001"},
+      "to": {"source": "canonical", "id": conv & ":000003"}
+    },
+    "checkpoint": checkpoint
+  }
+  let valid = validateCandidate(candidate, "attempt-1", 0, "sha256:test",
+    cuts, 1, 3, cutIds, cutSources, cutRoles)
+  check("valid candidate passes strict validation", valid.status == csCandidate,
+        valid.detail)
+  var badCut = candidate.copy()
+  badCut["cutBefore"] = %*{"source": "canonical", "id": conv & ":000003"}
+  check("candidate cannot invent an unbalanced cut",
+        validateCandidate(badCut, "attempt-1", 0, "sha256:test", cuts,
+          1, 1, cutIds, cutSources, cutRoles).status == csInvalid)
+  var badField = candidate.copy()
+  badField["checkpoint"]["hallucinatedStatus"] = %"done"
+  check("v1 rejects unknown semantic checkpoint fields",
+        validateCandidate(badField, "attempt-1", 0, "sha256:test", cuts,
+          1, 3, cutIds, cutSources, cutRoles).status == csInvalid)
+  var badGeneration = candidate.copy()
+  badGeneration["baseGeneration"] = %9
+  check("candidate generation is snapshot-bound",
+        validateCandidate(badGeneration, "attempt-1", 0, "sha256:test",
+          cuts, 1, 3, cutIds, cutSources, cutRoles).status == csInvalid)
+  var badDigest = candidate.copy()
+  badDigest["snapshotDigest"] = %"sha256:stale"
+  check("stale snapshot digest is rejected",
+        validateCandidate(badDigest, "attempt-1", 0, "sha256:test", cuts,
+          1, 3, cutIds, cutSources, cutRoles).status == csInvalid)
+  var truncated = candidate.copy()
+  truncated["checkpoint"].delete("nextSteps")
+  check("truncated checkpoint is rejected",
+        validateCandidate(truncated, "attempt-1", 0, "sha256:test", cuts,
+          1, 3, cutIds, cutSources, cutRoles).status == csInvalid)
+  let declined = %*{"version": 1, "status": "declined",
+                    "attemptId": "attempt-1", "reason": "indivisible"}
+  check("stable decline is first-class",
+        validateCandidate(declined, "attempt-1", 0, "sha256:test", cuts,
+          1, 3, cutIds, cutSources, cutRoles).status == csDeclined)
+  let ckIds = @["", conv & "#ck1", conv & ":000010", conv & ":000011"]
+  let ckSources = @["system", "checkpoint", "canonical", "canonical"]
+  let ckRoles = @["system", "user", "assistant", "user"]
+  let ckCuts = permittedCuts(ckIds, ckSources, ckRoles,
+    @["", "", "", ""], @["", "", "", ""])
+  var second = candidate.copy()
+  second["cutBefore"] = %*{"source": "canonical", "id": conv & ":000011"}
+  second["covered"] = %*{
+    "from": {"source": "checkpoint", "id": conv & "#ck1"},
+    "to": {"source": "canonical", "id": conv & ":000010"}}
+  check("second compaction may absorb the prior checkpoint",
+        validateCandidate(second, "attempt-1", 0, "sha256:test", ckCuts,
+          1, 2, ckIds, ckSources, ckRoles).status == csCandidate)
+
+  # --- 6. resume round-trip: appends continue after canonicalHigh ----------
   # The runner's next persist must target canonicalHigh + 1 — never reuse an
   # id the ledger already covers.
   p.ctxAppend(msgs, %*{"role": "user", "content": "after-restart"})

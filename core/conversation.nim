@@ -19,6 +19,7 @@ import natsnim
 import ../sdk/envelope
 import ../sdk/niffler/jsonx
 import catalog
+import compaction
 import dispatch
 import supervisor
 import retry
@@ -128,7 +129,8 @@ type
     ## What a context node stands in for (docs/research/COMPACTION.md §4.2).
     nsCanonical   ## a persisted store message; id = "<convId>:<6-digit seq>"
     nsCheckpoint  ## a rendered projection checkpoint; id = "<convId>#ck<gen>"
-    nsNotice      ## an omission/prune notice; id = ""; names the ids it replaced
+    nsNotice      ## an omission/prune notice; synthetic #omit id; its body
+                  ## names the canonical ids it replaced
     nsSystem      ## the frozen system prompt — rebuilt from the conversation
                   ## header, never store-resolvable, never cut or covered
 
@@ -138,7 +140,8 @@ type
     ## are expressed in these ids, never in array positions — positions
     ## shift when a checkpoint replaces a canonical range; ids do not.
     source*: NodeSource
-    id*: string            ## store key when canonical; checkpoint ref; "" for notices
+    id*: string            ## store key when canonical; synthetic checkpoint/
+                           ## notice ref; empty only for the system node
     canonicalSeq*: int     ## seq number when canonical (0 otherwise)
     projectionIndex*: int  ## index into Session.messages of the entry this node describes
 
@@ -172,10 +175,11 @@ type
     ## the highest canonical seq represented in context — appends continue
     ## after it, and a projection's covered range never reaches past it.
     ## The persister owns both because it allocates the ids the ledger
-    ## records. Generation is NOT here: it lives in the projection record
-    ## (§6.2), snapshots copy it.
+    ## records. `generation` mirrors the durable projection record so each
+    ## snapshot can bind itself to the projection it read (§4.2/§6.2).
     nodes*: seq[CtxNode]
     canonicalHigh*: int
+    generation*: int
     prunes*: seq[PruneRec]
 
   ToolExposure* = object
@@ -260,7 +264,7 @@ proc writeContextReceipt*(p: var Persister, requestId, failureClass, outcome,
     discard p.ct.storePutRev("contextreceipt", p.convId & ":" & requestId,
       %*{"requestId": requestId, "failureClass": failureClass,
          "outcome": outcome, "detail": detail,
-         "generation": 0,   # no projection record yet (step 4 wires the real one)
+         "generation": p.generation,
          "canonicalHigh": p.canonicalHigh, "at": epochTime()})
   except CatchableError as e:
     echo "core: WARNING context receipt not persisted: " & e.msg
@@ -289,6 +293,33 @@ proc ctxDigest*(nodes: openArray[CtxNode], messages: openArray[JsonNode],
     st.update($ch.digest())
     st.update("\x1e")
   result = "sha256:" & $st.digest()
+
+proc canonicalSeqOf(id: string): int =
+  let colon = id.rfind(':')
+  if colon >= 0:
+    try: return parseInt(id[colon + 1 .. ^1])
+    except ValueError: discard
+
+proc providerMessage(v: JsonNode): JsonNode =
+  ## Strip storage-only telemetry from a canonical message before replay.
+  result = newJObject()
+  result["role"] = v{"role"}
+  result["content"] = v{"content"}
+  for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
+    if v{field} != nil: result[field] = v{field}
+
+proc recoverUsage(v: JsonNode, promptTokens: var int,
+                  contextUsed: var int, ctxSize: var int) =
+  if v{"role"}.getStr("") != "assistant": return
+  if v{"usage"}{"prompt_tokens"} != nil:
+    promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
+  let total = v{"usage"}{"total_tokens"}.getInt(0)
+  let completion = v{"usage"}{"completion_tokens"}.getInt(0)
+  if total > 0:
+    contextUsed = total
+  elif promptTokens > 0:
+    contextUsed = promptTokens + completion
+  if v{"context"} != nil: ctxSize = v{"context"}.getInt(0)
 
 proc loadStoredMessagesEx*(ct: CoreTools, convId: string,
                            promptTokens: var int, contextUsed: var int,
@@ -331,38 +362,15 @@ proc loadStoredMessagesEx*(ct: CoreTools, convId: string,
     # error-role records too (the loaded list excludes them, so its length
     # would collide with their ids).
     let id = item{"id"}.getStr("")
-    let dot = id.rfind(':')
-    var seqNo = 0
-    if dot >= 0:
-      try:
-        seqNo = parseInt(id[dot+1 .. ^1])
-        result.lastSeqNo = max(result.lastSeqNo, seqNo)
-      except ValueError:
-        discard
+    let seqNo = canonicalSeqOf(id)
+    result.lastSeqNo = max(result.lastSeqNo, seqNo)
     # Turn errors are audit records, not provider message roles.
-    if v{"role"}.getStr("") == "error":
-      continue
-    var msg = newJObject()
-    msg["role"] = v{"role"}
-    msg["content"] = v{"content"}
-    for field in ["tool_call_id", "name", "tool_calls", "reasoning"]:
-      if v{field} != nil:
-        msg[field] = v{field}
+    if v{"role"}.getStr("") == "error": continue
     result.nodes.add(CtxNode(source: nsCanonical, id: id,
                              canonicalSeq: seqNo,
                              projectionIndex: result.messages.len))
-    result.messages.add(msg)
-    if v{"role"}.getStr("") == "assistant":
-      if v{"usage"}{"prompt_tokens"} != nil:
-        promptTokens = v{"usage"}{"prompt_tokens"}.getInt(0)
-      let total = v{"usage"}{"total_tokens"}.getInt(0)
-      let completion = v{"usage"}{"completion_tokens"}.getInt(0)
-      if total > 0:
-        contextUsed = total
-      elif promptTokens > 0:
-        contextUsed = promptTokens + completion
-      if v{"context"} != nil:
-        ctxSize = v{"context"}.getInt(0)
+    result.messages.add(providerMessage(v))
+    recoverUsage(v, promptTokens, contextUsed, ctxSize)
   if result.lastSeqNo == 0 and result.messages.len > 0:
     result.lastSeqNo = result.messages.len
 
@@ -597,56 +605,55 @@ proc reindexNodes(p: var Persister) =
   for i in 0 ..< p.nodes.len:
     p.nodes[i].projectionIndex = i
 
-proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
-  ## §5.2 model-free prune: tool results only, whole-result boundaries.
-  ## Over-threshold result text becomes head + omission marker + tail, keeping
-  ## role, tool_call_id, name and every machine field intact. The marker names
-  ## the canonical id — the original stays in the store, so a prune costs one
-  ## recall call at worst and is "undone" by any reload from canonical.
-  ## Reasoning is out of scope: providers reject a modified reasoning field on
-  ## replay. Returns the bytes saved.
-  result = 0
-  for i in 0 ..< p.nodes.len:
-    let n = p.nodes[i]
-    if n.source != nsCanonical: continue
-    if i >= messages.len: break   # defensive: ledger must stay 1:1
-    let m = messages[i]
-    if m{"role"}.getStr("") != "tool": continue
-    let content = m{"content"}.getStr("")
-    if content.len <= pruneThreshold: continue
-    if content.contains("[tool result middle pruned"): continue  # idempotent
-    # §5.3 gate — failure is never worse than the status quo. A result
-    # carrying a spill pointer (the tool capped its transcript body) depends
-    # on its spill document for the FULL capture: verify it exists before
-    # pruning, and name it as the recall target. A store failure or a
-    # missing document abandons the prune for this result — the original
-    # stays. Plain results are always safe: the canonical body is the full
-    # output by construction and canonical is never rewritten.
-    var spillBacked = false
-    if content.contains("[full output:"):
-      try:
-        let item = p.ct.storeGetItem("spill", n.id, 5_000)
-        if item.value == nil or item.value{"text"}.getStr("").len == 0:
-          continue
-        spillBacked = true
-      except CatchableError:
-        continue
-    let head = content[0 ..< pruneHead]
-    let tail = content[^pruneTail .. ^1]
-    let omitted = content.len - pruneHead - pruneTail
-    let refJson = if spillBacked:
-      "{\"ref\": {\"source\": \"spill\", \"id\": \"" & n.id & "\"}}"
-    else:
-      "{\"ref\": {\"source\": \"canonical\", \"id\": \"" & n.id & "\"}}"
-    let body = head & "\n[tool result middle pruned: " & $omitted &
-      " bytes omitted — recall the original with context_recall " & refJson &
-      "]\n" & tail
-    if body.len >= content.len:
-      continue   # §5.4: a notice larger than what it replaces is forbidden
-    messages[i]["content"] = %body
+proc pruneNode(p: var Persister, messages: var seq[JsonNode], i: int,
+               record = true): int =
+  ## Apply the deterministic §5.2 projection edit to one canonical tool
+  ## result. Shared by live admission and projection reload so recorded
+  ## prunes reproduce byte-identically after a runner restart.
+  if i < 0 or i >= p.nodes.len or i >= messages.len: return 0
+  let n = p.nodes[i]
+  if n.source != nsCanonical: return 0
+  let m = messages[i]
+  if m{"role"}.getStr("") != "tool": return 0
+  let content = m{"content"}.getStr("")
+  if content.len <= pruneThreshold or
+      content.contains("[tool result middle pruned"):
+    return 0
+  # §5.3 gate — failure is never worse than the status quo. A result
+  # carrying a spill pointer depends on its durable spill document for the
+  # full capture; storage failure keeps the original un-pruned.
+  var spillBacked = false
+  if content.contains("[full output:"):
+    try:
+      let item = p.ct.storeGetItem("spill", n.id, 5_000)
+      if item.value == nil or item.value{"text"}.getStr("").len == 0:
+        return 0
+      spillBacked = true
+    except CatchableError:
+      return 0
+  let head = content[0 ..< pruneHead]
+  let tail = content[^pruneTail .. ^1]
+  let omitted = content.len - pruneHead - pruneTail
+  let refJson = if spillBacked:
+    "{\"ref\": {\"source\": \"spill\", \"id\": \"" & n.id & "\"}}"
+  else:
+    "{\"ref\": {\"source\": \"canonical\", \"id\": \"" & n.id & "\"}}"
+  let body = head & "\n[tool result middle pruned: " & $omitted &
+    " bytes omitted — recall the original with context_recall " & refJson &
+    "]\n" & tail
+  if body.len >= content.len: return 0
+  messages[i]["content"] = %body
+  if record:
     p.prunes.add(PruneRec(id: n.id, bytesBefore: content.len,
                           bytesAfter: body.len))
-    result += content.len - body.len
+  content.len - body.len
+
+proc pruneContext*(p: var Persister, messages: var seq[JsonNode]): int =
+  ## §5.2 model-free prune: tool results only, whole-result boundaries.
+  ## Role, pairing and machine fields stay intact; canonical history is never
+  ## rewritten. Returns measured bytes saved and is idempotent.
+  for i in 0 ..< p.nodes.len:
+    result += p.pruneNode(messages, i)
 
 proc latestUserIndex(p: Persister, messages: seq[JsonNode]): int =
   ## Message index of the newest canonical user request — the turn being
@@ -675,18 +682,27 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
       users.add(i)
   if users.len <= keepTurns: return 0
   let dropEnd = users[users.len - keepTurns]   # first kept user request
-  if dropEnd <= 1: return 0             # nothing between system and the keep line
-  let coveredFrom = p.nodes[1].id
+  # A committed checkpoint is the durable summary of an earlier range and
+  # must survive the no-summary fallback rung (§6.3). Trim only the retained
+  # canonical span after it; without a checkpoint the removable span begins
+  # immediately after the system node as before.
+  let dropStart = if p.nodes.len > 1 and
+                       p.nodes[1].source == nsCheckpoint: 2 else: 1
+  if dropEnd <= dropStart: return 0
+  let coveredFrom = p.nodes[dropStart].id
   let coveredTo = p.nodes[dropEnd - 1].id
-  messages.delete(1 ..< dropEnd)
-  p.nodes.delete(1 ..< dropEnd)
-  result = dropEnd - 1
+  messages.delete(dropStart ..< dropEnd)
+  p.nodes.delete(dropStart ..< dropEnd)
+  result = dropEnd - dropStart
   let notice = %*{"role": "system", "content":
     "[history omitted without summary: dropped " & $result &
     " earlier messages (" & coveredFrom & " .. " & coveredTo &
     ") to fit the model window — the originals remain in canonical history]"}
-  messages.insert(notice, 1)
-  p.nodes.insert(CtxNode(source: nsNotice, id: "", projectionIndex: 1), 1)
+  messages.insert(notice, dropStart)
+  p.nodes.insert(CtxNode(source: nsNotice,
+                         id: p.convId & "#omit-" & $p.canonicalHigh &
+                             "-" & $dropEnd,
+                         projectionIndex: dropStart), dropStart)
   p.reindexNodes()
 
 proc contextTarget(p: Persister): int =
@@ -736,41 +752,11 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
     used = estimateTokens(messages) + toolTokens
   return used <= target
 
-proc checkContext*(p: var Persister, messages: var seq[JsonNode],
-                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
-                   turnId = "", toolTokens = 0): string =
-  ## Admission (§6.1): runs before EVERY provider request, not just at
-  ## user-turn entry — a single turn with 40 tool rounds must be reduced
-  ## mid-turn. Computes the whole candidate request (projection + frozen
-  ## tools) against the hard target; runs the §6.3 ladder when over the
-  ## proactive threshold; returns "" when the request may go out, or a
-  ## context-recovery-required text naming the cause and sizes when even
-  ## the ladder cannot fit it (§6.3 step 3 — the caller fails the turn
-  ## explicitly instead of sending a request that cannot succeed).
-  if p.ctxSize <= 0: return ""   # unknown capacity — overflow recovery owns it
-  let used0 =
-    if p.contextUsed > 0: p.contextUsed
-    elif p.promptTokens > 0: p.promptTokens
-    else: estimateTokens(messages) + toolTokens
-  let pct = int(used0.float * 100.0 / p.ctxSize.float)
-  let trimAt = trimThreshold(p)
-  if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
-    p.ctxWarned = true
-    echo "core: WARNING context at " & $pct & "% — will trim at " &
-         $(int(ctxTrimRatio * 100)) & "%"
-    if onEvent != nil:
-      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
-                            "promptTokens": p.promptTokens,
-                            "usedTokens": used0, "context": p.ctxSize,
-                            "warning": true,
-                            "reason": "warn:threshold"})
-  var used = estimateTokens(messages) + toolTokens
-  if used >= trimAt:
-    discard p.runFallbackLadder(messages, toolTokens, onEvent, turnId)
-    used = estimateTokens(messages) + toolTokens
-  let target = p.contextTarget()
-  if used <= target: return ""
-  # Ladder exhausted (or nothing droppable): name the cause (§6.3).
+proc contextPressureDetail(p: Persister, messages: seq[JsonNode],
+                           used, target, toolTokens: int): string =
+  ## Stable explanation used only after every configured recovery rung has
+  ## had a chance. Pressure itself is not an error: the runner may still
+  ## summarize or trim before it emits context-recovery-required.
   let sysTokens = (if messages.len > 0: estimateTokens(@[messages[0]]) else: 0) +
                   toolTokens
   let lu = p.latestUserIndex(messages)
@@ -780,10 +766,70 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
     cause = "frozen prefix (system prompt + tools) alone exceeds the window"
   elif sysTokens + tailTokens > target:
     cause = "newest indivisible tool group alone exceeds the window"
-  return "context-recovery-required: " & cause &
-    " — request ~" & $used & " tokens vs target " & $target &
+  cause & " — request ~" & $used & " tokens vs target " & $target &
     " (window " & $p.ctxSize & "); enlarge the model context, compact " &
     "explicitly, or continue from selected history"
+
+proc checkContext*(p: var Persister, messages: var seq[JsonNode],
+                   onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                   turnId = "", toolTokens = 0): string =
+  ## Admission (§6.1): runs before EVERY provider request, not just at
+  ## user-turn entry. It performs the lossless prune rung, then returns ""
+  ## when the candidate fits or "pressure:<detail>" when the runner must try
+  ## summarization and/or lossy trim. Keeping those later rungs outside this
+  ## proc establishes the required order (§6.3): prune → configured
+  ## compactor → trim → explicit context-recovery-required.
+  if p.ctxSize <= 0: return ""   # unknown capacity — overflow recovery owns it
+  let used0 =
+    if p.contextUsed > 0: p.contextUsed
+    elif p.promptTokens > 0: p.promptTokens
+    else: estimateTokens(messages) + toolTokens
+  let pct = int(used0.float * 100.0 / p.ctxSize.float)
+  let trimAt = trimThreshold(p)
+  if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
+    p.ctxWarned = true
+    echo "core: WARNING context at " & $pct & "% — will compact/trim at " &
+         $(int(ctxTrimRatio * 100)) & "%"
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "promptTokens": p.promptTokens,
+                            "usedTokens": used0, "context": p.ctxSize,
+                            "warning": true,
+                            "reason": "warn:threshold"})
+  var used = estimateTokens(messages) + toolTokens
+  if used >= trimAt:
+    let saved = p.pruneContext(messages)
+    if saved > 0 and onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "reset:prune", "bytesSaved": saved,
+                            "pruned": p.prunes.len})
+    used = estimateTokens(messages) + toolTokens
+  let target = p.contextTarget()
+  if used <= target: return ""
+  "pressure:" & contextPressureDetail(p, messages, used, target, toolTokens)
+
+proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
+                  toolTokens: int,
+                  onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                  turnId = "") =
+  ## The final lossy rung (§6.3), deliberately separate from admission so a
+  ## replaceable compactor always gets the first chance after lossless prune.
+  let target = p.contextTarget()
+  var used = estimateTokens(messages) + toolTokens
+  for keep in [minKeepTurns, 1]:
+    if used <= target: break
+    let dropped = p.trimTurns(messages, keep)
+    if dropped == 0: continue
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "promptTokens": p.promptTokens,
+                            "usedTokens": used, "context": p.ctxSize,
+                            "trimAt": trimThreshold(p),
+                            "reserveTokens": outputReserve(),
+                            "trimmed": dropped,
+                            "reason": "reset:trim",
+                            "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
+    used = estimateTokens(messages) + toolTokens
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -1029,6 +1075,316 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
                              "durationMs": toolDurationMs,
                              "at": epochTime()})
 
+proc sourceName(source: NodeSource): string =
+  case source
+  of nsCanonical: "canonical"
+  of nsCheckpoint: "checkpoint"
+  of nsNotice: "notice"
+  of nsSystem: "system"
+
+proc snapshotManifestDigest(manifest: JsonNode): string =
+  ## Bind the ordered node ids and the exact message bodies the component
+  ## read. Per-node contentHash fields also let commit validate exactly the
+  ## covered span chosen by the candidate.
+  var body = ""
+  if manifest != nil and manifest.kind == JArray:
+    for n in manifest:
+      body.add(n{"source"}.getStr("") & "\x1f" & n{"id"}.getStr("") &
+               "\x1f" & n{"contentHash"}.getStr("") & "\x1e")
+  contentDigest(body)
+
+proc cleanupSnapshot(ct: CoreTools, metaId: string, pageCount: int) =
+  try: ct.storeDel("compaction_input", metaId)
+  except CatchableError: discard
+  for i in 0 ..< pageCount:
+    try:
+      ct.storeDel("compaction_input",
+        metaId & ":p" & align($i, 6, '0'))
+    except CatchableError:
+      discard
+
+proc sweepCompactionSnapshots(ct: CoreTools, convId: string) =
+  ## Settle orphaned inputs from crashed/timed-out attempts after a grace
+  ## period. Snapshot pages are temporary inputs, never canonical history.
+  try:
+    let items = ct.storeListAll("compaction_input", convId & ":")
+    for item in items:
+      let id = item{"id"}.getStr("")
+      if ":p" in id: continue
+      let value = item{"value"}
+      if value != nil and epochTime() - value{"createdAt"}.getFloat(epochTime()) >
+          snapshotSweepSecs:
+        cleanupSnapshot(ct, id, value{"pageCount"}.getInt(0))
+  except CatchableError:
+    discard
+
+proc attemptCompaction*(ct: CoreTools, p: var Persister,
+                        messages: var seq[JsonNode],
+                        frozenTools: JsonNode,
+                        onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
+                        turnId = "", trigger = "pressure",
+                        cfg = compactionConfigFromEnv()): bool =
+  ## One bounded replacement attempt (§4.4–§6.3): persist and reference a
+  ## verified snapshot, ask the selected replaceable component for a
+  ## candidate, validate it, atomically install one context_projection with
+  ## expectRev, then and only then replace the in-memory covered span. A
+  ## timeout, decline, malformed answer or conflict returns false and leaves
+  ## the old projection installed; the caller proceeds to lossy trim.
+  if cfg.tool.len == 0 or ct.cat.toolSchema(cfg.tool) == nil or
+      messages.len != p.nodes.len:
+    return false
+  sweepCompactionSnapshots(ct, p.convId)
+
+  var ids, sources, roles, callIds, answerIds: seq[string]
+  var manifest = newJArray()
+  for i, n in p.nodes:
+    let m = messages[i]
+    ids.add(n.id)
+    sources.add(sourceName(n.source))
+    roles.add(m{"role"}.getStr(""))
+    var declared: seq[string]
+    let calls = m{"tool_calls"}
+    if calls != nil and calls.kind == JArray:
+      for tc in calls:
+        let id = tc{"id"}.getStr("")
+        if id.len > 0: declared.add(id)
+    callIds.add(declared.join("\x1f"))
+    answerIds.add(if m{"role"}.getStr("") == "tool":
+                    m{"tool_call_id"}.getStr("") else: "")
+    var mn = %*{"index": i, "source": sourceName(n.source), "id": n.id,
+                "role": m{"role"}.getStr(""),
+                "tokens": estimateTokens(@[m]),
+                "contentHash": contentDigest($m)}
+    if n.source == nsCanonical: mn["canonicalSeq"] = %n.canonicalSeq
+    manifest.add(mn)
+  let cuts = permittedCuts(ids, sources, roles, callIds, answerIds)
+  if cuts.len == 0:
+    return false
+  var lastCovered = 1
+  for c in cuts: lastCovered = max(lastCovered, c.index - 1)
+  var contentRows = newJArray()
+  for i in 1 .. lastCovered:
+    contentRows.add(%*{"index": i, "source": sources[i], "id": ids[i],
+                       "message": messages[i]})
+  let contentJson = $contentRows
+  let pages = chunkSnapshotContent(contentJson)
+  let attemptId = newId()
+  let metaId = p.convId & ":" & attemptId
+  let digest = snapshotManifestDigest(manifest)
+  var cutsJson = newJArray()
+  for c in cuts:
+    var retainedTokens = estimateTokens(messages[c.index .. ^1])
+    if c.fromIndex > 1:
+      retainedTokens += estimateTokens(messages[1 ..< c.fromIndex])
+    cutsJson.add(%*{
+      "fromIndex": c.fromIndex, "index": c.index,
+      "cutBefore": {"source": c.source, "id": c.id},
+      "covered": {
+        "from": {"source": sources[c.fromIndex], "id": ids[c.fromIndex]},
+        "to": {"source": sources[c.index - 1], "id": ids[c.index - 1]}
+      },
+      "tailTokens": retainedTokens
+    })
+  let target = p.contextTarget()
+  let fixedPrefix = estimateTokens(@[messages[0]]) + ($frozenTools).len div 4
+  let preferredTail = if target > 0: max(target div 5, 1) else: 0
+  var meta = %*{
+    "version": 1, "attemptId": attemptId, "sessionId": p.convId,
+    "trigger": trigger, "createdAt": epochTime(),
+    "generation": p.generation, "canonicalHigh": p.canonicalHigh,
+    "digest": digest, "manifest": manifest,
+    "systemPrompt": messages[0], "tools": frozenTools,
+    "permittedCuts": cutsJson, "pageCount": pages.len,
+    "contentBytes": contentJson.len,
+    "target": {"targetInputTokens": target,
+               "fixedPrefixTokens": fixedPrefix,
+               "preferredTailTokens": preferredTail}
+  }
+  # The previously normalized checkpoint is repeated explicitly for
+  # replacement components; it is also present in page content as the
+  # rendered checkpoint node. This makes merge intent unambiguous.
+  if p.generation > 0:
+    try:
+      let old = ct.storeGetItem("context_projection", p.convId)
+      if old.value == nil or
+          old.value{"generation"}.getInt(-1) != p.generation or
+          old.value{"checkpoint"} == nil:
+        return false
+      meta["previousCheckpoint"] = old.value{"checkpoint"}
+    except CatchableError:
+      return false
+  try:
+    discard ct.storePutRev("compaction_input", metaId, meta)
+    for i, page in pages:
+      discard ct.storePutRev("compaction_input",
+        metaId & ":p" & align($i, 6, '0'),
+        %*{"index": i, "bytes": page.len, "digest": contentDigest(page),
+           "content": page, "createdAt": epochTime()})
+  except CatchableError as e:
+    cleanupSnapshot(ct, metaId, pages.len)
+    echo "core: WARNING compaction snapshot not persisted: " & e.msg
+    return false
+  var settled = false
+  defer:
+    if settled: cleanupSnapshot(ct, metaId, pages.len)
+
+  let request = %*{
+    "version": 1, "sessionId": p.convId, "attemptId": attemptId,
+    "trigger": trigger,
+    "snapshot": {
+      "ref": {"kind": "compaction_input", "id": metaId},
+      "generation": p.generation, "canonicalHigh": p.canonicalHigh,
+      "digest": digest
+    },
+    "budget": {
+      "targetInputTokens": target, "fixedPrefixTokens": fixedPrefix,
+      "preferredTailTokens": preferredTail,
+      "maxSummaryTokens": cfg.maxSummaryTokens,
+      "maxLlmCalls": cfg.maxLlmCalls,
+      "maxTotalInputTokens": (if target > 0: %(target * cfg.maxLlmCalls)
+                               else: newJNull()),
+      "maxTotalOutputTokens": cfg.maxSummaryTokens * cfg.maxLlmCalls,
+      "timeoutMs": cfg.timeoutMs
+    }
+  }
+  var cand: JsonNode
+  try:
+    cand = ct.dispatchToolCall(cfg.tool, request, cfg.timeoutMs)
+  except CatchableError as e:
+    # The component can still be unwinding after our request deadline. Leave
+    # its pages for the startup/next-attempt grace-period sweep rather than
+    # deleting input under a timed-out reader.
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:failed", "error": e.msg})
+    return false
+  settled = true
+  # Resolve the claimed boundary first; the pure validator then checks that
+  # the candidate names the exact implied covered range.
+  var cutIdx = -1
+  var coveredFrom = -1
+  let cb = cand{"cutBefore"}
+  if cb != nil:
+    for c in cuts:
+      if c.id == cb{"id"}.getStr("") and
+          c.source == cb{"source"}.getStr(""):
+        cutIdx = c.index
+        coveredFrom = c.fromIndex
+        break
+  let coveredTo = if cutIdx >= 2: cutIdx - 1 else: 1
+  let checked = validateCandidate(cand, attemptId, p.generation, digest,
+    cuts, coveredFrom, coveredTo, ids, sources, roles)
+  case checked.status
+  of csDeclined:
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:declined",
+                            "detail": checked.declineReason})
+    return false
+  of csInvalid:
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:invalid",
+                            "detail": checked.detail})
+    return false
+  of csCandidate:
+    discard
+  if coveredFrom < 1 or cutIdx <= coveredFrom: return false
+  # Covered nodes must still be byte-identical to the persisted snapshot.
+  # A concurrent steer may append outside the cut, but replacement never
+  # installs over a changed covered span (§6.1).
+  for i in coveredFrom ..< cutIdx:
+    if manifest[i]{"contentHash"}.getStr("") != contentDigest($messages[i]):
+      if onEvent != nil:
+        onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                              "reason": "compact:stale"})
+      return false
+
+  let newGeneration = p.generation + 1
+  let rendered = renderCheckpoint(checked.checkpoint, newGeneration,
+                                  ids[coveredFrom], ids[cutIdx - 1])
+  let coveredTokens = estimateTokens(messages[coveredFrom ..< cutIdx])
+  let renderedTokens = estimateTokens(@[%*{"role": "user", "content": rendered}])
+  if not strictlyReduces(coveredTokens, renderedTokens):
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:invalid",
+                            "detail": "checkpoint does not strictly reduce the covered span"})
+    return false
+
+  var retained: seq[string]
+  for i in 1 ..< p.nodes.len:
+    if (i < coveredFrom or i >= cutIdx) and
+        p.nodes[i].source == nsCanonical:
+      retained.add(p.nodes[i].id)
+  var pruneJson = newJArray()
+  for pr in p.prunes:
+    if pr.id in retained:
+      var refSource = "canonical"
+      for i, n in p.nodes:
+        if n.id == pr.id and i < messages.len and
+            messages[i]{"content"}.getStr("").contains(
+              "\"source\": \"spill\""):
+          refSource = "spill"
+          break
+      pruneJson.add(%*{"ref": {"source": refSource, "id": pr.id},
+                       "bytesBefore": pr.bytesBefore,
+                       "bytesAfter": pr.bytesAfter})
+  let record = buildProjectionRecord(newGeneration, p.canonicalHigh,
+    checked.checkpoint, ids[coveredFrom], ids[cutIdx - 1], retained, pruneJson,
+    %*{"promptTokensBefore": estimateTokens(messages),
+       "promptTokensAfter": estimateTokens(messages) - coveredTokens + renderedTokens,
+       "coveredTokens": coveredTokens, "checkpointTokens": renderedTokens},
+    %*{"tool": cfg.tool, "attemptId": attemptId, "trigger": trigger,
+       "llmCalls": cand{"provenance"}{"llmCalls"}.getInt(0),
+       "model": cand{"provenance"}{"model"}.getStr("")})
+  try:
+    let old = ct.storeGetItem("context_projection", p.convId)
+    if old.value != nil and old.value{"generation"}.getInt(-1) != p.generation:
+      return false
+    if old.value == nil and p.generation != 0:
+      return false
+    discard ct.storePutRev("context_projection", p.convId, record,
+                           expectRev = old.rev)
+  except CatchableError as e:
+    echo "core: WARNING compaction projection commit failed: " & e.msg
+    return false
+
+  # Commit order matters: only an acknowledged projection put authorizes the
+  # in-memory replacement. A crash before the put reloads canonical; a crash
+  # after it reloads this checkpoint (§8 durability fixture).
+  var retainedMessages: seq[JsonNode] = @[messages[0]]
+  var retainedNodes: seq[CtxNode] = @[
+    CtxNode(source: nsSystem, id: "", projectionIndex: 0)]
+  retainedMessages.add(%*{"role": "user", "content": rendered})
+  retainedNodes.add(CtxNode(source: nsCheckpoint,
+    id: p.convId & "#ck" & $newGeneration, projectionIndex: 1))
+  for i in 1 ..< p.nodes.len:
+    if i >= coveredFrom and i < cutIdx: continue
+    # An older checkpoint is merged by the component and superseded by the
+    # new generation. Canonical retained entries remain in canonical order.
+    if p.nodes[i].source == nsCheckpoint: continue
+    retainedMessages.add(messages[i])
+    var n = p.nodes[i]
+    n.projectionIndex = retainedMessages.high
+    retainedNodes.add(n)
+  messages = retainedMessages
+  p.nodes = retainedNodes
+  p.prunes = p.prunes.filterIt(it.id in retained)
+  p.generation = newGeneration
+  p.reindexNodes()
+  p.contextUsed = 0
+  p.promptTokens = 0
+  p.ctxWarned = false
+  if onEvent != nil:
+    onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                          "reason": "reset:compact",
+                          "generation": newGeneration,
+                          "covered": record{"covered"},
+                          "beforeTokens": record{"measurements"}{"promptTokensBefore"},
+                          "afterTokens": record{"measurements"}{"promptTokensAfter"}})
+  true
+
 proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               modelOverride: string,
               exposure: var ToolExposure,
@@ -1189,10 +1545,32 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       promptToolsJson = filtered
     let toolsJson = promptToolsJson.formatToolsForLlm()
     let toolTokens = ($toolsJson).len div 4
-    # Admission (§6.1): prune/trim mid-turn, or fail the turn explicitly
-    # rather than send a request that cannot fit.
-    let recovery = checkContext(p, messages, onEvent, turnId, toolTokens)
-    if recovery.len > 0:
+    # Admission (§6.1/§6.3): lossless prune runs first. At pressure a
+    # configured replaceable compactor gets the next chance; only a decline,
+    # invalid answer, timeout or still-oversized checkpoint falls through to
+    # lossy trim. Never send a request the measured target cannot hold.
+    var verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
+    if verdict.startsWith("pressure:"):
+      let ccfg = compactionConfigFromEnv()
+      if ccfg.tool.len > 0 and ct.cat.toolSchema(ccfg.tool) != nil:
+        discard attemptCompaction(ct, p, messages, promptToolsJson, onEvent,
+                                  turnId, "pressure", ccfg)
+        # Steering/advice received while the auxiliary call was in flight is
+        # append-only history. Fold it in after settlement and re-admit the
+        # complete candidate before either trim or provider dispatch (§6.1).
+        discard drainSteer(ct, p, messages, onEvent, turnId)
+        discard drainAdvisories(ct, p, messages, onEvent, turnId)
+        verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
+      if verdict.startsWith("pressure:"):
+        runTrimRung(p, messages, toolTokens, onEvent, turnId)
+        verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
+    if verdict.len > 0:
+      let detail = if verdict.startsWith("pressure:"):
+                     verdict["pressure:".len .. ^1]
+                   else: verdict
+      let recovery = if detail.startsWith("context-recovery-required:"):
+                       detail
+                     else: "context-recovery-required: " & detail
       p.persistMsg(%*{"role": "error", "content": recovery,
                       "error": "context-recovery-required", "turnId": turnId})
       turnError = recovery
@@ -1250,7 +1628,22 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             if window > 0:
               p.ctxSize = window
               p.ctxWarned = false
-          if p.runFallbackLadder(messages, toolTokens, onEvent, turnId):
+          var overflowVerdict =
+            checkContext(p, messages, onEvent, turnId, toolTokens)
+          if overflowVerdict.startsWith("pressure:"):
+            let ccfg = compactionConfigFromEnv()
+            if ccfg.tool.len > 0 and ct.cat.toolSchema(ccfg.tool) != nil:
+              discard attemptCompaction(ct, p, messages, promptToolsJson,
+                                        onEvent, turnId, "overflow", ccfg)
+              discard drainSteer(ct, p, messages, onEvent, turnId)
+              discard drainAdvisories(ct, p, messages, onEvent, turnId)
+              overflowVerdict =
+                checkContext(p, messages, onEvent, turnId, toolTokens)
+            if overflowVerdict.startsWith("pressure:"):
+              runTrimRung(p, messages, toolTokens, onEvent, turnId)
+              overflowVerdict =
+                checkContext(p, messages, onEvent, turnId, toolTokens)
+          if overflowVerdict.len == 0:
             if onEvent != nil:
               onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
                                  "reason": "context-overflow",
@@ -1676,33 +2069,137 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     var pt = 0
     var used = 0
     var cs = 0
-    let (stored, storedNodes, lastSeqNo) =
-      loadStoredMessagesEx(ct, sessionId, pt, used, cs)
-    for m in stored:
-      entry.messages.add(m)
+    # §6.2 reload: a valid projection is the durable source of truth for
+    # the provider view. Read it before paging canonical history so the
+    # covered span can be skipped at the store cursor rather than loaded and
+    # heuristically re-trimmed. A malformed/dangling projection is explicit
+    # recovery-required — silently falling back would resurrect covered
+    # history and can overflow immediately after restart.
+    sweepCompactionSnapshots(ct, sessionId)
+    var projection: JsonNode
+    try:
+      projection = ct.storeGetItem("context_projection", sessionId).value
+    except CatchableError as e:
+      return %*{"error": "context-recovery-required: cannot read context projection: " & e.msg}
+    var stored: seq[JsonNode]
+    var storedNodes: seq[CtxNode]
+    var lastSeqNo = 0
+    let projectedHigh = if projection != nil:
+                          projection{"canonicalHigh"}.getInt(0)
+                        else: 0
+    if projection != nil:
+      if projection.kind != JObject or projection{"version"}.getInt(0) != 1 or
+          projection{"renderer"}.getStr("") != rendererId or
+          projection{"generation"}.getInt(0) < 1 or projectedHigh < 1 or
+          projection{"checkpoint"} == nil or
+          projection{"checkpoint"}.kind != JObject:
+        return %*{"error": "context-recovery-required: context projection is malformed or uses an unsupported renderer"}
+      let coveredTo = projection{"covered"}{"to"}.getStr("")
+      if coveredTo.len == 0 or ct.storeGetItem("message", coveredTo).value == nil:
+        return %*{"error": "context-recovery-required: context projection covered.to does not resolve: " & coveredTo}
+      let coveredSeq = canonicalSeqOf(coveredTo)
+      if coveredSeq <= 0 or coveredSeq > projectedHigh:
+        return %*{"error": "context-recovery-required: context projection canonicalHigh is inconsistent with covered.to"}
+      # Retained is authoritative and may include canonical prefix nodes
+      # before a middle-span autonomous cut. Resolve it exactly, in canonical
+      # order, without reading the covered range into provider context.
+      let retainedNode = projection{"retained"}
+      if retainedNode == nil or retainedNode.kind != JArray or retainedNode.len == 0:
+        return %*{"error": "context-recovery-required: context projection has no retained canonical tail"}
+      var previousSeq = 0
+      for idNode in retainedNode:
+        let id = idNode.getStr("")
+        let seqNo = canonicalSeqOf(id)
+        if id.len == 0 or seqNo <= previousSeq or seqNo > projectedHigh:
+          return %*{"error": "context-recovery-required: context projection has an invalid or unordered retained ref"}
+        let v = ct.storeGetItem("message", id).value
+        if v == nil or v{"role"}.getStr("") == "error":
+          return %*{"error": "context-recovery-required: retained projection ref does not resolve to a provider message: " & id}
+        storedNodes.add(CtxNode(source: nsCanonical, id: id,
+          canonicalSeq: seqNo, projectionIndex: stored.len))
+        stored.add(providerMessage(v))
+        recoverUsage(v, pt, used, cs)
+        previousSeq = seqNo
+      # A legal cut keeps a non-empty tail, so the final retained canonical
+      # id is the commit's high-water mark. This proves canonicalHigh does
+      # not point beyond stored history without replaying covered documents.
+      if previousSeq != projectedHigh:
+        return %*{"error": "context-recovery-required: context projection canonicalHigh is beyond its retained history"}
+      # Canonical appends after the projection commit are a separate paged
+      # range (§6.2/§6.4); they are not part of the retained checksum/list.
+      let highKey = sessionId & ":" & align($projectedHigh, 6, '0')
+      let appended = loadStoredMessagesEx(ct, sessionId, pt, used, cs,
+                                           after = highKey)
+      let base = stored.len
+      for m in appended.messages: stored.add(m)
+      for i, node0 in appended.nodes:
+        var node = node0
+        node.projectionIndex = base + i
+        storedNodes.add(node)
+      lastSeqNo = max(projectedHigh, appended.lastSeqNo)
+      let generation = projection{"generation"}.getInt(0)
+      let rendered = renderCheckpoint(projection{"checkpoint"}, generation,
+        projection{"covered"}{"from"}.getStr(""), coveredTo)
+      entry.messages.add(%*{"role": "user", "content": rendered})
+    else:
+      let ordinary = loadStoredMessagesEx(ct, sessionId, pt, used, cs)
+      stored = ordinary.messages
+      storedNodes = ordinary.nodes
+      lastSeqNo = ordinary.lastSeqNo
+    for m in stored: entry.messages.add(m)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
     # cache metrics survive a runner restart. seqNo continues after the
     # highest stored id (not the loaded count — error-role records are
     # excluded from the list but own ids the next persist must not reuse).
     var p = Persister(
-      ct: ct, convId: sessionId, seqNo: lastSeqNo,
+      ct: ct, convId: sessionId, seqNo: max(lastSeqNo, projectedHigh),
       promptTokens: pt, contextUsed: used, ctxSize: cs,
       cachePrompt: header{"cachePrompt"}.getInt(0),
-      cacheRead: header{"cacheRead"}.getInt(0))
-    # Context identity (§4.2): the system prompt is the frozen nsSystem
-    # node (rebuilt from the header, never store-resolvable); every stored
-    # message becomes a canonical node carrying its store key. The loader's
-    # projectionIndex is relative to its own list — here the system message
-    # sits at position 0, so stored nodes re-index +1 to stay 1:1 with
-    # entry.messages. canonicalHigh is the last canonical node's seq — the
-    # boundary appends continue after.
+      cacheRead: header{"cacheRead"}.getInt(0),
+      generation: (if projection != nil:
+                     projection{"generation"}.getInt(0) else: 0))
+    # Context identity (§4.2): system, optional durable checkpoint, exact
+    # retained canonical ids, then paged canonical appends after canonicalHigh.
+    # projectionIndex is rebuilt from this actual provider projection, not
+    # inferred from store offsets. The record's canonicalHigh validates its committed surface;
+    # canonical messages appended after that commit are also represented and
+    # advance the in-memory high-water mark before the next snapshot.
     p.nodes = @[CtxNode(source: nsSystem, id: "", projectionIndex: 0)]
+    var storedOffset = 1
+    if projection != nil:
+      p.nodes.add(CtxNode(source: nsCheckpoint,
+        id: sessionId & "#ck" & $p.generation, projectionIndex: 1))
+      storedOffset = 2
     for i, n in storedNodes:
       var node = n
-      node.projectionIndex = i + 1
+      node.projectionIndex = i + storedOffset
       p.nodes.add(node)
-    if storedNodes.len > 0:
+    if projection != nil:
+      p.canonicalHigh = projectedHigh
+      if storedNodes.len > 0:
+        p.canonicalHigh = max(p.canonicalHigh, storedNodes[^1].canonicalSeq)
+      let prunes = projection{"prunes"}
+      if prunes != nil and prunes.kind == JArray:
+        for pr in prunes:
+          p.prunes.add(PruneRec(
+            id: pr{"ref"}{"id"}.getStr(pr{"id"}.getStr("")),
+            bytesBefore: pr{"bytesBefore"}.getInt(0),
+            bytesAfter: pr{"bytesAfter"}.getInt(0)))
+      # Reapply exactly the recorded projection edits. The same deterministic
+      # routine verifies spill durability again; any missing ref or byte drift
+      # makes the projection explicitly unrecoverable rather than quietly
+      # sending a different prompt after restart.
+      for pr in p.prunes:
+        var idx = -1
+        for i, n in p.nodes:
+          if n.id == pr.id: idx = i; break
+        if idx < 0 or entry.messages[idx]{"content"}.getStr("").len !=
+            pr.bytesBefore or p.pruneNode(entry.messages, idx,
+                                         record = false) <= 0 or
+            entry.messages[idx]{"content"}.getStr("").len != pr.bytesAfter:
+          return %*{"error": "context-recovery-required: projection prune ref cannot be reproduced: " & pr.id}
+    elif storedNodes.len > 0:
       p.canonicalHigh = storedNodes[^1].canonicalSeq
     entry.persister = p
     # Tool profile (optional, first call only): resolved into the direct
