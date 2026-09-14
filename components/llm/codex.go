@@ -324,7 +324,7 @@ func responseUsage(usage openai.ResponseUsage) openai.Usage {
 }
 
 func emitLLMToken(c *sdk.Component, args chatArgs, content, reasoning string) {
-	if c == nil || !args.Stream || args.SessionID == "" || content == "" && reasoning == "" {
+	if c == nil || !args.Stream || !args.emitTokens() || args.SessionID == "" || content == "" && reasoning == "" {
 		return
 	}
 	_ = c.Emit("ev.llm.token", map[string]any{

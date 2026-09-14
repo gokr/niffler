@@ -259,6 +259,24 @@ func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	}
 }
 
+func TestChatArgsAuxiliaryControls(t *testing.T) {
+	var args chatArgs
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"x"}],"sessionId":"compaction.s.a","cancelId":"cancel.s.a","stream":true,"emitTokens":false,"purpose":"compaction"}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args.SessionID != "compaction.s.a" || args.CancelID != "cancel.s.a" ||
+		args.Purpose != "compaction" || !args.Stream || args.emitTokens() {
+		t.Fatalf("auxiliary args decoded incorrectly: %+v", args)
+	}
+	var ordinary chatArgs
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"x"}]}`), &ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if !ordinary.emitTokens() {
+		t.Fatal("emitTokens must default to true for ordinary turns")
+	}
+}
+
 func TestChatArgsRestoresReasoningContent(t *testing.T) {
 	var args chatArgs
 	if err := json.Unmarshal([]byte(`{"messages":[{"role":"assistant","content":null,"reasoning":"checked the tools","tool_calls":[{"id":"c1","type":"function","function":{"name":"list","arguments":"{}"}}]}]}`), &args); err != nil {

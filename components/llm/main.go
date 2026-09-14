@@ -12,12 +12,13 @@
 // provider.
 //
 // Protocol (evolved from llm-openai, same result shape):
-//   chat {messages, tools?, model?, provider?, sessionId?, stream?}
+//   chat {messages, tools?, model?, provider?, sessionId?, stream?,
+//         cancelId?, emitTokens?, purpose?}
 //   → result {content, reasoning?, tool_calls?, model, context, usage?}
 //   stream: true additionally emits ev.llm.token {sessionId, content,
-//   reasoning} frames (deltas) while generating.
-//   Cancellation: publish an envelope to llm.cancel.<sessionId> to abort
-//   the in-flight streaming call.
+//   reasoning} frames unless emitTokens is false.
+//   Cancellation: publish an envelope to llm.cancel.<cancelId> (or the
+//   session id when cancelId is omitted) to abort the in-flight call.
 
 package main
 
@@ -86,9 +87,9 @@ const defaultOutput = 32768
 // fallback applies to a 512k model (bench: full27-syn-large-* ran with
 // context 128000; the model serves 524288 per Synthetic's catalog).
 var knownContext = map[string]int{
-	"deepseek-chat":          1000000,
-	"deepseek-reasoner":      1000000,
-	"syn:large:text":         524288,
+	"deepseek-chat":         1000000,
+	"deepseek-reasoner":     1000000,
+	"syn:large:text":        524288,
 	"zai-org/glm-5.3-flash": 524288,
 }
 
@@ -418,7 +419,18 @@ type chatArgs struct {
 	Model     string        `json:"model"`
 	Provider  string        `json:"provider"`
 	SessionID string        `json:"sessionId"`
-	Stream    bool          `json:"stream"`
+	// CancelID is the cancellation correlation id. It is deliberately separate
+	// from SessionID so an auxiliary compaction request cannot be cancelled by
+	// the user's turn stop (or cancel that turn itself).
+	CancelID string `json:"cancelId"`
+	Stream   bool   `json:"stream"`
+	// EmitTokens controls publication of ev.llm.token frames. Auxiliary calls
+	// stream internally for cancellation but set this false so their partial
+	// output never appears as assistant text in the live conversation.
+	EmitTokens *bool `json:"emitTokens"`
+	// Purpose is telemetry/accounting metadata only; it never changes provider
+	// behavior or tool exposure.
+	Purpose string `json:"purpose"`
 	// ReasoningEffort forwards a per-turn thinking-effort selection
 	// ("low"|"medium"|"high"|"max"); empty = provider default. Only sent to the
 	// API when set — providers that do not support reasoning_effort
@@ -428,6 +440,10 @@ type chatArgs struct {
 	// JSON verdicts). It only ever lowers the provider/catalog default,
 	// never raises it; 0 = no cap.
 	MaxTokens int `json:"maxTokens"`
+}
+
+func (a chatArgs) emitTokens() bool {
+	return a.EmitTokens == nil || *a.EmitTokens
 }
 
 func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
@@ -446,13 +462,18 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 
 	// The cancellation side-channel is subscribed before provider/model/context
 	// resolution: a cancel published during that window must still abort the
-	// stream (NATS events are not durable).
+	// stream (NATS events are not durable). cancelId keeps auxiliary calls
+	// independent from the live conversation turn.
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
 	var unsub func()
-	if args.Stream && args.SessionID != "" {
+	cancelID := args.CancelID
+	if cancelID == "" {
+		cancelID = args.SessionID
+	}
+	if args.Stream && cancelID != "" {
 		var err error
-		unsub, err = c.Subscribe("llm.cancel."+args.SessionID, func(subject string, payload json.RawMessage) {
+		unsub, err = c.Subscribe("llm.cancel."+cancelID, func(subject string, payload json.RawMessage) {
 			streamCancel()
 		})
 		if err != nil {
@@ -661,8 +682,8 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 	if resp.Usage.CompletionTokens > 0 && total > 0 {
 		tps = float64(resp.Usage.CompletionTokens) / total.Seconds()
 	}
-	log.Printf("INFO chat provider=%s model=%s effort=%s ttft=n/a dur=%s prompt=%d completion=%d tok/s=%.1f status=ok",
-		providerName, usedModel, effort, total.Truncate(time.Millisecond),
+	log.Printf("INFO chat purpose=%s provider=%s model=%s effort=%s ttft=n/a dur=%s prompt=%d completion=%d tok/s=%.1f status=ok",
+		args.Purpose, providerName, usedModel, effort, total.Truncate(time.Millisecond),
 		resp.Usage.PromptTokens, resp.Usage.CompletionTokens, tps)
 	return resultJSON(providerName, usedModel, contextSize, msg.Content,
 		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
@@ -741,8 +762,8 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		if effort == "" {
 			effort = "default"
 		}
-		log.Printf("INFO chat provider=%s model=%s effort=%s ttft=%s dur=%s prompt=%d completion=%d tok/s=%.1f reasoning_chars=%d status=%s",
-			providerName, model, effort, ttft.Truncate(time.Millisecond), total.Truncate(time.Millisecond),
+		log.Printf("INFO chat purpose=%s provider=%s model=%s effort=%s ttft=%s dur=%s prompt=%d completion=%d tok/s=%.1f reasoning_chars=%d status=%s",
+			args.Purpose, providerName, model, effort, ttft.Truncate(time.Millisecond), total.Truncate(time.Millisecond),
 			usage.PromptTokens, usage.CompletionTokens, tps, reasoningChars, status)
 	}
 
@@ -789,7 +810,8 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 			ttft = time.Since(startedAt)
 		}
 		// one token frame per chunk with anything to show
-		if args.SessionID != "" && (delta.Content != "" || delta.reasoning() != "") {
+		if args.emitTokens() && args.SessionID != "" &&
+			(delta.Content != "" || delta.reasoning() != "") {
 			_ = c.Emit("ev.llm.token", map[string]any{
 				"sessionId": args.SessionID,
 				"content":   delta.Content,
@@ -954,9 +976,15 @@ func main() {
 			"provider": map[string]any{"type": "string",
 				"description": "Provider nickname from NIF_LLM_PROVIDERS (default: the provider component's active provider, else NIF_OPENAI_*)"},
 			"sessionId": map[string]any{"type": "string",
-				"description": "Session handle for ev.llm.token routing and llm.cancel.<sessionId> cancellation"},
+				"description": "Session handle for token routing and provider correlation"},
+			"cancelId": map[string]any{"type": "string",
+				"description": "Optional cancellation subject suffix; defaults to sessionId. Auxiliary callers use a distinct id."},
 			"stream": map[string]any{"type": "boolean",
-				"description": "Emit ev.llm.token {sessionId, content, reasoning} frames while generating (default false)"},
+				"description": "Stream internally while generating (default false)"},
+			"emitTokens": map[string]any{"type": "boolean",
+				"description": "Publish ev.llm.token frames (default true; false for auxiliary calls)"},
+			"purpose": map[string]any{"type": "string",
+				"description": "Telemetry purpose only, for example compaction"},
 			"reasoning_effort": map[string]any{"type": "string",
 				"description": "Backend reasoning effort (low/medium/high/max); omitted when empty = provider default"},
 			"maxTokens": map[string]any{"type": "integer",
