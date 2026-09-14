@@ -430,6 +430,15 @@ provider request, but sets `emitTokens: false`; its request loop relays
 `cancel.compaction` to the distinct `llm.cancel.<cancelId>` subject. Ordinary
 turns retain the old `cancelId` fallback and publish tokens by default.
 
+`tests/compaction_contract/fixture.nim` is the interchangeability fixture. It
+reads only the verified input metadata, returns a deterministic contract-v1
+candidate under `fixture_compaction_propose`, and never writes a projection.
+The integration test first commits with the default compactor, restarts with
+the fixture selected, then compacts the same conversation again. This proves
+that implementation identity is not persisted as runner behavior: the new
+component reloads and advances the prior projection through the same validator,
+renderer, optimistic commit, and canonical-retention rules.
+
 Deadlines are the runner's; the compactor may request a *smaller* one, never a
 larger one.
 
@@ -723,7 +732,7 @@ correctness, latency and cache rebuilds — not just token reduction.
 | 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
 | 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam — ☑ LANDED (contract-v1 snapshots/pages/digests, strict candidate validator, runner-owned checkpoint renderer, optimistic `context_projection` commit/reload, `x-harness.runner` allowlist seam, shipped `compaction_propose`; restart/second-generation/recall/corrupt-projection fixtures) |
 | 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it — ☑ LANDED (distinct cancellation relay, internal streaming with suppressed token frames, purpose telemetry, end-to-end cancellation fixture) |
-| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam |
+| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam — ☑ LANDED (LLM-free fixture under a second tool name, projection reload across implementations, cancellation/crash/recovery coverage) |
 
 Steps 0–3 are shippable independently and already improve reliability; step 4
 is the summarization upgrade; step 5 is the plumbing that makes the default
