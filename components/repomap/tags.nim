@@ -23,8 +23,10 @@ type
     relFname*: string
     fname*: string
     line*: int          # zero-based; -1 for refs without a meaningful row
+    col*: int           # zero-based column of the name; -1 when unknown
     name*: string
     kind*: TagKind
+    symKind*: string    # def tags: function/method/class/type/const/proc/...
 
 const LANGUAGE_VERSION_MAX = 15  # ts_parser_set_language rejects ABI mismatch
 
@@ -63,7 +65,7 @@ proc grammarFor(ext: string): Grammar =
   g
 
 proc classify(q: ptr TsQuery, captures: seq[TsQueryCapture]):
-    tuple[kind: TagKind, node: TsNode] =
+    tuple[kind: TagKind, node: TsNode, symKind: string] =
   ## Both capture conventions:
   ## - aider/language-pack: "name.definition.function" / "name.reference.call"
   ##   carry the identifier node themselves
@@ -73,18 +75,18 @@ proc classify(q: ptr TsQuery, captures: seq[TsQueryCapture]):
   for c in captures:
     let cn = q.captureName(c.index)
     if cn.startsWith("name.definition."):
-      return (kDef, c.node)
+      return (kDef, c.node, cn["name.definition.".len ..< cn.len])
     if cn.startsWith("name.reference."):
-      return (kRef, c.node)
+      return (kRef, c.node, cn["name.reference.".len ..< cn.len])
     if cn == "name":
       nameNode = c.node
   for c in captures:
     let cn = q.captureName(c.index)
     if nameNode.id != nil and cn.startsWith("definition."):
-      return (kDef, nameNode)
+      return (kDef, nameNode, cn["definition.".len ..< cn.len])
     if nameNode.id != nil and cn.startsWith("reference."):
-      return (kRef, nameNode)
-  (kDef, TsNode())  # no recognizable pair — caller skips on null id
+      return (kRef, nameNode, cn["reference.".len ..< cn.len])
+  (kDef, TsNode(), "")  # no recognizable pair — caller skips on null id
 
 proc leadingIdent(s: string): string =
   for ch in s:
@@ -114,13 +116,14 @@ proc extractTsTags(ext, source, fname, relFname: string): seq[Tag] =
     var caps: seq[TsQueryCapture]
     for i in 0 ..< m.captureCount.int:
       caps.add(m.captures[i])
-    let (kind, node) = classify(q, caps)
+    let (kind, node, symKind) = classify(q, caps)
     if node.id == nil: continue
     let name = node.nodeText(source)
     if name.len == 0: continue
     result.add(Tag(relFname: relFname, fname: fname,
-                   line: node.ts_node_start_point().row.int, name: name,
-                   kind: kind))
+                   line: node.ts_node_start_point().row.int,
+                   col: node.ts_node_start_point().column.int,
+                   name: name, kind: kind, symKind: symKind))
 
 # ---------------------------------------------------------------------------
 # native Nim tier (.nim/.nims — the 40 MB grammar problem, regex'd instead)
@@ -149,16 +152,19 @@ proc extractNimTags(source, fname, relFname: string): seq[Tag] =
     if indent == line.len: continue
     let body = line[indent ..< line.len]
     var name = ""
+    var symKind = ""
     for kw in ["proc", "func", "method", "iterator", "macro", "template",
                "converter"]:
       if body.startsWith(kw & " "):
         let rest = body[(kw.len + 1) ..< body.len]
+        symKind = kw
         name = if rest.startsWith("`"):
           let tick = rest.find('\x60', 1)
           (if tick > 1: rest[1 ..< tick] else: "")
         else: leadingIdent(rest)
         break
     if name.len == 0 and indent <= 2 and body.startsWith("type "):
+      symKind = "type"
       name = leadingIdent(body[5 ..< body.len])
     if name.len == 0 and indent <= 8 and '=' in body:
       # "Name* = object" / "Name = enum" style inside a type section
@@ -169,15 +175,18 @@ proc extractNimTags(source, fname, relFname: string): seq[Tag] =
           (rhs.startsWith("object") or rhs.startsWith("ref") or
            rhs.startsWith("enum") or rhs.startsWith("distinct") or
            rhs.startsWith("tuple") or rhs.startsWith("concept")):
+        symKind = "type"
         name = lhs.replace("*", "")
     if name.len == 0 and indent == 0 and
         (body.startsWith("const ") or body.startsWith("let ")):
       var rest = body[(if body.startsWith("const"): 6 else: 4) ..< body.len]
       if rest.startsWith("*"): rest = rest[1 ..< rest.len]
+      symKind = if body.startsWith("const"): "const" else: "let"
       name = leadingIdent(strip(rest))
     if name.len > 0 and name notin nimKeywords:
       result.add(Tag(relFname: relFname, fname: fname, line: i,
-                     name: name, kind: kDef))
+                     col: indent + body.find(name), name: name,
+                     kind: kDef, symKind: symKind))
   for i in 0 ..< lines.len:
     let line = lines[i]
     var j = 0

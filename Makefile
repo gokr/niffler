@@ -155,9 +155,15 @@ var/bin/lsp: components/lsp/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # ts.nim pull the C in and headers resolve via --cincludes. Queries live in
 # components/repomap/queries. The native Nim tier needs no C.
 var/bin/test_t_repomap_tags: tests/t_repomap_tags.nim components/repomap/tags.nim \
+    components/repomap/score.nim components/repomap/repomap.nim \
     components/repomap/ts.nim $(REPOMAP_CSRC) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk \
 	  -o:$@ tests/t_repomap_tags.nim
+
+var/bin/test_t_repomap_score: tests/t_repomap_score.nim components/repomap/tags.nim \
+    components/repomap/score.nim components/repomap/repomap.nim $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk \
+	  -o:$@ tests/t_repomap_score.nim
 
 # Background processes with an owner: start once, poll incremental output,
 # kill explicitly (docs/OCTOFRIEND-STEAL.md, "Steal 5 follow-up").
@@ -461,7 +467,7 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
-test-repomap: build var/bin/test_t_repomap_tags ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags
+test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score
 test-processes: build var/bin/test_t_processes ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_processes
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel
