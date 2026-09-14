@@ -55,6 +55,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and core's full-kind reads page through it (`storeListAll`) because a
   single capped list silently truncated long transcripts on resume.
 
+- **context compaction — long turns survive their own context
+  (`compaction` component, `context_recall`, durable projections).** Every
+  provider request is now admitted against the model window first; when
+  pressure hits, a deterministic ladder runs instead of failing: lossless
+  prune of oversized tool results (originals stay recallable), then a
+  summarization compaction attempt, then whole-turn trim, and only then an
+  explicit `context-recovery-required` error — never a silent over-window
+  request. Provider `context-overflow` errors are classified by code
+  (`context-overflow: …; window <N> tokens`) and get exactly one
+  receipt-backed recovery attempt. Compaction is replaceable: the runner
+  owns budgets, cut boundaries, strict candidate validation, checkpoint
+  rendering (`checkpoint-v1`) and the optimistic `context_projection`
+  commit/reload, while a contract-v1 component (default:
+  `compaction_propose`, override `NIF_COMPACTION_TOOL`) only chooses cuts
+  and drafts the checkpoint via bounded auxiliary `llm.chat` calls
+  (`cancelId`/`emitTokens`/`purpose` keep them out of the live turn's
+  token stream and cancel path). Canonical messages stay immutable and
+  append-only — prunes become executable refs, oversized bash captures are
+  promoted to durable spill documents, and the hidden `context_recall`
+  tool resolves canonical, spill and checkpoint refs. A restart reloads
+  the committed checkpoint plus the retained tail or fails loudly;
+  `tests/compaction_contract/fixture.nim` proves a second compactor
+  implementation meets the same contract. Knobs:
+  `NIF_COMPACTION_TOOL` (empty disables summarization but keeps the
+  deterministic guard), `NIF_COMPACTION_TIMEOUT_MS`,
+  `NIF_COMPACTION_MAX_LLM_CALLS`, `NIF_COMPACTION_MAX_SUMMARY_TOKENS`
+  (docs/research/COMPACTION.md; `tests/t_compaction.nim`,
+  `tests/t_ctxcompact.nim`).
+
 - **make install-lsp + lsp warmup.** `make install-lsp` (`scripts/install-lsp.sh`)
   idempotently installs the language servers behind the lsp component's
   built-in defaults (gopls, pyright, typescript-language-server + tsserver,
