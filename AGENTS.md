@@ -105,6 +105,20 @@ anything structural.
   (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
   trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
   (`reason: "reset:tools"`, emitted only when the direct set actually grew).
+- **Subagent continuation is append-only by construction**
+  (docs/WIRE.md "Subagent continuation"): `agent_run`/`agent_spawn
+  {session}` send content only — no preamble, no system prompt, no model/
+  thinking/tools/budgets (all frozen at the child's first turn) — so a
+  continued child's cached prefix survives. Authorization is the durable
+  lineage relation (`sessionmeta.parent` == caller) and every failure
+  refuses explicitly (unknown / self / root / foreign / closed / store
+  unreachable); `agent_run` refuses a mid-turn child with `code: "busy"`
+  (checked AFTER authorization — the caller is always mid-turn during its
+  own agent_run), `agent_spawn` queues. Each accepted turn advances
+  `sessionmeta.activations`/`firstActivationAt`; background continuations
+  stamp `continued`/`activation` on their `agentjob` record; `close: true`
+  sets `sessionmeta.closed` after the turn (records survive; only further
+  continuation refuses).
 
 ## Commands
 
@@ -126,7 +140,8 @@ make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
                       # t_models, t_provider, t_observe, t_logfile, t_core,
                       # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_fabric, t_nested, t_mcp —
+                      # t_systemprompt, t_agent, t_agentnotice, t_agentcont,
+                      # t_fabric, t_nested, t_mcp —
                       # each owns a private NATS server + temporary NIF_ROOT,
                       # so component targets can overlap a live harness
 make test-ui          # frontend only: `npm test` (lib unit tests, run on plain

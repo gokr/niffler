@@ -1703,8 +1703,8 @@ guide with nudge phrasing and worked examples:
 | Tool | What it does |
 |---|---|
 | `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. |
-| `agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. Optional per-job budgets: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. |
-| `agent_spawn {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
+| `agent_run {task, session?, close?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
+| `agent_spawn {task, session?, close?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
 | `agent_stop {jobId}` | Cancel a running job for real: the child's LLM request is aborted, its turn ends promptly, and an in-flight bash command is killed (whole process tree). The terminal record says "stopped". |
@@ -1729,6 +1729,31 @@ and it is a *pointer*, not the reply:
 
 Notices are best-effort: an unreachable store or agent component costs a
 notice, never a turn.
+
+### Continuation (sessions with memory)
+
+Both drivers take `session`: a previously returned `sessionId` gives that
+child another turn instead of minting a fresh one. The child keeps its
+conversation — send only the new task. Authorization is the durable lineage
+relation (`sessionmeta.parent`), so only the child's own parent conversation
+can continue it, and every failure refuses explicitly: unknown session, root
+conversation, foreign child, closed child and an unreachable store all
+return distinct errors rather than silently starting a fresh child.
+
+The two drivers differ exactly where their promises differ:
+
+- `agent_run {session}` promises a result **now**, so a mid-turn child is
+  refused (`code: "busy"`, naming `agent_spawn`/`agent_wait`/`agent_status`);
+- `agent_spawn {session}` promises the work **happens**, so it queues —
+  the child's runner serializes turns and runs the queued one next.
+
+Continuation is append-only history: the follow-up task is persisted as the
+next user message (no preamble, no system prompt), so the child's cached
+prefix survives. Each turn advances the child's activation ledger
+(`sessionmeta.activations`, with `firstActivationAt`), and background
+continuations stamp `continued`/`activation` on their `agentjob` record.
+`close: true` retires a child after its turn (`sessionmeta.closed`) — the
+record and transcript survive; only further continuation refuses.
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call
@@ -1835,9 +1860,9 @@ Kinds in use by core:
 | `provider` | nickname (plus the `active` marker doc) | redacted-at-rest LLM provider registry of the `provider` component |
 | `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discoverydiscoverinvoke)) |
 | `slash` | `slash` | the merged slash-command table UIs render (see [WIRE.md](WIRE.md)) |
-| `agentjob` | `<jobId>` | durable background `agent_spawn` job records |
+| `agentjob` | `<jobId>` | durable background `agent_spawn` job records (continuations stamp `continued`, `activation`, and queue `close`) |
 | `agentnotice` | `<parentSession>:<seq>` | subagent settlement notices (summary + recourse to the full reply; `deliveredAt`/`deliveredVia` mark delivery) |
-| `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata |
+| `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata: `{parent}` on spawn; continuations add `activations` (turn count, 1-based) and `firstActivationAt`; `close: true` retirement sets `closed` |
 | `fabricprog` | program name | the model-curated fabric program library (`fabric {name}` runs one) |
 
 Backend is the selected engine — SQLite at `var/store.db` by default, or

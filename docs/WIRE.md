@@ -358,6 +358,41 @@ never a turn, and a completed job is never turned into a failed call.
 `agent_notices {session?, peek?}` drains manually (on demand) for callers
 that want to look without waiting for a turn.
 
+## Subagent continuation (`agent_run`/`agent_spawn {session}`)
+
+Both drivers accept `session`: a previously returned `sessionId` gives that
+EXISTING child another turn instead of minting a fresh one. Design and
+testing: docs/research/SUBAGENTS-PLAN.md P1.3.
+
+- **Authorization is the durable lineage relation**: the child's
+  `sessionmeta.parent` must equal the caller's session. Unknown sessions,
+  root conversations (a lineage record with no `parent`), foreign children,
+  closed children and an unreachable store all refuse with distinct errors —
+  fail-closed, never a silently fresh child.
+- **Frozen controls**: model, thinking, tool allowlist and budgets were
+  frozen into the child's conversation header at its first turn. A
+  continuation sends content only (no preamble, no system prompt) — the
+  caller's model/thinking/tools/budget arguments are ignored by
+  construction, and the synchronous result carries the child's `effective`
+  controls as a readback. This keeps the child's cached request prefix
+  stable (append-only history).
+- **Busy semantics by promise**: `agent_run {session}` promises a result
+  now, so a mid-turn child is refused with `code: "busy"` (naming
+  `agent_spawn` to queue or `agent_wait`/`agent_status` for the current
+  turn). `agent_spawn {session}` promises the work happens, so it queues —
+  the child's runner serializes turns. The busy check runs AFTER
+  authorization, because the caller itself is always "mid-turn" while its
+  own `agent_run` executes.
+- **Activation ledger**: each accepted turn advances
+  `sessionmeta.activations` (1-based; the first turn counts as 1) and sets
+  `firstActivationAt` once. Background continuations stamp `continued` and
+  `activation` on their `agentjob` record (the completion tap preserves
+  them when it terminalizes the record).
+- **Close**: `close: true` marks the child retired (`sessionmeta.closed`)
+  AFTER its turn — synchronously in `agent_run`, via the job's completion
+  tap in `agent_spawn`. Nothing is deleted (record + transcript survive for
+  forensics); only further continuation refuses.
+
 ## Approvals
 
 Dispatch honors `x-harness.approval` on the tool schema (docs/research/REBOOT.md,

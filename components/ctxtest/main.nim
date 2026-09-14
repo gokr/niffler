@@ -17,6 +17,29 @@ let comp = newComponent("ctxtest", "0.1.0")
 
 var chatStage = initTable[string, int]()
   ## sessionId -> chat calls served (single-threaded SDK poll loop)
+var cntChild = ""
+  ## The subagent child a `cnt-*` parent started, remembered across the
+  ## parent's turns so the continuation script can name it (the stub reads
+  ## the agent_run/agent_spawn RESULT from the parent transcript the same
+  ## way the tests do — see rememberCnt below).
+
+proc lastChildSession(messages: JsonNode): string =
+  ## The most recent `agent-…` session id in a parent transcript — the stub's
+  ## way of remembering which child a `cnt-*` parent started (the parent's
+  ## agent_run/agent_spawn tool RESULT carries it; the tests read the same
+  ## field from the store). Tool results are JSON strings INSIDE the message
+  ## list, so their quotes are escaped in ($messages) — flatten first.
+  if messages == nil: return ""
+  let text = ($messages).replace("\\", "")
+  var at = 0
+  while true:
+    let marker = text.find("\"sessionId\":\"agent-", at)
+    if marker < 0: break
+    let start = marker + "\"sessionId\":\"".len
+    var stop = start
+    while stop < text.len and text[stop] != '"': inc stop
+    result = text[start ..< stop]
+    at = stop
 
 proc toolCall(id, name: string, args: JsonNode): JsonNode =
   ## One assistant tool-call turn for the stub LLM.
@@ -69,6 +92,24 @@ comp.tool(%*{"hidden": true}):
       # slow child for the stop test: the stub chat itself sleeps — the
       # stop must land while this LLM round is in flight (between-rounds
       # cancel checks at the next round top and at the would-stop point)
+      # continuation child (tests/t_agentcont.nim): prove the follow-up
+      # reached the SAME conversation. CNT_IGNORED is checked FIRST: both
+      # markers persist in the transcript, and the LATER turn's task must
+      # win (the CNT_IGNORED turn still contains turn 2's CNT_FOLLOWUP).
+      if messages != nil and ($messages).contains("CNT_IGNORED"):
+        return %*{"content": "cnt-final"}
+      if messages != nil and ($messages).contains("CNT_FOLLOWUP"):
+        return %*{"content": "cnt-saw-followup"}
+      # busy-test child (tests/t_agentcont.nim): the slowness must NOT live
+      # in this chat handler — the stub LLM is single-threaded, so a sleeping
+      # chat would block the PARENT's next chat round and the parent's
+      # agent_run could not dispatch until the child was already done. A long
+      # TOOL round keeps the child mid-turn while this handler returns at
+      # once, leaving the stub free to serve the parent.
+      if messages != nil and ($messages).contains("CNT_SLOW_BASH"):
+        if stage == 0:
+          return toolCall("t1", "bash", %*{"command": "sleep 8"})
+        return %*{"content": "cnt-slow-bash-done"}
       if messages != nil and ($messages).contains("SLOW_CHILD"):
         if stage == 0:
           sleep(8000)
@@ -229,6 +270,89 @@ comp.tool(%*{"hidden": true}):
                         %*{"task": "BIG_TOKENS report",
                            "maxTokens": 15000})
       return %*{"content": "agent-turn-done"}
+    if sessionId.startsWith("cnt-main"):
+      # continuation parent (tests/t_agentcont.nim): two stub stages per
+      # parent turn — even = the agent tool call, odd = the closing content.
+      # The parent drives one child across three turns: fresh, continuation,
+      # continuation-with-ignored-overrides + close.
+      cntChild = lastChildSession(messages)
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent",
+                           "model": "mock-model"})
+      if stage == 2:
+        return toolCall("t2", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP report what you were told",
+                           "session": cntChild})
+      if stage == 4:
+        return toolCall("t3", "agent_run",
+                        %*{"task": "CNT_IGNORED final report",
+                           "session": cntChild, "model": "other-model",
+                           "maxRounds": 1, "close": true})
+      return %*{"content": "cont-parent-done"}
+    if sessionId == "cnt-busy":
+      # busy refusal: turn 1 spawns a SLOW child in the background; turn 2
+      # tries to continue it while it is mid-turn and must get `busy`.
+      cntChild = lastChildSession(messages)
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "CNT_SLOW_BASH run the slow thing"})
+      if stage == 2:
+        return toolCall("t2", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP nudge",
+                           "session": cntChild})
+      return %*{"content": "busy-parent-done"}
+    if sessionId == "cnt-fail":
+      # fail-closed authorizations, one per turn: unknown session, self, a
+      # lineage record with no parent (root), then a fresh spawn whose child
+      # gets closed and whose further continuation must refuse.
+      cntChild = lastChildSession(messages)
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP x",
+                           "session": "agent-does-not-exist"})
+      if stage == 2:
+        return toolCall("t2", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP x",
+                           "session": "cnt-fail"})
+      if stage == 4:
+        return toolCall("t3", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP x",
+                           "session": "cnt-fake-root"})
+      if stage == 6:
+        return toolCall("t4", "agent_spawn",
+                        %*{"task": "echo agent-ok via a background subagent"})
+      if stage == 8:
+        return toolCall("t5", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP close it",
+                           "session": cntChild, "close": true})
+      if stage == 10:
+        return toolCall("t6", "agent_run",
+                        %*{"task": "CNT_FOLLOWUP again",
+                           "session": cntChild})
+      return %*{"content": "fail-parent-done"}
+    if sessionId.startsWith("cnt-spawn"):
+      # background continuation: turn 1 spawns fresh; turn 2 QUEUES another
+      # turn for the same child via agent_spawn {session}; turn 3 queues a
+      # turn AND closes the child (applied after the turn settles); turn 4
+      # runs a FRESH one-shot child with close (synchronous close).
+      cntChild = lastChildSession(messages)
+      if stage == 0:
+        return toolCall("t1", "agent_spawn",
+                        %*{"task": "echo agent-ok via a background subagent"})
+      if stage == 2:
+        return toolCall("t2", "agent_spawn",
+                        %*{"task": "CNT_FOLLOWUP background nudge",
+                           "session": cntChild})
+      if stage == 4:
+        return toolCall("t3", "agent_spawn",
+                        %*{"task": "CNT_FOLLOWUP last one",
+                           "session": cntChild, "close": true})
+      if stage == 6:
+        return toolCall("t4", "agent_run",
+                        %*{"task": "echo agent-ok via a subagent",
+                           "close": true})
+      return %*{"content": "spawncont-parent-done"}
     if sessionId.startsWith("ntc-"):
       # settlement-notice parents (tests/t_agentnotice.nim): spawn a
       # background child, then finish the turn. The child settles after the

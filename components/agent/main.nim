@@ -336,42 +336,173 @@ proc prepareChild(parentSession, task, model: string): tuple[
                     e.msg, "", "")
   result = (true, "", subject, child)
 
-proc childSessArgs(child, task, model, thinking: string,
-                   toolArgs: JsonNode = nil): JsonNode =
-  ## The child session call: task preamble, optional model override and
-  ## reasoning effort, optional tool allowlist and round budget (frozen
-  ## per-session controls enforced by core), and the conversation's
-  ## pluggable constitution (systemprompt component, best effort — the
-  ## runner's own fallback covers a missing component).
-  result = %*{"sessionId": child, "content": taskPreamble & task}
+# --- continuation ------------------------------------------------------------
+# A continuation is a NEW TURN in an EXISTING child conversation, not a new
+# child: the conversation already persists, its runner re-ensures on demand,
+# and every per-session control is frozen in its header. So the only things
+# this needs are the authorization check and the runner subject. Design:
+# docs/research/SUBAGENTS-PLAN.md P1.3.
+
+proc childMeta(child: string): tuple[found: bool, value: JsonNode] =
+  ## The stored lineage/meta record for a session, if any.
   try:
-    let sp = comp.request("systemprompt", "systemprompt",
-      %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()), "sessionId": child},
-      5_000)
-    let prompt = sp{"systemPrompt"}.getStr("")
-    if prompt.len > 0:
-      result["systemPrompt"] = %prompt
+    let v = comp.storeGet("sessionmeta", child, 10_000).value
+    if v == nil: return (false, newJObject())
+    return (true, v)
+  except StoreNotFoundError:
+    return (false, newJObject())
+
+proc continuable(child, caller: string): tuple[
+    ok: bool, error: string, subject: string, activation: int] =
+  ## Resolve a continuation target: validate FAIL-CLOSED, then re-ensure its
+  ## runner. Authorization is the durable lineage relation (the child's
+  ## sessionmeta.parent must be the caller) — the same relation the depth
+  ## guard uses, so there is one notion of "whose child is this".
+  ##
+  ## Every rejection is explicit: an unknown session, a root conversation, a
+  ## foreign child, a closed child and an unreachable store all refuse rather
+  ## than silently minting a fresh child (which would look like success while
+  ## doing something else entirely).
+  ##
+  ## On success this also advances the child's activation counter
+  ## (sessionmeta.activations, 1-based) — the durable ledger of how many
+  ## turns the child has had. Only the lineage parent may continue a child
+  ## and one parent's calls serialize through this component's pump, so the
+  ## read-modify-write cannot race.
+  if child == caller:
+    return (false, "cannot continue yourself", "", 0)
+  var found = false
+  var meta = newJObject()
+  try:
+    (found, meta) = childMeta(child)
+  except CatchableError as e:
+    return (false, "cannot verify continuation rights (store unreachable): " &
+                   e.msg, "", 0)
+  if not found:
+    return (false, "unknown subagent session '" & child &
+                   "' — no lineage record (it is not a child of this " &
+                   "conversation, or it was deleted)", "", 0)
+  if meta{"closed"}.getBool(false):
+    return (false, "subagent session '" & child &
+                   "' was closed (close: true); start a fresh one instead",
+            "", 0)
+  let owner = meta{"parent"}.getStr("")
+  if owner.len == 0:
+    return (false, "'" & child & "' is a root conversation, not a subagent " &
+                   "of this one", "", 0)
+  if owner != caller:
+    return (false, "subagent '" & child & "' belongs to another conversation " &
+                   "('" & owner & "'); only its parent may continue it", "", 0)
+  # The child exists and we may continue it. Its runner may be resident or
+  # retired — session_prepare is the idempotent re-ensure, so a retired child
+  # costs a process start, not a redesign.
+  var prep: JsonNode
+  try:
+    prep = comp.request("core", "session_prepare",
+                        %*{"sessionId": child}, 60_000)
+  except CatchableError as e:
+    return (false, "session_prepare failed for continuation: " & e.msg,
+            "", 0)
+  let subject = prep{"subject"}.getStr("")
+  if subject.len == 0:
+    return (false, "session_prepare returned no subject", "", 0)
+  # Advance the activation ledger. firstActivationAt is set once and never
+  # moves; activations counts every turn the child has accepted, including
+  # its first (so a child continued once reports activations = 2).
+  let activation = meta{"activations"}.getInt(1) + 1
+  meta["activations"] = %activation
+  if meta{"firstActivationAt"} == nil:
+    meta["firstActivationAt"] = %epochTime()
+  try:
+    discard comp.storePut("sessionmeta", child, meta, timeoutMs = 10_000)
+  except CatchableError as e:
+    return (false, "cannot record the continuation (store unreachable): " &
+                   e.msg, "", 0)
+  return (true, "", subject, activation)
+
+proc busyChild(child: string): bool =
+  ## True when the child's runner is holding a turn right now. Answered from
+  ## the ev.session.turn tap (the catalog has no turn state). Used to refuse
+  ## `agent_run {session}` with a clear `busy` instead of queueing a caller
+  ## that promised it wanted the result now.
+  child in liveTurns
+
+proc effectiveControls(child: string): JsonNode =
+  ## The child conversation's actual frozen controls, read back from its
+  ## conversation header. A continuation ignores the caller's
+  ## model/thinking/tools/budget arguments (they were frozen at the child's
+  ## FIRST turn), so reporting the effective set is how the caller learns
+  ## what it is really talking to instead of assuming its arguments took
+  ## effect. Read from the store directly: session_info does not carry the
+  ## per-session budget fields, and this keeps the read-only path free of a
+  ## core change.
+  result = newJObject()
+  try:
+    let header = comp.storeGet("conversation", child, 10_000).value
+    if header == nil: return
+    for f in ["model", "modelOverride", "thinkingEffort"]:
+      if header{f} != nil and header{f}.getStr("").len > 0:
+        result[f] = header{f}
+    for f in ["maxRounds", "maxCalls", "maxTokens"]:
+      if header{f} != nil and header{f}.getInt(0) > 0:
+        result[f] = header{f}
+    let allow = header{"toolAllowlist"}
+    if allow != nil and allow.kind == JArray and allow.len > 0:
+      result["tools"] = allow
   except CatchableError:
     discard
-  if model.len > 0:
-    result["model"] = %model
-  if thinking.len > 0:
-    result["thinking"] = %thinking
-  if toolArgs != nil:
-    # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
-    if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
-      result["tools"] = toolArgs{"tools"}
-    let mr = toolArgs{"maxRounds"}.getInt(0)
-    if mr >= 1 and mr <= 50:
-      result["maxRounds"] = %mr
-    # per-job budgets (frozen per-session controls enforced by core): total
-    # tool dispatches and cumulative tokens for the child's whole turn
-    let mc = toolArgs{"maxCalls"}.getInt(0)
-    if mc >= 1 and mc <= 500:
-      result["maxCalls"] = %mc
-    let mt = toolArgs{"maxTokens"}.getInt(0)
-    if mt >= 1:
-      result["maxTokens"] = %mt
+
+proc childSessArgs(child, task, model, thinking: string,
+                   toolArgs: JsonNode = nil; fresh = true): JsonNode =
+  ## The child session call.
+  ##
+  ## `fresh` is a BIRTH: task preamble, optional model/thinking, optional
+  ## tool allowlist and budgets (all frozen into the child's header by core
+  ## on this first call), and the conversation's pluggable constitution
+  ## (systemprompt component, best effort — the runner's own fallback covers
+  ## a missing component).
+  ##
+  ## `fresh = false` is a CONTINUATION: the child's constitution, model,
+  ## thinking, allowlist and budgets were frozen at its FIRST turn and are
+  ## read from its own header by core. Sending them again would be at best
+  ## ignored and at worst a future divergence between what the caller thinks
+  ## it set and what the child actually runs with — so a continuation sends
+  ## the content and nothing else. The task preamble is also dropped: the
+  ## child already knows it is a subagent (it was told on turn one).
+  if fresh:
+    result = %*{"sessionId": child, "content": taskPreamble & task}
+    try:
+      let sp = comp.request("systemprompt", "systemprompt",
+        %*{"cwd": getEnv("NIF_ROOT", getCurrentDir()), "sessionId": child},
+        5_000)
+      let prompt = sp{"systemPrompt"}.getStr("")
+      if prompt.len > 0:
+        result["systemPrompt"] = %prompt
+    except CatchableError:
+      discard
+    if model.len > 0:
+      result["model"] = %model
+    if thinking.len > 0:
+      result["thinking"] = %thinking
+    if toolArgs != nil:
+      # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
+      if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
+        result["tools"] = toolArgs{"tools"}
+      let mr = toolArgs{"maxRounds"}.getInt(0)
+      if mr >= 1 and mr <= 50:
+        result["maxRounds"] = %mr
+      # per-job budgets (frozen per-session controls enforced by core): total
+      # tool dispatches and cumulative tokens for the child's whole turn
+      let mc = toolArgs{"maxCalls"}.getInt(0)
+      if mc >= 1 and mc <= 500:
+        result["maxCalls"] = %mc
+      let mt = toolArgs{"maxTokens"}.getInt(0)
+      if mt >= 1:
+        result["maxTokens"] = %mt
+    return
+  # Continuation: content only. No systemPrompt, no model/thinking/tools,
+  # no budgets — every one of those is already frozen for this conversation.
+  result = %*{"sessionId": child, "content": task}
 
 proc originalCaller(toolArgs: JsonNode): string =
   ## Approvals inside the child route to the original interactive caller
@@ -505,9 +636,13 @@ let runSchema = toolSchema(%*{
   "maxTokens": {"type": "integer",
                 "description": "Optional cumulative token budget for the child's turn (provider-reported tokens across LLM rounds); the turn ends as budget-exhausted once it is spent"},
   "timeoutMs": {"type": "integer",
-                "description": "Give up waiting for the subagent after this many ms (default 600000)"}
+                "description": "Give up waiting for the subagent after this many ms (default 600000)"},
+  "session": {"type": "string",
+              "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
+  "close": {"type": "boolean",
+            "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."}
 }, required = @["task"],
-   description = "Run a task in a fresh subagent session (its own context, own tool loop) and return only its final reply. Use when a subtask needs exploratory judgment per step — search, debugging, reading code — and its intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool instead. For background work use agent_spawn instead. The subagent cannot spawn further subagents.")
+   description = "Run a task in a subagent session and return only its final reply. Without `session` it starts a FRESH child with its own context (include everything it needs — it does not see this conversation). With `session` it gives an EXISTING child another turn, keeping everything it already knows (send only the new task). Use for subtasks needing exploratory judgment per step — search, debugging, reading code — whose intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool; for background work use agent_spawn. The subagent cannot spawn further subagents.")
 runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
                             "sessionContext": true, "noSpawn": true,
                             "onDemand": true}
@@ -519,10 +654,37 @@ discard comp.tool("agent_run", runSchema,
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
       return errResult("agent_run needs task")
-    let prep = prepareChild(parentSession, task,
-                            toolArgs{"model"}.getStr(""))
-    if not prep.ok:
-      return errResult(prep.error)
+    let target = toolArgs{"session"}.getStr("")
+    let isFresh = target.len == 0
+    # Resolve the target FIRST (authorization fail-closed), THEN apply the
+    # busy check: a mid-turn refusal is only meaningful for a target we may
+    # actually continue — and the caller itself is always "mid-turn" while
+    # its own agent_run executes (its runner holds the turn), so a
+    # busy-before-auth check would misreport root/self continuations as
+    # busy instead of naming the real reason.
+    var ok = false
+    var failure = ""
+    var subject = ""
+    var child = ""
+    var activation = 0
+    if isFresh:
+      let prep = prepareChild(parentSession, task,
+                              toolArgs{"model"}.getStr(""))
+      (ok, failure, subject, child) = prep
+    else:
+      let cont = continuable(target, parentSession)
+      child = target
+      (ok, failure, subject, activation) = cont
+    if not ok:
+      return errResult(failure, extra = %*{"sessionId": child})
+    if not isFresh and busyChild(child):
+      # The child is mid-turn. `agent_run` promises a result NOW, so refusing
+      # is honest: the alternative is a request that silently queues behind
+      # the running turn and may time out. agent_spawn queues by design.
+      return errResult("subagent '" & child & "' is mid-turn — use " &
+                       "agent_spawn to queue another turn, or agent_wait/" &
+                       "agent_status for its current one",
+                       code = "busy", extra = %*{"sessionId": child})
     if wasCancelled(parentSession):
       # A stop for this session landed while its agent_run was queued behind
       # another in-flight agent_run: the launching turn is gone, so the
@@ -530,21 +692,41 @@ discard comp.tool("agent_run", runSchema,
       return errResult("cancelled by request")
     let timeoutMs = toolArgs{"timeoutMs"}.getInt(600_000)
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr(""), toolArgs),
+      childSessArgs(child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr(""), toolArgs,
+                    fresh = isFresh),
       originalCaller(toolArgs))
-    let resp = requestChildTurn(c, prep.subject, env, timeoutMs,
-                                parentSession, prep.child)
+    let resp = requestChildTurn(c, subject, env, timeoutMs,
+                                parentSession, child)
     if resp.kind == ekError:
       return errResult(resp.error{"message"}.getStr("subagent failed"),
-                       extra = %*{"sessionId": prep.child})
+                       extra = %*{"sessionId": child})
     # a child whose LLM failed reports failure, not a text reply
     let turnError = resp.args{"turnError"}.getStr("")
     if turnError.len > 0:
-      return errResult(turnError, extra = %*{"sessionId": prep.child})
-    return okResult(%*{"sessionId": prep.child,
-                       "reply": resp.args{"reply"}.getStr(""),
-                       "model": resp.args{"modelOverride"}.getStr("")}))
+      return errResult(turnError, extra = %*{"sessionId": child})
+    var answer = %*{"sessionId": child,
+                    "reply": resp.args{"reply"}.getStr(""),
+                    "model": resp.args{"modelOverride"}.getStr("")}
+    if not isFresh:
+      # Report what the child is ACTUALLY running with, since the caller's
+      # model/thinking/tools/budget arguments were ignored by design.
+      answer["continued"] = %true
+      answer["activation"] = %activation
+      answer["effective"] = effectiveControls(child)
+    if toolArgs{"close"}.getBool(false):
+      # Retire the child after THIS turn — a one-shot fresh child or the
+      # last turn of a continued one. The record and transcript survive;
+      # only further continuation refuses.
+      try:
+        let (found, meta) = childMeta(child)
+        if found:
+          meta["closed"] = %true
+          discard c.storePut("sessionmeta", child, meta, timeoutMs = 10_000)
+          answer["closed"] = %true
+      except CatchableError as e:
+        answer["closeError"] = %("cannot mark the child closed: " & e.msg)
+    return okResult(answer))
 
 let spawnSchema = toolSchema(%*{
   "task": {"type": "string",
@@ -562,9 +744,13 @@ let spawnSchema = toolSchema(%*{
   "maxTokens": {"type": "integer",
                 "description": "Optional cumulative token budget for the child's turn (provider-reported tokens across LLM rounds); the turn ends as budget-exhausted once it is spent"},
   "timeoutMs": {"type": "integer",
-                "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"}
+                "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"},
+  "session": {"type": "string",
+              "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
+  "close": {"type": "boolean",
+            "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."}
 }, required = @["task"],
-   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately. The job runs autonomously; agent_status checks it without blocking, agent_wait blocks until it finishes, agent_steer injects a message into the live turn, agent_stop cancels it for real. Terminal state (done/failed/stopped) is durable and announced as ev.agent.done, so a late wait cannot miss it. Use agent_run instead when you need the result right away. The subagent cannot spawn further subagents.")
+   description = "Start a subagent task in the BACKGROUND and return {jobId, sessionId} immediately; you are told when it settles (settlement notice), so there is no need to poll. agent_status checks it without blocking, agent_wait blocks, agent_steer injects into the live turn, agent_stop cancels it. Without `session` it starts a FRESH child (give it everything: it does not see this conversation); with `session` it queues another turn for an EXISTING child that already has the context. Start independent delegations together in one message and keep working while they run. Use agent_run instead when your next action depends on the result. The subagent cannot spawn further subagents.")
 spawnSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
                               "sessionContext": true, "noSpawn": true,
                               "onDemand": true}
@@ -576,17 +762,41 @@ discard comp.tool("agent_spawn", spawnSchema,
     let task = toolArgs{"task"}.getStr("")
     if task.len == 0:
       return errResult("agent_spawn needs task")
-    let prep = prepareChild(parentSession, task,
-                            toolArgs{"model"}.getStr(""))
-    if not prep.ok:
-      return errResult(prep.error)
+    let target = toolArgs{"session"}.getStr("")
+    let isFresh = target.len == 0
+    # No busy check here, by design: a background job promises the work
+    # HAPPENS, not that it starts now. A turn queued behind the child's
+    # current one is what a queue is for (the child's runner serializes
+    # turns, so it runs next).
+    var ok = false
+    var failure = ""
+    var subject = ""
+    var child = ""
+    var activation = 0
+    if isFresh:
+      let prep = prepareChild(parentSession, task,
+                              toolArgs{"model"}.getStr(""))
+      (ok, failure, subject, child) = prep
+    else:
+      let cont = continuable(target, parentSession)
+      child = target
+      (ok, failure, subject, activation) = cont
+    if not ok:
+      return errResult(failure, extra = %*{"sessionId": child})
     let jobId = "job-" & newId()
     # durable record BEFORE the fire-and-forget publish, so a completion
     # that races the spawn cannot arrive at an unknown job
-    var record = %*{"sessionId": prep.child, "parent": parentSession,
+    var record = %*{"sessionId": child, "parent": parentSession,
                     "status": "running",
                     "task": task[0 ..< min(task.len, 200)],
                     "startedAt": epochTime()}
+    if not isFresh:
+      record["continued"] = %true
+      record["activation"] = %activation
+    if toolArgs{"close"}.getBool(false):
+      # applied by the completion tap AFTER the turn settles — the parent
+      # cannot close a child before the work it queued has run
+      record["close"] = %true
     let budgetMs = toolArgs{"timeoutMs"}.getInt(0)
     if budgetMs > 0:
       record["budgetMs"] = %budgetMs
@@ -594,30 +804,32 @@ discard comp.tool("agent_spawn", spawnSchema,
       discard comp.storePut("agentjob", jobId, record, timeoutMs = 10_000)
     except CatchableError as e:
       return errResult("cannot record job (store unreachable): " & e.msg,
-                       extra = %*{"sessionId": prep.child})
+                       extra = %*{"sessionId": child})
     let env = callEnvelope("session",
-      childSessArgs(prep.child, task, toolArgs{"model"}.getStr(""),
-                    toolArgs{"thinking"}.getStr(""), toolArgs),
+      childSessArgs(child, task, toolArgs{"model"}.getStr(""),
+                    toolArgs{"thinking"}.getStr(""), toolArgs,
+                    fresh = isFresh),
       originalCaller(toolArgs))
     let data = env.encode()
     let inbox = "_INBOX.agentjob." & jobId
-    let st = natsConnection_PublishRequest(c.nc.conn, prep.subject.cstring,
+    let st = natsConnection_PublishRequest(c.nc.conn, subject.cstring,
       inbox.cstring, data.cstring, data.len.cint)
     if not checkStatus(st):
       discard c.storePut("agentjob", jobId,
-        %*{"sessionId": prep.child, "parent": parentSession,
+        %*{"sessionId": child, "parent": parentSession,
            "status": "failed",
            "error": "publish failed: " & getErrorString(st)},
         timeoutMs = 10_000)
       return errResult("could not start the job: " & getErrorString(st),
-                       extra = %*{"jobId": jobId,
-                                  "sessionId": prep.child})
-    comp.emit("ev.agent.started", %*{"jobId": jobId,
-                                     "sessionId": prep.child,
+                       extra = %*{"jobId": jobId, "sessionId": child})
+    comp.emit("ev.agent.started", %*{"jobId": jobId, "sessionId": child,
                                      "parent": parentSession})
-    return okResult(%*{"jobId": jobId, "sessionId": prep.child,
-                       "steer": "svc.session." &
-                                sanitizeSessionId(prep.child) & ".steer"}))
+    var started = %*{"jobId": jobId, "sessionId": child,
+                     "steer": "svc.session." &
+                              sanitizeSessionId(child) & ".steer"}
+    if toolArgs{"close"}.getBool(false):
+      started["close"] = %true
+    return okResult(started))
 
 let statusSchema = toolSchema(%*{
   "jobId": {"type": "string", "description": "Job id returned by agent_spawn"}
@@ -888,12 +1100,12 @@ discard comp.tap("_INBOX.agentjob.>",
       value["error"] = %turnError
     else:
       value["reply"] = %r.args{"reply"}.getStr("")
+    var prior: JsonNode = nil
     try:
       # preserve spawn-time fields and honor a stop request: any terminal
       # state while a stop was requested reads "stopped" — the turn may end
       # via llm.cancel (an error) or between rounds (clean), and the reply,
       # if one was produced, is kept either way
-      var prior: JsonNode = nil
       try:
         prior = c.storeGet("agentjob", jobId, 10_000).value
       except CatchableError:
@@ -908,11 +1120,33 @@ discard comp.tap("_INBOX.agentjob.>",
         # never embed a possibly-nil JsonNode in %* (SIGSEGVs at toUgly)
         if prior{"budgetMs"} != nil:
           value["budgetMs"] = prior{"budgetMs"}
+        # continuation lineage and a queued close survive terminalization:
+        # the record is rebuilt here, so anything the spawn wrote that the
+        # status surface must keep has to be carried over explicitly
+        if prior{"continued"} != nil:
+          value["continued"] = prior{"continued"}
+        if prior{"activation"} != nil:
+          value["activation"] = prior{"activation"}
         if prior{"status"}.getStr("") == "stopping":
           value["status"] = %"stopped"
       discard c.storePut("agentjob", jobId, value, timeoutMs = 10_000)
     except CatchableError:
       discard  # the durable record stays "running"; status reports it
+    # A close queued on the job (agent_spawn {close: true}) is applied HERE,
+    # after the child's turn has fully settled: the parent cannot mark the
+    # child closed before the work it queued has run. Best effort — a lost
+    # race (a continuation slipped in between turn end and this write) just
+    # means the child stays continuable; nothing is corrupted.
+    if prior != nil and prior{"close"}.getBool(false):
+      let child = value{"sessionId"}.getStr("")
+      if child.len > 0:
+        try:
+          var meta = c.storeGet("sessionmeta", child, 10_000).value
+          if meta != nil:
+            meta["closed"] = %true
+            discard c.storePut("sessionmeta", child, meta, timeoutMs = 10_000)
+        except CatchableError:
+          discard
     # The notice is written outside the storePut's try: a notice failure or
     # a store hiccup while recording the job must not suppress the event,
     # and emitNotice is itself best-effort (it never raises). The parent is

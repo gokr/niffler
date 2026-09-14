@@ -7,7 +7,7 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 |---|---|
 | P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, `tests/t_agentnotice.nim` — 30 checks) |
 | P0.2 `agent_list` | **shipped** (derived roster, residency status vocabulary, `agent_list {scope?}`, 9 more checks in `tests/t_agentnotice.nim`) |
-| P1.3 continuation | not started |
+| P1.3 continuation | **shipped** (t_agentcont: 59 checks) |
 | P1.4 fork | not started |
 | P2–P4 | not started |
 
@@ -406,6 +406,61 @@ no `reset:*` class.
 turns, so the second waits and its `timeoutMs` must budget the first's
 remainder. Resolution in §9 Q2 (return `busy` vs. queue + document). Do not
 merge P1.3 without deciding it, because the schema text depends on the answer.
+
+### Implementation notes (found while building it)
+
+Shipped on `feat/subagents-v2`; tests in
+`tests/t_agentcont.nim` (59 checks, own sandbox — same pattern as
+t_agentnotice, not inside `t_agent.nim` as first planned, so the new
+scripted-parent scenarios in `components/ctxtest` stay isolated).
+
+- **§9 Q2 is settled and implemented**: `agent_run {session}` on a mid-turn
+  child refuses with `code: "busy"` (naming `agent_spawn` to queue,
+  `agent_wait`/`agent_status` for the current turn); `agent_spawn {session}`
+  queues. The busy check runs **after** authorization, for a reason the plan
+  missed: the caller itself is always "mid-turn" while its own `agent_run`
+  executes (its session is in `liveTurns`), so a busy-before-auth check
+  misreports self/root continuations as busy instead of naming the real
+  reason. Fail-closed order: self → no record (unknown) → closed → record
+  without parent (root) → foreign parent.
+- **The completion tap rebuilds job records from spawn-time fields** and
+  would silently drop anything else a continuation stamped on them —
+  `continued`/`activation` must be carried over explicitly. A close queued
+  on an `agent_spawn` job is applied by that same tap AFTER the turn
+  settles, which resolves the plan's close×queue ambiguity in favor of
+  composition: `agent_spawn {session, close}` queues the turn and retires
+  the child afterwards. `agent_run {close}` applies synchronously after its
+  turn (fresh one-shot children included).
+- **The activation ledger lives in `sessionmeta`** (`activations` 1-based,
+  `firstActivationAt` set once) as the plan specifies; the job record only
+  carries a per-activation `activation` stamp. Only the lineage parent can
+  continue and one parent's calls serialize through the agent component's
+  pump, so the read-modify-write cannot race.
+- **The effective-controls readback reads the conversation header via the
+  store directly** — `session_info` does not surface the per-session budget
+  fields, and keeping core untouched was worth more than reusing it.
+- **Test-infrastructure discovery (the interesting one)**: the stub LLM
+  (`ctxtest`) is single-threaded, so a child whose CHAT handler sleeps
+  blocks the PARENT's next chat round — the parent's `agent_run` cannot
+  even dispatch until the child's turn is over, and a busy-window test
+  measures nothing (the first version flaked exactly there; tap timestamps
+  proved the check landed 4 ms after the child's `done`). A busy test must
+  make the child slow via a long TOOL round (bash `sleep 8`) — the chat
+  handler returns the tool call at once, the child stays mid-turn, and the
+  parent proceeds. The `ev.session.turn` tap itself proved reliable in
+  every run. Two more stub-facing shapes: tool results live in the
+  transcript as JSON strings (quotes escaped when the message list is
+  stringified — the stub's child-id memory must unescape), and a
+  component's `errResult` arrives as a SUCCESSFUL tool call whose value is
+  `{ok: false, error}` (`dispatchSubjectCall` returns `resp.args`
+  verbatim), which is what the test's fail-closed assertions parse.
+- **`interrupted` children need no special case**: `session_prepare` is the
+  idempotent re-ensure, and the spawn-continuation tests exercise exactly
+  the retired-runner → re-ensure path (`NIF_RUNNER_IDLE_S=2` retires every
+  child between test turns), so the plan's kill-then-continue scenario is
+  covered by construction rather than by a dedicated kill.
+- **v1 job-record compat** verified through `agent_status` and `agent_list`
+  with a hand-written record lacking the new fields.
 
 ---
 
@@ -927,7 +982,10 @@ bench: subagent scenarios (delegate/follow-up/fork/interrupt)
    arithmetic (DSH-STEAL §7.1's v1 answer)? The **schema text depends on the
    answer**, so decide before P1.3 ships. Recommendation: `busy` for
    `agent_run` (it promises a result *now*), queue for `agent_spawn` (it
-   promises work *happens*).
+   promises work *happens*). **Settled in P1.3** exactly as recommended —
+   with the addition that the busy check must run AFTER authorization (the
+   caller is always "mid-turn" during its own `agent_run`; see P1.3
+   implementation notes).
 3. **Fork + compaction.** Should a forked child inherit the parent's committed
    `summary` records (closer to the parent's live view, smaller) or only the
    raw records (complete, larger)? Recommendation: raw only, until compaction
