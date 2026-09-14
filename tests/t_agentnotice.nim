@@ -358,7 +358,17 @@ proc main() =
           busy[1]{"scope"}.getStr("") == "descendants" and
           busy[1]{"children"}.len == 3, $busy[1]{"scope"})
 
-  # Second turn: by now the children have settled and their runners retired
+  # Wait for every rostered job to settle before the settled-state turn.
+  # "By now" was a load-dependent race: under parallel-suite load the quick
+  # children can still be mid-flight when the next turn starts, and the
+  # check's intent is the settled vocabulary, not timing luck.
+  if busy.len >= 1 and busy[0]{"children"} != nil:
+    for c in busy[0]{"children"}:
+      let jid = c{"jobId"}.getStr("")
+      if jid.startsWith("job-"):
+        discard waitJob(jid)
+
+  # Second turn: the children have settled and their runners retired
   # (NIF_RUNNER_IDLE_S=2), so nobody may still read "running".
   discard call(nc, "core", "session",
                %*{"sessionId": listParent, "content": "settled?"}, 120_000)
