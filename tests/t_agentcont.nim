@@ -391,6 +391,25 @@ proc main() =
   check("one-shot child retired in lineage",
         metaOf(ochild){"closed"}.getBool(false), $metaOf(ochild))
 
+  # --- P4.12: session_info lineage enrichment -----------------------------
+  # the continued+closed child shows activations, firstActivationAt, closed
+  # and its child count; a root shows none of them and does not error
+  let sinfoChild = call(nc, "core", "session_info",
+                        %*{"sessionId": child}, 10_000)
+  check("P4.12: continued child shows its activation ledger",
+        sinfoChild{"activations"}.getInt(0) == 3 and
+        sinfoChild{"firstActivationAt"}.getFloat(0) > 0, $sinfoChild)
+  check("P4.12: closed child shows closed",
+        sinfoChild{"closed"}.getBool(false) == true, $sinfoChild)
+  let sinfoRoot = call(nc, "core", "session_info",
+                       %*{"sessionId": "cnt-main"}, 10_000)
+  check("P4.12: a parent shows its child count",
+        sinfoRoot{"children"}.getInt(0) >= 1, $sinfoRoot)
+  check("P4.12: a root shows no activation ledger",
+        sinfoRoot{"activations"} == nil and
+        sinfoRoot{"firstActivationAt"} == nil and
+        sinfoRoot{"closed"} == nil, $sinfoRoot)
+
   # =========================================================================
   # 5. v1 job records (no activation fields) stay readable
   # =========================================================================

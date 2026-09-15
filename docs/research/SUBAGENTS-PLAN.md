@@ -11,7 +11,14 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 | P1.4 fork | **shipped** (t_agentfork: 32 checks) |
 | P2.5 parallel start | **shipped** (A: schema guidance; B: keyed leases, `t_nested_leases` — 11 checks) |
 | P2.6 depth cap | **shipped** (`NIF_AGENT_MAX_DEPTH`, depth walk, re-entrant pump, `t_agentdepth` — 21 checks) |
-| P3–P4 | not started |
+| P3.7 mode wording | **shipped** (three mode sentences in both tools' `task` descriptions) |
+| P3.8 delegation scope | **shipped** (statement in the task preamble, first turn only) |
+| P3.9 steer durability | **shipped** (mid-turn publishes; idle queues parent-mail; `t_agentp3`) |
+| P3.10 `agent_ask` | **shipped** (continuation-with-answer; queues when mid-turn; `t_agentp3`) |
+| P3.11 fork × compaction | **shipped** (docs — the gate is satisfied; composition verified during the P1 merge) |
+| P4.12 `session_info` lineage | **shipped** (fork/activations/firstActivationAt/closed/children; t_agentcont) |
+| P4.13 UI surfacing | **SPA shipped** (`ev.agent.notice` activity line via a pure wording module + node tests; TUI = follow-up PR in its own repo). Note: `npm run typecheck` was ALREADY broken on main (TS 7 removed `baseUrl`, then generated `wailsjs`/css declarations missing in fresh checkouts) — pre-existing, not this phase's change |
+| P4.14 bench scenarios | **shipped** (`bench/subagents/run.mjs` — 4 mechanism scenarios scored on bus-observable facts; needs model keys: `node bench/subagents/run.mjs --model <m> --base-url <u> --key-env <ENV>`) |
 
 Design rationale and the comparison that produced it:
 [SUBAGENTS.md](SUBAGENTS.md) (kept in this branch). Provenance for the two

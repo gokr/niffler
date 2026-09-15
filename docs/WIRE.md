@@ -422,6 +422,15 @@ docs/research/SUBAGENTS-PLAN.md P1.4 (DSH-STEAL §3).
   copied raw; errors are the parent's audit), the `<session>:tools` toolset
   snapshot, and the header's control fields. The forked child's frozen
   controls come from THIS call (a birth), not from the source conversation.
+- **Fork × compaction** (the gate is satisfied — compaction landed): a
+  forked child receives the parent's **raw transcript**, which may be
+  LARGER than the parent's current live context — compaction's projections
+  are checkpoint nodes (`<convId>#ck<gen>`, outside the message kind) and
+  are never copied, and the child's ledger is rebuilt from the copied
+  records on its first resume. The child's own compaction then shrinks it
+  on its own schedule. Read-visibility framing: a fork is a reader of
+  records the parent may no longer hold in context — that is the point
+  (the child gets the real history, not the parent's summary of it).
 - **Provenance before the first turn, fail-closed**:
   `sessionmeta[child] = {parent, fork: {source, uptoId, copied}}`, surfaced
   by `session_info` as `fork`. A budget (`lastK`/`maxChars`) that drops

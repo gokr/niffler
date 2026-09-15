@@ -43,7 +43,13 @@ let comp = newComponent("agent", "0.1.0")
 const taskPreamble =
   "You are a subagent. Work autonomously on the task below using the " &
   "available tools. When done, report a concise final result — it is the " &
-  "only thing the caller sees.\n\nTask:\n"
+  "only thing the caller sees.\n" &
+  "You are a delegated subagent: your approvals are answered by the human " &
+  "driving the parent conversation, and your tool allowlist and budgets " &
+  "were fixed when this child was started — they cannot be widened from " &
+  "inside it. If a request is denied or a budget is exhausted, report the " &
+  "limitation in your final reply instead of retrying the denied " &
+  "operation.\n\nTask:\n"
 
 proc sanitizeSessionId(s: string): string =
   ## Mirror of the runner's subject sanitization (core/conversation.nim):
@@ -597,14 +603,22 @@ proc childModel(c: Component, parentSession, requested: string): tuple[
     let info = c.request("core", "session_info",
                          %*{"sessionId": parentSession}, 10_000)
     if info{"error"} != nil:
-      return (false, "", "parent session_info failed: " &
-        info{"error"}.getStr("unknown error"))
+      # The parent conversation could not be read (e.g. a direct bus caller
+      # with no conversation of its own). Degrade, don't fail: inheritance
+      # is a default, not a requirement — the requested model (possibly
+      # empty, meaning the provider's default) stands alone.
+      return (true, requested, "")
     let override = info{"modelOverride"}.getStr("").strip()
     if override.len > 0:
       return (true, override, "")
     return (true, info{"model"}.getStr("").strip(), "")
   except CatchableError as e:
-    return (false, "", "cannot resolve parent model: " & e.msg)
+    # Same degradation as above, and note that core RAISES on an error
+    # result (an unknown session reaches here as an exception, not an
+    # {"error": ...} envelope). Inheritance is a default: degrade quietly.
+    stderr.writeLine("agent: parent model inheritance unavailable (" &
+                     e.msg & ") — using the requested model as-is")
+    return (true, requested, "")
 
 # --- continuation ------------------------------------------------------------
 # A continuation is a NEW TURN in an EXISTING child conversation, not a new
@@ -892,7 +906,7 @@ proc reconcileAll() =
 # low-level registration: the handler needs the raw __session injection
 let runSchema = toolSchema(%*{
   "task": {"type": "string",
-           "description": "Self-contained task for the subagent. It starts with a fresh context — include everything it needs (paths, goals, constraints), not a continuation of this conversation."},
+           "description": "The task, phrased for the mode. Fresh child (no session): it starts with a fresh context — include everything it needs (paths, goals, constraints), not a continuation of this conversation. Forked child (fork set): it sees the completed turns of this conversation but not the turn in flight — state only what is new. Continuation (session set): it already has its own history — send only the next task."},
   "model": {"type": "string",
             "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
   "thinking": {"type": "string",
@@ -912,7 +926,7 @@ let runSchema = toolSchema(%*{
   "close": {"type": "boolean",
             "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."},
   "fork": {"type": ["boolean", "object"],
-           "description": "FRESH RUNS ONLY: seed the child with this conversation's COMPLETED turns, so it has READ the discussion instead of being told about it. true copies every completed turn; {lastK: n} copies only the last n; {maxChars: n} copies the newest turns that fit. The cut never lands mid-tool-round, and usage meters are NOT copied (the child is born cold — its first request replays the history uncached; warm from the second turn). Use this when the child must exercise judgment over the discussion; for bulk mechanical transfer with no judgment, use fabric instead. Fails closed if nothing fits."}
+           "description": "FRESH RUNS ONLY: seed the child with this conversation's COMPLETED turns, so it has READ the discussion instead of being told about it. true copies every completed turn; {lastK: n} copies only the last n; {maxChars: n} copies the newest turns that fit. The cut never lands mid-tool-round, and usage meters are NOT copied (the child is born cold — its first request replays the history uncached; warm from the second turn). The child receives the RAW transcript — it may be larger than this conversation's current live context (compaction checkpoints are not copied); the child's own compaction shrinks it on its own schedule. Use this when the child must exercise judgment over the discussion; for bulk mechanical transfer with no judgment, use fabric instead. Fails closed if nothing fits."}
 }, required = @["task"],
    description = "Run a task in a subagent session and return only its final reply. Without `session` it starts a FRESH child with its own context (include everything it needs — it does not see this conversation). With `session` it gives an EXISTING child another turn, keeping everything it already knows (send only the new task). Use for subtasks needing exploratory judgment per step — search, debugging, reading code — whose intermediate work must not enter this conversation. For mechanical, well-understood sequences (fan-out, big data, known shape) prefer the fabric tool; for background work use agent_spawn. The subagent cannot spawn further subagents.")
 runSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
@@ -1025,7 +1039,7 @@ discard comp.tool("agent_run", runSchema,
 
 let spawnSchema = toolSchema(%*{
   "task": {"type": "string",
-           "description": "Self-contained task for the subagent (same contract as agent_run)"},
+           "description": "The task, phrased for the mode (same contract as agent_run). Fresh child: include everything it needs — it does not see this conversation. Forked child: it sees this conversation's completed turns — state only what is new. Continuation (session set): send only the next task."},
   "model": {"type": "string",
             "description": "Optional model override for the subagent"},
   "thinking": {"type": "string",
@@ -1239,19 +1253,140 @@ discard comp.tool("agent_stop", stopSchema,
     except CatchableError as e:
       return errResult("cannot read job (store unreachable): " & e.msg))
 
-comp.tool(%*{"onDemand": true}):
-  proc agent_steer(session_id: string, message: string): JsonNode =
-    ## Inject a message into a RUNNING background subagent turn (folded in
-    ## between LLM rounds). Fire-and-forget: success means published, not
-    ## processed. Only meaningful for agent_spawn jobs — agent_run blocks
-    ## its caller until the child is done.
-    ## - session_id: The child session id returned by agent_spawn
-    ## - message: The steering message for the running turn
-    if session_id.len == 0 or message.len == 0:
+let steerSchema = toolSchema(%*{
+  "session_id": {"type": "string",
+                 "description": "The child session id returned by agent_spawn/agent_run"},
+  "message": {"type": "string",
+              "description": "The steering message for the running turn"}
+}, required = @["session_id", "message"],
+   description = "Send a message to one of your subagents. Mid-turn, it is injected into the running turn (folded in between LLM rounds). Between turns, it is QUEUED durably and delivered at the child's next continuation (agent_run/agent_spawn with session) — the reply says which: published=true means injected now, queued=true, deliveredVia=next-turn} means it is waiting for the child's next turn. Only the child's parent conversation may steer it.")
+steerSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
+discard comp.tool("agent_steer", steerSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let sessionId = toolArgs{"session_id"}.getStr("")
+    let message = toolArgs{"message"}.getStr("")
+    if sessionId.len == 0 or message.len == 0:
       return errResult("agent_steer needs session_id and message")
-    comp.emit("svc.session." & sanitizeSessionId(session_id) & ".steer",
-              %*{"content": message})
-    return okResult(%*{"published": true})
+    let caller = toolArgs{"__session"}{"session"}.getStr("")
+    if caller.len == 0:
+      return errResult("agent_steer needs a live session context")
+    # Authorization is the durable lineage relation, the same one that gates
+    # continuation: only the child's parent conversation may steer it. This
+    # also fail-closes on a nonexistent session — an error, never a pretend
+    # publish.
+    var meta: JsonNode
+    try:
+      meta = c.storeGet("sessionmeta", sessionId, 10_000).value
+    except StoreNotFoundError:
+      return errResult("unknown subagent session '" & sessionId &
+                       "' — no lineage record", code = "not-found")
+    except CatchableError as e:
+      return errResult("cannot verify steering rights (store unreachable): " & e.msg)
+    if meta == nil or meta{"parent"}.getStr("") != caller:
+      return errResult("subagent '" & sessionId & "' is not yours — only its " &
+                       "parent conversation may steer it")
+    # Mid-turn: the child's runner is draining the steer channel between LLM
+    # rounds, so a publish is delivered NOW. Anything else (idle between
+    # turns, retired runner) would swallow a bare publish — the runner's
+    # steer subscription dies with it — so queue durably instead and let the
+    # child's next turn-top drain fold it in (same pull lane as settlement
+    # notices, P0.1; same kind, direction parent-mail).
+    if sessionId in liveTurns:
+      comp.emit("svc.session." & sanitizeSessionId(sessionId) & ".steer",
+                %*{"content": message})
+      return okResult(%*{"published": true, "sessionId": sessionId})
+    var record = %*{"v": 1, "direction": "parent-mail",
+                    "from": caller, "child": sessionId,
+                    "text": message, "createdAt": epochTime()}
+    var seq = 0
+    try:
+      for item in c.storeList("agentnotice", sessionId & ":", 1000, 10_000):
+        let id = item.id
+        let dot = id.rfind(':')
+        if dot >= 0:
+          try: seq = max(seq, parseInt(id[dot + 1 .. ^1]))
+          except ValueError: discard
+      inc seq
+      discard c.storePut("agentnotice",
+                         sessionId & ":" & align($seq, 6, '0'), record,
+                         timeoutMs = 10_000)
+    except CatchableError as e:
+      return errResult("cannot queue the steering (store unreachable): " & e.msg)
+    return okResult(%*{"queued": true, "sessionId": sessionId,
+                       "deliveredVia": "next-turn",
+                       "guidance": "the child is between turns; this was " &
+                         "queued for its next continuation (agent_run or " &
+                         "agent_spawn with session)"}))
+
+let askSchema = toolSchema(%*{
+  "session": {"type": "string",
+              "description": "The child session id to ask (a previous agent_run/agent_spawn result)"},
+  "question": {"type": "string",
+               "description": "The question for the child"},
+  "timeoutMs": {"type": "integer",
+                "description": "Give up waiting for the child's answer after this many ms (default 300000)"}
+}, required = @["session", "question"],
+   description = "Ask one of your subagents a question and get its answer. On an idle child this is a continuation that returns the reply directly. On a MID-TURN child the question is queued as mail and delivered when its current turn ends — the result says queued=true with deliveredVia=next-turn, and the answer comes back with the child's next continuation result (or as part of its final report). Same authorization as agent_run: only the child's parent conversation may ask.")
+askSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 900_000,
+                            "sessionContext": true, "noSpawn": true,
+                            "onDemand": true}
+discard comp.tool("agent_ask", askSchema,
+  proc(c: Component, toolArgs: JsonNode): JsonNode =
+    let parentSession = toolArgs{"__session"}{"session"}.getStr("")
+    if parentSession.len == 0:
+      return errResult("agent_ask needs a live session context")
+    let target = toolArgs{"session"}.getStr("")
+    let question = toolArgs{"question"}.getStr("")
+    if target.len == 0 or question.len == 0:
+      return errResult("agent_ask needs session and question")
+    # Authorization fail-closed, identical to agent_run's continuation path:
+    # the durable lineage relation, and a closed child refuses.
+    let cont = continuable(target, parentSession)
+    if not cont.ok:
+      return errResult(cont.error, extra = %*{"sessionId": target})
+    if wasCancelled(parentSession):
+      return errResult("cancelled by request")
+    # A mid-turn child cannot start a new turn (turns never nest) — queue
+    # the question as mail for its next turn instead of pretending to ask.
+    if busyChild(target):
+      var record = %*{"v": 1, "direction": "parent-mail",
+                      "from": parentSession, "child": target,
+                      "text": question, "createdAt": epochTime()}
+      var seq = 0
+      try:
+        for item in c.storeList("agentnotice", target & ":", 1000, 10_000):
+          let id = item.id
+          let dot = id.rfind(':')
+          if dot >= 0:
+            try: seq = max(seq, parseInt(id[dot + 1 .. ^1]))
+            except ValueError: discard
+        inc seq
+        discard c.storePut("agentnotice",
+                           target & ":" & align($seq, 6, '0'), record,
+                           timeoutMs = 10_000)
+      except CatchableError as e:
+        return errResult("cannot queue the question (store unreachable): " & e.msg)
+      return okResult(%*{"queued": true, "sessionId": target,
+                         "deliveredVia": "next-turn",
+                         "guidance": "the child is mid-turn; the question " &
+                           "was queued for its next turn — its answer " &
+                           "arrives with that turn's result"})
+    let timeoutMs = toolArgs{"timeoutMs"}.getInt(300_000)
+    let env = callEnvelope("session",
+      childSessArgs(target, question, "", "", nil, fresh = false),
+      originalCaller(toolArgs))
+    let resp = requestChildTurn(c, cont.subject, env, timeoutMs,
+                                parentSession, target)
+    if resp.kind == ekError:
+      return errResult(resp.error{"message"}.getStr("subagent failed"),
+                       extra = %*{"sessionId": target})
+    let turnError = resp.args{"turnError"}.getStr("")
+    if turnError.len > 0:
+      return errResult(turnError, extra = %*{"sessionId": target})
+    return okResult(%*{"sessionId": target,
+                       "answer": resp.args{"reply"}.getStr(""),
+                       "activation": %cont.activation,
+                       "asked": %true}))
 
 let noticesSchema = toolSchema(%*{
   "session": {"type": "string",

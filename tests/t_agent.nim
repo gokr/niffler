@@ -319,12 +319,17 @@ proc main() =
         failed{"status"}.getStr("") == "failed" and
         failed{"error"}.getStr("").contains("llm error"), $failed)
 
-  # steering a spawned job's child: fire-and-forget publish
-  let steer = call(nc, "agent", "agent_steer",
-                   %*{"session_id": waited{"sessionId"}.getStr(""),
-                      "message": "wrap it up"}, 10_000)
-  check("agent_steer publishes to the live child",
-        steer{"ok"}.getBool(false) and steer{"published"}.getBool(false),
+  # steering a settled job's child (P3.9): the child is between turns, so
+  # the steer QUEUES durably for its next continuation instead of
+  # pretending to publish into a runner that may retire. The mid-turn
+  # publish path is covered by t_agentp3.
+  var steerArgs = %*{"session_id": waited{"sessionId"}.getStr(""),
+                      "message": "wrap it up"}
+  steerArgs["__session"] = %*{"session": spawnParent}
+  let steer = call(nc, "agent", "agent_steer", steerArgs, 10_000)
+  check("agent_steer to a settled child queues durably",
+        steer{"ok"}.getBool(false) and steer{"queued"}.getBool(false) and
+        steer{"deliveredVia"}.getStr("") == "next-turn",
         $steer)
 
   # stop on an already-terminal job just returns the record

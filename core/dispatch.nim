@@ -626,6 +626,24 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       if meta.value != nil and meta.value{"fork"} != nil:
         # fork provenance (P1.4): where this conversation's history came from
         info["fork"] = meta.value{"fork"}
+      if meta.value != nil:
+        # lineage enrichment (P4.12): the activation ledger and retirement
+        # state live in the caller's own record
+        if meta.value{"activations"} != nil:
+          info["activations"] = meta.value{"activations"}
+        if meta.value{"firstActivationAt"} != nil:
+          info["firstActivationAt"] = meta.value{"firstActivationAt"}
+        if meta.value{"closed"}.getBool(false):
+          info["closed"] = %true
+      # children are counted from the CHILDREN's records, not the caller's
+      # own (a root parent has no sessionmeta of its own but still has
+      # children) — a count, not the roster (agent_list is the roster tool)
+      var children = 0
+      for item in ct.storeListAll("sessionmeta", ""):
+        if item{"value"}{"parent"}.getStr("") == sessionId:
+          inc children
+      if children > 0:
+        info["children"] = %children
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
       # completionTotal is Σ completion_tokens over assistant messages with

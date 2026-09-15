@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { currentProfile } from './lib/toolProfiles';
+  import { describeAgentNotice } from './lib/agentNotice.ts';
+import { currentProfile } from './lib/toolProfiles';
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
@@ -315,6 +316,12 @@
     });
     on("ev.agent.done", (ev) => {
       pushActivity("agent", `job ${ev.payload?.status ?? "?"} · ${cap(ev.payload?.sessionId, 10)}`);
+    });
+    // P4.13: a settled background child tells its PARENT conversation (the
+    // notice is folded into the chat by the runner); the strip mirrors it so
+    // the human sees the same truth without leaving the view.
+    on("ev.agent.notice", (ev) => {
+      pushActivity("agent", describeAgentNotice(ev.payload));
     });
   });
 

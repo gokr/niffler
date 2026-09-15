@@ -970,31 +970,48 @@ proc drainNotices(ct: CoreTools, p: var Persister,
   if pulled != nil and pulled.kind == JArray:
     for n in pulled: inbound.add(n)
   for n in inbound:
-    let status = n{"status"}.getStr("")
-    if status.len == 0: continue
-    let jobId = n{"jobId"}.getStr("")
-    let child = n{"child"}.getStr("")
-    let summary = n{"summary"}.getStr("")
-    let replyBytes = n{"replyBytes"}.getInt(0)
-    var content = "[subagent " & child & " " & status & "]"
-    if summary.len > 0:
-      content.add("\n" & summary)
-    if replyBytes > summary.len:
-      content.add("\n(full reply: " & $replyBytes & " bytes — " &
-                  n{"fullReplyIn"}.getStr("agent_status") &
-                  " {jobId: \"" & jobId & "\"})")
-    let noticeMsg = %*{"role": "user", "content": content,
-                       "notice": {"kind": "subagent-settled",
-                                  "jobId": jobId, "child": child,
-                                  "status": status}}
+    # Two directions share the agentnotice kind (P3.9): child-settled
+    # notices (a background job reached a terminal state) and parent-mail
+    # (steering/questions queued while the child was between turns or
+    # mid-turn). Both fold as structurally marked user messages — runtime
+    # machinery, never something the user typed.
+    var noticeMsg: JsonNode
+    var eventId = %*{"sessionId": sessionId, "turnId": turnId}
+    if n{"direction"}.getStr("") == "parent-mail":
+      let mailFrom = n{"from"}.getStr("")
+      let text = n{"text"}.getStr("")
+      let content = "[mail from the parent conversation]\n" & text
+      noticeMsg = %*{"role": "user", "content": content,
+                     "mail": {"kind": "parent-mail", "from": mailFrom}}
+      eventId["kind"] = %"mail"
+      eventId["from"] = %mailFrom
+    else:
+      let status = n{"status"}.getStr("")
+      if status.len == 0: continue
+      let jobId = n{"jobId"}.getStr("")
+      let child = n{"child"}.getStr("")
+      let summary = n{"summary"}.getStr("")
+      let replyBytes = n{"replyBytes"}.getInt(0)
+      var content = "[subagent " & child & " " & status & "]"
+      if summary.len > 0:
+        content.add("\n" & summary)
+      if replyBytes > summary.len:
+        content.add("\n(full reply: " & $replyBytes & " bytes — " &
+                    n{"fullReplyIn"}.getStr("agent_status") &
+                    " {jobId: \"" & jobId & "\"})")
+      noticeMsg = %*{"role": "user", "content": content,
+                     "notice": {"kind": "subagent-settled",
+                                "jobId": jobId, "child": child,
+                                "status": status}}
+      eventId["jobId"] = %jobId
+      eventId["child"] = %child
+      eventId["status"] = %status
     # ctxAppend, not a bare messages.add: compaction's node ledger must stay
     # 1:1 with the projection, and notices are runtime machinery it may
     # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
     ctxAppend(p, messages, noticeMsg)
     if onEvent != nil:
-      onEvent("notice", %*{"sessionId": sessionId, "turnId": turnId,
-                            "jobId": jobId, "child": child,
-                            "status": status})
+      onEvent("notice", eventId)
     result += 1
 
 # A parsed tool call from an assistant message, ready for the wave scheduler.
