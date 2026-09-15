@@ -1062,7 +1062,7 @@ proc pumpNested*(ct: CoreTools) =
 
 const partialReplyGraceMs = 1_000
 
-proc partialArgs(args: JsonNode, reason: string): JsonNode =
+proc partialArgs(args: JsonNode, reason, errorText: string): JsonNode =
   ## Preserve a component's completed-but-partial result across a dispatch
   ## timeout/cancel. The marker is private machine data; conversation's tool
   ## projection renders the human-facing wording without trusting a component
@@ -1073,9 +1073,11 @@ proc partialArgs(args: JsonNode, reason: string): JsonNode =
     result = %*{"value": args}
   result["__partial"] = %true
   result["__partialReason"] = %reason
+  result["__toolError"] = %true
+  result["error"] = %errorText
 
 proc waitPartialReply(ct: CoreTools, sub: ptr natsSubscription,
-                      graceMs: int, reason: string): JsonNode =
+                      graceMs: int, reason, errorText: string): JsonNode =
   ## After publishing cancel.<component>, give cooperative components a short
   ## grace period to return the bytes they captured before termination. A
   ## component that does not answer remains a normal timeout/cancel error.
@@ -1087,7 +1089,7 @@ proc waitPartialReply(ct: CoreTools, sub: ptr natsSubscription,
       let reply = decode($natsMsg_GetData(msg))
       natsMsg_Destroy(msg)
       if reply.kind == ekResult:
-        return partialArgs(reply.args, reason)
+        return partialArgs(reply.args, reason, errorText)
       return nil
     if st != NATS_TIMEOUT and not checkStatus(st): return nil
   nil
@@ -1161,7 +1163,8 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
         epochTime() - ct.steerStream.cancelAt <= 30.0:
       let sessionId = ct.activeTurn.session
       publishToolCancel(ct, subject, tool, sessionId)
-      let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "cancelled")
+      let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "cancelled",
+                                     "cancelled by request")
       if partial != nil: return partial
       raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
@@ -1171,11 +1174,12 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
   # established timeout error shape.
   let sessionId = if ct.activeTurn != nil: ct.activeTurn.session else: ""
   publishToolCancel(ct, subject, tool, sessionId)
-  let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "timed_out")
+  let timeoutError = "tool '" & tool & "' (" & subject & ") timed out after " &
+                     $timeoutMs & "ms"
+  let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "timed_out",
+                                 timeoutError)
   if partial != nil: return partial
-  raise newException(IOError,
-    "tool '" & tool & "' (" & subject & ") timed out after " &
-    $timeoutMs & "ms")
+  raise newException(IOError, timeoutError)
 
 proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
@@ -1516,8 +1520,20 @@ proc dispatchToolCalls*(ct: CoreTools,
       allDone = false
       if now >= pending[i].deadline:
         pending[i].done = true
-        pending[i].error = "tool '" & pending[i].tool & "' timed out after " &
-          $pending[i].timeoutMs & "ms"
+        let comp = ct.cat.toolIndex.getOrDefault(pending[i].tool)
+        let subject = "svc." & comp & ".call"
+        let timeoutError = "tool '" & pending[i].tool & "' timed out after " &
+                           $pending[i].timeoutMs & "ms"
+        let sessionId = if ct.activeTurn != nil: ct.activeTurn.session else: ""
+        publishToolCancel(ct, subject, pending[i].tool, sessionId)
+        let partial = waitPartialReply(ct, pending[i].sub,
+                                       partialReplyGraceMs, "timed_out",
+                                       timeoutError)
+        if partial != nil:
+          pending[i].value = partial
+          pending[i].error = timeoutError
+        else:
+          pending[i].error = timeoutError
         continue
       var msg: ptr natsMsg
       let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, streamPollMs(ct))

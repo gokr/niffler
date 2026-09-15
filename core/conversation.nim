@@ -1111,15 +1111,17 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
   ## a string `text` field is rendered verbatim into the tool message —
   ## that is the whole diet; every other field stays machine-readable on
   ## the bus (fabric programs, tests, UIs) and never reaches the transcript.
+  let partialFailure = not oc.ok and oc.value != nil and
+                       oc.value{"__partial"}.getBool(false)
   let content =
-    if oc.ok:
+    if oc.ok or partialFailure:
       let t = oc.value{"text"}
       if t.isStr: t.getStr()
       else: jdump(oc.value)
     else:
       ""
   let toolMsg =
-    if oc.ok:
+    if oc.ok or partialFailure:
       var body = content
       promoteSpill(ct, p, sessionId, oc.value, body)
       if oc.value{"__partial"}.getBool(false):
@@ -1130,6 +1132,8 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
                         "cancelled by user"
         body.add("\n\n[tool output above is partial; " & wording &
                  "; retry may be useful]")
+      if partialFailure:
+        body = "ERROR: " & oc.error & "\n\n" & body
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
          "content": body}
     else:
@@ -1139,13 +1143,15 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
     %*{"turnId": turnId, "startedAt": toolStartedAt,
        "durationMs": toolDurationMs})
   if onEvent != nil:
-    if oc.ok:
-      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                             "callId": it.id, "phase": "done",
-                             "tool": it.name, "args": it.args,
-                             "result": oc.value,
-                             "durationMs": toolDurationMs,
-                             "at": epochTime()})
+    if oc.ok or partialFailure:
+      var event = %*{"sessionId": sessionId, "turnId": turnId,
+                      "callId": it.id, "phase": "done",
+                      "tool": it.name, "args": it.args,
+                      "result": oc.value,
+                      "durationMs": toolDurationMs,
+                      "at": epochTime()}
+      if partialFailure: event["error"] = %oc.error
+      onEvent("toolcall", event)
     else:
       onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                              "callId": it.id, "phase": "done",
@@ -2008,8 +2014,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
       else:
         try:
-          oc = ToolCallOutcome(ok: true,
-                               value: ct.dispatchToolCall(it.name, it.args))
+          let value = ct.dispatchToolCall(it.name, it.args)
+          if value != nil and value{"__toolError"}.getBool(false):
+            oc = ToolCallOutcome(ok: false, value: value,
+                                 error: value{"error"}.getStr("tool failed"))
+          else:
+            oc = ToolCallOutcome(ok: true, value: value)
         except CatchableError as e:
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
