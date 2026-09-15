@@ -19,6 +19,26 @@ func TestAcceptContractEmptyListsNoDrift(t *testing.T) {
 	}
 }
 
+func TestDirectToolThresholdDefersLargeServers(t *testing.T) {
+	t.Setenv("NIF_MCP_DIRECT_THRESHOLD", "2")
+	cfg := &serverConfig{Name: "large", Expose: "direct", Tools: []cachedTool{
+		{Name: "a"}, {Name: "b"}, {Name: "c"},
+	}}
+	if !deferDirectTools(cfg) {
+		t.Fatal("large direct server was not deferred")
+	}
+	if got := xHarness(cfg, false, true); got["onDemand"] != true {
+		t.Fatalf("large server x-harness = %#v, want onDemand", got)
+	}
+	cfg.Tools = cfg.Tools[:2]
+	if deferDirectTools(cfg) {
+		t.Fatal("server at threshold was deferred")
+	}
+	if got := xHarness(cfg, false, false); got["onDemand"] == true {
+		t.Fatalf("small direct server x-harness = %#v, want direct", got)
+	}
+}
+
 func TestAcceptContractRealDriftFailsClosed(t *testing.T) {
 	b := newBridge(&serverConfig{
 		Name:  "t",

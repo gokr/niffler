@@ -178,6 +178,11 @@ comp.tool(%*{"hidden": true}):
         return toolCall("t1", "agent_run",
                         %*{"task": "FORCE_LLM_FAILURE then report"})
       return %*{"content": "agent-turn-done"}
+    if sessionId == "agt-tier":
+      if stage == 0:
+        return toolCall("t1", "agent_run",
+                        %*{"task": "echo tiered agent-ok", "modelTier": "strong"})
+      return %*{"content": "agent-turn-done"}
     if sessionId == "agt-spawn":
       if stage == 0:
         return toolCall("t1", "agent_spawn",

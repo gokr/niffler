@@ -143,6 +143,29 @@ proc main() =
   check("systemprompt answers direct calls",
         directPrompt.contains("self-extending") and
         directPrompt.contains("agent harness"), $direct)
+
+  let hintA = call(nc, "systemprompt", "prompt_hint", %*{
+    "slot": "efficient_tools", "source": "z-plugin", "key": "z",
+    "content": "Prefer the z-plugin batch helper.", "mode": "aggregate"}, 10_000)
+  let hintB = call(nc, "systemprompt", "prompt_hint", %*{
+    "slot": "efficient_tools", "source": "a-plugin", "key": "a",
+    "content": "Prefer the a-plugin index helper.", "mode": "aggregate"}, 10_000)
+  discard call(nc, "systemprompt", "prompt_hint", %*{
+    "slot": "after_instructions", "source": "test", "key": "singleton",
+    "content": "stale singleton", "mode": "singleton"}, 10_000)
+  let hintD = call(nc, "systemprompt", "prompt_hint", %*{
+    "slot": "after_instructions", "source": "test", "key": "singleton",
+    "content": "current singleton", "mode": "singleton"}, 10_000)
+  let hinted = call(nc, "systemprompt", "systemprompt",
+                    %*{"cwd": root}){"systemPrompt"}.getStr("")
+  check("prompt slots aggregate deterministically",
+        hintA{"ok"}.getBool(false) and hintB{"ok"}.getBool(false) and
+        hinted.contains("Prefer the a-plugin index helper.") and
+        hinted.contains("Prefer the z-plugin batch helper.") and
+        hinted.find("a-plugin") < hinted.find("z-plugin"), hinted)
+  check("singleton prompt slot replaces prior content",
+        hintD{"ok"}.getBool(false) and hinted.contains("current singleton") and
+        not hinted.contains("stale singleton"), hinted)
   check("global AGENTS.md wraps into project_context with a root-relative path",
         directPrompt.contains(
           "<project_instructions path=\"AGENTS.md\">"),
