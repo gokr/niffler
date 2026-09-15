@@ -94,6 +94,10 @@ proc main() =
     ctxProc.close()
   check("ctxtest registered", waitComponent(nc, "ctxtest"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
+                                 extra = [("NIF_AGENT_MODEL_WEAK", "mock-weak"),
+                                          ("NIF_AGENT_MODEL_MEDIUM", "mock-medium"),
+                                          ("NIF_AGENT_MODEL_STRONG", "mock-strong"),
+                                          ("NIF_AGENT_DEFAULT_TIER", "medium")],
                                  logFile = root / "var" / "test-logs" / "agent.log")
   defer:
     if agentProc.running():
@@ -131,6 +135,28 @@ proc main() =
                   %*{"sessionId": parentId, "content": "go"}, 120_000)
   check("parent turn completed",
         turn{"reply"}.getStr("") == "agent-turn-done", $turn)
+
+  # A requested strong tier is clamped to the configured medium ceiling when
+  # the parent model is not present in the ladder (the test default tier).
+  let tierTurn = call(nc, "core", "session",
+                      %*{"sessionId": "agt-tier", "content": "go"}, 120_000)
+  check("tier parent turn completed",
+        tierTurn{"reply"}.getStr("") == "agent-turn-done", $tierTurn)
+  var tierResult = JsonNode(nil)
+  for i in 1 .. 8:
+    let m = call(nc, "store", "get",
+                 %*{"kind": "message",
+                    "id": "agt-tier:" & align($i, 6, '0')}, 10_000)
+    if m{"value"}{"role"}.getStr("") == "tool":
+      try:
+        tierResult = parseJson(m{"value"}{"content"}.getStr(""))
+      except CatchableError:
+        discard
+      break
+  check("model tier is clamped",
+        tierResult{"modelTier"}.getStr("") == "medium", $tierResult)
+  check("clamped tier selects its configured model",
+        tierResult{"model"}.getStr("") == "mock-medium", $tierResult)
 
   # agent_run result in the parent transcript: child session id + reply
   var agentResult = JsonNode(nil)
