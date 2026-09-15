@@ -500,7 +500,11 @@ reports:
   temporary paged `compaction_input` snapshot, validates the candidate's
   generation/digest/cut/schema/size and strict reduction, then commits one
   `context_projection` document with optimistic `expectRev`. The component
-  never writes conversation or projection records.
+  never writes conversation or projection records. Any contract-v1
+  implementation can be proved against the same suite with
+  `make test-conformance` (`tests/t_compaction_conformance.nim` — the suite
+  default proves the shipped component; `--bin:`/`--tool:` point it at a
+  third-party one).
 - A successful projection emits `reason: "reset:compact"`; model-free pruning
   emits `reset:prune`; lossy fallback emits `reset:trim`. `reset:tools` remains
   reserved for an actual sticky tool-schema promotion. These are the only
@@ -1780,7 +1784,7 @@ guide with nudge phrasing and worked examples:
 | Tool | What it does |
 |---|---|
 | `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. |
-| `agent_run {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
+| `agent_run {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop) — a fresh child without an explicit `model` inherits this conversation's effective model (the override first) instead of silently taking the provider default. With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
 | `agent_spawn {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
@@ -1805,7 +1809,9 @@ and it is a *pointer*, not the reply:
   reply is already durable in the `agentjob` record and one call away.
 
 Notices are best-effort: an unreachable store or agent component costs a
-notice, never a turn.
+notice, never a turn. They are appended runtime history — ledger nodes like
+steer and advisories — so compaction may compact them away like any other
+appended history.
 
 ### Continuation (sessions with memory)
 

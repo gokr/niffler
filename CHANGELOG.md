@@ -8,6 +8,87 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **compaction: contract-v1 conformance runner (`make test-conformance`) +
+  negative-case hardening.** `tests/t_compaction_conformance.nim` proves
+  that ANY implementation registering the selected proposal tool meets the
+  runner contract — propose → strict validation → checkpoint-v1 render →
+  optimistic commit → restart reload → second generation — without reading
+  core/: the suite default proves the shipped component still conforms, and
+  `./var/bin/test_t_compaction_conformance --bin:PATH --tool:NAME` points it
+  at any third-party contract-v1 implementation
+  (`tests/compaction_contract/fixture.nim` is the interchangeable second
+  implementation; the deterministic mock LLM enforces a 16k provider window,
+  so a finished turn also proves no request went over-window).
+  Negative cases closed: the runner rejects candidates claiming more
+  auxiliary LLM calls than `NIF_COMPACTION_MAX_LLM_CALLS` grants
+  (provenance is the enforceable boundary), a concurrent projection writer
+  wins the optimistic commit while the trim rung still completes the turn,
+  and a steer published during compaction is folded after settlement,
+  outside the cut. `drainNotices` now appends settlement notices through
+  `ctxAppend`, so subagent settlement notices are ledger nodes like steer
+  and advisories — visible to compaction and compactable like any other
+  appended history (previously persisted and projected but invisible to
+  the context identity ledger, exactly the drift the ledger rule exists to
+  prevent) (`f5bd958`, `4f70949`).
+
+- **lsp: `documentSymbol` and `workspaceSymbol` — the file outline and
+  repo-wide symbol search join the seam.** `documentSymbol` returns every
+  symbol in one file with kind, name and one-based position (no line/
+  character needed); `workspaceSymbol` is a fuzzy `query` over the server's
+  index with cross-file results (the server builds its index after warmup,
+  so the first call may need a retry) — the `lsp` tool now has seven query
+  operations plus `warmup`. The built-in registry defaults updated:
+  `nimtortoise` is the Nim default (replacing nimlangserver), `jdtls`
+  (Java) and `csharp-ls` (C#) join; `make install-lsp` gained the matching
+  per-language installs (jdtls resolved via the eclipse-jdtls snapshots
+  `latest.txt`, the classic tsserver.path pinned, csharp-ls pinned per
+  .NET SDK major with dotnet errors surfaced). New fixture cases in
+  `tests/t_lsp.nim` cover both operations (`62e5374`, `a5a2dca`,
+  `7266bc4`, `e285a05`, `7f8c28d`).
+
+- **`/doctor` self-test fan-out — components check themselves.** The
+  `doctor` core tool asks every registered component that implements the
+  standard hidden `selftest` tool (docs/WIRE.md "Self tests (`selftest`)
+  and `/doctor`", SDK: `selfTest()`) to verify itself and collects the
+  per-check results in the report
+  (`selftest: [{component, ok, summary, checks}]`); components without one
+  are listed as not implementing it (opt-in, not broken). `deep: true`
+  goes live — the lsp component boots every configured language server
+  against throwaway fixtures (clean file → 0 diagnostics, hover answers,
+  broken file → errors) and the store runs a full put/get/rev/list/del
+  roundtrip on its engine; quick mode stays cheap (binary resolution
+  only). The report also carries a rendered Markdown table in `text`
+  (what `/doctor` displays), and `ask: true` adds a `userMessage`
+  interpretation request under the slash-result convention (`8ab8c78`,
+  `109a544`).
+
+- **subagent continuation + fork — children with memory, and children
+  that have read the discussion.** Continuation (P1.3): both
+  `agent_run` and `agent_spawn` accept a previously returned `sessionId`
+  to give that existing child another turn — content only (no preamble,
+  no system prompt), so the child's cached prefix survives; authorization
+  is the durable lineage relation (`sessionmeta.parent` == caller) and
+  every failure refuses explicitly (unknown / self / root / foreign /
+  closed / store unreachable); `agent_run` refuses a mid-turn child with
+  `code: "busy"` (checked after authorization) while `agent_spawn` queues;
+  each accepted turn advances the activation ledger
+  (`sessionmeta.activations`, `firstActivationAt`), background
+  continuations stamp `continued`/`activation` on the `agentjob` record,
+  and `close: true` retires the child after its turn (records survive;
+  only further continuation refuses). Fork (P1.4): `fork: true | {lastK} |
+  {maxChars}` on fresh spawns only seeds the child's message log with the
+  caller's completed turns — a balanced, contiguous-from-0, replay-valid
+  cut on completed-turn boundaries that fails closed rather than producing
+  an empty child; per-message usage, `summary`/`error` records, the
+  toolset snapshot and header controls are not copied (a birth freezes the
+  caller's arguments); provenance lands in `sessionmeta.fork`; the child
+  is born cold (first request uncached, warm from the second turn). Fresh
+  spawns without an explicit `model` inherit the parent conversation's
+  persisted effective model instead of silently taking the provider
+  default (docs/WIRE.md "Subagent continuation"/"Subagent fork";
+  `tests/t_agentcont.nim`, `tests/t_agentfork.nim`) (`a54129d`,
+  `f3338f5`, `ac14d02`).
+
 - **make down-here** — the scoped variant of `make down`: stops only this
   checkout's harness, components and spawned bus, pinning every kill by
   process tree + NIF_ROOT env + executable path (`scripts/down-here.sh`,
@@ -365,6 +446,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   implementation plan merged docs-only (`412347c`).
 
 ### Changed
+
+- **plugins: `plugin_installed` derives the checkout commit at read time.**
+  Store records carry no commit field, so the listing runs `git rev-parse
+  HEAD` in each checkout and injects the result — truthful provenance for
+  `/status` and other clients with no store migration or reinstall
+  (`t_plugins` asserts the reported SHA matches the fixture repo's HEAD)
+  (`08e8f93`).
 
 - **baseprompt: placement triggers and scoping.** One sentence ties
   `lsp goToDefinition` to the failure moment — an edit to a symbol belongs

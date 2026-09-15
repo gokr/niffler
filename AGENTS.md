@@ -143,12 +143,8 @@ make run              # build, then ./var/bin/niffler (interactive harness)
 ./var/bin/niffler --minimal  # boot only store + bash + llm; skip persisted extras
 niffler-ui            # the desktop app: autostarts core; the last UI stops it
 make test             # the full gate: `make test-ui` then `make test-server`
-make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
-                      # t_builder, t_console, t_plugins, t_skills, t_fetch,
-                      # t_models, t_provider, t_observe, t_logfile, t_core,
-                      # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_agentnotice, t_agentcont,
-                      # t_fabric, t_nested, t_mcp —
+make test-server      # the whole bus-contract suite: smoke + every
+                      # tests/t_*.nim (t_bash, t_store, t_builder, … t_mcp) —
                       # each owns a private NATS server + temporary NIF_ROOT,
                       # so component targets can overlap a live harness
 make test-ui          # frontend only: `npm test` (lib unit tests, run on plain

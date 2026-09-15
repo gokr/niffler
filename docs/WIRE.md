@@ -361,7 +361,10 @@ that want to look without waiting for a turn.
 ## Subagent continuation (`agent_run`/`agent_spawn {session}`)
 
 Both drivers accept `session`: a previously returned `sessionId` gives that
-EXISTING child another turn instead of minting a fresh one. Design and
+EXISTING child another turn instead of minting a fresh one. On a fresh
+spawn (no `session`) an omitted `model` inherits the parent conversation's
+persisted effective model — the override first, the provider default only
+when the parent never resolved one. Design and
 testing: docs/research/SUBAGENTS-PLAN.md P1.3.
 
 - **Authorization is the durable lineage relation**: the child's
