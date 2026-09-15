@@ -329,10 +329,13 @@ Rules:
 - `provenance`/diagnostics never enter model context. Unknown usage is
   `unknown`, never zero. Claimed savings are advisory; the runner re-measures.
 - `cutBefore` must be one of the runner's permitted boundaries, and `covered`
-  must be exactly the range the checkpoint absorbs (which includes any prior
-  checkpoint node when one is present). A component may not pick a boundary the
-  runner did not offer, may not edit the system prompt or tool schemas, and may
-  not fabricate tool results.
+  must be exactly the contiguous span newly absorbed. Prefix cuts include a
+  prior checkpoint node directly. An autonomous-turn middle cut keeps the
+  latest user request outside that span; the snapshot supplies the prior
+  normalized checkpoint separately and the new generation supersedes it, so
+  checkpoints never stack. A component may not pick a boundary the runner did
+  not offer, replace the latest actual user request, edit the system prompt or
+  tool schemas, or fabricate tool results.
 - `status: "declined"` with a stable reason (`no-useful-cut`,
   `input-budget-exceeded`, `indivisible`) is a first-class answer. Exceptions,
   malformed replies, timeouts and no-responders all enter the same bounded
@@ -342,7 +345,11 @@ Rules:
 
 1. Read and verify the snapshot. Choose a permitted cut leaving a priced recent
    tail (~15–20% of the usable input budget, clamped by the budget's
-   `preferredTailTokens`).
+   `preferredTailTokens`). Ordinarily this replaces an old prefix before the
+   latest user request. In a single autonomous turn, the runner may instead
+   offer a balanced middle span of completed tool groups after that request;
+   retained canonical ids then contain the verbatim request prefix plus the
+   recent tail.
 2. Merge the previous checkpoint with the newly covered span. Preserve exact
    requirements, user corrections, decisions with rationale, file paths,
    verification results and unresolved uncertainty. Never promote a guess into
@@ -403,9 +410,8 @@ admission (approval, timeouts, workspace resolution); the compactor needs
 none of that, because its only nested call is to a concurrent, hidden,
 non-approved LLM tool.
 
-What still must change in `components/llm/main.go` before the default component
-can land, because today an auxiliary call with the conversation's own
-`sessionId` would corrupt the live turn:
+The default component now uses the following explicit auxiliary-call fields
+(they are part of the `chat` contract, not hidden conventions):
 
 - `cancelId` (string, optional) — subscribe `llm.cancel.<cancelId>` instead of
   `llm.cancel.<sessionId>`; the compactor passes
@@ -418,6 +424,20 @@ can land, because today an auxiliary call with the conversation's own
   `sessionId` is what makes both behaviors intentional.)
 - `purpose: "compaction"` — telemetry/accounting only; the runner's budget
   check stays authoritative.
+
+The default compactor streams internally so cancellation can interrupt the
+provider request, but sets `emitTokens: false`; its request loop relays
+`cancel.compaction` to the distinct `llm.cancel.<cancelId>` subject. Ordinary
+turns retain the old `cancelId` fallback and publish tokens by default.
+
+`tests/compaction_contract/fixture.nim` is the interchangeability fixture. It
+reads only the verified input metadata, returns a deterministic contract-v1
+candidate under `fixture_compaction_propose`, and never writes a projection.
+The integration test first commits with the default compactor, restarts with
+the fixture selected, then compacts the same conversation again. This proves
+that implementation identity is not persisted as runner behavior: the new
+component reloads and advances the prior projection through the same validator,
+renderer, optimistic commit, and canonical-retention rules.
 
 Deadlines are the runner's; the compactor may request a *smaller* one, never a
 larger one.
@@ -534,7 +554,10 @@ projection nodes + output reserve. A proposal is accepted only if:
   (compaction runs between complete tool batches, never while tools run);
 - the rendered checkpoint, framed by one runner-owned versioned template,
   strictly reduces the request and fits `targetInputTokens`;
-- `sum(granted auxiliary calls) ≤ maxLlmCalls` and the deadline was honored.
+- the candidate's reported `provenance.llmCalls` does not exceed the granted
+  `maxLlmCalls` — the runner cannot observe the component's calls directly,
+  so the claim is the enforceable boundary (a candidate claiming more is
+  `compact:invalid`); the deadline is honored by the request timeout.
 
 Steering/advice arriving during the attempt is queued, appended **after**
 commit/decline, and the budget re-checked before the request goes out.
@@ -561,6 +584,14 @@ now atomic on the default one). Content:
 Commit order: **validate → single acknowledged store put → replace in-memory
 context → emit event.** A failed put leaves the old projection installed. A
 crash after the put reloads the new projection even if no event was published.
+
+Candidate coverage names **projection nodes**; persisted `covered` endpoints
+name **canonical messages**. When an endpoint is a prior checkpoint, the
+runner substitutes that checkpoint's persisted canonical endpoint before
+rendering and pricing the replacement. This also permits a strictly smaller
+checkpoint-only replacement without persisting a dangling superseded `#ckN`
+reference. The conformance fixture exercises this with
+`NIF_FIXTURE_CHECKPOINT_ONLY=1`, including another restart after generation 2.
 
 Reload (runner startup and after any context rebuild):
 
@@ -680,12 +711,21 @@ fixture family (`tests/mock_llm.nim` pattern, `newCoreSandbox`):
    checkpoint is absorbed, not lost.
 7. **Interchangeability, enforced by a published conformance fixture.**
    `tests/compaction_contract/` ships a fixture compactor (trivial, deterministic,
-   LLM-free) **plus** the assertions as a reusable script, so a third-party
-author can run their implementation against the same contract without reading
-   `core/`. `t_ctxcompact` runs gradient 1 against both the default and the
-   fixture compactor under different tool names, asserts identical runner
-   behavior, and asserts a projection stored by compactor A reloads when B is
-   configured. This fixture is the actual guarantee behind "alternative
+   LLM-free) **plus** the assertions as a reusable runner,
+   `tests/t_compaction_conformance.nim` (`make test-conformance`, or
+   `--bin:PATH --tool:NAME` for a third-party implementation), so an author
+   can run their implementation against the same contract without reading
+   `core/`: propose → strict validation → checkpoint-v1 commit → canonical
+   immutability → snapshot cleanup → restart reload → second generation.
+   `t_compaction` runs the fixture under a different tool name, asserts a
+   projection stored by the default compactor reloads when the fixture is
+   configured, and closes the §8 negative cases `maxLlmCalls` exhaustion
+   (the fixture reports an over-budget call count and the runner rejects the
+   candidate), steering during compaction (a real steer is folded after
+   settlement and stays outside the cut), and the store-put conflict (a
+   concurrent projection writer wins; the runner declines without
+   overwrite and finishes the turn on the trim rung). This fixture is the
+   actual guarantee behind "alternative
    compactors plug in easily" — without it, the contract is prose.
 8. **Allowlisted subagent.** A conversation frozen with `tools: [...]` still
    compacts (the §4.1 exemption).
@@ -702,17 +742,24 @@ Gate: `make build && make test` (server suite mirrors the engine matrix), plus
 a live long-turn smoke test. Measure continuity, recovery success, recall
 correctness, latency and cache rebuilds — not just token reduction.
 
+The opt-in `make live-smoke` runs real components against Synthetic
+`hf:openai/gpt-oss-120b`. The [2026-09-15 live report](COMPACTION_LIVE_SMOKE.md)
+records two compactions in one ten-batch turn, no lossy trim, exact direct
+spill recall and continuity after restart. Its artificial 16000-token window
+is distinct from the model's native 131072-token limit. The run exposed and
+verified a fix for auxiliary tool-schema formatting.
+
 ## 9. Delivery order
 
 | # | Step | Why first |
 |---|---|---|
-| 0 | SQLite default + paged-read contract + importer + docs (§2, §6.4) | compaction's durability and reload depend on both |
-| 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes |
-| 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components |
-| 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists |
-| 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam |
-| 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it |
-| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam |
+| 0 | SQLite default + paged-read contract + importer + docs (§2, §6.4) | compaction's durability and reload depend on both — ☑ LANDED (merged with feat/store-sqlite-default) |
+| 1 | Context representation nodes/ids/generation + `persistMsg` ids + reload via pages (§4.2) | everything else addresses nodes — ☑ LANDED (CtxNode ledger 1:1 with the projection, ctxAppend growth path, canonicalHigh, loadStoredMessagesEx nodes + `after` cursor, ctxDigest; t_ctxcompact) |
+| 2 | Long-turn regression test + admission + prune + trim + bounded overflow receipt, **no component** (§6.1–6.5, test 1–4) | fixes the stated failure with zero new components — ☑ LANDED (admission before every request; prune → trim → context-recovery-required ladder; stable context-overflow classification in the adapter + receipt-bounded recovery; §8 fixtures 1–3 + end-to-end overflow recovery) |
+| 3 | `context_recall` + spill documents + prompt-template disclosure + bash spill pointer promotion (§5) | recall is useful before summarization exists — ☑ LANDED (components/recall; spill docs keyed by the canonical id; prune gate verifies the durable copy; baseprompt disclosure line) |
+| 4 | Compaction contract + default component + snapshot/validation (§4.4–4.6) | the replaceable seam — ☑ LANDED (contract-v1 snapshots/pages/digests, strict candidate validator, runner-owned checkpoint renderer, optimistic `context_projection` commit/reload, `x-harness.runner` allowlist seam, shipped `compaction_propose`; restart/second-generation/recall/corrupt-projection fixtures) |
+| 5 | Auxiliary `chat` additions: `cancelId`, suppressed token frames, `purpose` (§4.7) | only step 4 needs it — ☑ LANDED (distinct cancellation relay, internal streaming with suppressed token frames, purpose telemetry, end-to-end cancellation fixture) |
+| 6 | Interchangeability + crash matrix + docs (WIRE.md, MANUAL.md, AGENTS.md) | prove the seam — ☑ LANDED (LLM-free fixture under a second tool name, projection reload across implementations, reusable conformance runner `make test-conformance`, maxLlmCalls/steering/put-conflict negative cases) |
 
 Steps 0–3 are shippable independently and already improve reliability; step 4
 is the summarization upgrade; step 5 is the plumbing that makes the default
@@ -731,9 +778,10 @@ component's multi-call path possible.
   exist before.
 - **Prune is now first-class** (§5.2, §6.3): deterministic, model-free, applied
   at execution time and at compaction time, never rewriting canonical records.
-- **Auxiliary LLM plumbing is an explicit prerequisite** (§4.7): `chat` today
-  routes cancel and stream by `sessionId`, so compactor calls would publish
-  tokens into the live turn and be cancellable by the user's stop.
+- **Auxiliary LLM plumbing is explicit** (§4.7): `chat` carries a distinct
+  `cancelId`, suppressible token frames and a `purpose` field, so compactor
+  calls cannot publish partial output into the live turn or share its cancel
+  subject.
 - **Overflow classification named as a prerequisite** (§6.5): `core/retry.nim`
   treats `400` as permanent, so overflow recovery cannot work until the adapter
   emits a stable code.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,47 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+func TestRetryAfterMillis(t *testing.T) {
+	if got := retryAfterMillis("2.5"); got != 2500 {
+		t.Fatalf("seconds retry-after = %d, want 2500", got)
+	}
+	if got := retryAfterMillis("not-a-date"); got != 0 {
+		t.Fatalf("invalid retry-after = %d, want 0", got)
+	}
+	if got := retryAfterMillis("0"); got != 1 {
+		t.Fatalf("zero retry-after = %d, want 1", got)
+	}
+}
+
+func TestRetryAfterHTTPClientAddsHintToAPIError(t *testing.T) {
+	base := roundTripperDoer{fn: func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 429,
+			Header:     http.Header{"Retry-After": []string{"3"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"slow down"}}`)),
+		}, nil
+	}}
+	resp, err := (&retryAfterHTTPClient{base: base}).Do(httptest.NewRequest(http.MethodPost, "http://example.test", nil))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Fatalf("read body: %v", readErr)
+	}
+	if !strings.Contains(string(body), "retry-after-ms: 3000") {
+		t.Fatalf("body missing normalized hint: %s", body)
+	}
+}
+
+type roundTripperDoer struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (d roundTripperDoer) Do(req *http.Request) (*http.Response, error) {
+	return d.fn(req)
+}
 
 func TestInferCatalogProviderPrefersEndpoint(t *testing.T) {
 	tests := []struct {
@@ -256,6 +298,24 @@ func TestSanitizeMessagesRepairsPoisonedHistory(t *testing.T) {
 	}
 	if msgs[0].Content != "hi" || msgs[2].Content != "{}" {
 		t.Fatal("non-assistant messages were altered")
+	}
+}
+
+func TestChatArgsAuxiliaryControls(t *testing.T) {
+	var args chatArgs
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"x"}],"sessionId":"compaction.s.a","cancelId":"cancel.s.a","stream":true,"emitTokens":false,"purpose":"compaction"}`), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args.SessionID != "compaction.s.a" || args.CancelID != "cancel.s.a" ||
+		args.Purpose != "compaction" || !args.Stream || args.emitTokens() {
+		t.Fatalf("auxiliary args decoded incorrectly: %+v", args)
+	}
+	var ordinary chatArgs
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"x"}]}`), &ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if !ordinary.emitTokens() {
+		t.Fatal("emitTokens must default to true for ordinary turns")
 	}
 }
 

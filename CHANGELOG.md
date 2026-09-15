@@ -8,6 +8,124 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **agent: subagents-v2 — settlement notices, the child roster,
+  continuation and fork.** Four steps landed from the
+  `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH
+  comparison named:
+  - **Settlement notices (P0.1, `2911074`)** — a finished background child
+    now reaches the parent conversation without polling. The agent
+    component records a durable `agentnotice` record first
+    (`{parent, jobId, child, status, summary?, replyBytes, fullReplyIn}`,
+    id `<parent>:<zero-padded seq>`) and delivers it second; the notice is
+    a POINTER to the reply the agentjob record already holds, never the
+    reply, so a model told "your subagent finished" also learns that
+    `agent_status` returns the byte-identical full text (`fullReplyIn`).
+    Delivery is two-lane by parent state: mid-turn it rides
+    `svc.session.<parent>.steer` as a structurally marked user message
+    (never a bare "Steer: "); otherwise it pends and the parent's next
+    turn drains it at the top alongside steer and advisories — the model
+    never has to poll. `agent_notices {session?, peek?}` is the manual
+    drain. Best-effort throughout: an unreachable store costs a notice,
+    never a turn.
+  - **`agent_list` (P0.2, `fbea052`)** — the derived child roster:
+    `agent_list {scope?: "children"|"descendants"}` joins
+    `sessionmeta.parent` with agentjob records and one catalog read for
+    residency; nothing new is persisted. `status` (running | idle |
+    ready — storage only, never terminal) and `lastStatus` (how the last
+    activation ended) are deliberately separate questions.
+  - **Continuation (P1.3, `a54129d`)** — `agent_run`/`agent_spawn` accept
+    `session` to give an existing child another turn instead of minting a
+    fresh one per delegation. Authorization is the durable lineage
+    relation (`sessionmeta.parent == caller`) and every failure refuses
+    explicitly, fail-closed; a mid-turn child REFUSES `agent_run`
+    (`code: "busy"`) but queues under `agent_spawn`. Frozen controls
+    belong to the child — a continuation sends content only, so the
+    cached prefix survives — and `close: true` retires the child after
+    its turn.
+  - **Fork (P1.4, `f3338f5`)** — `fork: true | {"lastK": n} |
+    {"maxChars": n}` seeds a fresh child with the CALLER's completed
+    turns, so the model has read the discussion instead of being told
+    about it. The copy is a contiguous-from-0 replay-valid prefix
+    (two-pass cut: provider-validity walk, then turn blocks) — never a
+    dangling `tool_call_id` — and a selection that drops everything fails
+    closed. Fork + `session` is refused: a fork is a birth, not a
+    continuation.
+  - Children also inherit the parent's effective model unless an explicit
+    `model` override is given, instead of silently falling back to the
+    provider default (`ac14d02`). Tests: `tests/t_agentnotice.nim`,
+    `t_agentcont.nim`, `t_agentfork.nim`; WIRE.md gains the notice
+    record, continuation and fork contracts; MANUAL.md documents the new
+    tools.
+
+- **lsp: `documentSymbol` and `workspaceSymbol` — the file outline and
+  repo-wide symbol search as the sixth and seventh operations.**
+  `documentSymbol` (`62e5374`) returns every symbol in a file with kind,
+  name and one-based position (anchored at the name token), depth-indented
+  for nesting; hierarchical `DocumentSymbol[]` is primary, the deprecated
+  flat `SymbolInformation[]` form is handled too. `workspaceSymbol`
+  (`a5a2dca`) sends a fuzzy `query` to the server's own in-RAM workspace
+  index and renders the flat result cross-file, one-based,
+  workspace-relative — no indexing code of ours; the first call after
+  warmup may need a retry while the index builds. Both are
+  capability-gated like every other op, capped at `MAX_LOCATIONS` with a
+  pointer for the tail, and still one tool: new enum values, never new
+  registrations. Live-verified on nimtortoise and pyright;
+  `tests/fixtures/lsp_server.py` and `t_lsp` cover both forms.
+
+- **lsp: nimtortoise is the Nim default; jdtls and csharp-ls join the
+  defaults; `make install-lsp` is per-language.** The default registry now
+  maps .nim/.nims to nimtortoise (nimlangserver additionally never
+  publishes diagnostics for loose files; nimtortoise answered
+  clean/hover/broken in the live sweep and nimlangserver stays selectable
+  by name), adds jdtls (.java) and csharp-ls (.cs) — an absent binary
+  stays a clear `E_LSP_UNAVAILABLE` (`3ad367c`). `scripts/install-lsp.sh`
+  is reworked: Go, Nim and TS are mandatory (Niffler is built from those),
+  every other language is a y/n prompt with default yes, `--all` (`make
+  install-lsp ALL=1`) installs unattended for CI, and runtimes a server
+  needs (JDK 17+, .NET SDK 8+, cargo) are named in the failure message,
+  never auto-installed. jdtls resolves the newest build via
+  snapshots/latest.txt and tsserver.path is pinned to the classic TS5
+  install (`e285a05`); csharp-ls is pinned per .NET SDK major and dotnet
+  errors are surfaced instead of swallowed (`7f8c28d`).
+
+- **core: `/doctor` self-test fan-out — components check themselves, the
+  report renders as Markdown and can be interpreted.** The doctor was a
+  read-only core-side probe; now every component that registers the
+  standard hidden `selftest` tool is asked to check itself and its
+  per-check results land in the report (`8ab8c78`). Input
+  `{deep, default false}` — quick stays cheap (no spawns, < ~10s), deep
+  runs live end-to-end probes and may take minutes; a timeout is a failed
+  check, not a crash; components without a selftest are reported as not
+  implementing it, never as broken. The standard selftest name is exempt
+  from the global tool-uniqueness refusal (it exists on every implementing
+  component by design and is addressed per subject). The lsp selftest is
+  the flagship: quick = registry loads + every configured server's binary
+  resolves; deep = boots each server against throwaway fixtures. The
+  report also carries a rendered Markdown table in `text` (what `/doctor`
+  displays), and `ask: true` adds a `userMessage` per the WIRE.md
+  convention so the client submits an interpretation request as a user
+  turn — core stays a read-only health provider (`109a544`).
+
+- **compaction: contract-v1 conformance runner (`make test-conformance`).**
+  `tests/t_compaction_conformance.nim` runs any implementation against the
+  compaction contract — `--bin:`/`--tool:` point it at a third-party
+  component, the suite default proves the shipped one (`f5bd958`). The
+  runner now rejects candidates claiming more auxiliary LLM calls than
+  `maxLlmCalls` grants (provenance is the enforceable boundary; the
+  fixture gains `NIF_FIXTURE_LLM_CALLS` to simulate an over-budget
+  component), and negative cases are closed in `t_compaction`: a
+  concurrent projection writer wins the optimistic commit (foreign record
+  untouched, trim rung still completes the turn), and a real steer
+  published during compaction folds after settlement, stays outside the
+  cut, and reaches the post-compaction provider request.
+
+- **docs/research: subagent and harness studies.** `SUBAGENTS.md` — the
+  `agent` component vs DSH's subagent subsystem, tool by tool;
+  `SUBAGENTS-PLAN.md` — the phased P0–P4 runbook the subagents-v2 work
+  above follows; `OPENHANDS.md` — the Agent Canvas steal list;
+  `MAKI-STEAL.md` — the Maki investigation (`7b9202b`, `69b87c0`,
+  `30b1699`).
+
 - **make down-here** — the scoped variant of `make down`: stops only this
   checkout's harness, components and spawned bus, pinning every kill by
   process tree + NIF_ROOT env + executable path (`scripts/down-here.sh`,
@@ -54,6 +172,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `after`/`hasMore`/`nextAfter` cursor contract across all three engines,
   and core's full-kind reads page through it (`storeListAll`) because a
   single capped list silently truncated long transcripts on resume.
+
+- **context compaction — long turns survive their own context
+  (`compaction` component, `context_recall`, durable projections).** Every
+  provider request is now admitted against the model window first; when
+  pressure hits, a deterministic ladder runs instead of failing: lossless
+  prune of oversized tool results (originals stay recallable), then a
+  summarization compaction attempt, then whole-turn trim, and only then an
+  explicit `context-recovery-required` error — never a silent over-window
+  request. Provider `context-overflow` errors are classified by code
+  (`context-overflow: …; window <N> tokens`) and get exactly one
+  receipt-backed recovery attempt. Compaction is replaceable: the runner
+  owns budgets, cut boundaries, strict candidate validation, checkpoint
+  rendering (`checkpoint-v1`) and the optimistic `context_projection`
+  commit/reload, while a contract-v1 component (default:
+  `compaction_propose`, override `NIF_COMPACTION_TOOL`) only chooses cuts
+  and drafts the checkpoint via bounded auxiliary `llm.chat` calls
+  (`cancelId`/`emitTokens`/`purpose` keep them out of the live turn's
+  token stream and cancel path). Canonical messages stay immutable and
+  append-only — prunes become executable refs, oversized bash captures are
+  promoted to durable spill documents, and the hidden `context_recall`
+  tool resolves canonical, spill and checkpoint refs. A restart reloads
+  the committed checkpoint plus the retained tail or fails loudly;
+  `tests/compaction_contract/fixture.nim` proves a second compactor
+  implementation meets the same contract. Knobs:
+  `NIF_COMPACTION_TOOL` (empty disables summarization but keeps the
+  deterministic guard), `NIF_COMPACTION_TIMEOUT_MS`,
+  `NIF_COMPACTION_MAX_LLM_CALLS`, `NIF_COMPACTION_MAX_SUMMARY_TOKENS`
+  (docs/research/COMPACTION.md; `tests/t_compaction.nim`,
+  `tests/t_ctxcompact.nim`).
 
 - **make install-lsp + lsp warmup.** `make install-lsp` (`scripts/install-lsp.sh`)
   idempotently installs the language servers behind the lsp component's
@@ -337,6 +484,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **plugins: `plugin_installed` derives the checkout commit at read time.**
+  Store records carry no commit field, so the listing now runs
+  `git rev-parse HEAD` in each checkout and injects the result — truthful
+  provenance for `/status` and other clients with no store migration or
+  reinstall; `t_plugins` asserts the reported SHA matches the fixture
+  repo's HEAD (`08e8f93`).
+
 - **baseprompt: placement triggers and scoping.** One sentence ties
   `lsp goToDefinition` to the failure moment — an edit to a symbol belongs
   at its definition, and when grep only shows uses, the tool confirms the
@@ -352,6 +506,28 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`d64f437`).
 
 ### Fixed
+
+- **core: settlement notices join compaction's context ledger.** Merging
+  the compaction work brought the context identity ledger rule — every
+  context append goes through `ctxAppend`, or the ledger and the
+  projection drift apart. `drainNotices` predated that rule and bypassed
+  it: notice messages were persisted and projected but invisible to the
+  ledger. Notices are now ledger nodes like steer and advisories, and
+  compaction may compact them away like any appended history (`4f70949`).
+
+- **lsp: answer server-initiated requests, declare real client
+  capabilities, save-echo after didOpen.** Servers gate features on what
+  the client declares: an empty capability blob made
+  typescript-language-server skip its entire diagnostic push, and it
+  publishes no diagnostics until its `workspace/configuration` request is
+  answered — the client now declares only what the component honors
+  (didSave, publishDiagnostics, hover/definition/implementation/
+  references, workspace configuration/folders) and replies to
+  server→client requests (configuration gets per-item empty settings
+  objects, everything else the legal null "not supported") so
+  gate-keeping servers are never left waiting. didOpen is also followed
+  by a save echo, because the nimsuggest-family servers push diagnostics
+  on save only (`5bae58b`).
 
 - **core: four review-found defects, each with a regression test**
   (`0e4f5fd`): supervisor restart backoff never engaged (startChild reset

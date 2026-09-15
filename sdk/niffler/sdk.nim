@@ -695,6 +695,28 @@ proc handleMsg(c: Component, binding: SubscriptionBinding,
     except CatchableError as e:
       stderr.writeLine(c.name & ": reply publish failed: " & e.msg)
 
+proc pumpCallsReentrant*(c: Component, maxMessages: int): int =
+  ## Serve QUEUED tool calls re-entrantly, from inside a handler. The normal
+  ## pump loop handles calls one at a time; a blocking handler (agent_run
+  ## waiting for its child) therefore starves every queued call behind it —
+  ## which deadlocks stacked synchronous delegations (a child's agent_run
+  ## arrives while the parent's agent_run holds the pump). Only meant for
+  ## handlers that block on work which can itself enqueue calls; re-entrancy
+  ## depth is bounded by whatever the caller's own logic bounds (for
+  ## agent_run, the delegation depth cap).
+  for binding in c.bindings:
+    if binding.kind != skCall:
+      continue
+    while result < maxMessages:
+      var msg: ptr natsMsg
+      # bounded wait, like pumpTaps: a blocking NextMsg here would stall the
+      # caller's own wait loop when the queue is empty
+      let st = natsSubscription_NextMsg(addr msg, binding.sub, 1)
+      if st != NATS_OK:
+        break
+      inc result
+      c.handleMsg(binding, msg)
+
 proc pumpTaps(c: Component, maxMessages: int): int =
   for binding in c.bindings:
     if binding.kind != skTap:

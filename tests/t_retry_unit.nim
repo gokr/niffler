@@ -2,7 +2,7 @@
 ## of transient vs permanent failures and backoff bounds. Pure logic — no
 ## bus, no processes.
 
-import std/[math, os, strutils]
+import std/[math, os]
 import helpers
 import ../core/retry
 
@@ -36,6 +36,26 @@ proc main() =
   # 401 must win over transient words appearing elsewhere in the message
   check("permanent beats transient in one message",
         not isRetryableLlmError("connection reset during 401 auth"))
+
+  # --- independent budgets and Retry-After ----------------------------------
+  check("millisecond Retry-After parsed",
+        retryAfterMs("HTTP 429; retry-after-ms: 1500") == 1500)
+  check("seconds Retry-After parsed",
+        retryAfterMs("HTTP 429; retry-after: 2") == 2000)
+  check("invalid Retry-After ignored",
+        retryAfterMs("HTTP 429; retry-after: later") == 0)
+  let budgets = defaultRetryPolicy()
+  check("hinted rate limit has no attempt cap",
+        canRetry(budgets, "HTTP 429; retry-after-ms: 3000", 100))
+  check("stream timeout uses its own budget",
+        canRetry(budgets, "stream timed out", 1) and
+        not canRetry(budgets, "stream timed out", 2))
+  check("connection refused uses its own budget",
+        canRetry(budgets, "connection refused", 1) and
+        not canRetry(budgets, "connection refused", 2))
+  check("Retry-After is capped and floored",
+        retryDelayMs(budgets, 0, 1) >= 500 and
+        retryDelayMs(budgets, 0, 1) <= budgets.retryAfterCapMs)
 
   # --- backoff: bounds and growth ------------------------------------------
   let policy = RetryPolicy(maxRetries: 4, baseDelayMs: 500.0, maxDelayMs: 8000.0)

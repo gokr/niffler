@@ -87,7 +87,7 @@ func main() {
 			"url":         map[string]any{"type": "string", "description": "http/sse: endpoint URL (may contain ${NAME} env references, resolved at connect)"},
 			"headers":     map[string]any{"type": "object", "description": "http/sse: request headers, e.g. Authorization; values may contain ${NAME} references resolved from the harness environment at connect (store keeps the placeholder, listings redact values)"},
 			"approval":    map[string]any{"type": "string", "enum": []string{"", "always"}, "description": "Gate every tool of this server with a human approval prompt (default: none)"},
-			"expose":      map[string]any{"type": "string", "enum": []string{"ondemand", "direct"}, "description": "ondemand (default) keeps tools out of the frozen direct toolset (discover+invoke); direct puts schemas into every new conversation"},
+			"expose":      map[string]any{"type": "string", "enum": []string{"ondemand", "direct"}, "description": "ondemand (default) keeps tools out of the frozen direct toolset (discover+invoke); direct puts schemas into new conversations unless the server exceeds NIF_MCP_DIRECT_THRESHOLD tools, in which case the bridge defers the whole server"},
 			"effect":      map[string]any{"type": "string", "enum": []string{"read", "write"}, "description": "Fabric scheduling hint for the server's tools (default write)"},
 			"timeoutMs":   map[string]any{"type": "integer", "minimum": 0, "description": "Per-call deadline in milliseconds (0 = 120 seconds); includes lazy initialization"},
 			"idleMs":      map[string]any{"type": "integer", "description": "Idle session close in milliseconds (default 300000)"},

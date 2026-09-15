@@ -3,7 +3,7 @@
 ## reserve that lowers the trim threshold below the bare ratio.
 ## Pure logic — no bus, no processes.
 
-import std/[json, math, os]
+import std/[json, math, os, strutils]
 import helpers
 import ../core/conversation
 
@@ -61,7 +61,7 @@ proc main() =
         $trimThreshold(p))
   delEnv("NIF_CTX_RESERVE")
 
-  # --- trimContext still keeps whole turns ---------------------------------
+  # --- trimTurns still keeps whole turns (now ledger-aware, §6.3) ---------
   var msgs = @[
     %*{"role": "system", "content": "sys"},
     %*{"role": "user", "content": "turn one"},
@@ -73,11 +73,30 @@ proc main() =
     %*{"role": "tool", "tool_call_id": "c1", "content": "out"},
     %*{"role": "user", "content": "turn three"},
   ]
-  let dropped = trimContext(msgs)
+  var tp = Persister()
+  tp.nodes = @[CtxNode(source: nsSystem, projectionIndex: 0)]
+  for i in 1 ..< msgs.len:
+    tp.nodes.add(CtxNode(source: nsCanonical, id: "c:" & align($i, 6, '0'),
+                         canonicalSeq: i, projectionIndex: i))
+  let dropped = tp.trimTurns(msgs, minKeepTurns)
   check("trim drops turn one whole", dropped == 2, $dropped)
   check("system message kept", msgs[0]{"role"}.getStr("") == "system")
   check("first kept user is turn two",
-        msgs[1]{"content"}.getStr("") == "turn two", $msgs[1])
+        msgs[2]{"content"}.getStr("") == "turn two", $msgs[2])
+  check("ledger stayed 1:1 after trim", tp.nodes.len == msgs.len,
+        $tp.nodes.len & " vs " & $msgs.len)
+  check("omission notice replaced the dropped span",
+        tp.nodes[1].source == nsNotice and
+        msgs[1]{"content"}.getStr("").contains("history omitted without summary"),
+        $msgs[1])
+  check("notice names the covered canonical ids",
+        msgs[1]{"content"}.getStr("").contains("c:000001") and
+        msgs[1]{"content"}.getStr("").contains("c:000002"), $msgs[1])
+  check("projectionIndex reindexed after the structural edit", block:
+    var ok = true
+    for i in 0 ..< tp.nodes.len:
+      if tp.nodes[i].projectionIndex != i: ok = false
+    ok)
   var pairs = true
   for m in msgs:
     if m{"role"}.getStr("") == "tool":

@@ -417,6 +417,12 @@ Open work — deferred follow-ups and quests — is consolidated in
       start over an un-migrated `var/barrel-db`, and
       `niffler-store-migrate` moves a root between engines (verified on a
       real 43MB barrel: 4309 documents)
+- [x] **replaceable durable compaction** — prune → compactor → trim admission,
+      immutable canonical history, checkpoint reload and spill recall;
+      `make test-conformance` checks third-party implementations. The
+      [live GPT-OSS smoke](docs/research/COMPACTION_LIVE_SMOKE.md) completed
+      ten audit batches with two compactions, no lossy trim, and continuity
+      across restart (`make live-smoke`, opt-in).
 - [ ] **code hygiene + store v2** — `feat/code-hygiene` branch
       (docs/research/STORE_V2.md): SDK storeclient/config/http helpers +
       duplication cleanup; three interchangeable store engines behind one

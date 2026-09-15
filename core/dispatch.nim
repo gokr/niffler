@@ -66,6 +66,7 @@ type
   SteerStream* = ref object
     sub*: ptr natsSubscription
     queue*: seq[string]      # injected user messages (drained by runTurn)
+    notices*: seq[JsonNode]  # settlement notices (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
   # Raised from a dispatch's idle slot when a turn cancellation arrives
@@ -98,8 +99,19 @@ type
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
     workspace*: string       ## absolute per-conversation workspace, root by default
-    lease*: string           ## current lease; "" = no session-context call in flight
-    deadline*: MonoTime      ## monotonic limit for the current lease
+    leases*: Table[string, NestedLease]
+    ## Active session-context leases, KEYED BY LEASE ID (P2.5 B). One lease
+    ## per in-flight session-context dispatch: each entry carries its own
+    ## deadline, and a dispatch removes only its own key on exit, so two
+    ## overlapping session-context calls can neither clobber nor
+    ## prematurely restore each other (the old single-string lease was the
+    ## latent hazard that made parallel session-context dispatch unsafe).
+    ## The wave scheduler still refuses sessionContext today — this makes
+    ## the invariant "leases are per-call" true regardless of dispatch
+    ## policy.
+
+  NestedLease* = object
+    deadline*: MonoTime      ## monotonic limit for this lease
     hasDeadline*: bool
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
@@ -157,10 +169,15 @@ proc storeListItems*(ct: CoreTools, kind: string, idPrefix = "",
       result.add(item)
 
 proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
-                   pageLimit = 1000, timeoutMs = 5000): seq[JsonNode] =
+                   pageLimit = 1000, timeoutMs = 5000, after = ""): seq[JsonNode] =
   ## List EVERY document of a kind (id order) by paging the store's cursor
   ## to exhaustion. Use this instead of a single capped `list` whenever the
   ## caller must see the whole kind — resume, migration, audit.
+  ##
+  ## `after` starts the read at an exclusive id cursor: everything up to
+  ## and including that id is skipped. Compaction's projection reload uses
+  ## it to read only the span its checkpoint does not already represent
+  ## (docs/research/COMPACTION.md §6.2 reload step 4).
   ##
   ## A single `list` is capped at 1000 items, so a long transcript used to
   ## resume silently truncated and its next write could target an existing
@@ -169,12 +186,12 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
   ##
   ## Null or non-array `items` is treated as end-of-data rather than an
   ## error, matching storeListItems; an unreachable store still raises.
-  var after = ""
+  var cursor = after
   var pages = 0
   while true:
     var args = %*{"kind": kind, "idPrefix": idPrefix, "limit": pageLimit}
-    if after.len > 0:
-      args["after"] = %after
+    if cursor.len > 0:
+      args["after"] = %cursor
     let r = dispatchSubjectCall(ct, "svc.store.call", "list", args, timeoutMs)
     if not r{"ok"}.getBool(false):
       raise newException(IOError, r{"error"}.getStr("store list failed"))
@@ -187,9 +204,9 @@ proc storeListAll*(ct: CoreTools, kind: string, idPrefix = "",
     # spin forever).
     let nextAfter = r{"nextAfter"}.getStr("")
     if not r{"hasMore"}.getBool(false) or nextAfter.len == 0 or
-        nextAfter == after:
+        nextAfter == cursor:
       break
-    after = nextAfter
+    cursor = nextAfter
     inc pages
     if pages > 10_000:
       raise newException(IOError,
@@ -606,6 +623,27 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
       let meta = ct.storeGetItem("sessionmeta", sessionId)
       if meta.value != nil and meta.value{"parent"} != nil:
         info["parent"] = meta.value{"parent"}
+      if meta.value != nil and meta.value{"fork"} != nil:
+        # fork provenance (P1.4): where this conversation's history came from
+        info["fork"] = meta.value{"fork"}
+      if meta.value != nil:
+        # lineage enrichment (P4.12): the activation ledger and retirement
+        # state live in the caller's own record
+        if meta.value{"activations"} != nil:
+          info["activations"] = meta.value{"activations"}
+        if meta.value{"firstActivationAt"} != nil:
+          info["firstActivationAt"] = meta.value{"firstActivationAt"}
+        if meta.value{"closed"}.getBool(false):
+          info["closed"] = %true
+      # children are counted from the CHILDREN's records, not the caller's
+      # own (a root parent has no sessionmeta of its own but still has
+      # children) — a count, not the roster (agent_list is the roster tool)
+      var children = 0
+      for item in ct.storeListAll("sessionmeta", ""):
+        if item{"value"}{"parent"}.getStr("") == sessionId:
+          inc children
+      if children > 0:
+        info["children"] = %children
       # role counts from the message log (zero-padded ids → store key order
       # = message order). The store caps a list at 1000 items; flag the cut.
       # completionTotal is Σ completion_tokens over assistant messages with
@@ -695,6 +733,10 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
     ## alive, we answered), store, llm provider/model, systemprompt,
     ## catalog size, conversations. Each probe reports ok plus a short
     ## detail string; the whole report never executes anything.
+    ## `ask` rides the userMessage convention (docs/WIRE.md): the client
+    ## renders the report and submits the interpretation prompt as a user
+    ## turn — core stays a read-only health provider and never writes
+    ## conversation history.
     var doc = %*{"at": epochTime(), "checks": newJArray()}
     proc check(name: string, ok: bool, detail: string) =
       doc{"checks"}.add(%*{"name": name, "ok": ok, "detail": detail})
@@ -782,6 +824,25 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
            else: $stNames.len & " component(s) probed" &
              (if deep: " (deep)" else: " (quick)")) &
              (if stFailed > 0: " — " & $stFailed & " failed" else: ""))
+    var markdown: seq[string] = @[
+      "# Niffler doctor",
+      "",
+      "| Check | Status | Details |",
+      "|---|---|---|"]
+    for item in doc{"checks"}:
+      let name = item{"name"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"detail"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| " & name & " | " & state & " | " & detail & " |")
+    for item in doc{"selftest"}:
+      let name = item{"component"}.getStr("unknown")
+      let state = if item{"ok"}.getBool(false): "✅ OK" else: "❌ FAIL"
+      let detail = item{"summary"}.getStr("").replace("|", "\\|").replace("\n", " ")
+      markdown.add("| selftest/" & name & " | " & state & " | " & detail & " |")
+    let report = markdown.join("\n")
+    doc["text"] = %report
+    if args{"ask"}.getBool(false):
+      doc["userMessage"] = %("Interpret this Niffler doctor report. Explain any failed or suspicious checks, distinguish real failures from unavailable optional components, and give concrete next steps. Use only the report as evidence; do not claim to have run additional checks.\n\n" & report)
     return doc
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
@@ -877,6 +938,14 @@ proc pumpSteer*(ct: CoreTools) =
       ct.steerStream.cancelRequested = true
       ct.steerStream.cancelAt = epochTime()
       continue
+    # A settlement notice rides the same subject but is NOT user content:
+    # it is runtime machinery about a subagent, delivered structurally so the
+    # transcript can tell it apart from something the human typed. Queued
+    # separately and folded in by drainNotices as a marked message.
+    if env.payload{"notice"} != nil and
+        env.payload{"notice"}.kind == JObject:
+      ct.steerStream.notices.add(env.payload{"notice"})
+      continue
     let content = env.payload{"content"}.getStr("")
     if content.len > 0:
       ct.steerStream.queue.add(content)
@@ -939,7 +1008,7 @@ proc pumpAdvise*(ct: CoreTools) =
     except CatchableError as e:
       stderr.writeLine("core: advise reply publish failed: " & e.msg)
 
-proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
+proc handleNestedCall*(ct: CoreTools, env: Envelope): Envelope =
   ## Admission + dispatch for one nested tool call from a session-context
   ## program (arrives on svc.session.<id>.tool, pumped from the idle slot).
   ## Every check here fails closed: no live turn, no matching lease, hidden
@@ -950,13 +1019,25 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   if env.args == nil or env.args.kind != JObject:
     return errorEnvelope(env.id, "bad-args", "tool arguments must be an object")
   # lease: the in-flight session-context tool owns the proxy; a request
-  # without the live lease (stale, guessed, or no turn running) is denied.
-  if ct.nested == nil or ct.nested.session.len == 0 or ct.nested.lease.len == 0:
+  # without a live lease (stale, guessed, or no turn running) is denied.
+  # Leases are keyed by id (P2.5 B): each session-context dispatch owns its
+  # entry, so one completing cannot invalidate another still in flight.
+  if ct.nested == nil or ct.nested.session.len == 0 or ct.nested.leases.len == 0:
     return errorEnvelope(env.id, "no-session",
       "nested calls are only valid while a session-context tool is running")
   let lease = env.args{"__session"}{"lease"}.getStr("")
-  if lease.len == 0 or lease != ct.nested.lease:
+  var leaseData: NestedLease
+  if lease.len == 0 or not ct.nested.leases.hasKey(lease):
     return errorEnvelope(env.id, "bad-lease", "stale or unknown nested-call lease")
+  leaseData = ct.nested.leases[lease]
+  # The lease's validity window gates EVERYTHING else (fail closed early):
+  # an expired outer call is denied before tool resolution, argument
+  # validation, or dispatch can look at it.
+  if not leaseData.hasDeadline:
+    return errorEnvelope(env.id, "expired", "nested-call deadline is unavailable")
+  let outerMs = (leaseData.deadline - getMonoTime()).inMilliseconds.int
+  if outerMs <= 0:
+    return errorEnvelope(env.id, "expired", "nested-call deadline expired")
   let tool = env.tool
   # internal and recursive surfaces are never reachable from a program:
   # chat/session are core wiring, invoke would bypass admission, and
@@ -989,9 +1070,6 @@ proc handleNestedCall(ct: CoreTools, env: Envelope): Envelope =
   let invalid = validateToolArgs(schema, cleanArgs)
   if invalid.len > 0:
     return errorEnvelope(env.id, "bad-args", invalid)
-  if not ct.nested.hasDeadline:
-    return errorEnvelope(env.id, "expired", "nested-call deadline is unavailable")
-  let outerMs = (ct.nested.deadline - getMonoTime()).inMilliseconds.int
   let remainingMs = if requestedMs > 0: min(outerMs, requestedMs)
                     else: outerMs
   if remainingMs <= 0:
@@ -1019,6 +1097,55 @@ proc pumpNested*(ct: CoreTools) =
     let env = decode(data)
     let resp = handleNestedCall(ct, env)
     ct.nc.publish(hasReply, resp.encode())
+
+const partialReplyGraceMs = 1_000
+
+proc partialArgs(args: JsonNode, reason, errorText: string): JsonNode =
+  ## Preserve a component's completed-but-partial result across a dispatch
+  ## timeout/cancel. The marker is private machine data; conversation's tool
+  ## projection renders the human-facing wording without trusting a component
+  ## to phrase cancellation consistently.
+  if args != nil and args.kind == JObject:
+    result = args.copy()
+  else:
+    result = %*{"value": args}
+  result["__partial"] = %true
+  result["__partialReason"] = %reason
+  result["__toolError"] = %true
+  result["error"] = %errorText
+
+proc waitPartialReply(ct: CoreTools, sub: ptr natsSubscription,
+                      graceMs: int, reason, errorText: string): JsonNode =
+  ## After publishing cancel.<component>, give cooperative components a short
+  ## grace period to return the bytes they captured before termination. A
+  ## component that does not answer remains a normal timeout/cancel error.
+  let deadline = epochTime() + graceMs.float / 1000.0
+  while epochTime() < deadline:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, sub, 25)
+    if st == NATS_OK:
+      let reply = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if reply.kind == ekResult:
+        return partialArgs(reply.args, reason, errorText)
+      return nil
+    if st != NATS_TIMEOUT and not checkStatus(st): return nil
+  nil
+
+proc publishToolCancel(ct: CoreTools, subject, tool, sessionId: string) =
+  ## NATS request/reply has no cancellation primitive; components opt into the
+  ## side channel and match the injected session id. Keep this helper shared by
+  ## the turn-cancel and ordinary timeout paths.
+  if not subject.startsWith("svc.") or not subject.endsWith(".call"): return
+  let comp = subject["svc.".len ..< subject.len - ".call".len]
+  if comp.len == 0: return
+  try:
+    ct.nc.publish("cancel." & comp,
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"sessionId": sessionId, "tool": tool,
+                           "ts": epochTime()}).encode())
+  except CatchableError:
+    discard
 
 proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                           args: JsonNode, timeoutMs: int, caller = ""): JsonNode =
@@ -1072,19 +1199,25 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.steerStream != nil and ct.steerStream.cancelRequested and
         ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
         epochTime() - ct.steerStream.cancelAt <= 30.0:
-      if subject.startsWith("svc.") and subject.endsWith(".call"):
-        let comp = subject["svc.".len ..< subject.len - ".call".len]
-        if comp.len > 0:
-          ct.nc.publish("cancel." & comp,
-            Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"sessionId": ct.activeTurn.session,
-                                 "tool": tool, "ts": epochTime()}).encode())
+      let sessionId = ct.activeTurn.session
+      publishToolCancel(ct, subject, tool, sessionId)
+      let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "cancelled",
+                                     "cancelled by request")
+      if partial != nil: return partial
       raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
-  raise newException(IOError,
-    "tool '" & tool & "' (" & subject & ") timed out after " &
-    $timeoutMs & "ms")
+  # The component may have captured useful output before its timeout. Ask it
+  # to stop and briefly accept a final partial result; otherwise retain the
+  # established timeout error shape.
+  let sessionId = if ct.activeTurn != nil: ct.activeTurn.session else: ""
+  publishToolCancel(ct, subject, tool, sessionId)
+  let timeoutError = "tool '" & tool & "' (" & subject & ") timed out after " &
+                     $timeoutMs & "ms"
+  let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "timed_out",
+                                 timeoutError)
+  if partial != nil: return partial
+  raise newException(IOError, timeoutError)
 
 proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
@@ -1154,18 +1287,66 @@ proc applyWorkspace(schema, args: JsonNode, workspace: string) =
 proc checkToolAllowlist(ct: CoreTools, tool: string) =
   ## Enforce the same session scope on serial and parallel dispatches.
   # Per-session tool allowlist (subagent scoping): a conversation frozen
-  # with a tools list may dispatch only those tools. Exempt: "chat" (turn
-  # machinery) and the store quartet the runner itself persists through
-  # (transcript, headers, exposure) — without them an allowlisted session
-  # would silently lose its own history. Trade-off: a model in an
-  # allowlisted session can still read/write the shared KV store directly;
-  # scoping targets capabilities (bash, edit, git, fabric, agent), not the
-  # transcript store the session needs to exist.
-  if ct.sessionAllowlist != nil and ct.sessionAllowlist[].len > 0 and
-      tool notin ["chat", "put", "get", "list", "del"] and
-      tool notin ct.sessionAllowlist[]:
-    raise newException(ValueError,
-      "tool '" & tool & "' is not in this session's tool allowlist")
+  # with a tools list may dispatch only those tools. Exempt: the runner
+  # machinery a session needs to exist — "chat" (turns) and the store
+  # quartet the runner itself persists through (transcript, headers,
+  # exposure) — plus any hidden tool whose schema declares
+  # x-harness.runner: true (§4.1, docs/research/COMPACTION.md). Requiring
+  # hidden makes the claim enforceable: it is never offered to the model,
+  # so a differently-named compactor
+  # or recall tool works in allowlisted sessions without a core edit.
+  # Trade-off: a model in an allowlisted session can still read/write the
+  # shared KV store directly; scoping targets capabilities (bash, edit,
+  # git, fabric, agent), not the transcript store the session needs to
+  # exist.
+  if ct.sessionAllowlist == nil or ct.sessionAllowlist[].len == 0:
+    return
+  if tool in ct.sessionAllowlist[]:
+    return
+  if tool in ["chat", "put", "get", "list", "del"]:
+    return
+  let schema = ct.cat.toolSchema(tool)
+  if schema != nil and schema{"x-harness"}{"runner"}.getBool(false) and
+      schema{"x-harness"}{"hidden"}.getBool(false):
+    return
+  raise newException(ValueError,
+    "tool '" & tool & "' is not in this session's tool allowlist")
+
+proc agentMaxDepth*(): int =
+  ## NIF_AGENT_MAX_DEPTH (default 1): how deep delegation may nest. The
+  ## caller's lineage depth must be BELOW this number to spawn — 0 forbids
+  ## delegation entirely (even a root may not spawn). Keeping the default at
+  ## 1 is deliberate: raising it changes the trust shape of the harness and
+  ## should be an explicit act, and the team design (DSH-STEAL §5) assumes 1.
+  ## An unreadable or negative value falls back to the default.
+  try:
+    let v = parseInt(getEnv("NIF_AGENT_MAX_DEPTH", "1").strip())
+    return if v < 0: 1 else: v
+  except CatchableError:
+    return 1
+
+proc lineageDepth*(ct: CoreTools, session: string, cap: int): int =
+  ## Count sessionmeta.parent links from `session` up to a root: a root (no
+  ## lineage record, or a record without a parent) is depth 0, its spawned
+  ## children are 1, grandchildren 2. Bounded by the cap: the walk stops as
+  ## soon as the depth passes it, so a (corrupt) lineage cycle cannot loop —
+  ## it just exceeds the cap and is denied. Fail closed: a store error while
+  ## verifying lineage returns cap + 1 (denied) — spawning cannot be
+  ## verified, so it is not allowed.
+  var cur = session
+  var depth = 0
+  while depth <= cap:
+    var meta: JsonNode
+    try:
+      meta = ct.storeGetItem("sessionmeta", cur, 5_000).value
+    except CatchableError:
+      return cap + 1
+    let parent = if meta != nil: meta{"parent"}.getStr("") else: ""
+    if parent.len == 0:
+      return depth
+    inc depth
+    cur = parent
+  return depth
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
@@ -1240,49 +1421,43 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
       (if ct.nested != nil: ct.nested.session else: "")}
 
   # Session-context tools (fabric, agent): inject the calling session plus a
-  # lease for the nested-call proxy. Nested session-context calls temporarily
-  # replace the current lease and restore it on return, so an outer Fabric
-  # program remains valid after a nested agent_run.
+  # lease for the nested-call proxy. Leases are KEYED (P2.5 B): each dispatch
+  # registers its own lease with its own deadline and removes exactly that
+  # key on exit — overlapping session-context dispatches (if a future policy
+  # allows them) cannot clobber or prematurely restore one another.
   if schema != nil and schema{"x-harness"}{"sessionContext"}.getBool(false):
     if ct.nested == nil or ct.nested.session.len == 0:
       raise newException(ValueError,
         "tool '" & tool & "' needs a live session (no conversation turn is running)")
-    let previousLease = ct.nested.lease
-    let previousDeadline = ct.nested.deadline
-    let previousHasDeadline = ct.nested.hasDeadline
-    ct.nested.lease = newId()
-    ct.nested.deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
-    ct.nested.hasDeadline = true
+    let lease = newId()
+    ct.nested.leases[lease] = NestedLease(
+      deadline: getMonoTime() + initDuration(milliseconds = timeoutMs),
+      hasDeadline: true)
     defer:
-      ct.nested.lease = previousLease
-      ct.nested.deadline = previousDeadline
-      ct.nested.hasDeadline = previousHasDeadline
+      ct.nested.leases.del(lease)
     # caller is private proxy context: the interactive component driving this
     # turn. Session-context components (agent) forward it to child runners so
     # approvals raised inside a subagent route to the original human's client.
     let turnCaller = if ct.approval != nil: ct.approval.caller else: ""
     callArgs["__session"] = %*{"session": ct.nested.session,
-                                "lease": ct.nested.lease,
+                                "lease": lease,
                                 "remainingMs": timeoutMs,
                                 "caller": turnCaller}
-    # Depth guard at dispatch time (x-harness.noSpawn): a subagent — a session
-    # with a parent record in the store — may not call spawn-class tools. The
-    # check MUST live here, not in the component's handler: the handler blocks
-    # its component's pump for the child's whole turn, so a request from that
-    # child would queue behind it and circular-wait forever.
+    # Depth guard at dispatch time (x-harness.noSpawn): delegation depth is
+    # capped by NIF_AGENT_MAX_DEPTH (default 1 — subagents cannot spawn
+    # subagents). The check MUST live here, not in the component's handler:
+    # the handler blocks its component's pump for the child's whole turn, so
+    # a request from that child would queue behind it and circular-wait
+    # forever. The tool stays VISIBLE at the cap — each start rejects with
+    # an errored result naming the limit and the caller's depth, so the
+    # model learns why instead of finding a hidden tool.
     if schema{"x-harness"}{"noSpawn"}.getBool(false):
-      var hasParent = false
-      try:
-        hasParent = ct.storeGetItem("sessionmeta", ct.nested.session, 5_000)
-          .value{"parent"}.getStr("").len > 0
-      except CatchableError:
-        # fail closed: a missing sessionmeta record arrives as a result
-        # (not-found), so an exception here means the lineage store is
-        # unreachable — spawning cannot be verified, so it is denied
-        hasParent = true
-      if hasParent:
+      let maxDepth = agentMaxDepth()
+      let depth = lineageDepth(ct, ct.nested.session, maxDepth)
+      if depth >= maxDepth:
         raise newException(ValueError,
-          "subagents cannot spawn subagents (depth limit)")
+          "subagent depth " & $depth & " exceeds NIF_AGENT_MAX_DEPTH=" &
+          $maxDepth & " (subagents cannot spawn subagents)")
     return dispatchSubjectCall(ct, "svc." & comp & ".call", tool,
                                callArgs, timeoutMs)
 
@@ -1413,8 +1588,20 @@ proc dispatchToolCalls*(ct: CoreTools,
       allDone = false
       if now >= pending[i].deadline:
         pending[i].done = true
-        pending[i].error = "tool '" & pending[i].tool & "' timed out after " &
-          $pending[i].timeoutMs & "ms"
+        let comp = ct.cat.toolIndex.getOrDefault(pending[i].tool)
+        let subject = "svc." & comp & ".call"
+        let timeoutError = "tool '" & pending[i].tool & "' timed out after " &
+                           $pending[i].timeoutMs & "ms"
+        let sessionId = if ct.activeTurn != nil: ct.activeTurn.session else: ""
+        publishToolCancel(ct, subject, pending[i].tool, sessionId)
+        let partial = waitPartialReply(ct, pending[i].sub,
+                                       partialReplyGraceMs, "timed_out",
+                                       timeoutError)
+        if partial != nil:
+          pending[i].value = partial
+          pending[i].error = timeoutError
+        else:
+          pending[i].error = timeoutError
         continue
       var msg: ptr natsMsg
       let ns = natsSubscription_NextMsg(addr msg, pending[i].sub, streamPollMs(ct))

@@ -419,8 +419,49 @@ type SeenEntry = object
   full: bool     # the conversation holds (or can derive) the full content
 
 var gSeen = initTable[string, SeenEntry]()
+var gLazyInstructions = initTable[string, bool]()
 
 proc seenKey(session, target: string): string = session & "\x1f" & target
+
+const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
+                               "CLAUDE.md", "CLAUDE.MD"]
+const localInstruction = "AGENTS.local.md"
+
+proc lazyInstructionText(session, target: string): string =
+  ## Return newly discovered instructions for directories below the harness
+  ## root. The initial system prompt already contains the root/ancestor
+  ## constitution; read-triggered loading keeps monorepo subtrees out of that
+  ## frozen prefix until the model actually enters one.
+  if session.len == 0: return ""
+  var root = absolutePath(rootDir())
+  while root.len > 1 and root.endsWith("/"): root.setLen(root.len - 1)
+  let absoluteTarget = absolutePath(target)
+  if not absoluteTarget.startsWith(root & "/"): return ""
+  var dir = absoluteTarget.parentDir()
+  var chunks: seq[string]
+  while dir.len > root.len and dir.startsWith(root & "/"):
+    var paths: seq[string]
+    for name in instructionCandidates:
+      let path = dir / name
+      if fileExists(path):
+        paths.add(path)
+        break # primary files shadow each other in one directory
+    let local = dir / localInstruction
+    if fileExists(local): paths.add(local)
+    for path in paths:
+      let key = session & "\x1f" & path
+      if gLazyInstructions.hasKey(key): continue
+      gLazyInstructions[key] = true
+      try:
+        chunks.add("<lazy_project_instructions path=\"" &
+                   relativePath(path, root) & "\">\n" & readFile(path) &
+                   "\n</lazy_project_instructions>")
+      except CatchableError:
+        discard
+    dir = dir.parentDir()
+  if chunks.len == 0: return ""
+  "[Instructions loaded because this read entered a subdirectory:\n" &
+    chunks.join("\n\n") & "]"
 
 proc unchangedText(path, raw: string): string =
   let (_, body) = stripBom(raw)
@@ -894,6 +935,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     raise newException(ValueError,
       "[E_FILE_TOO_LARGE] " & path & " exceeds the 100MB read limit; use bash")
   let raw = readFile(target)
+  let lazy = lazyInstructionText(session, target)
   if raw.len == 0:
     return %("[] " & path & " is empty (0 lines). Use write to create content.")
   let sampleLen = min(SNIFF_BYTES, raw.len)
@@ -933,7 +975,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     let dig = $secureHash(raw)
     let key = seenKey(session, target)
     if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
-      return %unchangedText(path, raw)
+      let unchanged = unchangedText(path, raw)
+      return %(if lazy.len > 0: lazy & "\n\n" & unchanged else: unchanged)
   if offset > total:
     return %("Offset " & $offset & " is beyond end of file (" & $total &
       " lines). Use offset=1 to read from the start.")
@@ -973,6 +1016,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     let same = prev.digest == dig
     observe(session, target, raw, fullDelivered or (same and prev.full),
             persist = not same)
+  if lazy.len > 0:
+    text = lazy & "\n\n" & text
   result = %text
 
 type ReadRequest = tuple[path: string, offset: int, limit: int,
