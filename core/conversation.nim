@@ -1122,6 +1122,14 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
     if oc.ok:
       var body = content
       promoteSpill(ct, p, sessionId, oc.value, body)
+      if oc.value{"__partial"}.getBool(false):
+        let reason = oc.value{"__partialReason"}.getStr("cancelled")
+        let wording = if reason == "timed_out":
+                        "timed out"
+                      else:
+                        "cancelled by user"
+        body.add("\n\n[tool output above is partial; " & wording &
+                 "; retry may be useful]")
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
          "content": body}
     else:
@@ -1756,13 +1764,27 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           failMsg = "context-recovery-required: provider refused the request (" &
                     e.msg & ") and the fallback ladder could not reduce it " &
                     "below the window"
-        elif klass == lfcTransient and attempt < retryPolicy.maxRetries:
-          let delayMs = retryDelayMs(retryPolicy, attempt)
+        elif klass == lfcTransient and canRetry(retryPolicy, e.msg, attempt):
+          # Retry budgets are independent: hinted rate limits wait exactly as
+          # requested (up to the local cap), while stream timeouts and refused
+          # connections consume their own bounded counters. A hinted 429 has
+          # no attempt cap; the retry event exposes that fact as -1.
+          let hintMs = retryAfterMs(e.msg)
+          let delayMs = retryDelayMs(retryPolicy, attempt, hintMs)
+          let failureKind = retryKind(e.msg)
+          let budget = case failureKind
+                       of rkRateLimitHint: -1
+                       of rkStreamTimeout: retryPolicy.maxStreamRetries
+                       of rkConnectRefused: retryPolicy.maxConnectRetries
+                       else: retryPolicy.maxRetries
           if onEvent != nil:
             onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
                                "attempt": attempt + 1,
-                               "maxRetries": retryPolicy.maxRetries,
-                               "delayMs": delayMs, "error": e.msg})
+                               "maxRetries": budget,
+                               "delayMs": delayMs,
+                               "retryAfterMs": hintMs,
+                               "budget": $failureKind,
+                               "error": e.msg})
           sleep(delayMs)
           attempt += 1
           continue

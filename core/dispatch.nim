@@ -1060,6 +1060,53 @@ proc pumpNested*(ct: CoreTools) =
     let resp = handleNestedCall(ct, env)
     ct.nc.publish(hasReply, resp.encode())
 
+const partialReplyGraceMs = 1_000
+
+proc partialArgs(args: JsonNode, reason: string): JsonNode =
+  ## Preserve a component's completed-but-partial result across a dispatch
+  ## timeout/cancel. The marker is private machine data; conversation's tool
+  ## projection renders the human-facing wording without trusting a component
+  ## to phrase cancellation consistently.
+  if args != nil and args.kind == JObject:
+    result = args.copy()
+  else:
+    result = %*{"value": args}
+  result["__partial"] = %true
+  result["__partialReason"] = %reason
+
+proc waitPartialReply(ct: CoreTools, sub: ptr natsSubscription,
+                      graceMs: int, reason: string): JsonNode =
+  ## After publishing cancel.<component>, give cooperative components a short
+  ## grace period to return the bytes they captured before termination. A
+  ## component that does not answer remains a normal timeout/cancel error.
+  let deadline = epochTime() + graceMs.float / 1000.0
+  while epochTime() < deadline:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, sub, 25)
+    if st == NATS_OK:
+      let reply = decode($natsMsg_GetData(msg))
+      natsMsg_Destroy(msg)
+      if reply.kind == ekResult:
+        return partialArgs(reply.args, reason)
+      return nil
+    if st != NATS_TIMEOUT and not checkStatus(st): return nil
+  nil
+
+proc publishToolCancel(ct: CoreTools, subject, tool, sessionId: string) =
+  ## NATS request/reply has no cancellation primitive; components opt into the
+  ## side channel and match the injected session id. Keep this helper shared by
+  ## the turn-cancel and ordinary timeout paths.
+  if not subject.startsWith("svc.") or not subject.endsWith(".call"): return
+  let comp = subject["svc.".len ..< subject.len - ".call".len]
+  if comp.len == 0: return
+  try:
+    ct.nc.publish("cancel." & comp,
+      Envelope(v: 1, id: newId(), kind: ekEvent,
+               payload: %*{"sessionId": sessionId, "tool": tool,
+                           "ts": epochTime()}).encode())
+  except CatchableError:
+    discard
+
 proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                           args: JsonNode, timeoutMs: int, caller = ""): JsonNode =
   ## Request/reply to an explicit subject (svc.<comp>.call or a scoped
@@ -1112,16 +1159,20 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     if ct.steerStream != nil and ct.steerStream.cancelRequested and
         ct.activeTurn != nil and ct.activeTurn.session.len > 0 and
         epochTime() - ct.steerStream.cancelAt <= 30.0:
-      if subject.startsWith("svc.") and subject.endsWith(".call"):
-        let comp = subject["svc.".len ..< subject.len - ".call".len]
-        if comp.len > 0:
-          ct.nc.publish("cancel." & comp,
-            Envelope(v: 1, id: newId(), kind: ekEvent,
-                     payload: %*{"sessionId": ct.activeTurn.session,
-                                 "tool": tool, "ts": epochTime()}).encode())
+      let sessionId = ct.activeTurn.session
+      publishToolCancel(ct, subject, tool, sessionId)
+      let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "cancelled")
+      if partial != nil: return partial
       raise newException(TurnCancelled, "cancelled by request")
     pumpAdvise(ct)
     pumpNested(ct)
+  # The component may have captured useful output before its timeout. Ask it
+  # to stop and briefly accept a final partial result; otherwise retain the
+  # established timeout error shape.
+  let sessionId = if ct.activeTurn != nil: ct.activeTurn.session else: ""
+  publishToolCancel(ct, subject, tool, sessionId)
+  let partial = waitPartialReply(ct, sub, partialReplyGraceMs, "timed_out")
+  if partial != nil: return partial
   raise newException(IOError,
     "tool '" & tool & "' (" & subject & ") timed out after " &
     $timeoutMs & "ms")
