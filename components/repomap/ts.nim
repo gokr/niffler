@@ -33,6 +33,8 @@ const csrcDir = currentSourcePath().parentDir / "csrc"
 {.compile: "csrc/python/scanner.c".}
 {.compile: "csrc/typescript/parser.c".}
 {.compile: "csrc/typescript/scanner.c".}
+{.compile: "csrc/javascript/parser.c".}
+{.compile: "csrc/javascript/scanner.c".}
 
 type
   TsLanguage* {.importc: "TSLanguage", header: "tree_sitter/api.h".} = object
@@ -110,6 +112,7 @@ proc ts_query_cursor_next_match*(c: ptr TsQueryCursor,
 proc tree_sitter_go*(): ptr TsLanguage {.importc: "tree_sitter_go".}
 proc tree_sitter_python*(): ptr TsLanguage {.importc: "tree_sitter_python".}
 proc tree_sitter_typescript*(): ptr TsLanguage {.importc: "tree_sitter_typescript".}
+proc tree_sitter_javascript*(): ptr TsLanguage {.importc: "tree_sitter_javascript".}
 
 proc tsQuery*(lang: ptr TsLanguage, source: string): ptr TsQuery =
   ## Compile a tags query; raises on malformed queries (our .scm files are

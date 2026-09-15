@@ -58,6 +58,7 @@ proc grammarFor(ext: string): Grammar =
     of ".go": tree_sitter_go()
     of ".py": tree_sitter_python()
     of ".ts": tree_sitter_typescript()
+    of ".js": tree_sitter_javascript()
     else: nil
   if lang == nil:
     grammarCache[ext] = ((ptr TsLanguage)(nil), "")
@@ -65,6 +66,7 @@ proc grammarFor(ext: string): Grammar =
   let qname = case ext
     of ".go": "go-tags.scm"
     of ".py": "python-tags.scm"
+    of ".js": "javascript-tags.scm"
     else: "typescript-tags.scm"
   let g: Grammar = (lang, readFile(queriesDir() / qname))
   grammarCache[ext] = g
@@ -214,7 +216,7 @@ proc extractTags*(path, relFname: string, source: string): seq[Tag] =
   ## Per-file tags. The seam entry point a repomap (or any consumer) calls.
   let ext = splitFile(path).ext.toLowerAscii()
   case ext
-  of ".go", ".py", ".ts":
+  of ".go", ".py", ".ts", ".js":
     extractTsTags(ext, source, path, relFname)
   of ".nim", ".nims":
     extractNimTags(source, path, relFname)

@@ -69,6 +69,17 @@ proc main() =
   check("ts: refs (new + call)", hasRef(st, "Indexer") and
         hasRef(st, "buildIndex"))
 
+  # --- tree-sitter: javascript (aider query) -------------------------------
+  writeFile(fx / "sample.js",
+    "export function buildIdx(rows) {\n  return rows.map(r => r * 2);\n}\n" &
+    "class Collector {\n  add(v) { this.vs.push(v); }\n}\n" &
+    "const total = buildIdx([1, 2]);\n")
+  let jt = extractTags("sample.js", "sample.js", readFile(fx / "sample.js"))
+  check("js: function def", hasDef(jt, "0 buildIdx"), defList(jt))
+  check("js: class def", hasDef(jt, "3 Collector"), defList(jt))
+  check("js: method def", hasDef(jt, "4 add"), defList(jt))
+  check("js: call refs", hasRef(jt, "buildIdx"))
+
   report("REPOMAP TAGS")
 
 main()

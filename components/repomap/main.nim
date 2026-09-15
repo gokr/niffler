@@ -98,7 +98,7 @@ proc census(ws: string): seq[string] =
         stack.add(path)
       of pcFile:
         let ext = splitFile(path).ext.toLowerAscii()
-        if ext in [".nim", ".nims", ".go", ".py", ".ts"]:
+        if ext in [".nim", ".nims", ".go", ".py", ".ts", ".js"]:
           result.add(path)
         elif splitFile(path).name in ["README", "README.md", "Makefile",
             "package.json", "Cargo.toml", "go.mod", "config.nims"]:
