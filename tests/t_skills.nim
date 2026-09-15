@@ -91,6 +91,15 @@ proc main() =
   check("list finds project skill", "projskill" in names, names.join(","))
   check("list finds home skill", "homeskill" in names, names.join(","))
   check("list finds config skill", "configskill" in names, names.join(","))
+  # Bundled skills (repo skills/ tree; compiled into the binary as a
+  # last-resort source when no disk tree exists) must always surface and
+  # load — whatever the deployment ships.
+  check("bundled harness skill discovered", "niffler-harness" in names,
+        names.join(","))
+  let bh = call(nc, "skills", "skill_load", %*{"name": "niffler-harness"})
+  check("bundled harness skill loadable, docs map present",
+        bh{"ok"}.getBool(false) and
+        bh{"content"}.getStr("").contains("docs/MANUAL.md"), $bh)
 
   let lsrc = call(nc, "skills", "skill_list", %*{"source": "home"})
   var homeNames = newSeq[string]()

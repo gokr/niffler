@@ -8,6 +8,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **prompt+skills: Niffler can explain itself (`1a1718e`).** Asking about
+  Niffler — features, operating, configuring, extending, debugging — now
+  routes through the bundled skills instead of guesswork: `baseprompt`
+  gains a trigger to `skill_list` (query `"niffler"`) + `skill_load` the
+  matching `niffler-*` skill before answering, and `niffler-harness` gains
+  a docs map (`docs/MANUAL.md`, `docs/WIRE.md`, `docs/ARCHITECTURE.md`,
+  `docs/research/`, repo-root `AGENTS.md`/`CHANGELOG.md`) so one skill
+  owns the doc routing. Out-of-root workspaces learn the harness root via
+  the per-conversation `<workspace>` tail — the frozen head stays
+  path-free, and two conversations on one machine share the same root, so
+  provider prompt-cache prefixes still line up — so reading
+  `<root>/docs/MANUAL.md` needs no discovery round-trip. The skills
+  component bakes the bundled SKILL.md files into the binary as a
+  last-resort discovery source (disk always wins; `skill_audit` lists
+  baked-only entries with dir `(baked)`), so binary-only sandboxes keep
+  the self-knowledge set; `skill_list`'s docstring now names the
+  bundled/baked sources and the Niffler routing. Tests: `t_skills`
+  (bundled skills always discoverable/loadable, docs map present),
+  `t_systemprompt` (workspace tail carries the root; in-root prompt stays
+  path-free).
+
 - **agent: subagents-v2 — settlement notices, the child roster,
   continuation and fork.** Four steps landed from the
   `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH
