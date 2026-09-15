@@ -34,12 +34,16 @@ proc formatTools(raw: JsonNode): JsonNode =
   result = newJArray()
   if raw == nil or raw.kind != JArray: return
   for t in raw:
-    var parameters = t{"parameters"}
-    if parameters == nil: parameters = t{"inputSchema"}
-    if parameters == nil: parameters = %*{"type": "object", "properties": {}}
+    let schema = t{"schema"}
+    if schema == nil or schema.kind != JObject:
+      raise newException(ValueError, "snapshot tool has no catalog schema")
+    var parameters = newJObject()
+    for key, value in schema:
+      if key notin ["x-harness", "description"]:
+        parameters[key] = value
     result.add(%*{"type": "function", "function": {
       "name": t{"name"}.getStr(""),
-      "description": t{"description"}.getStr(""),
+      "description": schema{"description"}.getStr(t{"name"}.getStr("")),
       "parameters": parameters
     }})
 

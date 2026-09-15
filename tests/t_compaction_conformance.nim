@@ -177,13 +177,13 @@ proc main() =
         projection{"provenance"}{"tool"}.getStr("") == toolName and
         projection{"covered"}{"from"}.getStr("").len > 0 and
         projection{"checkpoint"}{"objective"}.getStr("").len > 0,
-        $projection)
+        (if projection == nil: "missing projection" else: $projection))
   check("covered range is present and ordered",
         projection{"covered"}{"from"}.getStr("").len > 0 and
         projection{"covered"}{"to"}.getStr("").len > 0 and
         projection{"covered"}{"from"}.getStr("") <=
           projection{"covered"}{"to"}.getStr(""),
-        $projection{"covered"})
+        (if projection == nil: "missing projection" else: $projection{"covered"}))
   var immutable = true
   for sample in seededSamples:
     let now = getDoc(nc, "message", sample.id)
@@ -193,10 +193,8 @@ proc main() =
   check("temporary compaction_input snapshot was cleaned up",
         listDocs(nc, "compaction_input", convId & ":").len == 0)
 
-  # Restart the runner. A component launched outside the manifest does not
-  # re-register with a fresh core (the supervisor owns manifest lifecycle),
-  # so the component under test is restarted with it — the same dance a
-  # third-party author performs in their own deployment.
+  # Restart the full test stack, including the externally launched component.
+  # It is not in the sandbox manifest, so this test owns its restart.
   proc restartStack(tag: string) =
     coreProc.stopHard()
     compProc.stopHard()
@@ -237,17 +235,22 @@ proc main() =
         secondTurn{"turnError"}.getStr("").len == 0 and
         projection2 != nil and
         projection2{"generation"}.getInt(0) == 2,
-        $secondTurn & " / " & $projection2)
+        $secondTurn & " / " &
+        (if projection2 == nil: "missing projection" else: $projection2))
   check("second projection still renders checkpoint-v1 with a real cut",
         projection2{"renderer"}.getStr("") == "checkpoint-v1" and
         projection2{"covered"}{"from"}.getStr("").len > 0,
-        $projection2)
+        (if projection2 == nil: "missing projection" else: $projection2))
 
-  try:
-    report("conformance")
-  except TestFailure:
-    quit(1)
-  echo "CONFORMANCE TEST PASSED"
+  restartStack("core-conformance-final-reload")
+  let finalReload = call(nc, "core", "session", %*{
+    "sessionId": convId, "content": "CONFORMANCE-FINAL-RELOAD"}, 180_000)
+  check("advanced projection also reloads after restart",
+    finalReload{"ok"}.getBool(false) and
+    finalReload{"turnError"}.getStr("").len == 0 and
+    finalReload{"reply"}.getStr("").len > 0, $finalReload)
+
+  report("CONFORMANCE TEST")
 
 when isMainModule:
   main()

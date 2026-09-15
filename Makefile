@@ -467,6 +467,10 @@ test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_RO
 # third-party implementations at it with
 #   ./var/bin/test_t_compaction_conformance --bin:PATH --tool:NAME
 test-conformance: build var/bin/test_t_compaction_conformance ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction_conformance
+# §8 live gate: real provider, real summarization, continuity + recall +
+# latency measured end to end. Not in the CI suite — spends tokens:
+#   SYNTHETIC_API_KEY=... make live-smoke
+live-smoke: build var/bin/test_compaction_live_smoke ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_compaction_live_smoke
 
 smoke: test-smoke  # legacy alias
 
