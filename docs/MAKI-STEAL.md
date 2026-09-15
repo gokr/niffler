@@ -317,12 +317,12 @@ audience. This is how `index`/`code_execution`/`batch` teach the model their
 existence without hardcoding: the plugin registers a hint into
 `efficient_tools`, and the prompt renderer composes it.
 
-Niffler today: `components/systemprompt` assembles the prompt; plugins have
-hooks but no typed prompt contribution points.
-
-Borrow: named prompt slots in systemprompt with singleton/aggregate
-semantics — plugin-contributed prompt fragments with deterministic ordering,
-instead of plugins mutating prompt text ad hoc. Effort: ~1 day.
+Niffler now has named prompt slots in `components/systemprompt`: internal
+components register aggregate or singleton fragments through `prompt_hint`,
+and new conversations render them in deterministic source/key order. Existing
+conversation prompts remain frozen; a registration affects only prompts
+composed after it. The memory component remains deliberately deferred while
+its scope and retrieval authority are researched.
 
 ## Where Niffler is already ahead
 

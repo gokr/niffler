@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -317,11 +318,23 @@ func (b *bridge) resources(ctx context.Context, args json.RawMessage) (any, erro
 		return nil, errors.New("op must be list, templates or read")
 	}
 }
-func xHarness(cfg *serverConfig, hidden bool) map[string]any {
+func directToolThreshold() int {
+	threshold, err := strconv.Atoi(strings.TrimSpace(os.Getenv("NIF_MCP_DIRECT_THRESHOLD")))
+	if err != nil || threshold < 1 {
+		return 10
+	}
+	return threshold
+}
+
+func deferDirectTools(cfg *serverConfig) bool {
+	return cfg.Expose == "direct" && len(cfg.Tools) > directToolThreshold()
+}
+
+func xHarness(cfg *serverConfig, hidden, deferred bool) map[string]any {
 	xh := map[string]any{"sessionId": true, "timeoutMs": cfg.timeout().Milliseconds()}
 	if hidden {
 		xh["hidden"] = true
-	} else if cfg.Expose != "direct" {
+	} else if cfg.Expose != "direct" || deferred {
 		xh["onDemand"] = true
 	}
 	if cfg.Approval == "always" {
@@ -351,19 +364,20 @@ func (b *bridge) register() error {
 			b.comp.ToolConcurrent(name, schema, wrapped)
 		}
 	}
+	deferred := deferDirectTools(b.cfg)
 	for _, ct := range b.cfg.Tools {
 		schema := map[string]any{}
 		if err := json.Unmarshal(ct.InputSchema, &schema); err != nil {
 			return err
 		}
-		schema["x-harness"] = xHarness(b.cfg, false)
+		schema["x-harness"] = xHarness(b.cfg, false, deferred)
 		schema["description"] = fmt.Sprintf("[mcp:%s] %s", b.cfg.Name, ct.Description)
 		add(prefixedToolName(b.cfg.Name, ct.Name), schema, func(ctx context.Context, args json.RawMessage) (any, error) { return b.callTool(ctx, ct.Name, args) })
 	}
-	resourceXH := xHarness(b.cfg, false)
+	resourceXH := xHarness(b.cfg, false, deferred)
 	resourceXH["effect"] = "read"
 	add(prefixedToolName(b.cfg.Name, "resources"), map[string]any{"type": "object", "description": "List/read MCP resources or list URI templates. Large results spill to a local JSON file readable with read.", "properties": map[string]any{"op": map[string]any{"type": "string", "enum": []string{"list", "templates", "read"}}, "uri": map[string]any{"type": "string"}}, "x-harness": resourceXH}, b.resources)
-	add(prefixedToolName(b.cfg.Name, "prompt"), map[string]any{"type": "object", "description": "Render a named MCP prompt (UI helper).", "properties": map[string]any{"name": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}}, "required": []string{"name"}, "x-harness": xHarness(b.cfg, true)}, func(ctx context.Context, raw json.RawMessage) (any, error) {
+	add(prefixedToolName(b.cfg.Name, "prompt"), map[string]any{"type": "object", "description": "Render a named MCP prompt (UI helper).", "properties": map[string]any{"name": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}}, "required": []string{"name"}, "x-harness": xHarness(b.cfg, true, false)}, func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var req struct {
 			Name      string            `json:"name"`
 			Arguments map[string]string `json:"arguments"`
@@ -385,7 +399,7 @@ func (b *bridge) register() error {
 			params = append(params, sdk.SlashParam{Name: a.Name, Kind: "string", Description: a.Description})
 		}
 		name := prefixedToolName(b.cfg.Name, "prompt_"+sanitizeTool(p.Name))
-		add(name, map[string]any{"type": "object", "description": p.Description, "properties": props, "required": required, "additionalProperties": false, "x-harness": xHarness(b.cfg, true)}, func(ctx context.Context, raw json.RawMessage) (any, error) {
+		add(name, map[string]any{"type": "object", "description": p.Description, "properties": props, "required": required, "additionalProperties": false, "x-harness": xHarness(b.cfg, true, false)}, func(ctx context.Context, raw json.RawMessage) (any, error) {
 			var args map[string]string
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return nil, err

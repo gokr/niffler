@@ -23,12 +23,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -514,6 +516,7 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	case "", protocolOpenAI:
 		cfg := openai.DefaultConfig(resolved.Provider.APIKey)
 		cfg.BaseURL = resolved.Provider.BaseURL
+		cfg.HTTPClient = &retryAfterHTTPClient{base: cfg.HTTPClient}
 		client := openai.NewClientWithConfig(cfg)
 		if args.Stream {
 			v, err := chatStream(streamCtx, c, client, model, resolved.ProviderName, args, resolved.Context, output)
@@ -524,6 +527,68 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported protocol %q", resolved.ProviderName, resolved.Provider.Protocol)
 	}
+}
+
+// retryAfterHTTPClient preserves the HTTP Retry-After header through
+// go-openai's APIError, whose public shape intentionally drops response
+// headers. The core retry policy can then honor the provider's wait without
+// making each adapter depend on the same client library details.
+type retryAfterHTTPClient struct {
+	base openai.HTTPDoer
+}
+
+func (c *retryAfterHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	resp, err := c.base.Do(req)
+	if err != nil || resp == nil || resp.StatusCode < 400 {
+		return resp, err
+	}
+	raw := resp.Header.Get("Retry-After")
+	if raw == "" {
+		return resp, err
+	}
+	ms := retryAfterMillis(raw)
+	if ms <= 0 {
+		return resp, err
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return resp, err
+	}
+	var envelope map[string]any
+	if json.Unmarshal(body, &envelope) == nil {
+		if apiErr, ok := envelope["error"].(map[string]any); ok {
+			if message, ok := apiErr["message"].(string); ok {
+				apiErr["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
+			}
+		} else if message, ok := envelope["message"].(string); ok {
+			envelope["message"] = message + "; retry-after-ms: " + strconv.Itoa(ms)
+		}
+		if updated, marshalErr := json.Marshal(envelope); marshalErr == nil {
+			body = updated
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, err
+}
+
+func retryAfterMillis(raw string) int {
+	if seconds, parseErr := strconv.ParseFloat(strings.TrimSpace(raw), 64); parseErr == nil {
+		if seconds <= 0 {
+			return 1
+		}
+		return int(seconds * 1000)
+	}
+	when, parseErr := http.ParseTime(raw)
+	if parseErr != nil {
+		return 0
+	}
+	ms := time.Until(when).Milliseconds()
+	if ms < 1 {
+		return 1
+	}
+	return int(ms)
 }
 
 // classifyProviderError normalizes the provider failures the harness

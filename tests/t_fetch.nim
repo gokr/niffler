@@ -197,7 +197,8 @@ proc main() =
   defer: nc.close()
   var compProc = startComponent(repoRoot / "var" / "bin" / "fetch", url,
                                  root = root,
-                                 extra = [("NIF_TRAFILATURA", "off")])
+                                 extra = [("NIF_TRAFILATURA", "off"),
+                                          ("NIF_FETCH_ALLOW_PRIVATE", "1")])
   defer: stopProcess(compProc)
   check("fetch registers", waitRegistered(nc, "fetch"))
 
@@ -244,6 +245,23 @@ proc main() =
 
   let noUrl = call(nc, "fetch", "fetch", %*{})
   check("missing url errors", noUrl{"error"} != nil, $noUrl)
+
+  # Private destinations require an explicit local-development opt-in.
+  stopProcess(compProc)
+  compProc = startComponent(repoRoot / "var" / "bin" / "fetch", url,
+                            root = root,
+                            extra = [("NIF_TRAFILATURA", "off")])
+  check("fetch re-registers without private opt-in", waitRegistered(nc, "fetch"))
+  let privateUrl = call(nc, "fetch", "fetch", %*{"url": base & "/page"})
+  check("private destination rejected by default",
+        not privateUrl{"ok"}.getBool(false) and
+        privateUrl{"error"}.getStr("").contains("private"), $privateUrl)
+  stopProcess(compProc)
+  compProc = startComponent(repoRoot / "var" / "bin" / "fetch", url,
+                            root = root,
+                            extra = [("NIF_TRAFILATURA", "off"),
+                                     ("NIF_FETCH_ALLOW_PRIVATE", "1")])
+  check("fetch re-registers with private opt-in", waitRegistered(nc, "fetch"))
 
   let badMethod = call(nc, "fetch", "fetch",
                        %*{"url": base & "/page", "method": "TRACE"})
@@ -332,7 +350,8 @@ printf '%s\n' 'Trafilatura selected article text' > "$output_dir/article.txt"
   stopProcess(compProc)
   compProc = startComponent(repoRoot / "var" / "bin" / "fetch", url,
                             root = root,
-                            extra = [("NIF_TRAFILATURA", fakeTrafilatura)])
+                            extra = [("NIF_TRAFILATURA", fakeTrafilatura),
+                                     ("NIF_FETCH_ALLOW_PRIVATE", "1")])
   check("fetch re-registers with trafilatura", waitRegistered(nc, "fetch"))
 
   let extracted = call(nc, "fetch", "fetch", %*{"url": base & "/page"})

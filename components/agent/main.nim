@@ -590,13 +590,50 @@ proc prepareChild(parentSession, task, model: string;
 # Applies at BIRTH only — a continuation's model is frozen at its first
 # turn and the caller's model argument is ignored by design (P1.3), so the
 # continuation path never consults this.
-proc childModel(c: Component, parentSession, requested: string): tuple[
+const agentTiers = ["weak", "medium", "strong"]
+
+proc tierRank(name: string): int =
+  let normalized = name.strip().toLowerAscii()
+  for i, tier in agentTiers:
+    if normalized == tier: return i
+  -1
+
+proc tierModel(rank: int): string =
+  case rank
+  of 0: getEnv("NIF_AGENT_MODEL_WEAK", "").strip()
+  of 1: getEnv("NIF_AGENT_MODEL_MEDIUM", "").strip()
+  of 2: getEnv("NIF_AGENT_MODEL_STRONG", "").strip()
+  else: ""
+
+proc defaultAgentTier(): int =
+  let configured = getEnv("NIF_AGENT_DEFAULT_TIER", "strong")
+  let rank = tierRank(configured)
+  if rank >= 0: rank else: 2
+
+proc tierNameForModel(model: string): string =
+  let normalized = model.strip()
+  for i in 0 ..< agentTiers.len:
+    if tierModel(i) == normalized: return agentTiers[i]
+  ""
+
+proc parentTier(model: string): int =
+  ## Unknown parent models use the configured ceiling. This keeps existing
+  ## deployments compatible while allowing installations with a known model
+  ## ladder to clamp children strictly.
+  let normalized = model.strip()
+  for i in 0 ..< agentTiers.len:
+    if tierModel(i) == normalized: return i
+  defaultAgentTier()
+
+proc childModel(c: Component, parentSession, requested, requestedTier: string): tuple[
     ok: bool, model, error: string] =
-  ## Resolve the model a child should use. An explicit child override wins;
-  ## otherwise inherit the parent's persisted effective model instead of
-  ## silently falling back to the provider's (possibly different) default.
-  ## An empty inherited model is valid: it means the parent's provider default
-  ## was also unresolved, so the child may resolve its provider normally.
+  ## Resolve a fresh child's model. An explicit exact model remains supported;
+  ## `modelTier` selects from the configured weak/medium/strong ladder and is
+  ## clamped to the parent's effective tier. Both controls together are
+  ## rejected so a caller cannot mistake a silently ignored tier for policy.
+  ## Continuations never call this: their model is frozen at birth.
+  if requested.len > 0 and requestedTier.len > 0:
+    return (false, "", "model and modelTier are mutually exclusive")
   if requested.len > 0:
     return (true, requested, "")
   try:
@@ -609,9 +646,20 @@ proc childModel(c: Component, parentSession, requested: string): tuple[
       # empty, meaning the provider's default) stands alone.
       return (true, requested, "")
     let override = info{"modelOverride"}.getStr("").strip()
-    if override.len > 0:
-      return (true, override, "")
-    return (true, info{"model"}.getStr("").strip(), "")
+    let inherited = if override.len > 0: override
+                    else: info{"model"}.getStr("").strip()
+    if requestedTier.len > 0:
+      let requestedRank = tierRank(requestedTier)
+      if requestedRank < 0:
+        return (false, "", "modelTier must be weak, medium, or strong")
+      let effectiveRank = min(requestedRank, parentTier(inherited))
+      let selected = tierModel(effectiveRank)
+      if selected.len == 0:
+        return (false, "", "model tier '" & agentTiers[effectiveRank] &
+          "' is not configured (set NIF_AGENT_MODEL_" &
+          agentTiers[effectiveRank].toUpperAscii() & ")")
+      return (true, selected, "")
+    return (true, inherited, "")
   except CatchableError as e:
     # Same degradation as above, and note that core RAISES on an error
     # result (an unknown session reaches here as an exception, not an
@@ -727,6 +775,9 @@ proc effectiveControls(child: string): JsonNode =
     for f in ["model", "modelOverride", "thinkingEffort"]:
       if header{f} != nil and header{f}.getStr("").len > 0:
         result[f] = header{f}
+    let tier = tierNameForModel(header{"model"}.getStr(""))
+    if tier.len > 0:
+      result["modelTier"] = %tier
     for f in ["maxRounds", "maxCalls", "maxTokens"]:
       if header{f} != nil and header{f}.getInt(0) > 0:
         result[f] = header{f}
@@ -908,7 +959,9 @@ let runSchema = toolSchema(%*{
   "task": {"type": "string",
            "description": "The task, phrased for the mode. Fresh child (no session): it starts with a fresh context — include everything it needs (paths, goals, constraints), not a continuation of this conversation. Forked child (fork set): it sees the completed turns of this conversation but not the turn in flight — state only what is new. Continuation (session set): it already has its own history — send only the next task."},
   "model": {"type": "string",
-            "description": "Optional model override for the subagent (e.g. a cheaper model for mechanical work)"},
+            "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
+  "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
+                "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "tools": {"type": "array",
@@ -922,7 +975,7 @@ let runSchema = toolSchema(%*{
   "timeoutMs": {"type": "integer",
                 "description": "Give up waiting for the subagent after this many ms (default 600000)"},
   "session": {"type": "string",
-              "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
+              "description": "Continue an EXISTING child instead of starting a fresh one: pass the sessionId that a previous agent_run/agent_spawn returned. The child keeps its conversation, so send only the new task — and model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (they were frozen at the child's first turn; the result reports the effective values). Fails if the session is not a child of this conversation, is closed, or if its runner is mid-turn (use agent_spawn for that)."},
   "close": {"type": "boolean",
             "description": "Mark this child finished after THIS turn completes, so it can no longer be continued (nothing is deleted). Works on a fresh run (one-shot child) or a continuation (last turn)."},
   "fork": {"type": ["boolean", "object"],
@@ -955,8 +1008,9 @@ discard comp.tool("agent_run", runSchema,
     # frozen at its first turn (the result's effectiveControls reports it).
     var resolvedModel = (ok: true, model: "", error: "")
     if isFresh:
-      let requestedModel = toolArgs{"model"}.getStr("")
-      let cm = childModel(c, parentSession, requestedModel)
+      let requestedModel = toolArgs{"model"}.getStr("").strip()
+      let requestedTier = toolArgs{"modelTier"}.getStr("").strip()
+      let cm = childModel(c, parentSession, requestedModel, requestedTier)
       if not cm.ok:
         return errResult(cm.error)
       resolvedModel = cm
@@ -1011,9 +1065,18 @@ discard comp.tool("agent_run", runSchema,
     let turnError = resp.args{"turnError"}.getStr("")
     if turnError.len > 0:
       return errResult(turnError, extra = %*{"sessionId": child})
+    let reportedModel = if isFresh and resolvedModel.model.len > 0:
+                          resolvedModel.model
+                        else:
+                          resp.args{"modelOverride"}.getStr("")
     var answer = %*{"sessionId": child,
                     "reply": resp.args{"reply"}.getStr(""),
-                    "model": resp.args{"modelOverride"}.getStr("")}
+                    "model": reportedModel}
+    let effectiveModel = if isFresh: resolvedModel.model
+                         else: answer["model"].getStr("")
+    let effectiveTier = tierNameForModel(effectiveModel)
+    if effectiveTier.len > 0:
+      answer["modelTier"] = %effectiveTier
     if forkCopied > 0:
       answer["fork"] = %*{"source": parentSession, "uptoId": forkUpto,
                           "copied": forkCopied}
@@ -1041,7 +1104,9 @@ let spawnSchema = toolSchema(%*{
   "task": {"type": "string",
            "description": "The task, phrased for the mode (same contract as agent_run). Fresh child: include everything it needs — it does not see this conversation. Forked child: it sees this conversation's completed turns — state only what is new. Continuation (session set): send only the next task."},
   "model": {"type": "string",
-            "description": "Optional model override for the subagent"},
+            "description": "Optional exact model override for the subagent; mutually exclusive with modelTier"},
+  "modelTier": {"type": "string", "enum": ["weak", "medium", "strong"],
+                "description": "Optional model tier for a FRESH child. Resolves through NIF_AGENT_MODEL_* and is clamped to the parent's tier; mutually exclusive with model"},
   "thinking": {"type": "string",
                "description": "Optional reasoning effort for the subagent (e.g. low/high; passed to the child's turns)"},
   "tools": {"type": "array",
@@ -1055,7 +1120,7 @@ let spawnSchema = toolSchema(%*{
   "timeoutMs": {"type": "integer",
                 "description": "Optional job budget in ms: once exceeded, the job is cancelled (agent_stop semantics) the next time it is observed via agent_status/agent_wait"},
   "session": {"type": "string",
-              "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
+              "description": "Give an EXISTING child another turn in the background instead of starting a fresh one: pass the sessionId from a previous agent_run/agent_spawn. The child keeps its conversation, so send only the new task — model/modelTier/thinking/tools/maxRounds/maxCalls/maxTokens are IGNORED (frozen at its first turn). Unlike agent_run this QUEUES if the child is mid-turn: a background job only promises the work happens. Fails if the session is not a child of this conversation or is closed."},
   "close": {"type": "boolean",
             "description": "Mark this child finished AFTER the queued/background turn settles, so it can no longer be continued (nothing is deleted). Applies via the job's completion, so it composes with session (queue the turn, then retire the child)."},
   "fork": {"type": ["boolean", "object"],
@@ -1087,8 +1152,9 @@ discard comp.tool("agent_spawn", spawnSchema,
     # Model inheritance on the fresh path only (see agent_run).
     var resolvedModel = (ok: true, model: "", error: "")
     if isFresh:
-      let requestedModel = toolArgs{"model"}.getStr("")
-      let cm = childModel(c, parentSession, requestedModel)
+      let requestedModel = toolArgs{"model"}.getStr("").strip()
+      let requestedTier = toolArgs{"modelTier"}.getStr("").strip()
+      let cm = childModel(c, parentSession, requestedModel, requestedTier)
       if not cm.ok:
         return errResult(cm.error)
       resolvedModel = cm
