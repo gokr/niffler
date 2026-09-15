@@ -2115,9 +2115,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
   let hasProfile = args.kind == JObject and args.hasKey("profile")
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
+  let hasExport = args.kind == JObject and args.hasKey("export") and
+                  args{"export"}.getBool(false)
   if sessionId.len == 0 or
       (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
-       not hasCwd and not hasProfile and not hasDiscovery):
+       not hasCwd and not hasProfile and not hasDiscovery and not hasExport):
     return %*{"error": "session needs sessionId and content, model, thinking, title, cwd or profile"}
 
   var entry: Session
@@ -2395,6 +2397,34 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     return %*{"ok": true, "sessionId": sessionId, "discovery": found}
 
   if content.len == 0:
+    if hasExport:
+      # Export the exact provider request assembled from the current context.
+      # This is deliberately read-only: no user message, LLM call, or store
+      # history entry is created. Keep this shape in lockstep with llmArgs
+      # below so `/export` is useful for reproducing a provider request.
+      var promptToolsJson = entry.exposure.promptTools()
+      if entry.allowlist.len > 0:
+        var filtered = newJArray()
+        for tool in promptToolsJson:
+          if tool{"name"}.getStr("") in entry.allowlist:
+            filtered.add(tool)
+        promptToolsJson = filtered
+      let exportTools = promptToolsJson.formatToolsForLlm()
+      var request = %*{"messages": entry.messages,
+                       "tools": exportTools,
+                       "sessionId": sessionId,
+                       "stream": true}
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      let selectedModel = resolved{"model"}.getStr(entry.modelOverride)
+      let provider = resolved{"provider"}.getStr("")
+      if selectedModel.len > 0:
+        request["model"] = %selectedModel
+      if provider.len > 0:
+        request["provider"] = %provider
+      if entry.thinkingEffort.len > 0:
+        request["reasoning_effort"] = %entry.thinkingEffort
+      sessions[sessionId] = entry
+      return %*{"ok": true, "sessionId": sessionId, "request": request}
     var status = %*{
       "sessionId": sessionId,
       "model": entry.modelOverride,
