@@ -585,6 +585,14 @@ Commit order: **validate → single acknowledged store put → replace in-memory
 context → emit event.** A failed put leaves the old projection installed. A
 crash after the put reloads the new projection even if no event was published.
 
+Candidate coverage names **projection nodes**; persisted `covered` endpoints
+name **canonical messages**. When an endpoint is a prior checkpoint, the
+runner substitutes that checkpoint's persisted canonical endpoint before
+rendering and pricing the replacement. This also permits a strictly smaller
+checkpoint-only replacement without persisting a dangling superseded `#ckN`
+reference. The conformance fixture exercises this with
+`NIF_FIXTURE_CHECKPOINT_ONLY=1`, including another restart after generation 2.
+
 Reload (runner startup and after any context rebuild):
 
 1. read the projection record (absent → ordinary resume);
@@ -706,7 +714,7 @@ fixture family (`tests/mock_llm.nim` pattern, `newCoreSandbox`):
    LLM-free) **plus** the assertions as a reusable runner,
    `tests/t_compaction_conformance.nim` (`make test-conformance`, or
    `--bin:PATH --tool:NAME` for a third-party implementation), so an author
-can run their implementation against the same contract without reading
+   can run their implementation against the same contract without reading
    `core/`: propose → strict validation → checkpoint-v1 commit → canonical
    immutability → snapshot cleanup → restart reload → second generation.
    `t_compaction` runs the fixture under a different tool name, asserts a
@@ -733,6 +741,13 @@ compaction; steering during compaction.
 Gate: `make build && make test` (server suite mirrors the engine matrix), plus
 a live long-turn smoke test. Measure continuity, recovery success, recall
 correctness, latency and cache rebuilds — not just token reduction.
+
+The opt-in `make live-smoke` runs real components against Synthetic
+`hf:openai/gpt-oss-120b`. The [2026-09-15 live report](COMPACTION_LIVE_SMOKE.md)
+records two compactions in one ten-batch turn, no lossy trim, exact direct
+spill recall and continuity after restart. Its artificial 16000-token window
+is distinct from the model's native 131072-token limit. The run exposed and
+verified a fix for auxiliary tool-schema formatting.
 
 ## 9. Delivery order
 

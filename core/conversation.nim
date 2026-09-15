@@ -1274,6 +1274,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   # The previously normalized checkpoint is repeated explicitly for
   # replacement components; it is also present in page content as the
   # rendered checkpoint node. This makes merge intent unambiguous.
+  var previousProjection: JsonNode
   if p.generation > 0:
     try:
       let old = ct.storeGetItem("context_projection", p.convId)
@@ -1281,6 +1282,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
           old.value{"generation"}.getInt(-1) != p.generation or
           old.value{"checkpoint"} == nil:
         return false
+      previousProjection = old.value
       meta["previousCheckpoint"] = old.value{"checkpoint"}
     except CatchableError:
       return false
@@ -1362,9 +1364,8 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     discard
   # The granted auxiliary budget is part of the snapshot contract (§4.7):
   # a candidate claiming more LLM calls than maxLlmCalls is invalid. The
-  # runner cannot observe the component's calls directly, so the reported
-  # provenance is the enforceable boundary — same trust model as the
-  # strict-reduction check, which also prices the candidate's own claim.
+  # runner cannot observe the component's calls directly: this rejects an
+  # over-budget report but cannot prevent unreported provider spending.
   let claimedCalls = cand{"provenance"}{"llmCalls"}.getInt(0)
   if claimedCalls > cfg.maxLlmCalls:
     if onEvent != nil:
@@ -1385,9 +1386,21 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                               "reason": "compact:stale"})
       return false
 
+  # Candidate boundaries name projection nodes; durable coverage must name
+  # canonical messages. In particular, a legal checkpoint-only cut cannot
+  # persist #ckN as covered.to: that checkpoint is superseded by this put.
+  let recordFrom = if p.nodes[coveredFrom].source == nsCheckpoint:
+                     previousProjection{"covered"}{"from"}.getStr("")
+                   else: ids[coveredFrom]
+  let recordTo = if p.nodes[cutIdx - 1].source == nsCheckpoint:
+                   previousProjection{"covered"}{"to"}.getStr("")
+                 else: ids[cutIdx - 1]
+  if not recordFrom.startsWith(p.convId & ":") or
+      not recordTo.startsWith(p.convId & ":"):
+    return false
   let newGeneration = p.generation + 1
   let rendered = renderCheckpoint(checked.checkpoint, newGeneration,
-                                  ids[coveredFrom], ids[cutIdx - 1])
+                                  recordFrom, recordTo)
   let coveredTokens = estimateTokens(messages[coveredFrom ..< cutIdx])
   let renderedTokens = estimateTokens(@[%*{"role": "user", "content": rendered}])
   if not strictlyReduces(coveredTokens, renderedTokens):
@@ -1416,7 +1429,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                        "bytesBefore": pr.bytesBefore,
                        "bytesAfter": pr.bytesAfter})
   let record = buildProjectionRecord(newGeneration, p.canonicalHigh,
-    checked.checkpoint, ids[coveredFrom], ids[cutIdx - 1], retained, pruneJson,
+    checked.checkpoint, recordFrom, recordTo, retained, pruneJson,
     %*{"promptTokensBefore": estimateTokens(messages),
        "promptTokensAfter": estimateTokens(messages) - coveredTokens + renderedTokens,
        "coveredTokens": coveredTokens, "checkpointTokens": renderedTokens},

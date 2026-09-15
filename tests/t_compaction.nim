@@ -159,6 +159,16 @@ proc main() =
           row{"cancelId"}.getStr("") == row{"sessionId"}.getStr("") and
           not row{"emitTokens"}.getBool(true)
     found)
+  check("auxiliary tools retain the exact main-call descriptions and schemas", block:
+    var auxiliaryTools, mainTools: JsonNode
+    for row in firstLog:
+      if row{"purpose"}.getStr("") == "compaction":
+        auxiliaryTools = row{"tools"}
+      elif row{"sessionId"}.getStr("") == convId:
+        mainTools = row{"tools"}
+    auxiliaryTools != nil and mainTools != nil and auxiliaryTools == mainTools and
+      auxiliaryTools.len > 0 and
+      auxiliaryTools[0]{"function"}{"description"}.getStr("").len > 0)
   check("auxiliary compaction chat is marked for telemetry",
         block:
           var found = false
@@ -495,7 +505,7 @@ proc main() =
   doAssert waitComponent(nc, "store"), "store did not register for fixture conformance"
   doAssert waitComponent(nc, "llm"), "llm did not register for fixture conformance"
   fixtureProc = startComponent(sandbox.sandboxBin("fixture-compaction"), url,
-    root = root, extra = @[],
+    root = root, extra = @[("NIF_FIXTURE_CHECKPOINT_ONLY", "1")],
     logFile = root / "var" / "test-logs" / "fixture-compaction.log")
   doAssert waitComponent(nc, "fixture-compaction"),
     "fixture compactor did not register after restart; running=" & $fixtureProc.running() &
@@ -527,6 +537,22 @@ proc main() =
   check("projection written by the default compactor reloads under fixture",
         fixtureProjection{"renderer"}.getStr("") == "checkpoint-v1" and
         fixtureProjection{"covered"}{"from"}.getStr("").len > 0)
+
+  check("checkpoint-only replacement records canonical coverage endpoints",
+    fixtureProjection{"covered"}{"from"}.getStr("").startsWith(convId & ":") and
+    fixtureProjection{"covered"}{"to"}.getStr("").startsWith(convId & ":"))
+  stopHard(fixtureProc)
+  coreProc.stopHard()
+  coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+    root = root, extra = fixtureExtra,
+    logFile = root / "var" / "test-logs" / "core-checkpoint-only-reload.log")
+  doAssert waitComponent(nc, "store") and waitComponent(nc, "llm")
+  let checkpointOnlyReload = call(nc, "core", "session", %*{
+    "sessionId": convId, "content": "AFTER-CHECKPOINT-ONLY-REPLACEMENT"}, 180_000)
+  check("checkpoint-only replacement survives a runner restart",
+    checkpointOnlyReload{"ok"}.getBool(false) and
+    checkpointOnlyReload{"turnError"}.getStr("").len == 0,
+    $checkpointOnlyReload)
 
   # §8 negative case: a component that ignores its granted auxiliary budget.
   # The fixture reports provenance.llmCalls = 99 against a budget of 4; the
@@ -563,7 +589,7 @@ proc main() =
         liarTurn{"reply"}.getStr("").len > 0,
         $liarTurn)
 
-  echo "COMPACTION TEST PASSED"
+  report("COMPACTION TEST")
 
 when isMainModule:
   main()
