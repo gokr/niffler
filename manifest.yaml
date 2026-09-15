@@ -156,6 +156,17 @@ components:
     required: false
     restart: on-failure
 
+  # Ranked repo map (docs/research/REPOMAP.md): the auto-append on
+  # ev.workspace.opened orients every conversation in its workspace from
+  # turn one; repo_map is the onDemand refresh. Optional: an absent
+  # component means no map, nothing else changes.
+  - name: repomap
+    build: {lang: nim, src: components/repomap/main.nim}
+    binary: var/bin/repomap
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Background processes with an owner (docs/OCTOFRIEND-STEAL.md): bash's
   # run_in_background flag forwards here; process_poll drains incremental
   # output, process_kill stops the group. Children are process-group

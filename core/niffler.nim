@@ -543,6 +543,7 @@ proc main() =
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
+                     mapStream: new(MapStream),
                      activeTurn: new(ActiveTurn),
                      uiReg: newUiRegistry())
   # Slash registry checkpoint (docs/WIRE.md): every catalog change persists

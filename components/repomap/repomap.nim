@@ -39,7 +39,13 @@ proc renderMap*(ranked: seq[RankedTag]): string =
   var outp = ""
   var curRel = ""
   var open = false
+  var lastKey = ""
   for t in display:
+    # the go query captures a struct twice (type_spec + the
+    # struct-specific pattern) — identical (file,line,col,name) renders once
+    let key = t.rel & ":" & $t.line & ":" & $t.col & ":" & t.name
+    if key == lastKey: continue
+    lastKey = key
     if t.rel != curRel:
       if open: outp.add("\n")
       outp.add(t.rel)

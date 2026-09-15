@@ -34,11 +34,17 @@ const LANGUAGE_VERSION_MAX = 15  # ts_parser_set_language rejects ABI mismatch
 # tree-sitter tier
 
 proc queriesDir*(): string =
-  ## components/repomap/queries — found relative to the binary (var/bin is a
-  ## child of the repo root), falling back to the current directory.
-  for base in [getAppDir().parentDir(), getCurrentDir()]:
-    let dir = base / "components" / "repomap" / "queries"
-    if dirExists(dir): return dir
+  ## components/repomap/queries — found by walking up from the binary's
+  ## directory (the repo root is two levels above var/bin; a started
+  ## component's CWD is the harness root, not the repo). Falls back to the
+  ## current directory for in-repo runs.
+  var dir = getAppDir()
+  for i in 0 ..< 6:
+    let q = dir / "components" / "repomap" / "queries"
+    if dirExists(q): return q
+    dir = dir.parentDir()
+  let q = getCurrentDir() / "components" / "repomap" / "queries"
+  if dirExists(q): return q
   raise newException(IOError, "repomap queries dir not found")
 
 type Grammar = tuple[lang: ptr TsLanguage, query: string]

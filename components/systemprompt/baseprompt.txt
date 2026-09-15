@@ -13,6 +13,7 @@ approval; file tools don't — never cat/sed content through it.
 
 Tools: the direct toolset is small — use discover for more: git,
 lsp (semantic code navigation and compiler diagnostics),
+repo_map (workspace orientation map),
 processes (long-running commands — start, poll, kill),
 store (harness database), fabric (mechanical fan-out),
 agent (sub agents), mcp, fetch (web), plugins (from github),
