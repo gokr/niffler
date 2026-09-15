@@ -43,6 +43,7 @@ const basePrompt = staticRead("baseprompt.txt")
 
 const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                     "CLAUDE.md", "CLAUDE.MD"]
+const localCandidate = "AGENTS.local.md"
 
 proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
   ## Pi-style candidate order, first existing readable file wins.
@@ -57,6 +58,18 @@ proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
         stderr.writeLine("systemprompt: unreadable context file " &
                          p & ": " & e.msg)
   return ("", "")
+
+proc loadLocalContextFileFromDir(dir: string): tuple[path, content: string] =
+  ## AGENTS.local.md is additive, not a shadowing candidate. It is useful for
+  ## checkout-local guidance while AGENTS.md remains the stable project rule.
+  let path = dir / localCandidate
+  if fileExists(path):
+    try:
+      return (path, readFile(path))
+    except CatchableError as e:
+      stderr.writeLine("systemprompt: unreadable context file " &
+                       path & ": " & e.msg)
+  ("", "")
 
 proc fileId(path: string): string =
   ## File identity for dedupe, not the path: a symlink farm (the bench
@@ -131,13 +144,20 @@ proc main() =
       var dir = cwd
       while true:
         let f = loadContextFileFromDir(dir)
-        if f.path.len > 0 and f.path != shadowed:
-          let fid = fileId(f.path)
-          if fid notin seen:
-            inc count
-            seen.add(fid)
-            files.add(f)
-            if count >= maxFiles: break
+        var candidatesHere: seq[tuple[path, content: string]] = @[]
+        let primary = loadContextFileFromDir(dir)
+        if primary.path.len > 0: candidatesHere.add(primary)
+        let local = loadLocalContextFileFromDir(dir)
+        if local.path.len > 0: candidatesHere.add(local)
+        for f in candidatesHere:
+          if f.path != shadowed:
+            let fid = fileId(f.path)
+            if fid notin seen:
+              inc count
+              seen.add(fid)
+              files.add(f)
+              if count >= maxFiles: break
+        if count >= maxFiles: break
         if dir == stopAbove or dir == "/" or dir.len <= 1: break
         dir = parentDir(dir)
 

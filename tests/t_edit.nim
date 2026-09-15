@@ -209,6 +209,24 @@ proc main() =
   check("read returns verbatim content",
         rr1.kind == JString and rr1.getStr("") == "one\ntwo\nthree\n", $rr1)
 
+  # Subdirectory instructions are lazy: entering a subtree adds its rules to
+  # the tool result once, without enlarging the frozen system-prompt prefix.
+  createDir(tmp / "nested")
+  writeFile(tmp / "nested" / "AGENTS.md", "Use the nested build command.\n")
+  writeFile(tmp / "nested" / "code.txt", "nested content\n")
+  let lazy1 = call(nc, "edit", "read", %*{
+    "path": "nested/code.txt", "__session": {"session": "lazy"}})
+  check("read lazily loads subdirectory instructions",
+        lazy1.getStr("").contains("<lazy_project_instructions") and
+        lazy1.getStr("").contains("Use the nested build command.") and
+        lazy1.getStr("").contains("nested content"), $lazy1)
+  let lazy2 = call(nc, "edit", "read", %*{
+    "path": "nested/code.txt", "force": true,
+    "__session": {"session": "lazy"}})
+  check("lazy instructions are not repeated for the session",
+        not lazy2.getStr("").contains("<lazy_project_instructions") and
+        lazy2.getStr("").contains("nested content"), $lazy2)
+
   # read: canonical "reads" array — several files/ranges in one call,
   # per-item errors, bounds; union semantics, legacy aliases, the cap
   writeFile(tmp / "m1.txt", "alpha\n")
