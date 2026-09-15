@@ -9,7 +9,9 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 | P0.2 `agent_list` | **shipped** (derived roster, residency status vocabulary, `agent_list {scope?}`, 9 more checks in `tests/t_agentnotice.nim`) |
 | P1.3 continuation | **shipped** (t_agentcont: 59 checks) |
 | P1.4 fork | **shipped** (t_agentfork: 32 checks) |
-| P2–P4 | not started |
+| P2.5 parallel start | **shipped** (A: schema guidance; B: keyed leases, `t_nested_leases` — 11 checks) |
+| P2.6 depth cap | **shipped** (`NIF_AGENT_MAX_DEPTH`, depth walk, re-entrant pump, `t_agentdepth` — 21 checks) |
+| P3–P4 | not started |
 
 Design rationale and the comparison that produced it:
 [SUBAGENTS.md](SUBAGENTS.md) (kept in this branch). Provenance for the two
@@ -687,6 +689,47 @@ only the number needs to become a setting.
 denied with the new message); `NIF_AGENT_MAX_DEPTH=2` allows one grandchild in
 a sandbox core; an unreadable `sessionmeta` link fails closed; a root session
 (no `sessionmeta`) is depth 0 and always allowed.
+
+### Implementation notes (found while building it)
+
+Shipped on `feat/subagents-p2`; tests in `tests/t_agentdepth.nim` (21 checks:
+three sandboxes — cap 2, cap 0, default schema text) and
+`tests/t_nested_leases.nim` (11 checks, unit-level).
+
+- **The cap-2 grandchild scenario deadlocked the agent component** — the
+  plan's own test surfaced a real product gap. The child's SYNCHRONOUS
+  agent_run arrives at the agent component while the parent's synchronous
+  agent_run holds its pump (single-threaded, and `requestChildTurn`
+  deliberately pumps only taps) — the nested request sits queued behind
+  the very handler waiting for it, circular-wait until timeout. Fixed with
+  a depth-bounded RE-ENTRANT call pump: `pumpCallsReentrant` (SDK, next to
+  `pumpTaps`) served from `requestChildTurn`'s wait loop. Re-entrancy
+  depth is bounded by the same cap (each level blocks in its own
+  downstream wait); handler state is per-call, shared state is set-based,
+  and handler exceptions stay contained (handleMsg wraps them). This is
+  option C's throughput benefit minus the multi-process part: one process
+  now serves a stack of delegations.
+- **Two enforcement points, one rule.** Core's dispatch gate is primary
+  (it must live at dispatch — the plan's own argument); the agent
+  component's `prepareChild` carried a SECOND, hard-coded depth-1 check
+  that silently contradicted the configurable cap (the cap-2 grandchild
+  was allowed by dispatch, then denied by the component with the old
+  message). It is now the same rule: a component-side depth walk (mirrored
+  — components cannot import core/dispatch) reading the same env var.
+  Care: the SDK's `storeGet` RAISES `StoreNotFoundError` for a missing
+  record — not-found must read as "root at this depth", not fail closed;
+  only other store failures fail closed. (Core's `storeGetItem` returns
+  nil for not-found — the two walks differ on purpose, matching each
+  side's store API.)
+- **The lease expiry check moved EARLIER** (before tool resolution and
+  argument validation): the outer call's validity window gates everything,
+  so an expired lease is denied `expired` regardless of the requested
+  tool. With the old order, an expired lease + unregistered tool read
+  `no-tool` — true but less honest.
+- **P2.5 A needed no new code**: the guidance ("start independent
+  delegations together in one message…") went into `agent_spawn`'s
+  description during P1.3; the test pins it via `catalog {op: schemas}`
+  so a wording regression fails a test rather than passing silently.
 
 ---
 

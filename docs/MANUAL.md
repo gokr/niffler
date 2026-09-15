@@ -1832,6 +1832,17 @@ continuations stamp `continued`/`activation` on their `agentjob` record.
 `close: true` retires a child after its turn (`sessionmeta.closed`) — the
 record and transcript survive; only further continuation refuses.
 
+### Delegation depth
+
+`NIF_AGENT_MAX_DEPTH` (default **1**) caps how deep delegation may nest,
+evaluated by walking `sessionmeta.parent` links at dispatch time. `0`
+forbids delegation entirely. The spawn tools stay visible at the cap: a
+denied start returns an error naming the limit and the caller's depth, so
+the model learns why. Raising it above 1 is a deliberate act — a child's
+synchronous `agent_run` is served re-entrantly by the agent component
+(see WIRE.md "Delegation depth"), and `agent_spawn` from a child needs no
+re-entrancy at all (background jobs never hold the pump).
+
 ### Fork (a child that has read the discussion)
 
 `fork: true | {"lastK": n} | {"maxChars": n}` — on **fresh spawns only** (a

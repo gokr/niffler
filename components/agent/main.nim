@@ -274,6 +274,13 @@ proc requestChildTurn(c: Component, subject: string, env: Envelope,
     # A handler may issue this request while the component's normal pump is
     # paused. Keep raw observation taps current without nesting calls/events.
     discard c.pumpTaps(100)
+    # Re-entrant call serving (P2.6): while this synchronous agent_run waits
+    # for its child, a DEEPER synchronous agent_run from that child (allowed
+    # when NIF_AGENT_MAX_DEPTH > 1) arrives at this component and must be
+    # served — otherwise it sits queued behind this very handler and the
+    # stack circular-waits until timeout. Re-entrancy depth is bounded by
+    # the same cap: each level blocks in its own requestChildTurn below.
+    discard c.pumpCallsReentrant(4)
     let st = natsSubscription_NextMsg(addr msg, subscription, 25)
     if st == NATS_OK:
       break
@@ -485,19 +492,55 @@ proc forkHistory(parent, child: string; mode: string, lastK,
             0, "")
   return (true, "", seqNo, upto)
 
+proc agentMaxDepth(): int =
+  ## The component-side mirror of core's NIF_AGENT_MAX_DEPTH (default 1).
+  ## In production the supervisor propagates core's environment to every
+  ## component, so both enforcement points read the same cap; the test
+  ## harness sets it on both explicitly. An unreadable value falls back.
+  try:
+    let v = parseInt(getEnv("NIF_AGENT_MAX_DEPTH", "1").strip())
+    return if v < 0: 1 else: v
+  except CatchableError:
+    return 1
+
+proc lineageDepth(session: string; cap: int): int =
+  ## Component-side mirror of core's depth walk (components cannot import
+  ## core/dispatch): count sessionmeta.parent links from `session` up to a
+  ## root, bounded by the cap. Fail closed on a store error — lineage that
+  ## cannot be verified denies the spawn.
+  var cur = session
+  var depth = 0
+  while depth <= cap:
+    var meta: JsonNode
+    try:
+      meta = comp.storeGet("sessionmeta", cur, 10_000).value
+    except StoreNotFoundError:
+      # not-found reads as "no lineage record" — a root at this depth
+      return depth
+    except CatchableError:
+      # the store is unreachable (any other refusal): lineage cannot be
+      # verified, so fail closed
+      return cap + 1
+    let parent = if meta != nil: meta{"parent"}.getStr("") else: ""
+    if parent.len == 0:
+      return depth
+    inc depth
+    cur = parent
+  return depth
+
 proc prepareChild(parentSession, task, model: string;
                   forkMode = "", forkK = 0, forkChars = 0): tuple[
     ok: bool, error: string, subject: string, child: string,
     forkCopied: int, forkUpto: string] =
   ## Depth-guarded child-runner preparation + fail-closed lineage.
-  var isChild = false
-  try:
-    isChild = hasParent(parentSession)
-  except CatchableError as e:
-    return (false, "cannot verify subagent lineage (store unreachable): " &
-                    e.msg, "", "", 0, "")
-  if isChild:
-    return (false, "subagents cannot spawn subagents (depth limit)", "",
+  ## Defense in depth: core's dispatch gate already enforces the cap for
+  ## turn-dispatched calls; this second check guards this component's own
+  ## trust boundary with the same configurable rule.
+  let cap = agentMaxDepth()
+  let depth = lineageDepth(parentSession, cap)
+  if depth >= cap:
+    return (false, "subagent depth " & $depth & " exceeds NIF_AGENT_MAX_DEPTH=" &
+                   $cap & " (subagents cannot spawn subagents)", "",
             "", 0, "")
   let child = "agent-" & newId()
   # The fork copy happens BEFORE the runner exists: the child's runner (and

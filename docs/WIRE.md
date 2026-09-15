@@ -431,6 +431,53 @@ docs/research/SUBAGENTS-PLAN.md P1.4 (DSH-STEAL §3).
   because the cost is otherwise surprising — and point bulk mechanical
   transfer at `fabric`.
 
+## Delegation depth (`NIF_AGENT_MAX_DEPTH`)
+
+Delegation depth is capped by `NIF_AGENT_MAX_DEPTH` (default **1** —
+subagents cannot spawn subagents). The cap is evaluated at dispatch time
+(`core/dispatch.nim`, where the session-context gate lives) by a **depth
+walk** over `sessionmeta.parent` links from the calling session to a root:
+a root is depth 0, children 1, grandchildren 2 — a spawn is denied when
+`depth >= cap`. `0` forbids delegation entirely (even a root may not
+spawn). The walk is bounded by the cap + 2 reads (a corrupt lineage cycle
+exceeds the cap and is denied) and fails closed when the lineage store is
+unverifiable.
+
+The spawn-class tool stays **visible at the cap** — each start rejects
+with an errored result naming the limit and the caller's depth
+(`subagent depth 1 exceeds NIF_AGENT_MAX_DEPTH=1 (subagents cannot spawn
+subagents)`), so the model learns why instead of finding a hidden tool.
+The component enforces the same rule a second time at its own trust
+boundary (defense in depth; core's dispatch gate is the primary).
+
+**Raising the cap above 1** changes the trust shape and needs the nested
+synchronous path to work: a child's synchronous `agent_run` arrives at the
+agent component while the parent's synchronous `agent_run` holds the
+component's pump — so `requestChildTurn` serves queued calls re-entrantly
+(`pumpCallsReentrant` in the SDK), depth-bounded by the same cap. Each
+level blocks in its own downstream wait; handler state is per-call.
+
+## Nested-call leases (keyed)
+
+The nested-call proxy validates requests against the lease a
+session-context dispatch granted. Leases are **keyed by id** — each
+session-context dispatch registers its own lease (with its own deadline)
+and removes exactly that key on exit:
+
+- two overlapping session-context dispatches can neither clobber nor
+  prematurely restore one another (the old single-string lease was the
+  latent hazard that made parallel session-context dispatch unsafe);
+- a lease's validity window gates everything else: an expired outer call
+  is denied (`expired`) before tool resolution or argument validation;
+- an unknown, stale or empty lease reads `bad-lease`; no live turn reads
+  `no-session`;
+- a completed dispatch's lease is dead immediately, and leases never
+  outlive their turn (cleared at turn end).
+
+The wave scheduler still refuses `sessionContext` tools — serial dispatch
+is fine (children are what run in parallel) — but the invariant "leases
+are per-call" now holds regardless of future dispatch policy.
+
 ## Approvals
 
 Dispatch honors `x-harness.approval` on the tool schema (docs/research/REBOOT.md,

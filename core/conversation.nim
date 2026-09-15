@@ -1553,12 +1553,15 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.nested != nil:
     ct.nested.session = sessionId
     ct.nested.workspace = workspace
-    ct.nested.lease = ""
+    ct.nested.leases = initTable[string, NestedLease]()
   defer:
     if ct.nested != nil:
       ct.nested.session = ""
       ct.nested.workspace = ""
-      ct.nested.lease = ""
+      # clear ALL leases: when the turn ends, every session-context call it
+      # started is over, and a stale lease is worthless (a leaked lease would
+      # keep the nested proxy answerable with it)
+      ct.nested.leases = initTable[string, NestedLease]()
   defer:
     emitTurnDone("aborted")
   # Live LLM token stream: subscribe before the first chat call so no
