@@ -561,7 +561,7 @@ Open work — deferred follow-ups and quests — is consolidated in
       the builder compiles `lang: "ts"` components via tsc into a node
       wrapper binary; verified live (builder → spawn → call from Node.js)
 - [x] **progressive tool discovery** — one complete global catalog, but each
-      conversation freezes a small immutable direct toolset (8 shipped);
+      conversation freezes a small immutable direct toolset (7 shipped);
       `discover` returns hints/full schemas into the append-only history and
       `invoke` calls any live non-hidden tool through the normal approval/
       timeout path; named tool profiles resolve into the direct toolset at a
@@ -611,8 +611,9 @@ Open work — deferred follow-ups and quests — is consolidated in
       fabric program sketch; silent by default, fail-closed
       (`tests/t_expert.nim` with a scripted mock llm)
 - [x] **language-server seam (`lsp`)** — one `lsp` tool (diagnostics without
-      a test run, goToDefinition, findReferences, goToImplementation, hover,
-      warmup) over any configured stdio language server; the registry is
+      a test run, documentSymbol (file outline), workspaceSymbol (repo-wide
+      symbol search), goToDefinition, findReferences, goToImplementation,
+      hover, warmup) over any configured stdio language server; the registry is
       data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`), so adding a
       language is a config entry or an approval-gated `lsp_registry add` —
       never code (docs/MANUAL.md "Language servers (`lsp`)");
@@ -625,6 +626,36 @@ Open work — deferred follow-ups and quests — is consolidated in
       `process_kill` stops the group, `process_list` shows the registry;
       `registry.json` drives a boot sweep against orphans
       (docs/MANUAL.md "Background processes (`processes`)")
+- [x] **subagent continuation + fork** — `agent_run`/`agent_spawn {session}`
+      give an existing child another turn: content only (append-only history,
+      cached prefix survives), durable lineage authorization
+      (`sessionmeta.parent`) with explicit refusals, busy-vs-queue semantics,
+      an activation ledger, and `close: true` retirement; `fork: true |
+      {lastK} | {maxChars}` seeds a fresh child with the caller's completed
+      turns (balanced contiguous-from-0 cut, replay-valid; usage, summary/
+      error records and controls not copied — a birth, born cold); a fresh
+      child without an explicit `model` inherits the parent's effective
+      model (docs/WIRE.md "Subagent continuation"/"Subagent fork";
+      `tests/t_agentcont.nim`, `tests/t_agentfork.nim`)
+- [x] **context compaction — long turns survive their own context** —
+      admission before every provider request, then a deterministic ladder
+      (lossless prune → summarizing compactor → whole-turn trim → explicit
+      `context-recovery-required`) instead of ever sending an over-window
+      request; the runner owns budgets, strict candidate validation and the
+      optimistic `context_projection` commit/reload while a replaceable
+      contract-v1 component (default `compaction_propose`,
+      `NIF_COMPACTION_TOOL`) only chooses cuts and drafts checkpoints;
+      canonical messages stay immutable — prunes become `context_recall`
+      refs, and any implementation can be proved against the contract with
+      `make test-conformance` (docs/research/COMPACTION.md, docs/MANUAL.md
+      "Context window"; `tests/t_compaction.nim`, `tests/t_ctxcompact.nim`)
+- [x] **`/doctor` self-test fan-out** — the `doctor` tool asks every
+      component registering the hidden `selftest` tool to check itself and
+      collects the per-check results (`deep: true` boots every configured
+      language server against throwaway fixtures and runs the store's
+      put/get/rev/list/del roundtrip); the report carries a rendered
+      Markdown table plus an `ask: true` user-message interpretation
+      handoff (docs/WIRE.md "Self tests (`selftest`) and `/doctor`")
 - [ ] Level 1 UI dynamism: x-ui schema hints + generic renderer registry
 - [x] Web UI TUI-parity features: slash commands (built-ins + the plugin
   registry, Tab completion, did-you-mean), thinking/tool display cycles
