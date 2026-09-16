@@ -63,15 +63,17 @@ Direct answers, since the original question asked:
 
 - **Codex — yes, family B, and it is the reference implementation.** Codex's
   model-facing edit tool *is* `apply_patch`: a FREEFORM (non-JSON) tool with a
-  Lark grammar (`codex-rs/core/src/tools/handlers/apply_patch_spec.rs:5,9,19`),
-  whose text is the `*** Begin Patch` dialect. Applying it is family A inside
-  the envelopes: `seek_sequence` tries exact → rstrip → trim → Unicode-folded
+  Lark grammar (`codex-rs/core/src/tools/handlers/apply_patch_spec.rs:5,9,19`,
+  grammar at `codex-rs/core/assets/tools/apply_patch.lark`), whose text is the
+  `*** Begin Patch` dialect. Applying it is family A inside the envelopes:
+  `seek_sequence` tries exact → rstrip → trim → Unicode-folded
   punctuation/spaces (`codex-rs/apply-patch/src/seek_sequence.rs:3-119`), with
   an `eof` bias for patterns meant to anchor at the end of file
   (`file_update.rs:100,145,163`), and a line-ending mode switch
-  (`NormalizeToLf` vs `PreserveLineEndings`, `lib.rs:64-94`). Codex reports
-  hunk-level**`*** End of File`** semantics and refuses ambiguity rather than
-  guessing. So: lazy edits yes, apply model no.
+  (`NormalizeToLf` vs `PreserveLineEndings`, `lib.rs:64-94`). The dialect has
+  an explicit `*** End of File` marker (`parser.rs:22`, `lib.rs:1239`), and
+  codex refuses ambiguity rather than guessing. So: lazy edits yes, apply
+  model no.
 - **Claude Code — no.** There is no fast-apply path and no apply model in the
   binary. Its `Edit` tool is exact-match `old_string`/`new_string`
   (`sdk-tools.d.ts`, `FileEditInput`), with two *failures modes that are echoed
@@ -185,42 +187,72 @@ call on the critical path, not a fallback.
 **Does family C need a local LLM? No — but it needs *a* model, and that is a
 cost/latency decision, not a technical one.** Three viable shapes:
 
-1. **Hosted** (Morph, octofriend's Synthetic hosting) — no local GPU, but an
-   API key, per-edit cost, a network round trip, and code leaving the machine.
+1. **Hosted** (Morph, or octofriend's Synthetic hosting for its autofix
+   models) — no local GPU, but an API key, per-edit cost, a network round trip,
+   and code leaving the machine.
    Morph's economics are the pitch: the apply model is small and fast, so one
    apply call costs less than the output tokens the main model would have
    spent re-copying context. That only holds for *large* files with *small*
    diffs; for a small edit the extra call is pure overhead (which is why the
    plugins tell the model to prefer native `edit` for small exact changes).
-2. **Local** — octofriend documents running the autofix models against local
-   LLMs; the training recipe is committed and tiny (Llama-3.1-8B + LoRA rank
-   32, 1 epoch, `training/fast-apply/unfat/octofriend-fast-apply/train.py`).
-   An 8B LoRA is laptop/24 GB-VRAM territory, or a few hundred MB quantized.
-   The *data* is the expensive part, not the serving.
+2. **Self-hosted** — the contract is small enough to serve yourself: the
+   fast-apply plugin reads `MORPH_API_URL` (default
+   `https://api.morphllm.com`, README config table), so a local
+   OpenAI-compatible server implementing `<code>+<update> → merged file` is a
+   config change, not a fork. A merge model is a far easier local workload
+   than a coding model: it reads one file and emits one file, so a small
+   quantized model on a single GPU is sufficient. Note this is a *different*
+   task from family D's repair (below), which only needs to return a corrected
+   search string and is cheaper again.
 3. **No apply model, local or otherwise** — family A/B, which is what codex,
    Claude Code and Niffler do. Free, deterministic, no code egress.
 
-**octofriend is the only shelf harness that ships both C and D**, and its
-config makes the architecture explicit: `diffApply` and `fixJson` are separate
+**A naming trap worth flagging:** octofriend's autofix model is
+`syntheticlab/diff-apply`, and its training directory is
+`training/fast-apply/` — but it is **not** a family-C merger. It is called
+*only after a validation failure* and returns a corrected `search` string
+(`source/compilers/autofix.ts:autofixEdit`, invoked from
+`source/agent/trajectory-arc.ts:339-345` under `validation.error`), leaving
+`replace` untouched. So it belongs to family D, and the `fast-apply`
+directory name is exactly the loose usage §0 complains about. Everything
+about its config is real, though: `diffApply` and `fixJson` are separate
 `AutofixModelConfig` entries (`source/config.ts:171-172`), defaulting to
 `hf:syntheticlab/diff-apply` and `hf:syntheticlab/fix-json` on Synthetic's
-OpenAI-compatible endpoint (`menu.tsx:158,176`), with a "use a custom
-diff-apply model" path for anything else. Both are open weights on Hugging
-Face (README). The training data is generated from real git history by
-*corrupting* the search string (`generate-diff-training.ts:146-206`:
-delete/double any of 30 special chars, cut at a random index, insert space/tab,
-`/ +/ → \t`, `\t → "  "`, blank-line insertion), with ~10% labelled
-`{success: false}` so refusal is trained too — the same taxonomy
-`../OCTOFRIEND-STEAL.md` proposes for a Niffler repair tier.
+OpenAI-compatible endpoint (`menu.tsx:158,176`), both open weights on Hugging
+Face, with a "use a custom diff-apply model" path (any baseUrl, so local
+serving is possible). `fixJson` is a third job again — repairing malformed
+tool-call JSON (`parse-tool-call.ts:119-127`) — unrelated to edit application
+but shipped from the same micro-model family.
 
 ## 5. Family D — repair hook (fast apply only after failure)
 
 Flow: deterministic ladder fails → send `{file, broken edit}` to a small model
-→ get the **corrected search string** back → re-validate → apply → the main
-loop never learns it happened.
+→ get the **corrected search string** back → re-validate → apply → the failure
+never reaches the main model.
+
+One correction worth stating precisely, because the doc's own §0 complains
+about the term: "the main loop never learns it happened" is **not** literally
+true in the implementations I read. octofriend re-validates the fix and, on
+success, continues with the corrected call — but it *does* push a
+`tool-skip-output` into the retry trajectory (`trajectory-arc.ts:386`), and the
+system prompt explains that "one of your other tool calls was invalid, so no
+tool calls were run" (`SKIP_INVALID_REASON`, `:34`). So the main model sees a
+*skip notice*, not the raw validation error; it is spared the failure detail,
+not the event. That distinction matters if Niffler copies this: the honest
+promise is "no error round trip", not "invisible".
 
 - **octofriend**: exactly this (`source/compilers/autofix.ts:autofixEdit`),
-  with the failure path returning `null` → the original error surfaces.
+  with the failure path returning `null` → the original error surfaces. Its
+  `diff-apply` model was trained on real git history by *corrupting* the
+  search string (`training/fast-apply/generate-diff-training.ts:146-206`:
+  delete or double any of 30 special chars, cut at a random index, insert
+  space/tab, `/ +/ → \t`, `\t → "  "`, blank-line insertion), with ~10%
+  labelled `{success: false}` so **refusal is trained too** — the same
+  taxonomy `../OCTOFRIEND-STEAL.md` proposes for a Niffler repair tier. The
+  committed recipe is deliberately small (Llama-3.1-8B + LoRA rank 32,
+  1 epoch, `unfat/octofriend-fast-apply/train.py`), which is the useful
+  datapoint for anyone considering this tier: the model is cheap, the
+  *failure corpus* is the expensive part.
 - **gemini-cli**: an LLM edit corrector for escaping damage —
   `correctStringEscaping` with a system prompt that says "Your job is to fix
   the provided parameters to make the edit succeed", plus a deterministic
