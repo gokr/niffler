@@ -748,7 +748,30 @@ proc run*(c: Component) =
   # .env from cwd and the harness root (existing env always wins)
   loadDotEnv(".env", getEnv("NIF_ROOT", ".") / ".env")
   let url = getEnv("NIF_NATS_URL", "nats://127.0.0.1:4222")
-  c.nc = connect(url)
+  # Bounded initial-connect retry. Components are started alongside the bus
+  # — at boot the supervisor spawns them while NATS is still binding, and at
+  # every stack restart dieWithParent tears them down and `restart:` brings
+  # them back while the old bus is already gone. A one-shot connect turned
+  # each of those windows into a crash-restart cycle (observed on prod:
+  # 25 components logging `connect: 111` per transition). The TS/Go SDKs
+  # ride their clients' reconnect options; here the retry is explicit and
+  # bounded — 60s of patience, then fail loudly into the supervisor's own
+  # backoff. gShutdown is honored so a teardown SIGTERM ends the wait.
+  var connected = false
+  for attempt in 0 ..< 60:
+    try:
+      c.nc = connect(url)
+      connected = true
+      break
+    except CatchableError as e:
+      if gShutdown or attempt == 59:
+        raise
+      if attempt == 0:
+        stderr.writeLine(c.name & ": bus not accepting yet (" & e.msg &
+                         ") — retrying for up to 60s")
+      sleep(1000)
+  if not connected:
+    raise newException(IOError, "connect " & url & ": gave up after 60s")
 
   # queue-grouped call subject: N replicas, one gets each call
   var sub: ptr natsSubscription
