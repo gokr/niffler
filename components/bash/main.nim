@@ -134,6 +134,11 @@ discard comp.tool("bash", bashSchema,
       try:
         var startArgs = %*{"command": command}
         if cwd.len > 0: startArgs["workdir"] = %cwd
+        # Hand the owning conversation to the registry: processes publishes
+        # the exit notice there, so a finished background job reaches the
+        # conversation instead of waiting to be polled (it owns the child,
+        # so it is the only one that can notice).
+        if sessionId.len > 0: startArgs["session"] = %sessionId
         let resp = c.request("processes", "process_start", startArgs, 15000)
         var payload = resp
         payload["text"] = %("Started in background as " &

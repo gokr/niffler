@@ -396,6 +396,17 @@ down:
 down-here:
 	@bash scripts/down-here.sh "$(ROOT)"
 
+# The env every test binary runs under. NIF_REPO_ROOT/NIF_ROOT are what the
+# Makefile has always passed; the `env -u` prefix is hygiene: a shell that
+# EXPORTED .env (a harness-spawned shell, or anyone who `set -a`'d it) leaks
+# NIF_OPENAI_* into every sandbox, where t_provider then legitimately finds a
+# complete environment provider and fails two checks that assert a clean one.
+# Tests that want a provider env set it themselves per component (see
+# tests/t_provider.nim's environment cases).
+TEST_ENV := env -u NIF_OPENAI_API_KEY -u NIF_OPENAI_BASE_URL \
+                -u NIF_OPENAI_MODEL -u NIF_OPENAI_PROTOCOL -u NIF_PROVIDER \
+                "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)"
+
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
@@ -437,7 +448,7 @@ test: test-ui test-server
 test-server: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
-		env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./$$t || exit 1; \
+		$(TEST_ENV) ./$$t || exit 1; \
 	done'
 
 # The frontend. The lib tests import the TypeScript sources directly (node

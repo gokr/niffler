@@ -994,10 +994,13 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                   messages: var seq[JsonNode],
                   onEvent: proc(kind: string, data: JsonNode) {.closure.},
                   turnId = ""): int =
-  ## Fold pending subagent settlement notices into the running conversation
+  ## Fold pending background-settlement notices into the running conversation
   ## (docs/research/SUBAGENTS-PLAN.md P0.1). A background child that settled
   ## while this conversation was idle left an `agentnotice` record; without
   ## this drain the parent would have to poll agent_status to learn about it.
+  ## The same lane carries the processes component's exit notices
+  ## (kind "process-exited", docs/WIRE.md "Settlement notices"), so one drain
+  ## covers every background thing the conversation started.
   ##
   ## Fetched at the top of every turn (like steer and advisories) so the
   ## pull lane is invisible to the model — it never has to remember to ask.
@@ -1049,6 +1052,30 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                      "mail": {"kind": "parent-mail", "from": mailFrom}}
       eventId["kind"] = %"mail"
       eventId["from"] = %mailFrom
+    elif n{"kind"}.getStr("") == "process-exited":
+      # A background process this conversation owns (components/processes)
+      # reached a terminal state. Pointer, not payload: the id, the status and
+      # how much output exists — the text itself stays in the spool, where the
+      # conversation's own process_poll can read it. Without this the model
+      # only learned of an exit by polling.
+      let pid = n{"processId"}.getStr("")
+      if pid.len == 0: continue
+      let label = n{"label"}.getStr("")
+      let pstatus = n{"status"}.getStr("")
+      let bytes = n{"outputBytes"}.getInt(0)
+      let secs = max(0, int(n{"endedAt"}.getFloat(0) -
+                            n{"startedAt"}.getFloat(0)))
+      var content = "[background process " & pid &
+                    (if label.len > 0: " (" & label & ")" else: "") &
+                    " " & pstatus & "]"
+      content.add("\nran " & $secs & "s, " & $bytes & " bytes of output — " &
+                  "read it with process_poll {id: \"" & pid & "\"}")
+      noticeMsg = %*{"role": "user", "content": content,
+                     "notice": {"kind": "process-exited",
+                                "processId": pid, "status": pstatus}}
+      eventId["kind"] = %"process"
+      eventId["processId"] = %pid
+      eventId["status"] = %pstatus
     else:
       let status = n{"status"}.getStr("")
       if status.len == 0: continue

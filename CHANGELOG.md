@@ -22,6 +22,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stores' published maps (stub class 4-9 symbols / 1-4 files / <3.1KB;
   healthy 59-119 symbols / 19-48 files / 3.5-4.6KB) and all four are
   env-overridable.
+- **Background processes report their exit to the conversation that owns them,
+  and the SDK grows the seam that makes it possible.** A `run_in_background`
+  child (or a direct `process_start`) that finishes now publishes an exit
+  notice — `kind: "process-exited"` on the same `svc.session.<id>.steer` lane
+  subagent settlement notices use — which the runner folds in as append-only
+  history (`[background process p3 (dev-server) exited(code 0)] ran 412s,
+  8123 bytes of output — read it with process_poll …`). It is a pointer: the
+  output stays in the spool, the command text never travels.
+
+  Why it was needed: nothing reaped a child except a tool call, so an exit was
+  invisible until someone happened to poll — a build or watcher that finished
+  while the model was busy went unnoticed. The reap is now periodic, via a new
+  SDK seam `onIdle(intervalMs, handler)` invoked from the pump loop between
+  passes (main thread, serialized, one handler per component); `processes` uses
+  it, which also stops `process_list` from reporting a finished child as
+  `running` until asked. `process_list` entries carry `started_at` for
+  client-side age displays. Design + the pointer discipline: docs/WIRE.md
+  "Settlement notices", docs/MANUAL.md "Background processes".
+
 
 - **Conversation controls: `/approvals`, `/limit` and the keep-going question.**
   Two controls now belong to the human, per conversation, set through the

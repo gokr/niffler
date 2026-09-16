@@ -81,6 +81,8 @@ type
     eventHandlers*: seq[tuple[pattern: string, handler: EventHandler]]
     taps*: seq[tuple[pattern: string, handler: TapHandler]]
     drainHandlers: seq[DrainHandler]
+    idleHandler: IdleHandler
+    idleEveryMs: int
     nc*: NatsConnection
     bindings: seq[SubscriptionBinding]
     shuttingDown*: bool
@@ -88,6 +90,14 @@ type
   DrainHandler* = proc(c: Component)
     ## Cleanup callback registered with onDrain; invoked (on the main
     ## thread, like every handler) when the component shuts down.
+
+  IdleHandler* = proc(c: Component)
+    ## Periodic callback registered with onIdle; invoked on the main thread
+    ## (like every handler) from the pump loop, at most once per registered
+    ## interval. For work with no request to ride on: reaping background
+    ## children (components/processes), health probes, cache refreshes.
+    ## Never runs while a handler executes — the loop is serialized, so a
+    ## long tool call delays it rather than interleaving.
 
 var libOpened = false
 
@@ -385,6 +395,18 @@ proc onDrain*(c: Component, handler: DrainHandler): Component =
   ## component receives ev.sys.drain — its authorized orderly shutdown
   ## event. Chainable like tool/on/tap.
   c.drainHandlers.add(handler)
+  return c
+
+proc onIdle*(c: Component, intervalMs: int, handler: IdleHandler): Component =
+  ## Run `handler` from the pump loop when the component has no message to
+  ## serve, at most once per `intervalMs` (floored at 10ms). Chainable like
+  ## tool/onDrain/tap.
+  ##
+  ## One handler per component: a second registration replaces the first, so
+  ## periodic work cannot silently stack. Runs on the main thread with the
+  ## shared connection — never block in it.
+  c.idleEveryMs = max(intervalMs, 10)
+  c.idleHandler = handler
   return c
 
 when defined(posix):
@@ -811,6 +833,7 @@ proc run*(c: Component) =
   # otherwise cost the pass a whole 50ms timeout, and a ">" tap (which sees
   # every message on the bus) backs up for seconds (t_observe). Bounded per
   # pass so a hammered call subject can't starve the rest.
+  var idleDueAt = epochTime() + c.idleEveryMs.float / 1000.0
   while not gShutdown:
     var gotOne = false
     for binding in c.bindings:
@@ -822,6 +845,13 @@ proc run*(c: Component) =
         inc drained
         gotOne = true
         c.handleMsg(binding, msg)
+    # Periodic work between passes (onIdle): the one place a component acts
+    # without a request to ride on. Checked after the drain, so a busy
+    # component never runs it more often than its interval, and a long
+    # handler (which blocks this loop) delays it rather than interleaving.
+    if c.idleHandler != nil and epochTime() >= idleDueAt:
+      idleDueAt = epochTime() + c.idleEveryMs.float / 1000.0
+      c.idleHandler(c)
     if not gotOne:
       sleep(5)
 

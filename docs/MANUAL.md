@@ -1033,8 +1033,25 @@ Details:
   `NIF_PROCESSES_SPOOL_CAP`) is truncated to its tail on the next poll;
   one poll returns at most `NIF_PROCESSES_POLL_CHUNK` new bytes per stream
   (default 64 KiB).
-- Caps: 32 concurrent processes; the 50 most recent finished entries stay
+- Cap: 32 concurrent processes; the 50 most recent finished entries stay
   in the registry.
+- **A finished process tells its conversation.** When you start one through
+  the `bash` tool's `run_in_background` flag, bash hands the owning
+  conversation to the registry; when that child exits, `processes` publishes
+  an exit notice into it (the same lane subagent settlement notices use), so
+  the turn that follows opens with `[background process p3 (dev-server)
+  exited(code 0)] ran 412s, 8123 bytes of output — read it with
+  \`process_poll\` …`. It is a pointer: the output stays in the spool, and the
+  command text never travels.
+
+  This is why a background job no longer goes unnoticed: the component reaps
+  its children on a periodic tick (the SDK's `onIdle`), not only when someone
+  polls — which also means `process_list` shows `exited(code N)` promptly
+  instead of `running` until asked. A process started without an owner
+  session (a direct `process_start`, e.g. from `cli`), or one whose
+  conversation runner has already retired, is announced to nobody — poll it.
+- `process_list` entries carry `started_at` (epoch seconds), so a client can
+  show how long something has been running (`bg 1 (7m)`).
 - Crash-safe: children are process-group leaders, so a SIGKILLed component
   leaves them running — `registry.json` (pid + /proc starttime, defeating
   pid reuse) drives a boot sweep that kills orphans from a previous life
@@ -1848,6 +1865,40 @@ existing mutex and TypeScript its promise chain.
 Go waits for drained subscription callbacks (up to its bounded shutdown grace),
 and TypeScript waits for queued handlers without deadlocking a handler that
 explicitly closes its own component.
+
+#### Idle work (`onIdle`)
+
+All three SDKs expose the same *idle seam* — a callback for work that no request
+can carry (reaping background children, health probes, cache refreshes).
+`components/processes` uses it to notice a background child's exit without
+anyone polling, which is what makes its exit notice possible.
+
+```nim
+proc onIdle*(c: Component, intervalMs: int, handler: IdleHandler): Component
+```
+
+```go
+func (c *Component) OnIdle(interval time.Duration, handler func(*Component)) *Component
+```
+
+```ts
+comp.onIdle(intervalMs, handler)
+```
+
+The API is mirrored; the *execution model* is each runtime's, so the contract is
+stated per SDK:
+
+| SDK | runs on | exclusion |
+|---|---|---|
+| Nim | the pump loop, between passes | never while a handler runs — that loop is serialized |
+| Go | its own ticker goroutine | takes the serial handler lock; `ToolConcurrent` handlers hold only the read lock, so it may overlap those |
+| TS | the promise chain, like every handler | never interleaves with another handler |
+
+Common to all three: register before connect/run, one handler per component (a
+second registration replaces the first), the interval is floored at 10ms, the
+timer starts with the connection and stops at close, and a panicking idle
+handler is logged, never fatal. Prefer it to a component thread whenever
+“every N seconds” is all you need.
 
 Nim's arbitrary-envelope request helper continues pumping only raw tap
 subscriptions while it waits. Tool and event handlers remain non-nested, while
