@@ -121,6 +121,11 @@ type Component struct {
 	deferAnnounce bool
 	contractMu    sync.RWMutex // protects setup while deferred calls/events can arrive
 	ready         bool
+	// Idle work (see OnIdle): registered before Connect, run by its own
+	// ticker goroutine under the serial handler lock.
+	idleEvery   time.Duration
+	idleHandler func(*Component)
+	idleStop    chan struct{}
 }
 
 const defaultConcurrentLimit = 16
@@ -425,6 +430,9 @@ func (c *Component) Connect() error {
 	if c.concurrentSem == nil {
 		c.concurrentSem = make(chan struct{}, defaultConcurrentLimit)
 	}
+	// Idle work starts with the connection (registered before Connect) and
+	// stops in Close.
+	c.startIdle()
 
 	// queue-grouped call subject: N replicas, one gets each call
 	callSubject := "svc." + c.Name + ".call"
@@ -526,6 +534,7 @@ func (c *Component) Close() {
 	// goroutine, so subscription Drain alone cannot observe those handlers.
 	// Wait before closing the shared NATS connection to preserve their replies.
 	c.concurrentWG.Wait()
+	c.stopIdle()
 	_ = c.nc.FlushTimeout(time.Second)
 	c.nc.Close()
 	c.nc = nil
@@ -570,6 +579,68 @@ func (c *Component) Announce() error {
 // Wait blocks until SIGTERM/SIGINT or ev.sys.drain. Call Close afterwards.
 // Run is Connect + Wait + Close; use Wait directly when Connect happened
 // earlier (e.g. deferred-announce setup in between).
+// OnIdle runs handler periodically for as long as the component is connected:
+// the Go SDK's counterpart of the Nim SDK's onIdle, for work that has no
+// request to ride on (reaping background children, health probes, cache
+// refreshes — components/processes uses it to notice a child's exit without
+// anyone polling).
+//
+// Semantics, and where they differ from Nim: the handler runs on its own
+// ticker goroutine, but takes the same lock a *serial* handler takes, so it
+// never interleaves with a serial tool call touching the same state. Concurrent
+// tools (ToolConcurrent) hold only the read lock, so an idle handler can
+// overlap them — keep an idle handler to component-local state you would
+// protect anyway. Panics are recovered and logged, never fatal.
+//
+// Register BEFORE Connect (like events and taps). One handler per component: a
+// second registration replaces the first. The interval is floored at 10ms.
+func (c *Component) OnIdle(interval time.Duration, handler func(*Component)) *Component {
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	c.idleEvery = interval
+	c.idleHandler = handler
+	return c
+}
+
+// idleLoop ticks the registered idle handler until the component closes.
+func (c *Component) idleLoop(stop chan struct{}) {
+	ticker := time.NewTicker(c.idleEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			c.handlerMu.Lock()
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("idle handler panic", "component", c.Name, "panic", r)
+					}
+				}()
+				c.idleHandler(c)
+			}()
+			c.handlerMu.Unlock()
+		}
+	}
+}
+
+func (c *Component) startIdle() {
+	if c.idleHandler == nil || c.idleStop != nil {
+		return
+	}
+	c.idleStop = make(chan struct{})
+	go c.idleLoop(c.idleStop)
+}
+
+func (c *Component) stopIdle() {
+	if c.idleStop != nil {
+		close(c.idleStop)
+		c.idleStop = nil
+	}
+}
+
 func (c *Component) Wait() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()

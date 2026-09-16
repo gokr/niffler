@@ -78,6 +78,9 @@ export class Component {
   private subs: Subscription[] = [];
   /** Serializes handlers (mirrors the Nim SDK's single thread). */
   private chain: Promise<unknown> = Promise.resolve();
+  private idleEveryMs = 0;
+  private idleHandler: ((c: Component) => void | Promise<void>) | null = null;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
   private handlerContext = new AsyncLocalStorage<boolean>();
   private closing: Promise<void> | null = null;
   private closeRequested = false;
@@ -300,6 +303,9 @@ export class Component {
     console.log(
       `${this.name} v${this.version} online on ${url} (${this.tools.length} tools)`
     );
+    // Idle work (registered before connect) starts with the connection and is
+    // cleared by close().
+    this.startIdle();
   }
 
   connected(): boolean {
@@ -323,6 +329,7 @@ export class Component {
     if (!this.nc) return;
     const nc = this.nc;
     this.closing = (async () => {
+      this.stopIdle();
       this.announce("reg.depart");
       for (const s of this.subs) {
         await s.drain();
@@ -355,7 +362,6 @@ export class Component {
     }
     await this.shutdown();
   }
-
   private async shutdown(): Promise<void> {
     if (!this.nc) return;
     await this.close();
@@ -393,6 +399,48 @@ export class Component {
     }).catch((err) => {
       console.error(`${this.name}: handler error:`, err);
     });
+  }
+
+  /**
+   * Run `handler` every `intervalMs` while the component is running: the TS
+   * SDK's counterpart of the Nim SDK's onIdle, for work that has no request to
+   * ride on (reaping background children, health probes, cache refreshes —
+   * components/processes uses it to notice a child's exit without anyone
+   * polling).
+   *
+   * The handler is enqueued on the same promise chain as every other handler,
+   * so it can never interleave with one (the serialization contract this port
+   * is built on). It must not block for long: everything else waits behind it.
+   * One handler per component; a second registration replaces the first. The
+   * timer is started by connect() and cleared by close().
+   */
+  onIdle(
+    intervalMs: number,
+    handler: (c: Component) => void | Promise<void>,
+  ): this {
+    this.idleEveryMs = Math.max(intervalMs, 10);
+    this.idleHandler = handler;
+    return this;
+  }
+
+  private startIdle(): void {
+    if (!this.idleHandler || this.idleTimer) return;
+    this.idleTimer = setInterval(() => {
+      const handler = this.idleHandler;
+      if (!handler) return;
+      this.enqueue(async () => {
+        await handler(this);
+      });
+    }, this.idleEveryMs);
+    // Never hold the process open for idle work alone.
+    this.idleTimer.unref?.();
+  }
+
+  private stopIdle(): void {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
   }
 
   private async handleCall(subject: string, reply: string, data: Uint8Array): Promise<void> {

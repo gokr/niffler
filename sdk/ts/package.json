@@ -1,14 +1,14 @@
 {
   "name": "niffler-sdk",
   "version": "0.1.0",
-  "description": "Niffler component SDK (TypeScript/Node.js) — mirror of sdk/go and sdk/niffler",
+  "description": "Niffler component SDK (TypeScript/Node.js) \u2014 mirror of sdk/go and sdk/niffler",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node test/logging.test.js",
+    "test": "npm run build && node test/logging.test.js && node test/idle.test.js",
     "prepare": "npm run build"
   },
   "dependencies": {

@@ -325,6 +325,23 @@ durable `agentnotice` record and delivers it to its **parent conversation** —
 not just to UIs (`ev.agent.done` is observe-only). Rationale and design:
 docs/research/SUBAGENTS-PLAN.md P0.1.
 
+**Background processes use the same lane** (components/processes): a tracked
+child that exits publishes a notice with `kind: "process-exited"` — and
+delivers it on exactly the same subject, so the runner folds it in as
+append-only history and nothing new is subscribed. It is a pointer too: the
+process id, its status, how long it ran and how many bytes of output exist;
+the output itself stays in the spool for `process_poll`, and the command text
+never travels. It exists because *nothing reaped a child except a tool call*:
+an exit was invisible until someone happened to poll, so finished background
+work sat unnoticed. The reap is now periodic (the SDK's `onIdle`), which is
+what makes the notice possible — and stops `process_list` from reporting a
+finished child as running.
+
+The one asymmetry with the agent's notice: no durable record backs it (the
+process entry itself is the record). A process whose owning conversation has
+no live runner, or whose runner is gone by the time it exits, is announced to
+nobody — the entry stays pollable, so the fallback is asking.
+
 Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
 
 ```json

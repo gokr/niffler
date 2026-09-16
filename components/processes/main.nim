@@ -27,6 +27,7 @@
 import std/[json, monotimes, os, posix, re, strutils, tables, times]
 import std/syncio
 import niffler/sdk
+import subjects   # sanitizeSessionId: the notice lane is per conversation
 
 const
   MAX_LIVE = 32                    # concurrent running processes
@@ -67,6 +68,9 @@ type Entry = ref object
   status: Status
   exitCode: int                    # exit code, or signal number when killed
   startedAt: float
+  session: string                  # owning conversation for the exit notice
+                                   # ("" = a direct call: nobody to tell)
+  notified: bool                   # the exit notice is sent exactly once
   swept: bool                      # terminal statuses left the sweep file
 
 var gProcs = initOrderedTable[string, Entry]()
@@ -142,8 +146,14 @@ proc bootSweep() =
 # ---------------------------------------------------------------------------
 # child lifecycle
 
+proc publishExitNotice(e: Entry)
+  ## Defined with the component (it publishes); called from the reaper.
+
 proc refreshStatus(e: Entry) =
-  ## Reap via WNOHANG; caches the terminal status.
+  ## Reap via WNOHANG; caches the terminal status. A transition to terminal
+  ## also tells the owning conversation (publishExitNotice) — this is the only
+  ## place a child's death is observed, so it is the only correct place to
+  ## speak up.
   if e.status != stRunning: return
   var status: cint
   let r = posix.waitpid(e.pid, status, WNOHANG)
@@ -156,6 +166,8 @@ proc refreshStatus(e: Entry) =
       e.exitCode = posix.WTERMSIG(status)
   elif r < 0:
     e.status = stExited          # reaped elsewhere / unknown: treat as gone
+  if e.status != stRunning:
+    publishExitNotice(e)
 
 proc statusText(e: Entry): string =
   case e.status
@@ -306,7 +318,8 @@ proc hStart(c: Component, args: JsonNode): JsonNode =
   if pid < 0:
     fail("E_LIMIT", "fork failed — cannot start background processes")
   let e = Entry(id: id, pid: pid, label: label, command: command,
-                outPath: outPath, errPath: errPath, startedAt: epochTime())
+                outPath: outPath, errPath: errPath, startedAt: epochTime(),
+                session: args{"session"}.getStr(""))
   gProcs[id] = e
   saveRegistry()
   return okResult(%*{"id": id, "label": label, "pid": int(pid),
@@ -391,6 +404,7 @@ proc hPoll(c: Component, args: JsonNode): JsonNode =
     text.add("\n[spool truncated to its tail — the cap was reached]")
   okResult(%*{"id": e.id, "label": e.label, "status": statusText(e),
               "exit_code": (if e.status != stRunning: e.exitCode else: 0),
+              "started_at": e.startedAt,
               "new_bytes": newBytes, "lines": totalLines,
               "matched": (if filter.len > 0: matched else: 0),
               "text": text})
@@ -413,7 +427,8 @@ proc hList(c: Component, args: JsonNode): JsonNode =
     lines.add(e.id & "  " & statusText(e) & "  " & e.label & "  — " & e.command)
     items.add(%*{"id": e.id, "label": e.label, "command": e.command,
                  "status": statusText(e),
-                 "exit_code": (if e.status != stRunning: e.exitCode else: 0)})
+                 "exit_code": (if e.status != stRunning: e.exitCode else: 0),
+                 "started_at": e.startedAt})
   let text = if lines.len == 0:
                "No background processes this component lifetime."
              else: lines.join("\n")
@@ -424,6 +439,47 @@ proc hList(c: Component, args: JsonNode): JsonNode =
 # component
 
 let comp = newComponent("processes", "0.1.0")
+
+proc publishExitNotice(e: Entry) =
+  ## Tell the owning conversation that a background process finished.
+  ##
+  ## Rides the lane the agent's settlement notices use —
+  ## svc.session.<id>.steer with a {"notice": …} payload — so the runner folds
+  ## it in as an appended user message and emits ev.session.notice. Without it
+  ## the model only learns by polling process_poll: nothing reaped a child
+  ## except a tool call, so an exit stayed invisible until someone asked.
+  ##
+  ## Pointer, not payload: the notice names the process, its status, how much
+  ## output exists and the recourse; the output stays in the spool for
+  ## process_poll. Best-effort — no session (a direct call), a failed publish
+  ## or a dead runner costs the notice, never the process.
+  if e.session.len == 0 or e.notified: return
+  e.notified = true
+  var payload = newJObject()
+  payload["kind"] = %"process-exited"
+  payload["processId"] = %e.id
+  payload["label"] = %e.label
+  payload["status"] = %statusText(e)
+  payload["exitCode"] = %e.exitCode
+  payload["startedAt"] = %e.startedAt
+  payload["endedAt"] = %epochTime()
+  payload["outputBytes"] = %(spoolSize(e.outPath) + spoolSize(e.errPath))
+  try:
+    comp.emit("svc.session." & sanitizeSessionId(e.session) & ".steer",
+              %*{"notice": payload})
+  except CatchableError as err:
+    stderr.writeLine(comp.name & ": exit notice for " & e.id &
+                     " failed: " & err.msg)
+
+# Reap on a tick: an exit must be noticed by the component, not by the next
+# caller. This is what makes the notice possible at all (the SDK's onIdle seam)
+# — and it also stops process_list from reporting a finished child as running
+# until someone happens to poll.
+discard comp.onIdle(500) do (c: Component):
+  for e in gProcs.values:
+    if e.status == stRunning:
+      refreshStatus(e)             # publishes the notice on transition
+      markTerminal(e)
 
 discard comp.onDrain do (c: Component):
   for e in gProcs.values:

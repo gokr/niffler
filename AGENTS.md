@@ -46,6 +46,12 @@ anything structural.
   not replicate single-writer or process-local mutable state (`store`, current
   `edit` undo state). Go tools serialize by default but may explicitly use the
   SDK's `ToolConcurrent` after a shared-state audit.
+  Periodic work that no request can carry goes through the SDKs' **idle seam**
+  (`onIdle`, all three SDKs — docs/MANUAL.md "Idle work"): Nim runs it in the
+  pump loop, serialized like a handler, TS on the promise chain, Go on a ticker
+  goroutine under the serial handler lock. Reach for it instead of a thread
+  whenever "every N seconds" is all you need — `components/processes` reaps its
+  background children that way.
 - NATS is the only bus. Barrel's (embedded BitBarrel KV in `store`) own pubsub is
   deliberately unused.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
