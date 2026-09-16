@@ -8,6 +8,33 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
+  Niffler — features, operating, configuring, extending, debugging — now
+  routes through the bundled skills instead of guesswork: `baseprompt`
+  gains a trigger to `skill_list` (query `"niffler"`) + `skill_load` the
+  matching `niffler-*` skill before answering, and `niffler-harness` gains
+  a docs map (`docs/MANUAL.md`, `docs/WIRE.md`, `docs/ARCHITECTURE.md`,
+  `docs/research/`, repo-root `AGENTS.md`/`CHANGELOG.md`) so one skill
+  owns the doc routing. Out-of-root workspaces learn the harness root via
+  the per-conversation `<workspace>` tail — the frozen head stays
+  path-free, and two conversations on one machine share the same root, so
+  provider prompt-cache prefixes still line up — so reading
+  `<root>/docs/MANUAL.md` needs no discovery round-trip. The skills
+  component bakes the bundled SKILL.md files into the binary as a
+  last-resort discovery source when no bundled tree is reachable (disk
+  always wins by name; baked entries report source `bundled`, dir
+  `(baked)` and no resources), so binary-only sandboxes keep the
+  self-knowledge set; `NIF_SKILLS_BUNDLED_DIR` relocates the bundled tree,
+  and pointing it at a path that does not exist is the explicit way to
+  force the fallback. `skill_list`'s docstring now names the
+  bundled/baked sources and the Niffler routing, and `docs/MANUAL.md`
+  gained the baked row, the env var and the `<workspace>` tail. Tests:
+  `t_skills` (bundled skills discoverable/loadable with a disk tree *and*
+  from the compiled-in copies alone — bundled dir unreachable — incl.
+  `skill_audit`'s baked-only rows and unaffected project/home/config
+  discovery), `t_systemprompt` (workspace tail carries the root; in-root
+  prompt stays path-free).
+
 - **agent: subagents-v2 — settlement notices, the child roster,
   continuation and fork.** Four steps landed from the
   `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH

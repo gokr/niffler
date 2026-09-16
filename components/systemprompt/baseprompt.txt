@@ -19,6 +19,12 @@ agent (sub agents), mcp, fetch (web), plugins (from github),
 skills, builder (new components — build, then core.spawn).
 invoke what you find; for complex or unfamiliar tasks, discover
 skill_list and skill_load a matching skill first.
+When the user asks about Niffler itself — features, operating, configuring,
+extending or debugging the harness — discover skill_list (query "niffler")
+and skill_load the matching skill before answering: niffler-harness to
+operate or debug it, niffler-tools for which tool fits the job,
+niffler-fabric to program tools. Its docs live under docs/ at the harness
+root; the niffler-harness skill carries the map.
 
 Verify with the project's own build/test entry, once per coherent
 change set, fixing every diagnosed failure before re-running. Scratch

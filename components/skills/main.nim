@@ -8,9 +8,17 @@
 ## directories and exposes load/install/remove over the bus:
 ##
 ##   project (NIF_ROOT):  .agents/skills, .claude/skills, .opencode/skills
+##   bundled (repo):      <repo>/skills — shadowable, never removable;
+##                        NIF_SKILLS_BUNDLED_DIR overrides this location
+##                        (and, pointed at a missing path, forces the
+##                        baked fallback)
 ##   home:                .agents/skills, .claude/skills, .opencode/skills,
 ##                        .niffler/skills
 ##   config (XDG):        opencode/skills
+##   baked:               the bundled SKILL.md files compiled into this
+##                        binary — last-resort source for names no disk
+##                        tree provided (deployments that ship var/bin
+##                        without the repo checkout)
 ##
 ## First match wins per skill name (project beats home beats config), so a
 ## repo's own skills shadow global ones. Discovery is a fresh scan per
@@ -58,7 +66,7 @@ type
     tags: seq[string]
     allowedTools: seq[string]
     rootDir: string
-    source: string    # project | home | config
+    source: string    # project | bundled | home | config
     content: string
     resources: seq[SkillResource]
 
@@ -94,31 +102,43 @@ proc yamlSeq(node: YamlNode, key: string): seq[string] =
         if item.kind == yScalar:
           result.add(item.content)
 
+proc parseSkillMarkdown(content: string, fallbackName: string): Option[Skill] =
+  ## Parse SKILL.md text (YAML frontmatter + markdown body) into a Skill
+  ## skeleton — no rootDir, no on-disk resources — or none on any failure.
+  let (fm, body) = splitFrontmatter(content)
+  if fm.len == 0:
+    return none(Skill)
+  var stream = newStringStream(fm)
+  var node: YamlNode
+  try:
+    load(stream, node)
+  except CatchableError:
+    stream.close()
+    return none(Skill)
+  stream.close()
+  var s: Skill
+  s.name = yamlStr(node, "name", fallbackName)
+  s.description = yamlStr(node, "description")
+  s.version = yamlStr(node, "version")
+  s.license = yamlStr(node, "license")
+  s.tags = yamlSeq(node, "tags")
+  s.allowedTools = yamlSeq(node, "allowed-tools")
+  s.content = body
+  if s.name.len == 0:
+    return none(Skill)
+  some(s)
+
 proc parseSkillDir(skillDir: string): Option[Skill] =
   ## Parse <skillDir>/SKILL.md into a Skill, or none on any failure.
   let path = skillDir / "SKILL.md"
   if not fileExists(path):
     return none(Skill)
   try:
-    let content = readFile(path)
-    let (fm, body) = splitFrontmatter(content)
-    if fm.len == 0:
+    let parsed = parseSkillMarkdown(readFile(path), skillDir.splitFile.name)
+    if parsed.isNone:
       return none(Skill)
-    var stream = newStringStream(fm)
-    var node: YamlNode
-    load(stream, node)
-    stream.close()
-    var s: Skill
-    s.name = yamlStr(node, "name", skillDir.splitFile.name)
-    s.description = yamlStr(node, "description")
-    s.version = yamlStr(node, "version")
-    s.license = yamlStr(node, "license")
-    s.tags = yamlSeq(node, "tags")
-    s.allowedTools = yamlSeq(node, "allowed-tools")
+    var s = parsed.get
     s.rootDir = skillDir
-    s.content = body
-    if s.name.len == 0:
-      return none(Skill)
     for (subName, kindLabel) in [("references", "reference"),
                                  ("scripts", "script"),
                                  ("assets", "asset")]:
@@ -133,10 +153,43 @@ proc parseSkillDir(skillDir: string): Option[Skill] =
   except CatchableError:
     return none(Skill)
 
+const bakedSkillFiles = [
+  # The bundled skills compiled into this binary. Keep in sync with the
+  # repo's skills/ tree: the disk tree is authoritative when present (and
+  # shadows these by name); this list is what binary-only deployments fall
+  # back to. staticRead resolves relative to this source file, so building
+  # the shipped component happens from the repo checkout, like
+  # systemprompt's baseprompt.txt.
+  ("niffler-harness", staticRead("../../skills/niffler-harness/SKILL.md")),
+  ("niffler-tools", staticRead("../../skills/niffler-tools/SKILL.md")),
+  ("niffler-fabric", staticRead("../../skills/niffler-fabric/SKILL.md")),
+  ("todo-markdown", staticRead("../../skills/todo-markdown/SKILL.md")),
+]
+
+# The `dir` reported for a skill served from the compiled-in copies: it has
+# no directory of its own (and no resources).
+const bakedDir = "(baked)"
+
+proc bakedSkills(): seq[Skill] =
+  ## The bundled skills as parsed compile-time content. rootDir is the
+  ## marker `(baked)`: resources are unavailable for baked entries (none
+  ## of the bundled skills ship any).
+  for (name, content) in bakedSkillFiles:
+    let parsed = parseSkillMarkdown(content, name)
+    if parsed.isSome:
+      var s = parsed.get
+      s.source = "bundled"
+      s.rootDir = bakedDir
+      result.add(s)
+
 proc bundledSkillsDir(root: string): string =
   ## Where the bundled (shipped-with-Niffler) skills live. Normally
   ## <repo>/skills next to this component's checkout; NIF_ROOT/skills
-  ## is the fallback for relocated deployments.
+  ## is the fallback for relocated deployments. NIF_SKILLS_BUNDLED_DIR
+  ## overrides both. When the resolved path does not exist on disk,
+  ## discovery falls back to the compiled-in copies (bakedSkills).
+  let override = getEnv("NIF_SKILLS_BUNDLED_DIR", "")
+  if override.len > 0: return override
   let repoRoot = currentSourcePath().parentDir.parentDir.parentDir
   let repoSkills = repoRoot / "skills"
   if dirExists(repoSkills): return repoSkills
@@ -162,7 +215,8 @@ proc skillSearchPaths(root, home, config: string): seq[(string, string)] =
 
 proc discoverSkills(): seq[Skill] =
   ## Fresh full scan: recursive walk for SKILL.md, dedup by name, first
-  ## match wins. Sorted by name.
+  ## match wins; the compiled-in bundled skills fill any name no disk
+  ## source provided. Sorted by name.
   let root = rootDir()
   let home = getHomeDir()
   let config = getConfigDir()
@@ -179,6 +233,10 @@ proc discoverSkills(): seq[Skill] =
         var skill = s.get
         skill.source = source
         result.add(skill)
+  for s in bakedSkills():
+    if s.name notin seen:
+      seen[s.name] = true
+      result.add(s)
   result.sort(proc(a, b: Skill): int = cmp(a.name, b.name))
 
 proc findSkill(name: string): Option[Skill] =
@@ -198,13 +256,19 @@ proc skillJson(s: Skill): JsonNode =
 comp.tool(%*{"onDemand": true}):
   proc skill_list(query: string = "", source: string = ""): JsonNode =
     ## List the skills available on this harness — reusable workflow/
-    ## strategy guides (SKILL.md files) from the standard agent skill
-    ## directories (.agents/skills, .claude/skills, .opencode/skills —
-    ## project and home) plus ~/.niffler/skills and the XDG
-    ## opencode/skills dir. Use before a class of work (review,
-    ## refactoring, a language, a workflow); then skill_load the match.
+    ## strategy guides (SKILL.md files) from the bundled repo skills/ tree
+    ## (or, when no disk tree exists, the SKILL.md files compiled into
+    ## this binary), the standard agent skill directories (.agents/skills,
+    ## .claude/skills, .opencode/skills — project and home) plus
+    ## ~/.niffler/skills and the XDG opencode/skills dir. Use before a
+    ## class of work (review, refactoring, a language, a workflow); then
+    ## skill_load the match. Questions about Niffler itself — operating,
+    ## configuring, extending or debugging the harness — route here first:
+    ## query "niffler" and load the matching niffler-* skill.
     ## - query: substring filter over name, description and tags
-    ## - source: "project", "home" or "config"; empty = all
+    ## - source: "project", "bundled", "home" or "config"; empty = all
+    ## Skills served from the compiled-in fallback report source
+    ## "bundled" and dir "(baked)".
     var skills = discoverSkills()
     if query.len > 0:
       let q = query.toLowerAscii()
@@ -224,8 +288,10 @@ comp.tool(%*{"onDemand": true}):
     ## borrow, docs/research/CODEWHALE.md): discoverSkills dedups by name so
     ## shadowing is invisible there; this lists every on-disk copy, marks
     ## which one wins for the runtime, and flags the shadowed duplicates and
-    ## invalid skill dirs. Use it when a skill seems ignored or two copies
-    ## disagree — the winner is always the first entry in skillSearchPaths.
+    ## invalid skill dirs. Names served only from the compiled-in baked
+    ## fallback (no disk copy anywhere) are listed with dir "(baked)". Use
+    ## it when a skill seems ignored or two copies disagree — the winner is
+    ## always the first entry in skillSearchPaths.
     let root = rootDir()
     let home = getHomeDir()
     let config = getConfigDir()
@@ -235,6 +301,7 @@ comp.tool(%*{"onDemand": true}):
     var entries = newJArray()
     var shadowed = 0
     var invalid = 0
+    var diskNames = initTable[string, bool]()
     for (source, dir) in skillSearchPaths(root, home, config):
       if not dirExists(dir):
         continue
@@ -251,11 +318,17 @@ comp.tool(%*{"onDemand": true}):
         let active = not winners.hasKey(s.get.name) or
                      findSkill(s.get.name).get.rootDir == s.get.rootDir
         if not active: inc shadowed
+        diskNames[s.get.name] = true
         entries.add(%*{"name": s.get.name, "dir": s.get.rootDir,
                         "source": source, "status": (if active: "active" else: "shadowed"),
                         "description": s.get.description})
+    for s in bakedSkills():
+      if not diskNames.hasKey(s.name):
+        entries.add(%*{"name": s.name, "dir": bakedDir,
+                        "source": "bundled", "status": "active",
+                        "description": s.description})
     %*{"skills": entries, "shadowedCount": shadowed, "invalidCount": invalid,
-        "note": "runtime discovery merges to one winner per name; this audit shows every on-disk copy"}
+        "note": "runtime discovery merges to one winner per name; this audit shows every on-disk copy plus baked-only entries"}
 
 comp.tool(%*{"onDemand": true}):
   proc skill_load(name: string): JsonNode =
