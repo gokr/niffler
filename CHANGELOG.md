@@ -484,6 +484,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **toolchain: Nim 2.2.10 → 2.2.12.** The repo now develops against the
+  current stable channel; the floor moves with it (`niffler.nimble`,
+  `scripts/check-nim-toolchain.sh`) and every pin follows — CI install
+  + cache key, `make install-nim`, README (Linux/macOS prerequisites),
+  the bench container's `NIM_VERSION`, and the website's fabric blurb.
+  Validated with a clean full rebuild (`var/bin` + nimcache cleared):
+  all 26 Nim binaries and 9 Go builds land, no new warnings.
+
 - **plugins: `plugin_installed` derives the checkout commit at read time.**
   Store records carry no commit field, so the listing now runs
   `git rev-parse HEAD` in each checkout and injects the result — truthful

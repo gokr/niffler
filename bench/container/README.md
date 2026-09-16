@@ -10,8 +10,8 @@ Rebuilding the whole image on every Niffler change would redo toolchains,
 swebench venv and harness CLIs (gigabytes, minutes) for a ~2–4 minute Nim/Go
 build. Instead:
 
-- The image holds **only stable layers**: Node 22, git, docker CLI, Go 1.26,
-  Nim 2.2.10, nats-server, uv + pinned `swebench==4.1.0` venv, and the
+- The image holds **only stable layers**: Node 22, git, docker CLI, Go 1.27,
+  Nim 2.2.12, nats-server, uv + pinned `swebench==4.1.0` venv, and the
   comparison harness CLIs (pi, opencode, codewhale).
 - At job start the entrypoint checks out `NIFFLER_REF` (tag, branch, or SHA —
   default `main`) and runs `make build` against a **cached volume**

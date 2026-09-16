@@ -6,7 +6,7 @@ set -euo pipefail
 
 fail() {
   echo "Nim: $*" >&2
-  echo 'Use a complete Nim >= 2.2.10 distribution (e.g. choosenim 2.2.10),' >&2
+  echo 'Use a complete Nim >= 2.2.12 distribution (e.g. choosenim 2.2.12),' >&2
   echo 'and put its bin directory on PATH; see README.md prerequisites.' >&2
   exit 1
 }
@@ -14,7 +14,7 @@ fail() {
 # Keep native/project configuration out of this toolchain-only probe.
 command -v nim >/dev/null 2>&1 || fail 'not found'
 nim --skipProjCfg --skipParentCfg --skipUserCfg --verbosity:0 --hints:off \
-  --eval:'import std/os; doAssert (NimMajor, NimMinor, NimPatch) >= (2, 2, 10), "Nim >= 2.2.10 required"' || fail 'toolchain probe failed'
+  --eval:'import std/os; doAssert (NimMajor, NimMinor, NimPatch) >= (2, 2, 12), "Nim >= 2.2.12 required"' || fail 'toolchain probe failed'
 # C toolchain for the linker (the guest is compiled and linked, not VM-eval'd).
 command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || \
   command -v clang >/dev/null 2>&1 || fail 'no C compiler (cc/gcc/clang)'
