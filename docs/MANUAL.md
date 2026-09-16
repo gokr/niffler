@@ -261,6 +261,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
 | `NIF_FETCH_ALLOW_PRIVATE` | `1` allows the `fetch` tool to contact loopback/private/link-local destinations; use only for trusted local development services | unset (blocked) |
+| `NIF_SKILLS_BUNDLED_DIR` | explicit location of the `skills` component's bundled tree, replacing `<repo>/skills` and its `$NIF_ROOT/skills` fallback. A path that does not exist makes discovery serve the compiled-in copies (dir `(baked)`) | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | number of cached tools a configured `expose: direct` MCP server may publish directly; larger servers are deferred to progressive discovery | `10` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll | `33554432` |
 | `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split) | `65536` |
@@ -615,7 +616,7 @@ beats home beats config):
 | Source | Directories |
 |---|---|
 | project | `$NIF_ROOT/.agents/skills`, `$NIF_ROOT/.claude/skills`, `$NIF_ROOT/.opencode/skills` |
-| bundled | `<repo>/skills` (shipped with Niffler; `$NIF_ROOT/skills` as fallback) — never removable |
+| bundled | `<repo>/skills` (shipped with Niffler; `$NIF_ROOT/skills` as fallback, `NIF_SKILLS_BUNDLED_DIR` overrides both) — never removable |
 | home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
 | config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
 
@@ -625,14 +626,22 @@ not in tool state; `niffler-tools` — which tool fits which job;
 operating the running harness itself) make Niffler useful out of the box;
 shadow one by dropping a same-named skill into a project or home directory.
 
+When **no** bundled tree is reachable — a deployment shipping `var/bin`
+without the repo checkout, where neither `<repo>/skills` nor
+`$NIF_ROOT/skills` exists — discovery falls back to the bundled SKILL.md
+files **compiled into the binary**. Those entries report source `bundled`
+and dir `(baked)`; they carry no resources (`skill_resources` is empty —
+none of the bundled skills ship any) and are never removable. Disk always
+wins by name, so a checkout is unaffected by the fallback.
+
 | Tool | What it does |
 |---|---|
-| `skill_list {query?, source?}` | available skills (name, description, version, tags, source, dir); filter by substring or source |
+| `skill_list {query?, source?}` | available skills (name, description, version, tags, source, dir); filter by substring or source; compiled-in fallback entries report dir `(baked)` |
 | `skill_search {query, owner?}` | online search of the skills.sh registry (the `npx skills find` backend): name, repo source, install count; the `source`+`name` pair feeds `skill_install` directly |
 | `skill_load {name}` | full SKILL.md instructions + resource list into the conversation (the load mechanism) |
 | `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files |
 | `skill_resource {name, path}` | read one resource on demand |
-| `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk: marks the active winner per name and every shadowed/invalid copy (discoveries merge in `skill_list`; shadowing is only visible here) |
+| `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk — plus names served only by the compiled-in fallback (dir `(baked)`): marks the active winner per name and every shadowed/invalid copy (discoveries merge in `skill_list`; shadowing is only visible here) |
 | `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
 | `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
 
@@ -1568,6 +1577,13 @@ itself.
    - worktree shadow rule: when the harness root is a `git worktree` under
      the main repo, the main repo root's context file is skipped — the
      ancestor walk would otherwise apply the same logical repo scope twice.
+3. A per-conversation `<workspace>` tail, appended only when the
+   conversation's cwd is **not** the harness root: it names the working
+   directory (relative paths resolve from it) and the harness root, so
+   `docs/`, `components/` and `sdk/` resolve by absolute path from an
+   out-of-root workspace. The frozen head above stays path-free either way —
+   the root is a per-conversation fact, identical for every conversation on
+   one machine, so provider cache prefixes still line up.
 
 The tool is `x-harness.hidden` — it never appears in an LLM toolset; it is
 infrastructure, reachable only by core and by components.

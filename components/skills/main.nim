@@ -8,7 +8,10 @@
 ## directories and exposes load/install/remove over the bus:
 ##
 ##   project (NIF_ROOT):  .agents/skills, .claude/skills, .opencode/skills
-##   bundled (repo):      <repo>/skills — shadowable, never removable
+##   bundled (repo):      <repo>/skills — shadowable, never removable;
+##                        NIF_SKILLS_BUNDLED_DIR overrides this location
+##                        (and, pointed at a missing path, forces the
+##                        baked fallback)
 ##   home:                .agents/skills, .claude/skills, .opencode/skills,
 ##                        .niffler/skills
 ##   config (XDG):        opencode/skills
@@ -63,7 +66,7 @@ type
     tags: seq[string]
     allowedTools: seq[string]
     rootDir: string
-    source: string    # project | home | config
+    source: string    # project | bundled | home | config
     content: string
     resources: seq[SkillResource]
 
@@ -163,22 +166,30 @@ const bakedSkillFiles = [
   ("todo-markdown", staticRead("../../skills/todo-markdown/SKILL.md")),
 ]
 
+# The `dir` reported for a skill served from the compiled-in copies: it has
+# no directory of its own (and no resources).
+const bakedDir = "(baked)"
+
 proc bakedSkills(): seq[Skill] =
-  ## The bundled skills as parsed compile-time content. rootDir stays
-  ## empty: resources are unavailable for baked entries (none of the
-  ## bundled skills ship any).
+  ## The bundled skills as parsed compile-time content. rootDir is the
+  ## marker `(baked)`: resources are unavailable for baked entries (none
+  ## of the bundled skills ship any).
   for (name, content) in bakedSkillFiles:
     let parsed = parseSkillMarkdown(content, name)
     if parsed.isSome:
       var s = parsed.get
       s.source = "bundled"
+      s.rootDir = bakedDir
       result.add(s)
 
 proc bundledSkillsDir(root: string): string =
   ## Where the bundled (shipped-with-Niffler) skills live. Normally
   ## <repo>/skills next to this component's checkout; NIF_ROOT/skills
-  ## is the fallback for relocated deployments. When neither exists on
-  ## disk, discovery falls back to the compiled-in copies (bakedSkills).
+  ## is the fallback for relocated deployments. NIF_SKILLS_BUNDLED_DIR
+  ## overrides both. When the resolved path does not exist on disk,
+  ## discovery falls back to the compiled-in copies (bakedSkills).
+  let override = getEnv("NIF_SKILLS_BUNDLED_DIR", "")
+  if override.len > 0: return override
   let repoRoot = currentSourcePath().parentDir.parentDir.parentDir
   let repoSkills = repoRoot / "skills"
   if dirExists(repoSkills): return repoSkills
@@ -256,6 +267,8 @@ comp.tool(%*{"onDemand": true}):
     ## query "niffler" and load the matching niffler-* skill.
     ## - query: substring filter over name, description and tags
     ## - source: "project", "bundled", "home" or "config"; empty = all
+    ## Skills served from the compiled-in fallback report source
+    ## "bundled" and dir "(baked)".
     var skills = discoverSkills()
     if query.len > 0:
       let q = query.toLowerAscii()
@@ -311,7 +324,7 @@ comp.tool(%*{"onDemand": true}):
                         "description": s.get.description})
     for s in bakedSkills():
       if not diskNames.hasKey(s.name):
-        entries.add(%*{"name": s.name, "dir": "(baked)",
+        entries.add(%*{"name": s.name, "dir": bakedDir,
                         "source": "bundled", "status": "active",
                         "description": s.description})
     %*{"skills": entries, "shadowedCount": shadowed, "invalidCount": invalid,
