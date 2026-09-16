@@ -80,6 +80,25 @@ proc main() =
   check("js: method def", hasDef(jt, "4 add"), defList(jt))
   check("js: call refs", hasRef(jt, "buildIdx"))
 
+  # --- tree-sitter: c / cpp / rust / ruby ----------------------------------
+  let ct = extractTags("sample.c", "sample.c", readFile(fx / "sample.c"))
+  check("c: struct def", hasDef(ct, "2 Point"), defList(ct))
+  check("c: function defs", hasDef(ct, "7 add") and hasDef(ct, "11 main"), defList(ct))
+  check("c: call refs", hasRef(ct, "add") and hasRef(ct, "printf"))
+  let cpt = extractTags("sample.cpp", "sample.cpp", readFile(fx / "sample.cpp"))
+  check("cpp: class + method defs", hasDef(cpt, "2 Widget") and
+        hasDef(cpt, "4 size") and hasDef(cpt, "5 grow"), defList(cpt))
+  check("cpp: free function + ref", hasDef(cpt, "11 measure") and
+        hasRef(cpt, "size"), defList(cpt))
+  let rt = extractTags("sample.rs", "sample.rs", readFile(fx / "sample.rs"))
+  check("rust: struct + fn defs", hasDef(rt, "0 Counter") and
+        hasDef(rt, "10 make_counter"), defList(rt))
+  check("rust: impl method", hasDef(rt, "5 bump"), defList(rt))
+  let rbt = extractTags("sample.rb", "sample.rb", readFile(fx / "sample.rb"))
+  check("ruby: module + class + methods", hasDef(rbt, "0 Repo") and
+        hasDef(rbt, "1 Scanner") and hasDef(rbt, "2 initialize"), defList(rbt))
+  check("ruby: method call ref", hasRef(rbt, "collect_files"))
+
   report("REPOMAP TAGS")
 
 main()

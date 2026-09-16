@@ -177,15 +177,19 @@ proc rankedTags*(files: seq[string], opts: ScoreOptions,
   var rankedDefinitions: seq[tuple[rel, ident: string, rank: float]]
   var outTotal = newSeq[float](nodes.len)
   for e in edges: outTotal[e.src] += e.w
+  # distribute each node's rank across its out-edges, onto definitions.
+  # One pass over the edges (O(E)): the per-node out-total is precomputed,
+  # so no inner scan over the edge list is needed. The previous
+  # O(nodes × edges) form was the multimillion-iteration hot spot on big
+  # repos (rubocop: 1551 files, ~200k edges → 71s of pure loop).
   var accum = initTable[tuple[rel, ident: string], float]()
-  for src in 0 ..< nodes.len:
-    if outTotal[src] == 0.0: continue
-    for e in edges:
-      if e.src != src: continue
-      let r = rank[src] * e.w / outTotal[src]
-      let key = (nodes[e.dst], e.ident)
-      if accum.hasKey(key): accum[key] += r
-      else: accum[key] = r
+  for e in edges:
+    let total = outTotal[e.src]
+    if total == 0.0: continue
+    let r = rank[e.src] * e.w / total
+    let key = (nodes[e.dst], e.ident)
+    if accum.hasKey(key): accum[key] += r
+    else: accum[key] = r
   for key, r in accum:
     rankedDefinitions.add((key[0], key[1], r))
   rankedDefinitions.sort() do (a, b: tuple[rel, ident: string, rank: float]) -> int:

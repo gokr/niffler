@@ -35,6 +35,13 @@ const csrcDir = currentSourcePath().parentDir / "csrc"
 {.compile: "csrc/typescript/scanner.c".}
 {.compile: "csrc/javascript/parser.c".}
 {.compile: "csrc/javascript/scanner.c".}
+{.compile: "csrc/c/parser.c".}
+{.compile: "csrc/cpp/parser.c".}
+{.compile: "csrc/cpp/scanner.c".}
+{.compile: "csrc/rust/parser.c".}
+{.compile: "csrc/rust/scanner.c".}
+{.compile: "csrc/ruby/parser.c".}
+{.compile: "csrc/ruby/scanner.c".}
 
 type
   TsLanguage* {.importc: "TSLanguage", header: "tree_sitter/api.h".} = object
@@ -113,6 +120,10 @@ proc tree_sitter_go*(): ptr TsLanguage {.importc: "tree_sitter_go".}
 proc tree_sitter_python*(): ptr TsLanguage {.importc: "tree_sitter_python".}
 proc tree_sitter_typescript*(): ptr TsLanguage {.importc: "tree_sitter_typescript".}
 proc tree_sitter_javascript*(): ptr TsLanguage {.importc: "tree_sitter_javascript".}
+proc tree_sitter_c*(): ptr TsLanguage {.importc: "tree_sitter_c".}
+proc tree_sitter_cpp*(): ptr TsLanguage {.importc: "tree_sitter_cpp".}
+proc tree_sitter_rust*(): ptr TsLanguage {.importc: "tree_sitter_rust".}
+proc tree_sitter_ruby*(): ptr TsLanguage {.importc: "tree_sitter_ruby".}
 
 proc tsQuery*(lang: ptr TsLanguage, source: string): ptr TsQuery =
   ## Compile a tags query; raises on malformed queries (our .scm files are

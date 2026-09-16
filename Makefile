@@ -158,7 +158,11 @@ REPOMAP_CSRC := $(wildcard components/repomap/csrc/tree_sitter/lib/src/*.c) \
   components/repomap/csrc/go/parser.c \
   components/repomap/csrc/python/parser.c components/repomap/csrc/python/scanner.c \
   components/repomap/csrc/typescript/parser.c components/repomap/csrc/typescript/scanner.c \
-  components/repomap/csrc/javascript/parser.c components/repomap/csrc/javascript/scanner.c
+  components/repomap/csrc/javascript/parser.c components/repomap/csrc/javascript/scanner.c \
+  components/repomap/csrc/c/parser.c \
+  components/repomap/csrc/cpp/parser.c components/repomap/csrc/cpp/scanner.c \
+  components/repomap/csrc/rust/parser.c components/repomap/csrc/rust/scanner.c \
+  components/repomap/csrc/ruby/parser.c components/repomap/csrc/ruby/scanner.c
 var/bin/repomap: components/repomap/main.nim components/repomap/tags.nim \
     components/repomap/score.nim components/repomap/repomap.nim \
     components/repomap/ts.nim $(REPOMAP_CSRC) $(SDK_NIM) $(NIM_CONF) | var/bin

@@ -98,7 +98,8 @@ proc census(ws: string): seq[string] =
         stack.add(path)
       of pcFile:
         let ext = splitFile(path).ext.toLowerAscii()
-        if ext in [".nim", ".nims", ".go", ".py", ".ts", ".js"]:
+        if ext in [".nim", ".nims", ".go", ".py", ".ts", ".js", ".c", ".h",
+                   ".cpp", ".hpp", ".cc", ".hh", ".cxx", ".hxx", ".rs", ".rb"]:
           result.add(path)
         elif splitFile(path).name in ["README", "README.md", "Makefile",
             "package.json", "Cargo.toml", "go.mod", "config.nims"]:
@@ -197,7 +198,7 @@ discard comp.tool("repo_map", toolSchema(%*{
            "description": "Map size in tokens (default 1024, max 4096)"}
 }, @[],
   "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. It is also appended to the conversation automatically at start when available."), hRepoMap,
-  %*{"timeoutMs": 120000, "onDemand": true, "effect": "read",
+  %*{"timeoutMs": 300000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["workspace"]}})
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,10 @@ All third-party code in this directory is unmodified except where noted.
   (MIT). `lib.c` and the wasm runtime are not compiled; `wasm_store.c` is
   compiled only for its no-op stubs.
 - `go/parser.c` — [tree-sitter-go v0.23.4](https://github.com/tree-sitter/tree-sitter-go) (MIT)
+- `c/parser.c` — [tree-sitter-c v0.23.4](https://github.com/tree-sitter/tree-sitter-c) (MIT)
+- `cpp/parser.c`, `cpp/scanner.c` — [tree-sitter-cpp v0.23.4](https://github.com/tree-sitter/tree-sitter-cpp) (MIT)
+- `rust/parser.c`, `rust/scanner.c` — [tree-sitter-rust v0.23.2](https://github.com/tree-sitter/tree-sitter-rust) (MIT)
+- `ruby/parser.c`, `ruby/scanner.c` — [tree-sitter-ruby v0.23.1](https://github.com/tree-sitter/tree-sitter-ruby) (MIT)
 - `python/parser.c`, `python/scanner.c` — [tree-sitter-python v0.23.6](https://github.com/tree-sitter/tree-sitter-python) (MIT)
 - `javascript/parser.c`, `javascript/scanner.c` —
   [tree-sitter-javascript v0.23.1](https://github.com/tree-sitter/tree-sitter-javascript) (MIT)
@@ -19,9 +23,12 @@ All third-party code in this directory is unmodified except where noted.
 
 ## Tag queries (`queries/`)
 
-- `go-tags.scm`, `python-tags.scm`, `javascript-tags.scm` — from
+- `go-tags.scm`, `python-tags.scm`, `javascript-tags.scm`, `c-tags.scm`,
+  `cpp-tags.scm`, `rust-tags.scm`, `ruby-tags.scm` — from
   [Aider](https://github.com/Aider-AI/aider) `aider/queries/tree-sitter-language-pack/`
-  (Apache-2.0), which vendor them from the tree-sitter grammars.
+  (Apache-2.0), which vendor them from the tree-sitter grammars. c/cpp are
+  definitions-only upstream (aider backfills refs with pygments); call-
+  reference patterns were appended here because the graph needs refs.
 - `typescript-tags.scm` — from tree-sitter-typescript's own `queries/tags.scm`
   (MIT), extended with concrete-implementation patterns (`function_declaration`,
   `class_declaration`, `method_definition`, `variable_declarator`, call

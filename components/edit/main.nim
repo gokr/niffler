@@ -625,7 +625,12 @@ proc lspDiagnosticsSection(c: Component, target: string,
     resp = c.request("lsp", "lsp",
       %*{"operation": "diagnostics", "path": target}, DIAG_PUSH_TIMEOUT_MS)
   except CatchableError as e:
-    if "E_LSP_TIMEOUT" in e.msg:
+    # Both the component's own budget (E_LSP_TIMEOUT envelope) and the
+    # SDK transport timeout on a slow settle (big repo still indexing)
+    # mean the same thing: retry later, don't fail the edit. The second
+    # form used to be swallowed silently — it is why gopls on large Go
+    # repos looked like "no server configured".
+    if "E_LSP_TIMEOUT" in e.msg or "timed out after" in e.msg:
       return "\n\n[LSP diagnostics: server busy or still indexing — the lsp tool can retry.]"
     return ""  # no server for this extension / lsp down: fully silent
   if resp{"ok"}.getBool(false):
