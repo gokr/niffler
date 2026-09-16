@@ -328,6 +328,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LOGFILE_SCAN_BYTES` | maximum bytes examined by one `logfile_search` | `16777216` |
 | `NIF_LOGFILE_DIRECTORY_ENTRIES` | maximum candidate JSONL paths enumerated per query | `10000` |
 | `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |
+| `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking. For headless automation only | unset |
 | `NIF_MAX_TURN_ROUNDS` | default LLM rounds per turn before the per-session `maxRounds` control overrides it | `50` |
 | `NIF_MAX_DIRECT_TOKENS` | estimated-token cap on a conversation's direct toolset for `invoke {sticky: true}` promotion; a promotion that would exceed it is deferred and reported in the tool result | `4000` |
 | `NIF_PROFILE` | default named tool profile for new conversations, used when the `session` call carries no `profile` argument | unset |
@@ -478,6 +479,43 @@ are gated on a human before they execute (core also gates its own
   every client dismisses any stale modal.
 - Unanswered UI requests time out after 5 minutes and are denied.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
+
+### Conversation controls: `/approvals` and `/limit`
+
+Two controls belong to you (the human), never to the model, and apply to one
+conversation. Both are set through the session call (the web UI exposes them
+as `/approvals` and `/limit`; any bus client can call `session` directly) and
+both are persisted with the conversation, so a resumed conversation keeps
+them.
+
+- **`/approvals auto`** — this conversation stops asking: every
+gated tool is granted, and core says so loudly in its log
+(`core: approval auto-granted for <tool>`), because a silent grant is exactly
+what the gate exists to prevent. `/approvals ask` (or `/approvals` with an
+empty argument) restores the normal gate. Use it for a conversation you have
+decided to trust end to end; the per-tool "don't ask again" record is still
+available for narrower trust.
+- **`/limit rounds=N tokens=N seconds=N`** — soft budgets for a turn: LLM
+rounds, cumulative tokens, and wall-clock seconds (checked before every tool
+dispatch, not only between rounds). When one is reached the turn does not die:
+core asks you **"keep going?"** through the same approval channel (the UI
+shows a Continue/Stop prompt naming the limit), and a *yes* extends that limit
+by one more step. A *no*, no answer, or no reachable client ends the turn with
+a distinct `limit-<dimension>` record that names the limit and the command
+that raises it. `/limit clear` removes all three.
+
+The distinction that matters: these limits are *yours*, so they negotiate;
+the job-scoped budgets (`maxRounds`/`maxCalls`/`maxTokens`, which the `agent`
+component freezes into a subagent's conversation, and `NIF_MAX_TURN_ROUNDS`)
+stay hard — a subagent must not be able to talk its way into more budget.
+`NIF_AUTO_CONTINUE=1` answers every keep-going question with yes (headless
+automation, same spirit as `NIF_AUTO_APPROVE=1`).
+
+A session call that arrives while a turn is running is refused immediately
+with `busy` ("the conversation is mid-turn — retry when the turn finishes")
+rather than waiting: turns never nest, and a client that waits instead just
+expires its own timeout (this is what made `/export` look broken during a long
+turn).
 
 ## Context window
 

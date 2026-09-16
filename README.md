@@ -444,7 +444,10 @@ Open work — deferred follow-ups and quests — is consolidated in
 - [x] **approvals** — x-harness.approval interceptor in dispatch: terminal
       prompt (tty) or caller-directed UI approval with ack, broadcast fallback,
       and `ev.approval.resolved` cleanup; deny when no human is reachable;
-      verified end-to-end (service + tty probes)
+      verified end-to-end (service + tty probes); plus the **conversation
+      controls** (`/approvals` ask|auto, `/limit` rounds/tokens/seconds) with
+      the keep-going question and the mid-turn `busy` refusal (docs/WIRE.md
+      "Conversation controls", tests/t_controls.nim)
 - [x] **recover mode** — `--recover` / `make recover`: rebuild shipped
       binaries from source, wipe spawned-component records, keep conversations
 - [x] **minimal boot profile** — `--minimal` starts only `store`, `bash` and

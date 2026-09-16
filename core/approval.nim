@@ -40,9 +40,16 @@ type
       ## Persisted per-conversation auto-approve lookup (set by the harness
       ## after CoreTools exists; queries the store). When it returns true the
       ## gate grants without asking any client — no dialog flashes anywhere.
+    approvalMode*: string
+      ## The conversation's gate mode, set around a turn (like session/
+      ## caller): "" or "ask" = gate every x-harness.approval tool, "auto" =
+      ## this conversation auto-grants them. Chosen by the human through the
+      ## session control op, never by the model.
 
 
 const ackTimeoutSecs = 1.5  ## how long the driver has to ack a directed request
+const continueTimeoutMs = 120_000
+  ## how long a turn-limit question ("keep going?") waits for its human
 
 proc newApproval*(nc: NatsConnection, cat: Catalog, tty: bool,
                   timeoutMs = 300000): Approval =
@@ -154,19 +161,21 @@ proc askTty(tool: string, args: JsonNode): bool =
   except EOFError:
     result = false   # stdin closed — deny
 
-proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
-  ## Interactive approval routing, no hardcoded component names:
+proc askHuman*(a: Approval, payload: JsonNode, timeoutMs: int): bool =
+  ## Put one question to a human over the approval transport and wait for the
+  ## verdict. Routing, no hardcoded component names:
   ## 1. turn driven by a known caller → private subject of that caller
   ##    (svc.approval.<caller>.request), ack-gated;
   ## 2. no ack within ackTimeoutSecs → broadcast fallback, any client;
   ## 3. no caller (direct call) → broadcast immediately, any client;
   ## 4. no interactive client reachable → DENY.
-  let id = newId()
-  var payload = %*{"id": id, "tool": tool, "args": args,
-                   "sessionId": a.session}
-  let manifest = approvalManifest(args)
-  if manifest != nil:
-    payload["manifest"] = manifest
+  ## `payload` carries id/tool/args (plus optional manifest/purpose/
+  ## dimension) and is completed in place with the caller when routing there:
+  ## JsonNode is a ref, so a parameter (not a var parameter) is both mutable
+  ## here and visible to the caller — and only a ref can be captured by the
+  ## publish closures below (a `var JsonNode` cannot be, by memory-safety).
+  let id = payload{"id"}.getStr("")
+  let tool = payload{"tool"}.getStr("")
   var directed = a.caller.len > 0
   if directed:
     payload["caller"] = %a.caller
@@ -186,14 +195,14 @@ proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
       "core: approval requested for " & tool & " (" & id & ") from " & a.caller)
   else:
     if a.cat.clientCount() == 0:
-      echo "core: approval required for " & tool &
+      echo "core: " & tool & " needs a human" &
            " but no interactive client is attached — denying"
       return false
     publishRequest("ev.approval.request",
       "core: approval requested for " & tool & " (" & id & ") — waiting for a UI")
 
   var acked = not directed
-  let deadline = epochTime() + a.timeoutMs.float / 1000.0
+  let deadline = epochTime() + timeoutMs.float / 1000.0
   let ackDeadline = epochTime() + ackTimeoutSecs
   while epochTime() < deadline:
     if directed and not acked and epochTime() > ackDeadline:
@@ -232,13 +241,42 @@ proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
       publishResolved(ok)
       return ok
   echo "core: approval for " & tool & " timed out after " &
-       $(a.timeoutMs div 1000) & "s — denying"
+       $(timeoutMs div 1000) & "s — denying"
   publishResolved(false)
   return false
+
+proc askUi*(a: Approval, tool: string, args: JsonNode): bool =
+  ## The gate's interactive question (see askHuman for routing).
+  var payload = %*{"id": newId(), "tool": tool, "args": args,
+                   "sessionId": a.session}
+  let manifest = approvalManifest(args)
+  if manifest != nil:
+    payload["manifest"] = manifest
+  askHuman(a, payload, a.timeoutMs)
+
+proc askContinue*(a: Approval, dimension, detail: string): bool =
+  ## A turn hit a human-set budget (rounds/tokens/seconds, see /limit): ask
+  ## whether it may keep going, over the same transport, on the same routing.
+  ## Denied, unanswered or unreachable → false, and the turn ends as budget
+  ## exhausted exactly as it would have without the question. Job-scoped
+  ## budgets (subagent scoping) never reach here — see runTurn.
+  if getEnv("NIF_AUTO_APPROVE") == "1" or getEnv("NIF_AUTO_CONTINUE") == "1":
+    return true
+  var payload = %*{"id": newId(), "tool": "turn-limit",
+                   "purpose": "continue", "sessionId": a.session,
+                   "args": %*{"dimension": dimension, "detail": detail}}
+  askHuman(a, payload, continueTimeoutMs)
 
 proc ask*(a: Approval, tool: string, args: JsonNode): bool =
   ## Returns true when the call may proceed.
   if getEnv("NIF_AUTO_APPROVE") == "1":
+    return true
+  # The conversation's own mode (/approvals auto): the human opted this
+  # conversation out of the gate. Grant loudly — a silent grant is what the
+  # gate exists to prevent.
+  if a.approvalMode == "auto":
+    echo "core: approval auto-granted for " & tool &
+         " (this conversation is in approval mode: auto)"
     return true
   # Persisted per-conversation auto-approve (set by a client's "auto
   # approve" action): grant without asking any client, so no dialog is

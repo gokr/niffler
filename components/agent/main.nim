@@ -752,11 +752,24 @@ proc continuable(child, caller: string): tuple[
                    e.msg, "", 0)
   return (true, "", subject, activation)
 
+proc refreshTurns() =
+  ## Poll the ev.session.turn tap before reading live turn state.
+  ##
+  ## The tap is only drained while a handler WAITS (SDK pumpTaps), so a
+  ## handler entered right after a child's turn returned still sees the child
+  ## as "running": `agent_ask` then queued its question as mail instead of
+  ## asking it (tests/t_agentp3.nim P3.10a, which fails identically on main —
+  ## a tap-staleness bug, not a queue-order one). One non-blocking poll; a
+  ## no-op when nothing is queued.
+  discard comp.pumpTaps(64)
+
 proc busyChild(child: string): bool =
   ## True when the child's runner is holding a turn right now. Answered from
   ## the ev.session.turn tap (the catalog has no turn state). Used to refuse
   ## `agent_run {session}` with a clear `busy` instead of queueing a caller
-  ## that promised it wanted the result now.
+  ## that promised it wanted the result now. The tap is refreshed first so a
+  ## turn that just ended is not still counted (see refreshTurns).
+  refreshTurns()
   child in liveTurns
 
 proc effectiveControls(child: string): JsonNode =
@@ -1358,6 +1371,10 @@ discard comp.tool("agent_steer", steerSchema,
     # child's next turn-top drain fold it in (same pull lane as settlement
     # notices, P0.1; same kind, direction parent-mail).
     if sessionId in liveTurns:
+      # Refresh first: publishing a steer to a child that has just gone idle
+      # would be swallowed (its runner's steer subscription goes away with
+      # the turn), so a stale "running" silently drops the message.
+      refreshTurns()
       comp.emit("svc.session." & sanitizeSessionId(sessionId) & ".steer",
                 %*{"content": message})
       return okResult(%*{"published": true, "sessionId": sessionId})
@@ -1574,6 +1591,9 @@ discard comp.tool("agent_list", listSchema,
     except CatchableError:
       discard  # status falls back to ready; the roster still lists
     var listing = newJArray()
+    # Refresh once for the whole listing: a child whose turn just returned
+    # must not be reported as still running.
+    refreshTurns()
     for row in rows:
       let child = row{"sessionId"}.getStr("")
       var entry = %*{"sessionId": child, "parent": row{"parent"},

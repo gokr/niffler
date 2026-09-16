@@ -54,6 +54,58 @@ export interface SlashContext {
 
 export type SlashHandler = (ctx: SlashContext) => Promise<void> | void;
 
+// ---- conversation controls (/approvals, /limit) ------------------------------
+//
+// Both ride the existing session tool as control calls: args {sessionId,
+// approvals?} or {sessionId, limits?} with NO content — core runs no inference
+// and answers with the conversation's status (its `approvals` + `limits`
+// readback). A control call that arrives while a turn is running is refused
+// fast by the runner (error code "busy") instead of hanging until a client
+// deadline; that surfaces here like any other error, with no blind retry.
+
+/** How long a conversation-control call may take. Generous on purpose: a
+ * conversation whose runner is not up yet spawns one first. */
+const CONTROL_TIMEOUT = 60000;
+
+/** The declared soft-limit dimensions, in display order. */
+const LIMIT_DIMENSIONS = ["rounds", "tokens", "seconds"] as const;
+
+/** Read a conversation's controls back through the session tool. */
+async function sessionControls(ctx: SlashContext, sid: string): Promise<any> {
+  // A session call with no content runs no inference, but core accepts one
+  // only when it carries content or one of model/thinking/title/cwd/profile/
+  // discovery/export/approvals/limits. `profile` is the one of those that
+  // writes nothing (core ignores it on resume) — the same companion key
+  // /discover already sends on a content-less call — so a status readback is
+  // {sessionId, profile} and never a value mutation.
+  return ctx.send("core", "session", { sessionId: sid, profile: ctx.profile() }, CONTROL_TIMEOUT);
+}
+
+/** Localized gate mode for core's readback ("" = ask, the default). */
+function approvalName(ctx: SlashContext, mode: unknown): string {
+  return String(mode ?? "") === "auto" ? ctx.t("approvals.modeAuto") : ctx.t("approvals.modeAsk");
+}
+
+/** Render a limits triple: "10 rounds · 90s", or the localized "none" when
+ * all three are 0 (core stores 0 for every dimension that is not set). */
+function limitsName(ctx: SlashContext, limits: unknown): string {
+  const l = (limits ?? {}) as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const dimension of LIMIT_DIMENSIONS) {
+    const n = Number(l[dimension] ?? 0);
+    if (Number.isInteger(n) && n > 0) parts.push(ctx.t("limits." + dimension, { n: String(n) }));
+  }
+  return parts.length > 0 ? parts.join(" · ") : ctx.t("limits.none");
+}
+
+/** The conversation this input belongs to, or a UI error when none is
+ * selected (a control call needs a conversation id). */
+function controlSession(ctx: SlashContext): string | undefined {
+  const sid = ctx.session();
+  if (!sid) ctx.error(ctx.t("controls.noSession"));
+  return sid;
+}
+
 /** Keys are declared built-in names (canonical only: an alias resolves through
  * `aliasOf`) or "<command> <subcommand>". */
 export const slashHandlers: Record<string, SlashHandler> = {
@@ -105,6 +157,67 @@ export const slashHandlers: Record<string, SlashHandler> = {
       ctx.setToolLevel(current === "brief" ? "full" : current === "full" ? "off" : "brief");
     }
     ctx.meta(ctx.t("chat.toolLevel", { level: ctx.toolLevel() }));
+  },
+  approvals: async (ctx) => {
+    const sid = controlSession(ctx);
+    if (!sid) return;
+    if (!ctx.arg.trim()) {
+      const status = await sessionControls(ctx, sid);
+      if (status?.error) return void ctx.error(String(status.error));
+      ctx.meta(ctx.t("approvals.current", { mode: approvalName(ctx, status?.approvals) }));
+      return;
+    }
+    // Parsed against the declaration, so the accepted modes cannot drift from
+    // the ones /help and completion advertise.
+    const cmd = commandNamed("approvals");
+    const parsed = parseSlashArgs(cmd!, ctx.arg.toLowerCase());
+    if (parsed.error) return void ctx.error(`/approvals: ${parsed.error}`);
+    const mode = String(parsed.args["mode"] ?? "");
+    const reply = await ctx.send("core", "session", { sessionId: sid, approvals: mode }, CONTROL_TIMEOUT);
+    if (reply?.error) return void ctx.error(String(reply.error));
+    // Render what core stored, not what was asked for: "ask" persists as "".
+    ctx.meta(ctx.t("approvals.updated", { mode: approvalName(ctx, reply?.approvals ?? mode) }));
+  },
+  limit: async (ctx) => {
+    const cmd = commandNamed("limit");
+    const [first, ...rest] = ctx.arg.split(/\s+/).filter(Boolean);
+    if (first && cmd) {
+      const sub = subcommandOf(cmd, first);
+      if (sub) return runSubcommand(cmd, sub, ctx, rest.join(" "));
+    }
+    const sid = controlSession(ctx);
+    if (!sid) return;
+    if (!ctx.arg.trim()) {
+      const status = await sessionControls(ctx, sid);
+      if (status?.error) return void ctx.error(String(status.error));
+      ctx.meta([
+        ctx.t("limits.current", { limits: limitsName(ctx, status?.limits) }),
+        ctx.t("limits.hint"),
+      ].join("\n"));
+      return;
+    }
+    const parsed = parseSlashArgs(cmd!, ctx.arg.toLowerCase());
+    if (parsed.error) return void ctx.error(`/limit: ${parsed.error}`);
+    const limits: Record<string, number> = {};
+    for (const dimension of LIMIT_DIMENSIONS) {
+      if (parsed.args[dimension] !== undefined) limits[dimension] = Number(parsed.args[dimension]);
+    }
+    const reply = await ctx.send("core", "session", { sessionId: sid, limits }, CONTROL_TIMEOUT);
+    if (reply?.error) return void ctx.error(String(reply.error));
+    ctx.meta(ctx.t("limits.updated", { limits: limitsName(ctx, reply?.limits ?? limits) }));
+  },
+  "limit clear": async (ctx) => {
+    if (ctx.arg.trim()) return void ctx.error(ctx.t("limits.clearArgs"));
+    const sid = controlSession(ctx);
+    if (!sid) return;
+    // Clearing is an EMPTY limits object: core replaces the whole triple with
+    // what it receives, and an object with no dimensions leaves all three at 0
+    // (= unset). The explicit {rounds: 0, tokens: 0, seconds: 0} form is
+    // refused by core's bounds check ("limit rounds must be between 1 and
+    // 200"); {} clears under that reading and under a "0 clears" one.
+    const reply = await ctx.send("core", "session", { sessionId: sid, limits: {} }, CONTROL_TIMEOUT);
+    if (reply?.error) return void ctx.error(String(reply.error));
+    ctx.meta(ctx.t("limits.cleared"));
   },
   connect: (ctx) => ctx.command("connect"),
   status: async (ctx) => ctx.meta(await ctx.statusText()),

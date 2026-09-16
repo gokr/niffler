@@ -8,7 +8,39 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
+- **Conversation controls: `/approvals`, `/limit` and the keep-going question.**
+  Two controls now belong to the human, per conversation, set through the
+  `session` call (the SPA exposes them as slash commands; any bus client can
+  call `session` directly) and persisted in the conversation header so a
+  resumed runner re-applies them:
+  - **`approvals`** (`""`/`"ask"`/`"auto"`) — this conversation's gate mode.
+    `auto` grants every `x-harness.approval` tool without asking any client,
+    loudly (`core: approval auto-granted for <tool>`); the default gates as
+    before. Chosen by the human, never by the model.
+  - **`limits`** (`rounds`/`tokens`/`seconds`) — SOFT turn budgets. Reaching
+    one no longer ends the turn: core asks "keep going?" over the existing
+    approval transport (`tool: "turn-limit"`, `purpose: "continue"`,
+    `args: {dimension, detail}`), and a yes extends that limit by one step.
+    A no, no answer or no reachable human ends the turn with a distinct
+    `limit-<dimension>` error record naming the limit and the command that
+    raises it. The seconds limit is checked before every tool dispatch, not
+    just at round boundaries. Job-scoped budgets (`maxRounds`/`maxCalls`/
+    `maxTokens`, what `agent` freezes into a subagent) and
+    `NIF_MAX_TURN_ROUNDS` stay HARD and never ask — a subagent cannot
+    negotiate its own budget. `NIF_AUTO_CONTINUE=1` answers yes with no human.
+  A session call with only a `sessionId` is the read-only status readback
+  (it echoes `approvals` and `limits`). Contract, routing and the fail-closed
+  rules: docs/WIRE.md "Conversation controls"; user-facing chapter:
+  docs/MANUAL.md.
+- **A mid-turn session call is refused with `busy`, not left hanging.** The
+  session runner is single-threaded and a turn never nests, so a session call
+  arriving mid-turn was simply unanswered until the turn ended — any client
+  with a deadline gave up first and reported a generic "context deadline
+  exceeded" (this is why `/export` looked broken during a long turn: it waits
+  10s). The runner's own call subject is now pumped from dispatch's idle slots
+  and answered at once with `{code: "busy"}` and "the conversation is
+  mid-turn — retry when the turn finishes", the same contract `agent_run`
+  uses for a mid-turn child (tests/t_controls.nim).- **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
   Niffler — features, operating, configuring, extending, debugging — now
   routes through the bundled skills instead of guesswork: `baseprompt`
   gains a trigger to `skill_list` (query `"niffler"`) + `skill_load` the
@@ -34,7 +66,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `skill_audit`'s baked-only rows and unaffected project/home/config
   discovery), `t_systemprompt` (workspace tail carries the root; in-root
   prompt stays path-free).
-
 - **agent: subagents-v2 — settlement notices, the child roster,
   continuation and fork.** Four steps landed from the
   `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH
