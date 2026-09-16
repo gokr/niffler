@@ -380,8 +380,13 @@ proc main() =
   # (the /export hang: the client's deadline expired against a turn-length
   # wait; the runner now answers instead of staying silent)
   block midTurnBusy:
+    # NIF_AUTO_APPROVE=1 for THIS probe only: the scripted bash must really
+    # run its sleep, otherwise the approval is denied and the turn ends in a
+    # few seconds instead of forty — and the mid-turn window closes before the
+    # second check lands. Auto-approval is not what this block tests.
     var p = startProbe("busy", @[("NIF_MOCK_ROUNDS", "2"),
-                                 ("NIF_MOCK_TOOLCMD", "sleep 20")])
+                                 ("NIF_MOCK_TOOLCMD", "sleep 20"),
+                                 ("NIF_AUTO_APPROVE", "1")])
     defer: p.stopProbe()
     let nc = p.nc
     let sid = "busy-" & $int(epochTime())
@@ -438,6 +443,9 @@ proc main() =
     # end before this, so a late answer cannot masquerade as a fast one.
     let busyDeadline = epochTime() + 5.0
     while refusal.len == 0 and epochTime() < busyDeadline:
+      # Stay on the approval transport even here: an unanswered question must
+      # never be the reason the turn ends inside this window.
+      discard serviceQuestions(nc, [directed], "yes", seen)
       let polled = pollEnv(busyReplies, 50)
       if polled.found:
         observed = $callerOf(polled.env)
@@ -466,6 +474,7 @@ proc main() =
     var directObserved: string = "no reply"
     let directDeadline = epochTime() + 5.0
     while directRefusal.len == 0 and epochTime() < directDeadline:
+      discard serviceQuestions(nc, [directed], "yes", seen)
       let polled = pollEnv(directReplies, 50)
       if polled.found:
         directObserved = $callerOf(polled.env)
