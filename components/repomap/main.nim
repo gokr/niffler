@@ -210,6 +210,15 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # arrives must never fail a conversation. The map goes to the session
   # runner's private .map subject; the runner drains it and appends once
   # (core/dispatch.nim pumpMap -> conversation drainMap).
+  #
+  # OFF BY DEFAULT until an A/B proves the economics: full30 showed the
+  # map costs ~40% more tokens for no benefit on small repos, and the first
+  # Multi10 high run lost 8/10 vs 9/10 with it on (docs/research/REPOMAP.md,
+  # bench/reports/repomap-ab-full30.md). Set NIF_REPOMAP_AUTOAPPEND=1 to
+  # turn the append back on — the repo_map tool is always available and
+  # process-local (the model asks, nothing is injected).
+  if getEnv("NIF_REPOMAP_AUTOAPPEND", "0") notin ["1", "true", "yes"]:
+    return
   let ws = payload{"workspace"}.getStr("")
   let convId = payload{"conversationId"}.getStr("")
   if ws.len == 0 or convId.len == 0 or not dirExists(ws): return

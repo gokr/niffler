@@ -80,11 +80,41 @@ proc main() =
   check("missing workspace refused", miss.hasKey("error") and
         miss{"error"}.getStr("").contains("[E_NOT_FOUND]"), $miss)
 
+  # --- auto-append is OPT-IN (default off) ------------------------------------
+  # The append is gated on NIF_REPOMAP_AUTOAPPEND: the tool above works either
+  # way, but nothing is injected unless the operator opts in. This process
+  # started without the env var, so publishing the event must produce silence.
+  block:
+    var offSub: ptr natsSubscription
+    discard natsConnection_SubscribeSync(addr offSub, nc.conn,
+                                         "svc.session.sess-off.map".cstring)
+    let offEv = Envelope(v: 1, id: newId(), kind: ekEvent,
+                         payload: %*{"workspace": ws,
+                                     "conversationId": "sess-off"})
+    nc.publish("ev.workspace.opened", offEv.encode())
+    var leaked = false
+    for i in 0 ..< 6:
+      var msg: ptr natsMsg
+      if natsSubscription_NextMsg(addr msg, offSub, 500) == NATS_OK:
+        natsMsg_Destroy(msg)
+        leaked = true
+        break
+    check("auto-append stays silent without NIF_REPOMAP_AUTOAPPEND", not leaked)
+
   # --- auto-append: ev.workspace.opened -> svc.session.<id>.map ---------------
   var mapSub: ptr natsSubscription
   let sst = natsConnection_SubscribeSync(addr mapSub, nc.conn,
                                          "svc.session.sess-test.map".cstring)
   if not checkStatus(sst): fail("cannot subscribe to map subject"); quit(1)
+  # restart with the opt-in so the append path is exercised
+  if rmProc.peekExitCode() == -1: rmProc.terminate()
+  sleep(300)
+  let rmOn = startComponent(bin, url, root = tmp,
+                            extra = [("NIF_REPOMAP_AUTOAPPEND", "1")])
+  defer:
+    if rmOn.peekExitCode() == -1: rmOn.terminate()
+    rmOn.close()
+  check("repomap re-registers with auto-append on", waitRegistered(nc, "repomap"))
   let ev = Envelope(v: 1, id: newId(), kind: ekEvent,
                     payload: %*{"workspace": ws, "conversationId": "sess-test"})
   nc.publish("ev.workspace.opened", ev.encode())
