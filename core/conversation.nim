@@ -21,6 +21,7 @@ import ../sdk/niffler/jsonx
 import catalog
 import compaction
 import dispatch
+import approval
 import supervisor
 import retry
 
@@ -200,6 +201,13 @@ type
     maxRounds*: int          ## per-turn tool-round budget (0 = default 50)
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
     maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
+    approvalMode*: string    ## this conversation's gate mode (/approvals):
+                             ## "" or "ask" gates every x-harness.approval
+                             ## tool, "auto" grants them without asking
+    limitRounds*: int        ## the human's SOFT turn limits (/limit): when one
+    limitTokens*: int        ## is reached the turn ASKS whether it may keep
+    limitSeconds*: int       ## going (0 = unset). The scoping budgets above
+                             ## stay hard — a job cannot negotiate its budget
     exposure*: ToolExposure
 
 proc newPersister*(ct: CoreTools): Persister =
@@ -1520,6 +1528,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
               thinkingEffort = "", turnContent = "", workspace = "",
               maxRounds = 0, maxCalls = 0, maxTokens = 0,
+              limitRounds = 0, limitTokens = 0, limitSeconds = 0,
               allowlist: seq[string] = @[],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
@@ -1632,6 +1641,61 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         discard
       if v < 1: 20 else: v
   let effMaxRounds = if maxRounds > 0: maxRounds else: envMaxRounds
+  # ---- conversation controls: the human's soft turn limits (/limit) --------
+  # A soft limit is different in kind from the budgets above: reaching it asks
+  # the human over the approval transport (tool "turn-limit", purpose
+  # "continue") instead of ending the turn, and a yes extends THAT limit by one
+  # more step so the question can come back later. The job-scoped and env caps
+  # stay hard and never ask — a subagent cannot negotiate its own budget, and
+  # NIF_MAX_TURN_ROUNDS is a runaway guard, not a conversation setting. Denied,
+  # unanswered or unreachable resolves to the same turn end the limit would have
+  # caused anyway (fail closed; see docs/WIRE.md "Conversation controls").
+  let turnStarted = epochTime()
+  var softRounds = limitRounds
+  var softTokens = limitTokens
+  var softSeconds = limitSeconds
+  var humanContinues = 0
+    ## How often the human extended a limit this turn (diagnostics only).
+
+  proc limitExhausted(dimension, detail: string): bool =
+    ## One soft-limit breach: ask whether the turn may keep going. Granted →
+    ## raise that limit by one step and return false (keep going); denied,
+    ## unanswered or no client reachable → true, so the caller ends the turn.
+    if ct.approval == nil: return true
+    if not ct.approval.askContinue(dimension, detail): return true
+    inc humanContinues
+    case dimension
+    of "rounds": softRounds += max(limitRounds, 1)
+    of "tokens": softTokens += max(limitTokens, 1)
+    of "seconds": softSeconds += max(limitSeconds, 1)
+    else: discard
+    echo "core: turn " & dimension & " limit continued by the human (" &
+         detail & ")"
+    false
+
+  proc limitMessage(dimension, detail: string): string =
+    ## The transcript record when a human limit ended the turn: which limit,
+    ## where it stood, and the one command that raises it. The dimension is
+    ## named as /limit names it, inside the detail.
+    "turn limit reached (" & detail & ") — the human declined to continue; " &
+      "raise it with /limit " & dimension & "=<n> and send a follow-up message"
+
+  proc endTurnOnLimit(p: var Persister, turnError: var string,
+                      dimension, detail, msg: string) =
+    ## End the turn at a human limit the human declined to extend — the same
+    ## shape as the hard budget endings, with a distinct error kind so the
+    ## model and a driver can tell a limit from a failure. `p`/`turnError` are
+    ## passed in rather than captured: both are `var` parameters of runTurn,
+    ## which a closure may not capture (memory safety).
+    turnError = msg
+    p.persistMsg(%*{"role": "error", "content": msg,
+                    "error": "limit-" & dimension, "turnId": turnId},
+                 %*{"limit": detail})
+    if onEvent != nil:
+      onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                         "error": msg})
+    emitTurnDone(msg)
+
   while rounds < max(effMaxRounds, 1):
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
@@ -1658,6 +1722,28 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                            "error": msg})
       emitTurnDone(msg)
       return ""
+    # The human's soft limits (rounds/tokens/seconds), checked before the next
+    # LLM round for exactly the reason the hard caps are: no further round
+    # starts on a limit the human is not going to extend.
+    if softRounds > 0 and rounds > softRounds:
+      let detail = $rounds & " LLM rounds (limit " & $softRounds & ")"
+      if limitExhausted("rounds", detail):
+        let msg = limitMessage("rounds", detail)
+        endTurnOnLimit(p, turnError, "rounds", detail, msg)
+        return ""
+    if softTokens > 0 and turnTokens >= softTokens:
+      let detail = $turnTokens & " tokens (limit " & $softTokens & ")"
+      if limitExhausted("tokens", detail):
+        let msg = limitMessage("tokens", detail)
+        endTurnOnLimit(p, turnError, "tokens", detail, msg)
+        return ""
+    if softSeconds > 0 and epochTime() - turnStarted >= softSeconds.float:
+      let detail = $int(epochTime() - turnStarted) & "s (limit " &
+                   $softSeconds & "s)"
+      if limitExhausted("seconds", detail):
+        let msg = limitMessage("seconds", detail)
+        endTurnOnLimit(p, turnError, "seconds", detail, msg)
+        return ""
     # Fold any steering messages the client injected mid-turn into the running
     # conversation before the next LLM call (Pi-style steering), plus any
     # accepted advisor messages (pumpAdvise). Admission runs AFTER the drains:
@@ -1977,6 +2063,21 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     var idx = 0
     while idx < items.len:
+      # The human's time limit is checked before every dispatch, not only at
+      # round boundaries: one bash call can outlast a whole round, and the
+      # point of the limit is to put the question at the moment it is reached.
+      if softSeconds > 0 and epochTime() - turnStarted >= softSeconds.float:
+        let detail = $int(epochTime() - turnStarted) & "s (limit " &
+                     $softSeconds & "s)"
+        if limitExhausted("seconds", detail):
+          let msg = limitMessage("seconds", detail)
+          # The assistant batch is already persisted: pair every unexecuted
+          # call with an error result so the history stays provider-valid.
+          for k in idx ..< items.len:
+            commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
+              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+          endTurnOnLimit(p, turnError, "seconds", detail, msg)
+          return ""
       if maxCalls > 0 and toolCallsMade >= maxCalls:
         let msg = "turn tool-call budget exhausted (" & $maxCalls &
           " tool calls)"
@@ -2117,10 +2218,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
   let hasExport = args.kind == JObject and args.hasKey("export") and
                   args{"export"}.getBool(false)
-  if sessionId.len == 0 or
-      (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
-       not hasCwd and not hasProfile and not hasDiscovery and not hasExport):
-    return %*{"error": "session needs sessionId and content, model, thinking, title, cwd or profile"}
+  # Conversation controls (docs/WIRE.md "Conversation controls"): the human's
+  # gate mode and soft turn limits. Both are mutable per conversation — unlike
+  # the frozen job-scoping args below — and both are accepted on a call with no
+  # content (a control call runs no inference).
+  let hasApprovals = args.kind == JObject and args.hasKey("approvals")
+  let hasLimits = args.kind == JObject and args.hasKey("limits")
+  # A call carrying only a sessionId is the read-only status readback — how a
+  # UI shows a conversation's model/thinking/approvals/limits without running
+  # a turn. Anything else without content needs one of the keys above.
+  if sessionId.len == 0:
+    return %*{"error": "session needs sessionId"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
@@ -2184,6 +2292,15 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.maxRounds = header{"maxRounds"}.getInt(0)
     entry.maxCalls = header{"maxCalls"}.getInt(0)
     entry.maxTokens = header{"maxTokens"}.getInt(0)
+    # Conversation controls ride the same header: they are mutable (the human
+    # may change them at any point) but must survive a runner resume, so a
+    # restarted runner re-applies exactly what the human last chose.
+    entry.approvalMode = header{"approvals"}.getStr("")
+    let storedLimits = header{"limits"}
+    if storedLimits != nil and storedLimits.kind == JObject:
+      entry.limitRounds = storedLimits{"rounds"}.getInt(0)
+      entry.limitTokens = storedLimits{"tokens"}.getInt(0)
+      entry.limitSeconds = storedLimits{"seconds"}.getInt(0)
     if args.kind == JObject and args.hasKey("tools") and
         args{"tools"}.kind == JArray and entry.allowlist.len == 0:
       for t in args{"tools"}:
@@ -2375,6 +2492,52 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       return %*{"error": "thinking must be low, medium or high (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
+  # Conversation controls: presence of the key means set (empty `approvals`
+  # clears to ask, an all-zero `limits` object clears all three). They apply
+  # from the NEXT turn on and are persisted before the turn runs, so a crash
+  # mid-turn cannot lose a human's choice.
+  if hasApprovals:
+    let mode = args{"approvals"}.getStr("").strip().toLowerAscii()
+    if mode notin ["", "ask", "auto"]:
+      return %*{"error": "approvals must be ask or auto (empty clears)"}
+    entry.approvalMode = if mode == "auto": "auto" else: ""
+    ct.updateConversationHeader(sessionId, %*{"approvals": entry.approvalMode})
+  if hasLimits:
+    let raw = args{"limits"}
+    if raw.kind != JObject:
+      return %*{"error": "limits must be an object of rounds/tokens/seconds"}
+    for key, fieldValue in raw:
+      if key notin ["rounds", "tokens", "seconds"]:
+        return %*{"error": "unknown limit " & key &
+                            " (rounds, tokens, seconds)"}
+      if fieldValue.kind != JNull and fieldValue.kind != JInt:
+        return %*{"error": "limit " & key & " must be a positive integer"}
+    var limitRounds = 0
+    var limitTokens = 0
+    var limitSeconds = 0
+    for dimension in ["rounds", "tokens", "seconds"]:
+      let wanted = raw{dimension}
+      if wanted == nil or wanted.kind == JNull: continue
+      let value = wanted.getInt(0)
+      # Bounds keep a typo (/limit seconds=100000000) from parking a turn for
+      # weeks; the ceiling is generous, not protective.
+      let ceiling = case dimension
+        of "rounds": 200
+        of "seconds": 86_400
+        else: 10_000_000
+      if value < 1 or value > ceiling:
+        return %*{"error": "limit " & dimension & " must be between 1 and " &
+                            $ceiling}
+      case dimension
+      of "rounds": limitRounds = value
+      of "tokens": limitTokens = value
+      else: limitSeconds = value
+    entry.limitRounds = limitRounds
+    entry.limitTokens = limitTokens
+    entry.limitSeconds = limitSeconds
+    ct.updateConversationHeader(sessionId,
+      %*{"limits": %*{"rounds": limitRounds, "tokens": limitTokens,
+                      "seconds": limitSeconds}})
   if hasTitle:
     var title = args{"title"}.getStr("").strip()
     if title.len > 0:
@@ -2429,6 +2592,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "sessionId": sessionId,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
+      "approvals": entry.approvalMode,
+      "limits": %*{"rounds": entry.limitRounds, "tokens": entry.limitTokens,
+                     "seconds": entry.limitSeconds},
       "cwd": entry.workspace,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
@@ -2465,14 +2631,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # are routed to its private approval subject. Cleared when the turn ends.
   if ct.approval != nil:
     ct.approval.caller = caller
+    # The conversation's gate mode rides the same lifecycle as caller/session:
+    # set for this turn, cleared when it ends, so a direct (non-session)
+    # harness call still reads as "" (ask).
+    ct.approval.approvalMode = entry.approvalMode
   defer:
-    if ct.approval != nil: ct.approval.caller = ""
+    if ct.approval != nil:
+      ct.approval.caller = ""
+      ct.approval.approvalMode = ""
 
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
                       entry.thinkingEffort, content, entry.workspace,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
+                      entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
@@ -2480,6 +2653,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
                   "modelOverride": entry.modelOverride,
                   "thinkingEffort": entry.thinkingEffort,
+                  "approvals": entry.approvalMode,
+                  "limits": %*{"rounds": entry.limitRounds,
+                                "tokens": entry.limitTokens,
+                                "seconds": entry.limitSeconds},
                   "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError

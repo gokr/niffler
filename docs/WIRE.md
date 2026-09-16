@@ -69,7 +69,12 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   carries them across runner resumes): a tool allowlist,
                        #   LLM rounds per turn (1-50, default 50), total tool dispatches per
                        #   turn (1-500), and cumulative tokens per turn — budget
-                       #   exhaustion ends the turn as a budget-exhausted error
+                       #   exhaustion ends the turn as a budget-exhausted error.
+                       #   approvals/limits are the human's conversation controls
+                       #   (see "Conversation controls"): mutable per conversation,
+                       #   persisted in the same header — a gate mode (ask|auto) and
+                       #   SOFT turn limits (rounds/tokens/seconds) that ask the human
+                       #   instead of ending the turn
 svc.session.<id>.steer # fire-and-forget event envelope {content} injected into the
                        #   running turn as a user message ("Steer: ..."); folded in
                        #   before the next LLM round or before done (no reply)
@@ -502,6 +507,76 @@ so any attached interactive client can step in; direct (non-session) calls
 broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
 denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
+
+## Conversation controls (`/approvals`, `/limit`)
+
+Two per-conversation controls belong to the human, never to the model, and
+ride the ordinary session call (`svc.session.<id>.call`, tool `session`):
+
+```json
+{"sessionId": "conv-…", "approvals": "auto"}
+{"sessionId": "conv-…", "limits": {"rounds": 20, "tokens": 50000, "seconds": 600}}
+{"sessionId": "conv-…"}                    // status readback, runs no turn
+```
+
+- **`approvals`** is this conversation's gate mode: `""`/`"ask"` (the
+default) gates every `x-harness.approval` tool as described above; `"auto"`
+grants them without asking any client, loudly (`core: approval auto-granted
+for <tool>`) — a silent grant is exactly what the gate exists to prevent.
+It applies from the NEXT turn on and, unlike the frozen scoping arguments,
+may be changed at any point in a conversation's life.
+- **`limits`** are SOFT budgets: `rounds` (LLM rounds per turn, 1–200),
+`tokens` (cumulative per turn) and `seconds` (wall clock per turn, checked
+before every dispatch as well as at round boundaries — one bash call can
+outlast a whole round). Each key is optional and independent; an empty
+object clears all three. Job-scoped budgets — `maxRounds`/`maxCalls`/
+`maxTokens` (what the `agent` component freezes into a child's header) and
+`NIF_MAX_TURN_ROUNDS` — remain HARD: they end the turn and never ask, because
+a subagent must not be able to negotiate its own budget.
+- **Reaching a soft limit asks the human.** The question travels the approval
+transport on the same routing (directed to the driver, then broadcast), with
+`tool: "turn-limit"`, `purpose: "continue"` and
+`args: {dimension, detail}` — `dimension` is `rounds`/`tokens`/`seconds`,
+`detail` is a human-readable "3 LLM rounds (limit 2)". The answer is the
+existing `ev.approval.reply` (with the usual `{id, ack: true}` first):
+`ok: true` extends THAT limit by one more step and the turn continues;
+`false`, no answer or no reachable human ends the turn with a distinct error
+record (`error: "limit-<dimension>"`) naming the limit and the command that
+raises it. `NIF_AUTO_CONTINUE=1` (or `NIF_AUTO_APPROVE=1`) answers yes
+without a human, for headless automation.
+- Both controls are persisted in the conversation header (`approvals`,
+`limits`), so a resumed runner re-applies exactly what the human last chose,
+and both are echoed by the status readback and the turn result (`approvals`,
+`limits`) for UIs. Invalid values are refused with a clear error (unknown
+mode, unknown limit key, out-of-range value).
+
+### Session calls during a turn
+
+The runner is single-threaded and a turn must never nest, so a session call
+that arrives while a turn is running is refused **immediately** with
+`{code: "busy"}`, message `the conversation is mid-turn — retry when the turn
+finishes`. It used to stay silent until the turn ended, which made any client
+with a deadline report a generic timeout ten seconds in (`/export` waits 10s
+and looked like a hang).
+
+The refusal is answered by whichever layer the caller reaches, and the two
+layers split by what losing the call would cost:
+
+- **`svc.core.call` (what UIs use)** — core is mid-dispatch for the running
+turn, so its idle-slot pump (`pumpCoreWhileBusy`) sees the call first. A
+**content-less** session call (the status readback, `/export`, a control
+change) is refused `busy` on the spot: it is cheap to retry, and stashing it
+only produces the client-side timeout. A **turn-starting** call (content
+present) is still *stashed* and drained once the turn ends, because a user's
+message must never be dropped, and the runner would refuse it anyway.
+- **`svc.session.<id>.call` (a client addressing the runner directly)** — the
+runner's own idle-slot pump (`pumpBusyCall`, `ct.callSub`) refuses everything
+it sees mid-turn with the same `busy`, since serving any of it would mean
+re-entering the session handler while the running turn owns the context.
+
+Both pumps answer within milliseconds; a caller that ignores `busy` and keeps
+waiting will still hit its own deadline. `agent_run`'s refusal of a mid-turn
+child uses the same `busy` contract.
 
 ## x-harness schema extensions
 

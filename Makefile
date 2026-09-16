@@ -368,7 +368,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
 # test-core, test-discover, test-cli, test-systemprompt,
 # test-observe, test-logfile, test-models, test-grep,
-# test-git, test-mcp, test-smoke.
+# test-git, test-mcp, test-controls, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -460,6 +460,7 @@ test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT
 test-fabric: build var/bin/test_t_fabric var/bin/test_t_fabric_frames var/bin/test_t_fabric_cancel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_frames && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" python3 tests/t_fabric_native.py && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_cancel
 test-nested: build var/bin/test_t_nested var/bin/test_t_schema_validation ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_schema_validation && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_nested
 test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_approval_manifest
+test-controls: build var/bin/test_t_controls ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_controls
 test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction

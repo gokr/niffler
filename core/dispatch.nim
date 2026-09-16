@@ -25,6 +25,11 @@ type
     root*: string                         ## harness root (var/, components/, sdk/)
     approval*: Approval
     coreSub*: ptr natsSubscription        ## svc.core.call (set by niffler.nim; nil in runners)
+    callSub*: ptr natsSubscription        ## svc.session.<id>.call (set by session.nim:
+                                          ## the runner's own surface, pumped from
+                                          ## dispatch's idle slot while a turn runs so a
+                                          ## mid-turn call is refused with "busy" instead
+                                          ## of waiting for a client deadline to expire)
     pending*: PendingCalls                ## session calls stashed during a turn
     runner*: bool                         ## true in a session runner: core tools go over the bus
     # Streaming turn channel: while a session turn is running, runTurn installs
@@ -854,6 +859,17 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
   ## against the in-flight turn: core waits for the install, the install
   ## waits for core. Concurrent session requests are stashed — turns must
   ## never nest — and drained by pumpCoreCalls once the turn ends.
+  ##
+  ## EXCEPT a content-less session call (the status readback, `/export`, a
+  ## control change): that is refused NOW with code "busy" instead of stashed.
+  ## Stashing answers it only when the turn ends, and the caller has usually
+  ## given up by then — the TUI's `/export` waits 10s and reported "request
+  ## svc.core.call: context deadline exceeded" for a read-only request that
+  ## looks like it should be instant. A retry costs the caller nothing; a
+  ## dropped user *message* would, which is why a turn-starting call is still
+  ## stashed rather than refused. (The runner refuses everything IT sees
+  ## mid-turn — pumpBusyCall — for clients that address svc.session.<id>.call
+  ## directly; this is the layer a UI actually talks to.)
   if ct.coreSub == nil: return
   while true:
     var msg: ptr natsMsg
@@ -870,6 +886,13 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
         "expected a call envelope").encode())
       continue
     if env.tool == "session":
+      let content = if env.args.kind == JObject:
+                      env.args{"content"}.getStr("")
+                    else: ""
+      if content.len == 0:
+        ct.nc.publish(reply, errorEnvelope(env.id, "busy",
+          "the conversation is mid-turn — retry when the turn finishes").encode())
+        continue
       ct.pending.items.add((env: env, reply: reply))
       continue
     var resp: Envelope
@@ -884,6 +907,43 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
     except CatchableError as e:
       resp = errorEnvelope(env.id, "boom", e.msg)
     ct.nc.publish(reply, resp.encode())
+
+proc pumpBusyCall*(ct: CoreTools) =
+  ## Refuse session calls that arrive while a turn is running.
+  ##
+  ## The runner's main loop is blocked inside the turn, so without this its own
+  ## svc.session.<id>.call subscription is unserviced until the turn ends — and
+  ## a client with a deadline gives up first: the TUI's /export waits 10s and
+  ## then reports "request svc.core.call: context deadline exceeded", which
+  ## reads like a hang rather than "come back in a minute". Answering
+  ## immediately with code "busy" (the same contract agent_run uses for a
+  ## mid-turn child) makes the refusal explicit and instant.
+  ##
+  ## Read-only ops are refused too: servicing them means re-entering
+  ## handleSessionCall on the same session while runTurn holds its context —
+  ## precisely the state the no-nesting rule protects. The caller retries once
+  ## the turn ends.
+  if ct.callSub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.callSub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    let reply = $natsMsg_GetReply(msg)
+    natsMsg_Destroy(msg)
+    if reply.len == 0: continue
+    var env: Envelope
+    try:
+      env = decode(data)
+    except CatchableError:
+      continue
+    if env.kind != ekCall:
+      ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
+        "expected a call envelope").encode())
+      continue
+    ct.nc.publish(reply, errorEnvelope(env.id, "busy",
+      "the conversation is mid-turn — retry when the turn finishes").encode())
 
 proc streamPollMs*(ct: CoreTools): int64 =
   ## Reply-wait timeout for a dispatch. The live token pump (pumpTokenStream)
@@ -1187,6 +1247,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpBusyCall(ct)
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)
@@ -1624,6 +1685,7 @@ proc dispatchToolCalls*(ct: CoreTools,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpBusyCall(ct)
     pumpAdvise(ct)
     pumpNested(ct)
   for i in 0 ..< calls.len:
