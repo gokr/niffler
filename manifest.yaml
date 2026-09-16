@@ -156,6 +156,19 @@ components:
     required: false
     restart: on-failure
 
+  # Ranked repo map (docs/research/REPOMAP.md): repo_map is the onDemand,
+  # read-effect tool. The workspace-open auto-append is OPT-IN via
+  # NIF_REPOMAP_AUTOAPPEND — off by default because the A/B showed it costing
+  # ~40% more tokens with no accuracy gain, and onDemand tools never activate
+  # themselves. Off, this is simply a component the model can discover.
+  # Optional: an absent component means no map, nothing else changes.
+  - name: repomap
+    build: {lang: nim, src: components/repomap/main.nim}
+    binary: var/bin/repomap
+    autostart: true
+    required: false
+    restart: on-failure
+
   # Background processes with an owner (docs/OCTOFRIEND-STEAL.md): bash's
   # run_in_background flag forwards here; process_poll drains incremental
   # output, process_kill stops the group. Children are process-group

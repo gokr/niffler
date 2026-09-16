@@ -97,7 +97,7 @@ as many UIs as needed.
 
 ## Prerequisites
 
-Core + components need **Nim >= 2.2.10**, **Go**, and native development
+Core + components need **Nim >= 2.2.12**, **Go**, and native development
 libraries for NATS C, LZ4, and PCRE. Futhark also needs Clang/libclang to generate
 bindings. The NATS bus server is built from source as a component
 (`components/nats` → `var/bin/nats-server`). TypeScript components and the desktop UI additionally need **Node 20+/npm** (the
@@ -128,7 +128,7 @@ sudo apt update
 sudo apt install build-essential curl ca-certificates git pkg-config libssl-dev liblz4-dev libpcre3-dev
 
 # Complete Nim toolchain (Ubuntu's apt package is too old)
-curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.12
 export PATH="$HOME/.nimble/bin:$PATH"
 
 # nats-server — built from source by `make build` (components/nats), no install needed
@@ -151,7 +151,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 brew install go node pkg-config cnats lz4 pcre
 export SDKROOT="$(xcrun --show-sdk-path)"
 export LIBRARY_PATH="$(brew --prefix)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.12
 export PATH="$HOME/.nimble/bin:$PATH"
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # → ~/go/bin/wails
 ```
@@ -165,7 +165,7 @@ when installing Nimble packages directly from your shell.
 
 `fabric-exec` no longer needs the compiler sources: it just invokes
 `nim c` to compile each guest into a private process, and caches identical
-programs in `var/fabric-cache`. Any Nim >= 2.2.10 distribution works
+programs in `var/fabric-cache`. Any Nim >= 2.2.12 distribution works
 (choosenim, Homebrew with the nimble package, or a system install);
 the embedded-VM `dist/checksums` and compiler-module requirement is gone.
 `make install-nim` checks an existing toolchain and reports

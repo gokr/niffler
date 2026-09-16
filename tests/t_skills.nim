@@ -7,7 +7,8 @@
 ## skill_resource reads; install from a LOCAL git repo (file:// support,
 ## no network) — single-skill repos install directly, multi-skill repos
 ## need a skill name, duplicates are rejected; skill_remove only touches
-## Niffler-managed dirs. Cleanup leaves no files behind.
+## Niffler-managed dirs; the baked (compiled-in) fallback serves discovery
+## when no bundled tree is reachable. Cleanup leaves no files behind.
 
 import std/[json, os, osproc, strutils]
 import natsnim
@@ -77,7 +78,7 @@ proc main() =
   defer: stopServer(server)
   var nc = waitConnect(url)
   defer: nc.close()
-  let compProc = startComponent(repoRoot / "var" / "bin" / "skills", url,
+  var compProc = startComponent(repoRoot / "var" / "bin" / "skills", url,
                                 root = root, extra = [("HOME", fakeHome)])
   defer: stopProcess(compProc)
   check("skills registers", waitRegistered(nc, "skills"))
@@ -91,6 +92,15 @@ proc main() =
   check("list finds project skill", "projskill" in names, names.join(","))
   check("list finds home skill", "homeskill" in names, names.join(","))
   check("list finds config skill", "configskill" in names, names.join(","))
+  # Bundled skills (repo skills/ tree; compiled into the binary as a
+  # last-resort source when no disk tree exists) must always surface and
+  # load — whatever the deployment ships.
+  check("bundled harness skill discovered", "niffler-harness" in names,
+        names.join(","))
+  let bh = call(nc, "skills", "skill_load", %*{"name": "niffler-harness"})
+  check("bundled harness skill loadable, docs map present",
+        bh{"ok"}.getBool(false) and
+        bh{"content"}.getStr("").contains("docs/MANUAL.md"), $bh)
 
   let lsrc = call(nc, "skills", "skill_list", %*{"source": "home"})
   var homeNames = newSeq[string]()
@@ -224,6 +234,77 @@ proc main() =
   let rem2 = call(nc, "skills", "skill_remove", %*{"name": "otherskill"})
   check("project-installed skill removable",
         rem2{"ok"}.getBool(false), $rem2)
+
+  # --- baked fallback: a binary with no reachable bundled tree -------------
+  # A deployment that ships var/bin without the repo checkout has no
+  # <repo>/skills tree, and NIF_ROOT/skills may be missing too. Discovery
+  # must still serve the SKILL.md copies compiled into the binary (source
+  # "bundled", dir "(baked)") so the self-knowledge set survives. Point the
+  # bundled tree at a missing path to exercise exactly that, and prove the
+  # project/home/config sources are unaffected by it.
+  stopProcess(compProc)
+  compProc = nil
+  var regSub: ptr natsSubscription
+  let subSt = natsConnection_SubscribeSync(addr regSub, nc.conn,
+                                           "reg.publish".cstring)
+  check("subscribe reg.publish for the baked phase", checkStatus(subSt))
+  discard natsConnection_Flush(nc.conn)
+  let bakedProc = startComponent(repoRoot / "var" / "bin" / "skills", url,
+                                 root = root,
+                                 extra = [("HOME", fakeHome),
+                                          ("NIF_SKILLS_BUNDLED_DIR",
+                                           root / "no-such-bundled-tree")])
+  defer: stopProcess(bakedProc)
+  check("baked phase component registers",
+        waitRegisteredOn(regSub, "skills"))
+  natsSubscription_Destroy(regSub)
+
+  let bl = call(nc, "skills", "skill_list", %*{"source": "bundled"})
+  var bakedNames = newSeq[string]()
+  var bakedShape = bl{"skills"}.len >= 4
+  for item in bl{"skills"}:
+    bakedNames.add(item{"name"}.getStr(""))
+    if item{"dir"}.getStr("") != "(baked)" or
+       item{"source"}.getStr("") != "bundled":
+      bakedShape = false
+  check("baked: bundled skills discovered as source bundled, dir (baked)",
+        bakedShape and "niffler-harness" in bakedNames and
+        "niffler-tools" in bakedNames and "niffler-fabric" in bakedNames and
+        "todo-markdown" in bakedNames, $bl)
+
+  let bload = call(nc, "skills", "skill_load", %*{"name": "niffler-harness"})
+  check("baked: skill_load serves the compiled-in content (docs map)",
+        bload{"ok"}.getBool(false) and
+        bload{"content"}.getStr("").contains("docs/MANUAL.md") and
+        bload{"skill"}{"dir"}.getStr("") == "(baked)" and
+        bload{"resourceCount"}.getInt(-1) == 0, $bload)
+
+  let bfixtures = call(nc, "skills", "skill_list", %*{})
+  var fixtureNames = newSeq[string]()
+  for item in bfixtures{"skills"}:
+    fixtureNames.add(item{"name"}.getStr(""))
+  check("baked: project/home/config discovery is unaffected",
+        "projskill" in fixtureNames and "homeskill" in fixtureNames and
+        "configskill" in fixtureNames, fixtureNames.join(","))
+
+  let ba = call(nc, "skills", "skill_audit", %*{})
+  var bakedRows = 0
+  var diskRows = 0
+  var invalidRows = 0
+  for e in ba{"skills"}:
+    if e{"dir"}.getStr("") == "(baked)":
+      inc bakedRows
+    else:
+      inc diskRows
+      if e{"status"}.getStr("") == "invalid": inc invalidRows
+  check("baked: skill_audit reports baked-only rows beside the disk copies",
+        bakedRows >= 4 and diskRows >= 3 and invalidRows == 0 and
+        ba{"shadowedCount"}.getInt(-1) == 0, $ba)
+
+  let brem = call(nc, "skills", "skill_remove", %*{"name": "niffler-harness"})
+  check("baked: compiled-in skills are not removable",
+        not brem{"ok"}.getBool(false) and
+        brem{"error"}.getStr("").contains("not Niffler-managed"), $brem)
 
   report("SKILLS TEST")
 

@@ -910,6 +910,28 @@ proc drainSteer(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     result += 1
   ct.steerStream.queue.setLen(0)
 
+proc drainMap(ct: CoreTools, p: var Persister,
+              messages: var seq[JsonNode],
+              onEvent: proc(kind: string, data: JsonNode) {.closure.}) =
+  ## Append the conversation's repo map once (docs/research/REPOMAP.md):
+  ## a user-role message carrying the ranked workspace snapshot. One per
+  ## conversation; append-only history, never the frozen prefix. If the
+  ## compaction trims it away later, the repo_map tool re-creates it.
+  if ct.mapStream == nil: return
+  if ct.mapStream.appended: return
+  for (ws, map) in ct.mapStream.queue:
+    ct.mapStream.appended = true
+    let msg = %*{"role": "user",
+                 "content": "[repo map of " & ws & " — a ranked snapshot of " &
+                   "this workspace when the conversation started. Edits you " &
+                   "make are not in it; call repo_map for a fresh one.]\n" & map}
+    ctxAppend(p, messages, msg)
+    if onEvent != nil:
+      onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
+                        "bytes": map.len})
+    break
+  ct.mapStream.queue.setLen(0)
+
 proc drainAdvisories(ct: CoreTools, p: var Persister,
                      messages: var seq[JsonNode],
                      onEvent: proc(kind: string, data: JsonNode) {.closure.},
@@ -1749,6 +1771,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # accepted advisor messages (pumpAdvise). Admission runs AFTER the drains:
     # it must measure the whole candidate request, steering included (§6.1).
     discard drainSteer(ct, p, messages, onEvent, turnId)
+    drainMap(ct, p, messages, onEvent)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
@@ -1778,6 +1801,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # append-only history. Fold it in after settlement and re-admit the
         # complete candidate before either trim or provider dispatch (§6.1).
         discard drainSteer(ct, p, messages, onEvent, turnId)
+        drainMap(ct, p, messages, onEvent)
         discard drainAdvisories(ct, p, messages, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
       if verdict.startsWith("pressure:"):
@@ -1855,6 +1879,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               discard attemptCompaction(ct, p, messages, promptToolsJson,
                                         onEvent, turnId, "overflow", ccfg)
               discard drainSteer(ct, p, messages, onEvent, turnId)
+              drainMap(ct, p, messages, onEvent)
               discard drainAdvisories(ct, p, messages, onEvent, turnId)
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
@@ -2680,6 +2705,13 @@ func steerSubject*(sessionId: string): string =
   ## Fire-and-forget channel a client publishes to in order to inject a message
   ## (or a __cancel control message — agent_stop's turn abort; see pumpSteer).
   "svc.session." & sanitizeSessionId(sessionId) & ".steer"
+
+func mapSubject*(sessionId: string): string =
+  ## The repo-map auto-append channel (docs/research/REPOMAP.md): the
+  ## repomap component publishes a finished workspace map here on
+  ## ev.workspace.opened; the runner drains it (pumpMap) and runTurn
+  ## appends it once as history.
+  "svc.session." & sanitizeSessionId(sessionId) & ".map"
 
 func adviseSubject*(sessionId: string): string =
   ## Turn-bound advisory requests from the expert peer (docs/research/EXPERT.md): answered

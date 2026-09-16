@@ -226,12 +226,17 @@ proc main() =
         dir = parentDir(dir)
 
       # --- compose: product prompt + wrapped context files -----------------
-      # Byte-stability: the composed prompt must not embed machine-specific
-      # absolute paths ($ROOT, cwd) — the prompt is persisted in the
-      # conversation header and its head should stay byte-identical across
-      # conversations for provider prompt-cache reuse. Paths are discoverable
-      # at runtime (pwd, tool results); the file attribute below is
-      # root-relative for the same reason.
+      # Byte-stability: the frozen head of the prompt (product prompt +
+      # context files) must not embed machine-specific absolute paths ($ROOT,
+      # cwd) — the prompt is persisted in the conversation header and its
+      # head should stay byte-identical across conversations for provider
+      # prompt-cache reuse. Paths are discoverable at runtime (pwd, tool
+      # results); the file attribute below is root-relative for the same
+      # reason. The one deliberate exception is the per-conversation
+      # <workspace> tail below, which carries the harness root so docs and
+      # skills outside the workspace resolve by absolute path: it only
+      # appears when cwd != root, and two conversations on one machine share
+      # the same root, so cache prefixes still line up.
       var prompt = basePrompt
       for slot in ["tool_usage", "efficient_tools", "after_instructions"]:
         let hints = renderPromptSlot(slot)
@@ -243,7 +248,9 @@ proc main() =
         prompt &= "\n\n<workspace>\nWorkspace: the conversation's working " &
           "directory — relative paths in tool calls resolve from it (`pwd` " &
           "prints the absolute path). Keep all task work inside it; reach " &
-          "outside only with absolute paths.\n</workspace>\n"
+          "outside only with absolute paths. Harness root: " & root &
+          " — docs/, components/, sdk/ live there; read them by absolute " &
+          "path (the niffler-harness skill has the docs map).\n</workspace>\n"
 
       if files.len > 0:
         prompt &= "\n\n<project_context>\n\n"

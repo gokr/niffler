@@ -9,8 +9,8 @@
 FROM node:22-bookworm
 
 ARG DOCKER_VERSION=29.7.2
-ARG GO_VERSION=1.26.2
-ARG NIM_VERSION=2.2.10
+ARG GO_VERSION=1.27.1
+ARG NIM_VERSION=2.2.12
 ARG NATS_SERVER_VERSION=2.11.6
 ARG SWEBENCH_VERSION=4.1.0
 ARG UV_VERSION=0.9.8
@@ -33,7 +33,7 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -C /usr/local -xzf - && ln -s /usr/local/go/bin/go /usr/local/bin/go
 
-# Nim toolchain (niffler.nimble requires >= 2.2.10) — official prebuilt tarball.
+# Nim toolchain (niffler.nimble requires >= 2.2.12) — official prebuilt tarball.
 RUN curl -fsSL "https://nim-lang.org/download/nim-${NIM_VERSION}-linux_x64.tar.xz" \
     | tar -C /opt -xJf - && ln -s /opt/nim-${NIM_VERSION}/bin/nim /usr/local/bin/nim \
     && ln -s /opt/nim-${NIM_VERSION}/bin/nimble /usr/local/bin/nimble \
