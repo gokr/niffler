@@ -12,6 +12,24 @@ and `niffler-fabric` is how to program tools. The repo snapshot is the source
 of truth; `var/` is disposable runtime state (remove artifacts with
 `make clean`, never a bare `rm -rf var`).
 
+## Docs map
+
+Deep reference for everything in this skill — root-relative paths under the
+harness root (`NIF_ROOT`; from a session workspace, read them by absolute
+path). Read the relevant file fully and follow its cross-references before
+advising on or changing Niffler itself:
+
+- `docs/MANUAL.md` — operating the harness: boot, configuration, env vars,
+  testing
+- `docs/WIRE.md` — the one bus protocol: JSON envelopes, subjects, component
+  and subagent lifecycles
+- `docs/ARCHITECTURE.md` — why core is core: the design test, invariants and
+  their rationale
+- `docs/research/` — design notes (REBOOT, STORE_V2, COMPACTION, SUBAGENTS,
+  …)
+- `AGENTS.md` (repo root) — development conventions; `CHANGELOG.md` — recent
+  changes
+
 ## Lifecycle
 
 - `make run` (or `./var/bin/niffler`) — the tty is an **admin shell**
@@ -114,10 +132,11 @@ The `x-harness.*` schema extensions core honors:
   `"interactive": true` packages are built but not spawned (start them
   manually, e.g. niffler-tui). Clones honor `NIF_GIT_MIRROR`.
 - Skills: discovery order project → bundled → home → config (first match per
-  name wins); bundled (`skills/` in the repo) are never removable.
-  `skill_audit` shows shadowed duplicates that `skill_list` hides. Loading a
-  skill appends to the conversation history — it never changes the frozen
-  prefix.
+  name wins); bundled (`skills/` in the repo) are never removable, and when
+  no disk tree exists (binary-only sandboxes) the bundled SKILL.md files
+  compiled into the binary serve instead. `skill_audit` shows shadowed
+  duplicates that `skill_list` hides. Loading a skill appends to the
+  conversation history — it never changes the frozen prefix.
 
 ## Config and secrets
 

@@ -10,7 +10,7 @@ bin           = @[]
 # yaml for the bootstrap manifest, natsnim (pure Nim, no libnats) for the
 # bus, bitbarrel for the store component's embedded KV.
 
-requires "nim >= 2.2.10"
+requires "nim >= 2.2.12"
 requires "yaml"
 requires "htmlparser"
 requires "checksums"

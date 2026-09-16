@@ -34,12 +34,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # Nim via choosenim, pinned to the version the repo develops against
-      # (niffler.nimble requires >= 2.2.10). Cache the toolchain and the
+      # (niffler.nimble requires >= 2.2.12). Cache the toolchain and the
       # nimble package store keyed on the .nimble file — first run builds
       # the deps, later runs reuse them.
       - name: Install Nim
         run: |
-          curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10
+          curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.12
           echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
 
       - name: Cache nim toolchain + packages
@@ -48,7 +48,7 @@ jobs:
           path: |
             ~/.choosenim
             ~/.nimble
-          key: nim-2.2.10-${{ hashFiles('niffler.nimble') }}
+          key: nim-2.2.12-${{ hashFiles('niffler.nimble') }}
 
       - uses: actions/setup-go@v5
         with:

@@ -190,6 +190,15 @@ proc main() =
                       %*{"cwd": root / "ws"}, 10_000){"systemPrompt"}.getStr("")
   check("workspace ancestor AGENTS.md within the root is injected",
         wsPrompt.contains("workspace rules: mind the boundary"), wsPrompt)
+  # Out-of-root workspaces get the harness root in the per-conversation
+  # <workspace> tail so repo docs resolve by absolute path; the frozen head
+  # stays path-free (asserted above for the in-root call), and two
+  # conversations on one machine share the same root, so cache prefixes
+  # still line up.
+  check("workspace prompt carries the harness root",
+        wsPrompt.contains("Harness root: " & root), wsPrompt)
+  check("in-root prompt has no workspace block (root stays implicit)",
+        not directPrompt.contains("Harness root:"), directPrompt)
   block aboveRoot:
     let above = parentDir(root) / "AGENTS.md"
     if fileExists(above):

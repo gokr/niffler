@@ -639,7 +639,7 @@ install-native-deps:
 install-nim:
 	@if ! command -v nim >/dev/null 2>&1; then \
 		echo "Installing Nim via choosenim (~/.nimble/bin) ..."; \
-		set -o pipefail; curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.10; \
+		set -o pipefail; curl -sSf https://nim-lang.org/choosenim/init.sh | sh -s -- -y 2.2.12; \
 	fi
 	@bash scripts/check-nim-toolchain.sh
 
