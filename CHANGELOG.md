@@ -8,6 +8,106 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **core: `session {export: true}` — dump the exact provider request
+  (read-only).** Returns the request the next turn would send — messages,
+  tool schemas (allowlist-filtered), model, provider, `reasoning_effort` —
+  with no user message, LLM call or store write; deliberately kept in
+  lockstep with the turn's own request assembly so the dump is faithful for
+  reproducing or debugging a provider request (`87b14bf`).
+
+- **agent: delegation depth cap, keyed nested leases, durable steer,
+  `agent_ask`, model tiers.** The next four steps of the
+  `docs/research/SUBAGENTS-PLAN.md` runbook (P2, P3, P4):
+  - **Delegation depth cap (`f1ef4c2`)** — `NIF_AGENT_MAX_DEPTH`
+    (default **1**: subagents cannot spawn subagents; `0` forbids
+    delegation entirely) is evaluated at dispatch by a depth walk over
+    `sessionmeta.parent` links, bounded by cap + 2 reads (a corrupt lineage
+    cycle exceeds the cap and is denied) and fails closed when lineage
+    cannot be verified. The spawn tools stay visible at the cap: each start
+    rejects with an error naming the limit and the caller's depth, and the
+    agent component enforces the same rule a second time at its own trust
+    boundary. Raising the cap above 1 works because a child's synchronous
+    `agent_run` is now served re-entrantly (`pumpCallsReentrant` in the
+    SDK) instead of circular-waiting on the parent's own held pump until
+    timeout.
+  - **Keyed nested leases (`f1ef4c2`)** — the nested-call proxy validated
+    against a single lease string that every session-context dispatch
+    replaced on entry and restored on exit, so parallel dispatches could
+    clobber one another. Leases are now keyed by id with per-call deadlines
+    and exact removal, and the validity window gates everything (an expired
+    lease is denied before tool resolution).
+  - **Model tiers (`db52960`)** — `agent_run`/`agent_spawn` accept
+    `modelTier: weak | medium | strong` for a fresh child, resolved through
+    `NIF_AGENT_MODEL_WEAK/MEDIUM/STRONG` and clamped to the parent's
+    effective tier (`NIF_AGENT_DEFAULT_TIER`, default `strong`). Mutually
+    exclusive with an exact `model` (a caller cannot mistake a silently
+    ignored tier for policy); `agent_status`'s effective controls and
+    `agent_run`'s result report the resolved tier. Unknown parent models
+    use the configured ceiling.
+  - **Durable steer (`34e8433`)** — steering an idle or retired child used
+    to publish into a steer subscription nobody drained and was silently
+    lost. Mid-turn publishes as before; between turns the steer queues as a
+    durable agentnotice (parent-mail) delivered at the child's next
+    continuation; a nonexistent session or non-parent caller fails closed.
+  - **`agent_ask {session, question}` (`34e8433`)** — a continuation that
+    returns the child's answer: directly from an idle child, queued as mail
+    for a mid-turn child (turns never nest), refused for a closed child.
+  - **P3/P4 polish (`34e8433`)** — the task preamble states the delegation
+    scope (approvals are answered by the parent's human, allowlists and
+    budgets are fixed at start and cannot be widened from inside, denials
+    are reported rather than retried); tool descriptions carry mode-
+    specific task wording (fresh/fork/continuation) so a forked child is
+    never handed a preamble re-narrating what it just read, and the fork
+    contract documents that the child receives the raw transcript —
+    compaction checkpoints are not copied and the child compacts on its own
+    schedule. `session_info` gains lineage enrichment (fork, activations,
+    `firstActivationAt`, closed, a children count). The SPA activity strip
+    surfaces `ev.agent.notice` via a pure wording module
+    (`ui/frontend/src/lib/agentNotice.ts`, node-tested), and
+    `bench/subagents/run.mjs` drives the four mechanism scenarios
+    (delegate-and-collect, follow-up, fork, interrupt-and-resume)
+    deterministically over the CLI. One robustness fix: a fresh child's
+    model inheritance now degrades to the requested model when the parent
+    conversation cannot be read instead of failing the spawn. Tests:
+    `tests/t_agentdepth.nim`, `tests/t_nested_leases.nim`,
+    `tests/t_agentp3.nim`; docs in MANUAL.md and WIRE.md ("Delegation
+    depth", "Nested-call leases (keyed)").
+
+- **prompt: deterministic system prompt slots (`a506618`).** Components and
+  plugins register prompt fragments through the hidden `prompt_hint` tool —
+  a named slot (`tool_usage`, `efficient_tools`, `after_instructions`),
+  content, a component identity and a stable contribution key, aggregate
+  (join) or singleton (later registration replaces the prior default) —
+  and new conversations render each non-empty slot in deterministic
+  source/key order inside `<prompt_slot name="...">` blocks. A registration
+  affects only prompts composed after it; existing (frozen) conversation
+  prompts are never rewritten.
+
+- **prompt: local and subtree instructions load lazily (`94a87cd`).**
+  `AGENTS.local.md` is an additive instruction file alongside the existing
+  AGENTS.md/CLAUDE.md shadow chain in the initial prompt — useful for
+  checkout-local guidance without touching the stable project rule. Reads
+  that enter a subdirectory below the harness root inject that subtree's
+  instructions once per session as a `<lazy_project_instructions>` block in
+  the tool result, so monorepo subtree rules stay out of the frozen
+  system-prompt prefix until the model actually enters the subtree.
+
+- **mcp: oversized direct toolsets defer to progressive discovery
+  (`e8942fb`).** A server configured `expose: direct` publishing more than
+  `NIF_MCP_DIRECT_THRESHOLD` tools (default 10) marks its tools onDemand
+  instead of flooding the tool prompt with a server the model did not ask
+  for; smaller direct servers keep publishing every tool up front.
+
+- **compaction: live GPT-OSS smoke (`make live-smoke`, `51a8a66`).** The
+  opt-in §8 gate runs real components against a real provider and measures
+  continuity, recall and latency across restarts — not part of CI because
+  it spends tokens (`SYNTHETIC_API_KEY=... make live-smoke`). The
+  conformance fixture gains `NIF_FIXTURE_CHECKPOINT_ONLY=1`, exercising a
+  strictly smaller checkpoint-only replacement including a restart after
+  generation 2. The [live smoke report](docs/research/COMPACTION_LIVE_SMOKE.md)
+  completed ten audit batches with two compactions, no lossy trim and
+  continuity across restart.
+
 - **agent: subagents-v2 — settlement notices, the child roster,
   continuation and fork.** Four steps landed from the
   `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH
@@ -484,6 +584,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **retry: failure budgets split by failure kind (`060b5d1`).** One retry
+  counter treated every transient alike: a stream timeout whose output may
+  already be billed and a local connection refusal both consumed the same
+  budget as an outage backoff. Failures are now classified — hinted rate
+  limit (429 with Retry-After), unhinted 429, stream timeout, connection
+  refused, transient, permanent — and each gets its own bounded budget:
+  `NIF_LLM_MAX_RETRIES` remains the general budget, with
+  `NIF_LLM_MAX_STREAM_RETRIES` (default 2), `NIF_LLM_MAX_CONNECT_RETRIES`
+  (default 2) and `NIF_LLM_RETRY_AFTER_CAP_MS` (default 1h) tunable
+  separately. A 429 that carries a server-directed wait sleeps exactly that
+  long (up to the cap) and is not attempt-bounded; permanent markers (auth,
+  quota, bad request) still fail fast. The Go llm adapter preserves the
+  HTTP Retry-After header through go-openai's error shape, which drops
+  response headers, by appending `retry-after-ms: <n>` to the error
+  message; `retry` events now carry `budget` and `retryAfterMs` (and
+  `maxRetries: -1` for the unbounded hinted case).
+
+- **fetch: private destinations blocked and redirects validated
+  (`a86b369`).** The fetch tool now resolves the host up front and fails
+  closed: loopback, private, link-local, carrier-grade NAT, multicast and
+  unspecified addresses are refused (IPv4-mapped IPv6 normalized to the
+  IPv4 rules), as are `localhost`/`.localhost`/`.local`/`.internal`
+  hostnames and URLs with embedded credentials; a DNS resolution failure is
+  an error, not a bypass. Redirects are followed hop-by-hop with the same
+  validation on every target (Nim's default redirect handling validated
+  neither DNS destinations nor redirect hops), capped at five hops and
+  http(s) targets only. `NIF_FETCH_ALLOW_PRIVATE=1` restores access to
+  loopback/private services for trusted local development.
+
 - **plugins: `plugin_installed` derives the checkout commit at read time.**
   Store records carry no commit field, so the listing now runs
   `git rev-parse HEAD` in each checkout and injects the result — truthful
@@ -506,6 +635,29 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`d64f437`).
 
 ### Fixed
+
+- **core: partial tool output travels with its timeout/cancel error
+  (`9bbe3e8`).** The partial-reply grace window let a component hand back
+  the bytes it had captured before a dispatch timeout or cancel, but the
+  result was recorded as a plain success: the model saw "[tool output above
+  is partial; timed out; retry may be useful]" with no error anywhere —
+  not in the tool message, not in the `toolcall` event. Partial output now
+  leads with the `ERROR:` line carrying the real timeout/cancel reason, the
+  `toolcall` event carries an `error` field, and a component result marked
+  `__toolError` is surfaced as a failed call instead of being committed as
+  a successful one.
+
+- **compaction: persisted coverage endpoints name canonical messages
+  (`51a8a66`).** When a cut boundary landed on a prior checkpoint node, the
+  new projection record named the superseded `#ckN` projection-node id as
+  its `covered` endpoint — a dangling reference after this very put
+  replaced it — instead of the checkpoint's canonical message endpoints.
+  The runner now substitutes the previous projection's persisted canonical
+  endpoints before rendering and pricing, and rejects a record whose
+  endpoints are not canonical conversation ids. The compactor's snapshot
+  tool schemas also now come from the catalog's `schema` field (raising on
+  a snapshot tool without one) instead of guessing at `parameters`/
+  `inputSchema`.
 
 - **core: settlement notices join compaction's context ledger.** Merging
   the compaction work brought the context identity ledger rule — every
