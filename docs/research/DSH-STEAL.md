@@ -1,6 +1,9 @@
 # DSH-STEAL — dsh's orchestration ideas, made Niffler-native
 
-Status: **proposal** (nothing here is implemented). Companion to
+Status: **partly shipped, partly proposal.** Continuable subagents and forked
+children are shipped in `agent`; on-demand `fabric {api: true}` declarations
+and the `team` component remain open. The detailed designs below predate the
+landed work, so use [MANUAL.md](../MANUAL.md) for current behavior. Companion to
 [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) — read its §4 (guarded tool
 pipeline), §8 (subagents) and #12 (agent-team) for the provenance. All dsh
 citations below refer to `~/git/harnesses/deepseek-harness`.
@@ -305,8 +308,9 @@ Consequences:
 - The prompt-embedded declaration block (see above) — one carve-out: a
   *tools profile* may inline it for dedicated fabric conversations, frozen at
   conversation start. Until someone measures a need: no.
-- Python/TS guest backends (dsh's `code-runtime-python`). The Nim-VM guest is
-  our isolation story, not a gap to fix; the api steal is deliberately orthogonal to guest language.
+- Python/TS guest backends (dsh's `code-runtime-python`). The compiled Nim
+  guest is the current Fabric backend; it is governance-only, not a security
+  boundary, and the api steal is deliberately orthogonal to guest language.
 
 ## 5. Steal 4 — Team: named teammates + a durable mailbox
 

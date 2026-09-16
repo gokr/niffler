@@ -1,7 +1,11 @@
 # What's next after compaction — priorities against Pi
 
+> Historical prioritization note. The context/compaction work described below
+> has since landed; the remaining rows are retained as an evidence-backed
+> backlog. Current behavior is in [MANUAL.md](MANUAL.md).
+>
 > Follow-up to [PI-VS-NIFFLER.md](PI-VS-NIFFLER.md) (the full difference map) and
-> [research/COMPACTION.md](research/COMPACTION.md) (the compaction proposal).
+> [research/COMPACTION.md](research/COMPACTION.md) (the compaction design record).
 > This file records the *decision* reached when asking: "after compaction lands,
 > what does Pi do that Niffler should actually do something about?" — and
 > deliberately separates findings backed by source from findings that are
@@ -15,7 +19,7 @@
 
 | # | Item | Kind | Size | Status |
 |---|---|---|---|---|
-| 1 | Context-overflow classification + recover-and-retry | compaction dependency | small | **[verified]** gap |
+| 1 | Context-overflow classification + recover-and-retry | compaction dependency | small | **shipped** |
 | 2 | Shell session env injection into `bash` | ergonomics | hours | **[verified]** gap, zero found |
 | 3 | Cache: breakpoints (conditional), write accounting (small, real), retention (sits on breakpoints) | doctrine-completing | small | **[verified]**, narrower than first assessed |
 | 4 | Image payloads across the wire (+ history normalization) | wire-level | medium | **[verified]** gap |
@@ -23,34 +27,25 @@
 
 Two commonly assumed candidates got demoted:
 
-- **Compaction** itself is already a proposal ([COMPACTION.md](research/COMPACTION.md)) — items 1
-  and part of 4 (the trim-vs-summary gap) are its dependencies, not new work.
+- **Compaction** itself is shipped ([COMPACTION.md](research/COMPACTION.md)) —
+  item 1 is now part of its bounded overflow-recovery path, while part of 4
+  (the trim-vs-summary gap) remains a separate wire-level question.
 - **Session tree navigation** (`/tree`, `/fork`, `/clone`, labels, filters) is a
   UX product bet, not an architectural gap — see the "Demoted" section.
 
-## 1. Context-overflow classification + recover-and-retry
+## 1. Context-overflow classification + recover-and-retry — shipped
 
-Pi has a distinct error class for "prompt too long"
-(`packages/coding-agent/src/utils/overflow.ts`), triggers compaction on it, and
-retries the request after compacting. Niffler treats overflow as a generic `llm`
-error; the only pre-emptive defenses are the 75% warn / 90% trim thresholds
-estimated from provider-reported usage.
+Pi has a distinct error class for "prompt too long" and retries after
+compacting. Niffler now has the corresponding bounded path: the Go LLM
+adapter normalizes provider overflow responses to `context-overflow`, and the
+runner performs one receipt-backed recovery attempt (compaction, then the
+fallback pressure ladder). A second overflow is terminal, so a provider cannot
+create an unbounded retry loop. Durable trim watermarks and provider-scale
+accounting also make restart and admission behavior truthful.
 
-This is **the trigger the `compaction` component needs** — `compaction_propose`
-is useless if nothing classifies the failure that means "compact now". Also the
-safety net: Niffler trims by *estimate*, and if the estimate is wrong the turn
-simply dies.
-
-Work: an error class in `core/retry.nim`'s classification family
-(`isRetryableLlmError` today treats everything non-transient as fail-fast), a
-provider-side detector in the `llm` adapters (`context_length_exceeded`,
-Anthropic's `invalid_request_error` / "prompt is too long"), and a
-recover-and-retry path that compacts (or trims harder) once and re-issues the
-request. Small, and sequenced *with* compaction rather than after it.
-
-**[verified]** `components/llm/` has no overflow branch; `core/retry.nim`
-classifies auth/quota/bad-request as fail-fast and 429/5xx/overload as
-retryable — overflow falls through neither path usefully.
+The original gap analysis and proposed work are retained below only as the
+historical motivation. See [MANUAL.md](MANUAL.md#context-window) and
+[COMPACTION.md](research/COMPACTION.md) for the current contract.
 
 ## 2. Shell session environment injection
 

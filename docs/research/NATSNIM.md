@@ -10,9 +10,10 @@ Design rationale and the phase plan live in that repo's
 [ASSESSMENT.md](https://github.com/gokr/natsnim/blob/main/ASSESSMENT.md) and
 [PROVENANCE.md](https://github.com/gokr/natsnim/blob/main/PROVENANCE.md).
 
-## Why
+## Why (the pre-natsnim baseline)
 
-Nim's only NATS clients are FFI bindings to `nats.c`
+Before this migration, the Nim NATS clients available to Niffler were FFI
+bindings to `nats.c`
 (`gokr/natswrapper`, `deem0n/nim-nats`), which make `libnats`, OpenSSL,
 libsodium and protobuf-c host prerequisites — `make doctor` checks
 `pkg-config --exists libnats`, and `make install-native-deps` installs it.

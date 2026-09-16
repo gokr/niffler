@@ -109,7 +109,7 @@ The model calls fabric with `tools: ["grep", "read"]` and roughly:
 
 ```nim
 import fabricguest
-import std/strutils   # allowed in guests; std/os, std/net etc. are lint-banned
+import std/strutils   # standard-library imports are allowed; Fabric is not a sandbox
 
 # typed wrappers: arguments are compile-checked against the pinned schema
 let hits = tools.grep(pattern = stringArg("symbol"), path = "core",

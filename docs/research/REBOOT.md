@@ -109,9 +109,10 @@ Rejected alternatives:
       restart: on-failure   # never | on-failure | always
   ```
 
-- **Boot sequence**: spawn NATS (if embedded mode) → open catalog → resolve
-  manifest to binaries (build cache keyed by source hash; `builder` itself is
-  a bootstrap component the supervisor compiles directly) → spawn children
+- **Boot sequence**: claim an attached bus or spawn a private NATS server →
+  open catalog → resolve manifest to binaries (build cache keyed by source
+  hash; `builder` itself is a bootstrap component the supervisor compiles
+  directly) → spawn children
   (no ordering; ordering emerges from the bus) → converge when the required set
   (llm adapter, core tools) has registered.
 - **Core stays nearly empty**: NATS + supervisor + conversation loop reading
@@ -280,18 +281,18 @@ speakers; anything request/reply can live behind `pipewrap`.
 
 ## What Niffler contributes
 
-- `natswrapper` (cnats) — Nim NATS client, proven
+- `natsnim` — pure-Nim NATS client, now the default bus client
 - `types/tools.nim` — ToolCall/ToolResult JSON shapes ≈ the envelope
 - `core/agent_manager.nim` — self-spawning logic = supervisor seed
 - DB-backed conversation persistence — externalized state is *why*
   mid-conversation tool swaps are safe
-- Multi-agent NATS experience (subjects, JetStream KV presence)
+- Multi-agent NATS experience (subjects and request/reply envelopes)
 
 Not ported: the `ToolKind` enum/object-variant tool registry — a tool is now
 just a queue-grouped subject; compile-time dispatch is exactly what we're
-escaping. Niffler is client-only re: NATS (no embedding in code; only roadmap
-docs discuss it) — Niffler adds the spawn-if-missing fallback (3 lines of
-`startProcess` on a random loopback port).
+escaping. Niffler components are NATS clients; the harness can also spawn a
+private `nats-server` for local operation. The spawn-if-missing fallback remains
+a small core concern, not part of the component contract.
 
 ## Open threads
 

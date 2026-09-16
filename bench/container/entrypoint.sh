@@ -72,18 +72,14 @@ if [ -x "$STAMPS/$SHA/var/bin/niffler" ]; then
   cp -a "$STAMPS/$SHA/var/bin" "$WORK/var/bin"
 else
   log "building niffler at $SHA (nimble deps + make build; caches under $CACHE/home)…"
-  # opir = futhark's libclang header parser (futhark is a natswrapper dep and
-  # invokes it at compile time); must be on PATH ($HOME/.nimble/bin is).
-  nimble install -y opir >/dev/null 2>&1 || log "warning: opir install failed"
   # Direct deps from niffler.nimble (config.nims resolves them from
   # $HOME/.nimble/pkgs2). htmlparser is stdlib-only; tolerate per-dep failures.
   (cd "$WORK" && sed -n 's/^requires "\(.*\)"$/\1/p' niffler.nimble \
       | grep -v '^nim' | while IFS= read -r dep; do \
           nimble install -y "$dep" >/dev/null 2>&1 || echo "[niffler-bench] nimble dep '$dep' unavailable (ok if stdlib)"; \
         done)
-  # config.nims' pkgs2 fallback allowlist can lag transitive deps (futhark ->
-  # macroutils, bitbarrel -> jwt/mummy/whisky/...). Synthesize the nimble.paths
-  # file nimble would generate, covering every installed package.
+  # config.nims' pkgs2 fallback allowlist can lag transitive deps. Synthesize
+  # the nimble.paths file nimble would generate, covering every installed package.
   {
     echo '--noNimblePath'
     echo "--path:\"$WORK\""

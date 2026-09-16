@@ -1,7 +1,8 @@
 # SANDBOX-PLAN — a small, honest first release
 
-Status: **revised plan; nothing implemented**, branch `feat/sandbox`, worktree
-`~/git/niffler-sandbox`. This revision supersedes the implementation decisions
+Status: **revised plan; nothing implemented**. The historical sandbox branch
+and worktree are not part of the current checkout. This revision supersedes the
+implementation decisions
 in [SANDBOX.md](SANDBOX.md) and the original version of this plan. The research
 is useful background, not an implementation specification.
 

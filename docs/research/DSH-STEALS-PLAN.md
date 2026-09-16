@@ -1,20 +1,22 @@
 # DSH steals — implementation plan
 
-Status: **planned, nothing started.** Execution order for the three steals
-selected out of [DSH-STEAL.md](DSH-STEAL.md) (orchestration) and
-[DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) (techniques). Those two stay the
-design rationale and provenance; this is the runbook.
+Status: **historical runbook.** Phases A (context/compaction) and B
+(continuable subagents/forks) shipped on `main`; phase C (on-demand
+`fabric {api: true}` declarations) remains open. The execution details below
+were written before implementation and are retained as design rationale and
+provenance. The current contracts are in [MANUAL.md](../MANUAL.md),
+[WIRE.md](../WIRE.md), and the [research index](README.md).
 
-Baseline `fea84d6`. Branch `feat/dsh-steals`, worktree
-`~/git/niffler-dsh-steals`.
+Original baseline: `fea84d6`. The feature branch and worktree named in the
+original plan are no longer authoritative.
 
 ## Order and why
 
 | phase | steal | depends on | effort | lands as |
 |---|---|---|---|---|
-| **A** | context layer: post-execute spill + compaction transaction | – | 3–4 d | `feat/ctx-compaction` |
-| **B** | continuable subagents + forked children | – | 3–4 d | `feat/agent-continuation` |
-| **C** | fabric declarations on demand (`{api: true}`) | **compiled-Nim merge** | 1–2 d | `feat/fabric-api` |
+| **A** | context layer: post-execute spill + compaction transaction | – | 3–4 d | **shipped** |
+| **B** | continuable subagents + forked children | – | 3–4 d | **shipped** |
+| **C** | fabric declarations on demand (`{api: true}`) | **compiled-Nim merge** | 1–2 d | **open** |
 
 A and B are independent — either can start first, and they can run in parallel
 worktrees. **C is gated**: `feature/fabric-compiled-nim` rewrites

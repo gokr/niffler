@@ -74,7 +74,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   10s). The runner's own call subject is now pumped from dispatch's idle slots
   and answered at once with `{code: "busy"}` and "the conversation is
   mid-turn — retry when the turn finishes", the same contract `agent_run`
-  uses for a mid-turn child (tests/t_controls.nim).- **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
+  uses for a mid-turn child (tests/t_controls.nim).
+
+- **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
   Niffler — features, operating, configuring, extending, debugging — now
   routes through the bundled skills instead of guesswork: `baseprompt`
   gains a trigger to `skill_list` (query `"niffler"`) + `skill_load` the
@@ -575,6 +577,23 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   implementation plan merged docs-only (`412347c`).
 
 ### Changed
+
+- **SDK: bounded initial-connect retry.** Nim SDK components now retry an
+  initial NATS connection for up to 60 seconds while the bus binds, honoring
+  shutdown, then fail into the supervisor's normal backoff. This removes
+  expected boot/restart races from component crash logs without changing the
+  successful first-connect path (`e761055`).
+
+- **context: provider-scale accounting and bounded overflow recovery.** Context
+  admission now measures in the provider's token scale, durable trim records
+  its watermark for restart-safe replay, and normalized provider overflow
+  errors receive one receipt-backed recovery attempt before becoming terminal
+  (`228251e`).
+
+- **settings groundwork.** `.env.example` now points at the complete settings
+  inventory and `docs/SETTINGS.md` records the proposed store-backed settings
+  surface. The general `/settings` command remains unimplemented; the separate
+  `/approvals` and `/limit` conversation controls are shipped (`7a988ba`).
 
 - **toolchain: Nim 2.2.10 → 2.2.12.** The repo now develops against the
   current stable channel; the floor moves with it (`niffler.nimble`,

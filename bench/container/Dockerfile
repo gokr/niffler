@@ -16,13 +16,12 @@ ARG SWEBENCH_VERSION=4.1.0
 ARG UV_VERSION=0.9.8
 
 # Base tools. python3.11 (bookworm) provides stdlib tomllib used by
-# bench/deepswe/import.mjs. clang/libclang are needed by futhark (natswrapper's
-# FFI generator) and its opir helper at Nimble-install time; libnats-dev /
-# liblz4-dev / libssl-dev / libpcre3-dev to link the Nim binaries.
+# bench/deepswe/import.mjs. clang/libclang are needed by transitive Nimble
+# dependencies; liblz4-dev / libssl-dev / libpcre3-dev link the Nim binaries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git jq ripgrep xz-utils python3 python3-venv \
     openssh-client procps tini \
-    clang libclang-dev libnats-dev liblz4-dev libssl-dev libpcre3-dev \
+    clang libclang-dev liblz4-dev libssl-dev libpcre3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker CLI (verification talks to the host daemon via the mounted socket).
@@ -60,7 +59,7 @@ RUN npm install -g --silent \
 
 # All mutable caches live under HOME=/cache (volume-backed): nimble pkgs,
 # nim cache, go modules/build cache, git config, deepswe/swe hidden cards.
-# ~/.nimble/bin (opir, nimble-installed binaries) must be on PATH for futhark.
+# Nimble-installed helpers live in ~/.nimble/bin.
 ENV HOME=/cache
 ENV PATH=/cache/.nimble/bin:${PATH}
 RUN mkdir -p /cache /work && git config --system --add safe.directory '*' \

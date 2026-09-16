@@ -1,7 +1,8 @@
 # Subagents v2 — implementation plan
 
-Status: **in progress.** Branch `feat/subagents-v2`, worktree
-`~/git/niffler-subagents-v2` (from `main` @ `3ad367c`).
+Status: **landed on `main`**, with the TUI follow-up remaining in its own
+repository. The original feature branch and worktree are no longer
+authoritative; this file is the implementation runbook and decision record.
 
 | phase | state |
 |---|---|
@@ -21,7 +22,7 @@ Status: **in progress.** Branch `feat/subagents-v2`, worktree
 | P4.14 bench scenarios | **shipped** (`bench/subagents/run.mjs` — 4 mechanism scenarios scored on bus-observable facts; needs model keys: `node bench/subagents/run.mjs --model <m> --base-url <u> --key-env <ENV>`) |
 
 Design rationale and the comparison that produced it:
-[SUBAGENTS.md](SUBAGENTS.md) (kept in this branch). Provenance for the two
+[SUBAGENTS.md](SUBAGENTS.md) (historical comparison). Provenance for the two
 inherited steals: [DSH-STEAL.md](DSH-STEAL.md) §2 (continuations) and §3
 (forks) — this plan supersedes their B1/B2 entries in
 [DSH-STEALS-PLAN.md](DSH-STEALS-PLAN.md) with a sharper, code-level design,
@@ -34,8 +35,9 @@ and subagents, [../WIRE.md](../WIRE.md).
 
 ## 0. What ships, in one table
 
-Fifteen proposals from SUBAGENTS.md §7, ordered so each phase is independently
-mergeable and the cheap wins land first.
+The proposals from SUBAGENTS.md §7, ordered so each phase was independently
+mergeable and the cheap wins landed first. All rows below are now completed
+unless the state column says otherwise.
 
 | phase | # | deliverable | effort | needs |
 |---|---|---|---|---|
@@ -54,10 +56,10 @@ mergeable and the cheap wins land first.
 | **P4** | 13 | TUI/UI surfacing of children + notices | 1 d | P0.1, P0.2 |
 | **P4** | 14 | Bench: subagent scenarios in `bench/` | 1–2 d | P1.3, P1.4 |
 
-Phases P0–P2 are the substance (the IanTheReal checklist). P3 is judgment and
-polish; P4 is observability. **Do not start P3.10 (`agent_ask`) before P1.3
-lands** — it is a thin wrapper over a continuation and building it first would
-duplicate the turn path.
+Phases P0–P2 were the substance (the IanTheReal checklist). P3 was judgment
+and polish; P4 was observability. The original sequencing warning about
+P3.10 (`agent_ask`) is retained as historical rationale: it is a thin wrapper
+over the continuation path and was correctly implemented after P1.3.
 
 ## 1. Standing rules
 
@@ -295,12 +297,11 @@ add no roster state). Tests in `tests/t_agentnotice.nim`.
 - The live-runner view is fetched ONCE for the whole listing
   (`liveRunnerSet`), not per child.
 
-**Why.** The IanTheReal checklist's "list_agents() — check who's doing what".
-Today only per-job `agent_status` exists, so a parent cannot enumerate its
-children; `session_info` shows `parent` for one known session but nothing
-lists a parent's set.
+**Why (at the time).** The IanTheReal checklist's "list_agents() — check
+who's doing what" exposed that only per-job `agent_status` existed. The roster
+below is now shipped as `agent_list`.
 
-**Design.**
+**Landed design.**
 
 - New on-demand tool `agent_list {scope?: "children"|"descendants"}` on the
   `agent` component.

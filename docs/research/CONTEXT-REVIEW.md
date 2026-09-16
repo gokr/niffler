@@ -1,6 +1,8 @@
 # Pi / DSH review — close the contracts before adding more features
 
-Status: **review and proposals, not implementation** (2026-09-13).
+Status: **historical review** (2026-09-13). The recommended context
+ownership split and bounded recovery have since shipped; current behavior is in
+[MANUAL.md](../MANUAL.md#context-window) and [COMPACTION.md](COMPACTION.md).
 
 Reviewed the latest [COMPACTION.md](COMPACTION.md),
 [PI-NEXT.md](../PI-NEXT.md), [PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md),
@@ -8,16 +10,17 @@ Reviewed the latest [COMPACTION.md](COMPACTION.md),
 [ESCALATION.md](ESCALATION.md), [OCTOFRIEND-STEAL.md](../OCTOFRIEND-STEAL.md),
 and the store/sandbox plans against the architecture and selected source paths.
 Niffler basis: `1329b7e`; local Pi: `71dca871b`; local DSH: `c291e7961a`.
-The working tree also contains in-progress process-tool changes; those were not
-modified. Findings below distinguish source observations, specification gaps,
+The process-tool work mentioned in the original snapshot has since shipped.
+Findings below distinguish source observations, specification gaps,
 and recommendations. This is not a fresh exhaustive upstream feature census.
 
 ## Recommendation
 
-**Proceed with replaceable compaction. Its ownership split is right.** Keep
-strategy in a component, and validation/admission/persistence in the runner.
-Retain deterministic fallback, mid-turn cuts, bounded recovery, immutable
-canonical history, and the third-party conformance fixture.
+**The replaceable-compaction recommendation landed.** Strategy lives in a
+component, while validation/admission/persistence live in the runner. The
+shipped path retains deterministic fallback, bounded recovery, immutable
+canonical history and the third-party conformance fixture; some broader
+recommendations below remain open research.
 
 The largest overlooked lesson from DSH is not its summarization prompt. It is
 that **stored history, the model's current view, external effects, and live

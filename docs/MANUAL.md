@@ -308,8 +308,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LLM_RETRY_AFTER_CAP_MS` | upper bound honored from a server `retry-after` hint; a hinted wait longer than this is clamped | `3600000` |
 | `NIF_LLM_TIMEOUT_MS` | ceiling for one `llm` `chat` completion; slow reasoning models (e.g. GLM thinking=max via llmgateway) can exceed the default on a single response | `300000` |
 | `NIF_CTX_RESERVE` | output tokens held back by context admission; `0` disables the reserve | `16384` |
-| `NIF_COMPACTION_TOOL` | contract-v1 proposal tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
-| `NIF_COMPACTION_TIMEOUT_MS` | whole proposal-call deadline (minimum 5000 ms) | `90000` |
+| `NIF_COMPACTION_TOOL` | contract-v1 candidate tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
+| `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline (minimum 5000 ms) | `90000` |
 | `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt; a candidate reporting more calls than granted is rejected as invalid | `4` |
 | `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap | `2048` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
@@ -653,7 +653,9 @@ stateless or externally coordinated components: all replicas share the same
 `svc.<name>.call` NATS queue group, so concurrent requests distribute one per
 process. Never replicate single-writer `store`, or a component such as `edit`
 whose mutation/undo state is process-local. The default Nim SDK pump remains
-serial. A component may explicitly own native concurrency when replicas do not
+serial. Its initial NATS connection retries for up to 60 seconds while the bus
+is binding, then fails into the supervisor's normal backoff; shutdown interrupts
+that wait. A component may explicitly own native concurrency when replicas do not
 fit: prefer `std/threads` + `std/locks` for long-lived/shared-state Nim workers,
 use `taskpools` for isolated jobs, and never use `asyncdispatch`. In Go,
 ordinary `Tool` handlers remain exclusive; an audited handler can use
@@ -692,7 +694,7 @@ topic `niffler-component` are discoverable without any registry:
   `version` pins a tag or branch explicitly.
 - Components always build from source via the `builder` — the same path
   agent-written components take. Running Niffler already provides the
-  toolchain (Nim/Go, nats.c, libclang), so no extra requirements; every
+  toolchain (Nim/Go and the NATS SDK), so no NATS C library is required; every
   platform compiles with its own toolchain. A Go entry may declare
   `"sources": ["component/helper.go", ...]`; these must be non-symlink,
   same-package `.go` files beside `main`, and the builder compiles them as one

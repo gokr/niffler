@@ -112,15 +112,13 @@ Smoke-tested from a clean cache volume, all three modes:
 
 What the build step has to handle (all automated in `entrypoint.sh`):
 
-- `opir` (futhark's libclang header parser, used by natswrapper at compile
-  time) is installed via nimble and put on `PATH` (`$HOME/.nimble/bin`).
-- System libs for linking: `libnats-dev`, `liblz4-dev` (futhark/lz4wrapper),
-  `libssl-dev` (std/httpclient), `libpcre3-dev` (link line of recent mains —
-  **hosts building upstream main need this too**; `make setup` installs it).
-- `config.nims`' pkgs2 fallback allowlist can lag transitive nimble deps
-  (futhark → macroutils, bitbarrel → jwt/mummy/whisky/…), so the entrypoint
-  synthesizes the `nimble.paths` file nimble would generate, covering every
-  installed package, plus a bounded self-healing retry for stragglers.
+- System libraries: `clang`/`libclang-dev` for transitive Nimble dependencies,
+  plus `liblz4-dev`, `libssl-dev` and `libpcre3-dev` for linking current Nim
+  binaries. Niffler uses pure-Nim `natsnim`, so `libnats-dev` is not required.
+- `config.nims`' pkgs2 fallback allowlist can lag transitive Nimble
+  dependencies, so the entrypoint synthesizes the `nimble.paths` file Nimble
+  would generate, covering every installed package, plus a bounded
+  self-healing retry for stragglers.
 
 ## Build pipeline (verified end-to-end)
 
@@ -128,15 +126,12 @@ Smoke-tested from a clean `/cache` volume in all three source modes:
 mounted checkout (build + per-SHA cache hit), and `NIFFLER_REF=main` GitHub
 clone (build of upstream main + bench entry). The build step handles:
 
-- `opir` — futhark's libclang header parser (natswrapper dependency chain);
-  nimble-installed, `$HOME/.nimble/bin` on `PATH`.
-- System libs to link Nim binaries: `libnats-dev`, `liblz4-dev`
-  (futhark/lz4wrapper), `libssl-dev`, `libpcre3-dev` (recent mains link
-  pcre — **hosts building upstream main need it too**; `make setup` covers
-  this).
-- `nimble.paths` — synthesized from the installed pkgs2 set; `config.nims`'
-  fallback allowlist can lag transitive deps (futhark → macroutils,
-  bitbarrel → jwt/mummy/whisky).
+- Transitive Nimble dependencies use `clang`/`libclang-dev`; Niffler's
+  `natsnim` client is pure Nim and does not require `libnats-dev`.
+- System libs to link Nim binaries: `liblz4-dev`, `libssl-dev`,
+  `libpcre3-dev` (plus `clang`/`libclang-dev` above).
+- `nimble.paths` — synthesized from the installed pkgs2 set because the
+  `config.nims` fallback allowlist can lag transitive dependencies.
 - A bounded self-heal loop: if `make build` still hits an unresolvable
   module, nimble-installs it and retries (visible in the log).
 

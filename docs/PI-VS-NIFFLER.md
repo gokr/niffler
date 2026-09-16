@@ -5,7 +5,9 @@
 > rather than cosmetic.
 >
 > Basis: Niffler at `7b46ccd` (2026-09-13), Pi at `71dca871b` / npm
-> `@earendil-works/pi-coding-agent` 0.85.1 (2026-09-11). Pi claims are read
+> `@earendil-works/pi-coding-agent` 0.85.1 (2026-09-11). This is a historical
+> comparison snapshot; compaction, overflow recovery and subagent continuation
+> have since landed on Niffler `main`. Pi claims are read
 > from its shipped docs (`packages/coding-agent/docs/*`, `README.md`) and the
 > `packages/` tree; Niffler claims from this repo, cited by path. This is a
 > *difference map*, not a scoreboard: the [bench/](../bench/README.md) suite exists for
@@ -202,15 +204,12 @@ discovered|undiscovered`, colored chips in the web UI).
 
 ## 6. Context pressure: trim vs compaction
 
-Niffler today is deliberately simple ([MANUAL.md § Context window](MANUAL.md)):
-warn at 75%, at 90% drop **whole turns** from the front (never below two user
-turns, `tool_call_id` pairs stay intact), append a note message, emit
-`ev.session.context` with the named reason. No summaries, no extra model call,
-no token math beyond provider-reported usage; the store keeps the full history,
-so trimming is in-memory per runner and a resumed conversation simply
-re-trims. Per-session budget controls (`maxRounds`, `maxCalls`, `maxTokens`)
-freeze at first call and end a turn as a *budget-exhausted* error — an explicit
-stop, not a silent degrade.
+At the snapshot, Niffler was deliberately simple ([MANUAL.md § Context window](MANUAL.md)):
+warn at 75%, at 90% drop **whole turns** from the front. Since then, Niffler
+has added a durable context ledger, deterministic prune/trim, replaceable
+compaction and recall, provider-scale accounting, and bounded provider-overflow
+recovery. Per-session budget controls still freeze at first call and remain
+explicit stops rather than silent degradation.
 
 Pi has real **compaction**: structured LLM summaries with an iterative
 previous-summary input, a configurable reserve (`reserveTokens`, default 16k),
@@ -218,14 +217,12 @@ a retained recent window (`keepRecentTokens`, default 20k), manual
 `/compact [instructions]`, auto-compaction on overflow *and* proactively, plus
 branch summarization on `/tree` navigation.
 
-Niffler's answer is a **proposal**: [research/COMPACTION.md](research/COMPACTION.md)
-specifies a replaceable `compaction` component (`compaction_propose` /
-`context_recall`) where the *runner* validates, applies and persists — the
-component proposes, core never delegates mutation of its own conversation, and
-replaced content keeps a durable recall link. It also makes the case that the
-prerequisite is the SQLite store engine (barrel's two-key put has a crash
-window exactly where a half-written context projection would corrupt a
-conversation).
+Niffler's shipped answer is documented in [research/COMPACTION.md](research/COMPACTION.md):
+a replaceable `compaction` component (`compaction_propose` / `context_recall`)
+where the *runner* validates, applies and persists — the component proposes,
+core never delegates mutation of its own conversation, and replaced content
+keeps a durable recall link. SQLite is now the default store engine, with
+Barrel and TiDB selectable behind the same contract.
 
 ## 7. Policy rides the schema — and where it is enforced
 
@@ -444,10 +441,9 @@ Honest list, because a comparison that only cuts one way is marketing:
 
 - **Session tree**: in-place branching, `/tree`, `/fork`, `/clone`, labels,
   filters, branch summaries, message queues with steering and follow-up
-  delivery modes. Niffler conversations are linear sequences of messages
-  (subagent sessions and `#fork`-like workarounds exist, but there is no
-  navigation UI). Planned: session tree in [research/PI_EFFICIENCY_PLAN.md](research/PI_EFFICIENCY_PLAN.md) C1.
-- **Compaction** (see §6): shipped in Pi, a proposal here.
+  delivery modes. Niffler has a replay-valid fork for subagent births, but no
+  navigation UI for general conversations. Planned: session tree in
+  [research/PI_EFFICIENCY_PLAN.md](research/PI_EFFICIENCY_PLAN.md) C1.
 - **In-process extension API richness**: custom editors, UI widgets,
   rendering for tool calls/results, keybindings, themes, hot reload. Niffler's
   UI dynamism is an explicit open item (PLAN.md: Level 1/2 UI dynamism).
@@ -465,7 +461,7 @@ Honest list, because a comparison that only cuts one way is marketing:
 - **A package registry** (npm) for sharing extensions; Niffler's plugin
   ecosystem is GitHub-repo-based and younger.
 - **Operational simplicity**: `npm install -g` and go. Niffler needs Nim,
-  Go, NATS, native libraries, and builds its own server — a real adoption
+  Go, native libraries, and builds its own NATS server — a real adoption
   cost for the process model's benefits.
 
 Both systems today share one gap: **neither sandboxes the agent**. Pi says so

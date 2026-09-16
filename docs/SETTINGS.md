@@ -1,13 +1,14 @@
 # SETTINGS — a settings surface over the store (design)
 
-> Plan, not implemented. Goal: every knob a *human or model* might want to
-> change lives in the store and is editable from a `/settings` command,
+> Design plan; the general `/settings` surface is not implemented. The
+> conversation-specific `/approvals` and `/limit` controls are shipped, but do
+> not replace this broader settings surface. Goal: every knob a *human or model*
+> might want to change lives in the store and is editable from a `/settings` command,
 > instead of being an environment variable you had to know about. Environment
 > stays what it is good at — boot decisions and secrets (see
 > MANUAL.md "State and configuration").
 >
-> Baseline: main @ the repomap merge; conv-controls (`/approvals`, `/limit`)
-> read from its worktree as the pattern to follow.
+> Baseline: `main` after the conversation-controls merge (`6d95c74`).
 
 ## 0. The problem, measured
 
