@@ -623,6 +623,27 @@ In order, all deterministic, all bounded:
    context model, another compactor, explicit continuation from selected
    history).
 
+**Durability addendum (implemented 2026-09-16, prod finding
+conv-b33207f94a47):** the trim cut was originally in-memory only — a runner
+restart rebuilt the full pre-trim projection from canonical history while the
+meter restored post-trim usage from the last assistant message, so admission
+under-reported the real candidate by the trimmed amount and could wave a
+doomed request straight to the provider. The trim now records the highest
+dropped canonical seqNo in the conversation header (`trimThrough`, written at
+the moment of the cut) and the ordinary resume path excludes canonical
+messages at or below it. Dropped turns remain in canonical history for
+`context_recall`; a later committed compaction supersedes the watermark
+entirely (the projection path ignores it).
+
+**Calibration addendum (same finding):** the ladder's trigger measures
+candidates with a chars/4 estimate that can lag a denser tokenizer by ~4-5%
+of the window (observed: ~22k tokens on a 524K window), which turns the 90%
+line into a ~99% line and lets requests the provider refuses leave the door.
+Every successful response re-measures an offset (reported `prompt_tokens`
+minus the estimate of the same request); admission, warnings and the ladder
+price candidates as estimate + offset. Model-scoped, resume-seeded, clamped
+to `[0, window]`, never persisted.
+
 ### 6.4 Store contract addition — paged read
 
 `list` gains `after` (exclusive id cursor) and `first`/`last` semantic clarity,

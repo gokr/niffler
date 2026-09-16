@@ -162,7 +162,19 @@ type
     seqNo*: int
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
-    ctxSize*: int        ## effective model context window
+    ctxSize*: int        ## catalog model context window
+    calib*: int          ## provider-vs-estimate calibration (tokens): each
+                         ## successful response re-measures it as the
+                         ## reported prompt_tokens minus the local chars/4
+                         ## estimate of the same request, so admission and
+                         ## trim measure what the provider counts, not what
+                         ## chars/4 guesses (DeepSeek-class models pack
+                         ## denser; the raw estimate lagged ~22k tokens on
+                         ## a 524k window). Cleared on model change; seeded
+                         ## from stored usage on resume; clamped to [0, ctxSize].
+    calibModel*: string  ## model the offset was learned for
+    trimThrough*: int    ## highest canonical seqNo dropped by a lossy trim
+                         ## (the watermark the resume honors — §6.3)
     ctxWarned*: bool     ## warned once per session until the next trim
     ## A3 cache economics: cumulative prompt tokens across the conversation,
     ## split by what the provider served from its prompt cache. The miss
@@ -680,7 +692,11 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
   ## explicit "history omitted without summary" notice naming the covered
   ## ids. Messages and the node ledger move in lockstep; canonicalHigh is
   ## untouched (canonical docs are unaffected — the notice is a projection
-  ## edit, and a reload from canonical simply restores what was dropped).
+  ## edit, and recall-canonical still reaches what was dropped).
+  ## The cut is DURABLE: the highest dropped canonical seqNo is recorded in
+  ## the header (trimThrough) and the ordinary resume path honors it, so a
+  ## restart rebuilds the trimmed projection instead of re-inflating to the
+  ## full pre-trim context while the meter reports post-trim usage.
   ## Returns the number of dropped messages.
   result = 0
   var users: seq[int]
@@ -702,6 +718,13 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
   messages.delete(dropStart ..< dropEnd)
   p.nodes.delete(dropStart ..< dropEnd)
   result = dropEnd - dropStart
+  # Persist the cut immediately (not at turn end): the whole point of the
+  # watermark is surviving a restart, whenever it comes.
+  let cutSeq = canonicalSeqOf(coveredTo)
+  if cutSeq > p.trimThrough:
+    p.trimThrough = cutSeq
+    p.ct.updateConversationHeader(p.convId,
+                                 %*{"trimThrough": %p.trimThrough})
   let notice = %*{"role": "system", "content":
     "[history omitted without summary: dropped " & $result &
     " earlier messages (" & coveredFrom & " .. " & coveredTo &
@@ -732,7 +755,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
   ## fits the hard target. Reductions are re-measured, never claimed.
   let target = p.contextTarget()
   if target <= 0: return false
-  var used = estimateTokens(messages) + toolTokens
+  var used = estimateTokens(messages) + toolTokens + p.calib
   if used <= target: return true
   # 1. prune — cheapest first: no history is lost, only bulk
   let saved = p.pruneContext(messages)
@@ -741,7 +764,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "reset:prune", "bytesSaved": saved,
                             "pruned": p.prunes.len})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
     if used <= target: return true
   # 2. trim — oldest complete turns first, then down to the latest request
   for keep in [minKeepTurns, 1]:
@@ -757,7 +780,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
   return used <= target
 
 proc contextPressureDetail(p: Persister, messages: seq[JsonNode],
@@ -788,10 +811,14 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
   ## proc establishes the required order (§6.3): prune → configured
   ## compactor → trim → explicit context-recovery-required.
   if p.ctxSize <= 0: return ""   # unknown capacity — overflow recovery owns it
-  let used0 =
-    if p.contextUsed > 0: p.contextUsed
-    elif p.promptTokens > 0: p.promptTokens
-    else: estimateTokens(messages) + toolTokens
+  # One measure for everything below — warning percentage, prune trigger,
+  # pressure line: the local estimate, shifted into the provider's scale by
+  # the calibration offset measured from the last response. Before the
+  # first response (calib 0) this is the raw chars/4 proxy — conservative
+  # only when the provider counts less than the estimate.
+  template measured(toolTokens: int): int =
+    estimateTokens(messages) + toolTokens + p.calib
+  let used0 = measured(toolTokens)
   let pct = int(used0.float * 100.0 / p.ctxSize.float)
   let trimAt = trimThreshold(p)
   if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
@@ -804,14 +831,14 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
                             "usedTokens": used0, "context": p.ctxSize,
                             "warning": true,
                             "reason": "warn:threshold"})
-  var used = estimateTokens(messages) + toolTokens
+  var used = measured(toolTokens)
   if used >= trimAt:
     let saved = p.pruneContext(messages)
     if saved > 0 and onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "reset:prune", "bytesSaved": saved,
                             "pruned": p.prunes.len})
-    used = estimateTokens(messages) + toolTokens
+    used = measured(toolTokens)
   let target = p.contextTarget()
   if used <= target: return ""
   "pressure:" & contextPressureDetail(p, messages, used, target, toolTokens)
@@ -823,7 +850,7 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
   ## The final lossy rung (§6.3), deliberately separate from admission so a
   ## replaceable compactor always gets the first chance after lossless prune.
   let target = p.contextTarget()
-  var used = estimateTokens(messages) + toolTokens
+  var used = estimateTokens(messages) + toolTokens + p.calib
   for keep in [minKeepTurns, 1]:
     if used <= target: break
     let dropped = p.trimTurns(messages, keep)
@@ -837,7 +864,7 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -881,6 +908,13 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   if resolvedContext > 0 and resolvedContext != p.ctxSize:
     p.ctxSize = resolvedContext
     p.ctxWarned = false
+  # The calibration offset is model-specific: switching models (or their
+  # provider) changes the tokenizer — drop the stale offset and re-learn
+  # from the next response.
+  if p.calibModel.len > 0 and p.calibModel != selectedModel:
+    p.calib = 0
+  if p.calibModel != selectedModel:
+    p.calibModel = selectedModel
   result = %*{
     "sessionId": p.convId,
     "provider": resolved{"provider"}.getStr(""),
@@ -1871,6 +1905,24 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             if window > 0:
               p.ctxSize = window
               p.ctxWarned = false
+          # Unknown capacity and a refusal that carries no parseable window:
+          # admission stands down, so checkContext below would pass the
+          # candidate unchanged and the retry would be byte-identical — a
+          # wasted call against a provider that just refused it. Reduce
+          # blind instead: lossless prune, then trim to the newest request.
+          # The single retry only goes out if the candidate actually shrank;
+          # an irreducible candidate (frozen prefix over an unknown window)
+          # ends terminal — never resend what was refused unchanged.
+          if p.ctxSize <= 0:
+            let before = estimateTokens(messages) + toolTokens
+            discard p.pruneContext(messages)
+            discard p.trimTurns(messages, 1)
+            if estimateTokens(messages) + toolTokens >= before:
+              writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                                  e.msg)
+              failMsg = "context-recovery-required: provider refused the request (" &
+                        e.msg & ") and the candidate cannot be reduced " &
+                        "(capacity unknown, no parseable window)"
           var overflowVerdict =
             checkContext(p, messages, onEvent, turnId, toolTokens)
           if overflowVerdict.startsWith("pressure:"):
@@ -1966,6 +2018,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+      # Re-measure the calibration offset on every response: what the
+      # provider counted for THIS request minus what chars/4 estimated for
+      # it. `messages` is still exactly the sent projection here, so the
+      # pair is honest. The next admission then measures the candidate as
+      # estimate + calib — the provider's own scale — instead of the raw
+      # proxy that lagged a DeepSeek-class tokenizer by ~22k tokens on a
+      # 524k window (observed: the 90% trim line silently became a ~99%
+      # line and a request the core called 86% was refused at 400).
+      # Clamped to [0, ctxSize]: never negative (the raw estimate stays
+      # the conservative fallback), never past the window itself.
+      block:
+        let sentEst = estimateTokens(messages) + toolTokens
+        p.calib = max(0, min(p.promptTokens - sentEst, max(p.ctxSize, 1)))
       # A3 cache economics: accumulate the cache-read split when the
       # provider reports it (prompt_tokens_details.cached_tokens). A
       # request with a stable prefix should show most of its prompt served
@@ -2441,6 +2506,27 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       stored = ordinary.messages
       storedNodes = ordinary.nodes
       lastSeqNo = ordinary.lastSeqNo
+      # §6.3 durable trim: a lossy trim records the canonical seqNo it cut
+      # through (header trimThrough). The dropped turns remain in canonical
+      # history (recall-canonical still reaches them) but are not part of
+      # the live projection — without this, a restart would rebuild the
+      # full pre-trim context while the meter restores the post-trim
+      # usage, and admission would wave the re-inflated request straight
+      # through to the provider.
+      let trimThrough = header{"trimThrough"}.getInt(0)
+      if trimThrough > 0:
+        var keptM: seq[JsonNode] = @[]
+        var keptN: seq[CtxNode] = @[]
+        for i, m in stored:
+          let n = storedNodes[i]
+          # The system node has no canonical id and is never trimmed.
+          if n.source == nsCanonical and n.canonicalSeq <= trimThrough:
+            continue
+          keptM.add(m)
+          keptN.add(n)
+        if keptM.len < stored.len:
+          stored = keptM
+          storedNodes = keptN
     for m in stored: entry.messages.add(m)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
@@ -2454,6 +2540,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       cacheRead: header{"cacheRead"}.getInt(0),
       generation: (if projection != nil:
                      projection{"generation"}.getInt(0) else: 0))
+    # Seed the calibration offset from stored usage: the last assistant
+    # message's prompt_tokens measures what the provider counted for the
+    # retained projection, so estimate-vs-provider lag is known BEFORE the
+    # first response of the session (a restart at 91% context must not
+    # re-walk into the overflow blind spot). The first response re-measures
+    # it exactly. 0 when nothing is stored (fresh conversation).
+    if pt > 0:
+      # stored excludes the system prompt (it lives in the header), so add
+      # its estimate back — the seed leans conservative, never under.
+      p.calib = max(0, min(pt - estimateTokens(stored) -
+        header{"systemPrompt"}.getStr("").len div 4, cs))
     # Context identity (§4.2): system, optional durable checkpoint, exact
     # retained canonical ids, then paged canonical appends after canonicalHigh.
     # projectionIndex is rebuilt from this actual provider projection, not

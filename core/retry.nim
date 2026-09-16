@@ -171,6 +171,7 @@ proc classifyLlmError*(msg: string): LlmFailureClass =
   let lower = msg.toLowerAscii()
   if lower.contains("context-overflow") or
      lower.contains("context_length_exceeded") or
+     lower.contains("context limit exceeded") or
      lower.contains("maximum context length") or
      lower.contains("prompt is too long") or
      lower.contains("input length exceeds") or

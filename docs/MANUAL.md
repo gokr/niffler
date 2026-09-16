@@ -588,6 +588,16 @@ reports:
   deterministic tool-result prune → configured compactor → oldest complete-
   turn trim → explicit `context-recovery-required`. It never knowingly sends
   an over-window request.
+- The trigger measures in the **provider's scale, not the estimate's**: every
+  successful response re-measures a calibration offset (reported
+  `prompt_tokens` minus the local estimate of the same request) and
+  admission, warnings and trim price candidates as estimate + offset. The
+  raw chars/4 proxy can lag a denser tokenizer by tens of thousands of
+  tokens — observed on a 524K-window conversation where the "90%" line
+  silently fired at ~99% and a request the core called 86% was refused at
+  400. The offset is model-scoped (cleared on model change, re-learned from
+  the next response), seeded on resume from stored usage, clamped to
+  `[0, window]`, and never persisted — it re-measures on the first response.
 - The shipped `compaction_propose` is replaceable: set
   `NIF_COMPACTION_TOOL=<tool>` to select another contract-v1 implementation,
   or set it to empty to disable summarization while keeping the deterministic
@@ -609,7 +619,21 @@ reports:
   oversized span.
 - A provider-reported `context-overflow` gets exactly one receipt-backed
   recovery attempt. The same prune → compactor → trim order is re-measured;
-  a second overflow is terminal, never an unbounded retry loop.
+  a second overflow is terminal, never an unbounded retry loop. When
+  capacity is unknown and the refusal carries no parseable window, the
+  attempt reduces blind (lossless prune, then trim to the newest request)
+  and the retry only goes out if the candidate actually shrank — an
+  irreducible candidate ends terminal instead of resending what was
+  refused. The adapter normalizes provider overflow wordings (including
+  the bare `"Context limit exceeded"` body some hosts return) to the
+  stable `context-overflow` prefix; the runner's classifier carries the
+  raw phrasings as a fallback.
+- A lossy trim is **durable**: it records the canonical seqNo it cut
+  through in the conversation header (`trimThrough`) and the ordinary
+  resume honors it, so a restart rebuilds the trimmed projection instead
+  of re-inflating the full pre-trim context while the meter restores
+  post-trim usage. Dropped turns remain in canonical history for
+  `context_recall`.
 
 ## Self-extension and component lifecycle
 

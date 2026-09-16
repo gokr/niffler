@@ -33,10 +33,31 @@ import niffler/sdk
 # - NIF_MOCK_TOOLCMD: the bash command the scripted rounds call.
 # - NIF_MOCK_LOG: JSONL request log (one line per chat request) so tests
 #   assert sizes/rejections against the mock's own view.
+# - NIF_MOCK_PT_BIAS: tokens the provider adds to its own chars/4 count
+#   when REPORTING usage and ENFORCING the window — models a tokenizer that
+#   packs denser than the core's chars/4 proxy (DeepSeek-class: ~4-5%). The
+#   core must learn this offset from reported usage (calibration) and fire
+#   the pressure ladder before the provider ever refuses.
+# - NIF_MOCK_ENFORCE_CTX: the rejection threshold the chat handler enforces,
+#   independent of the window llm_resolve reports — models the real-world
+#   gap where a host's effective input limit sits below its catalog window
+#   (thinking/output reserves count against it).
+# - NIF_MOCK_RAW_OVERFLOW: 1 rejects with the RAW provider phrasing (no
+#   context-overflow prefix, no window suffix) — the classifier must catch
+#   the provider's own words ("Context limit exceeded").
 let mockCtx = block:
   let v = getEnv("NIF_MOCK_CTX", "0")
   try: parseInt(v)
   except CatchableError: 0
+let mockPtBias = block:
+  let v = getEnv("NIF_MOCK_PT_BIAS", "0")
+  try: parseInt(v)
+  except CatchableError: 0
+let mockEnforceCtx = block:
+  let v = getEnv("NIF_MOCK_ENFORCE_CTX", "0")
+  try: parseInt(v)
+  except CatchableError: 0
+let mockRawOverflow = getEnv("NIF_MOCK_RAW_OVERFLOW", "").len > 0
 let mockHideCtx = getEnv("NIF_MOCK_HIDE_CTX", "").len > 0
 let mockRounds = block:
   let v = getEnv("NIF_MOCK_ROUNDS", "0")
@@ -129,14 +150,25 @@ proc(c: Component, args: JsonNode): JsonNode =
   currentPurpose = args{"purpose"}.getStr("")
   let messages = args{"messages"}
   let est = estimateTokens(messages, args{"tools"})
-  if mockCtx > 0 and est > mockCtx:
+  # The provider's own view of the request: chars/4 plus its tokenizer
+  # bias. Rejections and reported usage both speak this scale.
+  let providerCount = est + mockPtBias
+  let rejectAt = if mockEnforceCtx > 0: mockEnforceCtx else: mockCtx
+  if rejectAt > 0 and providerCount > rejectAt:
+    logRequest(providerCount, true, "over-window", messages, args{"tools"})
+    if mockRawOverflow:
+      # The raw phrasing a real host returns — no stable prefix, no window
+      # suffix (the provider counts a thinking/output reserve against the
+      # window, so its effective input limit is what rejects here).
+      raise newException(ValueError,
+        "llm error: error, status code: 400, status: 400 Bad Request, " &
+        "message: , body: {\"error\":\"Context limit exceeded\"}")
     # The enforcing fake provider: same stable text the real adapter emits
     # (core/retry.nim classifies on the prefix, recovery parses the window).
-    logRequest(est, true, "over-window", messages, args{"tools"})
     raise newException(ValueError,
       "context-overflow: request ~" & $est & " tokens exceeds the mock " &
       "window of " & $mockCtx & "; window " & $mockCtx & " tokens")
-  logRequest(est, false, "", messages, args{"tools"})
+  logRequest(providerCount, false, "", messages, args{"tools"})
   if currentPurpose == "compaction" and mockCompactionSleepMs > 0:
     sleep(mockCompactionSleepMs)
   var last = ""
@@ -209,7 +241,12 @@ proc(c: Component, args: JsonNode): JsonNode =
                 "tool_calls": [%*{"id": "c" & $served, "type": "function",
                                   "function": {"name": "bash",
                                                "arguments": $(%*{"command": mockToolCmd})}}],
-                "model": "mock-model"}
+                "model": "mock-model",
+                # Real providers report usage on tool-call rounds too; the
+                # core measures its calibration offset from every response.
+                "usage": {"prompt_tokens": providerCount,
+                          "completion_tokens": 0,
+                          "total_tokens": providerCount}}
     var objective = ""
     if messages != nil and messages.kind == JArray:
       for m in messages:
@@ -219,8 +256,8 @@ proc(c: Component, args: JsonNode): JsonNode =
             not c.startsWith("<context_checkpoint"):
           objective = c
           break
-    var usage = %*{"prompt_tokens": est, "completion_tokens": 10,
-                   "total_tokens": est + 10}
+    var usage = %*{"prompt_tokens": providerCount, "completion_tokens": 10,
+                   "total_tokens": providerCount + 10}
     if mockCtx > 0 and not mockHideCtx:
       usage["context"] = %mockCtx
     return %*{"content": "done — " & objective, "model": "mock-model",

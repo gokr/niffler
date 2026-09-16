@@ -612,7 +612,8 @@ func classifyProviderError(err error, contextSize int) error {
 	}
 	lower := strings.ToLower(msg)
 	for _, pattern := range []string{
-		"context_length_exceeded", "maximum context length",
+		"context_length_exceeded", "context limit exceeded",
+		"maximum context length",
 		"prompt is too long", "input length exceeds",
 		"too many input tokens",
 	} {
