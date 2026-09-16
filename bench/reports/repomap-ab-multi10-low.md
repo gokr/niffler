@@ -80,6 +80,36 @@ of flailing at 850k; ON: 5 turns). At high thinking the same model explores
 much more aggressively, and the injected map seems to widen rather than
 shorten that exploration (the 7.0M redis blowup).
 
+## The flipper probe (its outcome)
+
+jq+redis × {low, high} × {ON, OFF}, one knob, same tree (`266e19c`), controls
+verified (ON lanes published 2 maps each, OFF lanes 0). Verdicts and totals:
+
+| cell | low ON | low OFF | high ON | high OFF |
+|---|---|---|---|---|
+| jq | pass 816s / 1.85M | **timeout** 2171s | **timeout** 4864s / 11.2M | pass 1076s / 0.76M |
+| redis | pass 467s / 75k | **timeout** 1899s / 4.2M | pass 1068s / 246k | pass 1021s / 539k |
+
+With the 10-task low runs included, the low regime is now **ON 6/6 on these
+cells, OFF 1/4**, and every OFF failure is the expensive kind: multi-million-
+token flailing to a timeout at 21–64 turns, while ON passes at 5–8 turns
+(redis) / 32–54 (jq). The low flip **reproduces**; it is not one-sample noise.
+
+**The probe's sharper finding — the high A/B measured partly against stubs.**
+`multi10-map-on` ran at `9150c08`, before the C/Rust/Ruby tiers landed. Its
+published maps for exactly these cells: jq **154 bytes / 4 symbols**, nushell
+1239 B / 9 syms (C and Rust repos got almost nothing). The probe's `266e19c`
+maps: jq **4283 B / 119 syms**. So part of the high run's anti-map signal
+(including its redis timeout) was a near-empty map, not a real one. The high
+regime's remaining signal is jq: ON 11.2M/78 turns to timeout versus OFF
+passing at 0.76M — a mega-repo spiral, and the one open question this probe
+does not settle.
+
+Consequence: the gates in `docs/research/REPOMAP-GATES.md` (content: reject
+stub maps; size: reject micro repos) encode the two objective failure classes
+this probe exposed. The default stays opt-in until they land and a verification
+pass confirms the gated append is not a regression.
+
 ## Decision status
 
 The shipped default does **not** change on this report alone: the component
@@ -90,12 +120,8 @@ populated run could reverse it.
 
 The `Open question` in `repomap-ab-multi10.md` is now narrower: not "rerun
 redis once" but "are jq/redis systematically map-sensitive, or are they
-noise?" A dedicated probe is running: jq+redis × {low, high} × {ON, OFF}
-(4 short lanes, `repomap-flip-{low,high}-{on,off}`). When it lands: if the
-flips reproduce, the map's value is task-shaped (large unfamiliar repos with
-a long search horizon) and the auto-append could default on for that shape;
-if they scatter, both A/Bs were noise-dominated on these cells and the
-default stays opt-in (tool-only), which is also the conservative shape.
+noise?" A dedicated probe ran: jq+redis × {low, high} × {ON, OFF}
+(4 short lanes, `repomap-flip-{low,high}-{on,off}`).
 
 ## Reproduce
 

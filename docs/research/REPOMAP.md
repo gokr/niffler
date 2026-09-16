@@ -184,6 +184,9 @@ The full surface:
 Rules: empty/failed map appends nothing; subagents excluded in v1; a trim
 may drop the map — re-requestable (compaction should treat it as a keeper);
 the baseprompt mentions only the refresh tool, not "use the map".
+Admission gates (content + size) are specified in
+[REPOMAP-GATES.md](REPOMAP-GATES.md) — they apply to the append only, never
+to the tool.
 
 ## Port plan
 
