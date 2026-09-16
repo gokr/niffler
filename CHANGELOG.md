@@ -6,6 +6,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Session round guard default raised from 50 to 1000.** The hard
+  `NIF_MAX_TURN_ROUNDS` runaway guard remains configurable and separate from
+  the soft `/limit` controls.
+
 ### Added
 
 - **bench: repomap append-gate evidence — the Multi10 low A/B rerun and the

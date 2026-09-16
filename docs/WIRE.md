@@ -67,7 +67,8 @@ svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   LLM turn. tools/maxRounds/maxCalls/maxTokens are frozen per-session
                        #   controls (first call wins, then the conversation header
                        #   carries them across runner resumes): a tool allowlist,
-                       #   LLM rounds per turn (1-50, default 50), total tool dispatches per
+                       #   LLM rounds per turn (1-NIF_MAX_TURN_ROUNDS when explicitly set;
+                       #   default 1000), total tool dispatches per
                        #   turn (1-500), and cumulative tokens per turn — budget
                        #   exhaustion ends the turn as a budget-exhausted error.
                        #   approvals/limits are the human's conversation controls

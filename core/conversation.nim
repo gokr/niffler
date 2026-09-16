@@ -210,7 +210,7 @@ type
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
-    maxRounds*: int          ## per-turn tool-round budget (0 = default 50)
+    maxRounds*: int          ## per-turn tool-round budget (0 = env default)
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
     maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
     approvalMode*: string    ## this conversation's gate mode (/approvals):
@@ -221,6 +221,18 @@ type
     limitSeconds*: int       ## going (0 = unset). The scoping budgets above
                              ## stay hard — a job cannot negotiate its budget
     exposure*: ToolExposure
+
+const defaultMaxTurnRounds = 1000
+
+proc configuredMaxTurnRounds(): int =
+  ## Read the hard per-turn round ceiling shared by sessions and subagents.
+  result = defaultMaxTurnRounds
+  try:
+    result = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", $defaultMaxTurnRounds))
+  except ValueError:
+    discard
+  if result < 1:
+    result = defaultMaxTurnRounds
 
 proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
@@ -1711,19 +1723,13 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ## Cumulative tokens this turn (total_tokens per round when the provider
     ## reports usage) — the per-job token budget checks this before each new
     ## LLM round, so overshoot is bounded by one round.
-  # Effective round budget: a per-session maxRounds (subagent budgets,
-  # 1-50) overrides the NIF_MAX_TURN_ROUNDS env default (default 50 —
-  # pi's agent loop is unbounded, so the cap exists to bound runaway
-  # cost, not to shape behavior; bench lanes may raise it further).
-  let envMaxRounds =
-    block:
-      var v = 20
-      try:
-        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "50"))
-      except ValueError:
-        discard
-      if v < 1: 20 else: v
-  let effMaxRounds = if maxRounds > 0: maxRounds else: envMaxRounds
+  # Effective round budget: an explicit per-session maxRounds (1 through the
+  # configured NIF_MAX_TURN_ROUNDS) may narrow the hard ceiling, but can never
+  # raise it. The default is intentionally high enough that ordinary turns
+  # are not shaped by it; it remains a final runaway/cost guard.
+  let envMaxRounds = configuredMaxTurnRounds()
+  let effMaxRounds = if maxRounds > 0: min(maxRounds, envMaxRounds)
+                      else: envMaxRounds
   # ---- conversation controls: the human's soft turn limits (/limit) --------
   # A soft limit is different in kind from the budgets above: reaching it asks
   # the human over the approval transport (tool "turn-limit", purpose
@@ -2431,7 +2437,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if args.kind == JObject and args.hasKey("maxRounds") and
         entry.maxRounds == 0:
       let mr = args{"maxRounds"}.getInt(0)
-      if mr >= 1 and mr <= 20:
+      if mr >= 1 and mr <= configuredMaxTurnRounds():
         entry.maxRounds = mr
         ct.updateConversationHeader(sessionId, %*{"maxRounds": %mr})
     # Per-job budgets (subagent scoping), frozen the same way: first call

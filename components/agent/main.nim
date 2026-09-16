@@ -837,7 +837,7 @@ proc childSessArgs(child, task, model, thinking: string,
       if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
         result["tools"] = toolArgs{"tools"}
       let mr = toolArgs{"maxRounds"}.getInt(0)
-      if mr >= 1 and mr <= 50:
+      if mr >= 1:
         result["maxRounds"] = %mr
       # per-job budgets (frozen per-session controls enforced by core): total
       # tool dispatches and cumulative tokens for the child's whole turn
@@ -980,7 +980,7 @@ let runSchema = toolSchema(%*{
   "tools": {"type": "array",
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
-                "description": "Optional tool-round budget per child turn (1-50, default 50)"},
+                "description": "Optional hard tool-round budget per child turn (1-NIF_MAX_TURN_ROUNDS; omitted uses the server default)"},
   "maxCalls": {"type": "integer",
                "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
   "maxTokens": {"type": "integer",
@@ -1125,7 +1125,7 @@ let spawnSchema = toolSchema(%*{
   "tools": {"type": "array",
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
-                "description": "Optional tool-round budget per child turn (1-50, default 50)"},
+                "description": "Optional hard tool-round budget per child turn (1-NIF_MAX_TURN_ROUNDS; omitted uses the server default)"},
   "maxCalls": {"type": "integer",
                "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
   "maxTokens": {"type": "integer",
