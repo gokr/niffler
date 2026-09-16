@@ -68,7 +68,10 @@ dominate, even on redis/tokio/jq) shows a win, the flag is already there.
 Open question left behind: the ON lane's `redis` timeout at 7.0M tokens is a
 large enough outlier to deserve a rerun before treating "map is net-negative"
 as settled for long-horizon tasks specifically. The default-off decision does
-not depend on it.
+not depend on it — and the low-thinking matched-tree rerun
+(`repomap-ab-multi10-low.md`) promptly inverted the aggregate (10/10 vs 9/10 in
+the map's favour, at 0.46× tokens), with the same two cells (jq, redis) making
+the whole difference in both directions.
 
 ## Reproduce
 
