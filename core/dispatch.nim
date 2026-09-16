@@ -34,6 +34,10 @@ type
     # in niffler.nim or session.nim, shared everywhere).
     tokenStream*: TokenStream
     steerStream*: SteerStream          ## steering queue (see SteerStream below)
+    mapStream*: MapStream              ## repo-map auto-append channel (runners only;
+                                       ## components/repoMap publishes on
+                                       ## svc.session.<id>.map, pumpMap drains,
+                                       ## runTurn appends once — docs/research/REPOMAP.md)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
     sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
@@ -69,6 +73,15 @@ type
     notices*: seq[JsonNode]  # settlement notices (drained by runTurn)
     cancelRequested*: bool   # a __cancel control message arrived (agent_stop)
     cancelAt*: float         # when it arrived (stale cancels self-expire)
+  # Repo-map auto-append channel (svc.session.<id>.map): the repomap
+  # component builds a workspace map on ev.workspace.opened and publishes
+  # it here; pumpMap drains the subscription, runTurn appends it once via
+  # drainMap (append-only history, never the frozen prefix — the doctrine
+  # in docs/research/REPOMAP.md).
+  MapStream* = ref object
+    sub*: ptr natsSubscription
+    queue*: seq[tuple[workspace, map: string]]
+    appended*: bool          # one map per conversation
   # Raised from a dispatch's idle slot when a turn cancellation arrives
   # while that dispatch is in flight: the caller stops waiting for the
   # reply immediately. The callee keeps running (NATS request/reply has no
@@ -950,6 +963,26 @@ proc pumpSteer*(ct: CoreTools) =
     if content.len > 0:
       ct.steerStream.queue.add(content)
 
+proc pumpMap*(ct: CoreTools) =
+  ## Drain svc.session.<id>.map — the repomap component's auto-append
+  ## publications (one per conversation, built on ev.workspace.opened).
+  ## Queue for drainMap; runTurn appends via ctxAppend so the map is
+  ## append-only history, cache-stable for the conversation's lifetime.
+  if ct.mapStream == nil or ct.mapStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.mapStream.sub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekEvent or env.payload == nil: continue
+    let ws = env.payload{"workspace"}.getStr("")
+    let map = env.payload{"map"}.getStr("")
+    if ws.len > 0 and map.len > 0:
+      ct.mapStream.queue.add((ws, map))
+
 proc pumpAdvise*(ct: CoreTools) =
   ## Drain svc.session.<id>.advise — turn-bound advisory requests from the
   ## expert peer. Each request is answered immediately: accepted only while
@@ -1187,6 +1220,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpMap(ct)
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)
@@ -1624,6 +1658,7 @@ proc dispatchToolCalls*(ct: CoreTools,
       ct.sup.pump(ct.cat)
     pumpTokenStream(ct)
     pumpSteer(ct)
+    pumpMap(ct)
     pumpAdvise(ct)
     pumpNested(ct)
   for i in 0 ..< calls.len:

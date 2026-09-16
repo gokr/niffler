@@ -48,6 +48,7 @@ proc main() =
                      tokenStream: new(TokenStream),
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
+                     mapStream: new(MapStream),
                      activeTurn: new(ActiveTurn),
                      sessionAllowlist: new(seq[string]))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
@@ -87,6 +88,19 @@ proc main() =
     stderr.writeLine("session: subscribe " & steerSubjectStr & ": " & getErrorString(sst))
     quit(1)
   ct.steerStream.sub = steerSub
+  # Repo-map channel: the repomap component publishes a finished workspace
+  # map here after ev.workspace.opened; pumpMap drains (idle slot + dispatch
+  # idle slots), drainMap appends it once per conversation
+  # (docs/research/REPOMAP.md).
+  let mapSubjectStr = mapSubject(sessionId)
+  var mapSub: ptr natsSubscription
+  let mst = natsConnection_SubscribeSync(addr mapSub, nc.conn,
+                                         mapSubjectStr.cstring)
+  if not checkStatus(mst):
+    stderr.writeLine("session: subscribe " & mapSubjectStr & ": " &
+                     getErrorString(mst))
+    quit(1)
+  ct.mapStream.sub = mapSub
   # Advisory channel: sync subscribe to svc.session.<id>.advise (docs/research/EXPERT.md).
   # pumpAdvise answers each turn-bound advisory request — accepted only while
   # that turn is live — from dispatch's idle slot during a turn and from the
@@ -141,9 +155,11 @@ proc main() =
     var msg: ptr natsMsg
     let ms = natsSubscription_NextMsg(addr msg, sub, 200)
     if ms == NATS_TIMEOUT:
-      # Keep the advisory surface responsive while idle: a late advise must
-      # get its rejection reply now, not when the next turn happens to pump.
+      # Keep the advisory + repo-map surfaces responsive while idle: a late
+      # advise must get its rejection reply now, and an early map must not
+      # wait for a turn that may never come.
       pumpAdvise(ct)
+      pumpMap(ct)
       if epochTime() - lastActivity > idleLimitSecs:
         echo "session: retiring after " & $idleLimitSecs.int & "s idle"
         break

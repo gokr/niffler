@@ -150,6 +150,45 @@ var/bin/edit: components/edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 var/bin/lsp: components/lsp/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/lsp/main.nim
 
+# Repomap (docs/research/REPOMAP.md): ranked workspace map; the C in csrc/
+# is pulled in by ts.nim's {.compile.} pragmas (this list is rebuild
+# tracking only).
+REPOMAP_CSRC := $(wildcard components/repomap/csrc/tree_sitter/lib/src/*.c) \
+  $(wildcard components/repomap/csrc/tree_sitter/lib/src/unicode/*.h) \
+  components/repomap/csrc/go/parser.c \
+  components/repomap/csrc/python/parser.c components/repomap/csrc/python/scanner.c \
+  components/repomap/csrc/typescript/parser.c components/repomap/csrc/typescript/scanner.c \
+  components/repomap/csrc/javascript/parser.c components/repomap/csrc/javascript/scanner.c \
+  components/repomap/csrc/c/parser.c \
+  components/repomap/csrc/cpp/parser.c components/repomap/csrc/cpp/scanner.c \
+  components/repomap/csrc/rust/parser.c components/repomap/csrc/rust/scanner.c \
+  components/repomap/csrc/ruby/parser.c components/repomap/csrc/ruby/scanner.c
+var/bin/repomap: components/repomap/main.nim components/repomap/tags.nim \
+    components/repomap/score.nim components/repomap/repomap.nim \
+    components/repomap/ts.nim $(REPOMAP_CSRC) $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/repomap/main.nim
+
+# Repomap tags seam (docs/research/REPOMAP.md): tree-sitter C runtime + 3
+# grammars vendored under csrc/ (wasm excluded); the {.compile.} pragmas in
+# ts.nim pull the C in and headers resolve via --cincludes. Queries live in
+# components/repomap/queries. The native Nim tier needs no C.
+var/bin/test_t_repomap_tags: tests/t_repomap_tags.nim components/repomap/tags.nim \
+    components/repomap/score.nim components/repomap/repomap.nim \
+    components/repomap/ts.nim $(REPOMAP_CSRC) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk \
+	  -o:$@ tests/t_repomap_tags.nim
+
+var/bin/test_t_repomap_score: tests/t_repomap_score.nim components/repomap/tags.nim \
+    components/repomap/score.nim components/repomap/repomap.nim $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk \
+	  -o:$@ tests/t_repomap_score.nim
+
+var/bin/test_t_repomap: tests/t_repomap.nim components/repomap/main.nim \
+    components/repomap/tags.nim components/repomap/score.nim \
+    components/repomap/repomap.nim components/repomap/ts.nim $(REPOMAP_CSRC) \
+    $(SDK_NIM) $(NIM_CONF) | var/bin
+	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/t_repomap.nim
+
 # Background processes with an owner: start once, poll incremental output,
 # kill explicitly (docs/OCTOFRIEND-STEAL.md, "Steal 5 follow-up").
 var/bin/processes: components/processes/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -248,7 +287,7 @@ components:
 	$(BUILD_LOCK) env NIF_LOCK_HELD=1 $(MAKE) --no-print-directory components-inner
 
 components-inner: var/bin/niffler var/bin/session var/bin/store var/bin/store-sqlite var/bin/store-tidb var/bin/niffler-store-migrate var/bin/bash \
-	var/bin/edit var/bin/lsp var/bin/processes var/bin/grep var/bin/git \
+	var/bin/edit var/bin/lsp var/bin/repomap var/bin/processes var/bin/grep var/bin/git \
 	var/bin/builder var/bin/plugins var/bin/skills var/bin/fetch \
 	var/bin/observe var/bin/logfile var/bin/console \
 	var/bin/cli var/bin/llm-openai var/bin/models var/bin/provider var/bin/llm \
@@ -452,6 +491,8 @@ test-git:     build var/bin/test_t_git     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(R
 test-mcp:     build var/bin/test_t_mcp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_mcp
 test-edit:    build var/bin/test_t_edit    ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_edit
 test-lsp:     build var/bin/test_t_lsp     ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_lsp
+test-repomap: build var/bin/test_t_repomap_tags var/bin/test_t_repomap_score \
+    var/bin/test_t_repomap ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_tags && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap_score && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_repomap
 test-processes: build var/bin/test_t_processes ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_processes
 test-expert:  build var/bin/test_t_expert  ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_expert
 test-parallel: build var/bin/test_t_parallel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_parallel
