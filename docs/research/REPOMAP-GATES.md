@@ -7,8 +7,10 @@ agreed after those A/Bs, when the evidence stopped supporting "map good" or
 "map bad" and started supporting "map depends on what's in it and how big the
 repo is".
 
-Status: **specified, not yet implemented.** The append remains opt-in
-(`NIF_REPOMAP_AUTOAPPEND=1`) until the gates land and a bench pass shows the
+Status: **implemented** (`components/repomap/main.nim`, `MapStats` +
+`appendCensusOk` + `appendGateReason`; tests in `tests/t_repomap*.nim`;
+`make test-repomap` green). The append remains opt-in
+(`NIF_REPOMAP_AUTOAPPEND=1`) until the verification bench below shows the
 gated append is not a regression.
 
 ## Why gates — what the A/Bs actually show

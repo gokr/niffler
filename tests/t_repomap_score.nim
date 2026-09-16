@@ -83,6 +83,27 @@ proc main() =
   check("zero budget maps nothing",
         buildMap(@files, ScoreOptions(budgetTokens: 0), tagsOf) == "")
 
+  # --- countRendered (the append gates' input) ------------------------------
+  # Counted from the rendered text the model would receive: symbol rows are
+  # "  <line>:<col>  <kind>  <name>", file headings are unindented.
+  block:
+    let (syms, files) = countRendered(m1)
+    check("countRendered counts symbol rows", syms == 5, $syms & "\n" & m1)
+    check("countRendered counts symbol-bearing files", files == 5,
+          $files & "\n" & m1)
+    check("bare special-file entries are not symbol files",
+          countRendered("docs/readme.md\n").files == 0,
+          $countRendered("docs/readme.md\n"))
+    check("empty text counts zero",
+          countRendered("") == (0, 0))
+
+  # --- buildMapStats matches buildMap --------------------------------------
+  block:
+    let st = buildMapStats(@files, opts, tagsOf)
+    check("buildMapStats text is buildMap's", st.text == m1)
+    check("buildMapStats carries the counts", st.symbols == 5 and st.files == 5,
+          $st.symbols & "/" & $st.files)
+
   report("REPOMAP SCORE")
 
 main()

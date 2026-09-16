@@ -101,3 +101,48 @@ proc buildMap*(files: seq[string], opts: ScoreOptions,
     if lo > hi: break
     middle = (lo + hi) div 2
   return best
+
+type
+  MapStats* = object
+    ## A built map plus the counts the append's admission gates need
+    ## (docs/research/REPOMAP-GATES.md). Counted from the rendered text —
+    ## the artifact the model would receive — so dedup/trim are included.
+    text*: string
+    symbols*: int    # rendered symbol rows (defs+refs, post-dedup)
+    files*: int      # files with at least one rendered symbol
+
+proc isSymbolRow(row: string): bool =
+  ## "<line>:<col>  <symKind>  <name>" — the renderer's symbol shape.
+  ## The caller passes the line stripped of its two-space indent.
+  var i = 0
+  while i < row.len and row[i].isDigit: inc i
+  if i == 0 or i >= row.len or row[i] != ':': return false
+  inc i
+  let d0 = i
+  while i < row.len and row[i].isDigit: inc i
+  i > d0 and i < row.len and row[i] == ' '
+
+proc countRendered*(text: string): tuple[symbols, files: int] =
+  ## Count symbol rows and symbol-bearing files in a rendered map. File
+  ## headings are the lines not starting with a space; bare special-file
+  ## entries (a heading with no rows under it) do not count as files.
+  var curHas = false
+  var inFile = false
+  for raw in text.splitLines():
+    if raw.len == 0: continue
+    if raw[0] != ' ':
+      if inFile and curHas: result.files.inc
+      inFile = true
+      curHas = false
+    elif isSymbolRow(raw.strip()):
+      result.symbols.inc
+      curHas = true
+  if inFile and curHas: result.files.inc
+
+proc buildMapStats*(files: seq[string], opts: ScoreOptions,
+                    tagsOf: proc(rel: string): seq[Tag]): MapStats =
+  ## buildMap plus the gate counts.
+  result.text = buildMap(files, opts, tagsOf)
+  let (s, f) = countRendered(result.text)
+  result.symbols = s
+  result.files = f

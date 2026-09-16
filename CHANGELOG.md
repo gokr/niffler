@@ -8,6 +8,21 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **repomap append admission gates.** The workspace-open auto-append (still
+  opt-in via `NIF_REPOMAP_AUTOAPPEND=1`) now admits a map only when it is
+  worth injecting (docs/research/REPOMAP-GATES.md): a **size floor** —
+  workspaces under `NIF_REPOMAP_MIN_CENSUS` (default 50) covered source
+  files are never mapped, decided from the census before any tag parsing —
+  and a **content gate** — a rendered map below `NIF_REPOMAP_MIN_BYTES`
+  (800), `NIF_REPOMAP_MIN_SYMBOLS` (25) or `NIF_REPOMAP_MIN_FILES` (5) is a
+  stub and is withheld. Withheld maps log `repo map withheld ... (reason)`,
+  so bench artifacts show which gate fired. The `repo_map` tool path is
+  never gated: a small map is a fine answer to an explicit question, just
+  not worth injecting unasked. Thresholds are calibrated from the bench
+  stores' published maps (stub class 4-9 symbols / 1-4 files / <3.1KB;
+  healthy 59-119 symbols / 19-48 files / 3.5-4.6KB) and all four are
+  env-overridable.
+
 - **Conversation controls: `/approvals`, `/limit` and the keep-going question.**
   Two controls now belong to the human, per conversation, set through the
   `session` call (the SPA exposes them as slash commands; any bus client can
