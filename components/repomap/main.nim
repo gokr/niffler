@@ -1,17 +1,19 @@
 ## repomap component — the ranked repo map (docs/research/REPOMAP.md).
 ##
-## Two surfaces, one job: orient a conversation in a workspace without it
-## reading anything first.
+## Two surfaces, one job: orient a conversation in a workspace.
 ##
 ## - tool `repo_map {workspace?, focus?, mentionedIdents?, budget?}`:
 ##   onDemand, read-effect. The ranked, budget-capped map — the model's
-##   explicit refresh.
-## - auto-append: core announces every conversation workspace on
-##   ev.workspace.opened (already carries the conversation id). We build the
-##   map and publish it to svc.session.<id>.map, where the session runner
-##   drains it (core/dispatch.nim pumpMap) and appends it to history once.
-##   The map arrives — never sought: bench evidence says onDemand tools
-##   never activate on their own (zero discover calls in 58 Multi10 cells).
+##   explicit pull, and the only surface on by default.
+## - auto-append (**opt-in**, NIF_REPOMAP_AUTOAPPEND=1): core announces every
+##   conversation workspace on ev.workspace.opened (already carries the
+##   conversation id). We build the map and publish it to
+##   svc.session.<id>.map, where the session runner drains it
+##   (core/dispatch.nim pumpMap) and appends it to history once. The map
+##   arrives rather than being sought, because onDemand tools never activate
+##   on their own (zero discover calls in 58 Multi10 cells) — but the A/B says
+##   paying for it up front is net-negative, hence opt-in: see
+##   bench/reports/repomap-ab-{full30,multi10}.md.
 ##
 ## Every failure is silent or a structured error: no language server, no
 ## grammars for the languages present, an unreadable file — none of it may
@@ -211,12 +213,18 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # runner's private .map subject; the runner drains it and appends once
   # (core/dispatch.nim pumpMap -> conversation drainMap).
   #
-  # OFF BY DEFAULT until an A/B proves the economics: full30 showed the
-  # map costs ~40% more tokens for no benefit on small repos, and the first
-  # Multi10 high run lost 8/10 vs 9/10 with it on (docs/research/REPOMAP.md,
-  # bench/reports/repomap-ab-full30.md). Set NIF_REPOMAP_AUTOAPPEND=1 to
-  # turn the append back on — the repo_map tool is always available and
-  # process-local (the model asks, nothing is injected).
+  # OFF BY DEFAULT: the A/B did not clear the bar in either suite. full30
+  # (the regression gate) stayed 30/30 but cost ~40% more tokens; Multi10 on
+  # real OSS repos (the value probe) scored 8/10 with the map against 9/10
+  # without, at 3.7x the tokens (252k vs 68k per cell) — the one flipped cell
+  # was a redis timeout at 7.0M tokens. See bench/reports/repomap-ab-full30.md
+  # and repomap-ab-multi10.md.
+  #
+  # Set NIF_REPOMAP_AUTOAPPEND=1 to turn the append back on. Nothing about the
+  # component is disabled either way: repo_map stays registered, onDemand and
+  # read-effect, so the map is a tool the model discovers when a large
+  # unfamiliar repo warrants it rather than context injected into every
+  # conversation (the model asks, nothing is injected).
   if getEnv("NIF_REPOMAP_AUTOAPPEND", "0") notin ["1", "true", "yes"]:
     return
   let ws = payload{"workspace"}.getStr("")

@@ -138,26 +138,46 @@ repomap component (feat/repomap)
   output: append-only tool result, deterministic, budget-capped
 ```
 
-**How it enters the conversation — auto-append, not discovery.** On
-`ev.workspace.opened`, the component builds the workspace's map once and the
-session runner appends it to history (append-only, cache-safe — never the
-frozen prefix). The model is oriented from turn one with zero discovery:
-bench evidence says onDemand tools never activate on their own (zero
-discover calls across 58 Multi10 cells), so the map must arrive, not be
-sought. The full surface:
+**How it enters the conversation — the tool by default, the append on demand.**
+The designed entry was an auto-append: on `ev.workspace.opened` the component
+builds the workspace's map once and the session runner appends it to history
+(append-only, cache-safe — never the frozen prefix), orienting the model from
+turn one with zero discovery. That is implemented and works — but **the A/B
+did not clear the bar, so it ships off by default**
+(`NIF_REPOMAP_AUTOAPPEND=1` opts in). Results, both from this branch:
+
+| suite | map ON | map OFF | tokens |
+|---|---|---|---|
+| full30 (regression gate, tiny repos) | 30/30 | 30/30 | 34.5k vs 24.4k (**+41%**) |
+| Multi10 (value probe, real OSS repos) | **8/10** | **9/10** | 252k vs 68k (**3.7×**) |
+
+On full30 the tax was behavioral (the map nudged the agent into ~0.5 extra
+turns) and harmless. On Multi10 the map bought **zero** additional passes and
+cost one: the flipped cell was `redis` timing out at 7.0M tokens against 1.5M
+without it, and every task that passed without the map also passed with it.
+Reports: `bench/reports/repomap-ab-full30.md`, `repomap-ab-multi10.md`.
+
+So the shipped shape inverts the original plan: the map is **sought, not
+sent**. `repo_map` is onDemand and read-effect — the model asks when a large
+unfamiliar repo warrants orientation. The tension the plan named is real and
+unresolved (onDemand tools never activate on their own: zero discover calls
+across 58 Multi10 cells), so the honest summary is that **the map is not worth
+injecting, and may not be found either** — it is a capability that is there
+when the model looks. Keeping the append behind a flag makes the question
+re-openable with one env var if a workload appears where
+orientation-time dominates.
+
+The full surface:
 
 | Path | When | Cost |
 |---|---|---|
-| auto-append on `ev.workspace.opened` | once per conversation | ~300–1k tokens, once |
-| `repo_map {workspace?, focus?, budget?}` (onDemand tool) | refresh after big refactors, explicit pulls | same, model-initiated |
+| auto-append on `ev.workspace.opened` (**opt-in**) | once per conversation | ~300–1k tokens, once — the A/B says net-negative |
+| `repo_map {workspace?, focus?, budget?}` (onDemand tool) | explicit pulls; the only path on by default | same, model-initiated |
 | personalization | files the conversation read/edited (store seen-state, recency-decayed) + grep-hit idents | free — we know, aider guesses |
 
 Rules: empty/failed map appends nothing; subagents excluded in v1; a trim
 may drop the map — re-requestable (compaction should treat it as a keeper);
-the baseprompt mentions only the refresh tool, not "use the map" — it is
-already on the page. Bench A/B: conversations with/without the auto-append,
-measuring time-to-first-correct-file and total tokens (full30 regression +
-Multi10 unfamiliar-repo spot-check).
+the baseprompt mentions only the refresh tool, not "use the map".
 
 ## Port plan
 
