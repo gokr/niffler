@@ -187,6 +187,11 @@ ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
 ev.session.steer       # {sessionId, turnId?, content} a steer message was folded in
 ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
+ev.session.notice      # {sessionId, turnId?, jobId, child, status} a subagent
+                       #   settlement notice was folded in (the durable
+                       #   agentnotice record is what carries the summary and
+                       #   the recourse to the full reply; see "Settlement
+                       #   notices" below)
 ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
                        #   warning?|trimmed?}; context-window pressure
                        #   (75% warn, 90% trim)
@@ -308,6 +313,180 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
   possible future addition.
 
+## Settlement notices (subagents → parent)
+
+A background subagent (`agent_spawn`) that reaches a terminal state writes a
+durable `agentnotice` record and delivers it to its **parent conversation** —
+not just to UIs (`ev.agent.done` is observe-only). Rationale and design:
+docs/research/SUBAGENTS-PLAN.md P0.1.
+
+Record (store kind `agentnotice`, id `<parentSession>:<zero-padded seq>`):
+
+```json
+{ "v": 1, "parent": "conv-…", "jobId": "job-…", "child": "agent-…",
+  "status": "done|failed|stopped",
+  "summary": "<bounded head of the reply, ≤400 chars; absent when the job
+                produced no reply>",
+  "replyBytes": 12345,
+  "fullReplyIn": "agent_status",
+  "createdAt": 1765400000.0,
+  "deliveredAt": 1765400001.0, "deliveredVia": "wake|pull" }
+```
+
+The notice is a **pointer, not the reply**: `replyBytes` counts the
+untruncated reply and `fullReplyIn` names the tool that returns it, because
+the full reply is already durable in the `agentjob` record (`agent_status`
+returns it). A model told only "your subagent finished" does not know to make
+a second call; the pointer is what makes the summary a delegation rather
+than a loss. Same convention as the tool-spill paths (`bash`, `mcp`, `fetch`).
+
+Delivery is two-lane by **parent state**, and the durable record is written
+before either is attempted:
+
+- **parent runner mid-turn** → the steer subject
+  (`svc.session.<parent>.steer`) with a `notice` payload object instead of a
+  `content` string. The runner queues it separately from user steer and
+  folds it in as a structurally marked user message — it is runtime
+  machinery about a subagent, never something the human typed.
+- **otherwise** (idle, retired, or no runner) → pending; the parent's next
+  turn pulls every pending notice at the top of the turn (alongside steer
+  and advisories) and marks it `deliveredVia: "pull"`.
+
+Taking the pushed lane first is what prevents double delivery. Notices are
+best-effort throughout: a store or agent-component failure costs a notice,
+never a turn, and a completed job is never turned into a failed call.
+`agent_notices {session?, peek?}` drains manually (on demand) for callers
+that want to look without waiting for a turn.
+
+## Subagent continuation (`agent_run`/`agent_spawn {session}`)
+
+Both drivers accept `session`: a previously returned `sessionId` gives that
+EXISTING child another turn instead of minting a fresh one. Design and
+testing: docs/research/SUBAGENTS-PLAN.md P1.3.
+
+- **Authorization is the durable lineage relation**: the child's
+  `sessionmeta.parent` must equal the caller's session. Unknown sessions,
+  root conversations (a lineage record with no `parent`), foreign children,
+  closed children and an unreachable store all refuse with distinct errors —
+  fail-closed, never a silently fresh child.
+- **Frozen controls**: model, thinking, tool allowlist and budgets were
+  frozen into the child's conversation header at its first turn. A
+  continuation sends content only (no preamble, no system prompt) — the
+  caller's model/thinking/tools/budget arguments are ignored by
+  construction, and the synchronous result carries the child's `effective`
+  controls as a readback. This keeps the child's cached request prefix
+  stable (append-only history).
+- **Busy semantics by promise**: `agent_run {session}` promises a result
+  now, so a mid-turn child is refused with `code: "busy"` (naming
+  `agent_spawn` to queue or `agent_wait`/`agent_status` for the current
+  turn). `agent_spawn {session}` promises the work happens, so it queues —
+  the child's runner serializes turns. The busy check runs AFTER
+  authorization, because the caller itself is always "mid-turn" while its
+  own `agent_run` executes.
+- **Activation ledger**: each accepted turn advances
+  `sessionmeta.activations` (1-based; the first turn counts as 1) and sets
+  `firstActivationAt` once. Background continuations stamp `continued` and
+  `activation` on their `agentjob` record (the completion tap preserves
+  them when it terminalizes the record).
+- **Close**: `close: true` marks the child retired (`sessionmeta.closed`)
+  AFTER its turn — synchronously in `agent_run`, via the job's completion
+  tap in `agent_spawn`. Nothing is deleted (record + transcript survive for
+  forensics); only further continuation refuses.
+
+## Subagent fork (`fork: true | {lastK} | {maxChars}`)
+
+On fresh spawns only — a fork is a birth, not a continuation (`fork` +
+`session` is refused). The child's message log is seeded with the CALLER's
+completed turns before its first request, so the child has READ the
+conversation instead of being told about it. Design and testing:
+docs/research/SUBAGENTS-PLAN.md P1.4 (DSH-STEAL §3).
+
+- **The seed is contiguous-from-0 and replay-valid**: `balancedPrefixLen`
+  walks the transcript with a pending-tool_calls count and stops at the
+  first record that breaks the provider invariants (a user message over
+  unanswered calls, an orphaned tool record, a closing assistant over
+  unanswered calls); a tail ending with pending calls is cut before the
+  dangling assistant. Blocks within that prefix open at a user message and
+  close at an assistant with no `tool_calls` — a steered turn's extra user
+  messages fold into the same block. The fork copies whole blocks only, so
+  the child's first request can never carry a dangling `tool_call_id`.
+- **The one store-ownership exception**: this is the documented case where
+  `agent` writes `message` records (core otherwise owns that kind). Safe
+  because it is a one-time COPY written before the child's runner exists —
+  no concurrent writer for that session id, no lost-update window — and the
+  child's `seqNo` continues AFTER the copied ids (`loadStoredMessagesEx`
+  derives it from the highest stored id). The copy site in
+  `components/agent/main.nim` carries the ownership comment.
+- **Not copied**: per-message `usage` (the child's meters are its own —
+  born cold), `summary`/`error` roles (a summary is a derivation of records
+  copied raw; errors are the parent's audit), the `<session>:tools` toolset
+  snapshot, and the header's control fields. The forked child's frozen
+  controls come from THIS call (a birth), not from the source conversation.
+- **Fork × compaction** (the gate is satisfied — compaction landed): a
+  forked child receives the parent's **raw transcript**, which may be
+  LARGER than the parent's current live context — compaction's projections
+  are checkpoint nodes (`<convId>#ck<gen>`, outside the message kind) and
+  are never copied, and the child's ledger is rebuilt from the copied
+  records on its first resume. The child's own compaction then shrinks it
+  on its own schedule. Read-visibility framing: a fork is a reader of
+  records the parent may no longer hold in context — that is the point
+  (the child gets the real history, not the parent's summary of it).
+- **Provenance before the first turn, fail-closed**:
+  `sessionmeta[child] = {parent, fork: {source, uptoId, copied}}`, surfaced
+  by `session_info` as `fork`. A budget (`lastK`/`maxChars`) that drops
+  everything fails closed — never an empty child.
+- **Cache effect**: born cold (the first request replays the history
+  uncached; warm from the second turn). The tool descriptions say this,
+  because the cost is otherwise surprising — and point bulk mechanical
+  transfer at `fabric`.
+
+## Delegation depth (`NIF_AGENT_MAX_DEPTH`)
+
+Delegation depth is capped by `NIF_AGENT_MAX_DEPTH` (default **1** —
+subagents cannot spawn subagents). The cap is evaluated at dispatch time
+(`core/dispatch.nim`, where the session-context gate lives) by a **depth
+walk** over `sessionmeta.parent` links from the calling session to a root:
+a root is depth 0, children 1, grandchildren 2 — a spawn is denied when
+`depth >= cap`. `0` forbids delegation entirely (even a root may not
+spawn). The walk is bounded by the cap + 2 reads (a corrupt lineage cycle
+exceeds the cap and is denied) and fails closed when the lineage store is
+unverifiable.
+
+The spawn-class tool stays **visible at the cap** — each start rejects
+with an errored result naming the limit and the caller's depth
+(`subagent depth 1 exceeds NIF_AGENT_MAX_DEPTH=1 (subagents cannot spawn
+subagents)`), so the model learns why instead of finding a hidden tool.
+The component enforces the same rule a second time at its own trust
+boundary (defense in depth; core's dispatch gate is the primary).
+
+**Raising the cap above 1** changes the trust shape and needs the nested
+synchronous path to work: a child's synchronous `agent_run` arrives at the
+agent component while the parent's synchronous `agent_run` holds the
+component's pump — so `requestChildTurn` serves queued calls re-entrantly
+(`pumpCallsReentrant` in the SDK), depth-bounded by the same cap. Each
+level blocks in its own downstream wait; handler state is per-call.
+
+## Nested-call leases (keyed)
+
+The nested-call proxy validates requests against the lease a
+session-context dispatch granted. Leases are **keyed by id** — each
+session-context dispatch registers its own lease (with its own deadline)
+and removes exactly that key on exit:
+
+- two overlapping session-context dispatches can neither clobber nor
+  prematurely restore one another (the old single-string lease was the
+  latent hazard that made parallel session-context dispatch unsafe);
+- a lease's validity window gates everything else: an expired outer call
+  is denied (`expired`) before tool resolution or argument validation;
+- an unknown, stale or empty lease reads `bad-lease`; no live turn reads
+  `no-session`;
+- a completed dispatch's lease is dead immediately, and leases never
+  outlive their turn (cleared at turn end).
+
+The wave scheduler still refuses `sessionContext` tools — serial dispatch
+is fine (children are what run in parallel) — but the invariant "leases
+are per-call" now holds regardless of future dispatch policy.
+
 ## Approvals
 
 Dispatch honors `x-harness.approval` on the tool schema (docs/research/REBOOT.md,
@@ -345,8 +524,10 @@ keys:
   the runner injects `__session` context and a nested-call lease.
 - `sessionId`: the runner injects `__session.session` (the live session id,
   `""` for non-session callers) so the component can match
-  `cancel.<component>` events against its in-flight work (see Cancellation);
-  core overwrites any client-supplied `__session` for such tools at
+  `cancel.<component>` events against its in-flight work (see Cancellation).
+  Carries no lease and does not fail closed, so a read-only tool may also use
+  it purely to learn its caller (`agent_list`, `agent_notices` do); core
+  overwrites any client-supplied `__session` for such tools at
   dispatch — the key is core-owned private context, never caller data.
 - `effect`: `"read"` or `"write"` (default) — how the fabric batch host
   schedules items (reads fill the concurrency cap together, writes run

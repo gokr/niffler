@@ -45,6 +45,9 @@ const
   DIAG_PUSH_TIMEOUT_MS = 25_000  # lsp diagnostics push (server cold starts)
   DIAG_CONTEXT_LINES = 3    # diagnostics just outside the diff still matter
   DIAG_PUSH_MAX_LINES = 8   # cap on in-range diagnostics per edit response
+  OUTLINE_MIN_LINES = 1000  # whole-reads above this get an lsp outline (NIF_READ_OUTLINE_LINES)
+  OUTLINE_TIMEOUT_MS = 8_000  # the outline is opportunistic — never stall a read
+  OUTLINE_MAX_PER_CALL = 2  # per batch call: 2 × timeout stays inside the read budget
 
 # ---------------------------------------------------------------------------
 # line helpers + normalization
@@ -416,8 +419,49 @@ type SeenEntry = object
   full: bool     # the conversation holds (or can derive) the full content
 
 var gSeen = initTable[string, SeenEntry]()
+var gLazyInstructions = initTable[string, bool]()
 
 proc seenKey(session, target: string): string = session & "\x1f" & target
+
+const instructionCandidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
+                               "CLAUDE.md", "CLAUDE.MD"]
+const localInstruction = "AGENTS.local.md"
+
+proc lazyInstructionText(session, target: string): string =
+  ## Return newly discovered instructions for directories below the harness
+  ## root. The initial system prompt already contains the root/ancestor
+  ## constitution; read-triggered loading keeps monorepo subtrees out of that
+  ## frozen prefix until the model actually enters one.
+  if session.len == 0: return ""
+  var root = absolutePath(rootDir())
+  while root.len > 1 and root.endsWith("/"): root.setLen(root.len - 1)
+  let absoluteTarget = absolutePath(target)
+  if not absoluteTarget.startsWith(root & "/"): return ""
+  var dir = absoluteTarget.parentDir()
+  var chunks: seq[string]
+  while dir.len > root.len and dir.startsWith(root & "/"):
+    var paths: seq[string]
+    for name in instructionCandidates:
+      let path = dir / name
+      if fileExists(path):
+        paths.add(path)
+        break # primary files shadow each other in one directory
+    let local = dir / localInstruction
+    if fileExists(local): paths.add(local)
+    for path in paths:
+      let key = session & "\x1f" & path
+      if gLazyInstructions.hasKey(key): continue
+      gLazyInstructions[key] = true
+      try:
+        chunks.add("<lazy_project_instructions path=\"" &
+                   relativePath(path, root) & "\">\n" & readFile(path) &
+                   "\n</lazy_project_instructions>")
+      except CatchableError:
+        discard
+    dir = dir.parentDir()
+  if chunks.len == 0: return ""
+  "[Instructions loaded because this read entered a subdirectory:\n" &
+    chunks.join("\n\n") & "]"
 
 proc unchangedText(path, raw: string): string =
   let (_, body) = stripBom(raw)
@@ -611,6 +655,42 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     "the file and copy the text verbatim.")
 
 import diagformat
+
+var gOutlineBudget = 0
+  ## Whole-read outline attempts left in the current read call; reset per
+  ## dispatch in hReadTool. The SDK pump is single-threaded, so a module
+  ## global is a safe per-call cap (latency guard, not correctness).
+
+proc outlineMinLines(): int =
+  ## NIF_READ_OUTLINE_LINES overrides the whole-read outline threshold;
+  ## 0 disables the feature.
+  try: result = parseInt(getEnv("NIF_READ_OUTLINE_LINES", $OUTLINE_MIN_LINES))
+  except CatchableError: result = OUTLINE_MIN_LINES
+
+proc outlineSection(c: Component, target, path: string, total: int): string =
+  ## Whole-read outline: query the lsp component's documentSymbol instead of
+  ## dumping the bytes (the model asked for the whole file, but what it
+  ## usually wants is orientation). Read itself stays language-agnostic —
+  ## which servers cover which extensions is the lsp registry's data, the
+  ## same seam edit's diagnostics push uses. Every failure mode is silent:
+  ## no lsp component (instant no-responders), no server for the extension
+  ## (error envelope), a slow or cold server (timeout) — all fall back to
+  ## the normal content read.
+  if gOutlineBudget <= 0: return ""
+  dec gOutlineBudget
+  var resp: JsonNode
+  try:
+    resp = c.request("lsp", "lsp",
+      %*{"operation": "documentSymbol", "path": target}, OUTLINE_TIMEOUT_MS)
+  except CatchableError:
+    return ""
+  if not resp{"ok"}.getBool(false) or resp{"text"} == nil: return ""
+  let outline = resp{"text"}.getStr("")
+  if outline.len == 0: return ""
+  result = path & " is " & $total & " lines. Outline (from the language server):\n\n" &
+    outline &
+    "\n\n[Outline instead of the full text. Read windows with offset/limit " &
+    "(up to 12 ranges per call), or offset=1 to read the whole file anyway.]"
 
 proc lspDiagnosticsSection(c: Component, target: string,
                            first, last: int): string =
@@ -860,6 +940,7 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     raise newException(ValueError,
       "[E_FILE_TOO_LARGE] " & path & " exceeds the 100MB read limit; use bash")
   let raw = readFile(target)
+  let lazy = lazyInstructionText(session, target)
   if raw.len == 0:
     return %("[] " & path & " is empty (0 lines). Use write to create content.")
   let sampleLen = min(SNIFF_BYTES, raw.len)
@@ -874,6 +955,24 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
   let (_, body) = stripBom(raw)
   let lines = splitLf(toLf(body))
   let total = lines.len
+  # whole-read outline: a blind full read of a large file is the most
+  # expensive call the model makes without knowing it — swap it for the lsp
+  # outline when one is available (every failure silently falls back to the
+  # content below). Deliberate windowing (explicit offset/limit), the
+  # "dump it anyway" offset=1 and force re-dumps all bypass it.
+  let outlineMin = outlineMinLines()
+  if outlineMin > 0 and offN == nil and limN == nil and not force and
+      total > outlineMin:
+    let ol = outlineSection(c, target, path, total)
+    if ol.len > 0:
+      if session.len > 0:
+        # the model saw no bytes: keep any prior full-view state, and
+        # persist only a correction (same rules as the windowed path)
+        let dig = $secureHash(raw)
+        let key = seenKey(session, target)
+        let prev = if gSeen.hasKey(key): gSeen[key] else: SeenEntry()
+        observe(session, target, raw, prev.full, persist = prev.digest != dig)
+      return %ol
   # full view = one-shot whole-file delivery (explicit offset=1 is the
   # caller saying "dump it anyway" — the pre-force escape hatch)
   var fullDelivered = offN == nil and total <= limit and raw.len <= MAX_READ_BYTES
@@ -881,7 +980,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     let dig = $secureHash(raw)
     let key = seenKey(session, target)
     if gSeen.hasKey(key) and gSeen[key].digest == dig and gSeen[key].full:
-      return %unchangedText(path, raw)
+      let unchanged = unchangedText(path, raw)
+      return %(if lazy.len > 0: lazy & "\n\n" & unchanged else: unchanged)
   if offset > total:
     return %("Offset " & $offset & " is beyond end of file (" & $total &
       " lines). Use offset=1 to read from the start.")
@@ -921,6 +1021,8 @@ proc hRead(c: Component, args: JsonNode): JsonNode =
     let same = prev.digest == dig
     observe(session, target, raw, fullDelivered or (same and prev.full),
             persist = not same)
+  if lazy.len > 0:
+    text = lazy & "\n\n" & text
   result = %text
 
 type ReadRequest = tuple[path: string, offset: int, limit: int,
@@ -1081,6 +1183,7 @@ proc hReadTool(c: Component, args: JsonNode): JsonNode =
       " files/ranges per call (got " & $requests.len &
       ") — split into batches.")
   let force = args{"force"}.getBool(false)
+  gOutlineBudget = OUTLINE_MAX_PER_CALL
   if requests.len == 1 and requests[0].err.len == 0:
     # one item: plain content, no heading wrapper. Offset/limit are only
     # forwarded when the caller supplied a range, so the unchanged-stub
@@ -1167,7 +1270,7 @@ discard comp.tool("read", toolSchema(%*{
   "force": {"type": "boolean",
             "description": "Re-dump even if unchanged since your last read/write"}
 }, @[],
-  "Read files for editing. Canonical: \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges in one call, per-item errors, several items under a \"### path\" heading, 512KB cap; one \"reads\" item (or the sugar \"path\") returns plain content. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
+  "Read files for editing. Canonical: \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges in one call, per-item errors, several items under a \"### path\" heading, 512KB cap; one \"reads\" item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) with a language server for its type returns the symbol outline instead — read windows with offset/limit (batch them), or offset=1 to read the whole file anyway. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
      "workspace": {"pathFields": ["path"],
                    "pathArrayFields": ["paths"],

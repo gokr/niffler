@@ -91,8 +91,9 @@ anything structural.
   system prompt (persisted in the conversation header,
   `core/conversation.nim:resolveSystemPrompt`) plus the frozen direct tool
   schemas (`<sessionId>:tools` store doc) — must stay byte-stable for the
-  conversation's lifetime; history only grows (steer, advice, and discover
-  schemas all enter as appended messages). Any new contributor to the
+  conversation's lifetime; history only grows (steer, advice, discover
+  schemas and subagent settlement notices all enter as appended messages).
+  Any new contributor to the
   session context must state its effect: **frozen prefix** or **append-only
   history**. Never splice a volatile fact (time, a file edit, a catalog
   change) into the head; append it as a user/tool-role message instead. Tool
@@ -104,6 +105,27 @@ anything structural.
   (`cacheHitTokens`/`cacheHitRatio`); the only legitimate full misses are a
   trim (`reason: "reset:trim"`) and a sticky `invoke` promotion
   (`reason: "reset:tools"`, emitted only when the direct set actually grew).
+- **Subagent continuation is append-only by construction**
+  (docs/WIRE.md "Subagent continuation"): `agent_run`/`agent_spawn
+  {session}` send content only — no preamble, no system prompt, no model/
+  thinking/tools/budgets (all frozen at the child's first turn) — so a
+  continued child's cached prefix survives. Authorization is the durable
+  lineage relation (`sessionmeta.parent` == caller) and every failure
+  refuses explicitly (unknown / self / root / foreign / closed / store
+  unreachable); `agent_run` refuses a mid-turn child with `code: "busy"`
+  (checked AFTER authorization — the caller is always mid-turn during its
+  own agent_run), `agent_spawn` queues. Each accepted turn advances
+  `sessionmeta.activations`/`firstActivationAt`; background continuations
+  stamp `continued`/`activation` on their `agentjob` record; `close: true`
+  sets `sessionmeta.closed` after the turn (records survive; only further
+  continuation refuses).
+- **Fork is the one store-ownership exception** (docs/WIRE.md "Subagent
+  fork"): `agent` writes `message` records when seeding a forked child — a
+  one-time copy performed before the child's runner exists, so there is no
+  concurrent writer for that session id and no lost-update window. The copy
+  site states the exception in a comment. Everything else about the fork is
+  append-only and derived: provenance (`sessionmeta.fork`), the balanced
+  contiguous-from-0 cut, no usage/summary/error/toolset carry-over.
 
 ## Commands
 
@@ -125,7 +147,8 @@ make test-server      # the whole bus-contract suite: smoke + t_bash, t_store,
                       # t_builder, t_console, t_plugins, t_skills, t_fetch,
                       # t_models, t_provider, t_observe, t_logfile, t_core,
                       # t_cli, t_grep, t_git, t_edit, t_autostart,
-                      # t_systemprompt, t_agent, t_fabric, t_nested, t_mcp —
+                      # t_systemprompt, t_agent, t_agentnotice, t_agentcont,
+                      # t_fabric, t_nested, t_mcp —
                       # each owns a private NATS server + temporary NIF_ROOT,
                       # so component targets can overlap a live harness
 make test-ui          # frontend only: `npm test` (lib unit tests, run on plain

@@ -23,7 +23,7 @@
 ## answering on svc.systemprompt.call, builder.build, core.spawn — the
 ## agent can do this to itself.
 
-import std/[json, os, strutils]
+import std/[algorithm, json, os, sequtils, strutils, tables]
 import niffler/sdk
 
 const maxPromptLen = 200_000
@@ -43,6 +43,7 @@ const basePrompt = staticRead("baseprompt.txt")
 
 const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD",
                     "CLAUDE.md", "CLAUDE.MD"]
+const localCandidate = "AGENTS.local.md"
 
 proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
   ## Pi-style candidate order, first existing readable file wins.
@@ -58,6 +59,18 @@ proc loadContextFileFromDir(dir: string): tuple[path, content: string] =
                          p & ": " & e.msg)
   return ("", "")
 
+proc loadLocalContextFileFromDir(dir: string): tuple[path, content: string] =
+  ## AGENTS.local.md is additive, not a shadowing candidate. It is useful for
+  ## checkout-local guidance while AGENTS.md remains the stable project rule.
+  let path = dir / localCandidate
+  if fileExists(path):
+    try:
+      return (path, readFile(path))
+    except CatchableError as e:
+      stderr.writeLine("systemprompt: unreadable context file " &
+                       path & ": " & e.msg)
+  ("", "")
+
 proc fileId(path: string): string =
   ## File identity for dedupe, not the path: a symlink farm (the bench
   ## harness re-exposes the repo root inside its runtime dir) makes the same
@@ -70,6 +83,32 @@ proc fileId(path: string): string =
   except CatchableError:
     result = path
 
+type PromptHint = object
+  slot: string
+  source: string
+  key: string
+  content: string
+  mode: string
+  sequence: int
+
+var promptHints = initTable[string, PromptHint]()
+var nextHintSequence = 0
+
+proc hintKey(slot, source, key: string): string =
+  slot & "\x1f" & source & "\x1f" & key
+
+proc renderPromptSlot(slot: string): string =
+  var entries: seq[PromptHint]
+  for hint in promptHints.values:
+    if hint.slot == slot: entries.add(hint)
+  if entries.len == 0: return ""
+  entries.sort(proc(a, b: PromptHint): int =
+    cmp(a.source & "\x1f" & a.key, b.source & "\x1f" & b.key))
+  var rendered: seq[string]
+  for hint in entries:
+    rendered.add(hint.content)
+  rendered.join("\n\n")
+
 proc contextFileName(path: string): string =
   ## The concrete candidate filename a directory resolved to — the shadow
   ## rule must skip the main repo's AGENTS.override.md when the worktree
@@ -79,6 +118,44 @@ proc contextFileName(path: string): string =
 proc main() =
   let comp = newComponent("systemprompt", "0.1.0")
   let root = getEnv("NIF_ROOT", getCurrentDir())
+
+  let hintSchema = toolSchema(%*{
+    "slot": {"type": "string", "description": "Named prompt slot, e.g. efficient_tools or after_instructions"},
+    "content": {"type": "string", "description": "Prompt fragment; keep it concise and stable"},
+    "source": {"type": "string", "description": "Component/plugin identity"},
+    "key": {"type": "string", "description": "Stable contribution key; repeated registration replaces the same contribution"},
+    "mode": {"type": "string", "enum": ["aggregate", "singleton"], "description": "aggregate joins contributions; singleton keeps the last contribution for the slot"}
+  }, required = @["slot", "content"], description = "Register a prompt fragment for future conversations. Internal component API; changes affect only prompts composed after registration and never rewrite frozen conversations.")
+  hintSchema["x-harness"] = %*{"hidden": true, "timeoutMs": 5_000}
+  discard comp.tool("prompt_hint", hintSchema,
+    proc(c: Component, args: JsonNode): JsonNode =
+      let slot = args{"slot"}.getStr("").strip()
+      let content = args{"content"}.getStr("")
+      if slot.len == 0 or slot.len > 64 or
+          slot.anyIt(it notin {'a'..'z', '0'..'9', '_' }):
+        return errResult("slot must be 1..64 lowercase letters, digits or _")
+      if content.len == 0 or content.len > 16_384:
+        return errResult("content must be 1..16384 bytes")
+      let source = args{"source"}.getStr("component").strip()
+      let key = args{"key"}.getStr(slot).strip()
+      let mode = args{"mode"}.getStr("aggregate")
+      if mode notin ["aggregate", "singleton"]:
+        return errResult("mode must be aggregate or singleton")
+      inc nextHintSequence
+      if mode == "singleton":
+        # A singleton is keyed only by its slot: a later registration replaces
+        # the prior default, while aggregate hints remain independently keyed.
+        var removeKeys: seq[string]
+        for existingKey, existing in promptHints:
+          if existing.slot == slot and existing.mode == "singleton":
+            removeKeys.add(existingKey)
+        for existingKey in removeKeys:
+          promptHints.del(existingKey)
+      promptHints[hintKey(slot, source, key)] = PromptHint(
+        slot: slot, source: source, key: key, content: content,
+        mode: mode, sequence: nextHintSequence)
+      okResult(%*{"slot": slot, "source": source, "key": key})
+  )
 
   let schema = toolSchema(%*{
     "cwd": {"type": "string",
@@ -131,13 +208,20 @@ proc main() =
       var dir = cwd
       while true:
         let f = loadContextFileFromDir(dir)
-        if f.path.len > 0 and f.path != shadowed:
-          let fid = fileId(f.path)
-          if fid notin seen:
-            inc count
-            seen.add(fid)
-            files.add(f)
-            if count >= maxFiles: break
+        var candidatesHere: seq[tuple[path, content: string]] = @[]
+        let primary = loadContextFileFromDir(dir)
+        if primary.path.len > 0: candidatesHere.add(primary)
+        let local = loadLocalContextFileFromDir(dir)
+        if local.path.len > 0: candidatesHere.add(local)
+        for f in candidatesHere:
+          if f.path != shadowed:
+            let fid = fileId(f.path)
+            if fid notin seen:
+              inc count
+              seen.add(fid)
+              files.add(f)
+              if count >= maxFiles: break
+        if count >= maxFiles: break
         if dir == stopAbove or dir == "/" or dir.len <= 1: break
         dir = parentDir(dir)
 
@@ -149,6 +233,12 @@ proc main() =
       # at runtime (pwd, tool results); the file attribute below is
       # root-relative for the same reason.
       var prompt = basePrompt
+      for slot in ["tool_usage", "efficient_tools", "after_instructions"]:
+        let hints = renderPromptSlot(slot)
+        if hints.len > 0:
+          prompt &= "\n\n<prompt_slot name=\"" & slot & "\">\n" & hints &
+                    "\n</prompt_slot>\n"
+
       if cwd != root:
         prompt &= "\n\n<workspace>\nWorkspace: the conversation's working " &
           "directory — relative paths in tool calls resolve from it (`pwd` " &

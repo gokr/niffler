@@ -85,14 +85,15 @@ proc markerStart(messages: JsonNode, needle: string): int =
   -1
 
 proc logRequest(estimate: int, rejected: bool, note: string,
-                messages: JsonNode) =
+                messages, tools: JsonNode) =
   if mockLog.len == 0: return
   try:
     let f = open(mockLog, fmAppend)
     defer: f.close()
-    let line = %*{"estimate": estimate, "rejected": rejected,
+    let line = %*{"tools": tools, "estimate": estimate, "rejected": rejected,
                   "note": note,
                   "checkpoint": containsText(messages, "<context_checkpoint"),
+                  "steer": containsText(messages, "Steer: "),
                   "historyMarker": markerStart(messages, mockHistoryMarker) >= 0,
                   "historyMarkerIndex": markerStart(messages, mockHistoryMarker),
                   "sessionId": currentSessionId,
@@ -131,11 +132,11 @@ proc(c: Component, args: JsonNode): JsonNode =
   if mockCtx > 0 and est > mockCtx:
     # The enforcing fake provider: same stable text the real adapter emits
     # (core/retry.nim classifies on the prefix, recovery parses the window).
-    logRequest(est, true, "over-window", messages)
+    logRequest(est, true, "over-window", messages, args{"tools"})
     raise newException(ValueError,
       "context-overflow: request ~" & $est & " tokens exceeds the mock " &
       "window of " & $mockCtx & "; window " & $mockCtx & " tokens")
-  logRequest(est, false, "", messages)
+  logRequest(est, false, "", messages, args{"tools"})
   if currentPurpose == "compaction" and mockCompactionSleepMs > 0:
     sleep(mockCompactionSleepMs)
   var last = ""

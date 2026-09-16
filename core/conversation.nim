@@ -948,6 +948,94 @@ proc drainAdvisories(ct: CoreTools, p: var Persister,
     result += 1
   ct.adviseStream.queue.setLen(0)
 
+proc drainNotices(ct: CoreTools, p: var Persister,
+                  messages: var seq[JsonNode],
+                  onEvent: proc(kind: string, data: JsonNode) {.closure.},
+                  turnId = ""): int =
+  ## Fold pending subagent settlement notices into the running conversation
+  ## (docs/research/SUBAGENTS-PLAN.md P0.1). A background child that settled
+  ## while this conversation was idle left an `agentnotice` record; without
+  ## this drain the parent would have to poll agent_status to learn about it.
+  ##
+  ## Fetched at the top of every turn (like steer and advisories) so the
+  ## pull lane is invisible to the model — it never has to remember to ask.
+  ## The notice is written as a structurally marked user message: the
+  ## `notice` field is the provenance, so rendering, trimming and compaction
+  ## can treat it as runtime machinery rather than something the user said
+  ## (the lesson from OpenHands' prefix-matched goal prompts).
+  ##
+  ## Best-effort: a missing/unreachable agent component costs a notice, not
+  ## the turn.
+  ##
+  ## TWO lanes, one place: notices pushed over the steer channel while this
+  ## turn was running (the parent was mid-turn when the child settled) are
+  ## consumed from the queue first; anything still pending in the store is
+  ## then pulled (the child settled while this conversation was idle).
+  ## Taking the queue first is what keeps a wake-delivered notice from being
+  ## delivered twice.
+  let sessionId = p.convId
+  # Fold the two lanes in order: what the steer channel pushed while this
+  # turn was live (Lane 1), then whatever is still pending in the store
+  # (Lane 2, the idle parent). Lane 1 first is what keeps a wake-delivered
+  # notice from also arriving through the pull drain.
+  var inbound = newJArray()
+  if ct.steerStream != nil and ct.steerStream.notices.len > 0:
+    for n in ct.steerStream.notices: inbound.add(n)
+    ct.steerStream.notices.setLen(0)
+  var pending: JsonNode
+  try:
+    pending = ct.dispatchToolCall("agent_notices",
+      %*{"session": sessionId, "peek": false}, 5_000)
+  except CatchableError:
+    pending = nil
+  let pulled = if pending != nil: pending{"notices"} else: nil
+  if pulled != nil and pulled.kind == JArray:
+    for n in pulled: inbound.add(n)
+  for n in inbound:
+    # Two directions share the agentnotice kind (P3.9): child-settled
+    # notices (a background job reached a terminal state) and parent-mail
+    # (steering/questions queued while the child was between turns or
+    # mid-turn). Both fold as structurally marked user messages — runtime
+    # machinery, never something the user typed.
+    var noticeMsg: JsonNode
+    var eventId = %*{"sessionId": sessionId, "turnId": turnId}
+    if n{"direction"}.getStr("") == "parent-mail":
+      let mailFrom = n{"from"}.getStr("")
+      let text = n{"text"}.getStr("")
+      let content = "[mail from the parent conversation]\n" & text
+      noticeMsg = %*{"role": "user", "content": content,
+                     "mail": {"kind": "parent-mail", "from": mailFrom}}
+      eventId["kind"] = %"mail"
+      eventId["from"] = %mailFrom
+    else:
+      let status = n{"status"}.getStr("")
+      if status.len == 0: continue
+      let jobId = n{"jobId"}.getStr("")
+      let child = n{"child"}.getStr("")
+      let summary = n{"summary"}.getStr("")
+      let replyBytes = n{"replyBytes"}.getInt(0)
+      var content = "[subagent " & child & " " & status & "]"
+      if summary.len > 0:
+        content.add("\n" & summary)
+      if replyBytes > summary.len:
+        content.add("\n(full reply: " & $replyBytes & " bytes — " &
+                    n{"fullReplyIn"}.getStr("agent_status") &
+                    " {jobId: \"" & jobId & "\"})")
+      noticeMsg = %*{"role": "user", "content": content,
+                     "notice": {"kind": "subagent-settled",
+                                "jobId": jobId, "child": child,
+                                "status": status}}
+      eventId["jobId"] = %jobId
+      eventId["child"] = %child
+      eventId["status"] = %status
+    # ctxAppend, not a bare messages.add: compaction's node ledger must stay
+    # 1:1 with the projection, and notices are runtime machinery it may
+    # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
+    ctxAppend(p, messages, noticeMsg)
+    if onEvent != nil:
+      onEvent("notice", eventId)
+    result += 1
+
 # A parsed tool call from an assistant message, ready for the wave scheduler.
 # parseFailed calls were garbled/truncated at the source and are neutralized
 # (never dispatched) — their history entry carries valid {} args for strict
@@ -1062,17 +1150,29 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
   ## a string `text` field is rendered verbatim into the tool message —
   ## that is the whole diet; every other field stays machine-readable on
   ## the bus (fabric programs, tests, UIs) and never reaches the transcript.
+  let partialFailure = not oc.ok and oc.value != nil and
+                       oc.value{"__partial"}.getBool(false)
   let content =
-    if oc.ok:
+    if oc.ok or partialFailure:
       let t = oc.value{"text"}
       if t.isStr: t.getStr()
       else: jdump(oc.value)
     else:
       ""
   let toolMsg =
-    if oc.ok:
+    if oc.ok or partialFailure:
       var body = content
       promoteSpill(ct, p, sessionId, oc.value, body)
+      if oc.value{"__partial"}.getBool(false):
+        let reason = oc.value{"__partialReason"}.getStr("cancelled")
+        let wording = if reason == "timed_out":
+                        "timed out"
+                      else:
+                        "cancelled by user"
+        body.add("\n\n[tool output above is partial; " & wording &
+                 "; retry may be useful]")
+      if partialFailure:
+        body = "ERROR: " & oc.error & "\n\n" & body
       %*{"role": "tool", "tool_call_id": it.id, "name": it.name,
          "content": body}
     else:
@@ -1082,13 +1182,15 @@ proc commitToolItem(ct: CoreTools, p: var Persister,
     %*{"turnId": turnId, "startedAt": toolStartedAt,
        "durationMs": toolDurationMs})
   if onEvent != nil:
-    if oc.ok:
-      onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
-                             "callId": it.id, "phase": "done",
-                             "tool": it.name, "args": it.args,
-                             "result": oc.value,
-                             "durationMs": toolDurationMs,
-                             "at": epochTime()})
+    if oc.ok or partialFailure:
+      var event = %*{"sessionId": sessionId, "turnId": turnId,
+                      "callId": it.id, "phase": "done",
+                      "tool": it.name, "args": it.args,
+                      "result": oc.value,
+                      "durationMs": toolDurationMs,
+                      "at": epochTime()}
+      if partialFailure: event["error"] = %oc.error
+      onEvent("toolcall", event)
     else:
       onEvent("toolcall", %*{"sessionId": sessionId, "turnId": turnId,
                              "callId": it.id, "phase": "done",
@@ -1225,6 +1327,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
   # The previously normalized checkpoint is repeated explicitly for
   # replacement components; it is also present in page content as the
   # rendered checkpoint node. This makes merge intent unambiguous.
+  var previousProjection: JsonNode
   if p.generation > 0:
     try:
       let old = ct.storeGetItem("context_projection", p.convId)
@@ -1232,6 +1335,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
           old.value{"generation"}.getInt(-1) != p.generation or
           old.value{"checkpoint"} == nil:
         return false
+      previousProjection = old.value
       meta["previousCheckpoint"] = old.value{"checkpoint"}
     except CatchableError:
       return false
@@ -1311,6 +1415,19 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
     return false
   of csCandidate:
     discard
+  # The granted auxiliary budget is part of the snapshot contract (§4.7):
+  # a candidate claiming more LLM calls than maxLlmCalls is invalid. The
+  # runner cannot observe the component's calls directly: this rejects an
+  # over-budget report but cannot prevent unreported provider spending.
+  let claimedCalls = cand{"provenance"}{"llmCalls"}.getInt(0)
+  if claimedCalls > cfg.maxLlmCalls:
+    if onEvent != nil:
+      onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
+                            "reason": "compact:invalid",
+                            "detail": "auxiliary call budget exceeded: " &
+                              $claimedCalls & " claimed > " &
+                              $cfg.maxLlmCalls & " granted"})
+    return false
   if coveredFrom < 1 or cutIdx <= coveredFrom: return false
   # Covered nodes must still be byte-identical to the persisted snapshot.
   # A concurrent steer may append outside the cut, but replacement never
@@ -1322,9 +1439,21 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                               "reason": "compact:stale"})
       return false
 
+  # Candidate boundaries name projection nodes; durable coverage must name
+  # canonical messages. In particular, a legal checkpoint-only cut cannot
+  # persist #ckN as covered.to: that checkpoint is superseded by this put.
+  let recordFrom = if p.nodes[coveredFrom].source == nsCheckpoint:
+                     previousProjection{"covered"}{"from"}.getStr("")
+                   else: ids[coveredFrom]
+  let recordTo = if p.nodes[cutIdx - 1].source == nsCheckpoint:
+                   previousProjection{"covered"}{"to"}.getStr("")
+                 else: ids[cutIdx - 1]
+  if not recordFrom.startsWith(p.convId & ":") or
+      not recordTo.startsWith(p.convId & ":"):
+    return false
   let newGeneration = p.generation + 1
   let rendered = renderCheckpoint(checked.checkpoint, newGeneration,
-                                  ids[coveredFrom], ids[cutIdx - 1])
+                                  recordFrom, recordTo)
   let coveredTokens = estimateTokens(messages[coveredFrom ..< cutIdx])
   let renderedTokens = estimateTokens(@[%*{"role": "user", "content": rendered}])
   if not strictlyReduces(coveredTokens, renderedTokens):
@@ -1353,7 +1482,7 @@ proc attemptCompaction*(ct: CoreTools, p: var Persister,
                        "bytesBefore": pr.bytesBefore,
                        "bytesAfter": pr.bytesAfter})
   let record = buildProjectionRecord(newGeneration, p.canonicalHigh,
-    checked.checkpoint, ids[coveredFrom], ids[cutIdx - 1], retained, pruneJson,
+    checked.checkpoint, recordFrom, recordTo, retained, pruneJson,
     %*{"promptTokensBefore": estimateTokens(messages),
        "promptTokensAfter": estimateTokens(messages) - coveredTokens + renderedTokens,
        "coveredTokens": coveredTokens, "checkpointTokens": renderedTokens},
@@ -1477,12 +1606,15 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.nested != nil:
     ct.nested.session = sessionId
     ct.nested.workspace = workspace
-    ct.nested.lease = ""
+    ct.nested.leases = initTable[string, NestedLease]()
   defer:
     if ct.nested != nil:
       ct.nested.session = ""
       ct.nested.workspace = ""
-      ct.nested.lease = ""
+      # clear ALL leases: when the turn ends, every session-context call it
+      # started is over, and a stale lease is worthless (a leaked lease would
+      # keep the nested proxy answerable with it)
+      ct.nested.leases = initTable[string, NestedLease]()
   defer:
     emitTurnDone("aborted")
   # Live LLM token stream: subscribe before the first chat call so no
@@ -1555,6 +1687,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     discard drainSteer(ct, p, messages, onEvent, turnId)
     drainMap(ct, p, messages, onEvent)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
+    discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
     # enter append-only history through discover and are called via invoke.
     # An allowlisted conversation sees only its frozen tools in the prompt;
@@ -1682,13 +1815,27 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           failMsg = "context-recovery-required: provider refused the request (" &
                     e.msg & ") and the fallback ladder could not reduce it " &
                     "below the window"
-        elif klass == lfcTransient and attempt < retryPolicy.maxRetries:
-          let delayMs = retryDelayMs(retryPolicy, attempt)
+        elif klass == lfcTransient and canRetry(retryPolicy, e.msg, attempt):
+          # Retry budgets are independent: hinted rate limits wait exactly as
+          # requested (up to the local cap), while stream timeouts and refused
+          # connections consume their own bounded counters. A hinted 429 has
+          # no attempt cap; the retry event exposes that fact as -1.
+          let hintMs = retryAfterMs(e.msg)
+          let delayMs = retryDelayMs(retryPolicy, attempt, hintMs)
+          let failureKind = retryKind(e.msg)
+          let budget = case failureKind
+                       of rkRateLimitHint: -1
+                       of rkStreamTimeout: retryPolicy.maxStreamRetries
+                       of rkConnectRefused: retryPolicy.maxConnectRetries
+                       else: retryPolicy.maxRetries
           if onEvent != nil:
             onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
                                "attempt": attempt + 1,
-                               "maxRetries": retryPolicy.maxRetries,
-                               "delayMs": delayMs, "error": e.msg})
+                               "maxRetries": budget,
+                               "delayMs": delayMs,
+                               "retryAfterMs": hintMs,
+                               "budget": $failureKind,
+                               "error": e.msg})
           sleep(delayMs)
           attempt += 1
           continue
@@ -1912,8 +2059,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           it.rawArgs[0 ..< min(it.rawArgs.len, 200)])
       else:
         try:
-          oc = ToolCallOutcome(ok: true,
-                               value: ct.dispatchToolCall(it.name, it.args))
+          let value = ct.dispatchToolCall(it.name, it.args)
+          if value != nil and value{"__toolError"}.getBool(false):
+            oc = ToolCallOutcome(ok: false, value: value,
+                                 error: value{"error"}.getStr("tool failed"))
+          else:
+            oc = ToolCallOutcome(ok: true, value: value)
         except CatchableError as e:
           oc = ToolCallOutcome(error: e.msg)
       let toolDurationMs = (getMonoTime() - toolStarted).inMilliseconds
@@ -1989,9 +2140,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasCwd = args.kind == JObject and args.hasKey("cwd")
   let hasProfile = args.kind == JObject and args.hasKey("profile")
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
+  let hasExport = args.kind == JObject and args.hasKey("export") and
+                  args{"export"}.getBool(false)
   if sessionId.len == 0 or
       (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
-       not hasCwd and not hasProfile and not hasDiscovery):
+       not hasCwd and not hasProfile and not hasDiscovery and not hasExport):
     return %*{"error": "session needs sessionId and content, model, thinking, title, cwd or profile"}
 
   var entry: Session
@@ -2269,6 +2422,34 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     return %*{"ok": true, "sessionId": sessionId, "discovery": found}
 
   if content.len == 0:
+    if hasExport:
+      # Export the exact provider request assembled from the current context.
+      # This is deliberately read-only: no user message, LLM call, or store
+      # history entry is created. Keep this shape in lockstep with llmArgs
+      # below so `/export` is useful for reproducing a provider request.
+      var promptToolsJson = entry.exposure.promptTools()
+      if entry.allowlist.len > 0:
+        var filtered = newJArray()
+        for tool in promptToolsJson:
+          if tool{"name"}.getStr("") in entry.allowlist:
+            filtered.add(tool)
+        promptToolsJson = filtered
+      let exportTools = promptToolsJson.formatToolsForLlm()
+      var request = %*{"messages": entry.messages,
+                       "tools": exportTools,
+                       "sessionId": sessionId,
+                       "stream": true}
+      let resolved = resolveTurnConfig(ct, entry.persister, entry.modelOverride)
+      let selectedModel = resolved{"model"}.getStr(entry.modelOverride)
+      let provider = resolved{"provider"}.getStr("")
+      if selectedModel.len > 0:
+        request["model"] = %selectedModel
+      if provider.len > 0:
+        request["provider"] = %provider
+      if entry.thinkingEffort.len > 0:
+        request["reasoning_effort"] = %entry.thinkingEffort
+      sessions[sessionId] = entry
+      return %*{"ok": true, "sessionId": sessionId, "request": request}
     var status = %*{
       "sessionId": sessionId,
       "model": entry.modelOverride,

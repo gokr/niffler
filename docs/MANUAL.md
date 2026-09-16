@@ -62,7 +62,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
-| `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
+| `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
@@ -250,6 +250,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_OPENAI_MODEL` | model name | `deepseek-chat` |
 | `NIF_OPENAI_PROVIDER` | models catalog provider id for the default LLM connection; common endpoints are inferred when unset | inferred |
 | `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard | `models` catalog, then `llm` fallback |
+| `NIF_AGENT_MODEL_WEAK` / `NIF_AGENT_MODEL_MEDIUM` / `NIF_AGENT_MODEL_STRONG` | exact model ids used by a fresh subagent when `modelTier` is requested; a child tier is clamped to the parent's configured tier | unset |
+| `NIF_AGENT_DEFAULT_TIER` | tier ceiling used when the parent's exact model is not present in the configured ladder (`weak`, `medium`, or `strong`) | `strong` |
 | `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog}}` the `chat` tool's `provider` arg resolves; the provider registry (`provider` component) supersedes the default when active | `{}` |
 | `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
 | `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |
@@ -259,6 +261,8 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |
 | `NIF_MODELS_REFRESH_INTERVAL` | background refresh interval; `0` disables | `1h` |
 | `NIF_FETCH_DIR` | large fetch results and temporary extraction files | `$NIF_ROOT/var/fetch` |
+| `NIF_FETCH_ALLOW_PRIVATE` | `1` allows the `fetch` tool to contact loopback/private/link-local destinations; use only for trusted local development services | unset (blocked) |
+| `NIF_MCP_DIRECT_THRESHOLD` | number of cached tools a configured `expose: direct` MCP server may publish directly; larger servers are deferred to progressive discovery | `10` |
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll | `33554432` |
 | `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split) | `65536` |
 | `NIF_LSP_REGISTRY` | absolute path of the language-server user registry (`servers.json`) | `$XDG_CONFIG_HOME/niffler-lsp/servers.json` |
@@ -269,7 +273,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_CTX_RESERVE` | output tokens held back by context admission; `0` disables the reserve | `16384` |
 | `NIF_COMPACTION_TOOL` | contract-v1 proposal tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
 | `NIF_COMPACTION_TIMEOUT_MS` | whole proposal-call deadline (minimum 5000 ms) | `90000` |
-| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt | `4` |
+| `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt; a candidate reporting more calls than granted is rejected as invalid | `4` |
 | `NIF_COMPACTION_MAX_SUMMARY_TOKENS` | per-call checkpoint output cap | `2048` |
 | `NIF_OBSERVE_RING` | messages retained in observe's global ring | `2000` |
 | `NIF_OBSERVE_RING_BYTES` | approximate wire bytes retained in the global ring | `16777216` |
@@ -1781,12 +1785,97 @@ guide with nudge phrasing and worked examples:
 | Tool | What it does |
 |---|---|
 | `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. |
-| `agent_run {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a fresh subagent session (own runner, own loop) and return its final reply. Optional per-job budgets: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. |
-| `agent_spawn {task, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
+| `agent_run {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1-50), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
+| `agent_spawn {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
 | `agent_stop {jobId}` | Cancel a running job for real: the child's LLM request is aborted, its turn ends promptly, and an in-flight bash command is killed (whole process tree). The terminal record says "stopped". |
 | `agent_steer {session_id, message}` | Inject a message into a running background job's turn (drained between LLM rounds). |
+| `agent_list {scope?}` | The caller's subagent roster, derived from the durable lineage: one row per child with its `sessionId`, `jobId`, `task`, and a residency-based `status` — `running` (working now), `idle` (resident between turns), `ready` (storage only; **resumable, not finished**). `scope: "descendants"` walks the whole tree (depth 1 today). You are told when a child settles, so this is for orientation, not polling. |
+| `agent_notices {session?, peek?}` | Drain this conversation's pending subagent **settlement notices** — one entry per background child that finished, was stopped, or failed. Notices are delivered automatically (see below); this is for notices that arrived while the conversation was idle, and `peek` looks without consuming. |
+
+### Settlement notices
+
+A background child that reaches a terminal state tells its **parent
+conversation**, not just the UI (`ev.agent.done` is observe-only). The notice
+is a durable `agentnotice` record written before any delivery is attempted,
+and it is a *pointer*, not the reply:
+
+- while the parent's turn is running, the notice is folded in immediately
+  (steer lane) as a structurally marked user message;
+- otherwise it waits, and the parent's next turn pulls every pending notice
+  at the top of the turn (pull lane) — so the model never has to poll;
+- either way the notice carries a bounded `summary`, `replyBytes` (the
+  untruncated length) and `fullReplyIn: "agent_status"`, because the full
+  reply is already durable in the `agentjob` record and one call away.
+
+Notices are best-effort: an unreachable store or agent component costs a
+notice, never a turn.
+
+### Continuation (sessions with memory)
+
+Both drivers take `session`: a previously returned `sessionId` gives that
+child another turn instead of minting a fresh one. The child keeps its
+conversation — send only the new task. Authorization is the durable lineage
+relation (`sessionmeta.parent`), so only the child's own parent conversation
+can continue it, and every failure refuses explicitly: unknown session, root
+conversation, foreign child, closed child and an unreachable store all
+return distinct errors rather than silently starting a fresh child.
+
+The two drivers differ exactly where their promises differ:
+
+- `agent_run {session}` promises a result **now**, so a mid-turn child is
+  refused (`code: "busy"`, naming `agent_spawn`/`agent_wait`/`agent_status`);
+- `agent_spawn {session}` promises the work **happens**, so it queues —
+  the child's runner serializes turns and runs the queued one next.
+
+Continuation is append-only history: the follow-up task is persisted as the
+next user message (no preamble, no system prompt), so the child's cached
+prefix survives. Each turn advances the child's activation ledger
+(`sessionmeta.activations`, with `firstActivationAt`), and background
+continuations stamp `continued`/`activation` on their `agentjob` record.
+`close: true` retires a child after its turn (`sessionmeta.closed`) — the
+record and transcript survive; only further continuation refuses.
+
+### Delegation depth
+
+`NIF_AGENT_MAX_DEPTH` (default **1**) caps how deep delegation may nest,
+evaluated by walking `sessionmeta.parent` links at dispatch time. `0`
+forbids delegation entirely. The spawn tools stay visible at the cap: a
+denied start returns an error naming the limit and the caller's depth, so
+the model learns why. Raising it above 1 is a deliberate act — a child's
+synchronous `agent_run` is served re-entrantly by the agent component
+(see WIRE.md "Delegation depth"), and `agent_spawn` from a child needs no
+re-entrancy at all (background jobs never hold the pump).
+
+### Fork (a child that has read the discussion)
+
+`fork: true | {"lastK": n} | {"maxChars": n}` — on **fresh spawns only** (a
+fork is a birth, not a continuation; `fork` + `session` is refused) — seeds
+the child's message log with this conversation's **completed turns** before
+its first request, so the child has *read* the discussion instead of being
+told about it. The result and `session_info` carry the provenance
+(`{source, uptoId, copied}`).
+
+- **The cut is balanced and contiguous-from-0**: it lands on completed-turn
+  boundaries only — never mid-tool-round — and the seed is the longest
+  transcript prefix that replays as a valid provider message list (every
+  `tool_calls` answered by its tool records, no orphaned tool records). An
+  in-flight turn at the tail is excluded; a crash left dangling mid-history
+  truncates the fork there (fail-closed beats copying an unbalanced prefix).
+- **Budgets cut on turn boundaries** and a selection that drops everything
+  fails closed — an empty child would look like success while being wrong.
+- **What is not copied**: per-message `usage` meters (the child's accounting
+  is its own), `summary`/`error` role records (a summary is a derivation of
+  records that are copied raw; error records are the parent's audit), the
+  toolset snapshot (`<session>:tools`), and the header's control fields —
+  a fork is a birth: the caller's `tools`/`maxRounds`/… arguments freeze the
+  child's controls from this call, never the parent's.
+- **Born cold**: the child's first request replays the inherited history
+  uncached; warm from the second turn. That is the price of *judgment*
+  inheritance, and the right trade only when the preamble would otherwise
+  have to narrate the context. Bulk transfer with no judgment needed is
+  what `fabric` is for.
 
 - **Governance, not sandbox**: the guest is in bash's trust class — the human
   approves the program once (`x-harness.approval: always`). Every nested call
@@ -1893,8 +1982,9 @@ Kinds in use by core:
 | `provider` | nickname (plus the `active` marker doc) | redacted-at-rest LLM provider registry of the `provider` component |
 | `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discoverydiscoverinvoke)) |
 | `slash` | `slash` | the merged slash-command table UIs render (see [WIRE.md](WIRE.md)) |
-| `agentjob` | `<jobId>` | durable background `agent_spawn` job records |
-| `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata |
+| `agentjob` | `<jobId>` | durable background `agent_spawn` job records (continuations stamp `continued`, `activation`, and queue `close`) |
+| `agentnotice` | `<parentSession>:<seq>` | subagent settlement notices (summary + recourse to the full reply; `deliveredAt`/`deliveredVia` mark delivery) |
+| `sessionmeta` | `<sessionId>` | subagent lineage / runner metadata: `{parent}` on spawn; continuations add `activations` (turn count, 1-based) and `firstActivationAt`; `close: true` retirement sets `closed` |
 | `fabricprog` | program name | the model-curated fabric program library (`fabric {name}` runs one) |
 
 Backend is the selected engine — SQLite at `var/store.db` by default, or
