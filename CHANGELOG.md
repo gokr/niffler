@@ -8,6 +8,20 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **bench: repomap append-gate evidence — the Multi10 low A/B rerun and the
+  full30 gate verification.** The first low A/B was invalid twice over (lane B
+  DNS-dead, lanes on different trees); rerun on a matched tree with
+  `NIF_REPOMAP_AUTOAPPEND` as the only knob (publish counts verified ON 10 /
+  OFF 0): **ON 10/10 vs OFF 9/10 at 0.46× the tokens per cell** (166k vs
+  362k) — the high-thinking probe's sign inverted. The swing again lives in
+  jq and redis; the other eight cells are near-flat in both regimes. The
+  full30 gate verification then ran all 30 tasks with append forced on and
+  gates live: **30/30 workspaces withheld** ("workspace below census floor"),
+  0 published — the ungated-ON lane's +41% prompt tax (34.5k vs 24.1k tokens)
+  is gone by construction. Default stays opt-in. Reports:
+  `bench/reports/repomap-ab-multi10-low.md`,
+  `bench/reports/repomap-gates-full30.md` (`3f9f3e1`, `6bd1247`).
+
 - **repomap append admission gates.** The workspace-open auto-append (still
   opt-in via `NIF_REPOMAP_AUTOAPPEND=1`) now admits a map only when it is
   worth injecting (docs/research/REPOMAP-GATES.md): a **size floor** —
@@ -22,6 +36,31 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stores' published maps (stub class 4-9 symbols / 1-4 files / <3.1KB;
   healthy 59-119 symbols / 19-48 files / 3.5-4.6KB) and all four are
   env-overridable.
+
+- **docs/research: FAST-APPLY survey.** `docs/research/FAST-APPLY.md` surveys
+  the "fast apply" edit families across the harness shelf — whole-result
+  generation, deterministic cascades, merge providers, repair tiers — with
+  per-harness positions cited from their checkouts (Claude Code cited from its
+  compiled binary; no source exists). It ends where Niffler's edit 0.3.0 sits
+  and names the three supported steals: candidate-line ambiguity errors, a
+  repair tier behind the existing hook seam, and an opt-in fastapply plugin
+  component for merge providers — never core. Also records that cited code
+  lives in the sibling clone shelf `~/git/harnesses/` with its own
+  pinned-commit index (`6832e76`, `0e094ee`).
+
+- **repomap: c/cpp/rust/ruby tiers — complete language coverage.** The
+  Multi10 A/B exposed the gap: jq/redis/tokio/rubocop all fell outside the
+  .nim/.go/.py/.ts/.js tiers and got tiny or empty maps. Vendored
+  tree-sitter-c v0.23.4, -cpp v0.23.4, -rust v0.23.2 and -ruby v0.23.1 (MIT;
+  NOTICE.md updated); census, grammar map, query map, dispatch and the
+  Makefile rebuild list grew `.c/.h` → c, `.cpp/.hpp/.cc/.hh/.cxx/.hxx` →
+  cpp, `.rs`, `.rb`. Aider's c/cpp queries are definitions-only (aider
+  backfills refs with pygments at runtime) and the graph needs refs, so
+  call-expression ref patterns were appended (rust/ruby already carried
+  refs). Verified on the real Multi10 repos — rubocop 1149 tok, redis 911
+  (real C now), jq 1070, fmt 1036, tokio 920, all full-strength; fixture
+  coverage for the four tiers (54 checks green, was 45) (`aba88b8`).
+
 - **Background processes report their exit to the conversation that owns them,
   and the SDK grows the seam that makes it possible.** A `run_in_background`
   child (or a direct `process_start`) that finishes now publishes an exit
@@ -578,6 +617,18 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **docs: guides reconciled with shipped features.** README (en/zh/zh-TW)
+  trimmed by roughly 1,500 lines to describe what actually ships, and
+  `docs/PLAN.md`, `docs/SETTINGS.md`, `docs/MANUAL.md`, the bench container
+  docs and most `docs/research/` notes updated to match (`77fbb94`).
+
+- **repomap: scoring hot-spot fix.** The rank-distribution loop was
+  O(nodes × edges) — 71s of pure iteration on rubocop (1551 files / ~200k
+  edges), which made a warm rebuild look like a broken cache (extraction was
+  cached all along). One pass over the edges with precomputed out-totals:
+  71s → 6.3s, end-to-end warm rebuild 64s → 10s, output byte-identical
+  (`aba88b8`).
+
 - **SDK: bounded initial-connect retry.** Nim SDK components now retry an
   initial NATS connection for up to 60 seconds while the bus binds, honoring
   shutdown, then fail into the supervisor's normal backoff. This removes
@@ -625,6 +676,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`d64f437`).
 
 ### Fixed
+
+- **agent: live turn state is refreshed before it is read** (`9d1b584`).
+  `busyChild`, the steer lane and the roster's status column read
+  `liveTurns`, which is fed by the `ev.session.turn` tap — and a tap is only
+  drained while a handler waits, so a handler entered right after a child's
+  turn returned still saw that child as mid-turn: `agent_ask` on a
+  just-finished child queued the question as mail instead of asking it (the
+  reply came back with the child's NEXT turn, or never), and a steer to a
+  child that had just gone idle was silently dropped (the runner's steer
+  subscription goes away with the turn). One non-blocking tap poll now
+  precedes each live-state read, processed once for the whole roster listing.
+
+- **edit: both lsp timeout forms now yield the retry pointer** (`aba88b8`).
+  The post-edit diagnostics pull classified only the component's own
+  `E_LSP_TIMEOUT` envelope as "server busy"; the SDK transport timeout on a
+  slow diagnostics settle (gopls on a big Go repo) fell into the silent "no
+  server" branch — which is why gin/caddy (gopls ready and healthy) showed no
+  diagnostics while fast settlers (clangd/tsserver) did. Gopls install and
+  config were never the problem.
 
 - **core: settlement notices join compaction's context ledger.** Merging
   the compaction work brought the context identity ledger rule — every
