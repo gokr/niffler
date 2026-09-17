@@ -153,7 +153,7 @@ trimmed history stays reachable),
 [CODEWHALE.md](CODEWHALE.md) (reset vocabulary; §D-family notes already name the
 "large tool outputs enter context and stay forever" failure class),
 [PI_EFFICIENCY_FINDINGS.md §2.1](PI_EFFICIENCY_FINDINGS.md) (iterative update,
-file-op tracking), [OCTOFRIEND-STEAL.md §3](../OCTOFRIEND-STEAL.md) (same-provider
+file-op tracking), [OCTOFRIEND-STEAL.md §3](OCTOFRIEND-STEAL.md) (same-provider
 summarization, "resume where you left off"). [DSH-STEAL.md](DSH-STEAL.md) is
 orchestration, not compaction.
 
@@ -697,7 +697,7 @@ Cache honesty: the summarization call may hit the warm prefix; the next
 conversation request is a rebuild. `ev.session.status`'s `cacheHitRatio`
 measures exactly that, per turn, as it does today.
 
-**Cache relation** (see [../PI-NEXT.md](../PI-NEXT.md) §3.4): compaction is the
+**Cache relation** (see [../PI-NEXT.md](PI-NEXT.md) §3.4): compaction is the
 one place Niffler gets real cache leverage, and step 3 above is the mechanism —
 the summarization call replays the conversation's exact prefix and appends only
 the instruction, so a second full-context request arrives as a near-total cache

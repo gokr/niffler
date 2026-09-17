@@ -6,8 +6,8 @@
 > reference). Aider is the oldest idea-dense harness in the set: repo maps,
 > edit formats as a measurable dimension, git-first discipline, and a
 > self-repair loop that predates most of the field. Companion docs:
-> [../PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md),
-> [../PI-NEXT.md](../PI-NEXT.md), [REMOTE.md](REMOTE.md).
+> [../PI-VS-NIFFLER.md](PI-VS-NIFFLER.md),
+> [../PI-NEXT.md](PI-NEXT.md), [REMOTE.md](REMOTE.md).
 
 ## The one-paragraph shape
 
@@ -129,7 +129,7 @@ shipping vocabulary without a producer applies.
 session-wide; Aider's model settings carry pricing so this works across
 providers. Niffler's bench computes cost, the harness does not — the same
 "[verified] no write axis" shape as the cache finding in
-[../PI-NEXT.md](../PI-NEXT.md) §3.2. The `models` component already carries
+[../PI-NEXT.md](PI-NEXT.md) §3.2. The `models` component already carries
 prices; the conversation header already accumulates token meters. Steal: a
 `cost` meter next to `cacheRead`, rendered where the cache chips are. Small.
 

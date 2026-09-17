@@ -10,12 +10,12 @@
 > have since landed on Niffler `main`. Pi claims are read
 > from its shipped docs (`packages/coding-agent/docs/*`, `README.md`) and the
 > `packages/` tree; Niffler claims from this repo, cited by path. This is a
-> *difference map*, not a scoreboard: the [bench/](../bench/README.md) suite exists for
-> measurements, and [research/PI_FEATURE_SCAN.md](research/PI_FEATURE_SCAN.md)
+> *difference map*, not a scoreboard: the [bench/](../../bench/README.md) suite exists for
+> measurements, and [research/PI_FEATURE_SCAN.md](PI_FEATURE_SCAN.md)
 > is the feature-level "what to borrow" sibling of this document.
 >
-> Read [ARCHITECTURE.md](ARCHITECTURE.md), [WIRE.md](WIRE.md) and the repo's
-> [`AGENTS.md`](../AGENTS.md) (which carries the invariants quoted here) first if you
+> Read [ARCHITECTURE.md](../ARCHITECTURE.md), [WIRE.md](../WIRE.md) and the repo's
+> [`AGENTS.md`](../../AGENTS.md) (which carries the invariants quoted here) first if you
 > want the Niffler side in full; this file only compares.
 
 ## 1. The one-line difference
@@ -47,7 +47,7 @@ document is that propagation.
 
 ## 2. Composition: processes vs in-process plugins
 
-Niffler's design rationale is written out in [research/REBOOT.md](research/REBOOT.md);
+Niffler's design rationale is written out in [research/REBOOT.md](REBOOT.md);
 the short version against Pi:
 
 - **Teardown = `exit()`.** Removing a capability is `core.kill` /
@@ -55,12 +55,12 @@ the short version against Pi:
   children. Pi's in-process extensions can be *unregistered*, but anything
   they started leaks unless the author wrote the inverse by hand.
 - **Crash isolation.** The component author is an LLM that writes buggy code
-  ([REBOOT.md](research/REBOOT.md) states this explicitly). A component crash
+  ([REBOOT.md](REBOOT.md) states this explicitly). A component crash
   is a bus departure; core restarts it per its policy (`restart: on-failure`)
   and the agent's conversation is untouched. In Pi, a bad extension or tool
   throws inside the same process as the session.
 - **The mind is a process too.** One conversation = one process
-  (`var/bin/session <id>`, [MANUAL.md § Session runners](MANUAL.md)). Killing
+  (`var/bin/session <id>`, [MANUAL.md § Session runners](../MANUAL.md)). Killing
   it loses only the in-flight turn — the next call spawns a fresh runner that
   resumes from the store. Pi's equivalent durability work is the
   **AgentHarness** specification (`packages/agent/docs/harness.md`, WP00–WP07
@@ -79,7 +79,7 @@ the short version against Pi:
 What this costs Niffler: ~100µs per hop instead of a function call (accepted —
 LLM calls take seconds), a NATS server in the deployment, and clone-as-instance
 operational semantics (a clone claims its home bus; foreign cores are yielded
-to loudly — [MANUAL.md § Environment](MANUAL.md)). What it buys: the
+to loudly — [MANUAL.md § Environment](../MANUAL.md)). What it buys: the
 architecture's validation criterion — **the agent adds, rebuilds, and removes
 its own capabilities mid-conversation**, which is a 3-step loop here (`builder
 .build` → `core.spawn` → tool is live) and a fork-and-recompile of Pi.
@@ -110,15 +110,15 @@ that Pi builds per-mode:
 
 The wire is deliberately small: 4 envelope kinds, `reg.>`/`svc.*`/`ev.*`
 subject families, one reply per call, streaming as chunked events. Full spec:
-[WIRE.md](WIRE.md). Pi's equivalent artifacts are its extension event types and
+[WIRE.md](../WIRE.md). Pi's equivalent artifacts are its extension event types and
 the experimental `protocol` package (CBOR, routed envelopes, v8, explicitly
 "experimental, no compatibility guarantees").
 
 ## 4. The strict prompt-cache regime
 
 This is the most consequential *policy* difference, and it is a doctrine, not a
-trick. The stated rule ([`AGENTS.md`](../AGENTS.md) "Prompt-cache discipline",
-[MANUAL.md § Context window](MANUAL.md)):
+trick. The stated rule ([`AGENTS.md`](../../AGENTS.md) "Prompt-cache discipline",
+[MANUAL.md § Context window](../MANUAL.md)):
 
 > a conversation's request prefix — the frozen system prompt plus the frozen
 > direct tool schemas — must stay byte-stable for the conversation's lifetime;
@@ -158,12 +158,12 @@ invalidate the prefix. Niffler chooses the stricter invariant and pays for it
 with the `invoke` indirection: an on-demand call is always
 `invoke {tool, arguments}` instead of a natively declared function.
 
-The IV.4 trade-off is explicit in [MANUAL.md § Session state and caching](MANUAL.md):
+The IV.4 trade-off is explicit in [MANUAL.md § Session state and caching](../MANUAL.md):
 Pi's deferred-loading model gives better token shape (no gateway indirection,
 native validation) while keeping a stable prefix; Niffler's `invoke` keeps the
 prefix bit-exact for *every* provider, at the cost of one level of argument
 nesting. The feature scan proposes `x-harness.loadable` as the middle ground
-([research/PI_FEATURE_SCAN.md](research/PI_FEATURE_SCAN.md) §2.2) — it is not
+([research/PI_FEATURE_SCAN.md](PI_FEATURE_SCAN.md) §2.2) — it is not
 shipped.
 
 ## 5. Progressive tool discovery (`discover` / `invoke`)
@@ -204,7 +204,7 @@ discovered|undiscovered`, colored chips in the web UI).
 
 ## 6. Context pressure: trim vs compaction
 
-At the snapshot, Niffler was deliberately simple ([MANUAL.md § Context window](MANUAL.md)):
+At the snapshot, Niffler was deliberately simple ([MANUAL.md § Context window](../MANUAL.md)):
 warn at 75%, at 90% drop **whole turns** from the front. Since then, Niffler
 has added a durable context ledger, deterministic prune/trim, replaceable
 compaction and recall, provider-scale accounting, and bounded provider-overflow
@@ -217,7 +217,7 @@ a retained recent window (`keepRecentTokens`, default 20k), manual
 `/compact [instructions]`, auto-compaction on overflow *and* proactively, plus
 branch summarization on `/tree` navigation.
 
-Niffler's shipped answer is documented in [research/COMPACTION.md](research/COMPACTION.md):
+Niffler's shipped answer is documented in [research/COMPACTION.md](COMPACTION.md):
 a replaceable `compaction` component (`compaction_propose` / `context_recall`)
 where the *runner* validates, applies and persists — the component proposes,
 core never delegates mutation of its own conversation, and replaced content
@@ -240,7 +240,7 @@ programs and direct calls all pass through the same gate. Policies are thus
 data on a schema, not code in a policy engine; a third-party component
 declares its own.
 
-**Approvals** ([MANUAL.md § Approvals](MANUAL.md)): a tool marked
+**Approvals** ([MANUAL.md § Approvals](../MANUAL.md)): a tool marked
 `approval: "always"` (bash, write/edit, spawn/kill/remove, fabric, agent,
 plugin/skill install, provider credentials, observe writes…) blocks on a
 human. Terminal: y/N. Service mode: routed to the *specific* interactive
@@ -267,8 +267,8 @@ These three exist because components can call back into the session's dispatch
 path — a shape Pi would need extensions to emulate (and a third party did:
 `pi-fabric` is an extension that adds a `fabric_exec` TypeScript tool).
 
-**`fabric`** — programmable tool calling ([FABRIC_GUIDE.md](FABRIC_GUIDE.md),
-[research/FABRIC.md](research/FABRIC.md)). The model writes a small **Nim
+**`fabric`** — programmable tool calling ([FABRIC_GUIDE.md](../FABRIC_GUIDE.md),
+[research/FABRIC.md](FABRIC.md)). The model writes a small **Nim
 program**; `fabric-exec` compiles it (no embedded VM any more —
 `73bfc03`, content-addressed cache in `var/fabric-cache`) and runs it in a
 private process with a cleared environment, no NATS connection, RLIMIT caps,
@@ -292,8 +292,8 @@ architecture keeps every effect crossing the gate on purpose.
 `model`/`thinking`/`tools`/`maxRounds`/`maxCalls`/`maxTokens`; depth guard at
 dispatch; lazy restart recovery that never reports a dead job as "running").
 
-**`expert`** — a non-interactive *advisory peer* ([MANUAL.md § Expert](MANUAL.md),
-[research/EXPERT.md](research/EXPERT.md)): it follows sessions armed via
+**`expert`** — a non-interactive *advisory peer* ([MANUAL.md § Expert](../MANUAL.md),
+[research/EXPERT.md](EXPERT.md)): it follows sessions armed via
 `expert_follow`, observes their bounded current-turn events, and a stateless
 LLM judge over a cache-stable knowledge prefix decides whether to steer the
 working session — delivered through a **turn-bound** `svc.session.<id>.advise`
@@ -308,7 +308,7 @@ cancellation apply to delegated work identically".
 ## 9. Concurrency model
 
 Niffler's default SDK pump is single-threaded, callback-free and serialized
-([`AGENTS.md`](../AGENTS.md)): poll subscriptions, run one handler at a time,
+([`AGENTS.md`](../../AGENTS.md)): poll subscriptions, run one handler at a time,
 normal GC, never
 `asyncdispatch`. Concurrency is then an explicit, per-layer decision:
 
@@ -443,7 +443,7 @@ Honest list, because a comparison that only cuts one way is marketing:
   filters, branch summaries, message queues with steering and follow-up
   delivery modes. Niffler has a replay-valid fork for subagent births, but no
   navigation UI for general conversations. Planned: session tree in
-  [research/PI_EFFICIENCY_PLAN.md](research/PI_EFFICIENCY_PLAN.md) C1.
+  [research/PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) C1.
 - **In-process extension API richness**: custom editors, UI widgets,
   rendering for tool calls/results, keybindings, themes, hot reload. Niffler's
   UI dynamism is an explicit open item (PLAN.md: Level 1/2 UI dynamism).
@@ -465,7 +465,7 @@ Honest list, because a comparison that only cuts one way is marketing:
   cost for the process model's benefits.
 
 Both systems today share one gap: **neither sandboxes the agent**. Pi says so
-in `docs/security.md`; Niffler says so in [research/SANDBOX-PLAN.md](research/SANDBOX-PLAN.md)
+in `docs/security.md`; Niffler says so in [research/SANDBOX-PLAN.md](SANDBOX-PLAN.md)
 (a revised plan exists; nothing is implemented).
 
 ## 15. Where the designs converge
@@ -487,18 +487,18 @@ Worth stating, because the convergence is informative:
 
 | Claim | Niffler evidence | Pi evidence |
 |---|---|---|
-| Process components, SDKs, builder/spawn | `manifest.yaml`, `sdk/`, `components/`, [docs/ARCHITECTURE.md](ARCHITECTURE.md) | `packages/coding-agent/docs/extensions.md` (`pi.registerTool`) |
-| One conversation = one process | `core/session.nim`, `var/bin/session`, [MANUAL.md § Session runners](MANUAL.md) | `packages/agent/docs/harness.md` (durable harness; WP status §0.9) |
+| Process components, SDKs, builder/spawn | `manifest.yaml`, `sdk/`, `components/`, [docs/ARCHITECTURE.md](../ARCHITECTURE.md) | `packages/coding-agent/docs/extensions.md` (`pi.registerTool`) |
+| One conversation = one process | `core/session.nim`, `var/bin/session`, [MANUAL.md § Session runners](../MANUAL.md) | `packages/agent/docs/harness.md` (durable harness; WP status §0.9) |
 | Frozen prefix doctrine | `AGENTS.md` "Prompt-cache discipline"; `core/conversation.nim:resolveSystemPrompt`; store kind `session` | `docs/compaction.md`; `docs/extensions.md` "Dynamic Tool Loading" |
-| Progressive discovery | `core/catalog.nim`, `core/dispatch.nim`, [MANUAL.md § Progressive tool discovery](MANUAL.md); `tests/t_discover.nim` | deferred activation: `extensions.md` § Dynamic Tool Loading; `ai/src/utils/deferred-tools.ts` |
-| Context trim | [MANUAL.md § Context window](MANUAL.md) (75%/90%, named reset reasons) | `docs/compaction.md` (summaries, reserve/keep windows) |
-| `x-harness` policy keys | [WIRE.md](WIRE.md) § x-harness schema extensions; `core/dispatch.nim` | hooks: `extensions.md` "Tool Events" (`block`, mutable `event.input`) |
-| Directed approvals | `core/approval.nim`, [WIRE.md](WIRE.md) § Approvals | `docs/usage.md` Philosophy ("No permission popups") |
-| Fabric / subagents / expert | [research/FABRIC.md](research/FABRIC.md), [FABRIC_GUIDE.md](FABRIC_GUIDE.md), `components/fabric/`, `components/agent/`, `components/expert/` | `README.md` Philosophy (no sub-agents); `pi-fabric` third-party extension |
-| Store engines | [MANUAL.md § Store engines](MANUAL.md), `components/store*`, [research/STORE_V2.md](research/STORE_V2.md) | `docs/sessions.md` (JSONL), `packages/session-backends/sqlite-node` |
-| Self-extension + recovery | [MANUAL.md § Self-extension](MANUAL.md), § Recovery; `components/builder`, `components/plugins` | `docs/packages.md`, `pi install` |
-| Provider registry + OAuth | `components/provider/`, `components/llm/`, [MANUAL.md § Provider registry](MANUAL.md) | `docs/providers.md`, `docs/custom-provider.md`, `/login` |
+| Progressive discovery | `core/catalog.nim`, `core/dispatch.nim`, [MANUAL.md § Progressive tool discovery](../MANUAL.md); `tests/t_discover.nim` | deferred activation: `extensions.md` § Dynamic Tool Loading; `ai/src/utils/deferred-tools.ts` |
+| Context trim | [MANUAL.md § Context window](../MANUAL.md) (75%/90%, named reset reasons) | `docs/compaction.md` (summaries, reserve/keep windows) |
+| `x-harness` policy keys | [WIRE.md](../WIRE.md) § x-harness schema extensions; `core/dispatch.nim` | hooks: `extensions.md` "Tool Events" (`block`, mutable `event.input`) |
+| Directed approvals | `core/approval.nim`, [WIRE.md](../WIRE.md) § Approvals | `docs/usage.md` Philosophy ("No permission popups") |
+| Fabric / subagents / expert | [research/FABRIC.md](FABRIC.md), [FABRIC_GUIDE.md](../FABRIC_GUIDE.md), `components/fabric/`, `components/agent/`, `components/expert/` | `README.md` Philosophy (no sub-agents); `pi-fabric` third-party extension |
+| Store engines | [MANUAL.md § Store engines](../MANUAL.md), `components/store*`, [research/STORE_V2.md](STORE_V2.md) | `docs/sessions.md` (JSONL), `packages/session-backends/sqlite-node` |
+| Self-extension + recovery | [MANUAL.md § Self-extension](../MANUAL.md), § Recovery; `components/builder`, `components/plugins` | `docs/packages.md`, `pi install` |
+| Provider registry + OAuth | `components/provider/`, `components/llm/`, [MANUAL.md § Provider registry](../MANUAL.md) | `docs/providers.md`, `docs/custom-provider.md`, `/login` |
 | LSP as data; MCP bridges | `components/lsp/`, `components/mcp/`, CHANGELOG "lsp: language-server seam" | no built-in LSP/MCP in core (`docs/usage.md`) |
-| Session tree / branching | linear `kind=message` ([MANUAL.md § The store](MANUAL.md)) | `docs/sessions.md` (`/tree`, `/fork`, `/clone`), `docs/session-format.md` |
+| Session tree / branching | linear `kind=message` ([MANUAL.md § The store](../MANUAL.md)) | `docs/sessions.md` (`/tree`, `/fork`, `/clone`), `docs/session-format.md` |
 | Project trust | unguarded manifest/plugin restore | `docs/usage.md` § Project Trust |
-| No sandbox in either | [research/SANDBOX-PLAN.md](research/SANDBOX-PLAN.md) | `docs/security.md` |
+| No sandbox in either | [research/SANDBOX-PLAN.md](SANDBOX-PLAN.md) | `docs/security.md` |

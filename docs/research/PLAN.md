@@ -1,8 +1,8 @@
 # Plan — open work
 
 This is the short list of deliberately deferred work. Shipped behavior belongs
-in the [manual](MANUAL.md); design history and proposals belong in
-[research/](research/README.md).
+in the [manual](../MANUAL.md); design history and proposals belong in
+[research/](README.md).
 
 ## Current priorities
 
@@ -22,14 +22,14 @@ These were previously tracked here as plans and are now part of `main`:
 
 - Context ledger, deterministic prune/trim, replaceable compaction, durable
   projections and recall, plus bounded provider-overflow recovery; see
-  [research/COMPACTION.md](research/COMPACTION.md).
+  [research/COMPACTION.md](COMPACTION.md).
 - Continuable and forked subagents, settlement notices and `agent_list`; see
-  [MANUAL.md](MANUAL.md#fabric-and-subagents) and the historical runbook
-  [research/SUBAGENTS-PLAN.md](research/SUBAGENTS-PLAN.md).
+  [MANUAL.md](../MANUAL.md#fabric-and-subagents) and the historical runbook
+  [research/SUBAGENTS-PLAN.md](SUBAGENTS-PLAN.md).
 - Compiled-Nim Fabric guests, structured APIs, caching, cancellation and
-  bounded execution; see [FABRIC_GUIDE.md](FABRIC_GUIDE.md).
+  bounded execution; see [FABRIC_GUIDE.md](../FABRIC_GUIDE.md).
 - SQLite (default), Barrel and TiDB store engines behind one contract; see
-  [MANUAL.md](MANUAL.md#store-engines) and [research/STORE_V2.md](research/STORE_V2.md).
+  [MANUAL.md](../MANUAL.md#store-engines) and [research/STORE_V2.md](STORE_V2.md).
 - Pure-Nim NATS client, the configurable LSP registry and semantic operations,
   background processes, MCP bridges, self-documenting skills and repomap
   discovery.
@@ -48,4 +48,4 @@ These were previously tracked here as plans and are now part of `main`:
   SDK.
 
 A plan item is not an implementation promise. Update this file when work lands,
-and record user-visible changes in [CHANGELOG.md](../CHANGELOG.md).
+and record user-visible changes in [CHANGELOG.md](../../CHANGELOG.md).

@@ -278,7 +278,7 @@ zero-runtime-threat; ours is a real language with a governance gate.
 What fabric lacks that their node set has: **fan-in/reduce and gated
 phases** as first-class constructs. Fabric's `batch` already supplies a hard
 bounded concurrency helper; the remaining question is whether reduce/gated
-phases deserve named guest-library abstractions. See docs/PLAN.md for open
+phases deserve named guest-library abstractions. See docs/research/PLAN.md for open
 follow-ups.
 plus their `AUTOMATIC_WORKFLOWS.md` (agent drafts the workflow, shows the
 plan at the current permission mode, runtime compiles and monitors it).
@@ -401,7 +401,7 @@ is the claim semantics: the child *declares* `worktree_write` plus normalized
 repo-relative `write_roots`; **claims fail before mutation** when no real
 isolated worktree backs them, and "a real isolated worktree may proceed in
 parallel". Concrete prior art for the deferred fabric item "optional isolated
-git worktrees for subagents" (docs/PLAN.md) — Niffler has nothing here today.
+git worktrees for subagents" (docs/research/PLAN.md) — Niffler has nothing here today.
 
 ### D2. External eval-harness contract → `bench/`, headless runs
 

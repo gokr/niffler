@@ -5,9 +5,9 @@ ownership split and bounded recovery have since shipped; current behavior is in
 [MANUAL.md](../MANUAL.md#context-window) and [COMPACTION.md](COMPACTION.md).
 
 Reviewed the latest [COMPACTION.md](COMPACTION.md),
-[PI-NEXT.md](../PI-NEXT.md), [PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md),
+[PI-NEXT.md](PI-NEXT.md), [PI-VS-NIFFLER.md](PI-VS-NIFFLER.md),
 [DSH-STEAL.md](DSH-STEAL.md), [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md),
-[ESCALATION.md](ESCALATION.md), [OCTOFRIEND-STEAL.md](../OCTOFRIEND-STEAL.md),
+[ESCALATION.md](ESCALATION.md), [OCTOFRIEND-STEAL.md](OCTOFRIEND-STEAL.md),
 and the store/sandbox plans against the architecture and selected source paths.
 Niffler basis: `1329b7e`; local Pi: `71dca871b`; local DSH: `c291e7961a`.
 The process-tool work mentioned in the original snapshot has since shipped.

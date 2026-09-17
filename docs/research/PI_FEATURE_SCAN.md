@@ -280,7 +280,7 @@ compaction behavior too.
   rehydrate from snapshots. NATS already gives Niffler transport and routing;
   the borrowable *idea* is delta-tracked live state for the web UI transcript
   (bandwidth + render cost), fitting the Level-1/2 UI-dynamism work in
-  [PLAN.md](../PLAN.md).
+  [PLAN.md](PLAN.md).
 - **Session search service** — `agent/src/search/index.ts`
   (`searchSessions/searchEntries/sync/notify/remove`). The interface shape is
   the deliverable; Niffler's version belongs to the TiDB/FTS store-v2 quest

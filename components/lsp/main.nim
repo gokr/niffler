@@ -11,7 +11,7 @@
 ## the model-facing tool surface never changes (AGENTS.md invariant:
 ## language-agnostic core).
 ##
-## Design follows the dsh/Octo analysis in docs/OCTOFRIEND-STEAL.md:
+## Design follows the dsh/Octo analysis in docs/research/OCTOFRIEND-STEAL.md:
 ## - transient document lifecycle per query: didOpen (current bytes) →
 ##   request → didClose; no file watching, no persistent sync state.
 ## - one server instance per (server, workspace root), queries serialized

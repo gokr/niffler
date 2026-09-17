@@ -12,7 +12,7 @@
 ##
 ## The bash tool's run_in_background flag is a thin producer: it forwards
 ## here and returns the id — this component owns the child, the registry and
-## the reaping (docs/OCTOFRIEND-STEAL.md, "Steal 5 follow-up").
+## the reaping (docs/research/OCTOFRIEND-STEAL.md, "Steal 5 follow-up").
 ##
 ## Spool files are the drain buffer: the child writes append-mode to files
 ## (never a pipe it could deadlock on), the component reads from per-stream

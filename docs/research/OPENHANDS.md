@@ -10,7 +10,7 @@
 > Niffler baseline: this clone's `core/`, `components/`, `ui/`,
 > `docs/MANUAL.md` (commit `6be9748`, 2026-09-13). Companion docs:
 > [REMOTE.md](REMOTE.md) (OpenHands as the remote-runtime prior art),
-> [../PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md),
+> [../PI-VS-NIFFLER.md](PI-VS-NIFFLER.md),
 > [CODEWHALE.md](CODEWHALE.md) (permission rules),
 > [../MANUAL.md](../MANUAL.md) (approvals, discovery, MCP).
 
@@ -65,7 +65,7 @@ stream that Niffler already publishes (`ev.session.*`), so these are
 
 | Surface | Where | Niffler today |
 |---|---|---|
-| **Typed tool visualizers** — a registry keyed by action/observation `kind`; bash renders a code block + output pane + exit badge + risk warning, file editor renders a diff, search renders hit lists, task renders a tracker, markdown renders a preview; unknown kinds fall back to markdown | `components/features/chat/tool-visualizers/{define.ts,dispatcher.tsx,bash/,file-editor/,search/,task/,primitives/}` | `views/ToolRun.svelte`: one generic `<details>` card, a `preview()` heuristic on `command`/`path`/`filePath`, then a JSON dump. `docs/PLAN.md` "Level 1 UI dynamism" (`x-ui` hints + generic renderer registry) and Level 2 (builder-compiled Svelte modules) are the planned equivalents — **nothing shipped** |
+| **Typed tool visualizers** — a registry keyed by action/observation `kind`; bash renders a code block + output pane + exit badge + risk warning, file editor renders a diff, search renders hit lists, task renders a tracker, markdown renders a preview; unknown kinds fall back to markdown | `components/features/chat/tool-visualizers/{define.ts,dispatcher.tsx,bash/,file-editor/,search/,task/,primitives/}` | `views/ToolRun.svelte`: one generic `<details>` card, a `preview()` heuristic on `command`/`path`/`filePath`, then a JSON dump. `docs/research/PLAN.md` "Level 1 UI dynamism" (`x-ui` hints + generic renderer registry) and Level 2 (builder-compiled Svelte modules) are the planned equivalents — **nothing shipped** |
 | **Event grouping** — consecutive groupable events fold into one collapsible card; thoughts are *hoisted out* of collapsed groups into the main stream; dedicated renderings (Finish/Think/hooks/errors/task tracker/markdown artifacts) break groups | `conversation-events/chat/group-events.ts` | Chats emit each tool call separately; the TUI has tool levels (brief/full/off), the SPA has the same three levels but no folding |
 | **Conversation overview panel** — pinned sections (workspace, git), git sub-parts (changes/repository/branch/commits/PRs) with per-part pinning persisted per conversation | `conversation-overview-panel.tsx`, `conversation-overview-sections.ts` | Nothing; the SPA has a chat and a session list |
 | **Git control bar** — pull/push/commit/PR/branch buttons that *generate prompts* rather than executing (agent does the git) | `chat/git-control-bar*.tsx`, `utils/utils.ts` `getCreatePRPrompt(...)`, `conversation/conversation-git-actions-menu.tsx` | `git` component is read-only inspection (`git_status/diff/log/show/blame`); no UI affordance, no prompted-git pattern |
@@ -266,7 +266,7 @@ lists, and falls back to markdown — and, crucially, keys the registry by the
 *typed event kind* (`defineVisualizer({actionKinds, observationKinds, Body})`
 with `dispatcher.tsx` falling back when nothing matches).
 
-Niffler's plan already exists (`docs/PLAN.md` "Level 1 UI dynamism":
+Niffler's plan already exists (`docs/research/PLAN.md` "Level 1 UI dynamism":
 `x-ui` hints + generic renderer registry; Level 2: builder-compiled Svelte
 modules served from the store). The steal is prioritization and the fallback
 discipline:

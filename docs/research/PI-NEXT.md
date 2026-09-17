@@ -2,10 +2,10 @@
 
 > Historical prioritization note. The context/compaction work described below
 > has since landed; the remaining rows are retained as an evidence-backed
-> backlog. Current behavior is in [MANUAL.md](MANUAL.md).
+> backlog. Current behavior is in [MANUAL.md](../MANUAL.md).
 >
 > Follow-up to [PI-VS-NIFFLER.md](PI-VS-NIFFLER.md) (the full difference map) and
-> [research/COMPACTION.md](research/COMPACTION.md) (the compaction design record).
+> [research/COMPACTION.md](COMPACTION.md) (the compaction design record).
 > This file records the *decision* reached when asking: "after compaction lands,
 > what does Pi do that Niffler should actually do something about?" — and
 > deliberately separates findings backed by source from findings that are
@@ -27,7 +27,7 @@
 
 Two commonly assumed candidates got demoted:
 
-- **Compaction** itself is shipped ([COMPACTION.md](research/COMPACTION.md)) —
+- **Compaction** itself is shipped ([COMPACTION.md](COMPACTION.md)) —
   item 1 is now part of its bounded overflow-recovery path, while part of 4
   (the trim-vs-summary gap) remains a separate wire-level question.
 - **Session tree navigation** (`/tree`, `/fork`, `/clone`, labels, filters) is a
@@ -44,8 +44,8 @@ create an unbounded retry loop. Durable trim watermarks and provider-scale
 accounting also make restart and admission behavior truthful.
 
 The original gap analysis and proposed work are retained below only as the
-historical motivation. See [MANUAL.md](MANUAL.md#context-window) and
-[COMPACTION.md](research/COMPACTION.md) for the current contract.
+historical motivation. See [MANUAL.md](../MANUAL.md#context-window) and
+[COMPACTION.md](COMPACTION.md) for the current contract.
 
 ## 2. Shell session environment injection
 
@@ -63,7 +63,7 @@ Why it is worth more than it looks: a command can then self-report provenance,
 or call back into the harness (`cli call ...`) without the model smuggling ids
 into command strings. Niffler's scripting story (`cli`, plugins CI, bench lanes)
 is a differentiator, and this makes the shell a first-class citizen of it.
-Constraint from [WIRE.md](WIRE.md): session context is injected only for tools
+Constraint from [WIRE.md](../WIRE.md): session context is injected only for tools
 declaring `x-harness.sessionId`; injecting into session-dispatched `bash` calls
 is the narrow, sanctioned shape (component-to-component calls keep their
 explicit `__session`, never an ambient env).
@@ -73,12 +73,12 @@ explicit `__session`, never an ambient env).
 This started as "we lack Pi's `PI_CACHE_RETENTION` knob". Two passes over the
 source inverted the framing: part of the item is real but narrower than first
 written, one layer was cut outright, and the dsh cache technique worth having
-turned out to be already planned — in [COMPACTION.md](research/COMPACTION.md),
+turned out to be already planned — in [COMPACTION.md](COMPACTION.md),
 not here. What is left is small; the value of this section is mostly in
 recording what *not* to build and why.
 
 One vocabulary rule to take from the review
-([CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4): keep **mutation**
+([CONTEXT-REVIEW.md](CONTEXT-REVIEW.md) §4): keep **mutation**
 (`compact`, `trim`, `tools`), **trigger** (`pressure`, `overflow`, `manual`,
 maybe `suspected-expiry`) and **observed cache outcome** as three separate
 dimensions. Conflating them is what produced the cut idea below, and it is the
@@ -211,13 +211,13 @@ makes it a near-total cache hit by replaying the conversation's exact prefix
 and appending only the instruction — for **automatic-caching providers too**,
 which is what makes it worth more than everything above.
 
-Niffler already plans this: [COMPACTION.md](research/COMPACTION.md) §4.3 step 3
+Niffler already plans this: [COMPACTION.md](COMPACTION.md) §4.3 step 3
 — *"Try the prefix-reusing call: replay frozen system + tools + the covered
 messages, append only the compaction instruction (dsh's cache trick)."* It is
 filed in the right document for the right reason. Nothing to move; this section
 records the cross-link so the two discussions do not drift apart.
 
-[CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4 refines the hedge: treat
+[CONTEXT-REVIEW.md](CONTEXT-REVIEW.md) §4 refines the hedge: treat
 prefix-reusing summarization as an **optional measured strategy, not the
 compulsory first attempt on every cut**. A warm prefix can make the
 summarization call cheaper, which is exactly why the attempt is worth *trying* —
@@ -229,7 +229,7 @@ belongs to measurement, and the docs should not promise a win either way.
 The composition path is closed today, and this is the part that makes it
 wire-level rather than a tool fix:
 
-- **[verified]** [WIRE.md](WIRE.md) "Conventions": a result object carrying a
+- **[verified]** [WIRE.md](../WIRE.md) "Conventions": a result object carrying a
   string `text` field is the LLM-facing rendering — session runners put `text`
   verbatim into the tool message and *nothing else from the result reaches the
   transcript*. A text-only `read` component therefore cannot return an image
@@ -286,14 +286,14 @@ time someone wants "redo that turn better"), skip (2) until a user asks.
 
 | Candidate | Why not now |
 |---|---|
-| Expiry-aware prefix surgery (`reset:expired`) | **Cut after review — and independently reached the same conclusion** ([CONTEXT-REVIEW.md](research/CONTEXT-REVIEW.md) §4, written against the earlier revision of this file). No population of deferrable prefix mutations exists: `reset:trim` is forced by pressure, `reset:tools` is model-requested, profiles resolve before any cache exists. Expiry is uncertain, partial and provider-specific; a warm prefix can make the *summarization call itself* cheaper; and zero cached tokens is not uniquely evidence of expiry (thresholds, routing, unsupported caching and serialization changes all explain it). Keep mutation, trigger and observed cache outcome as **separate dimensions**, and never let `reset:expired` conceal a tool/profile mutation — a cold cache is not permission to violate the frozen-prefix contract |
+| Expiry-aware prefix surgery (`reset:expired`) | **Cut after review — and independently reached the same conclusion** ([CONTEXT-REVIEW.md](CONTEXT-REVIEW.md) §4, written against the earlier revision of this file). No population of deferrable prefix mutations exists: `reset:trim` is forced by pressure, `reset:tools` is model-requested, profiles resolve before any cache exists. Expiry is uncertain, partial and provider-specific; a warm prefix can make the *summarization call itself* cheaper; and zero cached tokens is not uniquely evidence of expiry (thresholds, routing, unsupported caching and serialization changes all explain it). Keep mutation, trigger and observed cache outcome as **separate dimensions**, and never let `reset:expired` conceal a tool/profile mutation — a cold cache is not permission to violate the frozen-prefix contract |
 | Session tree navigation (labels, filters, `/tree` UI) | UX bet; branching-as-data covers the practical need, and branch summaries are redundant with store-backed replay |
 | Hooks with teeth (block/patch tool calls, rewrite results) | Deliberate design choice: `components/hooks` is observe-only, and a veto layer needs its own note on ordering, approval interaction and audit ownership |
-| Project trust gate | Real, but a safety-policy item (see [research/PI_FEATURE_SCAN.md](research/PI_FEATURE_SCAN.md) §2.3), not an architecture gap |
+| Project trust gate | Real, but a safety-policy item (see [research/PI_FEATURE_SCAN.md](PI_FEATURE_SCAN.md) §2.3), not an architecture gap |
 | Prompt templates | Small convenience; skills already cover most of it |
 | Evals package | Valuable, but blocked on compaction to be assertable; do after |
 | Export/import/share | Small; the `cli` transcript recipe already covers the read path |
-| Sandboxing | Neither harness has it; already scoped separately in [research/SANDBOX-PLAN.md](research/SANDBOX-PLAN.md) |
+| Sandboxing | Neither harness has it; already scoped separately in [research/SANDBOX-PLAN.md](SANDBOX-PLAN.md) |
 
 ## One sentence
 

@@ -90,10 +90,10 @@ make install-ui         # 构建 Wails UI，复制到 ~/.local/bin，并安装
 - [操作手册](docs/MANUAL.md) — 安装、配置、工具、Provider、UI、恢复、测试和排错。
 - [Wire 协议](docs/WIRE.md) — JSON 信封、subject、错误、取消和 session context。
 - [架构](docs/ARCHITECTURE.md) — core、组件和 NATS 的边界及贡献者须遵守的约束。
-- [当前计划](docs/PLAN.md) — 尚未完成的工作。
+- [当前计划](docs/research/PLAN.md) — 尚未完成的工作。
 - [研究索引](docs/research/README.md) — 设计历史和先例研究，不是操作手册。
 - [Fabric 指南](docs/FABRIC_GUIDE.md) — 可编程编排和 subagent。
-- [设置设计](docs/SETTINGS.md) — 尚未发布的设置方案。
+- [设置设计](docs/research/SETTINGS.md) — 尚未发布的设置方案。
 
 ## 开发组件
 

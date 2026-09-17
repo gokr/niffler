@@ -25,7 +25,7 @@
 > Niffler baseline: `components/edit` (0.3.0) at this repo's HEAD.
 >
 > Companion docs: [AIDER.md](AIDER.md) (strategy ladders),
-> [OCTOFRIEND-STEAL.md](../OCTOFRIEND-STEAL.md) (the repair-hook proposal),
+> [OCTOFRIEND-STEAL.md](OCTOFRIEND-STEAL.md) (the repair-hook proposal),
 > [DEEPSEEK-HARNESS.md](DEEPSEEK-HARNESS.md) (dsh's *strict* edit tool).
 
 ## 0. The term, decompressed

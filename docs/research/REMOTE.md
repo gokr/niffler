@@ -9,9 +9,9 @@
 >
 > Basis: `~/git/harnesses/*` and `~/git/chetter` at the 2026-09-13 update (dsh
 > `c291e7961a`, pi `71dca871b`, OpenHands `28464621d`, chetter `3df7479`).
-> Companion docs: [../PI-VS-NIFFLER.md](../PI-VS-NIFFLER.md) (protocol
+> Companion docs: [../PI-VS-NIFFLER.md](PI-VS-NIFFLER.md) (protocol
 > support), [REBOOT.md](REBOOT.md) (NATS topology notes),
-> [../PI-NEXT.md](../PI-NEXT.md) (the near-term list this extends),
+> [../PI-NEXT.md](PI-NEXT.md) (the near-term list this extends),
 > [../MANUAL.md](../MANUAL.md) (bus identity, approvals, store engines).
 
 ## 0. The answer in one line

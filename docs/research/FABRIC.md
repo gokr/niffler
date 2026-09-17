@@ -79,7 +79,7 @@ controls reduce accidental damage but do not make approved code untrusted:
 
 The old VM-era banned-import/source-lint policy is not part of the compiled
 backend: guests may import standard-library modules and use native OS APIs.
-For real isolation, use a separate sandboxing mechanism; see `docs/PLAN.md`.
+For real isolation, use a separate sandboxing mechanism; see `docs/research/PLAN.md`.
 
 ## Core plumbing (shipped)
 

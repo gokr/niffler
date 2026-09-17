@@ -3,7 +3,7 @@
 This is the *user's* guide: what Fabric is for, how to ask Niffler for it,
 and what a run looks like from your side of the conversation. For the
 design and threat model see [research/FABRIC.md](research/FABRIC.md);
-explicitly deferred follow-ups are listed in [PLAN.md](PLAN.md).
+explicitly deferred follow-ups are listed in [PLAN.md](research/PLAN.md).
 
 ## What Fabric is
 
