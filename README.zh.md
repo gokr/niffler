@@ -36,6 +36,10 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
   `discover`/`invoke` 一步之内：`discover` 把工具 schema 作为普通工具结果
   追加到历史（不会让提示词膨胀），`invoke` 是固定的调用网关；`git`、`mcp`、
   `agent`、`lsp` 等按需组件在模型主动索取前不消耗任何上下文。
+- **人在回路中。** 工具可以要求审批，请求会带上 manifest（含源码摘要），
+  因此「总是允许」可以限定到该工具的这一份确切内容。每个对话可以选择门控
+  模式（`/approvals ask|auto`）；当没有人类可达时，调用会被拒绝，绝不会被
+  悄悄放行。
 - **语言无关的架构。** 提供 Nim、Go 和 TypeScript SDK；为某语言添加支持
   只需一条配置或一个插件组件，无需修改共享组件。
 - **总线就是 API。** 所有客户端——`niffler-tui` 终端客户端、Web UI、
@@ -48,6 +52,10 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
   用 `make install-tui` 安装）——这正好证明 UI 只是另一个组件。
 - **默认遵守缓存与成本纪律。** 对话的系统提示词和直接工具 schema 在创建时
   冻结，历史只追加，因此 provider 的 prompt cache 能接连命中。
+- **长会话不会卡死。** 压缩在持久化的上下文投影和检查点之上进行；provider
+  报告上下文溢出时只做有界恢复；预算明确：人类的软限制（`/limit rounds=N`）
+  会询问「继续吗？」，而硬性的 `NIF_MAX_TURN_ROUNDS` 会明确结束失控的回合，
+  而不是挂起。
 - **本地优先，clone 即实例。** clone 就是实例：对话和组件状态保存在
   `var/`（默认 SQLite），harness 自行管理 NATS 总线，不依赖任何中心服务。
 
@@ -112,3 +120,21 @@ Nim、Go 和 TypeScript 组件使用 `sdk/` 中的 SDK。正常扩展流程是�
 [AGENTS.md](AGENTS.md)、[组件生命周期](docs/MANUAL.md#self-extension-and-component-lifecycle)
 和 [WIRE.md](docs/WIRE.md)。社区组件通过 `plugins` 安装，详见
 [手册中的插件章节](docs/MANUAL.md#component-ecosystem-plugins)。
+
+## 项目理念
+
+- **开放模型，所有 Provider。** 本地、开放权重和托管模型走同一条一等路径：
+  默认使用 OpenAI 兼容协议，厂商只提供订阅登录时用 OAuth，模型元数据由
+  models.dev 目录提供；限额、能力和价格都是数据。添加一个 OpenAI 兼容的
+  Provider 只需一条配置，而不是一段代码。
+- **改进靠度量，不靠口号。** `bench/` 用相同的任务和模型，把 Niffler 与
+  pi、opencode、CodeWhale、Claude Code 放在一起比较达标时间、token 成本和
+  补丁质量（full30、SWE-bench Verified、DeepSWE 任务）。功能要有证据才
+  落地——有时也要靠证据才能保持关闭，比如 repo map 的自动注入就因 A/B 结果
+  不一致而默认关闭——报告提交在 `bench/reports/`。
+- **中文是我们的一等语言。** README 提供英文、简体中文和繁体中文，Web UI
+  完整本地化（`en`/`zh`/`zh-TW`），字典是强类型的——漏译会让类型检查失败。
+- **带着自豪与感激地「偷」。** 我们从能找到的最好的 harness 中吸收想法——
+  Pi、DeepSeek Harness、CodeWhale、OpenCode、Reasonix、Aider、OpenHands
+  等等——再逐条对照 Niffler 的设计约束；研究文档会标注来源和固定的提交，
+  内置的第三方代码保留其许可证，全部记录在 [docs/research/](docs/research/)。

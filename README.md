@@ -48,6 +48,11 @@ home.
   history, not prompt bloat), `invoke` is the fixed gateway that calls it,
   and on-demand components — `git`, `mcp`, `agent`, `lsp`, … — cost nothing
   until the model asks for them.
+- **The human stays in the loop.** Tools can require approval, and the
+  request carries a manifest with a source digest, so "always allow" can be
+  scoped to that exact tool content. Each conversation picks its gate mode
+  (`/approvals ask|auto`), and when no human is reachable the call is denied —
+  never silently allowed.
 - **Language-agnostic by construction.** SDKs in Nim, Go and TypeScript;
   adding support for a language is a config entry or a plugin component,
   never a change to shared components.
@@ -65,6 +70,11 @@ home.
 - **Cache- and cost-disciplined by design.** A conversation's system prompt
   and direct tool schemas are frozen for its lifetime and history only grows,
   so provider prompt caches keep hitting turn after turn.
+- **Long sessions stay alive.** Compaction runs behind a durable context
+  projection and checkpoint, provider context-overflow gets bounded recovery,
+  and budgets are explicit: the human's soft limits (`/limit rounds=N`) ask
+  "keep going?", while the hard `NIF_MAX_TURN_ROUNDS` guard ends a runaway
+  turn loudly instead of hanging.
 - **Local-first, clone-as-instance.** The clone is the instance: conversations
   and component state live in `var/` (SQLite by default), the harness manages
   its own NATS bus, and there is no central service to depend on.
@@ -140,3 +150,27 @@ architecture or adding a component.
 
 Community components are installed through the `plugins` component; see the
 [plugin section of the manual](docs/MANUAL.md#component-ecosystem-plugins).
+
+## Philosophies
+
+- **Open models, all providers.** Local, open-weight and hosted models get the
+  same first-class path: an OpenAI-compatible default, subscription OAuth
+  where a vendor offers nothing else, and a models.dev-backed catalog that
+  keeps limits, capabilities and prices as data. Adding an
+  OpenAI-compatible provider is a config entry, not a code path.
+- **Improvements are measured, not asserted.** `bench/` runs Niffler against
+  pi, opencode, CodeWhale and Claude Code on the same tasks and models,
+  comparing time-to-green, token cost and patch quality across the full30,
+  SWE-bench Verified and DeepSWE suites. Features land on that evidence — and
+  sometimes stay off it, like the repo map's auto-append, which ships disabled
+  because the A/Bs disagreed — with reports committed under `bench/reports/`.
+- **Chinese is a first-class language here.** The READMEs are English,
+  Simplified and Traditional Chinese, and the web UI is fully localized
+  (`en`/`zh`/`zh-TW`) with typed catalogs — a missing translation fails
+  typecheck.
+- **Stealing with pride and gratefulness.** We take the best ideas we can find
+  in other harnesses — Pi, DeepSeek Harness, CodeWhale, OpenCode, Reasonix,
+  Aider, OpenHands, … — and re-check each against Niffler's invariants before
+  it ships. The studies name their source and pinned commit, vendored code
+  keeps its license, and everything lives in
+  [docs/research/](docs/research/).
