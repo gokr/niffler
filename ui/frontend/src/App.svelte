@@ -157,17 +157,33 @@ import { currentProfile } from './lib/toolProfiles';
   }
 
   async function switchProvider(nickname: string) {
+    let switched = false;
     try {
       if (nickname === "__env__") {
         await send("provider", "provider_use_environment", {}, 30000);
       } else {
         await send("provider", "provider_switch", { nickname }, 30000);
       }
+      switched = true;
     } catch {
       // approval denied or error — keep current state
     }
     await loadProviders();
-    await loadEffective(sessionModels[sessionId ?? ""] || undefined);
+    const sid = sessionId;
+    // A switch that moves the backend invalidates the conversation's model
+    // pin: the pinned id belongs to the provider it was chosen under and may
+    // not exist on the new one, so drop it and let the newly active
+    // provider's default apply (mirrors the TUI). Re-selecting the already
+    // active provider leaves the pin alone.
+    const sameBackend =
+      nickname === "__env__"
+        ? effective?.providerSource === "environment"
+        : effective?.providerSource === "store" && nickname === effective?.provider;
+    if (switched && sid && sessionModels[sid] && !sameBackend) {
+      await pickModel("");
+      return;
+    }
+    await loadEffective(sessionModels[sid ?? ""] || undefined);
   }
 
   async function toggleStripPrefix(on: boolean) {
