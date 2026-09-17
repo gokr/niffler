@@ -9,58 +9,37 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 ## 为什么选择 Niffler
 
-- **模块化与可扩展性直达进程边界。** Niffler 与 [Pi](https://pi.dev) 和
-  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 一样
-  追求精简的 harness 理念，但更进一步：每项能力都是独立的操作系统进程，
-  通过统一的 wire 协议（NATS 上的 JSON 信封）通信，而不是进程内插件。
-  Agent 可以在对话进行中编写、编译并启动新组件，运行时替换实现，用
-  `core.kill` 移除组件——无需清理代码，也不会留下孤儿进程。
-- **更多「开箱即用」能力。** 内置组件涵盖了其他 harness 交给第三方插件的
-  功能：`fabric`（模型用 Nim 程序编排工具）、`agent`（子代理：后台运行、
-  可继续、可 fork）、`expert`（顾问同伴）、`git`、`mcp`（外部 MCP 服务器）、
-  `lsp`（任意语言服务器，以数据配置）、`repomap`（Aider 的
-  [repo map](https://github.com/Aider-AI/aider)：tree-sitter 符号图 +
-  PageRank 排序）、`skills`、`plugins`、`processes`（后台任务）、`fetch`、
-  `grep`、`edit`，以及观测总线的 `observe`/`logfile`。
-- **聚焦开源模型。** 只有一套适配器，没有厂商锁定：默认的 `openai-chat`
-  协议使用标准 Chat Completions，任何 OpenAI 兼容端点都能接入——DeepSeek、
-  OpenRouter、本地 vLLM/llama.cpp/Ollama——通过 `.env` 或由 store 持久化的
-  `provider` 注册表配置，并可在运行时切换。需要托管模型时，也支持 Anthropic
-  Messages 以及 ChatGPT/Claude 订阅 OAuth。
-- **订阅也能直接用，模型数据是一等公民。** 可以用 ChatGPT Plus/Pro 或
-  Claude Pro/Max 登录（浏览器 PKCE，无显示器的机器用 device code，token
-  自动刷新），无需购买 API 额度；也可以注册任意 API-key provider 并实时
-  切换。`models` 层从 models.dev、离线种子和覆盖层解析模型的限额、上下文
-  窗口和价格，每个对话各自固定模型和思考强度。
-- **工具渐进披露。** 每个对话只拿到一个小而冻结的直接工具集，其余工具都在
-  `discover`/`invoke` 一步之内：`discover` 把工具 schema 作为普通工具结果
-  追加到历史（不会让提示词膨胀），`invoke` 是固定的调用网关；`git`、`mcp`、
-  `agent`、`lsp` 等按需组件在模型主动索取前不消耗任何上下文。
-- **人在回路中。** 工具可以要求审批，请求会带上 manifest（含源码摘要），
-  因此「总是允许」可以限定到该工具的这一份确切内容。每个对话可以选择门控
-  模式（`/approvals ask|auto`）；当没有人类可达时，调用会被拒绝，绝不会被
-  悄悄放行。
-- **天然多语言。** Niffler 本身主要用 Nim 和 Go 编写，但架构不把任何组件
-  绑定到某种语言：组件契约是 NATS 上的 JSON 信封，已有 Nim、Go 和
-  TypeScript SDK，随仓库发布的 [`dialog`](components/dialog/dialog.sh) 示例
-  甚至是不用 SDK 的 bash 脚本。这种中立性也面向内部：语言服务器、文件模式
-  和工具链都是声明式配置或插件组件，而不是修改共享组件。
-- **总线就是 API。** 所有客户端——`niffler-tui` 终端客户端、Web UI、
-  `niffler-cli` 脚本和 CI、`niffler-console`——都只是总线上的普通成员：
-  任何能收发 JSON 信封的程序都可以观察、脚本化或驱动对话。
-- **UI 只是总线客户端。** 客户端本身不保存对话状态，因此可以多个同时连接
-  同一个 harness——终端客户端、桌面应用、你自己的脚本——而且每个 UI 都独立
-  构建、独立安装。桌面 UI 随本仓库发布（`make install-ui`）；终端客户端则是
-  独立仓库中的插件（[gokr/niffler-tui](https://github.com/gokr/niffler-tui)，
-  用 `make install-tui` 安装）——这正好证明 UI 只是另一个组件。
-- **默认遵守缓存与成本纪律。** 对话的系统提示词和直接工具 schema 在创建时
-  冻结，历史只追加，因此 provider 的 prompt cache 能接连命中。
-- **长会话不会卡死。** 压缩在持久化的上下文投影和检查点之上进行；provider
-  报告上下文溢出时只做有界恢复；预算明确：人类的软限制（`/limit rounds=N`）
-  会询问「继续吗？」，而硬性的 `NIF_MAX_TURN_ROUNDS` 会明确结束失控的回合，
-  而不是挂起。
-- **本地优先，clone 即实例。** clone 就是实例：对话和组件状态保存在
-  `var/`（默认 SQLite），harness 自行管理 NATS 总线，不依赖任何中心服务。
+- **模块化直达进程边界。** 像 Pi 和 DeepSeek Harness，但更深入一层：每项能力
+  都是独立的操作系统进程，通过统一的 wire 协议（NATS 上的 JSON 信封）通信；
+  Agent 可以在对话中编译、启动和移除组件，无需清理代码，也不会留下孤儿进程。
+  见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **开箱即用。** `fabric`（可编程工具编排）、`agent`/`expert`（子代理与顾问）、
+  `git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank 移植）、
+  `skills`、`plugins`、`processes`、`observe`/`logfile`——其他 harness 通常交给
+  第三方插件的功能。见[内置组件](docs/MANUAL.md#shipped-components)。
+- **开放模型，所有 Provider。** 任何 OpenAI 兼容端点——本地、开放权重或托管
+  ——通过 `.env` 或 store 持久化的 Provider 注册表接入；也支持 ChatGPT/Claude
+  订阅 OAuth 和 models.dev 模型目录。见
+  [Provider](docs/MANUAL.md#provider-registry-provider) 和
+  [模型目录](docs/MANUAL.md#model-catalog-models)。
+- **工具渐进披露。** 每个对话只有一个小而冻结的直接工具集，其余工具都在
+  `discover`/`invoke` 一步之内，作为历史追加而不是提示词膨胀。见
+  [手册](docs/MANUAL.md#progressive-tool-discovery)。
+- **人在回路中。** 工具可要求审批，带 manifest 摘要和每对话的 `ask`/`auto`
+  门控模式；无人可达时直接拒绝，绝不悄悄放行。见
+  [审批](docs/MANUAL.md#approvals)。
+- **多语言。** 主体是 Nim 和 Go，但架构不绑定任何语言：提供 Nim、Go 和
+  TypeScript SDK，还有一个不用 SDK 的 bash 示例。见
+  [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **总线就是 API。** `niffler-tui`、桌面 UI、`cli` 和 `console` 都是平等的
+  总线客户端；可以同时连接多个，各自独立构建和安装（TUI 本身就是插件）。见
+  [启动与停止](docs/MANUAL.md#starting-and-stopping)。
+- **为长时间运行而设计。** 冻结的提示词/工具前缀让 provider 缓存持续命中；
+  持久化压缩和有界溢出恢复让会话不中断；软性 `/limit` 预算之外还有硬性失控
+  保护。见[上下文窗口](docs/MANUAL.md#context-window)。
+- **本地优先，clone 即实例。** 对话和组件状态保存在 `var/`（默认 SQLite），
+  harness 自行运行 NATS 总线，不依赖中心服务。见
+  [布局](docs/MANUAL.md#layout-of-a-running-system)。
 
 当前版本是 [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)，
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。完整操作说明请参阅

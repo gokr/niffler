@@ -11,77 +11,41 @@ home.
 
 ## Why Niffler
 
-- **Modular and extensible to the process boundary.** Niffler shares the
-  minimal-harness philosophy of [Pi](https://pi.dev) and
-  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), but
-  takes it one level lower: every capability is its own OS process behind a
-  single wire protocol (JSON envelopes over NATS), not an in-process plugin.
-  The agent writes, builds and spawns new components mid-conversation, swaps
-  implementations at runtime, and removes one with `core.kill` — no teardown
-  code, no leaked children.
-- **More batteries included.** Shipped components cover work other harnesses
-  leave to third-party plugins: `fabric` (the model writes Nim programs that
-  orchestrate tools), `agent` (subagents: background, continuable and
-  forkable), `expert` (an advisory peer), `git`, `mcp` (external MCP
-  servers), `lsp` (any language server, configured as data), `repomap`
-  (Aider's [repo map](https://github.com/Aider-AI/aider): a tree-sitter
-  symbol graph ranked by PageRank), `skills`, `plugins`, `processes`
-  (background jobs), `fetch`, `grep`, `edit`, plus `observe`/`logfile` for
-  the bus itself.
-- **Focused on open models.** One adapter, no vendor lock-in: the default
-  `openai-chat` protocol speaks plain Chat Completions, so any
-  OpenAI-compatible endpoint works — DeepSeek, OpenRouter, a local
-  vLLM/llama.cpp/Ollama server — configured through `.env` or the
-  store-backed `provider` registry and switchable at runtime. Anthropic
-  Messages and ChatGPT/Claude subscription OAuth are supported when you want
-  a hosted model.
-- **Subscriptions work, and model data is first-class.** Sign in with
-  ChatGPT Plus/Pro or Claude Pro/Max — browser PKCE, or a device code on a
-  headless box, with tokens refreshing automatically — instead of buying API
-  credits; or register any API-key provider and switch it live. The `models`
-  layer resolves limits, context windows and prices from models.dev, an
-  offline seed and override layers, and each conversation pins its own model
-  and thinking effort.
-- **Progressive tool disclosure.** Each conversation gets a small, frozen
-  direct toolset; everything else stays one `discover`/`invoke` away.
-  `discover` returns a tool's schema as an ordinary tool result (appended
-  history, not prompt bloat), `invoke` is the fixed gateway that calls it,
-  and on-demand components — `git`, `mcp`, `agent`, `lsp`, … — cost nothing
-  until the model asks for them.
-- **The human stays in the loop.** Tools can require approval, and the
-  request carries a manifest with a source digest, so "always allow" can be
-  scoped to that exact tool content. Each conversation picks its gate mode
-  (`/approvals ask|auto`), and when no human is reachable the call is denied —
-  never silently allowed.
-- **Polyglot by construction.** Most of Niffler is Nim and Go, but no
-  component is tied to a language: the contract is JSON envelopes over NATS,
-  SDKs exist for Nim, Go and TypeScript, and the shipped
-  [`dialog`](components/dialog/dialog.sh) demo is a bash script with no SDK
-  at all. The same neutrality points inward — language servers, file patterns
-  and toolchains are declarative config or plugin components, never changes
-  to shared components.
-- **The bus is the API.** Every client — the `niffler-tui` terminal client,
-  the web UI, `niffler-cli` scripts and CI, `niffler-console` — is just
-  another bus citizen: anything that speaks JSON envelopes can observe,
-  script or drive conversations.
-- **UIs are just bus clients.** A client holds no conversation state of its
-  own, so several can attach to one harness at the same time — the terminal
-  client, the desktop app, your own scripts — and each UI builds and installs
-  independently. The desktop UI ships in this repo (`make install-ui`); the
-  terminal client is a plugin from a separate repo,
-  [gokr/niffler-tui](https://github.com/gokr/niffler-tui), installed by
-  `make install-tui` — the proof that a UI is just another component.
-- **Cache- and cost-disciplined by design.** A conversation's system prompt
-  and direct tool schemas are frozen for its lifetime and history only grows,
-  so provider prompt caches keep hitting turn after turn.
-- **Long sessions stay alive.** Compaction runs behind a durable context
-  projection and checkpoint, provider context-overflow gets bounded recovery,
-  and budgets are explicit: the human's soft limits (`/limit rounds=N`) ask
-  "keep going?", while the hard `NIF_MAX_TURN_ROUNDS` guard ends a runaway
-  turn loudly instead of hanging.
-- **Local-first, clone-as-instance.** The clone is the instance: conversations
-  and component state live in `var/` (SQLite by default), the harness manages
-  its own NATS bus, and there is no central service to depend on.
+- **Modular to the process boundary.** Like Pi and DeepSeek Harness, but one
+  level lower: every capability is its own OS process behind one wire
+  protocol (JSON envelopes over NATS), and the agent builds, spawns and
+  removes components mid-conversation — no teardown code, no leaked
+  children. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Batteries included.** `fabric` (programmable tool calls), `agent`/`expert`
+  (subagents and an advisory peer), `git`, `mcp`, `lsp`, `repomap` (Aider's
+  tree-sitter + PageRank port), `skills`, `plugins`, `processes`,
+  `observe`/`logfile` — work other harnesses leave to plugins. See the
+  [shipped components](docs/MANUAL.md#shipped-components).
+- **Open models, all providers.** Any OpenAI-compatible endpoint — local,
+  open-weight or hosted — via `.env` or a store-backed provider registry;
+  ChatGPT/Claude subscription OAuth and a models.dev-backed catalog. See
+  [providers](docs/MANUAL.md#provider-registry-provider) and the
+  [model catalog](docs/MANUAL.md#model-catalog-models).
+- **Progressive tool disclosure.** A small, frozen direct toolset; everything
+  else is one `discover`/`invoke` away, appended as history instead of prompt
+  bloat. See [MANUAL](docs/MANUAL.md#progressive-tool-discovery).
+- **The human stays in the loop.** Approval-gated tools with manifest digests
+  and a per-conversation `ask`/`auto` mode; with no human reachable the call
+  is denied, never silently allowed. See [approvals](docs/MANUAL.md#approvals).
+- **Polyglot.** Mostly Nim and Go, but no component is bound to a language:
+  SDKs for Nim, Go and TypeScript, and a shipped bash demo with no SDK at
+  all. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **The bus is the API.** `niffler-tui`, the desktop UI, `cli` and `console`
+  are equal bus clients; several can attach at once and each builds and
+  installs independently (the TUI is its own plugin). See
+  [starting and stopping](docs/MANUAL.md#starting-and-stopping).
+- **Built for long runs.** Frozen prompt/tool prefixes keep prompt caches
+  warm; durable compaction and bounded overflow recovery keep sessions alive;
+  soft `/limit` budgets sit beside a hard runaway guard. See the
+  [context window](docs/MANUAL.md#context-window).
+- **Local-first, clone-as-instance.** Conversations and component state live
+  in `var/` (SQLite by default) and the harness runs its own NATS bus, with
+  no central service. See [layout](docs/MANUAL.md#layout-of-a-running-system).
 
 The current release is [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0).
 See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
