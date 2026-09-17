@@ -2594,26 +2594,63 @@ proc ensureRunner*(ct: CoreTools, sessionId: string): string =
   sessionSubject(sessionId)
 
 proc callSession*(ct: CoreTools, args: JsonNode, caller = ""): JsonNode =
-  ## Service-mode path for the "session" tool: ensure the runner for this
-  ## sessionId, forward the turn, return its result. Core tools and other
-  ## svc.core.call traffic stay responsive during the wait
-  ## (dispatchSubjectCall pumps them); concurrent session calls are stashed
-  ## (pumpCoreWhileBusy) — turns never nest, but they must not be lost.
-  ## caller is forwarded so the runner can route approvals to the driver.
+  ## Direct (blocking) session path used by unit/direct callers. The system
+  ## core normally uses routeSessionCall below so one long turn cannot block
+  ## unrelated conversation runners. caller is forwarded so the runner can
+  ## route approvals to the driver.
   let sessionId = args{"sessionId"}.getStr("")
   if sessionId.len == 0:
     return %*{"error": "session needs sessionId"}
   let subject = ensureRunner(ct, sessionId)
   dispatchSubjectCall(ct, subject, "session", args, 1800_000, caller)
 
+proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
+  ## Start a session request and return immediately. The core's main pump owns
+  ## the forwarding inboxes; the runner process remains the serialization
+  ## boundary for calls belonging to one conversation.
+  if reply.len == 0: return
+  let sessionId = env.args{"sessionId"}.getStr("")
+  if sessionId.len == 0:
+    ct.nc.publish(reply, errorEnvelope(env.id, "boom",
+      "session needs sessionId").encode())
+    return
+  try:
+    let subject = ensureRunner(ct, sessionId)
+    let inbox = "_INBOX." & newId()
+    var sub: ptr natsSubscription
+    var st = natsConnection_SubscribeSync(addr sub, ct.nc.conn, inbox.cstring)
+    if not checkStatus(st):
+      raise newException(IOError, "subscribe session inbox: " & getErrorString(st))
+    let data = env.encode()
+    st = natsConnection_PublishRequest(ct.nc.conn, subject.cstring,
+                                       inbox.cstring, data.cstring,
+                                       data.len.cint)
+    if not checkStatus(st):
+      natsSubscription_Destroy(sub)
+      raise newException(IOError, "publish session request: " &
+        getErrorString(st))
+    if ct.pending == nil:
+      natsSubscription_Destroy(sub)
+      raise newException(IOError, "session forwarding state is unavailable")
+    ct.pending.forwards.add(SessionForward(
+      env: env, reply: reply, sub: sub,
+      deadline: epochTime() + 1800.0 * 1000.0))
+  except CatchableError as e:
+    ct.nc.publish(reply, errorEnvelope(env.id, "boom", e.msg).encode())
+
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
-  ## Serve pending svc.core.call messages (session/spawn/catalog).
-  ## Session requests stashed while a forward was busy are drained first.
-  ## Pop one at a time: callSession can pump and append to pending while
-  ## we work, so a plain `for` over items would trip the seq-mutation assert.
-  while ct.pending.items.len > 0:
+  ## Serve svc.core.call messages (session/spawn/catalog). Session requests
+  ## are forwarded asynchronously: different runner processes can work at
+  ## once, while each runner still serializes its own conversation.
+  pumpSessionForwards(ct)
+  # Keep compatibility with direct/unit callers that exercised the old
+  # blocking queue before the system router was installed.
+  while ct.pending != nil and ct.pending.items.len > 0:
     let pend = ct.pending.items[0]
     ct.pending.items.delete(0)
+    if ct.routeSession != nil:
+      ct.routeSession(pend.env, pend.reply)
+      continue
     var resp: Envelope
     try:
       let r = callSession(ct, pend.env.args, pend.env.caller)
@@ -2623,8 +2660,10 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     except CatchableError as e:
       resp = errorEnvelope(pend.env.id, "boom", e.msg)
     ct.nc.publish(pend.reply, resp.encode())
-  ct.pending.items = @[]
+  if ct.pending != nil:
+    ct.pending.items = @[]
   while true:
+    pumpSessionForwards(ct)
     var msg: ptr natsMsg
     let st = natsSubscription_NextMsg(addr msg, sub, 1)
     if st == NATS_TIMEOUT: break
@@ -2637,6 +2676,9 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     if env.kind != ekCall:
       ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
         "expected a call envelope").encode())
+      continue
+    if env.tool == "session" and ct.routeSession != nil:
+      ct.routeSession(env, reply)
       continue
     var resp: Envelope
     try:
@@ -2662,3 +2704,4 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
     except CatchableError as e:
       resp = errorEnvelope(env.id, "boom", e.msg)
     ct.nc.publish(reply, resp.encode())
+  pumpSessionForwards(ct)

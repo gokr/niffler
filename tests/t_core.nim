@@ -7,7 +7,7 @@
 ## tools are denied when no human/UI is reachable. A third isolated root
 ## verifies --minimal starts only store/bash/llm and skips persisted children.
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, streams, strutils, times]
 import natsnim
 import envelope
 import helpers
@@ -301,6 +301,48 @@ proc main() =
       break
     sleep(200)
   check("ctxtest registered", ctxUp)
+
+  # A long turn in one runner must not block a model-only control request for
+  # another conversation. This is the two-client case: core forwards session
+  # calls asynchronously, while each runner still serializes its own session.
+  var turnSub: ptr natsSubscription
+  check("subscribe session turn events",
+        checkStatus(natsConnection_SubscribeSync(
+          addr turnSub, nc.conn, "ev.session.turn".cstring)))
+  defer: natsSubscription_Destroy(turnSub)
+  let slowSession = "agent-slow-core-regression"
+  let slowProc = startComponent(cliBin, url, root = root, args = [
+    "--timeout=20", "call", "session",
+    "{\"sessionId\":\"" & slowSession &
+      "\",\"content\":\"SLOW_CHILD\"}"])
+  defer: stopProcess(slowProc, 1500)
+  var slowStarted = false
+  let turnDeadline = epochTime() + 10.0
+  while epochTime() < turnDeadline:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, turnSub, 200)
+    if st != NATS_OK: continue
+    let event = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if event.payload{"sessionId"}.getStr("") == slowSession and
+        event.payload{"phase"}.getStr("") == "start":
+      slowStarted = true
+      break
+  var slowOutput = ""
+  if not slowProc.running():
+    slowOutput = slowProc.outputStream.readAll()
+  check("slow session turn started", slowStarted, slowOutput)
+  let controlStarted = epochTime()
+  let concurrentControl = call(nc, "core", "session", %*{
+    "sessionId": "control-during-turn", "model": "control-model"}, 3_000)
+  let controlElapsed = epochTime() - controlStarted
+  check("model control for another session is not blocked by a turn",
+        concurrentControl{"ok"}.getBool(false) and controlElapsed < 2.5,
+        "elapsed=" & $controlElapsed & " result=" & $concurrentControl)
+  let slowDeadline = epochTime() + 20.0
+  while slowProc.running() and epochTime() < slowDeadline:
+    sleep(100)
+  check("slow session caller eventually completes", not slowProc.running())
 
   let liveTurn = call(nc, "core", "session",
                       %*{"sessionId": "si-live", "content": "go"}, 120_000)

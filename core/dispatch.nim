@@ -25,7 +25,7 @@ type
     root*: string                         ## harness root (var/, components/, sdk/)
     approval*: Approval
     coreSub*: ptr natsSubscription        ## svc.core.call (set by niffler.nim; nil in runners)
-    pending*: PendingCalls                ## session calls stashed during a turn
+    pending*: PendingCalls                ## queued and in-flight core forwards
     runner*: bool                         ## true in a session runner: core tools go over the bus
     # Streaming turn channel: while a session turn is running, runTurn installs
     # a subscription on ev.llm.token and dispatchToolCall pumps it during its
@@ -56,6 +56,9 @@ type
                                          ## renewable leases (system core only;
                                          ## nil in runners — they forward "ui"
                                          ## over the bus like any core tool)
+    routeSession*: proc(env: Envelope, reply: string) {.closure.}
+                                         ## system-core session forwarder;
+                                         ## nil in unit/direct contexts
   TokenStream* = ref object
     sub*: ptr natsSubscription
     session*: string                ## "" = not streaming a turn
@@ -126,8 +129,18 @@ type
   NestedLease* = object
     deadline*: MonoTime      ## monotonic limit for this lease
     hasDeadline*: bool
+  SessionForward* = ref object
+    ## An in-flight session request owned by the system core. Keeping the
+    ## runner request on its own inbox lets the core route several different
+    ## conversations without blocking its svc.core.call pump.
+    env*: Envelope
+    reply*: string
+    sub*: ptr natsSubscription
+    deadline*: float
+
   PendingCalls* = ref object
     items*: seq[tuple[env: Envelope, reply: string]]
+    forwards*: seq[SessionForward]
 
 proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
                        defaultTimeoutMs: int = 120000,
@@ -860,13 +873,58 @@ proc handleCoreTool*(ct: CoreTools, tool: string, args: JsonNode): JsonNode =
   else:
     return %*{"error": "core has no tool '" & tool & "'"}
 
+proc pumpSessionForwards*(ct: CoreTools) =
+  ## Complete session requests that the system core forwarded without
+  ## blocking its main svc.core.call pump. The session runner remains the
+  ## serialization boundary for one conversation; this loop only lets
+  ## different runner processes make progress at the same time.
+  if ct.pending == nil: return
+  var i = 0
+  while i < ct.pending.forwards.len:
+    let forward = ct.pending.forwards[i]
+    var remove = false
+    var response: Envelope
+    var responseError = ""
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, forward.sub, 1)
+    if st == NATS_OK:
+      let data = $natsMsg_GetData(msg)
+      natsMsg_Destroy(msg)
+      try:
+        response = decode(data)
+        if response.id != forward.env.id:
+          responseError = "session runner reply id mismatch"
+      except CatchableError as e:
+        responseError = "invalid session runner reply: " & e.msg
+      remove = true
+    elif st != NATS_TIMEOUT:
+      responseError = "session runner inbox: " & getErrorString(st)
+      remove = true
+    elif epochTime() >= forward.deadline:
+      responseError = "session request timed out after 1800000ms"
+      remove = true
+
+    if remove:
+      if responseError.len > 0:
+        response = errorEnvelope(forward.env.id, "boom", responseError)
+      try:
+        if forward.reply.len > 0:
+          ct.nc.publish(forward.reply, response.encode())
+      except CatchableError:
+        discard
+      natsSubscription_Destroy(forward.sub)
+      ct.pending.forwards.delete(i)
+    else:
+      inc i
+
 proc pumpCoreWhileBusy*(ct: CoreTools) =
-  ## Serve core's own svc.core.call surface while a turn dispatch is
-  ## blocked waiting for a component reply. Without this, a component
-  ## calling back into core (plugin_install → core.spawn) would deadlock
-  ## against the in-flight turn: core waits for the install, the install
-  ## waits for core. Concurrent session requests are stashed — turns must
-  ## never nest — and drained by pumpCoreCalls once the turn ends.
+  ## Serve core's own svc.core.call surface while a component dispatch is
+  ## blocked waiting for a reply. Without this, a component calling back into
+  ## core (plugin_install → core.spawn) would deadlock against the in-flight
+  ## call: core waits for the install, the install waits for core.
+  ## Session requests are forwarded asynchronously, so different conversation
+  ## runners keep making progress; each runner still serializes its own turns.
+  pumpSessionForwards(ct)
   if ct.coreSub == nil: return
   while true:
     var msg: ptr natsMsg
@@ -883,7 +941,12 @@ proc pumpCoreWhileBusy*(ct: CoreTools) =
         "expected a call envelope").encode())
       continue
     if env.tool == "session":
-      ct.pending.items.add((env: env, reply: reply))
+      if ct.routeSession != nil:
+        ct.routeSession(env, reply)
+      else:
+        # Unit/direct callers without the system-core router retain the old
+        # queue behavior; the real core installs routeSession at startup.
+        ct.pending.items.add((env: env, reply: reply))
       continue
     var resp: Envelope
     try:

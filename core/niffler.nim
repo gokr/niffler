@@ -546,6 +546,12 @@ proc main() =
                      mapStream: new(MapStream),
                      activeTurn: new(ActiveTurn),
                      uiReg: newUiRegistry())
+  # Session calls are routed through private forwarding inboxes instead of
+  # blocking this core process on one runner. Each runner still serializes
+  # calls for its own conversation; separate conversations can overlap.
+  ct.routeSession = proc(env: Envelope, reply: string) =
+    routeSessionCall(ct, env, reply)
+
   # Slash registry checkpoint (docs/WIRE.md): every catalog change persists
   # the merged table to the store BEFORE ev.catalog.updated goes out, so a UI
   # reading store-first after the event never sees a stale table. Best effort:
