@@ -222,13 +222,79 @@ func TestResolveHandlerNeverReturnsCredentials(t *testing.T) {
 }
 
 func TestResultJSONIncludesProvider(t *testing.T) {
-	result, err := resultJSON("deepseek", "deepseek-chat", 1_000_000, "ok", "", nil, openai.Usage{}, false)
+	result, err := resultJSON("deepseek", "deepseek-chat", 1_000_000, "ok", "", nil, openai.Usage{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := result.(map[string]any)
 	if got["provider"] != "deepseek" || got["model"] != "deepseek-chat" || got["context"] != 1_000_000 {
 		t.Fatalf("result = %#v", got)
+	}
+}
+
+// TestLengthCapUsesTheFieldTheProviderHonors pins the DeepSeek rule from
+// docs/research/DEEPSEEK.md: its Chat Completions reference documents only
+// max_tokens, so a cap sent as max_completion_tokens is ignored there and the
+// server default (8K non-thinking / 64K thinking / 128K at effort max) applies
+// instead — which is how an agent turn ends truncated at finish_reason length.
+func TestLengthCapUsesTheFieldTheProviderHonors(t *testing.T) {
+	if got, _ := lengthCap("deepseek", 65536); got != 65536 {
+		t.Fatalf("deepseek max_tokens = %d, want 65536", got)
+	}
+	if _, got := lengthCap("deepseek", 65536); got != 0 {
+		t.Fatalf("deepseek also sent max_completion_tokens = %d", got)
+	}
+	if got, _ := lengthCap("openai", 4096); got != 0 {
+		t.Fatalf("openai lanes must not send max_tokens (o-series reject it): %d", got)
+	}
+	if _, got := lengthCap("openai", 4096); got != 4096 {
+		t.Fatalf("openai max_completion_tokens = %d, want 4096", got)
+	}
+	if got, got2 := lengthCap("deepseek", 0); got != 0 || got2 != 0 {
+		t.Fatalf("unset output cap must send neither field: %d/%d", got, got2)
+	}
+}
+
+// TestInterruptedFinishIsTransient: the provider returns HTTP 200 with these
+// finish_reasons when it cut the generation short, so the turn must reach the
+// retry classifier as transient instead of being recorded as a success.
+func TestInterruptedFinishIsTransient(t *testing.T) {
+	for _, reason := range []string{finishAborted, finishInsufficientSys} {
+		if !interruptedFinish(reason) {
+			t.Fatalf("interruptedFinish(%q) = false", reason)
+		}
+		err := interruptErr(reason)
+		if err == nil || !strings.Contains(err.Error(), "stream error") {
+			t.Fatalf("interruptErr(%q) = %v, want a transient stream error", reason, err)
+		}
+		// "insufficient" alone means billing to core's classifier, so the
+		// message must not carry that marker.
+		if strings.Contains(err.Error(), "insufficient") {
+			t.Fatalf("interruptErr(%q) carries a billing marker: %v", reason, err)
+		}
+	}
+	for _, reason := range []string{"stop", "tool_calls", finishLength, ""} {
+		if interruptedFinish(reason) {
+			t.Fatalf("interruptedFinish(%q) = true", reason)
+		}
+	}
+}
+
+// TestCanonicalFinishNormalizesLanes keeps truncation visible on every
+// transport (chat completions, Anthropic messages, Codex responses).
+func TestCanonicalFinishNormalizesLanes(t *testing.T) {
+	cases := []struct{ provider, reason, want string }{
+		{"anthropic", "max_tokens", finishLength},
+		{"anthropic", "end_turn", "stop"},
+		{"anthropic", "tool_use", "tool_calls"},
+		{"openai-codex", "max_output_tokens", finishLength},
+		{"deepseek", "length", "length"},
+		{"deepseek", finishInsufficientSys, finishInsufficientSys},
+	}
+	for _, tc := range cases {
+		if got := canonicalFinish(tc.provider, tc.reason); got != tc.want {
+			t.Fatalf("canonicalFinish(%q, %q) = %q, want %q", tc.provider, tc.reason, got, tc.want)
+		}
 	}
 }
 
@@ -417,7 +483,7 @@ func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
 		},
 	}
 	result, err := resultJSON("deepseek", "deepseek-chat", 128000,
-		"ok", "", nil, usage, true)
+		"ok", "", nil, usage, true, finishLength)
 	if err != nil {
 		t.Fatalf("resultJSON: %v", err)
 	}
@@ -440,7 +506,7 @@ func TestResultJSONForwardsCachedTokenDetails(t *testing.T) {
 	// Without a details breakdown the field is omitted entirely (WIRE.md:
 	// missing fields are omitted, never null).
 	plain, err := resultJSON("deepseek", "deepseek-chat", 128000,
-		"ok", "", nil, openai.Usage{PromptTokens: 10, TotalTokens: 10}, true)
+		"ok", "", nil, openai.Usage{PromptTokens: 10, TotalTokens: 10}, true, "")
 	if err != nil {
 		t.Fatalf("resultJSON plain: %v", err)
 	}

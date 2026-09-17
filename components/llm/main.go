@@ -718,14 +718,81 @@ func sanitizeMessages(msgs []chatMessage) {
 	}
 }
 
+// finish_reason values beyond stop/tool_calls that change what a client must
+// do. DeepSeek documents all three: `length` means the reply was cut at the
+// output cap, while `aborted` and `insufficient_system_resource` arrive as an
+// HTTP 200 whose generation the provider interrupted — a caller that keys its
+// retry policy on HTTP status alone records those as successful turns.
+const (
+	finishLength          = "length"
+	finishAborted         = "aborted"
+	finishInsufficientSys = "insufficient_system_resource"
+)
+
+// interruptedFinish reports whether a finish_reason means the provider ended
+// the generation early rather than the model finishing its answer.
+func interruptedFinish(reason string) bool {
+	return reason == finishAborted || reason == finishInsufficientSys
+}
+
+// interruptErr hands an interrupted generation to the retry policy as a
+// transient failure: core looks for the "stream error" marker, and it treats
+// every "insufficient" as a permanent billing condition (core/retry.nim), so
+// the raw reason is logged rather than embedded in the message.
+func interruptErr(reason string) error {
+	log.Printf("WARN chat interrupted finish_reason=%s", reason)
+	return errors.New("stream error: the provider ended the generation early (provider resource pressure)")
+}
+
+// canonicalFinish maps a provider's stop/terminal reason onto the
+// finish_reason vocabulary the conversation loop understands (OpenAI's names),
+// so truncation surfaces the same way on every lane. Unknown reasons pass
+// through unchanged for logging.
+func canonicalFinish(provider, reason string) string {
+	switch provider {
+	case "anthropic":
+		switch reason {
+		case "max_tokens":
+			return finishLength
+		case "end_turn", "stop_sequence":
+			return "stop"
+		case "tool_use":
+			return "tool_calls"
+		}
+	case "openai-codex", "codex":
+		if reason == "max_output_tokens" {
+			return finishLength
+		}
+	}
+	return reason
+}
+
+// lengthCap returns the output cap in the request field the provider actually
+// honors. Niffler sends the OpenAI spelling (max_completion_tokens) by default,
+// but DeepSeek's Chat Completions reference documents only max_tokens — a cap
+// sent as max_completion_tokens is ignored there, so the server default applies
+// (8K non-thinking, 64K thinking, 128K at reasoning_effort max) and a long
+// agent turn ends truncated with finish_reason "length".
+func lengthCap(providerName string, output int) (maxTokens, maxCompletionTokens int) {
+	if output <= 0 {
+		return 0, 0
+	}
+	if providerName == "deepseek" {
+		return output, 0
+	}
+	return 0, output
+}
+
 func chatOnce(client *openai.Client, model, providerName string, args chatArgs, contextSize, outputSize int) (any, error) {
 	startedAt := time.Now()
+	maxTokens, maxCompletion := lengthCap(providerName, outputSize)
 	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
 		ParallelToolCalls:   true,
-		MaxCompletionTokens: outputSize,
+		MaxTokens:           maxTokens,
+		MaxCompletionTokens: maxCompletion,
 		ReasoningEffort:     args.ReasoningEffort,
 	})
 	if err != nil {
@@ -733,6 +800,10 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 	}
 	if len(resp.Choices) == 0 {
 		return nil, errors.New("no choices in llm response")
+	}
+	finish := string(resp.Choices[0].FinishReason)
+	if interruptedFinish(finish) {
+		return nil, interruptErr(finish)
 	}
 	msg := resp.Choices[0].Message
 	usedModel := resp.Model
@@ -752,7 +823,7 @@ func chatOnce(client *openai.Client, model, providerName string, args chatArgs, 
 		args.Purpose, providerName, usedModel, effort, total.Truncate(time.Millisecond),
 		resp.Usage.PromptTokens, resp.Usage.CompletionTokens, tps)
 	return resultJSON(providerName, usedModel, contextSize, msg.Content,
-		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true)
+		msg.ReasoningContent, msg.ToolCalls, resp.Usage, true, finish)
 }
 
 // llmChunk mirrors go-openai's ChatCompletionStreamResponse, but keeps the
@@ -768,7 +839,8 @@ type llmChunk struct {
 }
 
 type llmChoice struct {
-	Delta llmDelta `json:"delta"`
+	Delta        llmDelta            `json:"delta"`
+	FinishReason openai.FinishReason `json:"finish_reason"`
 }
 
 type llmDelta struct {
@@ -793,12 +865,14 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	maxTokens, maxCompletion := lengthCap(providerName, outputSize)
 	stream, err := client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            openAIMessages(args.Messages),
 		Tools:               args.Tools,
 		ParallelToolCalls:   true,
-		MaxCompletionTokens: outputSize,
+		MaxTokens:           maxTokens,
+		MaxCompletionTokens: maxCompletion,
 		ReasoningEffort:     args.ReasoningEffort,
 		StreamOptions:       &openai.StreamOptions{IncludeUsage: true},
 	})
@@ -836,6 +910,7 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	var content, reasoning strings.Builder
 	var calls []openai.ToolCall // aggregated by index, in stream order
 	var usedModel string
+	var finish string
 	var usage openai.Usage
 	var usageSeen bool
 
@@ -864,6 +939,9 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 		}
 		if len(resp.Choices) == 0 {
 			continue
+		}
+		if resp.Choices[0].FinishReason != "" {
+			finish = string(resp.Choices[0].FinishReason)
 		}
 		delta := resp.Choices[0].Delta
 		if delta.Content != "" {
@@ -906,16 +984,32 @@ func chatStream(ctx context.Context, c *sdk.Component, client *openai.Client, mo
 	if usedModel == "" {
 		usedModel = model
 	}
+	if interruptedFinish(finish) {
+		logStreamStats(usage, reasoning.Len(), true)
+		return nil, interruptErr(finish)
+	}
 	logStreamStats(usage, reasoning.Len(), false)
 	return resultJSON(providerName, usedModel, contextSize, content.String(),
-		reasoning.String(), calls, usage, usageSeen)
+		reasoning.String(), calls, usage, usageSeen, finish)
 }
 
 // resultJSON builds the wire result — the same shape llm-openai returns,
 // so core's conversation loop consumes it unchanged — plus `reasoning`.
 func resultJSON(providerName, model string, ctx int, content, reasoning string,
-	calls []openai.ToolCall, usage openai.Usage, usageSeen bool) (any, error) {
+	calls []openai.ToolCall, usage openai.Usage, usageSeen bool, finish string) (any, error) {
 	r := map[string]any{"content": content, "reasoning": reasoning}
+	finish = canonicalFinish(providerName, finish)
+	// finish_reason is additive: core ignores fields it does not know, and a
+	// "length" turn is the one case worth logging loudly (the reply was cut at
+	// the output cap). aborted/insufficient_system_resource never reach here —
+	// they return as errors so the retry policy sees them
+	// (docs/research/DEEPSEEK.md).
+	if finish != "" {
+		r["finish_reason"] = finish
+		if finish == finishLength {
+			log.Printf("WARN chat truncated at the output cap finish_reason=%s provider=%s model=%s", finish, providerName, model)
+		}
+	}
 	if providerName != "" {
 		r["provider"] = providerName
 	}

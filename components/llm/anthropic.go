@@ -122,6 +122,7 @@ func chatAnthropic(ctx context.Context, c *sdk.Component, p provider, model, pro
 	usage := anthropicUsage{}
 	usedModel := model
 	terminal := false
+	stopReason := ""
 	err = readAnthropicSSE(response.Body, func(event anthropicEvent) error {
 		switch event.Type {
 		case "message_start":
@@ -159,6 +160,11 @@ func chatAnthropic(ctx context.Context, c *sdk.Component, p provider, model, pro
 			}
 		case "message_delta":
 			mergeAnthropicUsage(&usage, event.Usage)
+			// The stop_reason arrives here (max_tokens means the reply was cut
+			// at the output cap; docs/research/DEEPSEEK.md covers the mapping).
+			if event.Delta.StopReason != "" {
+				stopReason = event.Delta.StopReason
+			}
 		case "message_stop":
 			terminal = true
 		case "error":
@@ -194,7 +200,7 @@ func chatAnthropic(ctx context.Context, c *sdk.Component, p provider, model, pro
 	openAIUsage.TotalTokens = openAIUsage.PromptTokens + openAIUsage.CompletionTokens
 	usageSeen := openAIUsage.PromptTokens > 0 || openAIUsage.CompletionTokens > 0
 	return resultJSON(providerName, usedModel, contextSize, content.String(), reasoning.String(),
-		calls, openAIUsage, usageSeen)
+		calls, openAIUsage, usageSeen, stopReason)
 }
 
 func anthropicRequest(model string, args chatArgs, outputSize int, isOAuth bool) ([]byte, error) {

@@ -98,7 +98,13 @@ proc retryKind*(msg: string): RetryKind =
   if lower.len == 0: return rkPermanent
   for permanent in ["401", "403", "unauthorized", "forbidden",
                     "invalid api key", "invalid_api_key", "incorrect api key",
-                    "quota", "billing", "insufficient",
+                    "quota", "billing",
+                    # Billing exhaustion is permanent; a bare "insufficient"
+                    # would also catch "insufficient_system_resource" — the
+                    # provider's *transient* mid-generation interruption
+                    # (HTTP 200 + that finish_reason; docs/research/DEEPSEEK.md).
+                    "insufficient balance", "insufficient funds",
+                    "insufficient credit", "insufficient quota",
                     "400", "bad request", "invalid request"]:
     if lower.contains(permanent): return rkPermanent
   let limited = lower.contains("429") or lower.contains("rate limit") or
@@ -113,7 +119,12 @@ proc retryKind*(msg: string): RetryKind =
   for transient in ["500", "502", "503", "504", "server error",
                     "overloaded", "capacity", "connection reset",
                     "connection dropped", "broken pipe", "eof", "econnreset",
-                    "stream error"]:
+                    "stream error",
+                    # The provider may cut a generation short under its own
+                    # resource pressure; retrying is the right response. Both
+                    # spellings occur: prose ("resource pressure") and the raw
+                    # finish_reason token ("insufficient_system_resource").
+                    "resource pressure", "system resource", "system_resource"]:
     if lower.contains(transient): return rkTransient
   rkPermanent
 
@@ -139,7 +150,10 @@ proc isRetryableLlmError*(msg: string): bool =
   # Fail fast — permanent or caller-fixable:
   for permanent in ["401", "403", "unauthorized", "forbidden",
                     "invalid api key", "invalid_api_key", "incorrect api key",
-                    "quota", "billing", "insufficient",
+                    "quota", "billing",
+                    # Billing-only: see the note in the classifier above.
+                    "insufficient balance", "insufficient funds",
+                    "insufficient credit", "insufficient quota",
                     "400", "bad request", "invalid request"]:
     if lower.contains(permanent):
       return false
@@ -150,7 +164,8 @@ proc isRetryableLlmError*(msg: string): bool =
                     "timeout", "timed out",
                     "connection reset", "connection refused",
                     "connection dropped", "broken pipe",
-                    "eof", "econnreset", "stream error"]:
+                    "eof", "econnreset", "stream error",
+                    "resource pressure", "system resource", "system_resource"]:
     if lower.contains(transient):
       return true
   # Nats request timeouts surface as "timeout"-family strings (matched

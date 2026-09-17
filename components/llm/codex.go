@@ -72,6 +72,7 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 	var usage openai.Usage
 	usageSeen := false
 	terminal := false
+	finish := ""
 
 	for {
 		event, recvErr := stream.Recv()
@@ -137,6 +138,12 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 			return nil, errors.New("Codex response failed")
 		case "response.completed", "response.done", "response.incomplete":
 			terminal = true
+			if event.Type == "response.incomplete" {
+				// The Responses API signals a cut-short generation with this
+				// event instead of a stop_reason; treat it like finish_reason
+				// "length" so truncation is visible (docs/research/DEEPSEEK.md).
+				finish = finishLength
+			}
 			if event.Response != nil {
 				if event.Response.Model != "" {
 					usedModel = event.Response.Model
@@ -167,7 +174,7 @@ func chatCodex(ctx context.Context, c *sdk.Component, p provider, model, provide
 
 	toolCalls := orderedCodexCalls(calls)
 	return resultJSON(providerName, usedModel, contextSize, content.String(), reasoning.String(),
-		toolCalls, usage, usageSeen)
+		toolCalls, usage, usageSeen, finish)
 }
 
 func codexRequest(model string, args chatArgs) (openai.CreateResponseRequest, error) {

@@ -6,6 +6,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **DeepSeek turns can no longer be silently length-capped or silently
+  interrupted.** DeepSeek's Chat Completions reference documents only
+  `max_tokens`; the llm adapter sent `max_completion_tokens`, which is ignored
+  there, so the server default applied — 8K non-thinking, 64K thinking, 128K at
+  effort `max` — and a long agent turn ended truncated at
+  `finish_reason: "length"`. The adapter now picks the field the provider
+  honors (`lengthCap`), turns an interrupted generation (`aborted`,
+  `insufficient_system_resource` — delivered as HTTP 200, so they used to read
+  as successful turns) into a transient `stream error` the retry policy acts on,
+  logs truncation, and carries `finish_reason` on the result; the Anthropic
+  (`max_tokens`) and Codex (`response.incomplete`) lanes normalize into the same
+  vocabulary. `core/retry.nim` no longer classifies every "insufficient" as
+  billing: a *resource* interruption is retryable, while "insufficient
+  balance/funds/credit/quota" stays permanent. Survey, verified facts and the
+  remaining backlog live in `docs/research/DEEPSEEK.md`.
+
 ### Changed
 
 - **Session round guard default raised from 50 to 1000.** The hard

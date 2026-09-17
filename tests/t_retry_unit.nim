@@ -15,7 +15,13 @@ proc main() =
               "connection reset by peer",
               "llm HTTP 500: internal server error",
               "EOF while streaming",
-              "Rate limit reached for model"]:
+              "Rate limit reached for model",
+              # A provider cutting a generation short for its own resource
+              # pressure arrives as HTTP 200 + finish_reason
+              # insufficient_system_resource; the adapter words it as a stream
+              # error so it lands here (docs/research/DEEPSEEK.md).
+              "stream error: the provider ended the generation early (provider resource pressure)",
+              "insufficient_system_resource"]:
     check("retryable: " & msg, isRetryableLlmError(msg))
 
   # --- classification: fail fast -------------------------------------------
@@ -26,7 +32,12 @@ proc main() =
               "billing error: card declined",
               "HTTP 400: messages required",
               "bad request: invalid tool schema",
-              "insufficient quota"]:
+              "insufficient quota",
+              # Billing exhaustion stays permanent — but only the billing
+              # phrasings, not every message containing "insufficient".
+              "insufficient balance",
+              "HTTP 402: Insufficient Balance",
+              "insufficient funds for this account"]:
     check("fail fast: " & msg, not isRetryableLlmError(msg))
 
   # --- classification: unknown → no retry ----------------------------------
@@ -36,6 +47,12 @@ proc main() =
   # 401 must win over transient words appearing elsewhere in the message
   check("permanent beats transient in one message",
         not isRetryableLlmError("connection reset during 401 auth"))
+  check("resource pressure uses the transient retry budget",
+        canRetry(defaultRetryPolicy(),
+                 "stream error: provider resource pressure", 0) and
+        not canRetry(defaultRetryPolicy(),
+                     "stream error: provider resource pressure",
+                     defaultRetryPolicy().maxRetries))
 
   # --- classification: overflow (its own class, §6.5) ----------------------
   # Real provider wordings. The normalized adapter prefix classifies on its
