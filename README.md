@@ -53,9 +53,13 @@ home.
   scoped to that exact tool content. Each conversation picks its gate mode
   (`/approvals ask|auto`), and when no human is reachable the call is denied —
   never silently allowed.
-- **Language-agnostic by construction.** SDKs in Nim, Go and TypeScript;
-  adding support for a language is a config entry or a plugin component,
-  never a change to shared components.
+- **Polyglot by construction.** Most of Niffler is Nim and Go, but no
+  component is tied to a language: the contract is JSON envelopes over NATS,
+  SDKs exist for Nim, Go and TypeScript, and the shipped
+  [`dialog`](components/dialog/dialog.sh) demo is a bash script with no SDK
+  at all. The same neutrality points inward — language servers, file patterns
+  and toolchains are declarative config or plugin components, never changes
+  to shared components.
 - **The bus is the API.** Every client — the `niffler-tui` terminal client,
   the web UI, `niffler-cli` scripts and CI, `niffler-console` — is just
   another bus citizen: anything that speaks JSON envelopes can observe,

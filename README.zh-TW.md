@@ -40,8 +40,11 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
   因此「總是允許」可以限定到該工具的這一份確切內容。每個對話可以選擇門控
   模式（`/approvals ask|auto`）；當沒有人類可達時，呼叫會被拒絕，絕不會被
   悄悄放行。
-- **語言無關的架構。** 提供 Nim、Go 和 TypeScript SDK；為某語言加入支援
-  只需一筆設定或一個外掛元件，無需修改共用元件。
+- **天生多語言。** Niffler 本身主要用 Nim 和 Go 撰寫，但架構不把任何元件
+  綁定到某種語言：元件契約是 NATS 上的 JSON 信封，已有 Nim、Go 和
+  TypeScript SDK，隨儲存庫發布的 [`dialog`](components/dialog/dialog.sh)
+  範例甚至是不用 SDK 的 bash 腳本。這種中立性也面向內部：語言伺服器、檔案
+  模式和工具鏈都是宣告式設定或外掛元件，而不是修改共用元件。
 - **匯流排就是 API。** 所有客戶端——`niffler-tui` 終端客戶端、Web UI、
   `niffler-cli` 腳本和 CI、`niffler-console`——都只是匯流排上的普通成員：
   任何能收發 JSON 信封的程式都可以觀察、腳本化或驅動對話。
