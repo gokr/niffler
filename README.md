@@ -9,6 +9,38 @@ agent can build and spawn new components while a conversation is running.
 Niffler is designed to run from its own clone, which is the harness instance's
 home.
 
+## Why Niffler
+
+- **Modular and extensible to the process boundary.** Niffler shares the
+  minimal-harness philosophy of [Pi](https://pi.dev) and
+  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), but
+  takes it one level lower: every capability is its own OS process behind a
+  single wire protocol (JSON envelopes over NATS), not an in-process plugin.
+  The agent writes, builds and spawns new components mid-conversation, swaps
+  implementations at runtime, and removes one with `core.kill` — no teardown
+  code, no leaked children.
+- **More batteries included.** Shipped components cover work other harnesses
+  leave to third-party plugins: `fabric` (the model writes Nim programs that
+  orchestrate tools), `agent`/`expert` (subagents and an advisory peer),
+  `git`, `mcp` (external MCP servers), `lsp` (any language server, configured
+  as data), `skills`, `plugins`, `repomap`, `processes` (background jobs),
+  `fetch`, `grep`, `edit`, plus `observe`/`logfile` for the bus and
+  `models`/`provider` for LLM access.
+- **Language-agnostic by construction.** SDKs in Nim, Go and TypeScript;
+  adding support for a language is a config entry or a plugin component,
+  never a change to shared components.
+- **The bus is the API.** Every client — the `niffler-tui` terminal client,
+  the web UI, `niffler-cli` scripts and CI, `niffler-console` — is just
+  another bus citizen: anything that speaks JSON envelopes can observe,
+  script or drive conversations.
+- **Cache- and cost-disciplined by design.** A conversation's system prompt
+  and direct tool schemas are frozen for its lifetime and history only grows,
+  so provider prompt caches keep hitting; large toolsets stay reachable
+  through `discover`/`invoke` instead of inflating every request.
+- **Local-first, clone-as-instance.** The clone is the instance: conversations
+  and component state live in `var/` (SQLite by default), the harness manages
+  its own NATS bus, and there is no central service to depend on.
+
 The current release is [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0).
 See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 

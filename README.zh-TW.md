@@ -7,6 +7,32 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 程序，透過 NATS 上的 JSON 信封通訊。Agent 可以在對話進行期間編譯並啟動
 新的元件。專案應從自己的 clone 執行，該 clone 是實例的 home。
 
+## 為什麼選擇 Niffler
+
+- **模組化與可擴充性直達程序邊界。** Niffler 與 [Pi](https://pi.dev) 和
+  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 一樣
+  追求精簡的 harness 理念，但更進一步：每項能力都是獨立的作業系統程序，
+  透過統一的 wire 協議（NATS 上的 JSON 信封）通訊，而不是程序內外掛。
+  Agent 可以在對話進行中撰寫、編譯並啟動新元件，執行時替換實作，用
+  `core.kill` 移除元件——無需清理程式碼，也不會留下孤兒程序。
+- **更多「開箱即用」能力。** 內建元件涵蓋了其他 harness 交給第三方外掛的
+  功能：`fabric`（模型用 Nim 程式編排工具）、`agent`/`expert`（子代理與
+  顧問）、`git`、`mcp`（外部 MCP 伺服器）、`lsp`（任意語言伺服器，以資料
+  設定）、`skills`、`plugins`、`repomap`、`processes`（背景工作）、
+  `fetch`、`grep`、`edit`，以及觀測匯流排的 `observe`/`logfile` 和 LLM
+  存取的 `models`/`provider`。
+- **語言無關的架構。** 提供 Nim、Go 和 TypeScript SDK；為某語言加入支援
+  只需一筆設定或一個外掛元件，無需修改共用元件。
+- **匯流排就是 API。** 所有客戶端——`niffler-tui` 終端客戶端、Web UI、
+  `niffler-cli` 腳本和 CI、`niffler-console`——都只是匯流排上的普通成員：
+  任何能收發 JSON 信封的程式都可以觀察、腳本化或驅動對話。
+- **預設遵守快取與成本紀律。** 對話的系統提示詞和直接工具 schema 在建立時
+  凍結，歷史只會追加，因此 provider 的 prompt cache 能持續命中；大型工具集
+  透過 `discover`/`invoke` 隨需取得，不會讓每次請求都膨脹。
+- **本地優先，clone 即實例。** clone 就是實例：對話和元件狀態保存在
+  `var/`（預設 SQLite），harness 自行管理 NATS 匯流排，不依賴任何中央
+  服務。
+
 目前版本是 [v0.2.0](https://github.com/gokr/niffler/releases/tag/v0.2.0)，
 變更記錄見 [CHANGELOG.md](CHANGELOG.md)。完整操作說明請參閱
 [docs/MANUAL.md](docs/MANUAL.md)。
