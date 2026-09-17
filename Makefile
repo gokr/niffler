@@ -73,7 +73,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke dev clean gotest \
-        install uninstall \
+        install uninstall install-ui install-tui \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps install-native-deps install-nim-deps \
         install-natscli install-jq install-zenity
@@ -82,9 +82,11 @@ help:
 	@echo 'make all       build core + components + desktop UI (default)'
 	@echo 'make build     build core + components only (no UI)'
 	@echo 'make ui        build the Wails desktop UI'
-	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
+	@echo 'make install-ui   build the desktop UI + launcher entry/icon (Linux;'
+	@echo '                  same as ui-install)'
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
 	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
+	@echo 'make install-tui  same, installing the niffler-tui client without asking'
 	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
 	@echo '                overrides: NIF_BIN_DIR=~/bin  WITH_TUI=1  FORCE=1'
 	@echo 'make run       run the harness in the terminal (admin shell)'
@@ -360,6 +362,14 @@ install: build
 
 uninstall:
 	./scripts/install.sh --uninstall
+
+# The README names these aliases so the desktop and terminal entry points
+# read in the same direction: install-ui = ui-install, install-tui =
+# install WITH_TUI=1.
+install-ui: ui-install
+
+install-tui:
+	$(MAKE) --no-print-directory install WITH_TUI=1
 
 # ---------------------------------------------------------------------------
 # run / test

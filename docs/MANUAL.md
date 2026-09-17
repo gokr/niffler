@@ -140,8 +140,8 @@ isolation. Turns never nest either way.
 The stdin/stdout tty (`make run`) is an **admin shell**, not a conversation
 UI: it only inspects the harness itself — `help`, `status`, `catalog`,
 `tools`, `sessions`, `exit` — with arrow-key history and tab completion
-(see `core/tty.nim`). The LLM chat lives in the web UI and the `niffler-tui`
-plugin; scripting goes through the `cli` component.
+(see `core/tty.nim`). The LLM chat lives in the `niffler-tui` terminal client
+and the web UI; scripting goes through the `cli` component.
 
 ### Store engines
 
@@ -2251,7 +2251,11 @@ make build          # rebuild what changed
 make install        # PATH entries (niffler, niffler-cli, niffler-console,
                     # + niffler-tui wrapper on request — never component
                     # binaries, so PATH cannot shadow grep/git/...)
+make install-tui    # same, installing the niffler-tui terminal client quietly
+                    # (= make install WITH_TUI=1)
 make uninstall      # remove those PATH entries again
+make install-ui     # build the desktop UI, then add the launcher entry + icon
+                    # (Linux; = make ui-install; -uninstall counterpart ui-uninstall)
 make install-lsp    # install the lsp component's default language servers
 make test           # the full gate: frontend tests + the bus-contract suite
 make test-server    # the bus-contract suite alone (each test owns a private bus)

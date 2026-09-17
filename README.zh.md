@@ -13,26 +13,43 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
 
 ## 快速开始
 
-需要 Nim 2.2.12+、Go、Node.js 20+ 和 npm。桌面 UI 还需要 Wails；Linux
-需要 WebKitGTK 4.1。Niffler 使用纯 Nim 的
+需要 Nim 2.2.12+ 和 Go；`make setup` 会安装平台依赖（Ubuntu/macOS）和
+Nimble 依赖。只有 TypeScript 组件和 Web UI 需要 Node.js 20+ 和 npm；可选的
+桌面 UI 在 Linux 上还需要 Wails 和 WebKitGTK 4.1。Niffler 使用纯 Nim 的
 [natsnim](https://github.com/gokr/natsnim)，不需要安装 `libnats` 或 `cnats`。
 
 ```bash
 git clone https://github.com/gokr/niffler.git
 cd niffler
-make setup
-cp .env.example .env       # 填入 LLM API key
-make                       # 构建核心、组件和桌面 UI
-./ui/build/bin/niffler-ui  # 启动 UI，同时启动本地 harness
+make setup                    # Ubuntu/macOS 依赖和 Nimble 包
+cp .env.example .env          # 填入 LLM API key
+make build                    # 构建核心和组件（不含 UI 工具链）
+make install-tui              # 写入 PATH 并安装 niffler-tui 终端客户端
+niffler-tui                   # 终端聊天，按需启动此 clone 的 harness
 ```
 
-只构建核心和组件使用 `make build`。`./var/bin/niffler` 是终端管理 shell，
-不是对话 UI；`./var/bin/niffler --minimal` 只启动 store、bash 和 LLM。
-`make doctor` 检查依赖，`make down-here` 只停止此 clone 的进程。
+`make install-tui` 等价于 `make install WITH_TUI=1`：把 `niffler`、
+`niffler-cli`、`niffler-console` 和 `niffler-tui` 包装脚本链接到用户 bin
+目录（可用 `NIF_BIN_DIR=~/bin` 指定），并安装
+[niffler-tui](https://github.com/gokr/niffler-tui) 插件。直接运行
+`make install` 则会在终端上询问是否安装该插件。
 
-开发时可用 `make dev` 在浏览器运行前端。测试命令：`make test-ui`（前端）、
-`make test-server`（总线契约）、`make test`（完整测试门）和 `make gotest`
-（Go 测试、vet、race）。
+`niffler-tui` 是对话客户端；`niffler`（或 `./var/bin/niffler`）是终端管理
+shell——status、catalog、sessions，不是对话 UI；`niffler --minimal` 只启动
+最小的 store/bash/LLM 配置。
+
+桌面 UI 是可选项：
+
+```bash
+make install-ui         # 构建 Wails UI，复制到 ~/.local/bin，并安装
+                        # 启动器条目和图标（Linux；别名 make ui-install）
+```
+
+开发时可用 `make dev` 在浏览器运行前端（bridge 以桩实现）。`make doctor`
+检查依赖，`make down-here` 只停止此 clone 的进程。
+
+测试：`make test-ui`（前端，无需 NATS）、`make test-server`（总线契约）、
+`make test`（完整测试门）、`make gotest`（Go 测试、vet 和 race 检查）。
 
 ## 文档
 

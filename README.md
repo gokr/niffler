@@ -14,34 +14,46 @@ See [CHANGELOG.md](CHANGELOG.md) for changes since that release.
 
 ## Quick start
 
-Requirements: Nim 2.2.12+, Go, Node.js 20+ and npm. The desktop UI additionally
-needs Wails and WebKitGTK 4.1 on Linux. Niffler uses the pure-Nim
-[natsnim](https://github.com/gokr/natsnim) client; no `libnats` or `cnats`
-installation is needed.
+Requirements: Nim 2.2.12+ and Go. `make setup` installs those and the other
+platform prerequisites (Ubuntu/macOS) plus the Nimble dependencies. Node.js 20+
+and npm are only needed for TypeScript components and the web UI; the optional
+desktop UI additionally needs Wails and WebKitGTK 4.1 on Linux. Niffler uses the
+pure-Nim [natsnim](https://github.com/gokr/natsnim) client; no `libnats` or
+`cnats` installation is needed.
 
 ```bash
 git clone https://github.com/gokr/niffler.git
 cd niffler
-make setup                         # Ubuntu/macOS prerequisites and Nimble deps
-cp .env.example .env               # add an LLM API key; edit other settings as needed
-make                                # core, components and desktop UI
-./ui/build/bin/niffler-ui           # the UI starts the local harness
+make setup                    # Ubuntu/macOS prerequisites and Nimble deps
+cp .env.example .env          # add an LLM API key; edit other settings as needed
+make build                    # core + components (no UI toolchain)
+make install-tui              # PATH entries + the niffler-tui terminal client
+niffler-tui                   # terminal chat; boots this clone's harness
 ```
 
-For a component-only build, use `make build`. `./var/bin/niffler` is the
-terminal admin shell (not the conversation UI); `./var/bin/niffler --minimal`
-starts only the minimal store/bash/LLM profile. Run `make doctor` to inspect
-prerequisites. Use `make down-here` to stop only this clone's processes.
+`make install-tui` is `make install WITH_TUI=1`: it links `niffler`,
+`niffler-cli`, `niffler-console` and the `niffler-tui` wrapper into a user bin
+directory (`NIF_BIN_DIR=~/bin` overrides the location) and installs the
+[niffler-tui](https://github.com/gokr/niffler-tui) plugin. Plain `make install`
+asks about the plugin on a terminal instead.
 
-To run the frontend in a browser during development:
+`niffler-tui` is the conversation client; `niffler` (or `./var/bin/niffler`) is
+the terminal admin shell — status, catalog, sessions, not a chat UI — and
+`niffler --minimal` boots only the minimal store/bash/LLM profile.
+
+The desktop UI is optional:
 
 ```bash
-make dev
+make install-ui         # build the Wails UI, then add it to ~/.local/bin with
+                        # a launcher entry and icon (Linux; alias: make ui-install)
 ```
 
-The UI is optional. `make test-ui` runs frontend tests without NATS;
-`make test-server` runs the bus-contract suite; `make test` runs the complete
-gate. `make gotest` runs the Go tests, vet and race checks.
+`make dev` runs the frontend in a browser with the bridge stubbed; `make doctor`
+inspects prerequisites; `make down-here` stops only this clone's processes.
+
+Testing: `make test-ui` runs frontend tests without NATS; `make test-server`
+runs the bus-contract suite; `make test` runs the complete gate; `make gotest`
+runs the Go tests, vet and race checks.
 
 ## Documentation
 

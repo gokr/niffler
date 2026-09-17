@@ -11,6 +11,12 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Session round guard default raised from 50 to 1000.** The hard
   `NIF_MAX_TURN_ROUNDS` runaway guard remains configurable and separate from
   the soft `/limit` controls.
+- **Docs lead with the terminal client, and the Makefile grows `install-ui` /
+  `install-tui`.** The README quick start now builds components only and
+  installs the `niffler-tui` plugin (`make install-tui` = `make install
+  WITH_TUI=1`); the desktop UI is documented as optional (`make install-ui`,
+  alias of the existing `ui-install`, builds the Wails UI and adds the
+  launcher entry + icon).
 
 ### Added
 
