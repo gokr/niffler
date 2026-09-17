@@ -21,11 +21,13 @@ home.
   code, no leaked children.
 - **More batteries included.** Shipped components cover work other harnesses
   leave to third-party plugins: `fabric` (the model writes Nim programs that
-  orchestrate tools), `agent`/`expert` (subagents and an advisory peer),
-  `git`, `mcp` (external MCP servers), `lsp` (any language server, configured
-  as data), `skills`, `plugins`, `repomap`, `processes` (background jobs),
-  `fetch`, `grep`, `edit`, plus `observe`/`logfile` for the bus and
-  `models`/`provider` for LLM access.
+  orchestrate tools), `agent` (subagents: background, continuable and
+  forkable), `expert` (an advisory peer), `git`, `mcp` (external MCP
+  servers), `lsp` (any language server, configured as data), `repomap`
+  (Aider's [repo map](https://github.com/Aider-AI/aider): a tree-sitter
+  symbol graph ranked by PageRank), `skills`, `plugins`, `processes`
+  (background jobs), `fetch`, `grep`, `edit`, plus `observe`/`logfile` for
+  the bus itself.
 - **Focused on open models.** One adapter, no vendor lock-in: the default
   `openai-chat` protocol speaks plain Chat Completions, so any
   OpenAI-compatible endpoint works — DeepSeek, OpenRouter, a local
@@ -33,6 +35,19 @@ home.
   store-backed `provider` registry and switchable at runtime. Anthropic
   Messages and ChatGPT/Claude subscription OAuth are supported when you want
   a hosted model.
+- **Subscriptions work, and model data is first-class.** Sign in with
+  ChatGPT Plus/Pro or Claude Pro/Max — browser PKCE, or a device code on a
+  headless box, with tokens refreshing automatically — instead of buying API
+  credits; or register any API-key provider and switch it live. The `models`
+  layer resolves limits, context windows and prices from models.dev, an
+  offline seed and override layers, and each conversation pins its own model
+  and thinking effort.
+- **Progressive tool disclosure.** Each conversation gets a small, frozen
+  direct toolset; everything else stays one `discover`/`invoke` away.
+  `discover` returns a tool's schema as an ordinary tool result (appended
+  history, not prompt bloat), `invoke` is the fixed gateway that calls it,
+  and on-demand components — `git`, `mcp`, `agent`, `lsp`, … — cost nothing
+  until the model asks for them.
 - **Language-agnostic by construction.** SDKs in Nim, Go and TypeScript;
   adding support for a language is a config entry or a plugin component,
   never a change to shared components.
@@ -49,8 +64,7 @@ home.
   `make install-tui` — the proof that a UI is just another component.
 - **Cache- and cost-disciplined by design.** A conversation's system prompt
   and direct tool schemas are frozen for its lifetime and history only grows,
-  so provider prompt caches keep hitting; large toolsets stay reachable
-  through `discover`/`invoke` instead of inflating every request.
+  so provider prompt caches keep hitting turn after turn.
 - **Local-first, clone-as-instance.** The clone is the instance: conversations
   and component state live in `var/` (SQLite by default), the harness manages
   its own NATS bus, and there is no central service to depend on.

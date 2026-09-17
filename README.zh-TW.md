@@ -16,16 +16,26 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
   Agent 可以在對話進行中撰寫、編譯並啟動新元件，執行時替換實作，用
   `core.kill` 移除元件——無需清理程式碼，也不會留下孤兒程序。
 - **更多「開箱即用」能力。** 內建元件涵蓋了其他 harness 交給第三方外掛的
-  功能：`fabric`（模型用 Nim 程式編排工具）、`agent`/`expert`（子代理與
-  顧問）、`git`、`mcp`（外部 MCP 伺服器）、`lsp`（任意語言伺服器，以資料
-  設定）、`skills`、`plugins`、`repomap`、`processes`（背景工作）、
-  `fetch`、`grep`、`edit`，以及觀測匯流排的 `observe`/`logfile` 和 LLM
-  存取的 `models`/`provider`。
+  功能：`fabric`（模型用 Nim 程式編排工具）、`agent`（子代理：背景執行、
+  可繼續、可 fork）、`expert`（顧問同伴）、`git`、`mcp`（外部 MCP 伺服器）、
+  `lsp`（任意語言伺服器，以資料設定）、`repomap`（Aider 的
+  [repo map](https://github.com/Aider-AI/aider)：tree-sitter 符號圖 +
+  PageRank 排序）、`skills`、`plugins`、`processes`（背景工作）、`fetch`、
+  `grep`、`edit`，以及觀測匯流排的 `observe`/`logfile`。
 - **聚焦開源模型。** 只有一套適配器，沒有廠商鎖定：預設的 `openai-chat`
   協議使用標準 Chat Completions，任何 OpenAI 相容端點都能接入——DeepSeek、
   OpenRouter、本地 vLLM/llama.cpp/Ollama——透過 `.env` 或由 store 持久化的
   `provider` 註冊表設定，並可在執行時切換。需要託管模型時，也支援
   Anthropic Messages 以及 ChatGPT/Claude 訂閱 OAuth。
+- **訂閱也能直接用，模型資料是一等公民。** 可以用 ChatGPT Plus/Pro 或
+  Claude Pro/Max 登入（瀏覽器 PKCE，無螢幕機器用 device code，token
+  自動更新），無需購買 API 額度；也可以註冊任意 API-key provider 並即時
+  切換。`models` 層從 models.dev、離線種子和覆蓋層解析模型的限額、上下文
+  視窗和價格，每個對話各自固定模型和思考強度。
+- **工具漸進揭露。** 每個對話只拿到一個小而凍結的直接工具集，其餘工具都在
+  `discover`/`invoke` 一步之內：`discover` 把工具 schema 作為普通工具結果
+  追加到歷史（不會讓提示詞膨脹），`invoke` 是固定的呼叫閘道；`git`、`mcp`、
+  `agent`、`lsp` 等隨需元件在模型主動索取前不消耗任何上下文。
 - **語言無關的架構。** 提供 Nim、Go 和 TypeScript SDK；為某語言加入支援
   只需一筆設定或一個外掛元件，無需修改共用元件。
 - **匯流排就是 API。** 所有客戶端——`niffler-tui` 終端客戶端、Web UI、
@@ -38,8 +48,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
   （[gokr/niffler-tui](https://github.com/gokr/niffler-tui)，用
   `make install-tui` 安裝）——這正好證明 UI 只是另一個元件。
 - **預設遵守快取與成本紀律。** 對話的系統提示詞和直接工具 schema 在建立時
-  凍結，歷史只會追加，因此 provider 的 prompt cache 能持續命中；大型工具集
-  透過 `discover`/`invoke` 隨需取得，不會讓每次請求都膨脹。
+  凍結，歷史只會追加，因此 provider 的 prompt cache 能持續命中。
 - **本地優先，clone 即實例。** clone 就是實例：對話和元件狀態保存在
   `var/`（預設 SQLite），harness 自行管理 NATS 匯流排，不依賴任何中央
   服務。
