@@ -757,6 +757,13 @@ proc busyChild(child: string): bool =
   ## the ev.session.turn tap (the catalog has no turn state). Used to refuse
   ## `agent_run {session}` with a clear `busy` instead of queueing a caller
   ## that promised it wanted the result now.
+  ##
+  ## Apply already-received turn events before reading the cache: the SDK
+  ## drains the call binding before the tap bindings, so a tool call that
+  ## follows a just-finished child turn can be handled while that turn's
+  ## `done` event is still queued — a cold read would report a freshly idle
+  ## child as busy (a spurious `busy` refusal, or a needlessly queued ask).
+  discard comp.pumpTaps(200)
   child in liveTurns
 
 proc effectiveControls(child: string): JsonNode =
@@ -1357,7 +1364,7 @@ discard comp.tool("agent_steer", steerSchema,
     # steer subscription dies with it — so queue durably instead and let the
     # child's next turn-top drain fold it in (same pull lane as settlement
     # notices, P0.1; same kind, direction parent-mail).
-    if sessionId in liveTurns:
+    if busyChild(sessionId):
       comp.emit("svc.session." & sanitizeSessionId(sessionId) & ".steer",
                 %*{"content": message})
       return okResult(%*{"published": true, "sessionId": sessionId})
