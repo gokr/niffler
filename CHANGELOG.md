@@ -6,7 +6,126 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Session round guard default raised from 50 to 1000.** The hard
+  `NIF_MAX_TURN_ROUNDS` runaway guard remains configurable and separate from
+  the soft `/limit` controls.
+- **Docs lead with the terminal client, and the Makefile grows `install-ui` /
+  `install-tui`.** The README quick start now builds components only and
+  installs the `niffler-tui` plugin (`make install-tui` = `make install
+  WITH_TUI=1`); the desktop UI is documented as optional (`make install-ui`,
+  alias of the existing `ui-install`, builds the Wails UI and adds the
+  launcher entry + icon).
+
 ### Added
+
+- **bench: repomap append-gate evidence — the Multi10 low A/B rerun and the
+  full30 gate verification.** The first low A/B was invalid twice over (lane B
+  DNS-dead, lanes on different trees); rerun on a matched tree with
+  `NIF_REPOMAP_AUTOAPPEND` as the only knob (publish counts verified ON 10 /
+  OFF 0): **ON 10/10 vs OFF 9/10 at 0.46× the tokens per cell** (166k vs
+  362k) — the high-thinking probe's sign inverted. The swing again lives in
+  jq and redis; the other eight cells are near-flat in both regimes. The
+  full30 gate verification then ran all 30 tasks with append forced on and
+  gates live: **30/30 workspaces withheld** ("workspace below census floor"),
+  0 published — the ungated-ON lane's +41% prompt tax (34.5k vs 24.1k tokens)
+  is gone by construction. Default stays opt-in. Reports:
+  `bench/reports/repomap-ab-multi10-low.md`,
+  `bench/reports/repomap-gates-full30.md` (`3f9f3e1`, `6bd1247`).
+
+- **repomap append admission gates.** The workspace-open auto-append (still
+  opt-in via `NIF_REPOMAP_AUTOAPPEND=1`) now admits a map only when it is
+  worth injecting (docs/research/REPOMAP-GATES.md): a **size floor** —
+  workspaces under `NIF_REPOMAP_MIN_CENSUS` (default 50) covered source
+  files are never mapped, decided from the census before any tag parsing —
+  and a **content gate** — a rendered map below `NIF_REPOMAP_MIN_BYTES`
+  (800), `NIF_REPOMAP_MIN_SYMBOLS` (25) or `NIF_REPOMAP_MIN_FILES` (5) is a
+  stub and is withheld. Withheld maps log `repo map withheld ... (reason)`,
+  so bench artifacts show which gate fired. The `repo_map` tool path is
+  never gated: a small map is a fine answer to an explicit question, just
+  not worth injecting unasked. Thresholds are calibrated from the bench
+  stores' published maps (stub class 4-9 symbols / 1-4 files / <3.1KB;
+  healthy 59-119 symbols / 19-48 files / 3.5-4.6KB) and all four are
+  env-overridable.
+
+- **docs/research: FAST-APPLY survey.** `docs/research/FAST-APPLY.md` surveys
+  the "fast apply" edit families across the harness shelf — whole-result
+  generation, deterministic cascades, merge providers, repair tiers — with
+  per-harness positions cited from their checkouts (Claude Code cited from its
+  compiled binary; no source exists). It ends where Niffler's edit 0.3.0 sits
+  and names the three supported steals: candidate-line ambiguity errors, a
+  repair tier behind the existing hook seam, and an opt-in fastapply plugin
+  component for merge providers — never core. Also records that cited code
+  lives in the sibling clone shelf `~/git/harnesses/` with its own
+  pinned-commit index (`6832e76`, `0e094ee`).
+
+- **repomap: c/cpp/rust/ruby tiers — complete language coverage.** The
+  Multi10 A/B exposed the gap: jq/redis/tokio/rubocop all fell outside the
+  .nim/.go/.py/.ts/.js tiers and got tiny or empty maps. Vendored
+  tree-sitter-c v0.23.4, -cpp v0.23.4, -rust v0.23.2 and -ruby v0.23.1 (MIT;
+  NOTICE.md updated); census, grammar map, query map, dispatch and the
+  Makefile rebuild list grew `.c/.h` → c, `.cpp/.hpp/.cc/.hh/.cxx/.hxx` →
+  cpp, `.rs`, `.rb`. Aider's c/cpp queries are definitions-only (aider
+  backfills refs with pygments at runtime) and the graph needs refs, so
+  call-expression ref patterns were appended (rust/ruby already carried
+  refs). Verified on the real Multi10 repos — rubocop 1149 tok, redis 911
+  (real C now), jq 1070, fmt 1036, tokio 920, all full-strength; fixture
+  coverage for the four tiers (54 checks green, was 45) (`aba88b8`).
+
+- **Background processes report their exit to the conversation that owns them,
+  and the SDK grows the seam that makes it possible.** A `run_in_background`
+  child (or a direct `process_start`) that finishes now publishes an exit
+  notice — `kind: "process-exited"` on the same `svc.session.<id>.steer` lane
+  subagent settlement notices use — which the runner folds in as append-only
+  history (`[background process p3 (dev-server) exited(code 0)] ran 412s,
+  8123 bytes of output — read it with process_poll …`). It is a pointer: the
+  output stays in the spool, the command text never travels.
+
+  Why it was needed: nothing reaped a child except a tool call, so an exit was
+  invisible until someone happened to poll — a build or watcher that finished
+  while the model was busy went unnoticed. The reap is now periodic, via a new
+  SDK seam `onIdle(intervalMs, handler)` invoked from the pump loop between
+  passes (main thread, serialized, one handler per component); `processes` uses
+  it, which also stops `process_list` from reporting a finished child as
+  `running` until asked. `process_list` entries carry `started_at` for
+  client-side age displays. Design + the pointer discipline: docs/WIRE.md
+  "Settlement notices", docs/MANUAL.md "Background processes".
+
+
+- **Conversation controls: `/approvals`, `/limit` and the keep-going question.**
+  Two controls now belong to the human, per conversation, set through the
+  `session` call (the SPA exposes them as slash commands; any bus client can
+  call `session` directly) and persisted in the conversation header so a
+  resumed runner re-applies them:
+  - **`approvals`** (`""`/`"ask"`/`"auto"`) — this conversation's gate mode.
+    `auto` grants every `x-harness.approval` tool without asking any client,
+    loudly (`core: approval auto-granted for <tool>`); the default gates as
+    before. Chosen by the human, never by the model.
+  - **`limits`** (`rounds`/`tokens`/`seconds`) — SOFT turn budgets. Reaching
+    one no longer ends the turn: core asks "keep going?" over the existing
+    approval transport (`tool: "turn-limit"`, `purpose: "continue"`,
+    `args: {dimension, detail}`), and a yes extends that limit by one step.
+    A no, no answer or no reachable human ends the turn with a distinct
+    `limit-<dimension>` error record naming the limit and the command that
+    raises it. The seconds limit is checked before every tool dispatch, not
+    just at round boundaries. Job-scoped budgets (`maxRounds`/`maxCalls`/
+    `maxTokens`, what `agent` freezes into a subagent) and
+    `NIF_MAX_TURN_ROUNDS` stay HARD and never ask — a subagent cannot
+    negotiate its own budget. `NIF_AUTO_CONTINUE=1` answers yes with no human.
+  A session call with only a `sessionId` is the read-only status readback
+  (it echoes `approvals` and `limits`). Contract, routing and the fail-closed
+  rules: docs/WIRE.md "Conversation controls"; user-facing chapter:
+  docs/MANUAL.md.
+- **A mid-turn session call is refused with `busy`, not left hanging.** The
+  session runner is single-threaded and a turn never nests, so a session call
+  arriving mid-turn was simply unanswered until the turn ended — any client
+  with a deadline gave up first and reported a generic "context deadline
+  exceeded" (this is why `/export` looked broken during a long turn: it waits
+  10s). The runner's own call subject is now pumped from dispatch's idle slots
+  and answered at once with `{code: "busy"}` and "the conversation is
+  mid-turn — retry when the turn finishes", the same contract `agent_run`
+  uses for a mid-turn child (tests/t_controls.nim).
 
 - **prompt+skills: Niffler can explain itself (`c262a87`).** Asking about
   Niffler — features, operating, configuring, extending, debugging — now
@@ -34,7 +153,6 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `skill_audit`'s baked-only rows and unaffected project/home/config
   discovery), `t_systemprompt` (workspace tail carries the root; in-root
   prompt stays path-free).
-
 - **agent: subagents-v2 — settlement notices, the child roster,
   continuation and fork.** Four steps landed from the
   `docs/research/SUBAGENTS-PLAN.md` runbook, closing the gaps the DSH
@@ -511,6 +629,35 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **docs: guides reconciled with shipped features.** README (en/zh/zh-TW)
+  trimmed by roughly 1,500 lines to describe what actually ships, and
+  `docs/PLAN.md`, `docs/SETTINGS.md`, `docs/MANUAL.md`, the bench container
+  docs and most `docs/research/` notes updated to match (`77fbb94`).
+
+- **repomap: scoring hot-spot fix.** The rank-distribution loop was
+  O(nodes × edges) — 71s of pure iteration on rubocop (1551 files / ~200k
+  edges), which made a warm rebuild look like a broken cache (extraction was
+  cached all along). One pass over the edges with precomputed out-totals:
+  71s → 6.3s, end-to-end warm rebuild 64s → 10s, output byte-identical
+  (`aba88b8`).
+
+- **SDK: bounded initial-connect retry.** Nim SDK components now retry an
+  initial NATS connection for up to 60 seconds while the bus binds, honoring
+  shutdown, then fail into the supervisor's normal backoff. This removes
+  expected boot/restart races from component crash logs without changing the
+  successful first-connect path (`e761055`).
+
+- **context: provider-scale accounting and bounded overflow recovery.** Context
+  admission now measures in the provider's token scale, durable trim records
+  its watermark for restart-safe replay, and normalized provider overflow
+  errors receive one receipt-backed recovery attempt before becoming terminal
+  (`228251e`).
+
+- **settings groundwork.** `.env.example` now points at the complete settings
+  inventory and `docs/SETTINGS.md` records the proposed store-backed settings
+  surface. The general `/settings` command remains unimplemented; the separate
+  `/approvals` and `/limit` conversation controls are shipped (`7a988ba`).
+
 - **toolchain: Nim 2.2.10 → 2.2.12.** The repo now develops against the
   current stable channel; the floor moves with it (`niffler.nimble`,
   `scripts/check-nim-toolchain.sh`) and every pin follows — CI install
@@ -541,6 +688,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`d64f437`).
 
 ### Fixed
+
+- **agent: live turn state is refreshed before it is read** (`9d1b584`).
+  `busyChild`, the steer lane and the roster's status column read
+  `liveTurns`, which is fed by the `ev.session.turn` tap — and a tap is only
+  drained while a handler waits, so a handler entered right after a child's
+  turn returned still saw that child as mid-turn: `agent_ask` on a
+  just-finished child queued the question as mail instead of asking it (the
+  reply came back with the child's NEXT turn, or never), and a steer to a
+  child that had just gone idle was silently dropped (the runner's steer
+  subscription goes away with the turn). One non-blocking tap poll now
+  precedes each live-state read, processed once for the whole roster listing.
+
+- **edit: both lsp timeout forms now yield the retry pointer** (`aba88b8`).
+  The post-edit diagnostics pull classified only the component's own
+  `E_LSP_TIMEOUT` envelope as "server busy"; the SDK transport timeout on a
+  slow diagnostics settle (gopls on a big Go repo) fell into the silent "no
+  server" branch — which is why gin/caddy (gopls ready and healthy) showed no
+  diagnostics while fast settlers (clangd/tsserver) did. Gopls install and
+  config were never the problem.
 
 - **core: settlement notices join compaction's context ledger.** Merging
   the compaction work brought the context identity ledger rule — every

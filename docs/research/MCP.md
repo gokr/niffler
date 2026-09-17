@@ -1,6 +1,9 @@
-# MCP support — plan
+# MCP support — implementation design record
 
-> Research note — an unshipped plan. Status: not implemented.
+> Historical research note. MCP client support is shipped as the `mcp` manager
+> and one `mcp-bridge` process per configured server. The current operating
+> contract is [MANUAL.md](../MANUAL.md#external-mcp-servers-mcp); this document
+> retains the original design and scope decisions.
 >
 > How Niffler gains Model Context Protocol support as a *client*: external MCP
 > servers (stdio) contribute tools that appear as ordinary bus tools, gated by
@@ -14,9 +17,11 @@
 
 ## Goal
 
-Phase 1 target: a configured MCP server's tools become live Niffler tools —
-discoverable, invokable, approval/timeout-gated — with server lifecycle
-managed as supervised child processes of one new component.
+The shipped Phase 1 target makes a configured MCP server's tools available as
+ordinary Niffler tools — discoverable, invokable, approval/timeout-gated — with
+server lifecycle managed as supervised child processes of one manager
+component. The bridge also supports the transports and guards described in the
+manual; those details were added after this original plan.
 
 Non-goals for v1 (kept from the old implementation, which also ignored them):
 

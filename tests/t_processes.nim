@@ -12,12 +12,36 @@
 ## (process-group leaders) and the next life kills the orphans via
 ## registry.json (pid + /proc starttime).
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, times]
 import natsnim
+import envelope
 import helpers
 
 proc pidAlive(pid: int): bool =
   dirExists("/proc/" & $pid)
+
+# --- the notice lane, from the test's side ----------------------------------
+# The processes component publishes exit notices on the same subject the agent
+# uses for settlement notices, so the test subscribes to it directly (shim
+# calls, like the rest of this file).
+proc openSub(nc: NatsConnection, subject: string): ptr natsSubscription =
+  var sub: ptr natsSubscription
+  if not checkStatus(natsConnection_SubscribeSync(addr sub, nc.conn,
+                                                 subject.cstring)):
+    fail("subscribe " & subject)
+  sub
+
+proc pollEnvelope(sub: ptr natsSubscription,
+                  timeoutMs: int64): tuple[found: bool, env: Envelope] =
+  var msg: ptr natsMsg
+  if natsSubscription_NextMsg(addr msg, sub, timeoutMs) != NATS_OK:
+    return (false, Envelope())
+  let data = $natsMsg_GetData(msg)
+  natsMsg_Destroy(msg)
+  try:
+    return (true, decode(data))
+  except CatchableError:
+    return (false, Envelope())
 
 proc main() =
 
@@ -277,6 +301,76 @@ proc main() =
   # unknown ids from the previous life are a clean 404
   check("stale ids from the previous life are not pollable",
         pcall("process_poll", %*{"id": id7}).hasKey("error"))
+
+  # -------------------------------------------------------------------------
+  # exit notices: a finished background process tells its conversation
+  # -------------------------------------------------------------------------
+  # Rides the lane the agent's settlement notices use
+  # (svc.session.<id>.steer with a {"notice": …} payload). The point is that
+  # it arrives WITHOUT anyone polling: before onIdle, a child's exit was only
+  # noticed when a tool call happened to reap it, so finished background work
+  # sat unseen.
+  block exitNotice:
+    let steerSub = openSub(nc, "svc.session.bgnotice.steer")
+    defer: natsSubscription_Destroy(steerSub)
+    let started = pcall("process_start",
+      %*{"command": "echo notice-me", "label": "notice-fixture",
+         "session": "bgnotice"}, 20_000)
+    let ownedId = started{"id"}.getStr("")
+    check("notice: start accepted the owning session",
+          started{"error"} == nil and ownedId.len > 0, $started)
+
+    var notice: JsonNode = nil
+    let noticeDeadline = epochTime() + 20.0
+    while notice == nil and epochTime() < noticeDeadline:
+      let polled = pollEnvelope(steerSub, 200)
+      if polled.found and polled.env.payload != nil and
+          polled.env.payload{"notice"} != nil:
+        notice = polled.env.payload{"notice"}
+
+    check("notice: the exit was announced with no poll of our own",
+          notice != nil, "nothing on " & "svc.session.bgnotice.steer in 20s")
+    if notice != nil:
+      check("notice: names the process and its terminal status",
+            notice{"kind"}.getStr("") == "process-exited" and
+            notice{"processId"}.getStr("") == ownedId and
+            notice{"status"}.getStr("") == "exited(code 0)", $notice)
+      check("notice: carries the timing and how much output exists",
+            notice{"startedAt"}.getFloat(0) > 0 and
+            notice{"endedAt"}.getFloat(0) >= notice{"startedAt"}.getFloat(0) and
+            notice{"outputBytes"}.getInt(0) > 0, $notice)
+      check("notice: it is a pointer (label, not the output itself)",
+            notice{"label"}.getStr("") == "notice-fixture" and
+            notice{"text"} == nil, $notice)
+
+    # exactly once: further reaps, polls and listings must not repeat it
+    var strays = 0
+    let quietWindow = epochTime() + 2.5
+    while epochTime() < quietWindow:
+      if pollEnvelope(steerSub, 100).found: inc strays
+    discard pcall("process_poll", %*{"id": ownedId})
+    discard pcall("process_list", %*{})
+    if pollEnvelope(steerSub, 500).found: inc strays
+    check("notice: sent exactly once", strays == 0, $strays & " extra")
+
+    # the UI's age display needs the start time on the listing
+    let listing = pcall("process_list", %*{})
+    var sawStartedAt = false
+    if listing{"processes"} != nil:
+      for p in listing{"processes"}:
+        if p{"id"}.getStr("") == ownedId:
+          sawStartedAt = p{"started_at"}.getFloat(0) > 0
+    check("process_list exposes started_at (for the status-row age)",
+          sawStartedAt, $listing)
+
+    # a process started without an owner says nothing to anyone
+    discard pcall("process_start", %*{"command": "echo quiet"})
+    sleep(1500)
+    var unowned = 0
+    let unownedUntil = epochTime() + 2.0
+    while epochTime() < unownedUntil:
+      if pollEnvelope(steerSub, 100).found: inc unowned
+    check("notice: no owner session means no notice", unowned == 0, $unowned)
 
   report("t_processes")
 

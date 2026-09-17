@@ -37,6 +37,24 @@ proc main() =
   check("permanent beats transient in one message",
         not isRetryableLlmError("connection reset during 401 auth"))
 
+  # --- classification: overflow (its own class, §6.5) ----------------------
+  # Real provider wordings. The normalized adapter prefix classifies on its
+  # own; the raw host phrasings (Anthropic/GLM-class, synthetic, OpenAI)
+  # must be caught by the phrase list even inside a 400 Bad Request.
+  for msg in ["context-overflow: request ~90000 tokens exceeds the " &
+                "window of 8192; window 8192 tokens",
+              "llm error: error, status code: 400, status: 400 Bad " &
+                "Request, message: , body: {\"error\":\"Context limit " &
+                "exceeded\"}",
+              "400 This model's maximum context length is 200000 tokens",
+              "400 prompt is too long: 190000 tokens > 131072 maximum",
+              "input length exceeds context window",
+              "too many input tokens"]:
+    check("overflow: " & msg, classifyLlmError(msg) == lfcOverflow)
+  # ...while a 400 WITHOUT an overflow phrase stays permanent
+  check("plain 400 is still permanent",
+        classifyLlmError("HTTP 400: messages required") == lfcPermanent)
+
   # --- independent budgets and Retry-After ----------------------------------
   check("millisecond Retry-After parsed",
         retryAfterMs("HTTP 429; retry-after-ms: 1500") == 1500)

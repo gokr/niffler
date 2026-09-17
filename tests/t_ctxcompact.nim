@@ -56,7 +56,7 @@ proc runSandboxFixture(tag: string, window: int, rounds: int,
                        toolBytes: int, hideCtx: bool, reserve: string,
                        objective: string,
                        verify: proc(nc: NatsConnection, sessionId: string) {.closure.} = nil,
-                       toolCmd = ""): tuple[reply, turnError: string, logPath: string] =
+                       toolCmd = "", rawOverflow = false): tuple[reply, turnError: string, logPath: string] =
   ## Boot a sandbox core with the enforcing mock provider and drive one
   ## user turn. `verify` runs while the sandbox is still live (store
   ## assertions). Returns the session result plus the mock's request log.
@@ -87,6 +87,7 @@ proc runSandboxFixture(tag: string, window: int, rounds: int,
        "head -c " & $toolBytes & " /dev/zero | tr '\\0' 'x'"),
     ("NIF_MOCK_LOG", logPath)]
   if hideCtx: extra.add(("NIF_MOCK_HIDE_CTX", "1"))
+  if rawOverflow: extra.add(("NIF_MOCK_RAW_OVERFLOW", "1"))
   if reserve.len > 0: extra.add(("NIF_CTX_RESERVE", reserve))
   var coreProc = startComponent(sandbox.sandboxBin("niffler"), url, root = root,
     extra = extra,
@@ -422,6 +423,216 @@ proc main() =
     for a in accepted:
       if a > 3000: fits = false
     check("every accepted request fit the window", fits, $accepted)
+
+  # --- 9b. Calibration: the trigger must measure the provider's scale -----
+  # Prod finding (conv-b33207f94a47, 2026-09-16): the core's chars/4
+  # estimate lagged the provider's count by ~22k tokens on a 524k window,
+  # so the "90%" trim line silently fired at ~99% — and a request the core
+  # called 86% was refused at 400 with "Context limit exceeded". The fix:
+  # every response re-measures the offset (reported prompt_tokens minus the
+  # estimate of the same request) and admission/triggers measure in the
+  # provider's scale. Fixture: provider adds 1500 to its count (PT_BIAS)
+  # and refuses above 7800; catalog 8000, trigger 7200 on the RAW estimate.
+  # Six pre-turns with 4KB tool results build droppable history; the
+  # crossing turn's request would be sent uncalibrated (est 6444 < 7200,
+  # provider 7944 > 7800 → 400) — calibration must fire the ladder first:
+  # pressure at entry, trim drops the oldest turns, ZERO rejections.
+  block calibrationPrevents:
+    proc runScenario(tag: string, extra: seq[(string, string)],
+                     objective: string): tuple[reply, turnError: string,
+                                               logPath: string,
+                                               sessionId: string] =
+      ## Boot a sandbox core with the raw-overflow fixture and drive turns.
+      let repoRoot = getEnv("NIF_REPO_ROOT",
+                            getEnv("NIF_ROOT", getAppDir().parentDir()))
+      let sandbox = newCoreSandbox(tag, ["store", "bash", "llm", "recall"])
+      let root = sandbox.root
+      let compProc = startProcess("nim", args = [
+        "c", "--hints:off", "--warnings:off",
+        "--path:" & repoRoot / "sdk",
+        "-o:" & sandbox.sandboxBin("llm"),
+        repoRoot / "tests" / "mock_llm.nim"],
+        options = {poUsePath, poStdErrToStdOut})
+      if waitForExit(compProc, 120_000) != 0:
+        fail("mock llm failed to compile for " & tag)
+        quit(1)
+      compProc.close()
+      let logPath = root / "mock-requests.log"
+      let (server, url) = startNats()
+      var nc = waitConnect(url)
+      var knobs = extra
+      knobs.add(("NIF_AUTO_APPROVE", "1"))
+      knobs.add(("NIF_MOCK_LOG", logPath))
+      var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+        root = root, extra = knobs,
+        logFile = root / "var" / "test-logs" / "core-" & tag & ".log")
+      defer: coreProc.stopHard()
+      defer: nc.close()
+      defer: stopServer(server)
+      doAssert waitComponent(nc, "store"), tag & ": store did not register"
+      doAssert waitComponent(nc, "llm"), tag & ": mock llm did not register"
+      let sessionId = "conv-" & tag & "-" & $int(epochTime())
+      var lastError = ""
+      var lastReply = ""
+      for i in 1 .. 7:
+        let content = if i < 7: "Turn " & $i & ": run the command, then say T" &
+          $i & "-DONE."
+                      else: objective
+        let turn = call(nc, "core", "session",
+                        %*{"sessionId": sessionId, "content": content},
+                        180_000)
+        lastError = turn{"turnError"}.getStr("")
+        lastReply = turn{"reply"}.getStr("")
+        if lastError.len > 0: break
+      return (reply: lastReply, turnError: lastError,
+              logPath: logPath, sessionId: sessionId)
+    let r = runScenario("calib", @[
+      ("NIF_MOCK_CTX", "8000"),          # what llm_resolve advertises
+      ("NIF_MOCK_PT_BIAS", "1500"),      # provider counts ~1500 more
+      ("NIF_MOCK_ENFORCE_CTX", "7800"),  # provider refuses above its count
+      ("NIF_MOCK_RAW_OVERFLOW", "1"),    # raw 400 phrasing if it ever refuses
+      ("NIF_MOCK_ROUNDS", "1"),
+      ("NIF_MOCK_TOOLCMD", "head -c 4000 /dev/zero | tr '\\0' 'x'"),
+      ("NIF_CTX_RESERVE", "400")],
+      "Keep the phrase CALIB-MARKER-4D in your final answer.")
+    check("calibrated turn completes with no provider refusal",
+          r.turnError.len == 0, r.turnError)
+    check("final answer produced (mock echoes the oldest kept user turn)",
+          r.reply.contains("done —"), r.reply)
+    let (accepted, rejected) = readRequests(r.logPath)
+    check("calibration prevented every provider-side refusal",
+          rejected == 0 and accepted.len >= 7,
+          "accepted=" & $accepted & " rejected=" & $rejected)
+    var within = true
+    for a in accepted:
+      if a > 7800: within = false
+    check("no request ever exceeded the provider's real ceiling", within,
+          $accepted)
+
+  # --- 9c. Raw 400 phrasing still routes to §6.5 recovery -----------------
+  # Capacity hidden (llm_resolve withholds the window): admission stands
+  # down, the oversized request goes out, and the mock refuses with the RAW
+  # provider text (no context-overflow prefix, no window suffix). The
+  # classifier must catch the provider's own words and run the recovery
+  # ladder — exactly the 14:26 prod failure, which instead died with a raw
+  # 400 because neither classifier knew the phrase.
+  block rawPhraseRecovers:
+    proc checkReceiptRaw(nc: NatsConnection, sessionId: string) =
+      let store = call(nc, "store", "list",
+                       %*{"kind": "contextreceipt", "limit": 100}, 10_000)
+      let items = store{"items"}
+      check("context receipt persisted for the raw-phrase overflow",
+            items != nil and items.len == 1 and
+            items[0]{"value"}{"outcome"}.getStr("") == "recovered" and
+            items[0]{"value"}{"failureClass"}.getStr("") == "context-overflow",
+            $store)
+    let r = runSandboxFixture("rawrec", 3000, 1, 20_000, true, "400",
+                              "Keep the phrase RAWREC-MARKER-2Z in your final answer.",
+                              checkReceiptRaw, rawOverflow = true)
+    check("raw-phrase turn completes after recovery",
+          r.turnError.len == 0, r.turnError)
+    check("objective survives the raw-phrase recovery",
+          r.reply.contains("RAWREC-MARKER-2Z"), r.reply)
+    let (accepted9c, rejected9c) = readRequests(r.logPath)
+    check("exactly one raw-phrase rejection (one recovery attempt)",
+          rejected9c == 1, $rejected9c)
+
+  # --- 9d. Durable trim: the cut survives a restart (§6.3 watermark) ------
+  # Trim drops whole turns from the projection. Until now that cut lived
+  # only in memory: a restart rebuilt the FULL pre-trim context from
+  # canonical history while the meter restored post-trim usage — admission
+  # under-reporting by the trimmed amount. The trim now records the
+  # canonical seqNo it cut through (header trimThrough) and the ordinary
+  # resume honors it. Fixture: six heavy pre-turns (4KB tool results)
+  # push a later turn over the 7200 trigger → trim fires (watermark
+  # written); core restarts; the resumed turn's first request must be the
+  # TRIMMED size, not the re-inflated ~7×1100-token projection.
+  block trimDurability:
+    let repoRoot = getEnv("NIF_REPO_ROOT",
+                          getEnv("NIF_ROOT", getAppDir().parentDir()))
+    let sandbox = newCoreSandbox("trimdur", ["store", "bash", "llm", "recall"])
+    let root = sandbox.root
+    let compProc = startProcess("nim", args = [
+      "c", "--hints:off", "--warnings:off",
+      "--path:" & repoRoot / "sdk",
+      "-o:" & sandbox.sandboxBin("llm"),
+      repoRoot / "tests" / "mock_llm.nim"],
+      options = {poUsePath, poStdErrToStdOut})
+    if waitForExit(compProc, 120_000) != 0:
+      fail("mock llm failed to compile for trimdur")
+      quit(1)
+    compProc.close()
+    let logPath = root / "mock-requests.log"
+    let (server, url) = startNats()
+    var nc = waitConnect(url)
+    defer: nc.close()
+    defer: stopServer(server)
+    let knobs: seq[(string, string)] = @[
+      ("NIF_AUTO_APPROVE", "1"),
+      ("NIF_MOCK_CTX", "8000"),          # catalog window
+      ("NIF_MOCK_ENFORCE_CTX", "30000"), # never refuses — the ladder must act first
+      ("NIF_MOCK_ROUNDS", "1"),
+      ("NIF_MOCK_TOOLCMD", "head -c 4000 /dev/zero | tr '\\0' 'x'"),
+      ("NIF_MOCK_LOG", logPath),
+      ("NIF_CTX_RESERVE", "400")]
+    let sessionId = "conv-trimdur-" & $int(epochTime())
+    var trimThrough = 0
+    # --- phase 1: build history until the ladder trims -------------------
+    block phase1:
+      var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+        root = root, extra = knobs,
+        logFile = root / "var" / "test-logs" / "core-trimdur-1.log")
+      doAssert waitComponent(nc, "store"), "phase1: store did not register"
+      doAssert waitComponent(nc, "llm"), "phase1: mock llm did not register"
+      for i in 1 .. 7:
+        let turn = call(nc, "core", "session",
+                        %*{"sessionId": sessionId,
+                           "content": "Trim turn " & $i & ": run the command, then say T" &
+                             $i & "-DONE."}, 180_000)
+        if turn{"turnError"}.getStr("").len > 0:
+          check("phase-1 turn " & $i & " completes", false,
+                turn{"turnError"}.getStr(""))
+          break
+      let header = call(nc, "store", "get",
+                        %*{"kind": "conversation", "id": sessionId}, 10_000)
+      trimThrough = header{"value"}{"trimThrough"}.getInt(0)
+      check("trim fired in phase 1 and wrote the watermark", trimThrough > 0,
+            $header)
+      coreProc.stopHard()
+    # --- phase 2: restart, resume must honor the watermark ---------------
+    block phase2:
+      var coreProc = startComponent(sandbox.sandboxBin("niffler"), url,
+        root = root, extra = knobs,
+        logFile = root / "var" / "test-logs" / "core-trimdur-2.log")
+      doAssert waitComponent(nc, "store"), "phase2: store did not register"
+      doAssert waitComponent(nc, "llm"), "phase2: mock llm did not register"
+      let turn = call(nc, "core", "session",
+                      %*{"sessionId": sessionId,
+                         "content": "Final turn: say DONE-RESTART-2W."}, 180_000)
+      check("resumed turn completes", turn{"turnError"}.getStr("").len == 0,
+            turn{"turnError"}.getStr(""))
+      check("final answer produced after the restart",
+            turn{"reply"}.getStr("").contains("done —"),
+            turn{"reply"}.getStr(""))
+      # The first assistant message of the resumed turn records the request
+      # size the provider actually saw. With the watermark honored it is
+      # the trimmed projection (~2-3k tokens); without it the full 7-turn
+      # history (~8k+) walks straight back in.
+      let msgs = call(nc, "store", "list",
+                      %*{"kind": "message", "idPrefix": sessionId & ":",
+                         "limit": 500}, 10_000)
+      var firstPt = 0
+      for item in msgs{"items"}:
+        let v = item{"value"}
+        let u = v{"usage"}{"prompt_tokens"}.getInt(0)
+        if v{"role"}.getStr("") == "assistant" and u > 0:
+          firstPt = u
+          break
+      check("resumed request stays at the trimmed size",
+            firstPt > 0 and firstPt < 4500, "first prompt_tokens=" & $firstPt &
+            " (trimThrough=" & $trimThrough & ")")
+      coreProc.stopHard()
+
 
   # --- 10. §8 test 5 — recall: replaced content stays retrievable ---------
   # One bash round emitting 20KB (over bash's 12KB transcript cap → spill +

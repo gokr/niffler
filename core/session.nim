@@ -114,6 +114,10 @@ proc main() =
                      getErrorString(ast))
     quit(1)
   ct.adviseStream.sub = adviseSub
+  # The runner's own call surface, kept on CoreTools so dispatch's idle slots can
+  # refuse a mid-turn call with "busy" instead of leaving it unanswered until the
+  # turn ends (pumpBusyCall; a client's deadline would expire first).
+  ct.callSub = sub
   # Nested-call proxy: sync subscribe to svc.session.<id>.tool. pumpNested
   # drains it from dispatch's idle slot while a session-context tool (fabric,
   # agent) is running, so a generated program's callTool requests re-enter

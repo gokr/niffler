@@ -264,8 +264,9 @@ honest. The read-only probe rule directly applies to `catalog`/status tools.
 ### 8. Workflow orchestration (declarative compile-only) → contrast for `fabric`
 
 `../CodeWhale/docs/WORKFLOW_AUTHORING.md`, `../CodeWhale/crates/workflow-js`.
-The instructive *opposite* of fabric: where we chose a real Nim VM (RLIMIT,
-framed stdio bridge, every effect through the session proxy), they chose a
+The instructive *opposite* of fabric: where we chose a real compiled Nim
+guest (RLIMIT, framed stdio bridge, every governed effect through the session
+proxy), they chose a
 **compile-only declarative JS subset** — `eval`, `import`, `fetch`,
 `process`, async are all rejected; the script is a coordinator with no
 FS/shell/network of its own; source lowers to a typed `WorkflowSpec` that a
@@ -275,9 +276,10 @@ concurrent / 1000 agents per run. Their tradeoff is less expressive but
 zero-runtime-threat; ours is a real language with a governance gate.
 
 What fabric lacks that their node set has: **fan-in/reduce and gated
-phases** as first-class constructs, and a hard concurrency cap as a
-scheduling concept. The deferred-fabric work in docs/PLAN.md (councils,
-map/reduce research) should study this,
+phases** as first-class constructs. Fabric's `batch` already supplies a hard
+bounded concurrency helper; the remaining question is whether reduce/gated
+phases deserve named guest-library abstractions. See docs/PLAN.md for open
+follow-ups.
 plus their `AUTOMATIC_WORKFLOWS.md` (agent drafts the workflow, shows the
 plan at the current permission mode, runtime compiles and monitors it).
 

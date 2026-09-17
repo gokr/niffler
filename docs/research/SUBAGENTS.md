@@ -1,6 +1,10 @@
 # Subagents — Niffler vs DSH, and the fork/resume baseline
 
-> Research note (2026-09-14). Scope deliberately narrow: **compare Niffler's
+> Historical research note (2026-09-14). The gap analysis below was written
+> before subagents-v2 landed. Current continuation, fork, roster and settlement
+> notice contracts are in [MANUAL.md](../MANUAL.md#fabric-and-subagents).
+>
+> Scope deliberately narrow: **compare Niffler's
 > `agent` component with DSH's subagent subsystem**, then decide what
 > "spawn / send_message / wait / list / interrupt, with fork and resume" (the
 > IanTheReal baseline) actually costs Niffler.
@@ -20,17 +24,10 @@
 Niffler's `agent` component is **better than DSH at the hard parts nobody
 enumerates** — durable job records, lazy restart reconciliation, two-channel
 cancellation that actually kills an in-flight command, depth-1 lineage, graceful
-degradation when the store is down — and **behind DSH at the three things the
-baseline asks for**: there is no continuation (`agent_run` cannot utter a second
-turn into an existing child), no fork (children always start from an empty
-transcript), and **no notification back to the parent** when a background child
-settles (the parent must poll or block). The first two are the DSH-STEAL §2/§3
-design, still unimplemented. The third is a genuine capability gap that DSH
-solves with a *manager-owned settlement notice* and that Niffler's own
-architecture makes nearly free — the parent session is a live runner with a
-proven steer channel. Continuation is ~2–3 days; fork ~2 days; parent
-notification under a day. All three are **append-only** with respect to the
-frozen prompt prefix.
+degradation when the store is down — and now ships the baseline's continuation,
+fork, child roster and parent settlement notice. The remaining differences are
+listed below as research rather than current implementation gaps. All landed
+subagent additions are **append-only** with respect to the frozen prompt prefix.
 
 ## 1. The two designs side by side
 
@@ -42,12 +39,12 @@ frozen prompt prefix.
 | **Child identity** | A durable Session + at most one process-local **Activation** (residency epoch); `subagent/descriptor` session event is the durable identity | A session (`agent-<id>`) + a `sessionmeta` lineage record; `agentjob` records are per-activation |
 | **Child transport** | In-process (shared agent factory/LLM/tools) or out-of-process (ACP/Codex/Claude Code) | **Always out-of-process on the bus** — the child is a full session runner process |
 | **One-shot shape** | `SubagentRun` handle: `result` promise + `dispose()`; ownership transfers at publication | `agent_run` (synchronous `requestEnvelope`) / `agent_spawn` (fire-and-forget publish + a reply-inbox tap) |
-| **Continuable shape** | Durable child, FIFO inbox, multiple turns per Activation, cold resume | **Absent.** A child conversation persists and its runner resumes, but no tool can add a turn to it |
-| **Fork** | `fork` provider: child seeded with the parent's *balanced completed-turn prefix* | **Absent.** `fork` appears only as a *future* todo in the fabric design docs |
+| **Continuable shape** | Durable child, FIFO inbox, multiple turns per Activation, cold resume | **Shipped.** `agent_run` refuses a busy child; `agent_spawn` queues another turn |
+| **Fork** | `fork` provider: child seeded with the parent's *balanced completed-turn prefix* | **Shipped.** Fresh children can inherit a replay-valid completed-turn prefix |
 | **Messaging** | `send_message` (adjacent-only: direct child, or direct parent from a resident child), Steer scheduling fixed | `agent_steer` (into a live turn only, fire-and-forget, no reply) |
 | **Interrupt** | `interrupt_agent`: cancels the current turn, **keeps inbox + descendants + availability** | `agent_stop`: two-channel cancel (`llm.cancel.<child>` + steer `__cancel`), keeps the conversation |
-| **Listing** | `list_agents` (children/descendants, durable ids, labels, status from the live registry) | `agent_status` (one job by id) — no list of children; `session_info` shows `parent` but nothing enumerates a parent's children |
-| **Completion signal** | Manager-owned **settlement notice** delivered into the parent's turn stream (parent woken if idle) | **None.** `ev.agent.done` goes to the *UI*; the parent agent only learns by `agent_wait`/`agent_status` |
+| **Listing** | `list_agents` (children/descendants, durable ids, labels, status from the live registry) | `agent_list` (children/descendants, derived status) plus `agent_status` for one job |
+| **Completion signal** | Manager-owned **settlement notice** delivered into the parent's turn stream (parent woken if idle) | **Shipped.** Durable `agentnotice` pointers are delivered during a live turn or drained before the next one |
 | **Depth limit** | `maxDepth` config (default 3; `0` forbids delegation), absolute cap, provider capability advertised | Hard-coded **depth 1** (`x-harness.noSpawn` + `sessionmeta.parent` check at dispatch) |
 | **Policy per child** | `persona` (scoped shadow), `toolFilter` (one live visibility rule), `agentOptions` (provider/model/effort) | `model`, `thinking`, `tools` allowlist, `maxRounds`/`maxCalls`/`maxTokens` — **frozen into the child conversation at its first turn** |
 | **Approvals in children** | Pinned `approvalPolicy: 'never'` + a child-visible "your scope was fixed at start" statement | Child approvals **route to the original interactive caller** via `__session.caller` (strictly more capable) |
@@ -93,36 +90,17 @@ These are not consolation prizes — they are load-bearing:
 
 ### 1.3 Where the drift is real
 
-Three gaps, in order of what they cost a user:
+The headline gaps in this comparison are now closed: Niffler has continuation,
+fork, `agent_list` and parent settlement notices. Remaining asymmetries worth
+keeping in view are:
 
-1. **No parent notification.** A spawned child finishing is invisible to the
-   parent's conversation. The parent must burn a turn on `agent_wait` (blocking)
-   or `agent_status` (polling). DSH delivers a settlement notice *into the
-   parent's turn stream* and wakes an idle parent.
-2. **No continuation.** DSH-STEAL §2's design. The child conversation already
-   persists, the runner already re-ensures on demand (`session_prepare` is
-   idempotent), steer/cancel already address the conversation — only the
-   `session` argument and the authorization check are missing.
-3. **No fork.** DSH-STEAL §3's design. `storeList` on the parent's messages +
-   writes under the child id + one provenance record. The store contract makes
-   this a copy loop.
-
-Plus three smaller asymmetries worth naming:
-
-4. **No child enumeration.** `list_agents` has no Niffler counterpart: you can
-   look up one job by id, but nothing lists "children of this conversation".
-   (`storeList("agentjob")` + filter would do it, but no tool exposes it, and
-   the `parent` field is there.)
-5. **Depth is 1, not N.** DSH defaults `maxDepth: 3` with `0` forbidding
-   delegation, and the tool *stays visible at the cap* (each start is checked,
-   rejecting with an errored result). Niffler hides/denies at depth 1. Depth-1
-   is a defensible choice (DSH-STEAL §5 keeps it deliberately), but the number
-   should be a conscious setting, not a constant, if teams ever land.
-6. **`agent_steer` cannot carry a reply.** DSH's `send_message` returns the
-   accepted `MessageId` and the reply arrives as a *new message* from the child
-   (or as the activation's final reply). Niffler's steer is fire-and-forget by
-   design, which is fine for nudging but means a parent can never *ask* a
-   running child a question.
+1. **Depth is 1, not N.** DSH defaults `maxDepth: 3`; Niffler deliberately
+   keeps depth-1 lineage. A configurable cap remains a possible future change.
+2. **`agent_steer` is fire-and-forget.** A parent can continue a child with
+   `agent_run`/`agent_spawn`, but steer itself does not return a reply.
+3. **The APIs differ.** Niffler's roster and notice records are bus-native and
+   derived from `sessionmeta`/`agentjob`; they are not DSH's provider registry
+   or in-process activation model.
 
 ## 2. The baseline, checked against Niffler tool by tool
 
@@ -130,29 +108,30 @@ IanTheReal's five-tool sketch, mapped:
 
 | Baseline | DSH | Niffler today | Verdict |
 |---|---|---|---|
-| `spawn_agent(task, context: fresh\|fork)` | `subagent` tool, provider `spawn`/`fork`, `run_in_background` | `agent_run` / `agent_spawn`, **fresh only** | **fork missing** |
-| `send_message(id, message)` | `send_message` (Steer, fixed; returns `MessageId`) | `agent_steer` (fire-and-forget) + `agent_run` for a fresh child | **continuation missing** |
+| `spawn_agent(task, context: fresh\|fork)` | `subagent` tool, provider `spawn`/`fork`, `run_in_background` | `agent_run` / `agent_spawn`, fresh or `fork` | **present** |
+| `send_message(id, message)` | `send_message` (Steer, fixed; returns `MessageId`) | `agent_steer` plus `agent_run`/`agent_spawn` continuation | **present, different API** |
 | `wait_agent(id)` | `subagent` foreground (awaits result) or one-shot `job_output` | `agent_wait` (polls the durable record; **blocks the component pump**) | present, blocked-pump caveat |
-| `list_agents()` | `list_agents` (children/descendants, live status), one-shot children omitted | **absent** (per-job `agent_status` only) | **missing** |
+| `list_agents()` | `list_agents` (children/descendants, live status), one-shot children omitted | `agent_list` (children or descendants, derived from lineage) | **present, different API** |
 | `interrupt_agent(id)` | `interrupt_agent` (keeps inbox/descendants) | `agent_stop` (keeps conversation) | present, better cancellation |
-| background notify | settlement notice into the parent's turn stream | `ev.agent.done` to UIs only | **missing** |
+| background notify | settlement notice into the parent's turn stream | durable `agentnotice` delivered to the parent | **present** |
 
 Agreement with the chat: **fork and resume, with context and history persisted,
-is the right first scope.** Niffler's persistence is already the strongest part
-of its story — a child conversation survives everything, and its runner is
-reconstructible. What is missing is the *verbs*, not the storage.
+was the right first scope.** Niffler's persistence was already the strongest
+part of its story; the missing verbs were subsequently added without changing
+the store ownership model.
 
 ## 3. Steal 1 — continuation (the foundation)
 
-This restates DSH-STEAL §2 with the code as it now is. Nothing in the design
-changes; the case is stronger because more of it has landed.
+This restates DSH-STEAL §2 as a historical design record. The continuation
+contract described here has landed; see the manual for the authoritative
+schema and authorization rules.
 
-**The insight: Niffler already ships continuation except for the parameter.**
+**The insight: continuation was already latent in the runner model.**
 `session_prepare` is the idempotent re-ensure ("prepare the runner directly
 (core's session tool would stash mid-turn)"); a runner that retired resumes from
 the store; the conversation header carries the frozen controls. A second turn
 is `requestEnvelope("session", {sessionId: child, content: …})` — the *same*
-call the fresh path makes.
+call the fresh path makes, now authorized and exposed by `agent_run`/`agent_spawn`.
 
 Design (unchanged from DSH-STEAL §2.1–§2.6, reiterated compactly):
 
@@ -220,7 +199,11 @@ checkable: cut at the last `user` message whose turn has a terminal assistant
 reply, never mid-tool-round. Getting this wrong produces a child that resumes
 with a dangling `tool_call_id` — exactly the invariant `trimContext` protects.
 
-## 5. Steal 3 — the settlement notice (the gap this note adds)
+## 5. Steal 3 — the settlement notice — shipped
+
+The design below is the pre-implementation reasoning. The landed record and
+current delivery rules are in [WIRE.md](../WIRE.md#settlement-notices-subagents)
+and the manual.
 
 This is not in DSH-STEAL.md and is the cheapest of the three.
 
@@ -236,9 +219,11 @@ content the sender chose, while this message is the manager stating what became
 of the child, and a transcript that merged them would credit the child with words
 it never wrote."
 
-**What Niffler has.** `ev.agent.done {jobId, sessionId, status}` — consumed by
-`ui/frontend/src/App.svelte` as an activity line and by the TUI not at all. The
-parent conversation learns nothing.
+**What Niffler has now.** In addition to `ev.agent.done` for clients, the
+agent component writes a durable `agentnotice` pointer and delivers it to the
+parent's live turn or drains it before the parent's next turn. The notice
+carries status, summary and a pointer to the byte-identical full reply in
+`agent_status`; it never pastes the full child reply into parent history.
 
 **Why Niffler can do better than DSH here.** The parent is a live session runner
 with a proven, *recorded* injection channel: `svc.session.<id>.steer`. The
@@ -248,7 +233,7 @@ runner folds steer payloads in as `role: "user"` messages prefixed `"Steer: "`
 append-only history — the exact cache shape DSH describes ("the notice follows
 its reusable request prefix").
 
-**Design:**
+**Landed design (the bullets below record the reasoning):**
 
 - `resolveStale`/the completion tap already know the terminal facts. After
   writing the record, publish the notice to the **parent** session:

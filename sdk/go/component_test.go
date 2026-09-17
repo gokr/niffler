@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,6 +87,34 @@ func TestShouldLog(t *testing.T) {
 func TestShouldLogRejectsUnknownLevel(t *testing.T) {
 	if _, err := shouldLog("notice", "info"); err == nil {
 		t.Fatal("shouldLog accepted an unknown level")
+	}
+}
+
+// TestOnIdleRunsWhileConnectedAndStopsOnClose pins the Go SDK's idle seam:
+// a registered handler fires while the component is connected (no request to
+// ride on — the reason components/processes can notice a child's exit), and
+// stops firing once the component closes.
+func TestOnIdleRunsWhileConnectedAndStopsOnClose(t *testing.T) {
+	url := startTestNATS(t)
+	t.Setenv("NIF_NATS_URL", url)
+	c := New("idletest", "0.0.0")
+	var runs int32
+	c.OnIdle(20*time.Millisecond, func(*Component) { atomic.AddInt32(&runs, 1) })
+	if err := c.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for atomic.LoadInt32(&runs) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&runs); got < 2 {
+		t.Fatalf("idle handler ran %d times while connected, want >= 2", got)
+	}
+	c.Close()
+	after := atomic.LoadInt32(&runs)
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(&runs); got != after {
+		t.Fatalf("idle handler kept running after Close (%d -> %d)", after, got)
 	}
 }
 

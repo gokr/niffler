@@ -46,9 +46,8 @@ security sandbox — see "Threat model" below. The envelope codec
 Design posture:
 
 - **Governance-only isolation**: the guest is in `bash`'s trust class — a
-  human approves the program once. Explicit hardening (below) replaces
-  reliance on VM accidents; every effect is *encouraged* through the bridge
-  so the gate sees it.
+  human approves the program once. Every effect is *encouraged* through the
+  bridge so the gate sees it, but approved native code can still touch the OS.
 - The guest is an **orchestrator of references, not a runtime for data**:
   files/data live in components (`store`, `bash`/`read`/`write`); the guest
   holds ids and artifact paths, never the data. Bridge helpers are pure JSON
@@ -60,35 +59,27 @@ Design posture:
 
 ## Threat model (governance-only)
 
-On Nim 2.2.10 the embedded VM is *accidentally* tight: `readFile` and
-`import std/os` fail to compile in the guest (`importc`/`cmpic` errors),
-`getEnv` is undeclared, and `staticExec`/`gorge` die at runtime unless the
-host defines `-d:nimcore`. We keep the accidents from regressing and add
-explicit policy:
+Fabric guests are ordinary compiled Nim programs, not an embedded VM or a
+security sandbox. The source is approved before compilation because Nim
+macros, static blocks and compiler configuration can execute code. Explicit
+controls reduce accidental damage but do not make approved code untrusted:
 
-1. Executor compiled **without** `nimcore`/`nimsuggest` (keeps the gorge gate).
-2. **Pre-eval source lint**: guest source is scanned before `evalScript`;
-   banned tokens (`staticExec`, `gorge`, `slurp`, `staticRead`, `importc`,
-   `os`/`osproc`/`net` imports, bus clients) reject the program with a clear
-   error. A lint is not bulletproof — it is auditable policy, not a boundary.
-3. Executor child runs with a **cleared environment** (no `NIF_*` vars) and
-   **no configured NATS connection** — the fabric parent owns the bus and
-   serves the child's bridge requests over framed stdio. The guest still
-   shares the host filesystem, UID and network namespace, so this reduces
-   accidental access rather than creating a security boundary.
-4. `posix.setrlimit(RLIMIT_AS)` + process kill for timeout — resource limits,
-   not effect limits.
-5. Honest framing: approval is the boundary. `x-harness.approval: "always"`
-   means one approval covers the program's effects; effects that route through
-   the bridge get per-call approval and audit; effects that exploit a VM
-   accident are *policy violations caught by the lint*, treated like a guest
-   that lied in its approved source.
-6. **Approval manifests**: a program approval shows what is actually approved —
-   a source digest, the full program at a stable digest-keyed path under
-   `var/approval-sources/` (mode 0600), the selected tools, and the declared
-   budgets (UI modal and tty prompt both render it). Persisted auto-approval is
-   keyed by digest (`fabric:<digest>`), never by tool name alone, so a blanket
-   "always approve fabric" cannot cover unreviewed source.
+1. The executor uses a private build directory and controlled compiler flags,
+   skipping project/user/parent config files and ambient package installation.
+2. The child has no NATS connection or provider credentials. The parent owns
+   the bus and serves bridge requests over framed stdio. The guest still shares
+   the host filesystem, UID and network namespace.
+3. CPU, file-size, address-space and file-descriptor limits, process groups and
+   host timeout/cancellation bound runaway work; they are resource limits, not
+   effect limits.
+4. **Approval manifests** show the source digest, the full program at a stable
+   digest-keyed path under `var/approval-sources/` (mode 0600), selected tools
+   and declared budgets. Persisted auto-approval is keyed by digest
+   (`fabric:<digest>`), never by tool name alone.
+
+The old VM-era banned-import/source-lint policy is not part of the compiled
+backend: guests may import standard-library modules and use native OS APIs.
+For real isolation, use a separate sandboxing mechanism; see `docs/PLAN.md`.
 
 ## Core plumbing (shipped)
 
@@ -210,18 +201,19 @@ into a synchronous surface and durable background jobs:
   `{t: "resp", id, ok, result|error}` on the child's stdin), `{t: "log", s}`,
   and finally `{t: "result", ok, value, diagnostics?}`. The parent drains
   continuously — no pipe-fill deadlock (the bash-component lesson).
-- Cleared environment, no NATS in the child; CPU, address-space, file
-  descriptor, and child-process `setrlimit` caps before `createInterpreter`;
-  fresh interpreter per program (kill = timeout; the VM API has no interrupt
-  hook).
-- Runtime search paths resolved from the compiling toolchain (compile-time
-  self-locating — valid because components are built in place).
-- Bridge via `implementRoutine`; the `.nimble` file in `fabricguest/` is
-  **load-bearing** (callback key = nimble package name).
-- Compile errors: real Nim compiler diagnostics passed back verbatim.
+- The child has no configured NATS connection; it applies CPU, file-size,
+  address-space and descriptor caps, starts a process group, closes inherited
+  descriptors and replaces itself with the compiled guest. The host can kill
+  that group for timeout or cancellation.
+- Compilation skips ambient project/user/parent config files and uses the
+  executor's checked-in guest SDK path. Compile diagnostics are returned with
+  guest line numbers remapped when generated wrappers add a prelude.
+- A content-addressed executable cache is optional (`FABRIC_CACHE_DIR`); the
+  key includes source, generated driver, SDK, compiler identity and flags, but
+  excludes run-specific paths and session credentials.
 
 **Raw guest API** (`components/fabric/fabricguest/fabricguest.nim`) —
-stdlib-free (no imports; cold eval ~ms):
+small compiled bridge module; guests may add standard-library imports as needed:
 
 | Proc | Purpose |
 | --- | --- |

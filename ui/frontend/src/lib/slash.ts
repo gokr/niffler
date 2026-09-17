@@ -104,6 +104,23 @@ export function builtinSlashCommands(): SlashCommand[] {
       builtin: true,
       params: [{ name: "level", kind: "enum", values: ["auto", "low", "medium", "high"], description: "empty = provider default (auto)" }],
     },
+    {
+      name: "approvals",
+      description: "approval gate for this conversation: ask (default) or auto",
+      builtin: true,
+      params: [{ name: "mode", kind: "enum", values: ["ask", "auto"], description: "empty = show the current mode" }],
+    },
+    {
+      name: "limit",
+      description: "this conversation's soft turn limits (rounds/tokens/seconds); clear resets them",
+      builtin: true,
+      subcommands: [{ name: "clear" }],
+      params: [
+        { name: "rounds", kind: "int", description: "LLM rounds before the turn asks to continue" },
+        { name: "tokens", kind: "int", description: "output tokens before the turn asks to continue" },
+        { name: "seconds", kind: "int", description: "wall-clock seconds before the turn asks to continue" },
+      ],
+    },
     { name: "connect", description: "open provider setup", builtin: true },
     { name: "status", description: "show provider/model/context details", builtin: true },
     { name: "new", description: "start a new conversation", builtin: true, params: [{ name: "id", kind: "string", description: "optional conversation id" }] },

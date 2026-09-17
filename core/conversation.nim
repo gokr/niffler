@@ -21,6 +21,7 @@ import ../sdk/niffler/jsonx
 import catalog
 import compaction
 import dispatch
+import approval
 import supervisor
 import retry
 
@@ -161,7 +162,19 @@ type
     seqNo*: int
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
-    ctxSize*: int        ## effective model context window
+    ctxSize*: int        ## catalog model context window
+    calib*: int          ## provider-vs-estimate calibration (tokens): each
+                         ## successful response re-measures it as the
+                         ## reported prompt_tokens minus the local chars/4
+                         ## estimate of the same request, so admission and
+                         ## trim measure what the provider counts, not what
+                         ## chars/4 guesses (DeepSeek-class models pack
+                         ## denser; the raw estimate lagged ~22k tokens on
+                         ## a 524k window). Cleared on model change; seeded
+                         ## from stored usage on resume; clamped to [0, ctxSize].
+    calibModel*: string  ## model the offset was learned for
+    trimThrough*: int    ## highest canonical seqNo dropped by a lossy trim
+                         ## (the watermark the resume honors — §6.3)
     ctxWarned*: bool     ## warned once per session until the next trim
     ## A3 cache economics: cumulative prompt tokens across the conversation,
     ## split by what the provider served from its prompt cache. The miss
@@ -197,10 +210,29 @@ type
     modelOverride*: string
     thinkingEffort*: string  ## "" (provider default) | low | medium | high | max
     allowlist*: seq[string]  ## frozen tool allowlist (empty = unrestricted)
-    maxRounds*: int          ## per-turn tool-round budget (0 = default 50)
+    maxRounds*: int          ## per-turn tool-round budget (0 = env default)
     maxCalls*: int           ## per-turn total tool-dispatch budget (0 = unlimited)
     maxTokens*: int          ## per-turn cumulative token budget (0 = unlimited)
+    approvalMode*: string    ## this conversation's gate mode (/approvals):
+                             ## "" or "ask" gates every x-harness.approval
+                             ## tool, "auto" grants them without asking
+    limitRounds*: int        ## the human's SOFT turn limits (/limit): when one
+    limitTokens*: int        ## is reached the turn ASKS whether it may keep
+    limitSeconds*: int       ## going (0 = unset). The scoping budgets above
+                             ## stay hard — a job cannot negotiate its budget
     exposure*: ToolExposure
+
+const defaultMaxTurnRounds = 1000
+
+proc configuredMaxTurnRounds(): int =
+  ## Read the hard per-turn round ceiling shared by sessions and subagents.
+  result = defaultMaxTurnRounds
+  try:
+    result = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", $defaultMaxTurnRounds))
+  except ValueError:
+    discard
+  if result < 1:
+    result = defaultMaxTurnRounds
 
 proc newPersister*(ct: CoreTools): Persister =
   ## Create a conversation header in the store and a persister for it.
@@ -672,7 +704,11 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
   ## explicit "history omitted without summary" notice naming the covered
   ## ids. Messages and the node ledger move in lockstep; canonicalHigh is
   ## untouched (canonical docs are unaffected — the notice is a projection
-  ## edit, and a reload from canonical simply restores what was dropped).
+  ## edit, and recall-canonical still reaches what was dropped).
+  ## The cut is DURABLE: the highest dropped canonical seqNo is recorded in
+  ## the header (trimThrough) and the ordinary resume path honors it, so a
+  ## restart rebuilds the trimmed projection instead of re-inflating to the
+  ## full pre-trim context while the meter reports post-trim usage.
   ## Returns the number of dropped messages.
   result = 0
   var users: seq[int]
@@ -694,6 +730,13 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
   messages.delete(dropStart ..< dropEnd)
   p.nodes.delete(dropStart ..< dropEnd)
   result = dropEnd - dropStart
+  # Persist the cut immediately (not at turn end): the whole point of the
+  # watermark is surviving a restart, whenever it comes.
+  let cutSeq = canonicalSeqOf(coveredTo)
+  if cutSeq > p.trimThrough:
+    p.trimThrough = cutSeq
+    p.ct.updateConversationHeader(p.convId,
+                                 %*{"trimThrough": %p.trimThrough})
   let notice = %*{"role": "system", "content":
     "[history omitted without summary: dropped " & $result &
     " earlier messages (" & coveredFrom & " .. " & coveredTo &
@@ -724,7 +767,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
   ## fits the hard target. Reductions are re-measured, never claimed.
   let target = p.contextTarget()
   if target <= 0: return false
-  var used = estimateTokens(messages) + toolTokens
+  var used = estimateTokens(messages) + toolTokens + p.calib
   if used <= target: return true
   # 1. prune — cheapest first: no history is lost, only bulk
   let saved = p.pruneContext(messages)
@@ -733,7 +776,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "reset:prune", "bytesSaved": saved,
                             "pruned": p.prunes.len})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
     if used <= target: return true
   # 2. trim — oldest complete turns first, then down to the latest request
   for keep in [minKeepTurns, 1]:
@@ -749,7 +792,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
   return used <= target
 
 proc contextPressureDetail(p: Persister, messages: seq[JsonNode],
@@ -780,10 +823,14 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
   ## proc establishes the required order (§6.3): prune → configured
   ## compactor → trim → explicit context-recovery-required.
   if p.ctxSize <= 0: return ""   # unknown capacity — overflow recovery owns it
-  let used0 =
-    if p.contextUsed > 0: p.contextUsed
-    elif p.promptTokens > 0: p.promptTokens
-    else: estimateTokens(messages) + toolTokens
+  # One measure for everything below — warning percentage, prune trigger,
+  # pressure line: the local estimate, shifted into the provider's scale by
+  # the calibration offset measured from the last response. Before the
+  # first response (calib 0) this is the raw chars/4 proxy — conservative
+  # only when the provider counts less than the estimate.
+  template measured(toolTokens: int): int =
+    estimateTokens(messages) + toolTokens + p.calib
+  let used0 = measured(toolTokens)
   let pct = int(used0.float * 100.0 / p.ctxSize.float)
   let trimAt = trimThreshold(p)
   if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
@@ -796,14 +843,14 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
                             "usedTokens": used0, "context": p.ctxSize,
                             "warning": true,
                             "reason": "warn:threshold"})
-  var used = estimateTokens(messages) + toolTokens
+  var used = measured(toolTokens)
   if used >= trimAt:
     let saved = p.pruneContext(messages)
     if saved > 0 and onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "reason": "reset:prune", "bytesSaved": saved,
                             "pruned": p.prunes.len})
-    used = estimateTokens(messages) + toolTokens
+    used = measured(toolTokens)
   let target = p.contextTarget()
   if used <= target: return ""
   "pressure:" & contextPressureDetail(p, messages, used, target, toolTokens)
@@ -815,7 +862,7 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
   ## The final lossy rung (§6.3), deliberately separate from admission so a
   ## replaceable compactor always gets the first chance after lossless prune.
   let target = p.contextTarget()
-  var used = estimateTokens(messages) + toolTokens
+  var used = estimateTokens(messages) + toolTokens + p.calib
   for keep in [minKeepTurns, 1]:
     if used <= target: break
     let dropped = p.trimTurns(messages, keep)
@@ -829,7 +876,7 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
-    used = estimateTokens(messages) + toolTokens
+    used = estimateTokens(messages) + toolTokens + p.calib
 
 proc startTokenStream*(ct: CoreTools, sessionId: string,
                        cb: proc(sid, content, reasoning: string) {.closure.}) =
@@ -873,6 +920,13 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   if resolvedContext > 0 and resolvedContext != p.ctxSize:
     p.ctxSize = resolvedContext
     p.ctxWarned = false
+  # The calibration offset is model-specific: switching models (or their
+  # provider) changes the tokenizer — drop the stale offset and re-learn
+  # from the next response.
+  if p.calibModel.len > 0 and p.calibModel != selectedModel:
+    p.calib = 0
+  if p.calibModel != selectedModel:
+    p.calibModel = selectedModel
   result = %*{
     "sessionId": p.convId,
     "provider": resolved{"provider"}.getStr(""),
@@ -952,10 +1006,13 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                   messages: var seq[JsonNode],
                   onEvent: proc(kind: string, data: JsonNode) {.closure.},
                   turnId = ""): int =
-  ## Fold pending subagent settlement notices into the running conversation
+  ## Fold pending background-settlement notices into the running conversation
   ## (docs/research/SUBAGENTS-PLAN.md P0.1). A background child that settled
   ## while this conversation was idle left an `agentnotice` record; without
   ## this drain the parent would have to poll agent_status to learn about it.
+  ## The same lane carries the processes component's exit notices
+  ## (kind "process-exited", docs/WIRE.md "Settlement notices"), so one drain
+  ## covers every background thing the conversation started.
   ##
   ## Fetched at the top of every turn (like steer and advisories) so the
   ## pull lane is invisible to the model — it never has to remember to ask.
@@ -1007,6 +1064,30 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                      "mail": {"kind": "parent-mail", "from": mailFrom}}
       eventId["kind"] = %"mail"
       eventId["from"] = %mailFrom
+    elif n{"kind"}.getStr("") == "process-exited":
+      # A background process this conversation owns (components/processes)
+      # reached a terminal state. Pointer, not payload: the id, the status and
+      # how much output exists — the text itself stays in the spool, where the
+      # conversation's own process_poll can read it. Without this the model
+      # only learned of an exit by polling.
+      let pid = n{"processId"}.getStr("")
+      if pid.len == 0: continue
+      let label = n{"label"}.getStr("")
+      let pstatus = n{"status"}.getStr("")
+      let bytes = n{"outputBytes"}.getInt(0)
+      let secs = max(0, int(n{"endedAt"}.getFloat(0) -
+                            n{"startedAt"}.getFloat(0)))
+      var content = "[background process " & pid &
+                    (if label.len > 0: " (" & label & ")" else: "") &
+                    " " & pstatus & "]"
+      content.add("\nran " & $secs & "s, " & $bytes & " bytes of output — " &
+                  "read it with process_poll {id: \"" & pid & "\"}")
+      noticeMsg = %*{"role": "user", "content": content,
+                     "notice": {"kind": "process-exited",
+                                "processId": pid, "status": pstatus}}
+      eventId["kind"] = %"process"
+      eventId["processId"] = %pid
+      eventId["status"] = %pstatus
     else:
       let status = n{"status"}.getStr("")
       if status.len == 0: continue
@@ -1542,6 +1623,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               onEvent: proc(kind: string, data: JsonNode) {.closure.} = nil,
               thinkingEffort = "", turnContent = "", workspace = "",
               maxRounds = 0, maxCalls = 0, maxTokens = 0,
+              limitRounds = 0, limitTokens = 0, limitSeconds = 0,
               allowlist: seq[string] = @[],
               turnError: var string): string =
   ## One user turn: chat → dispatch tool calls → append results.
@@ -1641,19 +1723,68 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     ## Cumulative tokens this turn (total_tokens per round when the provider
     ## reports usage) — the per-job token budget checks this before each new
     ## LLM round, so overshoot is bounded by one round.
-  # Effective round budget: a per-session maxRounds (subagent budgets,
-  # 1-50) overrides the NIF_MAX_TURN_ROUNDS env default (default 50 —
-  # pi's agent loop is unbounded, so the cap exists to bound runaway
-  # cost, not to shape behavior; bench lanes may raise it further).
-  let envMaxRounds =
-    block:
-      var v = 20
-      try:
-        v = parseInt(getEnv("NIF_MAX_TURN_ROUNDS", "50"))
-      except ValueError:
-        discard
-      if v < 1: 20 else: v
-  let effMaxRounds = if maxRounds > 0: maxRounds else: envMaxRounds
+  # Effective round budget: an explicit per-session maxRounds (1 through the
+  # configured NIF_MAX_TURN_ROUNDS) may narrow the hard ceiling, but can never
+  # raise it. The default is intentionally high enough that ordinary turns
+  # are not shaped by it; it remains a final runaway/cost guard.
+  let envMaxRounds = configuredMaxTurnRounds()
+  let effMaxRounds = if maxRounds > 0: min(maxRounds, envMaxRounds)
+                      else: envMaxRounds
+  # ---- conversation controls: the human's soft turn limits (/limit) --------
+  # A soft limit is different in kind from the budgets above: reaching it asks
+  # the human over the approval transport (tool "turn-limit", purpose
+  # "continue") instead of ending the turn, and a yes extends THAT limit by one
+  # more step so the question can come back later. The job-scoped and env caps
+  # stay hard and never ask — a subagent cannot negotiate its own budget, and
+  # NIF_MAX_TURN_ROUNDS is a runaway guard, not a conversation setting. Denied,
+  # unanswered or unreachable resolves to the same turn end the limit would have
+  # caused anyway (fail closed; see docs/WIRE.md "Conversation controls").
+  let turnStarted = epochTime()
+  var softRounds = limitRounds
+  var softTokens = limitTokens
+  var softSeconds = limitSeconds
+  var humanContinues = 0
+    ## How often the human extended a limit this turn (diagnostics only).
+
+  proc limitExhausted(dimension, detail: string): bool =
+    ## One soft-limit breach: ask whether the turn may keep going. Granted →
+    ## raise that limit by one step and return false (keep going); denied,
+    ## unanswered or no client reachable → true, so the caller ends the turn.
+    if ct.approval == nil: return true
+    if not ct.approval.askContinue(dimension, detail): return true
+    inc humanContinues
+    case dimension
+    of "rounds": softRounds += max(limitRounds, 1)
+    of "tokens": softTokens += max(limitTokens, 1)
+    of "seconds": softSeconds += max(limitSeconds, 1)
+    else: discard
+    echo "core: turn " & dimension & " limit continued by the human (" &
+         detail & ")"
+    false
+
+  proc limitMessage(dimension, detail: string): string =
+    ## The transcript record when a human limit ended the turn: which limit,
+    ## where it stood, and the one command that raises it. The dimension is
+    ## named as /limit names it, inside the detail.
+    "turn limit reached (" & detail & ") — the human declined to continue; " &
+      "raise it with /limit " & dimension & "=<n> and send a follow-up message"
+
+  proc endTurnOnLimit(p: var Persister, turnError: var string,
+                      dimension, detail, msg: string) =
+    ## End the turn at a human limit the human declined to extend — the same
+    ## shape as the hard budget endings, with a distinct error kind so the
+    ## model and a driver can tell a limit from a failure. `p`/`turnError` are
+    ## passed in rather than captured: both are `var` parameters of runTurn,
+    ## which a closure may not capture (memory safety).
+    turnError = msg
+    p.persistMsg(%*{"role": "error", "content": msg,
+                    "error": "limit-" & dimension, "turnId": turnId},
+                 %*{"limit": detail})
+    if onEvent != nil:
+      onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                         "error": msg})
+    emitTurnDone(msg)
+
   while rounds < max(effMaxRounds, 1):
     rounds += 1
     # A cancel (agent_stop) ends the turn before the next LLM round: the
@@ -1680,6 +1811,28 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                            "error": msg})
       emitTurnDone(msg)
       return ""
+    # The human's soft limits (rounds/tokens/seconds), checked before the next
+    # LLM round for exactly the reason the hard caps are: no further round
+    # starts on a limit the human is not going to extend.
+    if softRounds > 0 and rounds > softRounds:
+      let detail = $rounds & " LLM rounds (limit " & $softRounds & ")"
+      if limitExhausted("rounds", detail):
+        let msg = limitMessage("rounds", detail)
+        endTurnOnLimit(p, turnError, "rounds", detail, msg)
+        return ""
+    if softTokens > 0 and turnTokens >= softTokens:
+      let detail = $turnTokens & " tokens (limit " & $softTokens & ")"
+      if limitExhausted("tokens", detail):
+        let msg = limitMessage("tokens", detail)
+        endTurnOnLimit(p, turnError, "tokens", detail, msg)
+        return ""
+    if softSeconds > 0 and epochTime() - turnStarted >= softSeconds.float:
+      let detail = $int(epochTime() - turnStarted) & "s (limit " &
+                   $softSeconds & "s)"
+      if limitExhausted("seconds", detail):
+        let msg = limitMessage("seconds", detail)
+        endTurnOnLimit(p, turnError, "seconds", detail, msg)
+        return ""
     # Fold any steering messages the client injected mid-turn into the running
     # conversation before the next LLM call (Pi-style steering), plus any
     # accepted advisor messages (pumpAdvise). Admission runs AFTER the drains:
@@ -1785,6 +1938,24 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
             if window > 0:
               p.ctxSize = window
               p.ctxWarned = false
+          # Unknown capacity and a refusal that carries no parseable window:
+          # admission stands down, so checkContext below would pass the
+          # candidate unchanged and the retry would be byte-identical — a
+          # wasted call against a provider that just refused it. Reduce
+          # blind instead: lossless prune, then trim to the newest request.
+          # The single retry only goes out if the candidate actually shrank;
+          # an irreducible candidate (frozen prefix over an unknown window)
+          # ends terminal — never resend what was refused unchanged.
+          if p.ctxSize <= 0:
+            let before = estimateTokens(messages) + toolTokens
+            discard p.pruneContext(messages)
+            discard p.trimTurns(messages, 1)
+            if estimateTokens(messages) + toolTokens >= before:
+              writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                                  e.msg)
+              failMsg = "context-recovery-required: provider refused the request (" &
+                        e.msg & ") and the candidate cannot be reduced " &
+                        "(capacity unknown, no parseable window)"
           var overflowVerdict =
             checkContext(p, messages, onEvent, turnId, toolTokens)
           if overflowVerdict.startsWith("pressure:"):
@@ -1880,6 +2051,19 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # token accounting for the context check on the next round
     if usageObj{"prompt_tokens"} != nil:
       p.promptTokens = usageObj{"prompt_tokens"}.getInt(0)
+      # Re-measure the calibration offset on every response: what the
+      # provider counted for THIS request minus what chars/4 estimated for
+      # it. `messages` is still exactly the sent projection here, so the
+      # pair is honest. The next admission then measures the candidate as
+      # estimate + calib — the provider's own scale — instead of the raw
+      # proxy that lagged a DeepSeek-class tokenizer by ~22k tokens on a
+      # 524k window (observed: the 90% trim line silently became a ~99%
+      # line and a request the core called 86% was refused at 400).
+      # Clamped to [0, ctxSize]: never negative (the raw estimate stays
+      # the conservative fallback), never past the window itself.
+      block:
+        let sentEst = estimateTokens(messages) + toolTokens
+        p.calib = max(0, min(p.promptTokens - sentEst, max(p.ctxSize, 1)))
       # A3 cache economics: accumulate the cache-read split when the
       # provider reports it (prompt_tokens_details.cached_tokens). A
       # request with a stable prefix should show most of its prompt served
@@ -2002,6 +2186,21 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
 
     var idx = 0
     while idx < items.len:
+      # The human's time limit is checked before every dispatch, not only at
+      # round boundaries: one bash call can outlast a whole round, and the
+      # point of the limit is to put the question at the moment it is reached.
+      if softSeconds > 0 and epochTime() - turnStarted >= softSeconds.float:
+        let detail = $int(epochTime() - turnStarted) & "s (limit " &
+                     $softSeconds & "s)"
+        if limitExhausted("seconds", detail):
+          let msg = limitMessage("seconds", detail)
+          # The assistant batch is already persisted: pair every unexecuted
+          # call with an error result so the history stays provider-valid.
+          for k in idx ..< items.len:
+            commitToolItem(ct, p, messages, exposure, onEvent, sessionId,
+              turnId, items[k], ToolCallOutcome(error: msg), epochTime(), 0)
+          endTurnOnLimit(p, turnError, "seconds", detail, msg)
+          return ""
       if maxCalls > 0 and toolCallsMade >= maxCalls:
         let msg = "turn tool-call budget exhausted (" & $maxCalls &
           " tool calls)"
@@ -2142,10 +2341,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   let hasDiscovery = args{"discovery"} != nil and args{"discovery"}.kind == JObject
   let hasExport = args.kind == JObject and args.hasKey("export") and
                   args{"export"}.getBool(false)
-  if sessionId.len == 0 or
-      (content.len == 0 and not hasModel and not hasThinking and not hasTitle and
-       not hasCwd and not hasProfile and not hasDiscovery and not hasExport):
-    return %*{"error": "session needs sessionId and content, model, thinking, title, cwd or profile"}
+  # Conversation controls (docs/WIRE.md "Conversation controls"): the human's
+  # gate mode and soft turn limits. Both are mutable per conversation — unlike
+  # the frozen job-scoping args below — and both are accepted on a call with no
+  # content (a control call runs no inference).
+  let hasApprovals = args.kind == JObject and args.hasKey("approvals")
+  let hasLimits = args.kind == JObject and args.hasKey("limits")
+  # A call carrying only a sessionId is the read-only status readback — how a
+  # UI shows a conversation's model/thinking/approvals/limits without running
+  # a turn. Anything else without content needs one of the keys above.
+  if sessionId.len == 0:
+    return %*{"error": "session needs sessionId"}
 
   var entry: Session
   if sessions.hasKey(sessionId):
@@ -2209,6 +2415,15 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     entry.maxRounds = header{"maxRounds"}.getInt(0)
     entry.maxCalls = header{"maxCalls"}.getInt(0)
     entry.maxTokens = header{"maxTokens"}.getInt(0)
+    # Conversation controls ride the same header: they are mutable (the human
+    # may change them at any point) but must survive a runner resume, so a
+    # restarted runner re-applies exactly what the human last chose.
+    entry.approvalMode = header{"approvals"}.getStr("")
+    let storedLimits = header{"limits"}
+    if storedLimits != nil and storedLimits.kind == JObject:
+      entry.limitRounds = storedLimits{"rounds"}.getInt(0)
+      entry.limitTokens = storedLimits{"tokens"}.getInt(0)
+      entry.limitSeconds = storedLimits{"seconds"}.getInt(0)
     if args.kind == JObject and args.hasKey("tools") and
         args{"tools"}.kind == JArray and entry.allowlist.len == 0:
       for t in args{"tools"}:
@@ -2222,7 +2437,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     if args.kind == JObject and args.hasKey("maxRounds") and
         entry.maxRounds == 0:
       let mr = args{"maxRounds"}.getInt(0)
-      if mr >= 1 and mr <= 20:
+      if mr >= 1 and mr <= configuredMaxTurnRounds():
         entry.maxRounds = mr
         ct.updateConversationHeader(sessionId, %*{"maxRounds": %mr})
     # Per-job budgets (subagent scoping), frozen the same way: first call
@@ -2324,6 +2539,27 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       stored = ordinary.messages
       storedNodes = ordinary.nodes
       lastSeqNo = ordinary.lastSeqNo
+      # §6.3 durable trim: a lossy trim records the canonical seqNo it cut
+      # through (header trimThrough). The dropped turns remain in canonical
+      # history (recall-canonical still reaches them) but are not part of
+      # the live projection — without this, a restart would rebuild the
+      # full pre-trim context while the meter restores the post-trim
+      # usage, and admission would wave the re-inflated request straight
+      # through to the provider.
+      let trimThrough = header{"trimThrough"}.getInt(0)
+      if trimThrough > 0:
+        var keptM: seq[JsonNode] = @[]
+        var keptN: seq[CtxNode] = @[]
+        for i, m in stored:
+          let n = storedNodes[i]
+          # The system node has no canonical id and is never trimmed.
+          if n.source == nsCanonical and n.canonicalSeq <= trimThrough:
+            continue
+          keptM.add(m)
+          keptN.add(n)
+        if keptM.len < stored.len:
+          stored = keptM
+          storedNodes = keptN
     for m in stored: entry.messages.add(m)
     # A2/A3: usage and cumulative cache counters persist in the header
     # (written by persistConversationRuntime), so the context meter and
@@ -2337,6 +2573,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       cacheRead: header{"cacheRead"}.getInt(0),
       generation: (if projection != nil:
                      projection{"generation"}.getInt(0) else: 0))
+    # Seed the calibration offset from stored usage: the last assistant
+    # message's prompt_tokens measures what the provider counted for the
+    # retained projection, so estimate-vs-provider lag is known BEFORE the
+    # first response of the session (a restart at 91% context must not
+    # re-walk into the overflow blind spot). The first response re-measures
+    # it exactly. 0 when nothing is stored (fresh conversation).
+    if pt > 0:
+      # stored excludes the system prompt (it lives in the header), so add
+      # its estimate back — the seed leans conservative, never under.
+      p.calib = max(0, min(pt - estimateTokens(stored) -
+        header{"systemPrompt"}.getStr("").len div 4, cs))
     # Context identity (§4.2): system, optional durable checkpoint, exact
     # retained canonical ids, then paged canonical appends after canonicalHigh.
     # projectionIndex is rebuilt from this actual provider projection, not
@@ -2400,6 +2647,52 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       return %*{"error": "thinking must be low, medium or high (empty clears)"}
     ct.updateConversationHeader(sessionId,
       %*{"thinkingEffort": entry.thinkingEffort})
+  # Conversation controls: presence of the key means set (empty `approvals`
+  # clears to ask, an all-zero `limits` object clears all three). They apply
+  # from the NEXT turn on and are persisted before the turn runs, so a crash
+  # mid-turn cannot lose a human's choice.
+  if hasApprovals:
+    let mode = args{"approvals"}.getStr("").strip().toLowerAscii()
+    if mode notin ["", "ask", "auto"]:
+      return %*{"error": "approvals must be ask or auto (empty clears)"}
+    entry.approvalMode = if mode == "auto": "auto" else: ""
+    ct.updateConversationHeader(sessionId, %*{"approvals": entry.approvalMode})
+  if hasLimits:
+    let raw = args{"limits"}
+    if raw.kind != JObject:
+      return %*{"error": "limits must be an object of rounds/tokens/seconds"}
+    for key, fieldValue in raw:
+      if key notin ["rounds", "tokens", "seconds"]:
+        return %*{"error": "unknown limit " & key &
+                            " (rounds, tokens, seconds)"}
+      if fieldValue.kind != JNull and fieldValue.kind != JInt:
+        return %*{"error": "limit " & key & " must be a positive integer"}
+    var limitRounds = 0
+    var limitTokens = 0
+    var limitSeconds = 0
+    for dimension in ["rounds", "tokens", "seconds"]:
+      let wanted = raw{dimension}
+      if wanted == nil or wanted.kind == JNull: continue
+      let value = wanted.getInt(0)
+      # Bounds keep a typo (/limit seconds=100000000) from parking a turn for
+      # weeks; the ceiling is generous, not protective.
+      let ceiling = case dimension
+        of "rounds": 200
+        of "seconds": 86_400
+        else: 10_000_000
+      if value < 1 or value > ceiling:
+        return %*{"error": "limit " & dimension & " must be between 1 and " &
+                            $ceiling}
+      case dimension
+      of "rounds": limitRounds = value
+      of "tokens": limitTokens = value
+      else: limitSeconds = value
+    entry.limitRounds = limitRounds
+    entry.limitTokens = limitTokens
+    entry.limitSeconds = limitSeconds
+    ct.updateConversationHeader(sessionId,
+      %*{"limits": %*{"rounds": limitRounds, "tokens": limitTokens,
+                      "seconds": limitSeconds}})
   if hasTitle:
     var title = args{"title"}.getStr("").strip()
     if title.len > 0:
@@ -2454,6 +2747,9 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
       "sessionId": sessionId,
       "model": entry.modelOverride,
       "thinkingEffort": entry.thinkingEffort,
+      "approvals": entry.approvalMode,
+      "limits": %*{"rounds": entry.limitRounds, "tokens": entry.limitTokens,
+                     "seconds": entry.limitSeconds},
       "cwd": entry.workspace,
       "context": entry.persister.ctxSize,
       "promptTokens": entry.persister.promptTokens,
@@ -2490,14 +2786,21 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # are routed to its private approval subject. Cleared when the turn ends.
   if ct.approval != nil:
     ct.approval.caller = caller
+    # The conversation's gate mode rides the same lifecycle as caller/session:
+    # set for this turn, cleared when it ends, so a direct (non-session)
+    # harness call still reads as "" (ask).
+    ct.approval.approvalMode = entry.approvalMode
   defer:
-    if ct.approval != nil: ct.approval.caller = ""
+    if ct.approval != nil:
+      ct.approval.caller = ""
+      ct.approval.approvalMode = ""
 
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
                       entry.thinkingEffort, content, entry.workspace,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
+                      entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)
   sessions[sessionId] = entry
   # turnError distinguishes "the turn failed" from "the model said this" so
@@ -2505,6 +2808,10 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var sessionResult = %*{"ok": true, "sessionId": sessionId, "reply": reply,
                   "modelOverride": entry.modelOverride,
                   "thinkingEffort": entry.thinkingEffort,
+                  "approvals": entry.approvalMode,
+                  "limits": %*{"rounds": entry.limitRounds,
+                                "tokens": entry.limitTokens,
+                                "seconds": entry.limitSeconds},
                   "cwd": entry.workspace}
   if turnError.len > 0:
     sessionResult["turnError"] = %turnError
@@ -2639,18 +2946,15 @@ proc routeSessionCall*(ct: CoreTools, env: Envelope, reply: string) =
     ct.nc.publish(reply, errorEnvelope(env.id, "boom", e.msg).encode())
 
 proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
-  ## Serve svc.core.call messages (session/spawn/catalog). Session requests
-  ## are forwarded asynchronously: different runner processes can work at
-  ## once, while each runner still serializes its own conversation.
+  ## Serve svc.core.call messages (session/spawn/catalog). Content-less
+  ## session calls (status/export/controls) are forwarded asynchronously so
+  ## one conversation's turn cannot delay another's; a turn-starting call
+  ## keeps the blocking path (its reply is the turn's result), and calls
+  ## stashed while core was busy replay here first.
   pumpSessionForwards(ct)
-  # Keep compatibility with direct/unit callers that exercised the old
-  # blocking queue before the system router was installed.
   while ct.pending != nil and ct.pending.items.len > 0:
     let pend = ct.pending.items[0]
     ct.pending.items.delete(0)
-    if ct.routeSession != nil:
-      ct.routeSession(pend.env, pend.reply)
-      continue
     var resp: Envelope
     try:
       let r = callSession(ct, pend.env.args, pend.env.caller)
@@ -2677,9 +2981,16 @@ proc pumpCoreCalls*(ct: CoreTools, sub: ptr natsSubscription) =
       ct.nc.publish(reply, errorEnvelope(env.id, "bad-envelope",
         "expected a call envelope").encode())
       continue
-    if env.tool == "session" and ct.routeSession != nil:
-      ct.routeSession(env, reply)
-      continue
+    if env.tool == "session":
+      let content = if env.args.kind == JObject:
+                      env.args{"content"}.getStr("")
+                    else: ""
+      if content.len == 0 and ct.routeSession != nil:
+        # Content-less control calls never block the pump: the target runner
+        # serves them at once, or refuses with "busy" when its own
+        # conversation is mid-turn (pumpBusyCall).
+        ct.routeSession(env, reply)
+        continue
     var resp: Envelope
     try:
       case env.tool

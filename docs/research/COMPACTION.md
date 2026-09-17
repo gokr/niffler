@@ -1,15 +1,22 @@
 # Replaceable compaction — continuity, recall, and bounded context recovery
 
-Status: **proposal**, not implemented. Supersedes the first draft of this file
-(2026-09); the changes are listed in §10.
+Status: **shipped** on `main`. This is the design and implementation record;
+the operating contract is [MANUAL.md](../MANUAL.md#context-window). It
+supersedes the first draft of this file (2026-09); the changes are listed in §10.
 
-Three deliverables, in order:
+The three deliverables landed:
 
-1. **Store default: barrel → SQLite** (§2) — a prerequisite, not housekeeping.
-2. **Compaction** (§3–§7): a replaceable `compaction` component proposes, the
-   runner validates/applies/persists.
+1. **Store default: barrel → SQLite** (§2) — selectable engines retain one
+   document-store contract.
+2. **Compaction** (§3–§7): a replaceable `compaction` component proposes while
+   the runner validates, applies and persists.
 3. **Recall** (§5): replaced content keeps a durable link back to the original
    record, and the model is told it can retrieve it.
+
+The runner also classifies provider context overflow and performs one bounded,
+receipt-backed recovery attempt; a second overflow is terminal. Tests and the
+manual define the shipped behavior where this historical design text is less
+specific.
 
 ## 1. Decision
 
@@ -39,18 +46,18 @@ This refines [PI_EFFICIENCY_PLAN.md](PI_EFFICIENCY_PLAN.md) A1:
 
 ## 2. Prerequisite — SQLite becomes the default store ☑ LANDED
 
-**Status: implemented** (branch `feat/store-sqlite-default`, three commits).
-`NIF_STORE_BACKEND` unset now means sqlite; barrel and tidb remain selectable;
+**Status: implemented on `main`.** `NIF_STORE_BACKEND` unset now means sqlite;
+barrel and tidb remain selectable;
 an un-migrated `var/barrel-db` makes core refuse to boot with the migration
 command. The `list` cursor shipped for all three engines, and every core
 full-kind read moved to `storeListAll`. `niffler-store-migrate` (a separate
 offline binary) moves a root between engines — verified against a real 43 MB
 production barrel (4309 documents, counts confirmed with sqlite3, harness
-booted on the migrated store). The remaining work in this document is §3
-onward.
+booted on the migrated store). The sections below retain the implementation
+choices and evidence.
 
-`docs/research/STORE_V2.md` set the switch condition: "barrel stays the default
-until comparison data says otherwise". Compaction supplies that data. The
+The original store plan set the switch condition: "barrel stays the default
+until comparison data says otherwise". Compaction supplied that data. The
 projection record is the one artifact whose half-written state would silently
 corrupt a conversation's context, and it is exactly where the engines differ:
 
@@ -88,10 +95,11 @@ One-line core change plus docs and tests:
   resolves the manifest through `NIF_STORE_BACKEND`. `tests/helpers.nim`
   sandboxes must copy `store-sqlite` alongside `store`.
 
-### 2.2 One-shot importer
+### 2.2 One-shot importer (historical design sketch)
 
-`var/bin/cli store-import` (or a `NIF_STORE_*`-guarded mode inside `cli`)
-performs export→import in one process:
+The shipped `niffler-store-migrate` tool performs the offline export/import
+between engines. The original one-process `cli store-import` sketch below is
+retained for its data-integrity decisions, but is not the command to run:
 
 1. Boot (or attach to) a harness with the **old** engine; `list` every kind in
    pages of 1000 using the id cursor, writing JSONL `{kind, id, value}` records
@@ -622,6 +630,27 @@ In order, all deterministic, all bounded:
    with cause, known sizes, attempt counts and the available actions (larger
    context model, another compactor, explicit continuation from selected
    history).
+
+**Durability addendum (implemented 2026-09-16, prod finding
+conv-b33207f94a47):** the trim cut was originally in-memory only — a runner
+restart rebuilt the full pre-trim projection from canonical history while the
+meter restored post-trim usage from the last assistant message, so admission
+under-reported the real candidate by the trimmed amount and could wave a
+doomed request straight to the provider. The trim now records the highest
+dropped canonical seqNo in the conversation header (`trimThrough`, written at
+the moment of the cut) and the ordinary resume path excludes canonical
+messages at or below it. Dropped turns remain in canonical history for
+`context_recall`; a later committed compaction supersedes the watermark
+entirely (the projection path ignores it).
+
+**Calibration addendum (same finding):** the ladder's trigger measures
+candidates with a chars/4 estimate that can lag a denser tokenizer by ~4-5%
+of the window (observed: ~22k tokens on a 524K window), which turns the 90%
+line into a ~99% line and lets requests the provider refuses leave the door.
+Every successful response re-measures an offset (reported `prompt_tokens`
+minus the estimate of the same request); admission, warnings and the ladder
+price candidates as estimate + offset. Model-scoped, resume-seeded, clamped
+to `[0, window]`, never persisted.
 
 ### 6.4 Store contract addition — paged read
 

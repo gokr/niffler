@@ -1,5 +1,10 @@
 # Pi Efficiency Findings
 
+> Historical research snapshot. Several Niffler gaps identified here — fan-out,
+> accounting, retries, output spill and compaction — have since shipped. The
+> comparison remains useful as prior art; current behavior is in
+> [../MANUAL.md](../MANUAL.md).
+>
 > Research note — what pi (github.com/earendil-works/pi, `@earendil-works`) does that
 > Niffler does not, focused on **token consumption** and **wall-clock execution
 > time** on tasks, plus a deep-dive on concurrency (Nim threading vs. NATS
@@ -15,12 +20,12 @@
 | Axis | pi | Niffler |
 |---|---|---|
 | Unit of execution | one big Node process (`AgentSession`), everything in-thread | many small processes on a NATS bus; core is a thin orchestrator |
-| Tool call parallelism | parallel by default, per-file mutation serialization | strictly serial (`for tc in toolCalls`) |
-| Context overflow | LLM **compaction** (structured summaries, iterative update) | whole-turn **trim** (drops history, no summary) |
-| Token accounting | model-reported usage + cache buckets, persisted, drives decisions | chars/4 fallback + blunt 90% threshold |
-| Prompt cache | measured (`cache-stats`), cache-retention policy per call | forwarded `sessionId`, `cached_tokens` read back, no measurement |
-| LLM failure | classified retryable vs not, exponential backoff | error returned to caller, no auto-retry |
-| Long output | bounded tail + full-output temp file | head+tail cap in memory |
+| Tool call parallelism | parallel by default, per-file mutation serialization | cross-component fan-out over NATS; same-component work remains serialized unless replicated/concurrent |
+| Context overflow | LLM **compaction** (structured summaries, iterative update) | replaceable compaction + deterministic prune/trim + one bounded overflow recovery |
+| Token accounting | model-reported usage + cache buckets, persisted, drives decisions | provider-scale usage, durable context ledger and cache outcome events |
+| Prompt cache | measured (`cache-stats`), cache-retention policy per call | frozen-prefix doctrine, forwarded `sessionId`, and cache outcomes in context events |
+| LLM failure | classified retryable vs not, exponential backoff | classified transient/overflow failures with bounded retries and recovery |
+| Long output | bounded tail + full-output temp file | head+tail caps plus pageable full-output spill files |
 | Sessions | tree with branch summaries, forks | linear conversation (+ subagents) |
 | Images | read + auto-resize ≤2000px, normalized on entry | text-only reads |
 

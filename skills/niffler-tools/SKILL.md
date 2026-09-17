@@ -112,8 +112,9 @@ assume a tool you saw in one context exists in another:
   spawn further subagents (`x-harness.noSpawn`) and only sees the tools its
   dispatch grants. Steer it toward what IT can call, not what the main
   session has.
-- **Fabric guest** — only the bridge (the pinned typed allowlist in typed
-  mode); std/os, std/net, std/osproc are lint-banned.
+- **Fabric guest** — the bridge is the governed Niffler seam (the pinned typed
+  allowlist in typed mode), but the guest is approved native code and standard
+  library/OS imports are not a sandbox boundary.
 - The frozen direct set is **per conversation**: `discover` (or the
   session's `prompt_preview`) is the authority on what THIS session can
   call right now.

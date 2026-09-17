@@ -1,14 +1,14 @@
 # Fabric: compiled Nim transformation
 
-Status: phases 2-6 implemented on feature/fabric-compiled-nim.
-  - 2 native executor  3 executable cache  4 structured SDK + diagnostics
-    5 fabric_help discovery  6 reference/examples rewrite (+ examples migrated
-    to the structured finish)  7 native-only cutover (VM, compiler-source
-    requirement and the VM-era nimble removed; toolchain check/README/MANUAL
-    updated). Phase 8: deterministic tests done (native contract test incl.
-    process-group reaping, cache, non-terminating programs); t30 verifier
-    hardened. Bench calibration not run — it needs an explicit go-ahead.
-Worktree: `/home/gokr/git/niffler-fabric-compiled`.
+Status: **shipped on `main`**. Phases 2–8 landed: native executor, executable
+cache, structured SDK and diagnostics, `fabric_help`, reference/examples,
+native-only cutover, and deterministic contract tests (including process-group
+reaping, cache behavior and non-terminating programs). Bench calibration is
+separate evidence and has not been run without explicit approval.
+
+This document remains the transformation design record. The user-facing
+contract is [REFERENCE.md](REFERENCE.md) and
+[docs/MANUAL.md](../../../docs/MANUAL.md#fabric-and-subagents).
 Baseline: `be8d880`.
 
 ## Decision and success criteria
@@ -213,17 +213,13 @@ Primary files: `components/fabric/executor.nim`, `fabric.nim`,
 - A successful nested test is a real verification; no rerun solely to make it
   visible. Tell the model to consume structured success, not text substrings.
 
-### 7. Stored-program migration and native-only cutover
+### 7. Stored-program migration and native-only cutover — completed
 
-- Inventory store kind fabricprog schemas/source usages before changing
-  interpretation. Add an explicit guest API/runtime version where needed;
-  no silent rewriting or deletion of stored programs.
-- Exercise existing stored sources through native compatibility. Native Nim
-  does not guarantee every VM guest compiles unchanged: report actionable
-  migration errors and document the bounded supported compatibility surface.
-- Make compiled Nim the sole execution backend after contract tests pass.
-  Remove embedded VM dependencies and update setup/doctor/manual/build docs.
-- No changes to persistent component naming or agent spawning semantics.
+The store schema and source usages were inventoried before switching the
+interpretation. Native compilation is now the sole backend; existing programs
+receive actionable compile diagnostics rather than silent rewriting. Setup,
+doctor, manual and build documentation were updated, with no changes to
+persistent component naming or agent spawning semantics.
 
 ### 8. Verification and calibration
 

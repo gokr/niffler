@@ -73,7 +73,7 @@ UI_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
         test-systemprompt test-grep test-git test-edit test-expert test-mcp test-uireg \
         test-retry-unit test-ctx-accounting test-compaction \
         test-autostart test-smoke smoke dev clean gotest \
-        install uninstall \
+        install uninstall install-ui install-tui \
         setup doctor recover install-go install-nim install-nats \
         install-node install-wails install-ui-deps install-native-deps install-nim-deps \
         install-natscli install-jq install-zenity
@@ -82,9 +82,11 @@ help:
 	@echo 'make all       build core + components + desktop UI (default)'
 	@echo 'make build     build core + components only (no UI)'
 	@echo 'make ui        build the Wails desktop UI'
-	@echo 'make ui-install   install the launcher entry + app icon (Linux)'
+	@echo 'make install-ui   build the desktop UI + launcher entry/icon (Linux;'
+	@echo '                  same as ui-install)'
 	@echo 'make ui-uninstall remove the launcher entry + app icon (Linux)'
 	@echo 'make install    put niffler/niffler-cli (+ niffler-tui on request) on PATH'
+	@echo 'make install-tui  same, installing the niffler-tui client without asking'
 	@echo 'make uninstall  remove those PATH entries again (WITH_TUI=1 to preinstall)'
 	@echo '                overrides: NIF_BIN_DIR=~/bin  WITH_TUI=1  FORCE=1'
 	@echo 'make run       run the harness in the terminal (admin shell)'
@@ -361,6 +363,14 @@ install: build
 uninstall:
 	./scripts/install.sh --uninstall
 
+# The README names these aliases so the desktop and terminal entry points
+# read in the same direction: install-ui = ui-install, install-tui =
+# install WITH_TUI=1.
+install-ui: ui-install
+
+install-tui:
+	$(MAKE) --no-print-directory install WITH_TUI=1
+
 # ---------------------------------------------------------------------------
 # run / test
 
@@ -396,6 +406,17 @@ down:
 down-here:
 	@bash scripts/down-here.sh "$(ROOT)"
 
+# The env every test binary runs under. NIF_REPO_ROOT/NIF_ROOT are what the
+# Makefile has always passed; the `env -u` prefix is hygiene: a shell that
+# EXPORTED .env (a harness-spawned shell, or anyone who `set -a`'d it) leaks
+# NIF_OPENAI_* into every sandbox, where t_provider then legitimately finds a
+# complete environment provider and fails two checks that assert a clean one.
+# Tests that want a provider env set it themselves per component (see
+# tests/t_provider.nim's environment cases).
+TEST_ENV := env -u NIF_OPENAI_API_KEY -u NIF_OPENAI_BASE_URL \
+                -u NIF_OPENAI_MODEL -u NIF_OPENAI_PROTOCOL -u NIF_PROVIDER \
+                "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)"
+
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
@@ -407,7 +428,7 @@ var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
 # test-core, test-discover, test-cli, test-systemprompt,
 # test-observe, test-logfile, test-models, test-grep,
-# test-git, test-mcp, test-smoke.
+# test-git, test-mcp, test-controls, test-smoke.
 
 TEST_NIM  := tests/smoke.nim $(wildcard tests/t_*.nim)
 TEST_BINS := $(patsubst tests/%.nim,var/bin/test_%,$(TEST_NIM))
@@ -437,7 +458,7 @@ test: test-ui test-server
 test-server: build $(TEST_BINS) gotest
 	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
 		echo "== $$t"; \
-		env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./$$t || exit 1; \
+		$(TEST_ENV) ./$$t || exit 1; \
 	done'
 
 # The frontend. The lib tests import the TypeScript sources directly (node
@@ -501,6 +522,7 @@ test-autostart: build var/bin/test_t_autostart ; $(TEST_LOCK) env "NIF_REPO_ROOT
 test-fabric: build var/bin/test_t_fabric var/bin/test_t_fabric_frames var/bin/test_t_fabric_cancel ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_frames && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" python3 tests/t_fabric_native.py && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_fabric_cancel
 test-nested: build var/bin/test_t_nested var/bin/test_t_schema_validation ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_schema_validation && env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_nested
 test-approval: build var/bin/test_t_approval_manifest ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_approval_manifest
+test-controls: build var/bin/test_t_controls ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_controls
 test-retry-unit: build var/bin/test_t_retry_unit ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_retry_unit
 test-ctx-accounting: build var/bin/test_t_ctx_accounting ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_ctx_accounting
 test-compaction: build var/bin/test_t_compaction ; $(TEST_LOCK) env "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)" ./var/bin/test_t_compaction

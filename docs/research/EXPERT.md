@@ -32,7 +32,7 @@ prefix size, and anything beyond one target session.
 
 The working session should keep its small frozen direct toolset and
 task-focused transcript, as described in
-[progressive tool discovery](docs/MANUAL.md#progressive-tool-discovery). The
+[progressive tool discovery](../MANUAL.md#progressive-tool-discovery). The
 expert carries broader Niffler knowledge in a separate, cache-stable prompt and
 sees a bounded view of the working session's current turn. It never performs
 work for the agent. Its only possible action is a short, attributable steer.

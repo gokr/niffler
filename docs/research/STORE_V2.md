@@ -1,8 +1,8 @@
 # Store v2 — three stores, one contract, SDK tightening, DuckDB as observer
 
-> Plan for the `feat/code-hygiene` branch. Status: design; SDK additions in
-> progress. Revision 3: **the SQLite engine is now the default** — see M7.
-> The barrel store remains fully supported and selectable.
+> Implementation record. M3, M4, M5 and the SQLite default flip are shipped on
+> `main`; the barrel store remains fully supported and selectable. M2 (shared
+> SDK helpers) and M6 (DuckDB observer) remain open.
 >
 > Progress: **M3, M4 and the default flip landed** — `components/store-sqlite`
 > and `components/store-tidb` (both Go, goose migrations, `NIF_STORE_BACKEND`
@@ -52,8 +52,8 @@ is a boot-time choice:
 - `make build` produces all three binaries: `var/bin/store` (barrel, as
   today), `var/bin/store-sqlite`, `var/bin/store-tidb`.
 - The manifest keeps its single `store` entry. Core resolves that entry's
-  binary through `NIF_STORE_BACKEND` (unset/`barrel` → `var/bin/store`;
-  `sqlite` → `var/bin/store-sqlite`; `tidb` → `var/bin/store-tidb`;
+  binary through `NIF_STORE_BACKEND` (unset/`sqlite` → `var/bin/store-sqlite`;
+  `barrel` → `var/bin/store`; `tidb` → `var/bin/store-tidb`;
   anything else → refuse to boot with a clear error). One small core
   change at manifest resolution; the llm-openai comment-out dance stays
   available as a manual fallback.
@@ -103,11 +103,11 @@ either way; the difference is what the bytes sit on.
 - TiDB-only extras: network-shared persistence (many harnesses, one
   store), scale-out, and FTS/vector columns later for retrieval work
 
-Net: for Niffler's current workload the doc store genuinely suffices —
-which is exactly why barrel stays default and SQL is an *additional*
-option. SQL starts paying when we want cross-document questions, real
-transactions, operational visibility, or a shared store. The three-store
-setup is what lets us measure that instead of argue about it.
+Net: the three-store setup lets Niffler choose by workload. SQLite is the
+current default because its atomic writes suit conversation projections;
+Barrel remains useful for compatibility and simple deployments, while TiDB
+serves shared/networked persistence. SQL also pays when we want cross-document
+questions, real transactions or operational visibility.
 
 ## Store 2: SQLite — Go
 

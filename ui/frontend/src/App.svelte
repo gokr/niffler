@@ -31,6 +31,50 @@ import { currentProfile } from './lib/toolProfiles';
     args: any;
     sessionId: string;
     manifest?: ApprovalManifest | null;
+    /** purpose "continue": the soft turn-limit question (/limit) rather than a
+     * tool gate. It rides the same transport and the same ack/reply protocol,
+     * but it is never auto-approved and never rendered as a tool call. */
+    purpose?: string;
+    /** continue: which limit asked (rounds | tokens | seconds). */
+    dimension?: string;
+    /** continue: core's human-readable standing, e.g. "3 LLM rounds (limit 2)". */
+    detail?: string;
+  }
+
+  /** A turn-limit "keep going?" question, not a tool approval. */
+  function isContinueReq(p: any): boolean {
+    return p?.purpose === "continue";
+  }
+
+  /** Normalize an approval-transport payload into a modal entry. */
+  function approvalEntry(p: any): ApprovalReq {
+    if (isContinueReq(p)) {
+      return {
+        id: p.id,
+        tool: p.tool,
+        args: p.args ?? {},
+        sessionId: p.sessionId ?? "",
+        manifest: null,
+        purpose: "continue",
+        dimension: String(p.args?.dimension ?? ""),
+        detail: String(p.args?.detail ?? ""),
+      };
+    }
+    return {
+      id: p.id,
+      tool: p.tool,
+      args: p.args,
+      sessionId: p.sessionId ?? "",
+      manifest: p.manifest ?? null,
+    };
+  }
+
+  /** Localized name of the limit dimension a continue request names. */
+  function dimensionLabel(dimension: string | undefined): string {
+    if (dimension === "rounds") return t("app.dimensionRounds");
+    if (dimension === "tokens") return t("app.dimensionTokens");
+    if (dimension === "seconds") return t("app.dimensionSeconds");
+    return dimension ?? "";
   }
 
   // Persisted auto-approvals are keyed by tool name, or by
@@ -254,6 +298,15 @@ import { currentProfile } from './lib/toolProfiles';
       const p = ev.payload ?? {};
       if (!p.id || !p.tool) return;
       const sid = p.sessionId ?? "";
+      // The turn-limit question (/limit): ack so the runner knows a human is
+      // being asked, then show its own prompt. Deliberately never covered by a
+      // persisted auto-approve — a recorded tool decision must not silently
+      // extend a budget — and never rendered as a tool call.
+      if (isContinueReq(p)) {
+        emit("ev.approval.reply", { id: p.id, ack: true });
+        approvals = [...approvals, approvalEntry(p)];
+        return;
+      }
       if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
         // Decision alone resolves the gate; no ack needed.
         emit("ev.approval.reply", { id: p.id, ok: true });
@@ -261,7 +314,7 @@ import { currentProfile } from './lib/toolProfiles';
       }
       // Ack so the runner knows a human is being asked; then show the modal.
       emit("ev.approval.reply", { id: p.id, ack: true });
-      approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid, manifest: p.manifest ?? null }];
+      approvals = [...approvals, approvalEntry(p)];
     })
   );
 
@@ -272,11 +325,15 @@ import { currentProfile } from './lib/toolProfiles';
       const p = ev.payload ?? {};
       if (p.id && p.tool) {
         const sid = p.sessionId ?? "";
+        if (isContinueReq(p)) {
+          approvals = [...approvals, approvalEntry(p)];
+          return;
+        }
         if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
           emit("ev.approval.reply", { id: p.id, ok: true });
           return;
         }
-        approvals = [...approvals, { id: p.id, tool: p.tool, args: p.args, sessionId: sid, manifest: p.manifest ?? null }];
+        approvals = [...approvals, approvalEntry(p)];
       }
     })
   );
@@ -376,7 +433,8 @@ import { currentProfile } from './lib/toolProfiles';
   async function answerApproval(ok: boolean, auto: boolean = false) {
     const req = approvals[0];
     if (!req) return;
-    if (auto) {
+    // The turn-limit question has no auto-approve: only Continue/Stop.
+    if (auto && req.purpose !== "continue") {
       const key = autoKey(req.tool, req.manifest?.digest);
       autoApproved = {
         ...autoApproved,
@@ -608,49 +666,61 @@ import { currentProfile } from './lib/toolProfiles';
 {#if approvals.length > 0}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
     <div class="w-[520px] max-w-[92vw] rounded-xl border border-ink-600 bg-ink-900 p-5 shadow-2xl">
-      <div class="text-[15px] font-semibold text-ink-200">{t("app.approvalRequired")}</div>
-      <div class="mt-1 text-[13px] text-ink-400">
-        {t("app.approvalWaiting")}
-      </div>
-      <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
-        <div class="font-mono text-[13px] text-accent">{approvals[0].tool}</div>
-        {#if approvals[0].manifest}
-          <div class="mt-2 space-y-0.5 font-mono text-[12px] text-ink-300">
-            <div>digest: <span class="text-accent">{approvals[0].manifest.digest.slice(0, 16)}…</span></div>
-            {#if approvals[0].manifest.tools?.length}
-              <div>tools: {approvals[0].manifest.tools.join(", ")}</div>
-            {/if}
-            {#if approvals[0].manifest.maxCalls != null}
-              <div>maxCalls: {approvals[0].manifest.maxCalls}</div>
-            {/if}
-            {#if approvals[0].manifest.timeoutMs != null}
-              <div>timeoutMs: {approvals[0].manifest.timeoutMs}</div>
-            {/if}
-            {#if approvals[0].manifest.source}
-              <div>full source: {approvals[0].manifest.source}</div>
-            {/if}
-          </div>
-        {/if}
-        <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
-      </div>
+      <div class="text-[15px] font-semibold text-ink-200">{approvals[0].purpose === "continue" ? t("app.continueTitle") : t("app.approvalRequired")}</div>
+      {#if approvals[0].purpose === "continue"}
+        <!-- The turn-limit "keep going?" question: the same approval
+             transport and reply protocol, but never a tool call — no tool
+             name, args or manifest, and no auto-approve. -->
+        <div class="mt-1 text-[13px] text-ink-400">
+          {t("app.continueBody", { dimension: dimensionLabel(approvals[0].dimension) })}
+        </div>
+        <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
+          <div class="font-mono text-[13px] text-accent">{approvals[0].detail}</div>
+        </div>
+      {:else}
+        <div class="mt-1 text-[13px] text-ink-400">
+          {t("app.approvalWaiting")}
+        </div>
+        <div class="mt-3 rounded-lg border border-ink-600 bg-ink-800 p-3">
+          <div class="font-mono text-[13px] text-accent">{approvals[0].tool}</div>
+          {#if approvals[0].manifest}
+            <div class="mt-2 space-y-0.5 font-mono text-[12px] text-ink-300">
+              <div>digest: <span class="text-accent">{approvals[0].manifest.digest.slice(0, 16)}…</span></div>
+              {#if approvals[0].manifest.tools?.length}
+                <div>tools: {approvals[0].manifest.tools.join(", ")}</div>
+              {/if}
+              {#if approvals[0].manifest.maxCalls != null}
+                <div>maxCalls: {approvals[0].manifest.maxCalls}</div>
+              {/if}
+              {#if approvals[0].manifest.timeoutMs != null}
+                <div>timeoutMs: {approvals[0].manifest.timeoutMs}</div>
+              {/if}
+              {#if approvals[0].manifest.source}
+                <div>full source: {approvals[0].manifest.source}</div>
+              {/if}
+            </div>
+          {/if}
+          <pre class="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap font-mono text-[12px] text-ink-300">{prettyArgs(approvals[0].args)}</pre>
+        </div>
+      {/if}
       {#if approvals.length > 1}
         <div class="mt-2 text-[12px] text-ink-400">{t("app.moreWaiting", { n: String(approvals.length - 1) })}</div>
       {/if}
-      {#if (autoApproved[approvals[0].sessionId] ?? []).length > 0}
+      {#if approvals[0].purpose !== "continue" && (autoApproved[approvals[0].sessionId] ?? []).length > 0}
         <div class="mt-2 text-[12px] text-ink-400">
           {t("app.autoApproving")} <span class="font-mono">{autoApproved[approvals[0].sessionId].join(", ")}</span>
         </div>
       {/if}
       <div class="mt-4 flex items-center justify-between gap-2">
-        <span class="text-[11px] text-ink-400">{t("app.enterEsc")}</span>
+        <span class="text-[11px] text-ink-400">{approvals[0].purpose === "continue" ? t("app.continueHint") : t("app.enterEsc")}</span>
         <div class="flex gap-2">
           <button
             class="rounded-lg border border-ink-600 px-4 py-1.5 text-[13px] text-ink-300 hover:bg-ink-800"
             onclick={() => answerApproval(false)}
           >
-            {t("app.deny")}
+            {approvals[0].purpose === "continue" ? t("app.continueNo") : t("app.deny")}
           </button>
-          {#if approvals[0].sessionId}
+          {#if approvals[0].purpose !== "continue" && approvals[0].sessionId}
             <button
               class="rounded-lg border border-accent-dim/50 px-4 py-1.5 text-[13px] text-accent hover:bg-accent-dim/10"
               title={t("app.autoApproveTitle")}
@@ -663,7 +733,7 @@ import { currentProfile } from './lib/toolProfiles';
             class="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-semibold text-ink-950 hover:opacity-90"
             onclick={() => answerApproval(true)}
           >
-            {t("app.approve")}
+            {approvals[0].purpose === "continue" ? t("app.continueYes") : t("app.approve")}
           </button>
         </div>
       </div>

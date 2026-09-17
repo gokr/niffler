@@ -752,18 +752,24 @@ proc continuable(child, caller: string): tuple[
                    e.msg, "", 0)
   return (true, "", subject, activation)
 
+proc refreshTurns() =
+  ## Poll the ev.session.turn tap before reading live turn state.
+  ##
+  ## The tap is only drained while a handler WAITS (SDK pumpTaps), so a
+  ## handler entered right after a child's turn returned still sees the child
+  ## as "running": `agent_ask` then queued its question as mail instead of
+  ## asking it (tests/t_agentp3.nim P3.10a, which fails identically on main —
+  ## a tap-staleness bug, not a queue-order one). One non-blocking poll; a
+  ## no-op when nothing is queued.
+  discard comp.pumpTaps(64)
+
 proc busyChild(child: string): bool =
   ## True when the child's runner is holding a turn right now. Answered from
   ## the ev.session.turn tap (the catalog has no turn state). Used to refuse
   ## `agent_run {session}` with a clear `busy` instead of queueing a caller
-  ## that promised it wanted the result now.
-  ##
-  ## Apply already-received turn events before reading the cache: the SDK
-  ## drains the call binding before the tap bindings, so a tool call that
-  ## follows a just-finished child turn can be handled while that turn's
-  ## `done` event is still queued — a cold read would report a freshly idle
-  ## child as busy (a spurious `busy` refusal, or a needlessly queued ask).
-  discard comp.pumpTaps(200)
+  ## that promised it wanted the result now. The tap is refreshed first so a
+  ## turn that just ended is not still counted (see refreshTurns).
+  refreshTurns()
   child in liveTurns
 
 proc effectiveControls(child: string): JsonNode =
@@ -831,7 +837,7 @@ proc childSessArgs(child, task, model, thinking: string,
       if toolArgs{"tools"} != nil and toolArgs{"tools"}.kind == JArray:
         result["tools"] = toolArgs{"tools"}
       let mr = toolArgs{"maxRounds"}.getInt(0)
-      if mr >= 1 and mr <= 50:
+      if mr >= 1:
         result["maxRounds"] = %mr
       # per-job budgets (frozen per-session controls enforced by core): total
       # tool dispatches and cumulative tokens for the child's whole turn
@@ -974,7 +980,7 @@ let runSchema = toolSchema(%*{
   "tools": {"type": "array",
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
-                "description": "Optional tool-round budget per child turn (1-50, default 50)"},
+                "description": "Optional hard tool-round budget per child turn (1-NIF_MAX_TURN_ROUNDS; omitted uses the server default)"},
   "maxCalls": {"type": "integer",
                "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
   "maxTokens": {"type": "integer",
@@ -1119,7 +1125,7 @@ let spawnSchema = toolSchema(%*{
   "tools": {"type": "array",
             "description": "Optional tool allowlist for the subagent (frozen for the child conversation; it may dispatch only these tools)"},
   "maxRounds": {"type": "integer",
-                "description": "Optional tool-round budget per child turn (1-50, default 50)"},
+                "description": "Optional hard tool-round budget per child turn (1-NIF_MAX_TURN_ROUNDS; omitted uses the server default)"},
   "maxCalls": {"type": "integer",
                "description": "Optional total tool-dispatch budget for the child's turn (1-500); the turn ends as budget-exhausted once it is spent"},
   "maxTokens": {"type": "integer",
@@ -1364,7 +1370,11 @@ discard comp.tool("agent_steer", steerSchema,
     # steer subscription dies with it — so queue durably instead and let the
     # child's next turn-top drain fold it in (same pull lane as settlement
     # notices, P0.1; same kind, direction parent-mail).
-    if busyChild(sessionId):
+    if sessionId in liveTurns:
+      # Refresh first: publishing a steer to a child that has just gone idle
+      # would be swallowed (its runner's steer subscription goes away with
+      # the turn), so a stale "running" silently drops the message.
+      refreshTurns()
       comp.emit("svc.session." & sanitizeSessionId(sessionId) & ".steer",
                 %*{"content": message})
       return okResult(%*{"published": true, "sessionId": sessionId})
@@ -1581,6 +1591,9 @@ discard comp.tool("agent_list", listSchema,
     except CatchableError:
       discard  # status falls back to ready; the roster still lists
     var listing = newJArray()
+    # Refresh once for the whole listing: a child whose turn just returned
+    # must not be reported as still running.
+    refreshTurns()
     for row in rows:
       let child = row{"sessionId"}.getStr("")
       var entry = %*{"sessionId": child, "parent": row{"parent"},

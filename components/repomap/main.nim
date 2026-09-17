@@ -5,15 +5,18 @@
 ## - tool `repo_map {workspace?, focus?, mentionedIdents?, budget?}`:
 ##   onDemand, read-effect. The ranked, budget-capped map — the model's
 ##   explicit pull, and the only surface on by default.
-## - auto-append (**opt-in**, NIF_REPOMAP_AUTOAPPEND=1): core announces every
-##   conversation workspace on ev.workspace.opened (already carries the
-##   conversation id). We build the map and publish it to
+## - auto-append (**opt-in**, NIF_REPOMAP_AUTOAPPEND=1, and gated): core
+##   announces every conversation workspace on ev.workspace.opened (already
+##   carries the conversation id). We build the map and publish it to
 ##   svc.session.<id>.map, where the session runner drains it
 ##   (core/dispatch.nim pumpMap) and appends it to history once. The map
 ##   arrives rather than being sought, because onDemand tools never activate
-##   on their own (zero discover calls in 58 Multi10 cells) — but the A/B says
-##   paying for it up front is net-negative, hence opt-in: see
-##   bench/reports/repomap-ab-{full30,multi10}.md.
+##   on their own (zero discover calls in 58 Multi10 cells) — but the A/B
+##   says paying for it up front is net-negative on average and the sign is
+##   regime-shaped, hence opt-in (bench/reports/repomap-ab-*.md). Admission
+##   gates (docs/research/REPOMAP-GATES.md): a workspace below the census
+##   floor never builds; a rendered stub (byte/symbol/file counts) never
+##   publishes. Withheld maps are logged; the tool path is never gated.
 ##
 ## Every failure is silent or a structured error: no language server, no
 ## grammars for the languages present, an unreadable file — none of it may
@@ -35,6 +38,30 @@ const
   BUILD_TIMEOUT_MS = 90_000    # per-build cap inside the tool's 120s
   TAGS_CACHE_DIR = "var" / "repomap-tags"   # CACHE_VERSION lives in the dir
                                              # name when the format changes
+
+# Admission gates for the auto-append only (docs/research/REPOMAP-GATES.md);
+# the repo_map tool is never gated. Thresholds calibrated from the bench
+# stores' published maps: the stub class (pre-language-tier lanes) sat at
+# 4-9 symbols across 1-4 files in 100-3100 bytes, healthy maps at 59-119
+# symbols across 19-48 files in 3.5-4.6KB; micro repos (full30) census 1-31
+# files, real OSS repos (Multi10) 72-1552. Overridable per-run for the bench.
+const
+  MAP_MIN_BYTES = 800          # rendered map body — below this it is a stub
+  MAP_MIN_SYMBOLS = 25         # rendered symbol rows
+  MAP_MIN_FILES = 5            # files with at least one rendered symbol
+  MIN_WORKSPACE_CENSUS = 50    # covered source files; below this the map
+                               # cannot pay (nothing to orient)
+
+proc intEnv(name: string, dflt: int): int =
+  ## Positive-int env override; garbage or non-positive falls back to the
+  ## default (a zeroed gate would silently admit everything).
+  let raw = getEnv(name, "")
+  if raw.len == 0: return dflt
+  try:
+    result = parseInt(raw)
+  except ValueError:
+    return dflt
+  if result <= 0: return dflt
 
 const skipDirs = ["node_modules", "vendor", "dist", "build", "target",
                   "__pycache__", ".venv", "venv", "nimcache", "obj",
@@ -114,13 +141,15 @@ proc relTo(ws, p: string): string =
   let r = if p.startsWith(ws): p[ws.len ..< p.len] else: p
   return r.strip(chars = {'/'}).replace('\\', '/')
 
-proc buildFor(ws: string, opts: ScoreOptions): string =
-  ## Census + cached tags + scored map. Deterministic for identical repo
-  ## state (sorted census, stable scoring), so the same workspace yields a
-  ## byte-identical map — the append's cache-stability requirement.
+proc buildFor(ws: string, opts: ScoreOptions): MapStats =
+  ## Census + cached tags + scored map, with the append gates' counts.
+  ## Deterministic for identical repo state (sorted census, stable
+  ## scoring), so the same workspace yields a byte-identical map — the
+  ## append's cache-stability requirement. Tool and append share this;
+  ## the gates are applied by the caller (appendCensusOk/gatePasses).
   let wsAbs = absolutePath(ws)
   let srcFiles = census(wsAbs)
-  if srcFiles.len == 0: return ""
+  if srcFiles.len == 0: return
   var tagsOf = proc(rel: string): seq[Tag] =
     let abs = wsAbs / rel
     if not fileExists(abs): return
@@ -140,7 +169,29 @@ proc buildFor(ws: string, opts: ScoreOptions): string =
   let rels = srcFiles.mapIt(relTo(wsAbs, it))
   var opts2 = opts
   # focus paths arrive relative to the workspace already
-  return buildMap(rels, opts2, tagsOf)
+  result = buildMapStats(rels, opts2, tagsOf)
+
+proc appendCensusOk(ws: string): bool =
+  ## Size floor (gate 4): the census alone decides — no tag parsing for a
+  ## workspace too small to orient in. Cheaper than buildFor and it is the
+  ## first check the append handler runs.
+  census(absolutePath(ws)).len >= intEnv("NIF_REPOMAP_MIN_CENSUS",
+                                         MIN_WORKSPACE_CENSUS)
+
+proc appendGateReason(st: MapStats): string =
+  ## Content gate (gate 3): "" when the map is substantive enough to
+  ## inject, else a short reason for the withheld log line.
+  let minBytes = intEnv("NIF_REPOMAP_MIN_BYTES", MAP_MIN_BYTES)
+  let minSyms = intEnv("NIF_REPOMAP_MIN_SYMBOLS", MAP_MIN_SYMBOLS)
+  let minFiles = intEnv("NIF_REPOMAP_MIN_FILES", MAP_MIN_FILES)
+  if st.text.len == 0: return "empty"
+  if st.text.len < minBytes:
+    return "stub: " & $st.text.len & "B < " & $minBytes & "B"
+  if st.symbols < minSyms:
+    return "stub: " & $st.symbols & " syms < " & $minSyms
+  if st.files < minFiles:
+    return "stub: " & $st.files & " files < " & $minFiles
+  ""
 
 proc resolveFocus(ws: string, args: JsonNode): seq[string] =
   if args{"focus"} == nil or args{"focus"}.kind != JArray: return
@@ -174,7 +225,8 @@ proc hRepoMap(c: Component, args: JsonNode): JsonNode =
                           mentionedIdents: mentioned,
                           budgetTokens: budget)
   let t0 = epochTime()
-  let map = buildFor(absolutePath(ws), opts)
+  let st = buildFor(absolutePath(ws), opts)
+  let map = st.text
   let ms = ((epochTime() - t0) * 1000).int
   if map.len == 0:
     return %*{"ok": true,
@@ -199,7 +251,7 @@ discard comp.tool("repo_map", toolSchema(%*{
   "budget": {"type": "integer", "minimum": 32, "maximum": 4096,
            "description": "Map size in tokens (default 1024, max 4096)"}
 }, @[],
-  "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. It is also appended to the conversation automatically at start when available."), hRepoMap,
+  "A ranked map of a workspace: the load-bearing files and their key definitions, in ~1KB. Use it to orient in an unfamiliar repo or to re-orient after a big refactor — it answers what the repo contains and what matters, before any grep or read. Pass focus (files you are working on) to rank around your work; pass mentionedIdents for symbols the task names. The map is a snapshot: it does not track your edits — call again for a fresh one. The workspace-open auto-append is opt-in and gated, so do not rely on seeing it: call this when you need orientation."), hRepoMap,
   %*{"timeoutMs": 300000, "onDemand": true, "effect": "read",
      "workspace": {"pathFields": ["workspace"]}})
 
@@ -225,26 +277,42 @@ discard comp.on("ev.workspace.opened") do (c: Component, subject: string,
   # read-effect, so the map is a tool the model discovers when a large
   # unfamiliar repo warrants it rather than context injected into every
   # conversation (the model asks, nothing is injected).
+  #
+  # Admission gates (docs/research/REPOMAP-GATES.md): even opted in, the
+  # append is withheld unless the workspace is big enough (size floor,
+  # decided by the census before any parsing) and the rendered map is
+  # substantive (content gate). The tool path below/alone is never gated —
+  # a small map is a fine answer to an explicit question, just not worth
+  # injecting unasked. Thresholds are env-overridable for the bench.
   if getEnv("NIF_REPOMAP_AUTOAPPEND", "0") notin ["1", "true", "yes"]:
     return
   let ws = payload{"workspace"}.getStr("")
   let convId = payload{"conversationId"}.getStr("")
   if ws.len == 0 or convId.len == 0 or not dirExists(ws): return
   try:
-    let map = buildFor(absolutePath(ws), ScoreOptions(
+    if not appendCensusOk(ws):
+      c.log("info", "repo map withheld for " & convId &
+            " (workspace below census floor)")
+      return
+    let st = buildFor(absolutePath(ws), ScoreOptions(
         budgetTokens: MAP_DEFAULT_BUDGET))
-    if map.len == 0: return
+    let reason = appendGateReason(st)
+    if reason.len > 0:
+      c.log("info", "repo map withheld for " & convId & " (" & reason & ")")
+      return
     publish(c.nc, "svc.session." & sanitizeSessionId(convId) & ".map",
       Envelope(v: 1, id: newId(), kind: ekEvent,
                payload: %*{"workspace": ws, "conversationId": convId,
-                           "map": map}).encode())
+                           "map": st.text}).encode())
     c.log("info", "repo map published for " & convId & " (" &
-          $map.len & " bytes)")
+          $st.text.len & " bytes, " & $st.symbols & " syms)")
   except CatchableError as e:
     c.log("info", "repo map build failed: " & e.msg)
 
 discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
-  ## /doctor deep: map a tiny temp workspace and require real defs.
+  ## /doctor deep: map a tiny temp workspace and require real defs, then
+  ## exercise both append gates on the same code path — the tiny workspace
+  ## must be withheld, a padded one admitted.
   var ok = true
   var checks = newJArray()
   proc check(name: string, cond: bool, detail = "") =
@@ -258,11 +326,28 @@ discard comp.selfTest(proc(c: Component, args: JsonNode): JsonNode =
     writeFile(dir / "a.nim", "proc alpha(x: int): int =\n  x\n\n" &
         "proc beta(): int =\n  alpha(2)\n")
     writeFile(dir / "b.py", "class Alpha:\n    def walk(self):\n        pass\n")
-    let m = buildFor(absolutePath(dir), ScoreOptions(budgetTokens: 512))
-    check("nim+py map has defs", m.contains("alpha") and
-          m.contains("walk"), m)
-    check("map mentions both files", m.contains("a.nim") and
-          m.contains("b.py"), m)
+    let st = buildFor(absolutePath(dir), ScoreOptions(budgetTokens: 512))
+    check("nim+py map has defs", st.text.contains("alpha") and
+          st.text.contains("walk"), st.text)
+    check("map mentions both files", st.text.contains("a.nim") and
+          st.text.contains("b.py"), st.text)
+    check("tiny workspace fails the size floor", not appendCensusOk(dir))
+    check("tiny workspace fails the content gate",
+          appendGateReason(st).len > 0, appendGateReason(st))
+    # padded past both gates: 60 files x 4 defs each
+    for i in 0 ..< 60:
+      var src = ""
+      for j in 0 ..< 4:
+        src.add("proc fn" & $i & "x" & $j & "(x: int): int =\n  x + " &
+                $j & "\n\n")
+      writeFile(dir / ("pad" & $i & ".nim"), src)
+    let st2 = buildFor(absolutePath(dir), ScoreOptions(budgetTokens: 4096))
+    check("padded workspace clears the size floor", appendCensusOk(dir),
+          $census(absolutePath(dir)).len)
+    check("padded workspace clears the content gate",
+          appendGateReason(st2).len == 0,
+          appendGateReason(st2) & " syms=" & $st2.symbols &
+          " files=" & $st2.files & " bytes=" & $st2.text.len)
     removeDir(dir)
   except CatchableError as e:
     check("selftest build", false, e.msg)

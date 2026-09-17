@@ -32,9 +32,10 @@ must never enter the conversation, edit-then-verify, polling loops.
 ## Program anatomy
 
 ```nim
-import fabricguest   # the ONLY required import; provides the bridge procs
-# std/strutils, std/json, std/tables … are allowed; std/os, std/net,
-# std/osproc are lint-banned — guests must not touch the host directly
+import fabricguest   # the ONLY required Niffler import; provides bridge procs
+# Standard-library imports such as std/strutils, std/json, std/tables and
+# std/os are allowed. Fabric is approved native code, not a filesystem/network
+# sandbox; route Niffler effects through the bridge when they need governance.
 
 # Typed mode: pass tools: [...] to pin an execution allowlist + schemas,
 # then call typed wrappers tools.<name>(...) — arguments compile-checked,
@@ -63,9 +64,9 @@ finish($(%*{"answer": ...}))     # the ONLY thing that reaches the conversation
    slowest call, not the sum.
 3. **Big data** — the program holds the volume (logs, large outputs); the
    chat sees only the final value. Data volume unbounded, answer small.
-4. **Poll until ready** — a while loop of `tools.bash(command = "sleep 2")`
-   plus the real check; `finish` the last status. Guests may not import
-   std/os, so waiting is a bash sleep.
+4. **Poll until ready** — use a bounded loop with a short native sleep or a
+   `tools.bash(command = "sleep 2")` check; `finish` the last status. Keep
+   polling bounded by the program deadline.
 5. **Edit-then-verify** — `tools.edit(...)` then `tools.bash("make test …")`;
    if broken, edit again to revert before finishing. `finish` only the
    outcome.

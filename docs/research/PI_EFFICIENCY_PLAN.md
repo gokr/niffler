@@ -1,5 +1,10 @@
 # Pi Efficiency Plan
 
+> Historical prioritization plan derived from [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md).
+> Runner fan-out, replicas, Go concurrency, usage accounting, retries and the
+> context/compaction work have since landed; the remaining open items below are
+> retained as research. Current behavior is in [../MANUAL.md](../MANUAL.md).
+>
 > Operating plan derived from [PI_EFFICIENCY_FINDINGS.md](PI_EFFICIENCY_FINDINGS.md)
 > (same directory). Ordered by **impact ÷ effort**, split into phases. Each item
 > names the wire/spec implications where they exist, because Niffler's core
@@ -20,7 +25,7 @@ serialized unless explicitly registered concurrency-safe.
 
 ---
 
-## Phase 1 — Concurrency + cheap wins (this branch)
+## Phase 1 — Concurrency + cheap wins (historical; mostly shipped)
 
 ### B1a. Runner fan-out: cross-component parallelism *(no threads)* ☑
 - **What:** replace `for tc in toolCalls:` in `core/conversation.nim` with a
@@ -132,37 +137,20 @@ serialized unless explicitly registered concurrency-safe.
 
 ## Phase 2 — Token-efficiency core (the big one)
 
-### A1. LLM-backed compaction — as a separate component
-- **Decision (2026-08):** compaction techniques live in their own component(s),
-  not wired into the conversation loop. Compaction is a wide field —
-  checkpoint summaries, mid-turn splits, semantic clustering, retrieval
-  repair — and the harness's own discipline says replaceable capabilities are
-  components (docs/ARCHITECTURE.md). The runner keeps only a thin seam: ask
-  the component for a compacted message list when the usage guard triggers;
-  absent/broken component → current trim behavior as fallback.
-- **What:** a `compaction` component receiving the serialized conversation and
-  returning a structured checkpoint (`## Goal / Progress / Key Decisions /
-  Next Steps / Critical Context` — port pi `compaction.ts` + `utils.ts`
-  `serializeConversation`, truncated tool results to 2K chars), iteratively
-  updating the previous summary instead of regenerating, appending
-  `<read-files>/<modified-files>` tracked from tool calls, and injecting a
-  compaction system message in place of the dropped turns (new message role
-  per `docs/WIRE.md`).
-- **Spec:** new role/kind in the store (`kind=compaction` entry), a
-  `compaction` tool or a runner-internal LLM call (reuse `svc.llm` `chat` with
-  a small model — cheap), and the summarization prompt living where prompts
-  live today (systemprompt component or baked const).
-- **Effort:** large (the design record above is the pattern; port it, don't
-  invent). Defer the mid-turn split and pre-turn trigger until the basic
-  path works.
-- **Why first-class:** this is the single biggest token + capability win on
-  long tasks; Phase-1 A2/A3 make its trigger and its cost visible.
+### A1. LLM-backed compaction — shipped
 
-### A4. Bash full-output temp file
-- **What:** on truncation, spill the full output to `var/logs/<conv>/…` and
-  include the path + a read hint in the result (pi `output-accumulator.ts`).
-- **Effort:** small. Real token savings on build/test-heavy tasks; pairs with
-  `edit`'s read for selective re-reads.
+The proposed separate `compaction` component and runner-owned validation landed,
+with durable projections, recall links, deterministic fallback pruning, cache
+accounting and bounded provider-overflow recovery. The exact contract and
+remaining deferred strategies are recorded in
+[research/COMPACTION.md](COMPACTION.md) and the manual. This plan's original
+`kind=compaction`/system-message sketch is historical, not the wire contract.
+
+### A4. Bash full-output temp file — shipped
+
+Oversized bash output spills to a pageable file and returns a read hint; the
+same pointer convention is used by other bounded-output tools. See the
+[manual](../MANUAL.md#bash) for caps and paths.
 
 ### A5. Grep early-kill + line truncation
 - **What:** in `components/grep/main.nim`, kill rg as soon as `max_results` is
@@ -216,11 +204,11 @@ serialized unless explicitly registered concurrency-safe.
 | 5 | **B3** LLM auto-retry | small ☑ | saves human round-trips constantly |
 | 6 | **A2** usage-accurate accounting | small–med ☑ | makes compaction reliable |
 | 7 | **A3** cache-waste reporting | small ☑ | makes efficiency measurable |
-| 8 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins |
+| 8 | **A4/B5/B4** bash temp-file, rg download, length-stop | small | everyday wins; A4 shipped |
 | 9 | **C1** session tree + branch summaries | large | strategic; reuses A1 machinery |
 | 10 | **B1b** worker-aware Nim pump | large/deferred | parallel reads in mixed stateful components |
 
-B1a, B2, and B1c are shipped. Continue with **A1**; implement B1b when a
-mixed stateful component needs call-level concurrency that replicas cannot
-safely provide. Wire implications are marked per item — nail the compaction
-message role before coding A1.
+B1a, B2, B1c and A1 are shipped. Continue with **C1** or the remaining
+small backlog; implement B1b when a mixed stateful component needs call-level
+concurrency that replicas cannot safely provide. The compaction message-role
+sketch in this historical plan is superseded by the shipped contract.

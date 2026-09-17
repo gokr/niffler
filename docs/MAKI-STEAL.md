@@ -65,25 +65,25 @@ callable by construction. Timeouts: **awaiting a tool call does not count**
 against the script budget (the clock stops while parked in the host); memory
 capped (50 MB), output capped (2000 lines/50 KB), fresh sandbox per run.
 
-Niffler today: fabric runs LLM-written **Nim** in a VM-embedding guest with
-framed stdio bridge, leases, selected-tool typed wrappers, `finish()` value.
-Stronger security story (native Nim, no NATS/creds, RLIMIT). Weaker
-ergonomics story: models write Python far more fluently than Nim, and every
-fabric compile error costs a round trip Maki never pays (Python is
-interpreted, errors are runtime values the model can fix in-place).
+Niffler today: Fabric runs LLM-written **Nim** as a compiled native guest
+with a framed stdio bridge, leases, selected-tool typed wrappers and a
+`finish()` value. The guest has no NATS credentials and resource limits, but
+approved code remains bash-class trust rather than a security sandbox. Its
+trade-off is explicit compilation: models write Python more fluently than Nim,
+and a compile error costs a round trip Maki never pays.
 
 Borrow (into fabric, no rewrite needed):
-1. **Error-isolated fan-out helper** — a fabric guest library fn that runs N
-   tool calls and returns per-call `ok/err` results instead of failing the
-   program on first error. Our typed wrappers make this easy; today one
-   failed call in a loop kills the run.
+1. **Keep error-isolated fan-out (`batch`) prominent** — Niffler now has a
+   bounded `batch(...)` helper that returns per-call `ok/err` results without
+   aborting siblings. Plain sequential `callTool` loops remain fail-fast by
+   design when each result changes the next step.
 2. **Tool-await time doesn't count against the guest deadline** — fabric's
    kill timeout currently includes time parked in the parent dispatch gate.
    Monotonic deadlines exist in the bridge; subtracting nested-call wait time
    makes long fan-outs viable under a tight guest budget.
-3. **Signature injection into the fabric tool description** — advertise the
-   selected-tool mode as `tools.grep(pattern, include) -> str` style lines so
-   the model sees the callable surface without reading wrapper docs.
+3. **Signature injection is shipped** — selected tools receive generated,
+   schema-pinned typed wrappers in `fabricmeta`; retain the idea when extending
+   the structured guest API.
 4. **Python guest dialect** (bigger call, flag for later): a monty-style
    embedded Python guest alongside the Nim guest. Monty itself is Rust (not
    linkable from Nim cheaply), but Wasm-based Python (wasmtime + CPython
