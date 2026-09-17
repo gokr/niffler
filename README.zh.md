@@ -21,11 +21,21 @@ Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能�
   配置）、`skills`、`plugins`、`repomap`、`processes`（后台任务）、
   `fetch`、`grep`、`edit`，以及观测总线的 `observe`/`logfile` 和 LLM 接入
   的 `models`/`provider`。
+- **聚焦开源模型。** 只有一套适配器，没有厂商锁定：默认的 `openai-chat`
+  协议使用标准 Chat Completions，任何 OpenAI 兼容端点都能接入——DeepSeek、
+  OpenRouter、本地 vLLM/llama.cpp/Ollama——通过 `.env` 或由 store 持久化的
+  `provider` 注册表配置，并可在运行时切换。需要托管模型时，也支持 Anthropic
+  Messages 以及 ChatGPT/Claude 订阅 OAuth。
 - **语言无关的架构。** 提供 Nim、Go 和 TypeScript SDK；为某语言添加支持
   只需一条配置或一个插件组件，无需修改共享组件。
 - **总线就是 API。** 所有客户端——`niffler-tui` 终端客户端、Web UI、
   `niffler-cli` 脚本和 CI、`niffler-console`——都只是总线上的普通成员：
   任何能收发 JSON 信封的程序都可以观察、脚本化或驱动对话。
+- **UI 只是总线客户端。** 客户端本身不保存对话状态，因此可以多个同时连接
+  同一个 harness——终端客户端、桌面应用、你自己的脚本——而且每个 UI 都独立
+  构建、独立安装。桌面 UI 随本仓库发布（`make install-ui`）；终端客户端则是
+  独立仓库中的插件（[gokr/niffler-tui](https://github.com/gokr/niffler-tui)，
+  用 `make install-tui` 安装）——这正好证明 UI 只是另一个组件。
 - **默认遵守缓存与成本纪律。** 对话的系统提示词和直接工具 schema 在创建时
   冻结，历史只追加，因此 provider 的 prompt cache 能持续命中；大型工具集
   通过 `discover`/`invoke` 按需获取，不会让每次请求都膨胀。

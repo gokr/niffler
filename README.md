@@ -26,6 +26,13 @@ home.
   as data), `skills`, `plugins`, `repomap`, `processes` (background jobs),
   `fetch`, `grep`, `edit`, plus `observe`/`logfile` for the bus and
   `models`/`provider` for LLM access.
+- **Focused on open models.** One adapter, no vendor lock-in: the default
+  `openai-chat` protocol speaks plain Chat Completions, so any
+  OpenAI-compatible endpoint works — DeepSeek, OpenRouter, a local
+  vLLM/llama.cpp/Ollama server — configured through `.env` or the
+  store-backed `provider` registry and switchable at runtime. Anthropic
+  Messages and ChatGPT/Claude subscription OAuth are supported when you want
+  a hosted model.
 - **Language-agnostic by construction.** SDKs in Nim, Go and TypeScript;
   adding support for a language is a config entry or a plugin component,
   never a change to shared components.
@@ -33,6 +40,13 @@ home.
   the web UI, `niffler-cli` scripts and CI, `niffler-console` — is just
   another bus citizen: anything that speaks JSON envelopes can observe,
   script or drive conversations.
+- **UIs are just bus clients.** A client holds no conversation state of its
+  own, so several can attach to one harness at the same time — the terminal
+  client, the desktop app, your own scripts — and each UI builds and installs
+  independently. The desktop UI ships in this repo (`make install-ui`); the
+  terminal client is a plugin from a separate repo,
+  [gokr/niffler-tui](https://github.com/gokr/niffler-tui), installed by
+  `make install-tui` — the proof that a UI is just another component.
 - **Cache- and cost-disciplined by design.** A conversation's system prompt
   and direct tool schemas are frozen for its lifetime and history only grows,
   so provider prompt caches keep hitting; large toolsets stay reachable
