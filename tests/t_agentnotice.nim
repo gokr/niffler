@@ -266,6 +266,8 @@ proc main() =
   check("the replyless notice fabricates no summary",
         failNotice{"summary"} == nil and
         failNotice{"replyBytes"}.getInt(-1) == 0, $failNotice)
+  check("failed notice carries the terminal error",
+        failNotice{"error"}.getStr("").len > 0, $failNotice)
 
   # --- 6. a stopped job KEEPS a reply it already produced -----------------
   # Documented behavior: stopping is not erasure — the terminal record reads
@@ -384,7 +386,16 @@ proc main() =
           kids.len == 3 and kids[0]{"lastStatus"}.getStr("") in
             ["done", "failed", "stopped"], $kids)
 
-  # The durable relation the roster derives from, asserted directly so a
+  let externalRoster = call(nc, "agent", "agent_list",
+    %*{"sessionId": listParent, "scope": "descendants"}, 10_000)
+  check("read-only UI roster accepts an explicit parent session",
+        externalRoster{"children"} != nil and
+        externalRoster{"children"}.len == 3, $externalRoster)
+  if externalRoster{"children"} != nil and externalRoster{"children"}.len > 0:
+    check("external roster carries activation timing for badges",
+          externalRoster{"children"}[0]{"startedAt"}.getFloat(0) > 0,
+          $externalRoster{"children"}[0])
+
   # future change to the tool cannot silently empty it.
   var metaChildren = 0
   let metas = call(nc, "store", "list",

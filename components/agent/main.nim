@@ -139,7 +139,7 @@ proc deliverNotice(notice: var JsonNode, immediate: bool) =
     var payload = newJObject()
     payload["kind"] = %"subagent-settled"
     payload["parent"] = %parent
-    for f in ["jobId", "child", "status", "summary", "replyBytes",
+    for f in ["jobId", "child", "status", "summary", "error", "replyBytes",
               "fullReplyIn"]:
       if notice{f} != nil:
         payload[f] = notice{f}
@@ -151,7 +151,7 @@ proc deliverNotice(notice: var JsonNode, immediate: bool) =
     discard  # stays pending; the next turn's drain delivers it
 
 proc emitNotice(c: Component, jobId, parent, child, status,
-                reply: string) =
+                reply, error: string) =
   ## The single writer of a settlement notice.
   ##
   ## Best-effort by construction: a notice is a convenience for the parent,
@@ -169,6 +169,8 @@ proc emitNotice(c: Component, jobId, parent, child, status,
     "createdAt": epochTime()}
   if reply.len > 0:
     notice["summary"] = %replySummary(reply, reply.len)
+  if error.len > 0:
+    notice["error"] = %error
   try:
     let seqNo = nextNoticeSeq(parent)
     let id = parent & ":" & align($seqNo, 6, '0')
@@ -179,7 +181,8 @@ proc emitNotice(c: Component, jobId, parent, child, status,
   except CatchableError as e:
     stderr.writeLine(c.name & ": notice for " & jobId & " failed: " & e.msg)
   c.emit("ev.agent.notice", %*{"jobId": jobId, "parent": parent,
-                                "child": child, "status": status})
+                                "child": child, "status": status,
+                                "error": error})
 
 proc publishCancel(c: Component, child: string) =
   ## Two-channel turn cancellation: the llm side-channel aborts an in-flight
@@ -951,7 +954,7 @@ proc resolveStale(jobId: string, value: JsonNode): JsonNode =
     return nil  # cannot persist — leave the record alone rather than lie
   emitNotice(comp, jobId, updated{"parent"}.getStr(""),
              updated{"sessionId"}.getStr(""), updated{"status"}.getStr(""),
-             updated{"reply"}.getStr(""))
+             updated{"reply"}.getStr(""), updated{"error"}.getStr(""))
   comp.emit("ev.agent.done", %*{"jobId": jobId,
                                 "sessionId": updated{"sessionId"},
                                 "status": updated{"status"}})
@@ -1532,14 +1535,18 @@ proc liveRunnerSet(c: Component): HashSet[string] =
 let listSchema = toolSchema(%*{
   "scope": {"type": "string",
             "description": "children (default) lists direct children only; descendants walks the whole tree below you",
-            "enum": ["children", "descendants"]}
+            "enum": ["children", "descendants"]},
+  "sessionId": {"type": "string",
+                "description": "Read-only UI override for the parent conversation; normal model calls omit it and use injected session context"}
 }, description = "List your subagent children by durable session id, with what each is doing. Entries carry the child session id, its status, the jobId of its last activation, and the task it was given. Status is running (working right now), idle (resident between turns), or ready (exists in storage only — resumable, NOT finished and not a result waiting to be collected). Use it to remember which children you started and to decide how to reach one: agent_steer for a running turn, agent_wait/agent_status for a job's result, agent_spawn/agent_run with session to give it more work. You are told when a child settles (see the settlement notices), so this is for orientation, not for polling.")
 listSchema["x-harness"] = %*{"onDemand": true, "sessionId": true}
 discard comp.tool("agent_list", listSchema,
   proc(c: Component, toolArgs: JsonNode): JsonNode =
-    let caller = toolArgs{"__session"}{"session"}.getStr("")
+    var caller = toolArgs{"__session"}{"session"}.getStr("")
     if caller.len == 0:
-      return errResult("agent_list needs a live session context")
+      caller = toolArgs{"sessionId"}.getStr("")
+    if caller.len == 0:
+      return errResult("agent_list needs a live session context or sessionId")
     let wantDescendants = toolArgs{"scope"}.getStr("children") == "descendants"
     var metas: seq[JsonNode]
     var readError = ""
@@ -1584,10 +1591,19 @@ discard comp.tool("agent_list", listSchema,
       for item in c.storeList("agentjob", "", 1000, 10_000):
         let child = item.value{"sessionId"}.getStr("")
         if child.len == 0: continue
-        let at = item.value{"startedAt"}.getFloat(0)
+        var value = item.value
+        # Lazy restart recovery, the same rule agent_status applies: reconcile
+        # a non-terminal record against the live catalog and the child
+        # transcript BEFORE deriving a status from it — otherwise a job whose
+        # completion tap was lost would leave the roster reading "running"
+        # forever (the badge would never disappear).
+        if value{"status"}.getStr("") in ["running", "stopping"]:
+          let resolved = resolveStale(item.id, value)
+          if resolved != nil: value = resolved
+        let at = value{"startedAt"}.getFloat(0)
         if not lastJob.hasKey(child) or
             lastJob[child].value{"startedAt"}.getFloat(0) <= at:
-          lastJob[child] = (id: item.id, value: item.value)
+          lastJob[child] = (id: item.id, value: value)
     except CatchableError:
       discard  # status falls back to ready; the roster still lists
     var listing = newJArray()
@@ -1607,7 +1623,12 @@ discard comp.tool("agent_list", listSchema,
         entry["jobId"] = %jobId
         if job{"status"} != nil: entry["lastStatus"] = job{"status"}
         if job{"task"} != nil: entry["task"] = job{"task"}
-      if child in liveTurns:
+        if job{"startedAt"} != nil: entry["startedAt"] = job{"startedAt"}
+        if job{"error"} != nil: entry["error"] = job{"error"}
+      let lastStatus = if lastJob.hasKey(child):
+                         lastJob[child].value{"status"}.getStr("")
+                       else: ""
+      if child in liveTurns or lastStatus in ["running", "stopping"]:
         entry["status"] = %"running"
       elif sanitizeSessionId(child) in live:
         entry["status"] = %"idle"
@@ -1695,7 +1716,8 @@ discard comp.tap("_INBOX.agentjob.>",
     if value{"parent"}.getStr("").len > 0:
       emitNotice(c, jobId, value{"parent"}.getStr(""),
                  value{"sessionId"}.getStr(""),
-                 value{"status"}.getStr(""), value{"reply"}.getStr(""))
+                 value{"status"}.getStr(""), value{"reply"}.getStr(""),
+                 value{"error"}.getStr(""))
     c.emit("ev.agent.done", %*{"jobId": jobId,
                                 "sessionId": value{"sessionId"},
                                 "status": value{"status"}}))
