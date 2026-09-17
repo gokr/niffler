@@ -23,6 +23,13 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   billing: a *resource* interruption is retryable, while "insufficient
   balance/funds/credit/quota" stays permanent. Survey, verified facts and the
   remaining backlog live in `docs/research/DEEPSEEK.md`.
+- **web UI: persisted error and system records no longer render as user
+  speech.** `Chat.svelte`'s history loader mapped every role that is not
+  `tool` or `assistant` to `user`, so a turn failure stored as role `error`
+  (round/token budget, limit, abort) reappeared as a user bubble on reload,
+  and runner notices (a trim without summary) looked like something the human
+  typed. Error records use the transcript's error block; system/meta records
+  use the meta block.
 
 ### Changed
 

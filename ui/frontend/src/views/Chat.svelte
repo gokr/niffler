@@ -594,6 +594,15 @@
             context: v.context,
             usage: v.usage,
           });
+        } else if (v.role === "error") {
+          // Turn failures persist as role "error" (round/token budgets,
+          // limits, aborts). Rendering them as user text read as a stray
+          // prompt on every reload; the transcript has an error block.
+          stored.push({ role: "error", content: v.content ?? "" });
+        } else if (v.role === "system" || v.role === "meta") {
+          // System notices persisted by the runner (e.g. a trim without
+          // summary) are informational, not user speech.
+          stored.push({ role: "meta", content: v.content ?? "" });
         } else {
           stored.push({ role: "user", content: v.content ?? "" });
         }
