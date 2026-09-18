@@ -193,6 +193,15 @@ proc main() =
 
   # --- hover: position conversion (fixture echoes the zero-based wire pos)
   writeFile(tmp / "main.nx", "let wobble = 1\nfn main() {}\n")
+  # Count only the handshakes THIS pair causes: the fixture log is cumulative,
+  # and earlier checks legitimately start their own instances (the
+  # out-of-workspace `cross` case gets its own root and its own server), so an
+  # absolute count of one was never right — it passed only while every earlier
+  # call was refused before reaching a server.
+  proc initCount(): int =
+    if not fileExists(fixtureLog): return 0
+    readFile(fixtureLog).splitLines().filterIt(it.startsWith("initialize ")).len
+  let initsBefore = initCount()
   let hv = lspCall(%*{"operation": "hover", "path": "main.nx", "line": 2, "character": 3})
   check("hover converts one-based to zero-based",
         hv{"ok"}.getBool(false) and
@@ -201,9 +210,7 @@ proc main() =
   check("second hover reuses the instance",
         hv2{"ok"}.getBool(false) and
         hv2{"text"}.getStr("") == "hover at line 0 char 0", $hv2)
-  let inits = if fileExists(fixtureLog):
-                readFile(fixtureLog).splitLines().filterIt(it.len > 0).len
-              else: 0
+  let inits = initCount() - initsBefore
   check("exactly one initialize for two queries", inits == 1, $inits)
 
   # --- definition: Location normalization + one-based rendering ----------
