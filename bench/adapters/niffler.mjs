@@ -448,7 +448,8 @@ export class NifflerHarness {
 // split the read tool's single-file sugar from multi-file batches;
 // a 1-item "reads" array returns plain content, so it counts as single).
 export function transcriptShape(items) {
-  const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0 };
+  const shape = { turns: 0, toolCalls: 0, tools: {}, readSingle: 0, readBatch: 0,
+                  leakUrls: [] };
   for (const it of items || []) {
     const v = it.value || {};
     if (v.role !== "assistant") continue;
@@ -468,9 +469,37 @@ export function transcriptShape(items) {
           (Array.isArray(a.windows) && a.windows.length > 1);
         if (batched) shape.readBatch += 1;
         else shape.readSingle += 1;
+      } else if (n === "invoke" || n === "bash") {
+        // Knowledge-isolation check. A SWE-bench instance is derived from a
+        // real merged pull request, so fetching the upstream project (its
+        // issues, PRs, patch) hands the model the graded answer. Prompt rules
+        // are not enforcement — record what each cell actually reached for, so
+        // a leak can never be read as a capability win. Conservative on
+        // purpose: bash is only inspected when the command looks like network
+        // access, and loopback URLs are ignored.
+        let a = {};
+        try {
+          a = JSON.parse(tc.function.arguments || "{}");
+        } catch {}
+        const probes =
+          n === "invoke"
+            ? a.tool === "fetch"
+              ? [JSON.stringify(a.arguments || a.args || {})]
+              : []
+            : /\b(curl|wget)\b|\bgit +(clone|fetch)\b/.test(String(a.command || ""))
+              ? [String(a.command || "")]
+              : [];
+        for (const s of probes) {
+          for (const m of s.matchAll(/https?:\/\/[^\s"'`)]+/g)) {
+            const u = m[0];
+            if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(u)) continue;
+            if (!shape.leakUrls.includes(u)) shape.leakUrls.push(u);
+          }
+        }
       }
     }
   }
+  shape.leaked = shape.leakUrls.length > 0;
   return shape;
 }
 

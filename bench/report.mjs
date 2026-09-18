@@ -95,7 +95,7 @@ for (const r of results) {
     : (r.tokens?.cost || 0);
   const officialCost = costOnBasis(pricing?.official, r.tokens);
   md.push(
-    `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""} | ` +
+    `| ${r.model} | ${r.harness} | ${r.task} | ${r.verdict}${r.invalid ? "*" : ""}${r.leaked ? " ⚠LEAK" : ""} | ` +
       `${r.totalTimeS} | ${r.rounds} | ${r.shape?.turns ?? "-"} | ${fmtTok(totalTokens(r))} | ` +
       `${fmtTok(r.tokens?.input || 0)} | ${fmtTok(r.tokens?.output || 0)} | ` +
       `${fmtTok(r.tokens?.cacheRead || 0)}/${fmtTok(r.tokens?.cacheWrite || 0)} | ` +
@@ -122,6 +122,7 @@ for (const [k, rs] of groups) {
   const [model, harness] = k.split("|");
   const n = rs.length;
   const pass = rs.filter((r) => r.verdict === "pass").length;
+  const leaked = rs.filter((r) => r.leaked);
   const avg = (f) => rs.reduce((s, r) => s + (f(r) || 0), 0) / n;
   const pricing = pricingFor(model);
   const sumProvider = rs.reduce(
@@ -139,9 +140,17 @@ for (const [k, rs] of groups) {
       `${sumProvider.toFixed(4)} | ${sumOfficial.toFixed(4)} | ` +
       `${avg((r) => r.diff?.insertions).toFixed(0)}/${avg((r) => r.diff?.deletions).toFixed(0)} |`,
   );
+  if (leaked.length) {
+    md.push(
+      `\n⚠ **${leaked.length}/${n} cells reached external URLs — their verdicts are not attributable** ` +
+        `(a SWE-bench instance is derived from a merged upstream PR): ` +
+        leaked.map((r) => `\`${r.task}\` (${(r.leakUrls || []).length})`).join(", "),
+    );
+  }
 }
 md.push("");
 md.push("*`invalid*` = tests pass but protected files (tests) were modified.*");
+md.push("*`⚠LEAK` = the cell reached external URLs (fetch/curl/git) — a SWE-bench instance comes from a merged upstream PR, so the verdict is not attributable to capability.*");
 if (results.some((r) => pricingFor(r.model))) {
   md.push("");
   md.push(
@@ -163,7 +172,7 @@ const outMd = path.join(runDir, "report.md");
 fs.writeFileSync(outMd, md.join("\n") + "\n");
 
 // CSV
-const csv = ["model,harness,task,verdict,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
+const csv = ["model,harness,task,verdict,leaked,totalTimeS,agentTimeS,rounds,tokTotal,tokIn,tokOut,cacheRead,cacheWrite,costUSD,costOfficialUSD,insertions,deletions,firstPromptTokens,expertActive,expertJudgments,expertSilences,expertSteers,expertAccepted,expertRejected,expertStaleDrops,expertErrors,expertPromptTokens,expertCachedTokens,expertCompletionTokens,turns,toolCalls,readSingle,readBatch,grepCalls,bashCalls,editCalls,writeCalls"];
 for (const r of results) {
   csv.push(
     [
@@ -171,6 +180,7 @@ for (const r of results) {
       r.harness,
       r.task,
       r.verdict,
+      r.leaked ? "true" : "false",
       r.totalTimeS,
       r.agentTimeS,
       r.rounds,

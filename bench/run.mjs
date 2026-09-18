@@ -719,6 +719,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     totalTimeS: Number(totalTimeS.toFixed(1)),
     tokens: usage,
     shape,
+    // Knowledge isolation: true when the cell reached external URLs (fetch,
+    // curl/wget/git clone) — a SWE-bench instance comes from a merged PR, so a
+    // leaked cell's verdict says nothing about capability. See transcriptShape.
+    leaked: shape?.leaked === true,
+    leakUrls: shape?.leakUrls || [],
     firstPromptTokens,
     footprintOver,
     expert,
@@ -728,6 +733,11 @@ async function runTask(combo, taskId, taskMeta, taskPrompt, shared) {
     workdir,
   };
   writeJson(path.join(workdir, "result.json"), result);
+  if (shape?.leaked) {
+    console.warn(
+      `[${combo.harness}/${combo.model}/${taskId}] LEAK — ${shape.leakUrls.length} external URL(s) reached, verdict not attributable: ${shape.leakUrls[0]}`,
+    );
+  }
   // The agent needs a real git repo while working, but once patch.diff and
   // diff stats are captured the nested .git is pure scratch. Strip it by
   // default so VSCode and other editor scanners do not list every completed

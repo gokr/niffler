@@ -8,6 +8,24 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **bench: a cell can no longer fetch the upstream fix unnoticed.** The first
+  rerun on the new stack had carbon-3005 (PHP) flip fail→pass by fetching
+  `https://github.com/briannesbitt/Carbon/pull/3005.diff` — a SWE-bench
+  instance is derived from a merged upstream PR, so its gold patch is public
+  (it also crawled the maintainer's issue pages). The prompt's
+  knowledge-isolation rule was collateral damage of the previous change: the
+  old "do not fetch anything from the network" covered it, and its replacement
+  only forbade hunting for the hidden tests. The task prompt now says it
+  directly — the issue text is the only specification; do not look up the
+  upstream project, its issues, pull requests or patches — while keeping the
+  compile/existing-tests permission the earlier edit was actually after (and
+  dropping the now-duplicated wording from step 3). Prompt rules are not
+  enforcement, so the pipeline records it too: `transcriptShape` collects every
+  external URL a cell reaches (fetch invokes, and `curl`/`wget`/`git clone`
+  bash commands; loopback ignored) as `leaked`/`leakUrls` in `result.json`,
+  `run.mjs` warns per cell, and `report.md` marks the row `⚠LEAK` with a
+  per-combo count and a CSV column. Limit, stated so nobody over-trusts it: it
+  sees tool-level web access, not a compiler downloading modules.
 - **ctx: the admission reserve is the model's declared output cap, and the
   llm adapter clamps the completion at dispatch — the provider-side overflow
   both layers had to agree on.** Providers count the requested `max_tokens`

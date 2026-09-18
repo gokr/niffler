@@ -117,16 +117,19 @@ for (const row of rows) {
       `including behavior on other code paths that share the code you touch. ` +
       `If the same behavior is produced by more than one path, update all of ` +
       `them.\n` +
-      `3. Check your work as far as this checkout allows — compiling, or ` +
-      `building a small repro and exercising it, is encouraged — then re-read ` +
-      `your edits.\n` +
+      `3. Check your work as far as this checkout allows, then re-read your ` +
+      `edits.\n` +
       `4. Reply with a one-paragraph summary of the change.\n\n` +
       `Hard rules:\n` +
+      `- The issue text above is your only specification: do not look up the ` +
+      `upstream project, its issues, pull requests or patches — solve from the ` +
+      `issue text and the repository code.\n` +
       `- The graded tests are hidden and run in a separate environment ` +
       `afterwards. Do not try to find, recreate or guess them, and never modify ` +
       `tests: your diff is graded as production code only.\n` +
-      `- Do not add or vendor dependencies — the grading environment has its ` +
-      `own, and everything your patch needs must already be in the repository.\n` +
+      `- Compiling, or running the repository's own tests, is fine when the ` +
+      `toolchain already has what it needs; do not add or vendor dependencies — ` +
+      `the grading environment has its own.\n` +
       `- Stay inside {{REPO}}: never read other checkouts, caches, task ` +
       `metadata, or anything else on this machine.\n`,
   );
