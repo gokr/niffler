@@ -165,6 +165,49 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   declares `dotnet`. `warmup` lists them in `skipped` ("jdtls (needs
   'java')") and a query fails fast with `E_LSP_UNAVAILABLE` — no process is
   started that can only die, and no warm slot is spent on it.
+- **edit/git: the read tools declare the effect they have, so fabric stops
+  serializing read-only batches.** `read` and `git_status`/`git_diff`/
+  `git_log`/`git_show`/`git_blame` were registered `parallel: true` with no
+  `x-harness.effect`, and the default is `write` — the batch host ran them one
+  at a time, leaving the concurrency cap idle for the whole tool. The only
+  write `read` can make is a correction to the per-file seen-state it owns
+  (losing one is a hint loss, never a correctness loss); `review_receipt`,
+  which stores receipts, deliberately stays a write.
+- **edit: the `write` description builds its cap from the knob that controls
+  it.** It hardcoded "Cap 900KB" while `NIF_WRITE_MAX_BYTES` overrides the real
+  limit, so a lowered cap produced a tool whose own description lied.
+- **lsp: `NIF_LSP_BIN_DIRS` entries are tilde-expanded.** The list was split
+  on `PathSep` and used verbatim, so the `~/...` form the MANUAL documents
+  never matched a server. A leading `~` now means the user's home.
+- **lsp: `..` is refused in the argument as given.** `resolvePath` joins with
+  `/` and Nim *normalizes*, so `../hidden.nx` reached the scope check already
+  rewritten to `<root>/hidden.nx` and the call answered `E_NOT_FOUND` — a path
+  the caller was never allowed to name reported as absent. The refusal now
+  runs on the raw argument first; absolute paths outside the workspace stay
+  allowed (scope is a bound, not an equality).
+- **web UI: deleting a conversation goes through core's
+  `conversation_delete`.** The SPA trimmed raw `store` records by hand: it
+  could not stop a live runner (which resurrects what it writes) and left the
+  `sessionmeta` lineage and durable `agentjob` rows behind. One approval-gated
+  core call does what core's own control does.
+- **Makefile: a multi-file component rebuilds when its sibling sources
+  change.** `var/bin/lsp` listed only `components/lsp/main.nim`, so editing
+  `roots.nim` rebuilt nothing and `make test-lsp` silently ran the previous
+  binary (found while gating the tilde fix). `NIM_SRCS`/`GO_SRCS` are
+  wildcards — a hand-written list rots the same way — `_test.*` is filtered out
+  (only the test target compiles it), and `var/bin/test_t_lsp` depends on the
+  component sources it imports.
+- **tests: `t_recall` now reads `reg.publish` for what it is, and passes.**
+  The announcement carries the registration object itself, not an envelope, so
+  the test's `payload`-based drain captured nothing and the three assertions it
+  exists for — `context_recall` is registered, `onDemand`, and `sessionId`, the
+  ones that keep the trim/prune notices' advice actionable — never ran. It also
+  waited on a subscription opened *after* the spawns (announcements are
+  fire-and-forget: recall announces while store is still opening its database),
+  and the resulting nil reached a `check` detail, where `$` on a nil JsonNode
+  dereferences — so the run ended in SIGSEGV rather than a report. Both
+  announcements are read off the pre-spawn subscription now, parsed as JSON,
+  with guarded details. (`t_recall` never passed; `make test-recall` is green.)
 
 ### Added
 
