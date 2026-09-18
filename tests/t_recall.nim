@@ -10,9 +10,8 @@
 ## be unactionable and the store the only way back. This check would have caught
 ## that; the component shipped with hidden: true and no test at all.
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, times]
 import natsnim
-import envelope
 import helpers
 
 proc main() =
@@ -47,20 +46,38 @@ proc main() =
   let recallProc = startComponent(recallBin, url, root = tmp)
   defer: stopProcess(recallProc)
 
-  check("store registers", waitRegistered(nc, "store"), "reg.publish")
-  check("recall registers", waitRegistered(nc, "recall"), "reg.publish")
+  # Read both announcements off the subscription opened BEFORE the spawns.
+  # `reg.publish` carries the registration object *itself* — `envelope.decode`
+  # leaves `payload` nil for it, which is why the payload-based drain this
+  # replaces never captured anything — and it is fire-and-forget, so a
+  # subscription opened after a spawn misses what already happened. Both matter
+  # here: `recall` announces (one tool, no store) while `store` is still
+  # opening its database, so waiting for store on a fresh subscription ate
+  # recall's announcement and the check failed 15 s later; the nil `reg` then
+  # reached `$reg` and segfaulted the run.
+  var storeReg, recallReg: JsonNode
+  block:
+    let deadline = epochTime() + 20
+    while epochTime() < deadline and (storeReg == nil or recallReg == nil):
+      var msg: ptr natsMsg
+      let st = natsSubscription_NextMsg(addr msg, regSub, 500)
+      if st != NATS_OK: continue
+      let data = $natsMsg_GetData(msg)
+      natsMsg_Destroy(msg)
+      var node: JsonNode
+      try:
+        node = parseJson(data)
+      except CatchableError:
+        continue
+      case node{"name"}.getStr("")
+      of "store": storeReg = node
+      of "recall": recallReg = node
+      else: discard
+  check("store registers", storeReg != nil, "reg.publish")
+  check("recall registers", recallReg != nil, "reg.publish")
 
   # --- the registered schema: reachable by the caller the notices address ----
-  var reg: JsonNode
-  for _ in 0 ..< 60:
-    var msg: ptr natsMsg
-    let st = natsSubscription_NextMsg(addr msg, regSub, 1000)
-    if st == NATS_TIMEOUT or not checkStatus(st): continue
-    let env = decode($natsMsg_GetData(msg))
-    natsMsg_Destroy(msg)
-    if env.payload != nil and env.payload{"name"}.getStr("") == "recall":
-      reg = env.payload
-      break
+  let reg = recallReg
   var hs: JsonNode
   if reg != nil:
     let tools = reg{"tools"}
@@ -68,12 +85,17 @@ proc main() =
       for t in tools:
         if t{"name"}.getStr("") == "context_recall":
           hs = t{"schema"}{"x-harness"}
-  check("context_recall is registered", hs != nil, $reg)
+  # `$` on a nil JsonNode dereferences (json.nim has no nil guard), so the
+  # detail strings are guarded: a missing announcement must report, not
+  # segfault the run.
+  let regText = if reg == nil: "no recall announcement captured" else: $reg
+  let hsText = if hs == nil: "no recall schema in the announcement" else: $hs
+  check("context_recall is registered", hs != nil, regText)
   check("context_recall is onDemand, not hidden",
         hs != nil and hs{"onDemand"}.getBool(false) and hs{"hidden"} == nil,
-        "the notices tell the model to call it; hidden makes that impossible — " & $hs)
+        "the notices tell the model to call it; hidden makes that impossible — " & hsText)
   check("context_recall declares sessionId (the runner injects the conversation)",
-        hs != nil and hs{"sessionId"}.getBool(false), $hs)
+        hs != nil and hs{"sessionId"}.getBool(false), hsText)
 
   # --- seed a conversation whose middle stands in for dropped messages -------
   const conv = "conv-recalltest"
