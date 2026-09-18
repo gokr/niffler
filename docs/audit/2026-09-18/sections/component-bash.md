@@ -52,6 +52,13 @@ source: `components/bash.md`
 - CODE: `main.nim:1-222`
 - FIX: add the section above — four prose cross-references exist, but nothing states the schema, the two timeouts, the caps, the spill directory or the exit-code table in one place. The table row (MANUAL.md:55) is a summary, not a chapter.
 
+## A277 (doc-edit)
+source: `components/bash.md`
+
+- MANUAL: MANUAL absent (`var/toolout` never mentioned)
+- CODE: `main.nim:27-49`, `176-179`
+- FIX: add — oversized captures spill to `$NIF_ROOT/var/toolout/<session>/<pid>-<epoch>-<counter>.out`, absolute and therefore readable with `read` (offset/limit); files older than **1 hour** are swept on each new spill, so a spill path from an old turn may be gone. MANUAL.md:55 calls it "a temp file pageable with `read`", which leaves the reader unable to find or predict it — and it is not `$TMPDIR` when `NIF_ROOT` is set (`main.nim:31-32`). Add a `var/` state-table row (MANUAL.md:41-48) too: `| var/toolout/ | bash spill files … | disposable, 1 h TTL |`.
+
 ## A278 (doc-edit)
 source: `components/bash.md`
 
@@ -65,13 +72,6 @@ source: `components/bash.md`
 - MANUAL: MANUAL absent (parse/start failure output)
 - CODE: `procutil.nim:28-40`
 - FIX: add — when nothing could be captured (unterminated heredoc, unbalanced quote) the transcript shows `[no output captured — the command failed to parse or start; check quoting and heredoc termination]` instead of a bare code. Also worth one clause: a command containing `<<` is wrapped with the redirection on its own line (`procutil.nim:82-88`), i.e. heredocs are supported and tested (tests/t_bash.nim:49-53).
-
-## A281 (doc-edit)
-source: `components/bash.md`
-
-- MANUAL: MANUAL absent (truncation marker)
-- CODE: `procutil.nim:153-166`
-- FIX: add the literal marker shape `[... truncated <omitted> of <total> bytes (capped at <max>) — <hint> ...]` with head+tail kept, since the model's recovery behaviour (re-run narrower, or `read` the spill) depends on it, and `bash` passes two different hints (`main.nim:161-162`, `181-183`).
 
 ## A282 (doc-edit)
 source: `components/bash.md`

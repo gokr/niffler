@@ -2,7 +2,7 @@
 
 Scope: what the component offers, its two tools and every argument, its
 configuration and toolchain, and how `docs/MANUAL.md` covers it. Line numbers
-are as of the **3072-line** revision read while finalizing this report — the
+are as of the **3082-line** revision read while finalizing this report — the
 MANUAL is being edited concurrently, so a shifted number is expected and the
 quotes are the stable anchor (the convention in this directory's README).
 Read-only audit; every claim carries file:line. Component version `0.1.0`
@@ -80,7 +80,7 @@ and `var/nimcache/var_build_synthetic`.
 4. Exposure: `build`/`info` are `onDemand`, so they never sit in a conversation's
    frozen direct toolset; the *new* component's own tools are direct in a new
    conversation and reach existing ones through `discover` + `invoke`
-   (`sdk/niffler/sdk.nim` `info.flow`, MANUAL.md:893-895).
+   (`sdk/niffler/sdk.nim` `info.flow`, MANUAL.md:897-899).
 5. Registration is **fire-and-forget**: `announce` only publishes
    (`sdk/niffler/sdk.nim:541-542`) and no reply is checked, while core refuses the
    *entire* registration on a duplicate/missing tool name
@@ -157,7 +157,7 @@ Two defects, both in the tool's own declaration:
    extractor takes `- param: text` on one line as the parameter doc and appends
    every other prose line to the *tool* description
    (`sdk/niffler/sdk.nim:939-958`), so the parameter doc stops at
-   "…e.g. `[\"ssl\"] for`" and the sentence's tail — "HTTPS-capable httpclient —
+   "…e.g. `["ssl"] for`" and the sentence's tail — "HTTPS-capable httpclient —
    appended as -d:NAME (validated; Nim identifier characters only)" — lands at the
    end of the tool description, after "…bare semantic names (read, edit, bash, …)."
    The fix is one line of doc comment.
@@ -304,21 +304,21 @@ test notes. Verbatim, with today's line numbers:
 - **MANUAL.md:43** (layout): ``| `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |``
 - **MANUAL.md:52** (layout): ``| `var/build/` | source files of agent-built components (builder's scratch dir) |``
 - **MANUAL.md:63** (shipped components, the only description): ``| `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source into binaries: `build {lang, name, source, files?, defines?}` (approval-gated, on demand) and `info` (on demand: the per-language source skeleton and SDK locations) |``
-- **MANUAL.md:184-185** (minimal boot): `` `builder`, `plugins`, `skills`, `fetch`, `models`, `provider`, the dedicated file tools, and observation/logging do not start.``
+- **MANUAL.md:184-186** (minimal boot): `` `builder`, `plugins`, `skills`, `fetch`, `models`, `provider`, the dedicated file tools, and observation/logging do not start.``
 - **MANUAL.md:355-356** (state and configuration): ``and everything derived is `var/` (regenerable — delete it and `make build` + a boot rebuilds the world).``
 - **MANUAL.md:401** (environment table): ``| `NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default |``
 - **MANUAL.md:482** (build knobs): ``**Build and script knobs** — read by the scripts around the harness, never by components: … `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks — exclusive for builds, shared for test runs) …``
-- **MANUAL.md:632-634** (approvals): ``Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`, …``
-- **MANUAL.md:890-895** (self-extension steps 2-3): ``2. `build {lang, name, source, files?, defines?}` (the `builder` component) compiles it into `var/bin/` (`files` adds further Go sources, `defines` passes compiler defines)`` / ``3. `spawn {name, binary, replicas?}` (core) starts it; it registers itself; new conversations expose its tools directly (when not on demand), existing ones reach them via `discover` + `invoke` …``
-- **MANUAL.md:901-902**: ``A fabric program that stabilizes takes the same route: `fabricprog` is the scratchpad, `builder.build` + `core.spawn` is graduation``
-- **MANUAL.md:928-929** (persistence of shape): ``**Persistence of shape**: spawned components are recorded in the store (kind `component`) and restored on normal boot.``
-- **MANUAL.md:959-965** (plugins build path): ``Components always build from source via the `builder` — the same path agent-written components take.`` … ``A Go entry may declare `"sources": ["component/helper.go", ...]`; these must be non-symlink, same-package `.go` files beside `main`, and the builder compiles them as one package.``
-- **MANUAL.md:966-967**: ``A component manifest entry with `"interactive": true` is built into `var/bin` but is not passed to `core.spawn`.``
-- **MANUAL.md:971-973**: ``A manifest entry may carry `defines` (an array of `-d:`-style prepends) and `env` (an array of `NAME=value` strings). Both are passed through — `defines` to the builder, `env` to the spawn …``
-- **MANUAL.md:1856-1857** (progressive discovery): ``A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it.``
-- **MANUAL.md:2057** (shipped policy): ``- Core lifecycle/status/catalog, builder, plugins, and fetch.``
-- **MANUAL.md:2934-2935** (testing): ``Repository build writes are serialized, while agent-built test components use sandbox-local Nim caches.``
-- **MANUAL.md:2941-2944** (testing, network opt-in): ```NIF_TEST_NETWORK=1` runs `plugin_search` against GitHub, `skill_search` against skills.sh, and the TypeScript builder build (npm registry).``
+- **MANUAL.md:636-638** (approvals): ``Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`, …``
+- **MANUAL.md:894-899** (self-extension steps 2-3): ``2. `build {lang, name, source, files?, defines?}` (the `builder` component) compiles it into `var/bin/` (`files` adds further Go sources, `defines` passes compiler defines)`` / ``3. `spawn {name, binary, replicas?}` (core) starts it; it registers itself; new conversations expose its tools directly (when not on demand), existing ones reach them via `discover` + `invoke` …``
+- **MANUAL.md:905-906**: ``A fabric program that stabilizes takes the same route: `fabricprog` is the scratchpad, `builder.build` + `core.spawn` is graduation``
+- **MANUAL.md:932-933** (persistence of shape): ``**Persistence of shape**: spawned components are recorded in the store (kind `component`) and restored on normal boot.``
+- **MANUAL.md:963-969** (plugins build path): ``Components always build from source via the `builder` — the same path agent-written components take.`` … ``A Go entry may declare `"sources": ["component/helper.go", ...]`; these must be non-symlink, same-package `.go` files beside `main`, and the builder compiles them as one package.``
+- **MANUAL.md:970-971**: ``A component manifest entry with `"interactive": true` is built into `var/bin` but is not passed to `core.spawn`.``
+- **MANUAL.md:975-977**: ``A manifest entry may carry `defines` (an array of `-d:`-style prepends) and `env` (an array of `NAME=value` strings). Both are passed through — `defines` to the builder, `env` to the spawn …``
+- **MANUAL.md:1865-1867** (progressive discovery): ``A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it.``
+- **MANUAL.md:2067** (shipped policy): ``- Core lifecycle/status/catalog, builder, plugins, and fetch.``
+- **MANUAL.md:2944-2945** (testing): ``Repository build writes are serialized, while agent-built test components use sandbox-local Nim caches.``
+- **MANUAL.md:2951-2954** (testing, network opt-in): ```NIF_TEST_NETWORK=1` runs `plugin_search` against GitHub, `skill_search` against skills.sh, and the TypeScript builder build (npm registry).``
 
 The frozen system prompt adds only one line —
 `components/systemprompt/baseprompt.txt:20` ``skills, builder (new components — build, then core.spawn).`` — and
@@ -332,20 +332,20 @@ MANUAL is the only real documentation, and it stops at the three argument names.
 1. **The result shape.** No `ok`/`binary`/`log`/`error`, no "compile errors are
 truncated to 2000 chars", no note that a timeout and a compile error look alike.
 2. **Multi-file components beyond Go.** `files` is documented only as "adds
-further Go sources" (MANUAL.md:891) and as manifest `sources`
-(MANUAL.md:962-965). That a Nim or TS build **silently ignores `files`**, and
+further Go sources" (MANUAL.md:895) and as manifest `sources`
+(MANUAL.md:966-969). That a Nim or TS build **silently ignores `files`**, and
 that the limit is 64 files / 2 MB, is nowhere. The ship of a 28-file Go
 component in this very checkout (`var/build/tui/`) shows how load-bearing `files`
 is — it is the second argument an agent reaches for.
 3. **The TypeScript flow.** Only two facts exist: `**NIF_NPM_REGISTRY**` (MANUAL.md:401)
-and "the TypeScript builder build (npm registry)" (MANUAL.md:2943). Nothing says
+and "the TypeScript builder build (npm registry)" (MANUAL.md:2953). Nothing says
 `node`+`npm` are required on PATH, that `package.json`/`tsconfig.json` are
 generated, that `niffler-sdk` is wired as a `file:` dependency into `<root>/sdk/ts`
 (and therefore needs that checkout, plus its own `prepare` build), or that the
 "binary" is a `node` wrapper `require`-ing `var/build/<name>/dist/main.js` by
 absolute path.
 4. **The lock, and what `make clean` does to agent-built components.** MANUAL.md:482
-correctly lists `NIF_BUILD_LOCK` as script-only, and MANUAL.md:2934 says build
+correctly lists `NIF_BUILD_LOCK` as script-only, and MANUAL.md:2944-2945 says build
 writes are serialized — but the builder is *not* in that lock, and a `make clean`
 (`rm -rf var`) during a build, or after one, deletes both the source
 (`var/build/`) and the artifact (`var/bin/`) while the `component` record
@@ -354,7 +354,7 @@ survives. The next boot then reports `core: WARNING missing binary for <name>`
 source — a direct contradiction of MANUAL.md:355-356's "everything derived is
 `var/` (regenerable … a boot rebuilds the world)".
 5. **The failure modes of self-extension.** A tool-name collision makes core
-refuse the whole registration *silently* (MANUAL.md:890-895 promises "it
+refuse the whole registration *silently* (MANUAL.md:894-899 promises "it
 registers itself"); rebuilding a live component needs `kill` before `spawn`
 (spawn answers `component already supervised: <name>`, `core/dispatch.nim:330-332`).
 6. **The limits.** Name rules (the reason `../escape` is refused), the
@@ -368,13 +368,13 @@ returns the *flow* and the naming rule) but is otherwise right; MANUAL.md:43's
 `var/bin/` row describes only `make build` output, although agent-built binaries
 land there too and are the rows an operator will find surprising; MANUAL.md:52
 says "source files", though for Go/TS it is a whole directory with
-`node_modules`/`dist`/`go.sum`; MANUAL.md:971-973 promises manifest `defines` are
+`node_modules`/`dist`/`go.sum`; MANUAL.md:975-977 promises manifest `defines` are
 "passed through", which is true but inert for `lang: go`/`ts` packages (see the
 row under **Component ecosystem**).
 
 **Proposed placement:** a new section ``## Building components (`builder`)``
 inserted after `## Self-extension and component lifecycle` (which ends at
-MANUAL.md:932) and before `## Component ecosystem (`plugins`)` (MANUAL.md:934),
+MANUAL.md:936) and before `## Component ecosystem (`plugins`)` (MANUAL.md:938),
 with subsections `### The tools`, `### The three languages`, `### Safety rules
 and limits`, `### Where output lands`, `### Configuration and the build lock`;
 plus a Contents line after MANUAL.md:18 and one state-table row for `var/build`.
@@ -382,49 +382,50 @@ Keep MANUAL.md:63 as the one-line summary.
 
 ## 5. DELTA list
 
-Row format: `- MANUAL: … | CODE: … | FIX: …`. The bracketed tag after the verb
-in `FIX` is the finding class (the row text itself is the proposed wording).
+Row format: `- MANUAL: <exact current quote, or the word absent> | CODE: <path:line> | FIX: <verb + proposed wording>`.
+Groups are exact `## ` headings of the current `docs/MANUAL.md` (3082-line revision);
+the bracketed tag before the verb in `FIX` is the finding class.
 
 ## Layout of a running system
 
-- MANUAL:43 "`var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build`" | CODE: `components/builder/main.nim:75`, `103`, `145`, `195` (every `build` returns `<root>/var/bin/<name>`) | FIX: update [doc-edit] — add "; agent-built components (`builder.build`) land here too, beside the system binaries"
-- MANUAL:52 "`var/build/` | source files of agent-built components (builder's scratch dir)" | CODE: `main.nim:74`, `84` (Nim: one `<name_>.nim`), `107` (Go: `<name>/` with `go.mod`/`main.go`/`go.sum`), `152` (TS: `<name>/` with `package.json`/`tsconfig.json`/`node_modules/`/`dist/`) | FIX: update [doc-edit] — "; for Go and TypeScript it is a whole project directory (generated `go.mod`, `package.json`/`tsconfig.json`, `node_modules`), never pruned. It is the **only** copy of an agent-built component's source — deleting `var/` orphans the persisted `component` record"
-- MANUAL:355-356 "and everything derived is `var/` (regenerable — delete it and `make build` + a boot rebuilds the world)" | CODE: `core/dispatch.nim:340-343` (the persisted `component` record holds only `{name, binary, policy, replicas, args, addedAt}` — no source), `core/niffler.nim:505-507` (boot then prints `core: WARNING missing binary for <name>` and skips it), `main.nim:74-75` (source lives only in `var/build`) | FIX: update [wrong] — "everything derived is `var/`, **except agent-built components**: their source exists only under `var/build/` and their binary only under `var/bin/`, so `make clean` deletes both while the `component` record survives — the next boot warns `missing binary for <name>` and the component cannot be restored. Rebuild it with `builder.build` + `core.spawn`, or `core.remove` the record"
-- MANUAL:1856-1857 "A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it." | CODE: `main.nim:104-105` (build returns the path), `core/dispatch.nim:308-346` (spawn), `components/plugins/main.nim:256-263` (install spawns) | FIX: none [verified] — accurate; the only unstated part is that the build→spawn pair is the documented self-extension step (MANUAL.md:890-895).
+- MANUAL: "| `var/bin/` | built binaries (system core + session runner + components). Rebuilt by `make build` |" | CODE: `components/builder/main.nim:75`, `103`, `145`, `195` (every `build` returns `<root>/var/bin/<name>`) | FIX: update [doc-edit] — add "; agent-built components (`builder.build`) land here too, beside the system binaries"
+- MANUAL: "| `var/build/` | source files of agent-built components (builder's scratch dir) |" | CODE: `main.nim:74`, `84` (Nim: one `<name_>.nim`), `107` (Go: `<name>/` with `go.mod`/`main.go`/`go.sum`), `152` (TS: `<name>/` with `package.json`/`tsconfig.json`/`node_modules/`/`dist/`) | FIX: update [doc-edit] — "; for Go and TypeScript it is a whole project directory (generated `go.mod`, `package.json`/`tsconfig.json`, `node_modules`), never pruned. It is the **only** copy of an agent-built component's source — deleting `var/` orphans the persisted `component` record"
+- MANUAL: "and everything derived is `var/` (regenerable — delete it and `make build` + a boot rebuilds the world)" | CODE: `core/dispatch.nim:340-343` (the persisted `component` record holds only `{name, binary, policy, replicas, args, addedAt}` — no source), `core/niffler.nim:505-507` (boot then prints `core: WARNING missing binary for <name>` and skips it), `main.nim:74-75` (source lives only in `var/build`) | FIX: update [wrong] — "everything derived is `var/`, **except agent-built components**: their source exists only under `var/build/` and their binary only under `var/bin/`, so `make clean` deletes both while the `component` record survives — the next boot warns `missing binary for <name>` and the component cannot be restored. Rebuild it with `builder.build` + `core.spawn`, or `core.remove` the record"
+- MANUAL: "A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it." | CODE: `main.nim:104-105` (build returns the path), `core/dispatch.nim:308-346` (spawn), `components/plugins/main.nim:256-263` (install spawns) | FIX: none [verified] — accurate; the only unstated part is that the build→spawn pair is the documented self-extension step (MANUAL.md:894-899).
+- MANUAL: "compiles agent-written Nim/Go/TypeScript source into binaries: `build {lang, name, source, files?, defines?}` (approval-gated, on demand) and `info` (on demand: the per-language source skeleton and SDK locations)" | CODE: `main.nim:49` (`approval: always`, `timeoutMs: 300000`, `onDemand: true`), `main.nim:203` (`info`, `onDemand` only), **live** `catalog {op:schemas}` returns exactly those two tools, `required: [lang,name,source]` | FIX: none [verified] — the row is right about both tools, the five arguments, the gate and the exposure; only depth is missing (see the next rows).
+- MANUAL: "`info` (on demand: the per-language source skeleton and SDK locations)" | CODE: `main.nim:206-213` (returns `langs`, `sdk`, `sdkGo`, `sdkTs`, `naming`, `flow`, `nim`, `go`, `ts`), **live** `info` result (same nine keys), `tests/t_builder.nim:49-52` (compiles `info{"go"}` verbatim as a Go component — the skeleton is the contract) | FIX: update [doc-edit] — "`info` (on demand) returns the SDK paths (`sdk`/`sdkGo`/`sdkTs`), the global tool-naming rule, the build→spawn→discover `flow` string, and a complete compiling skeleton per language — the fastest way to write a component that builds on the first try."
+- MANUAL: "`build {lang, name, source, files?, defines?}`" | CODE: `main.nim:76-78` (`validComponentName`), `main.nim:25-34` (`validGoSourceName`), `main.nim:36-45` (`validDefine`), `main.nim:89` (`defines.kind == JArray`), `main.nim:111-130` (Go-only `files`) | FIX: add [missing] — the row should carry the rules an agent must satisfy before calling: `name` is 1–64 chars of `a-z0-9` and single hyphens (that is the traversal guard — `../escape` is refused with `name must be 1-64 lowercase letters, digits, and single hyphens`); `files` is **Go only** (≤64 flat `*.go` sources, ≤2 MB total, no `main.go`, no `*_test.go`, no directories) and is silently ignored by Nim/TS builds; `defines` is **Nim only** (`-d:NAME`, `[A-Za-z0-9_.]`, ≤64 chars) and a non-array value is silently ignored.
+- MANUAL: "`builder`, `plugins`, `skills`, `fetch`, `models`, `provider`, the dedicated file tools, and observation/logging do not start." | CODE: `core/niffler.nim:25` (`minimalComponents = ["store", "bash", "llm"]`), `core/niffler.nim:473` (every manifest entry outside that list is skipped) | FIX: none [verified] — in `--minimal` `builder` (and its tool schemas) really is left out; the records of previously spawned components stay in the store.
 
-## Shipped components
+## Self-extension and component lifecycle
 
-- MANUAL:184-185 "`builder`, `plugins`, `skills`, `fetch`, `models`, `provider`, the dedicated file tools, and observation/logging do not start." (in `--minimal`) | CODE: `core/niffler.nim:25` (`minimalComponents = ["store", "bash", "llm"]`), `core/niffler.nim:473` (every manifest entry outside that list is skipped) | FIX: none [verified] — `--minimal` really does leave `builder` (and its tool schemas) out; the records of previously spawned components stay in the store.
-- MANUAL:63 "`info` (on demand: the per-language source skeleton and SDK locations)" | CODE: `main.nim:206-213` (returns `langs`, `sdk`, `sdkGo`, `sdkTs`, `naming`, `flow`, `nim`, `go`, `ts`), **live** `info` result (same nine keys), `tests/t_builder.nim:49-52` (compiles `info{"go"}` verbatim as a Go component — the skeleton is the contract) | FIX: update [doc-edit] — "`info` (on demand) returns the SDK paths (`sdk`/`sdkGo`/`sdkTs`), the global tool-naming rule, the build→spawn→discover `flow` string, and a complete compiling skeleton per language — the fastest way to write a component that builds on the first try."
-- MANUAL:63 "compiles agent-written Nim/Go/TypeScript source into binaries: `build {lang, name, source, files?, defines?}` (approval-gated, on demand) and `info` (on demand: the per-language source skeleton and SDK locations)" | CODE: `main.nim:49` (`approval: always`, `timeoutMs: 300000`, `onDemand: true`), `main.nim:203` (`info`, `onDemand` only), **live** `catalog {op:schemas}` returns exactly those two tools, `required: [lang,name,source]` | FIX: none [verified] — the row is right about both tools, the five arguments, the gate and the exposure; only depth is missing (see the next rows).
-- MANUAL:63 "`build {lang, name, source, files?, defines?}`" | CODE: `main.nim:76-78` (`validComponentName`), `main.nim:25-34` (`validGoSourceName`), `main.nim:36-45` (`validDefine`), `main.nim:89` (`defines.kind == JArray`), `main.nim:111-130` (Go-only `files`) | FIX: add [missing] — the row should carry the rules an agent must satisfy before calling: `name` is 1–64 chars of `a-z0-9` and single hyphens (that is the traversal guard — `../escape` is refused with `name must be 1-64 lowercase letters, digits, and single hyphens`); `files` is **Go only** (≤64 flat `*.go` sources, ≤2 MB total, no `main.go`, no `*_test.go`, no directories) and is silently ignored by Nim/TS builds; `defines` is **Nim only** (`-d:NAME`, `[A-Za-z0-9_.]`, ≤64 chars) and a non-array value is silently ignored.
-- MANUAL:63 (no result shape) | CODE: `main.nim:104-105`, `146-147`, `196-198` (success `{ok, lang, name, binary, log}`), `main.nim:100-102`, `142-144`, `176-182` (failure `{ok:false, lang, error: <compiler output tail>}`, 2000 bytes), `sdk/niffler/procutil.nim:181-189` (UTF-8-safe tail with a `…` marker) | FIX: add [missing] — "`build` returns `{ok, lang, name, binary, log}` on success and `{ok: false, lang, error}` on failure, where `error` is the compiler's own output tail (2000 bytes) — check the return instead of assuming `var/bin/<name>` exists. There is no exit code in the result, so a build killed at its internal budget (Nim 120 s, Go/`npm install` 300 s, `tsc` 120 s) looks like a compile error with whatever output it had produced."
-- MANUAL:63 (no timeout) | CODE: `main.nim:49` (`timeoutMs: 300000`), `core/dispatch.nim:1638-1641` (enforced), `main.nim:96-99` (Nim `runCmd` with no timeout → 120 000 ms default, `sdk/niffler/procutil.nim:70`) | FIX: code bug [code-bug?] — the advertised 300 s does not match any Nim build's real budget: pass an explicit `300_000` to the Nim `runCmd` (or lower the schema to what is true), because today the dispatch timeout fires while a listener-based `bash`-style partial reply is unavailable.
-- MANUAL:63 (the schema the model actually reads) | CODE: `main.nim:50-51` (`defines: JsonNode`), `sdk/niffler/sdk.nim:920-921` (`JsonNode` → `"type": "object"`), `main.nim:89` (handler requires `JArray`), `main.nim:70-72` (the doc comment's wrapped `- defines:` line), `sdk/niffler/sdk.nim:939-958` (doc extractor: only single-line `- param:` lines are parameter docs) | FIX: code bug [code-bug?] — make the declaration match reality: `defines: seq[string]` (publishes `array` of `string`) and keep the `- defines:` doc line unbroken. Today the LLM is told "Optional array of Nim compile defines, e.g. `[\"ssl\"] for`" in a field typed `object`, with the rest of the sentence glued to the end of the tool description.
-- MANUAL:63 (no cancellation) | CODE: `main.nim:49` (no `sessionId`), `docs/WIRE.md` "Cancellation" (components opt in by subscribing `cancel.<component>` and matching the injected `__session.session`), `components/bash/main.nim:55-94` (the reference implementation: kill the process group, exit 130), `core/dispatch.nim:1403-1421` (core publishes the cancel and waits briefly for a partial reply) | FIX: add [missing] — "a cancelled turn does not stop a build: core publishes `cancel.build`, the builder has no subscription and no `x-harness.sessionId`, so the compiler keeps running to its own deadline and only the reply is abandoned. Wait for the tool result before cancelling, or kill the component (`core.kill {name: "builder"}`)."
+- MANUAL: absent (the result shape of `build` anywhere in the MANUAL) | CODE: `main.nim:104-105`, `146-147`, `196-198` (success `{ok, lang, name, binary, log}`), `main.nim:100-102`, `142-144`, `176-182` (failure `{ok:false, lang, error: <compiler output tail>}`, 2000 bytes), `sdk/niffler/procutil.nim:181-189` (UTF-8-safe tail with a `…` marker) | FIX: add [missing] — "`build` returns `{ok, lang, name, binary, log}` on success and `{ok: false, lang, error}` on failure, where `error` is the compiler's own output tail (2000 bytes) — check the return instead of assuming `var/bin/<name>` exists. There is no exit code in the result, so a build killed at its internal budget (Nim 120 s, Go/`npm install` 300 s, `tsc` 120 s) looks like a compile error with whatever output it had produced."
+- MANUAL: absent (the 300000 ms `x-harness.timeoutMs` of `build` and the per-command budgets inside it) | CODE: `main.nim:49` (`timeoutMs: 300000`), `core/dispatch.nim:1638-1641` (enforced), `main.nim:96-99` (Nim `runCmd` with no timeout → 120 000 ms default, `sdk/niffler/procutil.nim:70`) | FIX: code bug [code-bug?] — the advertised 300 s does not match any Nim build's real budget: pass an explicit `300_000` to the Nim `runCmd` (or lower the schema to what is true), because today the dispatch timeout fires while a listener-based `bash`-style partial reply is unavailable.
+- MANUAL: absent (the schema the model actually plans against — the MANUAL names the arguments, never their published types) | CODE: `main.nim:50-51` (`defines: JsonNode`), `sdk/niffler/sdk.nim:920-921` (`JsonNode` → `"type": "object"`), `main.nim:89` (handler requires `JArray`), `main.nim:70-72` (the doc comment's wrapped `- defines:` line), `sdk/niffler/sdk.nim:939-958` (doc extractor: only single-line `- param:` lines are parameter docs) | FIX: code bug [code-bug?] — make the declaration match reality: `defines: seq[string]` (publishes `array` of `string`) and keep the `- defines:` doc line unbroken. Today the LLM is told "Optional array of Nim compile defines, e.g. `["ssl"] for`" in a field typed `object`, with the rest of the sentence glued to the end of the tool description.
+- MANUAL: absent (what a cancelled turn does to a build already running) | CODE: `main.nim:49` (no `sessionId`), `docs/WIRE.md` "Cancellation" (components opt in by subscribing `cancel.<component>` and matching the injected `__session.session`), `components/bash/main.nim:55-94` (the reference implementation: kill the process group, exit 130), `core/dispatch.nim:1403-1421` (core publishes the cancel and waits briefly for a partial reply) | FIX: add [missing] — "a cancelled turn does not stop a build: core publishes `cancel.build`, the builder has no subscription and no `x-harness.sessionId`, so the compiler keeps running to its own deadline and only the reply is abandoned. Wait for the tool result before cancelling, or kill the component (`core.kill {name: "builder"}`)."
 
 ## Approvals
 
-- MANUAL:632-634 "Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`, …" | CODE: `main.nim:49` (gate), `core/dispatch.nim:1636-1640` (enforcement), `components/plugins/main.nim:256` (a peer component calls `svc.builder.call` directly — no gate, no `timeoutMs`), `components/plugins/main.nim:628` (`plugin_install` carries its own) | FIX: update [doc-edit] — add a sentence after the list: "The gate is enforced by core's dispatcher, so it covers LLM/session calls; a component that calls `svc.builder.call` directly (the `plugins` install path) is not gated — that caller carries its own approval."
+- MANUAL: "Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`, …" | CODE: `main.nim:49` (gate), `core/dispatch.nim:1636-1640` (enforcement), `components/plugins/main.nim:256` (a peer component calls `svc.builder.call` directly — no gate, no `timeoutMs`), `components/plugins/main.nim:628` (`plugin_install` carries its own) | FIX: update [doc-edit] — add a sentence after the list: "The gate is enforced by core's dispatcher, so it covers LLM/session calls; a component that calls `svc.builder.call` directly (the `plugins` install path) is not gated — that caller carries its own approval."
 
 ## Environment variables
 
-- MANUAL:401 "`NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default" | CODE: `main.nim:170-171` (`--registry <url>` on `npm install`; empty → no flag) | FIX: none [verified] — accurate; the row is the only TS-related fact in the MANUAL today.
-- MANUAL:482 "**Build and script knobs** — read by the scripts around the harness, never by components: … `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks — exclusive for builds, shared for test runs) …" | CODE: `scripts/with-build-lock.sh:22`, `Makefile:67-68`, `Makefile:581-582` (`clean` = `rm -rf var` under the exclusive lock), `components/builder/main.nim` (no lock call anywhere), `core/supervisor.nim:124` (children inherit the environment) | FIX: update [delta] — the sentence is true about components, but it hides the consequence: `builder.build` runs **outside** the lock, so `make build`/`make clean` in a second terminal can race a runtime build — `clean` deletes `var/bin` and `var/build` under it. Add: "`builder.build` deliberately does not take this lock — stop the harness (or avoid `make clean`) while an agent is building a component."
+- MANUAL: "`NIF_NPM_REGISTRY` | npm registry for `builder` ts-component installs (e.g. `https://registry.npmmirror.com`) | npm default" | CODE: `main.nim:170-171` (`--registry <url>` on `npm install`; empty → no flag) | FIX: none [verified] — accurate; the row is the only TS-related fact in the MANUAL today.
+- MANUAL: "**Build and script knobs** — read by the scripts around the harness, never by components: … `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks — exclusive for builds, shared for test runs) …" | CODE: `scripts/with-build-lock.sh:22`, `Makefile:67-68`, `Makefile:581-582` (`clean` = `rm -rf var` under the exclusive lock), `components/builder/main.nim` (no lock call anywhere), `core/supervisor.nim:124` (children inherit the environment) | FIX: update [delta] — the sentence is true about components, but it hides the consequence: `builder.build` runs **outside** the lock, so `make build`/`make clean` in a second terminal can race a runtime build — `clean` deletes `var/bin` and `var/build` under it. Add: "`builder.build` deliberately does not take this lock — stop the harness (or avoid `make clean`) while an agent is building a component."
 
 ## Component ecosystem (`plugins`)
 
-- MANUAL:971-973 "A manifest entry may carry `defines` (an array of `-d:`-style prepends) and `env` (an array of `NAME=value` strings). Both are passed through — `defines` to the builder, `env` to the spawn …" | CODE: `components/plugins/main.nim:249-250` (passed regardless of `lang`), `main.nim:89-95` (read only in the Nim branch), `main.nim:111-130` (files: Go branch only) | FIX: update [doc-edit] — "`defines` is a **Nim-only** affordance: a `lang: "go"` or `lang: "ts"` manifest entry that declares `defines` builds fine and silently ignores them — verify by behaviour, not by manifest."
-- MANUAL:963-965 "A Go entry may declare `"sources": ["component/helper.go", ...]`; these must be non-symlink, same-package `.go` files beside `main`, and the builder compiles them as one package." | CODE: `components/plugins/main.nim:251-255` (keyed by `extractFilename()` — the directory is *flattened*), `main.nim:25-34` | FIX: update [doc-edit] — say that only the **basename** survives: "`sources` paths are flattened to their filename before they reach the builder, so two files with the same basename collide and subdirectories cannot exist in the build directory; the cap is 64 files / 2 MB, and a subpackage (`component/foo/bar.go`) is not buildable at all."
+- MANUAL: "A manifest entry may carry `defines` (an array of `-d:`-style prepends) and `env` (an array of `NAME=value` strings). Both are passed through — `defines` to the builder, `env` to the spawn …" | CODE: `components/plugins/main.nim:249-250` (passed regardless of `lang`), `main.nim:89-95` (read only in the Nim branch), `main.nim:111-130` (files: Go branch only) | FIX: update [doc-edit] — "`defines` is a **Nim-only** affordance: a `lang: "go"` or `lang: "ts"` manifest entry that declares `defines` builds fine and silently ignores them — verify by behaviour, not by manifest."
+- MANUAL: "A Go entry may declare `"sources": ["component/helper.go", ...]`; these must be non-symlink, same-package `.go` files beside `main`, and the builder compiles them as one package." | CODE: `components/plugins/main.nim:251-255` (keyed by `extractFilename()` — the directory is *flattened*), `main.nim:25-34` | FIX: update [doc-edit] — say that only the **basename** survives: "`sources` paths are flattened to their filename before they reach the builder, so two files with the same basename collide and subdirectories cannot exist in the build directory; the cap is 64 files / 2 MB, and a subpackage (`component/foo/bar.go`) is not buildable at all."
 
 ## Progressive tool discovery
 
-- MANUAL:2057 "- Core lifecycle/status/catalog, builder, plugins, and fetch." | CODE: `main.nim:49` (`build` onDemand), `main.nim:203` (`info` onDemand) | FIX: none [verified] — both builder tools are on demand, exactly as listed; no builder tool is direct or hidden.
+- MANUAL: "- Core lifecycle/status/catalog, builder, plugins, and fetch." | CODE: `main.nim:49` (`build` onDemand), `main.nim:203` (`info` onDemand) | FIX: none [verified] — both builder tools are on demand, exactly as listed; no builder tool is direct or hidden.
 
 ## Testing
 
-- MANUAL:2934-2935 "Repository build writes are serialized, while agent-built test components use sandbox-local Nim caches." | CODE: `Makefile:67-68` (`BUILD_LOCK`/`TEST_LOCK`), `tests/t_builder.nim:28-34` (the sandbox gets its own `config.nims` + `nimcache`), `components/builder/main.nim` (no lock) | FIX: update [delta] — scope the claim: "Repository build writes (`make build`, `make clean`) are serialized by `scripts/with-build-lock.sh`; a runtime `builder.build` is not part of that lock, and agent-built components compile with the checkout's `var/nimcache/var_build_<name>` unless a sandbox overrides it."
-- MANUAL:2941-2944 "`NIF_TEST_NETWORK=1` runs `plugin_search` against GitHub, `skill_search` against skills.sh, and the TypeScript builder build (npm registry)." | CODE: `tests/t_builder.nim:136-154` (the TS case is skipped with a note unless `NIF_TEST_NETWORK=1`), `main.nim:149-151`, `172-180` | FIX: none [verified] — accurate, and it explains why a `make test` run proves nothing about the TS path: `node`/`npm` presence, the `file:` SDK wiring and the wrapper are only exercised by that opt-in.
+- MANUAL: "Repository build writes are serialized, while agent-built test components use sandbox-local Nim caches." | CODE: `Makefile:67-68` (`BUILD_LOCK`/`TEST_LOCK`), `tests/t_builder.nim:28-34` (the sandbox gets its own `config.nims` + `nimcache`), `components/builder/main.nim` (no lock) | FIX: update [delta] — scope the claim: "Repository build writes (`make build`, `make clean`) are serialized by `scripts/with-build-lock.sh`; a runtime `builder.build` is not part of that lock, and agent-built components compile with the checkout's `var/nimcache/var_build_<name>` unless a sandbox overrides it."
+- MANUAL: "`NIF_TEST_NETWORK=1` runs `plugin_search` against GitHub, `skill_search` against skills.sh, and the TypeScript builder build (npm registry)." | CODE: `tests/t_builder.nim:136-154` (the TS case is skipped with a note unless `NIF_TEST_NETWORK=1`), `main.nim:149-151`, `172-180` | FIX: none [verified] — accurate, and it explains why a `make test` run proves nothing about the TS path: `node`/`npm` presence, the `file:` SDK wiring and the wrapper are only exercised by that opt-in.
 
 ## Troubleshooting
 
@@ -466,9 +467,11 @@ a sentence in the MANUAL:
 - Tree artifacts: `var/build/deepseek.nim`, `var/build/tui/` (28 `.go` files, `go.mod`
   with the builder's `replace` line), `var/nimcache/var_build_*`.
 - Every MANUAL quote in this report and every cited `file:line` was re-checked
-  against the current tree by script (21 quoted spans across 1 code file + 6 docs;
-  100+ citations); all MANUAL quotes match modulo the manual's line-wrap and
-  indentation (stated in the header). **Not** run: an actual `builder.build`
+  against the current tree by script — the 21-span list in section 4 plus all 16
+  quoted delta rows (the other 6 state `MANUAL: absent`) and 100+ `file:line`
+  citations. Every quote matches the current manual modulo its line-wrap and
+  indentation (stated in the header); line numbers are the 3082-line revision's.
+  **Not** run: an actual `builder.build`
   (approval-gated — it would prompt a human), `make test-builder` (no code
   changed by this audit), and the `NIF_TEST_NETWORK=1` TypeScript path.
 
@@ -476,11 +479,11 @@ a sentence in the MANUAL:
 
 | class | count | rows |
 |---|---|---|
-| `verified` | 6 | MANUAL 1856-1857, 63 (tool surface), 184-185 (minimal boot exclusion), 401, 2057, 2941-2944 |
-| `doc-edit` | 6 | MANUAL 43, 52, 63 (`info` depth), 632-634, 971-973, 963-965 |
+| `verified` | 6 | MANUAL 1865-1867, 63 (tool surface), 184-186 (minimal boot exclusion), 401, 2067, 2951-2954 |
+| `doc-edit` | 6 | MANUAL 43, 52, 63 (`info` depth), 636-638, 975-977, 966-969 |
 | `missing` | 5 | MANUAL 63 ×3 (safety rules, result shape, cancellation) + the two Troubleshooting entries (refused registration, rebuild workflow) |
 | `code-bug?` | 2 | MANUAL 63 (the `defines` schema/description; the 300 s vs 120 s timeout) |
-| `delta` | 2 | MANUAL 482 and 2934-2935 (the build lock does not cover a runtime build) |
+| `delta` | 2 | MANUAL 482 and 2944-2945 (the build lock does not cover a runtime build) |
 | `wrong` | 1 | MANUAL 355-356 (`var/` is not regenerable for agent-built components) |
 
 ### The five findings that matter most

@@ -1,0 +1,6 @@
+Context window	14	A605,A606,A607,A608,A609,A610,A612,A627,A634,A635,A636,A637,A652,A676
+The bus in one screen	8	A563,A564,A565,A566,A567,A568,A581,A611
+External MCP servers (mcp)	6	A558,A812,A813,A814,A816,A817
+State and configuration	4	A531,A695,A753,A754
+component: compaction	3	A621,A624,A626
+Self-extension and component lifecycle	1	A800

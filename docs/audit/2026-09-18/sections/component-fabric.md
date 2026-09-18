@@ -34,19 +34,19 @@ source: `components/fabric.md`
 - CODE: n/a (structural; fabric and agent are peers sharing one H2)
 - FIX: add `### Fabric (programmable tool calling)` before MANUAL:2080 — the fabric material is currently nested under the Fork subsection that ends at MANUAL:2078, so nothing can link to it.
 
-## A338 (doc-edit)
-source: `components/fabric.md`
-
-- MANUAL: MANUAL:1987-1988 (`fabric` arguments only, no budgets)
-- CODE: components/fabric/fabric.nim:24-38 (limits), 704-714 (defaults/cap), 713 (outer-deadline clamp), 275-280 (nested slice)
-- FIX: append one sentence to the `fabric` row — "Budgets: `maxCalls` defaults to 200 (max 1000) and `timeoutMs` to 240 s (hard cap 300 s, also clamped to the caller's remaining session deadline); every nested call inherits the run's remaining time, and results over 50 KB spill to `var/fabric-artifacts/<run>.json`." Do not copy the full limits table — link docs/FABRIC_GUIDE.md §Budgets and limits (guide:294-308).
-
 ## A339 (doc-edit)
 source: `components/fabric.md`
 
 - MANUAL: MANUAL:2090 (guards bullet; effect undocumented for fabric)
 - CODE: components/fabric/fabric.nim:205 (cap 4), 217-241 (classification, default write), 314-345 (reads share the cap and may overlap a write; writes globally exclusive)
 - FIX: add one bullet — "**Effect-aware batching**: `batch()` runs at most 4 calls on the bus at once. Each tool is classified by `x-harness.effect` (anything undeclared counts as a write); reads may fill the cap together, writes are mutually exclusive globally, not per target." MANUAL currently explains `x-harness.effect` only for MCP servers (MANUAL:1193).
+
+## A340 (doc-edit)
+source: `components/fabric.md`
+
+- MANUAL: MANUAL:2084 ("The executor child holds no NATS connection and no credentials")
+- CODE: components/fabric/fabric.nim:120-126
+- FIX: extend the clause — "…no NATS connection, no credentials and no inherited `NIF_*` environment: the child gets only `PATH`, `HOME`, `TMPDIR` and the cache path."
 
 ## A342 (doc-edit)
 source: `components/fabric.md`

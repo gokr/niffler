@@ -1,6 +1,6 @@
 # Docs audit — `components/dialog/` (bash, 225 LOC, one script)
 
-Read-only audit of the current tree (`docs/MANUAL.md` at **3072 lines**), 2026-09-19.
+Read-only audit of the current tree (`docs/MANUAL.md` at **3082 lines**), 2026-09-19.
 No component source and no MANUAL file was edited. Every claim cites `file:line`; claims
 marked **verified live** were reproduced against isolated buses with instrumented stubs
 (a fake `nats`, `zenity` and `notify-send` on `PATH`) so nothing touched a running
@@ -106,7 +106,7 @@ NIF_NATS_URL  →  ./var/nats-url (the CURRENT DIRECTORY's var/)  →  nats://12
 
 ## 4. How the MANUAL covers it (now)
 
-**Shipped-components row** — `### Shipped components`, MANUAL:86 (the whole row):
+**Shipped-components row** — `## Layout of a running system` (`### Shipped components`), MANUAL:86 (the whole row):
 
 > | `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: natscli, jq, zenity — `make setup` installs all three |
 
@@ -121,14 +121,14 @@ actually contain.
 
 **Other mentions (all checked):**
 
-- `MANUAL:990` (`## Component ecosystem (plugins)`) — "`components/dialog/dialog.sh` — a
+- `MANUAL:994` (`## Component ecosystem (plugins)`) — "`components/dialog/dialog.sh` — a
   whole bash component with no SDK at all." — correct, and the only place the component is
   used as a teaching example.
 - `MANUAL:482` (`## Environment variables`) — "`NIF_NATS_CLI` (the nats CLI
   `components/dialog/dialog.sh` drives)" — correct; but MANUAL:387 in the same section
   says the opposite in spirit: the build/script knobs (the list includes `NIF_NATS_CLI`)
   "are never consulted by a running harness". See D7.
-- `MANUAL:630` (`## Approvals`) lists core's `spawn` as gated — which is the missing half of
+- `MANUAL:634` (`## Approvals`) lists core's `spawn` as gated — which is the missing half of
   the row's spawn instruction (D2).
 - `make doctor`/`make install-*` prerequisites (`Makefile:589-593`, `:628-640`) are not in
   the MANUAL; the row's "`make setup` installs all three" is enough.
@@ -164,7 +164,7 @@ actually contain.
   cases): `NIF_NATS_URL` → `./var/nats-url` → 4222. It only works when core spawns the
   component (core sets `workingDir = NIF_ROOT`, `core/supervisor.nim:160`); a
   hand-started dialog from elsewhere talks to 4222. The MANUAL's client-discovery sentence
-  (MANUAL:2965-2972) describes a *different* chain and never mentions dialog's.
+  (MANUAL:2975-2982) describes a *different* chain and never mentions dialog's.
 - **D7 — `NIF_NATS_CLI` is misclassified as "never consulted by a running harness".**
   MANUAL:387 excludes it from component use while MANUAL:482 attributes it to
   `components/dialog/dialog.sh`, which does read it (`dialog.sh:44`) — and dialog *is* a
@@ -194,7 +194,7 @@ actually contain.
   advertises "macOS — dialog falls back to notify-send/osascript"). A Linux-first demo
   component should say so; the Makefile comment is the thing that is wrong.
 - Verified, no change needed: MANUAL:86's bash/no-SDK/no-compile/`var/bin/dialog`/
-  not-autostarted/spawn-shape/`make setup` claims, MANUAL:990's reference-shape sentence,
+  not-autostarted/spawn-shape/`make setup` claims, MANUAL:994's reference-shape sentence,
   MANUAL:482's `NIF_NATS_CLI`-drives-dialog clause, and the zenity rc mapping
   (zenity returns 5 on timeout; `dialog.sh:139-142` maps it to `timeout`).
 
@@ -203,11 +203,10 @@ actually contain.
 Legend: rows are grouped under the **exact current MANUAL heading**; the class is the
 trailing `[class]` tag (`FIX: fix: none` = `verified`; "code bug" in the FIX text is detected by
 the parser as `code-bug?`; `wrong`/`missing`/`trim` need the tag because a
-`components/*.md` report keeps the parser's `group` at `component: dialog`). The group
-headings below carry the MANUAL's heading text without its own `##`/`###` marker; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:` wording
+`components/*.md` report keeps the parser's `group` at `component: dialog`). **Every group heading below is one of the current MANUAL's `## ` headings, verbatim**; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:` wording
 is the text I propose to insert/replace, verbatim.
 
-## Shipped components
+## Layout of a running system
 
 - MANUAL: "demo component written entirely in bash — nats CLI + jq, no SDK, no compile step" | CODE: components/dialog/dialog.sh:1-19 (header), Makefile:297-300 (`cp $< $@ && chmod +x $@`; nimble:all_internal identical), manifest.yaml (no `dialog` entry) | FIX: fix: none — verified [verified]
 - MANUAL: "`dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer." | CODE: components/dialog/dialog.sh:107-141 (backends), :167-184 (handlers), :82/:95 (`x-harness.timeoutMs` 45000/120000, nothing else) | FIX: add "Neither tool is approval-gated and neither is on-demand, so once `dialog` is spawned both sit in every new conversation's direct toolset; `dialog_show` returns `{ok, shown, via: zenity|notify|log, kind}`, `dialog_ask` `{ok, answer: yes|no|timeout}`, and without a display (`DISPLAY` unset or zenity missing) `dialog_ask` answers `timeout` immediately without asking anyone." [missing]

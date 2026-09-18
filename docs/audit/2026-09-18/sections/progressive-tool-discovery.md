@@ -1,9 +1,16 @@
 # Worklist slice: Progressive tool discovery
 
-From `worklist.tsv` (13 rows). `class` is one of
+From `worklist.tsv` (27 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
+
+## A037 (doc-edit)
+source: `mechanisms-full.md`
+
+- MANUAL: MANUAL: absent — `x-harness.runner` (the fifth core-honoured schema extension) is documented nowhere in MANUAL or AGENTS.md
+- CODE: `core/dispatch.nim:1455-1473` lets a `hidden` + `runner: true` tool bypass a session's tool allowlist (`components/compaction/main.nim:216`, `components/recall/main.nim:166`)
+- FIX: add one sentence to §Progressive discovery: "A tool marked `x-harness.runner: true` **and** `hidden` is exempt from a session's frozen tool allowlist, so a replaced compactor or recall resolver keeps working in an allowlisted (subagent) session without a core edit."
 
 ## A069 (doc-edit)
 source: `mechanisms-full.md`
@@ -68,13 +75,6 @@ source: `mechanisms-full.md`
 - CODE: true for core's `conversation_delete` (`core/dispatch.nim:406-461`), **not** for the shipped web UI, which deletes raw store records (`ui/frontend/src/views/Sessions.svelte:55-67`)
 - FIX: apply the `mechanisms-sessions.md` finding (make the SPA call `conversation_delete`, or document the deviation). `[dup]`.
 
-## A170 (doc-edit)
-source: `mechanisms.md`
-
-- MANUAL: MANUAL: line 1106 `observe_request` "... approval-gated and limited to 30 seconds"
-- CODE: `components/observe/main.nim:376` `timeoutMs: 35_000`
-- FIX: "35 s (`x-harness.timeoutMs`)".
-
 ## A203 (code-bug?)
 source: `mechanisms-sessions.md`
 
@@ -93,4 +93,102 @@ source: `components/llm.md`
 - MANUAL: - MANUAL: `:1482` lists "LLM `chat`/`llm_resolve`" among tools whose registration the catalog projection covers
 - CODE: consistent
 - FIX: none — recorded as a verified-correct claim (no change).
+
+## A532 (doc-edit)
+source: `components/builder.md`
+
+- MANUAL: MANUAL: "A binary under `var/bin` is inert until manifest autostart, `core.spawn`, or a plugin install starts it."
+- CODE: `main.nim:104-105` (build returns the path), `core/dispatch.nim:308-346` (spawn), `components/plugins/main.nim:256-263` (install spawns)
+- FIX: none [verified] — accurate; the only unstated part is that the build→spawn pair is the documented self-extension step (MANUAL.md:894-899).
+
+## A546 (doc-edit)
+source: `components/builder.md`
+
+- MANUAL: MANUAL: "- Core lifecycle/status/catalog, builder, plugins, and fetch."
+- CODE: `main.nim:49` (`build` onDemand), `main.nim:203` (`info` onDemand)
+- FIX: none [verified] — both builder tools are on demand, exactly as listed; no builder tool is direct or hidden.
+
+## A617 (doc-edit)
+source: `components/compaction.md`
+
+- MANUAL: MANUAL: "Hidden takes precedence if both flags are present. A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist"
+- CODE: `core/dispatch.nim:1544-1546`, `components/compaction/main.nim:216`
+- FIX: none — verified accurate for this component (the exemption requires `hidden` **and** `runner`, checked at dispatch); but see the recall report: the sentence's example list "(compaction, recall)" is wrong about `recall`.
+
+## A618 (doc-edit)
+source: `components/compaction.md`
+
+- MANUAL: MANUAL: "Internal tools remain hidden: core `session`/`session_prepare`, store"
+- CODE: `components/compaction/main.nim:216`
+- FIX: add `compaction_propose` to that list (and, for symmetry, the recall resolver is *on demand*, not hidden) — "Internal tools remain hidden: core `session`/`session_prepare`, store `del`, LLM `chat`/`llm_resolve`, the compaction `compaction_propose`, the systemprompt prompt, …".
+
+## A630 (doc-edit)
+source: `components/recall.md`
+
+- MANUAL: MANUAL: "A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist"
+- CODE: `core/dispatch.nim:1544-1546`, `components/recall/main.nim:238`
+- FIX: update — drop `recall` from the example: "A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist — how replaceable runner machinery (the compactor, and any replacement summarizer) reaches a child whose toolset was frozen before it existed. The two flags are required together: an on-demand tool that carries `runner` without `hidden` is **not** exempt, and is refused in an allowlisted conversation like any other tool outside its `tools` list."  The parenthetical "(compaction, recall)" in the current sentence is wrong about `recall`, which is `onDemand` and therefore refused by `checkToolAllowlist`.
+
+## A631 (doc-edit)
+source: `components/recall.md`
+
+- MANUAL: MANUAL: "| on demand | `x-harness.onDemand: true` | omitted | hint + schema lookup | `invoke` |"
+- CODE: `core/dispatch.nim:288-291`, `core/conversation.nim:2460`
+- FIX: update — "... | `invoke`, or a direct call by name: exposure is not an ACL, so a tool the model was never offered still dispatches if the conversation has no tool allowlist".
+
+## A632 (code-bug?)
+source: `components/recall.md`
+
+- MANUAL: MANUAL: "`invoke` gateway refuses hidden targets, while components can still request"
+- CODE: `core/dispatch.nim:276-291` (`invokeTool` resolves the bare name but dispatches the raw string; `core/dispatch.nim:1615-1618` then finds no component)
+- FIX: either dispatch the resolved bare name in `invokeTool` or document that `invoke {tool: "component.tool"}` is rejected — a dotted spelling that `invokeTool` tolerates during lookup ("tolerate \"component.tool\" spellings (the LLM writes them naturally)", `core/dispatch.nim:281-284`) fails afterwards with "no component provides tool 'recall.context_recall'", which is exactly how a model spells the tool a notice just named (code bug, no test covers the dotted path).
+
+## A646 (doc-edit)
+source: `components/recall.md`
+
+- MANUAL: MANUAL: "The long tail is on demand:"
+- CODE: `components/recall/main.nim:238`, `core/catalog.nim:441-446`
+- FIX: add `context_recall` to the on-demand inventory's "Search and inspection" bullet — it is the one on-demand tool that notices tell the model to call, and it is the only shipped on-demand tool missing from this list.
+
+## A647 (doc-edit)
+source: `components/recall.md`
+
+- MANUAL: MANUAL: "Internal tools remain hidden: core `session`/`session_prepare`, store"
+- CODE: `components/recall/main.nim:238`
+- FIX: none — verified accurate for this component (it is deliberately *not* in the hidden list; that omission is correct, and `tests/t_recall.nim:94-96` is the guard against re-adding it).
+
+## A654 (doc-edit)
+source: `components/grep.md`
+
+- MANUAL: MANUAL: "- Routine work: `bash`, `grep`, and the file tools"
+- CODE: components/grep/main.nim:52 (no `onDemand`)
+- FIX: none — [verified] `grep` is a direct tool, so the bullet is right as written.
+
+## A655 (doc-edit)
+source: `components/grep.md`
+
+- MANUAL: MANUAL: "- Search and inspection: `files` (sorted listing), the git"
+- CODE: components/grep/main.nim:100 (`onDemand: true`)
+- FIX: none — [verified] `files` is discover-only; this bullet is the MANUAL's only statement of that fact.
+
+## A656 (doc-edit)
+source: `components/grep.md`
+
+- MANUAL: MANUAL: "- Search and inspection: `files` (sorted listing), the git"
+- CODE: components/grep/main.nim:52 (`parallel: true`), :100 (absent)
+- FIX: add — [delta] one clause next to `the observe/logfile diagnostics` bullet (or in the new chapter): "`grep` declares `parallel: true`, so a batched `grep` may run alongside other parallel tools; `files` does not, so an `invoke`d `files` serializes against them" (`core/dispatch.nim:1631-1654` is the runner-side gate).
+
+## A696 (doc-edit)
+source: `components/logfile.md`
+
+- MANUAL: MANUAL: "- Search and inspection: `files` (sorted listing), the git"
+- CODE: components/logfile/main.nim:292,448
+- FIX: update — [doc-edit] replace "the observe/logfile diagnostics" in that bullet with "the `observe_*` diagnostics and logfile's `logfile_search`/`logfile_paths`", so the two discoverable logfile tools are nameable from the on-demand inventory rather than only from their own subsection.
+
+## A727 (doc-edit)
+source: `components/observe.md`
+
+- MANUAL: MANUAL: "- Search and inspection: `files` (sorted listing), the git"
+- CODE: components/observe/main.nim:297,361,376,419,447,472,494,506,515,591,677,714 (all `onDemand`)
+- FIX: none — [verified] every `observe_*` tool is on demand, so the generic "the observe/logfile diagnostics" phrasing is right; naming them individually (or linking the tool table) is the optional improvement.
 

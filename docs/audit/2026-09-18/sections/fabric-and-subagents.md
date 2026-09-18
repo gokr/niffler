@@ -1,6 +1,6 @@
 # Worklist slice: Fabric and subagents
 
-From `worklist.tsv` (9 rows). `class` is one of
+From `worklist.tsv` (8 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -43,19 +43,12 @@ source: `mechanisms.md`
 
 - MANUAL: MANUAL: lines 2017-2075 (continuation is append-only, authorization by `sessionmeta.parent`, activation ledger, fork cut/provenance) matches `docs/WIRE.md` "Subagent continuation"/"Subagent fork" and `components/agent/main.nim:493,585,752,1113,1216` ✔ (no delta).
 
-## A237 (doc-edit)
-source: `mechanisms-obs.md`
-
-- MANUAL: MANUAL: absent (`var/approval-sources/` is nowhere in MANUAL, not even the `var/` row of the state table at MANUAL:244, which lists `logs/`, `captures/`, `processes/` …)
-- CODE: `core/approval.nim:99–121` creates `$NIF_ROOT/var/approval-sources/<digest>.nim` with mode 0600
-- FIX: add `approval-sources/` (0600 program source awaiting/recorded for approval) to the `var/` row and to §Approvals.
-
-## A340 (doc-edit)
+## A338 (doc-edit)
 source: `components/fabric.md`
 
-- MANUAL: MANUAL:2084 ("The executor child holds no NATS connection and no credentials")
-- CODE: components/fabric/fabric.nim:120-126
-- FIX: extend the clause — "…no NATS connection, no credentials and no inherited `NIF_*` environment: the child gets only `PATH`, `HOME`, `TMPDIR` and the cache path."
+- MANUAL: MANUAL:1987-1988 (`fabric` arguments only, no budgets)
+- CODE: components/fabric/fabric.nim:24-38 (limits), 704-714 (defaults/cap), 713 (outer-deadline clamp), 275-280 (nested slice)
+- FIX: append one sentence to the `fabric` row — "Budgets: `maxCalls` defaults to 200 (max 1000) and `timeoutMs` to 240 s (hard cap 300 s, also clamped to the caller's remaining session deadline); every nested call inherits the run's remaining time, and results over 50 KB spill to `var/fabric-artifacts/<run>.json`." Do not copy the full limits table — link docs/FABRIC_GUIDE.md §Budgets and limits (guide:294-308).
 
 ## A341 (doc-edit)
 source: `components/fabric.md`

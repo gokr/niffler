@@ -1,6 +1,6 @@
 # Worklist slice: Wrong claims (summary)
 
-From `worklist.tsv` (6 rows). `class` is one of
+From `worklist.tsv` (7 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -29,6 +29,11 @@ source: `mechanisms-obs.md`
 source: `mechanisms-obs.md`
 
 - MANUAL: MANUAL:459 (`core.spawn`, `core.kill`, `core.remove`) names tools that do not exist under those names (`spawn`/`kill`/`remove`, core/catalog.nim:68,81,89) and does not say core gates them by name rather than by schema (core/dispatch.nim:273–276).
+
+## A256 (doc-edit)
+source: `mechanisms-obs.md`
+
+- MANUAL: MANUAL:190 "capped at 1000 items" without the `limit` default of 100, which is what a caller omitting `limit` actually gets (components/store/main.nim:130,151).
 
 ## A259 (wrong)
 source: `mechanisms-obs.md`

@@ -1,6 +1,6 @@
 # Worklist slice: Language servers (lsp)
 
-From `worklist.tsv` (7 rows). `class` is one of
+From `worklist.tsv` (9 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -51,4 +51,18 @@ source: `components/lsp.md`
 - MANUAL: MANUAL: `docs/MANUAL.md:948` "| `lsp {operation, path, line?, character?}` |"
 - CODE: `components/lsp/main.nim:1063-1078`
 - FIX: update signature to `lsp {operation, path, query?, line?, character?, workspaceRoot?}` and add one clause: "`workspaceRoot` pins the server root; without it the root is derived from the file's nearest module marker (`go.mod`, `Cargo.toml`, `tsconfig.json`/`package.json`, `pyproject.toml`, `*.nimble`, …), falling back to the workspace."
+
+## A406 (doc-edit)
+source: `components/lsp.md`
+
+- MANUAL: MANUAL: `docs/MANUAL.md:950` "`lsp_registry {action: add|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name"
+- CODE: `components/lsp/main.nim:970-992`, `:1017-1019`
+- FIX: update — "`add` takes `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}, initializationOptions?}`, overrides a built-in of the same name, and refuses an extension already mapped to another server with `E_LSP_CONFLICT` (remove that mapping first). `remove` deletes user entries only."
+
+## A487 (doc-edit)
+source: `components/repomap.md`
+
+- MANUAL: MANUAL:996-1031 (`### How the user adds a language`, lsp)
+- CODE: CODE: `tags.nim:3-4, 57-78, 223-233`, `ts.nim:19-45`, `Makefile:158-167` — the MANUAL's "adding a language is a config entry, never code" promise is true for lsp, but a repomap language needs a vendored grammar and component edits
+- FIX: FIX (proposed section): "Adding a language to the map is a component change, not a config entry: vendor the grammar's C under `csrc/`, register it in `ts.nim`'s `{.compile.}` list and `REPOMAP_CSRC`, add `queries/<lang>-tags.scm`, and add its extensions to `tags.nim`. The tier list is the seam's current limit, not a policy."
 

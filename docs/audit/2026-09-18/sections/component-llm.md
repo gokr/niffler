@@ -1,6 +1,6 @@
 # Worklist slice: component: llm
 
-From `worklist.tsv` (12 rows). `class` is one of
+From `worklist.tsv` (8 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -33,20 +33,6 @@ source: `components/llm.md`
 - CODE: `main.go:770-784` (`lengthCap`)
 - FIX: document that the cap is sent as `max_completion_tokens` for every openai-chat provider **except** DeepSeek, which documents only `max_tokens` and silently ignores the other spelling (server default 8K non-thinking / 64K thinking then applies). Anthropic always receives the resolved window as `max_tokens` (`anthropic.go:212`).
 
-## A389 (doc-edit)
-source: `components/llm.md`
-
-- MANUAL: - MANUAL: absent (grep `finish_reason` = 0 hits; only `context-overflow` is described at `:620-629`)
-- CODE: `main.go:726-750`, `:998-1020`
-- FIX: add: the result carries `finish_reason` (`length` warns "truncated at the output cap"; unknown reasons pass through), and DeepSeek's `aborted` / `insufficient_system_resource` — HTTP 200 with an interrupted generation — are returned as a transient `stream error: …` so the retry policy sees them instead of recording a successful turn. Anthropic `max_tokens`/`end_turn`/`tool_use` and Codex `max_output_tokens`/`response.incomplete` are canonicalized onto the same vocabulary (`main.go:751-767`, `anthropic.go:161-167`, `codex.go:139-145`).
-
-## A390 (doc-edit)
-source: `components/llm.md`
-
-- MANUAL: - MANUAL: `:242` mentions `/effort`; no `reasoning_effort` value set or lane behavior anywhere (grep `reasoning_effort` in MANUAL = 0 hits)
-- CODE: `main.go:437-440`, `:1147-1149`; `anthropic.go:231-234`; `codex.go:208-212`
-- FIX: document that `thinking`/`reasoning_effort` accepts `low|medium|high|max` (empty = provider default) and is **only sent when non-empty**, so providers that do not support it never see the field; openai-chat forwards the field verbatim, Codex converts it to `reasoning {effort, summary: "auto"}`, Anthropic to `thinking {type: adaptive, display: summarized}` + `output_config.effort` (plus the interleaved-thinking beta on OAuth). Add that the `session` schema enum lists only `low/medium/high` while the description and core's validation accept `max` (`core/catalog.nim:198`, `core/conversation.nim:2646`) — a real inconsistency.
-
 ## A391 (doc-edit)
 source: `components/llm.md`
 
@@ -68,24 +54,10 @@ source: `components/llm.md`
 - CODE: `main.go:636-723`
 - FIX: add one or two sentences: before sending, assistant `tool_calls` arguments in replayed history are repaired (unterminated strings/containers closed, unrecoverable payloads become `{}`) so a strict backend cannot 400 a session poisoned by an earlier truncated stream; this runs on text only and never executes anything.
 
-## A396 (doc-edit)
-source: `components/llm.md`
-
-- MANUAL: - MANUAL: `:1585-1589` describes the live source accurately (priority 150, background probe after chats, 10-minute TTL) but never names `llm_models_source`
-- CODE: `models_source.go:25-95`, `:136-140`; `main.go:1114-1122`
-- FIX: name the tool and add its bounds: one probe per (catalog provider, base URL) key per 10 minutes, 8s probe timeout, in-memory only (a restart loses the ids until the next chat), `GET {baseUrl}/models`, Codex excluded because the ChatGPT backend exposes no such route, and the tool errors `"no live model data yet"` until the first successful probe.
-
 ## A397 (doc-edit)
 source: `components/llm.md`
 
 - MANUAL: - MANUAL: absent (`runner` flag semantics; grep "x-harness.runner" in MANUAL = 0 hits)
 - CODE: `main.go:1107`, `:1154`; `core/dispatch.nim:1470-1474`
 - FIX: document `x-harness.runner: true` where the hidden-tool flags are explained (tool-schema extension list / discovery section): a hidden tool that a session runner may call even when the session's `tools` allowlist would exclude it — which is why a restrictive profile can never lock out `chat` or `llm_resolve`.
-
-## A399 (doc-edit)
-source: `components/llm.md`
-
-- MANUAL: - MANUAL: absent (`stripPrefix`, `accountId` = 0 hits)
-- CODE: `main.go:68-73`, `main.go:508-511`; `codex.go:41-52`
-- FIX: fold into the provider-object documentation (delta 5) rather than a new paragraph: `stripPrefix` is the gateway workaround, and `accountId` is the ChatGPT account id used to build Codex request headers, derived from the JWT when the provider record does not carry one — a Codex call with neither fails with "OAuth token has no ChatGPT account id; sign in again".
 

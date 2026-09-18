@@ -1,6 +1,6 @@
 # Worklist slice: component: expert
 
-From `worklist.tsv` (18 rows). `class` is one of
+From `worklist.tsv` (15 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -14,11 +14,6 @@ source: `components/expert.md`
 source: `components/expert.md`
 
 - MANUAL: **Prefix budget unexplained.** "fixed cache-stable knowledge prefix" (`docs/MANUAL.md:2111`) should name the 80 % fill / 8 k reserve and `llm.llm_resolve` sizing — `main.nim:57-60`, `main.nim:404-412`.
-
-## A316 (doc-edit)
-source: `components/expert.md`
-
-- MANUAL: **Prefix composition unstated.** Policy + the three bundled-only skills + the observed session's frozen exposure/allowlist (`core.prompt_preview`) + `discover` hints — `main.nim:266-357`, `main.nim:386-443`; skills trust boundary at `main.nim:50-56`/`296-322`.
 
 ## A317 (doc-edit)
 source: `components/expert.md`
@@ -49,16 +44,6 @@ source: `components/expert.md`
 source: `components/expert.md`
 
 - MANUAL: **Observation triggers unlisted.** toolcall start/done, turn start/done, assistant text, token reasoning tail, and the context-pressure trigger at ≥80 % (`main.nim:709-793`); turn done clears the frame so advice can never cross turns (`main.nim:735-738`).
-
-## A323 (doc-edit)
-source: `components/expert.md`
-
-- MANUAL: **Audit trail unmentioned.** `ev.log.expert` judgment lines with silence reasons (`main.nim:588-594`) — the operator's way to answer "why was it silent?".
-
-## A324 (doc-edit)
-source: `components/expert.md`
-
-- MANUAL: **`expert_status` fields truncated.** MANUAL `:2131` lists counters but not `knowledgeVersion`, `liveTools`, `skills`, `prefixChars`, `prefixBudgetTokens`, `tokens{prompt,cached,completion}` — `main.nim:874-925` (frame/counters 883-906, aggregate 908-925).
 
 ## A325 (doc-edit)
 source: `components/expert.md`

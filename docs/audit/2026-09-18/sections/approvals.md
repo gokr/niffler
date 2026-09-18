@@ -1,6 +1,6 @@
 # Worklist slice: Approvals
 
-From `worklist.tsv` (13 rows). `class` is one of
+From `worklist.tsv` (19 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -95,4 +95,46 @@ source: `components/provider.md`
 - MANUAL: MANUAL:857-859 names only `NIF_OAUTH_CALLBACK_HOST`; the environment-fallback nickname/defaults are missing.
 - CODE: `environmentProvider()` returns nickname `"default"` (main.go:127-136), base URL default `https://api.openai.com/v1` (main.go:120-121), model default `deepseek-chat` (main.go:123-125); switch-to-environment announces nickname `"default"` (main.go:1012).
 - FIX: extend 857 → "The fallback backend presents itself as nickname `default` (`source: environment`) with `NIF_OPENAI_BASE_URL` default `https://api.openai.com/v1` and `NIF_OPENAI_MODEL` default `deepseek-chat`; `provider_use_environment` clears the marker, it does not delete stored providers."
+
+## A474 (doc-edit)
+source: `components/provider.md`
+
+- MANUAL: MANUAL:881 calls `provider:active` "a plain store doc — remove or overwrite it"; shape and self-healing are unstated.
+- CODE: `{nickname, updatedAt}` (main.go:203-206), written with `expectRev` 0 (main.go:990); an empty/dangling marker is auto-deleted when read (main.go:964-967).
+- FIX: append "{nickname, updatedAt}; a dangling or empty marker is cleaned up automatically on the next read, so `provider_remove`/`provider_use_environment` need no manual repair."
+
+## A541 (doc-edit)
+source: `components/builder.md`
+
+- MANUAL: MANUAL: "Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`, …"
+- CODE: `main.nim:49` (gate), `core/dispatch.nim:1636-1640` (enforcement), `components/plugins/main.nim:256` (a peer component calls `svc.builder.call` directly — no gate, no `timeoutMs`), `components/plugins/main.nim:628` (`plugin_install` carries its own)
+- FIX: update [doc-edit] — add a sentence after the list: "The gate is enforced by core's dispatcher, so it covers LLM/session calls; a component that calls `svc.builder.call` directly (the `plugins` install path) is not gated — that caller carries its own approval."
+
+## A571 (doc-edit)
+source: `components/cli.md`
+
+- MANUAL: MANUAL: "Tools whose schema carries `x-harness.approval: "always"` — currently `bash`, `build` (the `builder` component), core's `spawn`, `kill` and `remove`,"
+- CODE: core/dispatch.nim:1630-1633 (the only gate), components/cli/main.nim:112-114 (the cli never enters core's dispatch)
+- FIX: add "The gate sits in core's dispatch, so it protects core-mediated callers only (the model, and anything reached through `svc.core.call`). A bus client — `./var/bin/cli call bash …`, `dialog`, a test calling `svc.<component>.call` directly — runs an `approval: "always"` tool unasked; treat such a component as the trust level of the shell that started the harness." [missing]
+
+## A619 (doc-edit)
+source: `components/compaction.md`
+
+- MANUAL: MANUAL: "automatic pressure ladder: core asks the configured compaction component for"
+- CODE: `core/conversation.nim:2957-2986`
+- FIX: none — verified accurate (no LLM turn, no user message, a decline never degrades to the lossy rung).
+
+## A620 (doc-edit)
+source: `components/compaction.md`
+
+- MANUAL: MANUAL: "before/after token counts, or `compacted: false` with the reason (no"
+- CODE: `core/conversation.nim:2965-2969`, `core/conversation.nim:2983-2986`
+- FIX: update — "The reply reports `compacted: true` with `beforeTokens`, `afterTokens` and `generation`, or `compacted: false` with exactly two possible reasons: `no compaction component available (NIF_COMPACTION_TOOL=<value>)` (empty or unregistered) or `nothing to compact: the compactor declined or no permitted cut exists yet` — the second also covers a failed, invalid or stale candidate attempt."
+
+## A657 (doc-edit)
+source: `components/grep.md`
+
+- MANUAL: MANUAL: absent (no grep tool in the approval list)
+- CODE: components/grep/main.nim:52-54,100-102
+- FIX: none — [verified] neither schema carries `x-harness.approval` and both tools are read-only, so the approvals chapter's list is correct to omit them; the shipped row should keep saying "approval-free" if it is ever expanded.
 

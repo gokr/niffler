@@ -12,19 +12,19 @@ source: `config.md`
 - CODE: components/mcp/main.go:463-474 — `timeout := 30s`; `cfg.TimeoutMs` used only `if > 30_000`; the env value is then assigned **unconditionally last** (`if raw := os.Getenv("NIF_MCP_PROBE_TIMEOUT_MS"); ms > 0 { timeout = ms }`), so a *lower* env value wins too (mcp-bridge probes: components/mcp-bridge/main.go:437)
 - FIX: drop "when higher" → "(overrides both the 30 s default and the server's configured `timeoutMs`)"
 
-## A261 (doc-edit)
-source: `config.md`
-
-- MANUAL: MANUAL:187 "All engines enforce single-writer the same way: one process owns the file (flock; kernel-released on crash), everyone else speaks envelopes."
-- CODE: components/store-tidb/main.go:99-142 — no `flock` in the tidb engine at all (MANUAL's own bullet at :181-183 says so, so the section contradicts itself); file-backed locks are components/store-sqlite/main.go:133 `acquireLock(dbPath + ".lock")` → `var/store.db.lock` and components/store/main.nim:48-50 `lockPath = path & ".lock"` → `var/barrel-db.lock`
-- FIX: "File-backed engines (sqlite, barrel) enforce single-writer with a flock beside the data file (`var/store.db.lock`, `var/barrel-db.lock`); the `tidb` engine takes no lock — the cluster's row locks arbitrate."
-
 ## A263 (doc-edit)
 source: `config.md`
 
 - MANUAL: MANUAL:367-369 "Loading rules (identical in the Nim SDK, Go SDK and the UI bridge): existing shell environment **always wins** over `.env`; `.env` is loaded from the current directory and from `$NIF_ROOT`, in that order."
 - CODE: the order is *reversed* in the UI bridge — ui/bridge.go:71 `sdk.LoadDotEnv(filepath.Join(harnessRoot(), ".env"), ".env")` (root first, cwd second); since the first-loaded value wins (sdk/go/dotenv.go:24 `if os.Getenv(key) == ""`, sdk/dotenv.nim `if … not existsEnv(key)`, sdk/ts/src/dotenv.ts:36 `=== undefined`), the **harness-root `.env` wins in the UI** while the **launch-directory `.env` wins in the SDKs**
 - FIX: state the winner explicitly and split the UI out: "the first file that defines a key wins, so a launch-directory `.env` beats the root one — except in the UI bridge, which loads the root first (ui/bridge.go)".
+
+## A264 (doc-edit)
+source: `config.md`
+
+- MANUAL: MANUAL:240 (state table, Environment/.env row) "components read env once at boot; a config change is `core.kill` + `core.spawn`" (repeated MANUAL:336 and MANUAL:879)
+- CODE: the supervisor passes **no env** to children — core/supervisor.nim:118-120 comment + :160 `startProcess("/bin/sh", workingDir = sup.root, …)` inherits core's environment, so a variable **exported in core's shell env** cannot be changed by kill+spawn at any level; children do re-read `.env` itself at their own boot (sdk/niffler/sdk.nim:771, sdk/go/component.go:414, sdk/ts/src/component.ts:242, core/session.nim:37)
+- FIX: "`.env` edits apply when the component is respawned (`core.kill` + `core.spawn`); a change to a variable *exported in the shell environment* requires restarting the harness — children inherit core's environment and shell env beats `.env`."
 
 ## A265 (doc-edit)
 source: `config.md`

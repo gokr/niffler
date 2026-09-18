@@ -1,6 +1,6 @@
 # Worklist slice: Testing
 
-From `worklist.tsv` (7 rows). `class` is one of
+From `worklist.tsv` (14 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -53,4 +53,53 @@ source: `mechanisms-sessions.md`
 - MANUAL: MANUAL: line 2205-2209 "Core-based tests snapshot their required binaries into a unique temporary `NIF_ROOT`"
 - CODE: `Makefile:433-434,458-460` (`TEST_BINS` loop, one test-owned bus each), `scripts/with-build-lock.sh:25-27` (`flock -s`)
 - FIX: accurate in substance; the passing mention of `test-autostart` is fine.
+
+## A576 (verified)
+source: `components/cli.md`
+
+- MANUAL: MANUAL: "make test-bash      # ... or just one — `make help` lists every target"
+- CODE: Makefile:521-523 (`test-cli` → `t_cli` + `t_cli_catalog`), tests/t_cli.nim, tests/t_cli_catalog.nim
+- FIX: fix: none — verified; the hand-list is gone and the target exists [verified]
+
+## A590 (verified)
+source: `components/console.md`
+
+- MANUAL: MANUAL: "make test-ui        # ... frontend side only: lib unit tests + `npm run typecheck`"
+- CODE: Makefile:505 (`test-console` → `t_console`), tests/t_console.nim:1-112 (call/result/event rendering + raw registration contract)
+- FIX: fix: none — verified; the hand-list of targets is gone and the target exists [verified]
+
+## A625 (doc-edit)
+source: `components/compaction.md`
+
+- MANUAL: MANUAL: "Each test boots the real component binaries (Nim, Go *and* TypeScript —"
+- CODE: `Makefile:447` (wildcard suite includes `tests/t_compaction.nim`), `Makefile:544` (`make test-compaction`), `Makefile:548` (`make test-conformance --bin=PATH --tool=NAME`), `Makefile:552` (`make live-smoke`), `tests/t_compaction_conformance.nim:99-141`
+- FIX: add — "The compaction contract has its own verification: `make test-compaction` runs the end-to-end restore/commit/resume fixtures, `make test-conformance --bin=<binary> --tool=<name>` points the same contract suite at a replacement compactor (the acceptance test for a third-party summarizer), and `make live-smoke` exercises real summarization against a real provider (network, opt-in). None of the three is part of `make test-server`."
+
+## A659 (code-bug?)
+source: `components/grep.md`
+
+- MANUAL: MANUAL: "`/doctor deep` additionally fans out to each component's own self test over"
+- CODE: tests/t_grep.nim:1-149; Makefile:524 (`test-grep`); `grep -c selftest components/grep/main.nim` → 0
+- FIX: add — [missing] a Verification note in the new chapter: "`tests/t_grep.nim` (`make test-grep`) covers matches, gitignore/hidden handling, globs, case folding, bad-regex exit 2, result caps and the `files` tool; the component registers no `selftest`, so `/doctor deep` reports it as not implementing one."
+
+## A678 (code-bug?)
+source: `components/hooks.md`
+
+- MANUAL: MANUAL: "`/doctor deep` additionally fans out to each component's own self test over"
+- CODE: tests/t_hooks.nim:1-69; Makefile:517 (`test-hooks`); `grep -c selftest components/hooks/main.nim` → 0
+- FIX: add — [missing] a Verification line in `## Hooks`: "`tests/t_hooks.nim` (`make test-hooks`) publishes `ev.session.turn` and asserts the configured command receives the event payload on stdin; the component registers no `selftest`, so `/doctor deep` reports it as not implementing one."
+
+## A698 (code-bug?)
+source: `components/logfile.md`
+
+- MANUAL: MANUAL: "`/doctor deep` additionally fans out to each component's own self test over"
+- CODE: `grep -c selftest components/logfile/main.nim` → 0
+- FIX: add — [delta] one clause where the logfile test is named: "`logfile` registers no `selftest`, so `/doctor deep` lists it as not implementing one" — or register one; the tests already cover the contract either way.
+
+## A729 (code-bug?)
+source: `components/observe.md`
+
+- MANUAL: MANUAL: "`/doctor deep` additionally fans out to each component's own self test over"
+- CODE: `grep -c selftest components/observe/main.nim` → 0
+- FIX: add — [delta] one clause in the same Verification paragraph: "`observe` registers no `selftest`, so `/doctor deep` lists it as not implementing one" — or register one; `t_observe` already covers the contract.
 

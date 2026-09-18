@@ -1,6 +1,6 @@
 # Worklist slice: component: provider
 
-From `worklist.tsv` (10 rows). `class` is one of
+From `worklist.tsv` (13 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -11,6 +11,13 @@ source: `components/provider.md`
 - MANUAL: MANUAL:807/808 `provider_add {...}` and `provider_update {...}` omit **`stripPrefix`**.
 - CODE: main.go:74, `main.go:340`, `main.go:450`; UI toggles it (App.svelte:189-196).
 - FIX: update both rows → add `stripPrefix?`; prose: "`stripPrefix` sends model ids without the `vendor/` prefix for gateways (LLMgateway, devpass) that route on the canonical id, e.g. `glm-5.2` for `alibaba/glm-5.2`."
+
+## A466 (doc-edit)
+source: `components/provider.md`
+
+- MANUAL: MANUAL:807 says `provider_add` "add an API-key provider"; it is an **upsert** whose response may report an update and whose first-provider auto-activation also applies to OAuth logins.
+- CODE: main.go:395-437 (existing rev → op `update`), main.go:417-421; oauth.go:682-687.
+- FIX: update → "add or overwrite an API-key provider (upsert by nickname; response redacted); the first provider — API-key or OAuth — becomes active automatically unless `active: false`."
 
 ## A468 (doc-edit)
 source: `components/provider.md`
@@ -40,6 +47,13 @@ source: `components/provider.md`
 - CODE: field only stored/summarized (main.go:69,87,110,339,450,521); no existence check, no spawn, no forwarding; the switch event carries no plugin name (main.go:993-998).
 - FIX: update → "`plugin` is informational metadata naming the component that owns this provider's extra tools; the provider component does not start or validate it. The plugin must be spawned separately and subscribe to `ev.provider.switch`, comparing the announced `nickname` with the provider records it serves."
 
+## A473 (doc-edit)
+source: `components/provider.md`
+
+- MANUAL: MANUAL:819 "if it was active, another one takes over" hides the **deterministic rule**.
+- CODE: alphabetically first remaining nickname, else environment (`main.go:1019-1035`).
+- FIX: append "(the alphabetically first remaining provider, else the `NIF_OPENAI_*` fallback)".
+
 ## A475 (doc-edit)
 source: `components/provider.md`
 
@@ -60,6 +74,13 @@ source: `components/provider.md`
 - MANUAL: MANUAL:878-880 says the changed event is for interactive clients but never lists its `op` values or that refresh/login are included.
 - CODE: ops `add`/`update`/`switch`/`remove`/`import`/`login`/`refresh` (main.go:430,532,578,900; oauth.go:690,741); payload has no credential (main.go:972-985); UI consumer App.svelte:421-426.
 - FIX: append "(`op` is one of `add`, `update`, `switch`, `remove`, `import`, `login`, `refresh`; the payload is secret-free)".
+
+## A478 (doc-edit)
+source: `components/provider.md`
+
+- MANUAL: MANUAL:817 "live-updates the LLM backend" can be read as a push; MANUAL:866-868 correctly says per-call resolution.
+- CODE: `llm/main.go:377-380` (re-read each chat call).
+- FIX: reword 817 → "make another stored provider active; the next chat call (and `llm_resolve`) uses it immediately." (No restart needed, no push involved.)
 
 ## A479 (doc-edit)
 source: `components/provider.md`

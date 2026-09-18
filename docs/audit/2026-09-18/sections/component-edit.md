@@ -1,6 +1,6 @@
 # Worklist slice: component: edit
 
-From `worklist.tsv` (16 rows). `class` is one of
+From `worklist.tsv` (13 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -20,33 +20,12 @@ source: `components/edit.md`
 
 - MANUAL: MANUAL.md:654, 1467-1472, 233-247, 341, 348 — replication caveat, shipped tool-profile policy, state table, the two env rows.
 
-## A298 (doc-edit)
+## A297 (doc-edit)
 source: `components/edit.md`
 
-- MANUAL: MANUAL:65 (no mention of the read/write staleness gate)
-- CODE: `main.nim:786-797` (rationale `main.nim:410-424`)
-- FIX: add — when a conversation's last-observed digest of a file differs from disk (external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` *before* matching, because `old_string` may occur exactly once in text the model has never seen. Fix is to re-read and redo the edit; session-less callers (`cli`, other components) are not tracked and skip the gate.
-
-## A299 (doc-edit)
-source: `components/edit.md`
-
-- MANUAL: MANUAL:233-247 (state table; no `niffler-edit` row)
-- CODE: `main.nim:474-481`
-- FIX: add a row — `| **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json` (else `~/.config/niffler-edit/undo.json`): last pre-edit bytes per file + per-conversation seen-state digests | durable |`. It is the only durable artifact this component owns; deleting it only loses undo history and unchanged-read stubs, never file content.
-
-## A300 (doc-edit)
-source: `components/edit.md`
-
-- MANUAL: MANUAL absent (undo semantics)
-- CODE: `main.nim:864-900`, `522-546`
-- FIX: add — `undo_last_edit` is **single-level per file** (the previous edit only, not a stack), **persisted across restarts** and keyed by absolute path, and reverts content, BOM and line endings exactly. It is refused with `E_UNDO_STALE` when the file was modified or deleted after the edit — and in that case the stale record is *discarded*, so the undo is gone for good; the model is told to re-read and edit forward. The undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert.
-
-## A301 (doc-edit)
-source: `components/edit.md`
-
-- MANUAL: MANUAL:65 (read description) / absent elsewhere
-- CODE: `main.nim:466-472`, `979-985`, `44` (`MIN_STUB_BYTES = 512`), `54-61`
-- FIX: add — a *full* re-read of a file ≥512 bytes that this conversation previously read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; the model passes `force: true` (or any offset/limit window) to force a re-dump. Windowed reads and small files always re-dump.
+- MANUAL: MANUAL:65 (`edit` (unique `old_string`, guarded fallback cascade, `replace_all`))
+- CODE: `main.nim:1285-1298` (an `edits` array), `main.nim:803-810` (`E_OVERLAP`), `main.nim:798-838` (single atomic write)
+- FIX: add — `edit` is inherently multi-edit: `edits[]` takes any number of `{old_string,new_string,replace_all?}` pairs, all matched against the *original* file, checked for overlap and no-change before anything is written, then applied in one atomic rename. There is no separate `multi_edit` tool; a stringified or single-object `edits` is accepted (`main.nim:735-741`). A batch that fails any pre-check leaves the file byte-identical.
 
 ## A302 (doc-edit)
 source: `components/edit.md`
@@ -62,12 +41,12 @@ source: `components/edit.md`
 - CODE: `main.nim:430-459`, `943`, `1024-1025`
 - FIX: add — a `read` that enters a directory *below* the harness root appends any newly discovered `AGENTS.override.md`/`AGENTS.md`/`AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` (+ `AGENTS.local.md`) for the directories on the path, each wrapped in `<lazy_project_instructions path="…">`, once per session. This keeps monorepo subtrees out of the frozen system prompt until the model actually enters them.
 
-## A306 (doc-edit)
+## A305 (doc-edit)
 source: `components/edit.md`
 
-- MANUAL: MANUAL:65 vs CODE (`edit` cannot create files)
-- CODE: `main.nim:159-167`
-- FIX: add one clause — `edit` only changes *existing* text files: a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content. This is the most common confusion between the two tools and is currently implied only by the error text.
+- MANUAL: MANUAL:65 ("`write` (atomic whole-file)")
+- CODE: `main.nim:1317-1325`, `106-131`, `1210-1241`
+- FIX: update — `write` creates the file and its parent directories, follows symlinks, preserves the target's permissions via `fchmod` on the temp file, renames atomically, and truncates on empty content; payload cap is 900000 bytes (`NIF_WRITE_MAX_BYTES`), deliberately under NATS's 1MB limit so oversized writes get a clear component error; it reports path, bytes, lines, digest and `overwrote`.
 
 ## A307 (doc-edit)
 source: `components/edit.md`

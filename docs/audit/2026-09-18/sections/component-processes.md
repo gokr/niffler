@@ -1,6 +1,6 @@
 # Worklist slice: component: processes
 
-From `worklist.tsv` (8 rows). `class` is one of
+From `worklist.tsv` (9 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -9,6 +9,16 @@ revision and are hints only.
 source: `components/processes.md`
 
 - MANUAL: **[wrong claim] The 50-finished-entry cap does not exist.** `KEEP_FINISHED = 50` (`main.nim:34`) is declared and **never referenced**; `gProcs` has no eviction path (`main.nim:76, 323`, only `clear()` at shutdown `main.nim:487`), so finished entries accumulate for the component's lifetime and `process_list` returns all of them (`main.nim:421-436`). MANUAL:1055-1056 asserts "the 50 most recent finished entries stay in the registry". → either implement the cap (evict oldest terminal entries past 50) **or** replace the claim with "the registry keeps every process of this component's lifetime, running and finished; only running ones are persisted to `registry.json`".
+
+## A454 (doc-edit)
+source: `components/processes.md`
+
+- MANUAL: **[wrong scope] An LLM-invoked `process_start` is anonymous.** The tool schema has no `x-harness.sessionId` (`main.nim:500`), and only bash passes `session` (`components/bash/main.nim:139`); so `process_start` reached via `discover`/`invoke` never gets an exit notice. MANUAL:1069-1071 lists "a direct `process_start`, e.g. from `cli`" — → widen to "started by anything other than `bash run_in_background` (the model's own `invoke`, `cli`, a script)".
+
+## A455 (doc-edit)
+source: `components/processes.md`
+
+- MANUAL: **[imprecise] "Processes die with the harness" (MANUAL:1077).** True for a graceful stop (`onDrain` → `killEntry` on every entry, `main.nim:484-488`, fired on SIGTERM/SIGINT/`ev.sys.drain`, `sdk/niffler/sdk.nim:33, 393-397`), but a SIGKILLed component leaves them running until the **next component start** sweeps them (`main.nim:115-143`). → "die when the `processes` component stops; if it is killed, the next start sweeps the orphans".
 
 ## A456 (doc-edit)
 source: `components/processes.md`
@@ -19,11 +29,6 @@ source: `components/processes.md`
 source: `components/processes.md`
 
 - MANUAL: **[missing] `workdir` fallback.** Schema says "default: workspace" (`main.nim:497`); core substitutes the conversation workspace when the field is empty or relative (`core/dispatch.nim:1437-1446`), so that default holds only for calls that go through core dispatch; a bare `cli call process_start` leaves it empty and the child inherits the component's cwd (`NIF_ROOT`). A non-existent `workdir` fails with `E_BAD_SHAPE` (`main.nim:291`). → one sentence.
-
-## A458 (doc-edit)
-source: `components/processes.md`
-
-- MANUAL: **[missing] Env validation asymmetry.** `NIF_PROCESSES_POLL_CHUNK` is clamped to `[1024, 1048576]` (`main.nim:49-57`); `NIF_PROCESSES_SPOOL_CAP` is parsed without bounds (`main.nim:42-47`) and feeds `keep = min(2 MiB, cap div 2)` (`main.nim:206`) — a tiny/negative cap can empty a spool on the next poll. MANUAL:299-300 lists both as plain defaults. → add "clamped to 1 KiB-1 MiB" and "must exceed the keep size".
 
 ## A459 (doc-edit)
 source: `components/processes.md`

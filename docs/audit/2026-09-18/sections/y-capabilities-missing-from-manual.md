@@ -1,6 +1,6 @@
 # Worklist slice: (Y) Capabilities missing from MANUAL
 
-From `worklist.tsv` (13 rows). `class` is one of
+From `worklist.tsv` (12 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -54,13 +54,6 @@ source: `mechanisms-full.md`
 source: `mechanisms-full.md`
 
 - MANUAL: **Schema drift to fix in code, then document**: the `session` tool schema omits `discovery`/`tools`/`maxRounds`/`maxCalls`/`maxTokens` (`core/catalog.nim:184-196` vs `core/conversation.nim:2341,2427-2457`), declares `"enum": ["low","medium","high"]` for `thinking` while accepting `max` (`core/catalog.nim:198-200`), and the mismatch error text says "low, medium or high" (`core/conversation.nim:2647`).
-
-## A149 (missing)
-source: `mechanisms.md`
-
-- MANUAL: MANUAL: absent (never mentions the core `ui` tool, the UI registry, leases or display numbers)
-- CODE: `core/catalog.nim:203-215` (hidden tool `ui`, ops register/renew/release/claim/release_session/owner), `core/uireg.nim:1-30,33,60-124` (UUID → "Niffler N" monotonic numbering, 20 s renewable lease, one live UI per conversation, lazy sweep)
-- FIX: add a "Clients and the UI registry" subsection: register/renew/release, claim/release_session/owner semantics, lease 20 s, numbers monotonic per harness lifetime, coordination not authentication.
 
 ## A150 (missing)
 source: `mechanisms.md`

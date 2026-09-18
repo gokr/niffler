@@ -1,6 +1,6 @@
 # Worklist slice: Expert advisory peer (expert)
 
-From `worklist.tsv` (5 rows). `class` is one of
+From `worklist.tsv` (8 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -30,6 +30,21 @@ source: `mechanisms-full.md`
 source: `components/expert.md`
 
 - MANUAL: **No published economics numbers.** MANUAL `:2133-2136` says "cooldown, latest-state coalescing" without values; add `MaxJudgmentsPerTurn = 2`, `EvalCooldownMs = 8_000`, `MaxActivities = 8`, `MaxField = 400`, `MaxReasoningTail = 2000`, `MaxMessage = 1200` — `components/expert/main.nim:33-41`.
+
+## A316 (doc-edit)
+source: `components/expert.md`
+
+- MANUAL: **Prefix composition unstated.** Policy + the three bundled-only skills + the observed session's frozen exposure/allowlist (`core.prompt_preview`) + `discover` hints — `main.nim:266-357`, `main.nim:386-443`; skills trust boundary at `main.nim:50-56`/`296-322`.
+
+## A323 (doc-edit)
+source: `components/expert.md`
+
+- MANUAL: **Audit trail unmentioned.** `ev.log.expert` judgment lines with silence reasons (`main.nim:588-594`) — the operator's way to answer "why was it silent?".
+
+## A324 (doc-edit)
+source: `components/expert.md`
+
+- MANUAL: **`expert_status` fields truncated.** MANUAL `:2131` lists counters but not `knowledgeVersion`, `liveTools`, `skills`, `prefixChars`, `prefixBudgetTokens`, `tokens{prompt,cached,completion}` — `main.nim:874-925` (frame/counters 883-906, aggregate 908-925).
 
 ## A330 (doc-edit)
 source: `components/expert.md`

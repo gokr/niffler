@@ -1,9 +1,16 @@
 # Worklist slice: Shipped components (
 
-From `worklist.tsv` (5 rows). `class` is one of
+From `worklist.tsv` (6 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
+
+## A141 (doc-edit)
+source: `mechanisms.md`
+
+- MANUAL: MANUAL: line 36 "`components/` | shipped component sources: `bash`, `builder`, `store`, `plugins`, `skills`, `fetch`, `edit`, `grep`, `git`, `agent`, `fabric`, `expert`, `observe`, `logfile`, `hooks`, `dialog`, `systemprompt`, `cli`, `console` (Nim), `models`, `provider` and `llm` (Go) + the `llm-openai` swap-in example"
+- CODE: `components/` actually contains 33 dirs, incl. `compaction`, `recall`, `repomap`, `processes`, `mcp`, `mcp-bridge`, `nats`, `store-sqlite`, `store-tidb`, `ctxtest` (`ls components/`)
+- FIX: update the sentence to name the missing ones (`compaction`, `recall`, `processes`, `repomap`, `mcp` + `mcp-bridge`, `store-sqlite`/`store-tidb`, `nats`) or replace the enumeration with "see the Shipped-components table below".
 
 ## A142 (doc-edit)
 source: `mechanisms.md`

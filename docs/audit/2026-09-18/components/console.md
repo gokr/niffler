@@ -1,6 +1,6 @@
 # Docs audit — `components/console/` (Nim, 107 LOC, one file)
 
-Read-only audit of the current tree (`docs/MANUAL.md` at **3072 lines**), 2026-09-19.
+Read-only audit of the current tree (`docs/MANUAL.md` at **3082 lines**), 2026-09-19.
 No component source and no MANUAL file was edited. Every claim cites `file:line`; claims
 marked **verified live** were reproduced against an isolated bus with hand-made fixtures
 (no interference with a running harness).
@@ -71,13 +71,13 @@ read from the cwd — see D5 for the MANUAL sentence that says otherwise.
 
 ## 4. How the MANUAL covers it (now)
 
-**Shipped-components row** — `### Shipped components`, MANUAL line 81:
+**Shipped-components row** — `## Layout of a running system` (`### Shipped components`), MANUAL line 81:
 
 > | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 
 Correct.
 
-**The viewer section** — `## The bus in one screen`, MANUAL:599-608:
+**The viewer section** — `## The bus in one screen`, MANUAL:603-612:
 
 > `nats sub '>'` attached to the bus shows the harness thinking in real time.
 > Or better: **the console component** (`./var/bin/console`, not in the
@@ -98,21 +98,21 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
 
 **Other mentions:**
 
-- `MANUAL:2382` (in `### Boundary`, `## Observation and logs`) — "`console` prints and
+- `MANUAL:2392` (in `## Observation and logs`) — "`console` prints and
   forgets" — correct and consistent with `main.nim` (no persistence, no ring).
-- `MANUAL:2389-2390` (in `### observe`: bounded live inspection) — observe "preserves the
+- `MANUAL:2399-2400` (in `## Observation and logs`, `### observe`: bounded live inspection) — observe "preserves the
   original JSON node, including unknown envelope fields and bare registration payloads" —
   a contract console does **not** share (`main.nim:48-56`); the contrast is undocumented
   and, for anyone debugging a boot, decisive (D1).
-- `MANUAL:2965-2972` (`## Starting and stopping`, "Interactive plugins") — "they probe for a
+- `MANUAL:2975-2982` (`## Starting and stopping`, "Interactive plugins") — "they probe for a
   live bus (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` →
   127.0.0.1:4222)". Accurate for the TUI that bullet names
   (`~/git/niffler-tui/tui/main.go:3057-3072`), **not** for `console`/`cli`: the Nim SDK
   reads `NIF_NATS_URL` → `<NIF_ROOT or own clone>/var/nats-url` → `127.0.0.1:4222`, with
   no cwd leg (`sdk/subjects.nim:19-32`) — verified live (D5).
-- `MANUAL:3015` (`## Common tasks`) — `make install` lists `niffler-console` — matches
+- `MANUAL:3025` (`## Common tasks`) — `make install` lists `niffler-console` — matches
   `scripts/install.sh:111`.
-- `## Testing` (MANUAL:2911) no longer hand-lists targets; `test-console` exists
+- `## Testing` (MANUAL:2921) no longer hand-lists targets; `test-console` exists
   (`Makefile:505`) — nothing to fix.
 
 ## 5. DELTA list
@@ -124,7 +124,7 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
   twice (isolated bus, fixtures): `00:53:59.462 event reg.publish  ` and, against a real
   `bash` component, `01:16:58.733 event reg.publish  `. Component arrival/departure — the
   most frequent boot traffic — is therefore invisible in detail, while the neighbouring
-  `observe` component documents that it preserves exactly these payloads (MANUAL:2389-2390).
+  `observe` component documents that it preserves exactly these payloads (MANUAL:2399-2400).
 - **D2 — results have no tool attribution.** Every SDK reply omits `tool`
   (`sdk/niffler/sdk.nim:725`, `sdk/envelope.nim:72-73`), so console prints
   `result   → {…}` with an empty name and no envelope id to correlate against
@@ -140,7 +140,7 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
   "pid":451756,"pids":[451756],"tools":0}` with a dead pid; publishing `reg.depart` with
   that pid removed it immediately. The MANUAL documents the *client* variant of this
   ("a client killed without `reg.depart` keeps an autostarted core up … until the catalog
-  drops it", MANUAL:2980-2985) but not that a zero-tool component's entry never drops by
+  drops it", MANUAL:2991-2994) but not that a zero-tool component's entry never drops by
   itself — the same is true of a hand-started `dialog`.
 - **D4 — reconnection is undocumented and slower than the source comment claims.** After
   the bus dies, console keeps polling until the natsnim client exhausts its internal
@@ -154,7 +154,7 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
   true — but the in-code "~2min" (`main.nim:93-95`) understates the ~4 min budget, and the
   MANUAL says nothing about any of it).
 - **D5 — the documented client discovery chain is the TUI's, not the Nim clients'.** The
-  MANUAL's "Interactive plugins" bullet (MANUAL:2965-2972) lists a `./var/nats-url` leg
+  MANUAL's "Interactive plugins" bullet (MANUAL:2975-2982) lists a `./var/nats-url` leg
   that `console` and `cli` do not have (they use `NIF_ROOT` **or their own clone**, never
   the cwd — `sdk/subjects.nim:19-32`) while `dialog` has the opposite behaviour
   (cwd-relative only, `NIF_ROOT` ignored). Three clients, three chains, one sentence
@@ -166,12 +166,12 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
   screen is not offered. One sentence would let a user decide between console and
   `observe`.
 - **D7 — console is not a `"client": true` frontend**, so an autostarted core can exit
-  underneath it (MANUAL:2980-2991 defines the client rule; console violates neither the
+  underneath it (MANUAL:2990-3002 defines the client rule; console violates neither the
   rule nor the text — but the section never says which of the three terminal clients is
   one). Verified in code (`main.nim:72-74` has no `client` field; `core/catalog.nim`
   `clientCount` counts only `client: true`).
-- Verified, no change needed: MANUAL:81 (row), MANUAL:2382 (`console` prints and forgets),
-  MANUAL:3015 (`make install` → `niffler-console`), the `test-console` wiring, and
+- Verified, no change needed: MANUAL:81 (row), MANUAL:2392 (`console` prints and forgets),
+  MANUAL:3025 (`make install` → `niffler-console`), the `test-console` wiring, and
   "not in the manifest — start it yourself".
 
 ## 6. Findings — row format (`normalize.py`)
@@ -179,11 +179,10 @@ answered — need the raw `nats sub` this paragraph offers as the inferior alter
 Legend: rows are grouped under the **exact current MANUAL heading**; the class is the
 trailing `[class]` tag (`FIX: fix: none` = `verified`; "code bug" in the FIX text is detected by
 the parser as `code-bug?`; `wrong`/`missing`/`trim` need the tag because a
-`components/*.md` report keeps the parser's `group` at `component: console`). The group
-headings below carry the MANUAL's heading text without its own `##`/`###` marker; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:`
+`components/*.md` report keeps the parser's `group` at `component: console`). **Every group heading below is one of the current MANUAL's `## ` headings, verbatim**; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:`
 wording is the text I propose to insert/replace, verbatim.
 
-## Shipped components
+## Layout of a running system
 
 - MANUAL: "| `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |" | CODE: components/console/main.nim:1-11 (zero tools), :72-74 (`reg.publish`), Makefile:253-254, manifest.yaml (no `console` entry), scripts/install.sh:111 | FIX: fix: none — the row is right, including the empty Manifest cell [verified]
 - MANUAL: "on-demand bus viewer (renders every envelope on stdout)" | CODE: components/console/main.nim:39-56 (registration payloads render as bare `event <subject>` lines; results lose their tool name), :101-107 (no signal handling, no `reg.depart`) | FIX: add "It is a stream viewer, not a registration viewer: bare `reg.publish`/`reg.depart` payloads show as `event reg.publish` with an empty body, a result shows its args but not the tool that produced it, and a killed console stays in the catalog until core restarts" [missing]
@@ -202,11 +201,9 @@ wording is the text I propose to insert/replace, verbatim.
 - MANUAL: "they probe for a live bus (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222), connect and register `client: true`" | CODE: sdk/subjects.nim:19-32 (Nim: `NIF_NATS_URL` → `<NIF_ROOT or own clone>/var/nats-url` → default, no cwd leg), components/console/main.nim:58-62, components/cli/main.nim:28-32, components/dialog/dialog.sh:24-31 (cwd-relative only); ~/git/niffler-tui/tui/main.go:3057-3072 (the four-leg chain the sentence describes) | FIX: update to "the chain is per client: the TUI probes `NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222; the Nim clients (`cli`, `console`) use `NIF_NATS_URL` → `<NIF_ROOT or their own clone>/var/nats-url` → 127.0.0.1:4222 (never the cwd); the bash `dialog` uses `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222" [wrong]
 - MANUAL: "Interactive frontends register `"client": true` (the SDK's `interactive()` / `Component.Client` marker)." | CODE: components/console/main.nim:72-74 (registers as an ordinary zero-tool component, no `client` field); core/catalog.nim `clientCount` | FIX: add "`console` and `dialog` are not interactive frontends by this definition: they register without `client: true`, so an autostarted core can exit under them (they reconnect when a new harness appears)." [doc-edit]
 
-## Boundary
+## Observation and logs
 
 - MANUAL: "`console` prints and forgets, and `hooks` record nothing." | CODE: components/console/main.nim:1-11 (no ring, no file, no state) | FIX: fix: none — verified [verified]
-
-## `observe`: bounded live inspection
 
 - MANUAL: "It preserves the original JSON node, including unknown envelope fields and bare registration payloads." | CODE: components/observe/main.nim (raw `>` ring) vs components/console/main.nim:48-56 (payload-only render, non-envelope messages show an empty body) | FIX: add "(the sibling `console` does not: it renders envelopes only, so a bare `reg.publish` shows as `event reg.publish` with no body — see [The bus in one screen](#the-bus-in-one-screen))" [doc-edit]
 

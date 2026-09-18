@@ -1,16 +1,9 @@
 # Worklist slice: component: repomap
 
-From `worklist.tsv` (16 rows). `class` is one of
+From `worklist.tsv` (13 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
-
-## A481 (doc-edit)
-source: `components/repomap.md`
-
-- MANUAL: MANUAL:396 (`ev.session.context …` is the last line of the bus block, MANUAL:389-405)
-- CODE: `core/conversation.nim:2839-2846` (`mapSubject`), `:2388` (`ev.workspace.opened` publish), `components/repomap/main.nim:303-306`
-- FIX: add two lines to the subject block: `svc.session.<id>.map   repomap → runner: the workspace map to append once` and `ev.workspace.opened {workspace, conversationId} core → components: a conversation's workspace, for pre-warm and the repo-map append`.
 
 ## A482 (doc-edit)
 source: `components/repomap.md`
@@ -39,20 +32,6 @@ source: `components/repomap.md`
 - MANUAL: MANUAL:56 (shipped table row)
 - CODE: `main.nim:244-263` — the row lists the param names only and omits the language tiers and the tool's defaults
 - FIX: keep the row, but move detail to the proposed section and make the row end with "see [Repository map](#repository-map-repomap)"; there, state the default budget (1024 tokens, max 4096, `main.nim:34-36, 217-218`) and that the tool is discover-only, read-effect and approval-free.
-
-## A486 (doc-edit)
-source: `components/repomap.md`
-
-- MANUAL: MANUAL: absent (no language-coverage statement anywhere)
-- CODE: CODE: `tags.nim:57-78, 224-233`, `main.nim:121-141`
-- FIX: FIX (in the proposed section): "Tag coverage is two tiers: tree-sitter for Go, Python, TypeScript, JavaScript, C, C++, Rust and Ruby (grammars vendored under `components/repomap/csrc/`, queries in `components/repomap/queries/`), and a native Nim tagger for `.nim`/`.nims` because the Nim grammar's generated parser is 40 MB. Unlisted extensions contribute no symbols."
-
-## A487 (doc-edit)
-source: `components/repomap.md`
-
-- MANUAL: MANUAL:996-1031 (`### How the user adds a language`, lsp)
-- CODE: CODE: `tags.nim:3-4, 57-78, 223-233`, `ts.nim:19-45`, `Makefile:158-167` — the MANUAL's "adding a language is a config entry, never code" promise is true for lsp, but a repomap language needs a vendored grammar and component edits
-- FIX: FIX (proposed section): "Adding a language to the map is a component change, not a config entry: vendor the grammar's C under `csrc/`, register it in `ts.nim`'s `{.compile.}` list and `REPOMAP_CSRC`, add `queries/<lang>-tags.scm`, and add its extensions to `tags.nim`. The tier list is the seam's current limit, not a policy."
 
 ## A488 (doc-edit)
 source: `components/repomap.md`

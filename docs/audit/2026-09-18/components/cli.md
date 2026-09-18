@@ -1,6 +1,6 @@
 # Docs audit — `components/cli/` (Nim, 279 LOC, one file)
 
-Read-only audit of the current tree (`docs/MANUAL.md` at **3072 lines**), 2026-09-19.
+Read-only audit of the current tree (`docs/MANUAL.md` at **3082 lines**), 2026-09-19.
 No component source and no MANUAL file was edited; the reports are the deliverable.
 Every claim cites `file:line`; claims marked **verified live** were reproduced against a
 running bus (see §5).
@@ -89,16 +89,16 @@ NIF_NATS_URL  →  <harness root>/var/nats-url  →  nats://127.0.0.1:4222
 
 ## 4. How the MANUAL covers it (now)
 
-**Shipped-components row** — `### Shipped components`, MANUAL line 80:
+**Shipped-components row** — `## Layout of a running system` (`### Shipped components`), MANUAL line 80:
 
 > | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 
 Correct, including the empty Manifest cell. The table never explains what `—` means for a
 user (nothing spawns it; you start it yourself) — the same gap exists for `console`, while
-the section text at MANUAL:600-601 spells the rule out for `console` only ("not in the
+the section text at MANUAL:604-605 spells the rule out for `console` only ("not in the
 manifest — start it yourself in a second terminal").
 
-**The scripting section** — `## The bus in one screen`, MANUAL:610-628:
+**The scripting section** — `## The bus in one screen`, MANUAL:614-632:
 
 > **The cli component** (`./var/bin/cli`) drives the same bus from a
 > script or pipeline — non-interactive, CI-friendly (exit 0 on success);
@@ -129,17 +129,17 @@ the 60 s/600 s budgets, and the bypass (D3/D4).
 
 - `MANUAL:70` — "Session-less callers (`cli`, other components) are not tracked and skip the
   gate" (`edit`'s staleness gate) — correct (`main.nim:112-114` sends no session context).
-- `MANUAL:1695-1696` — "Direct callers (CLI scripts) get `""` — they cannot spoof a
+- `MANUAL:1705-1706` — "Direct callers (CLI scripts) get `""` — they cannot spoof a
   session" (MCP `x-harness.sessionId`) — correct, and the closest the MANUAL comes to
   stating the bypass.
-- `MANUAL:2169` — "Components and `cli call` address them directly by name." — correct.
-- `MANUAL:2873` — "Direct bus callers (cli, tests, core) keep full access." — correct.
-- `MANUAL:1572` — "the internal `process_start` goes straight over NATS and never passes
+- `MANUAL:2179` — "Components and `cli call` address them directly by name." — correct.
+- `MANUAL:2883` — "Direct bus callers (cli, tests, core) keep full access." — correct.
+- `MANUAL:1582` — "the internal `process_start` goes straight over NATS and never passes
   core's approval gate, while a direct `process_start` (e.g. from `cli`) is gated" —
   **wrong**: `cli` *is* a direct bus caller; see D3.
-- `make install`'s PATH block (MANUAL:3015) lists `niffler-cli` — matches
+- `make install`'s PATH block (MANUAL:3025) lists `niffler-cli` — matches
   `scripts/install.sh:110`.
-- `## Testing` (MANUAL:2911) no longer hand-lists targets ("`make help` lists every
+- `## Testing` (MANUAL:2921) no longer hand-lists targets ("`make help` lists every
   target"); `test-cli` exists (`Makefile:521-523`) — nothing to fix.
 - `## Environment variables` documents `NIF_NATS_URL` and `NIF_ROOT`; there is **no**
   cli-specific variable to document.
@@ -159,7 +159,7 @@ the 60 s/600 s budgets, and the bypass (D3/D4).
   `components/cli/main.nim(279) main … Error: unhandled exception: invalid integer: abc
   [ValueError]`, exit 1. Related: `cli --help`/`-h` prints `cli: unknown option --help`
   (exit 2) — there is no help flag, only `usage()` on a missing command.
-- **D3 — MANUAL:1572 is wrong about the cli being gated (verified live, isolated).**
+- **D3 — MANUAL:1582 is wrong about the cli being gated (verified live, isolated).**
   The approval gate lives only in core's dispatch (`core/dispatch.nim:1630-1633`, the single
   `x-harness.approval` site), while `cli` publishes to `svc.<component>.call`
   (`main.nim:112-114`). Sandbox proof (`--minimal` core + `store`/`bash`/`llm` in a
@@ -195,8 +195,8 @@ the 60 s/600 s budgets, and the bypass (D3/D4).
 - **D10 — `install`'s verifications are documented, its timings are not** (60 s for
   `plugins` to register, 600 s for `plugin_install`, 60 s per spawned component):
   `main.nim:170,176,201`.
-- Verified, no change needed: MANUAL:80 (row + `—`), MANUAL:70, MANUAL:1695, MANUAL:2169,
-  MANUAL:2873, the `cli install` prose (MANUAL:621-628), `make install`'s `niffler-cli`,
+- Verified, no change needed: MANUAL:80 (row + `—`), MANUAL:70, MANUAL:1705, MANUAL:2179,
+  MANUAL:2883, the `cli install` prose (MANUAL:625-632), `make install`'s `niffler-cli`,
   and the `## Testing` pointer to `make help`.
 
 ## 6. Findings — row format (`normalize.py`)
@@ -204,11 +204,10 @@ the 60 s/600 s budgets, and the bypass (D3/D4).
 Row legend: rows are grouped under the **exact current MANUAL heading**; the class is the
 trailing `[class]` tag (`FIX: fix: none` = `verified`, `trim …` = `trim`, "code bug" in the FIX
 text = `code-bug?`, which the parser detects; `wrong`/`missing` need the tag because a
-`components/*.md` report keeps the parser's `group` at `component: cli`). The group
-headings below carry the MANUAL's heading text without its own `##`/`###` marker; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:` wording is
+`components/*.md` report keeps the parser's `group` at `component: cli`). **Every group heading below is one of the current MANUAL's `## ` headings, verbatim**; `FIX: fix: none` is the literal token `normalize.py` classifies as `verified`. `FIX:` wording is
 the text I propose to insert/replace, verbatim.
 
-## Shipped components
+## Layout of a running system
 
 - MANUAL: "| `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |" | CODE: components/cli/main.nim:1-15 (no `reg.publish` in the file at all); manifest.yaml (no `cli` entry); Makefile:256-257, 308-310; scripts/install.sh:110 | FIX: fix: none — the row is right, including the empty Manifest cell [verified]
 - MANUAL: "on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`)" | CODE: components/cli/main.nim:76-95 (only the catalog read; no `reg.publish` anyway) | FIX: add "(`cli` is a pure client — it never publishes `reg.publish`, so it never shows up in `catalog` and `cli wait cli` can never succeed)" [missing]

@@ -1,16 +1,9 @@
 # Worklist slice: Component ecosystem (plugins)
 
-From `worklist.tsv` (6 rows). `class` is one of
+From `worklist.tsv` (8 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
-
-## A046 (trim)
-source: `mechanisms-full.md`
-
-- MANUAL: MANUAL: line 715-720 points at `gokr/niffler-weather` as the sample package
-- CODE: `manifest.yaml:128-138` also documents the MCP bridge as a spawned-component example
-- FIX: keep; add a pointer to `components/dialog/dialog.sh` (a whole bash component, no SDK) as the third reference shape.
 
 ## A219 (doc-edit)
 source: `mechanisms-obs.md`
@@ -46,4 +39,25 @@ source: `mechanisms-obs.md`
 - MANUAL: MANUAL: 712 "The GitHub API is used unauthenticated (60 req/h/IP)."
 - CODE: verified — no token or `Authorization` header is read anywhere in `components/plugins/main.nim` (headers set at `:41`); no `NIF_GITHUB_TOKEN` exists
 - FIX: none (keep the warning; it is the honest rate limit).
+
+## A544 (doc-edit)
+source: `components/builder.md`
+
+- MANUAL: MANUAL: "A manifest entry may carry `defines` (an array of `-d:`-style prepends) and `env` (an array of `NAME=value` strings). Both are passed through — `defines` to the builder, `env` to the spawn …"
+- CODE: `components/plugins/main.nim:249-250` (passed regardless of `lang`), `main.nim:89-95` (read only in the Nim branch), `main.nim:111-130` (files: Go branch only)
+- FIX: update [doc-edit] — "`defines` is a **Nim-only** affordance: a `lang: "go"` or `lang: "ts"` manifest entry that declares `defines` builds fine and silently ignores them — verify by behaviour, not by manifest."
+
+## A545 (doc-edit)
+source: `components/builder.md`
+
+- MANUAL: MANUAL: "A Go entry may declare `"sources": ["component/helper.go", ...]`; these must be non-symlink, same-package `.go` files beside `main`, and the builder compiles them as one package."
+- CODE: `components/plugins/main.nim:251-255` (keyed by `extractFilename()` — the directory is *flattened*), `main.nim:25-34`
+- FIX: update [doc-edit] — say that only the **basename** survives: "`sources` paths are flattened to their filename before they reach the builder, so two files with the same basename collide and subdirectories cannot exist in the build directory; the cap is 64 files / 2 MB, and a subpackage (`component/foo/bar.go`) is not buildable at all."
+
+## A600 (verified)
+source: `components/dialog.md`
+
+- MANUAL: MANUAL: "`components/dialog/dialog.sh` — a whole bash component with no SDK at all."
+- CODE: components/dialog/dialog.sh:1-19 (envelope + bare `reg.publish` written by hand), docs/WIRE.md:44-47 (the registration shape it speaks)
+- FIX: fix: none — verified, and it should stay the teaching example [verified]
 

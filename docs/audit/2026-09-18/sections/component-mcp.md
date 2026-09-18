@@ -1,6 +1,6 @@
 # Worklist slice: component: mcp
 
-From `worklist.tsv` (9 rows). `class` is one of
+From `worklist.tsv` (7 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -12,19 +12,12 @@ source: `components/mcp.md`
 - CODE: `mcp_search` is a registered on-demand read tool (`components/mcp/main.go:148-158`); it only appears in prose at 1233
 - FIX: add row — "| `mcp_search` | keyword search of the official MCP Registry; returns `installable` entries with ready `name`/`type`/`command`/`args`/`url` for `mcp_add`, others with the reason (`limit` default 10, max 20) |". Also rename the table's `Effect` column to `Purpose` (its cells are purposes, not `read`/`write`).
 
-## A420 (doc-edit)
+## A421 (doc-edit)
 source: `components/mcp.md`
 
-- MANUAL: MANUAL: 1206 `mcp_add` row mentions only the validate→store→spawn happy path
-- CODE: `enabled: false` stores a parked config with *no probe, no spawn* (`components/mcp/main.go:563-583`); a spawn that never registers returns `{"ok": true, "warning": "stored but bridge did not start: …"}` and the record is kept (`components/mcp/main.go:606-608`, `:525-544`)
-- FIX: extend — "`enabled: false` stores a parked config without connecting or spawning (`mcp_edit {enabled: true}` activates it later). If the bridge does not register within 15s the record is still stored and the call returns `ok` plus a `warning` naming `var/logs/mcp-<server>.log`; re-run `mcp_refresh` or `mcp_edit` after fixing the server."
-
-## A423 (doc-edit)
-source: `components/mcp.md`
-
-- MANUAL: MANUAL: 1155-1159 Drift describes persist-and-exit-3 as best effort
-- CODE: on persist failure after 3 rev-retries the bridge does **not** exit — it enters a fail-closed `retiring` state, surfaces `"contract drift could not be persisted; edit/refresh to recover: …"` in `bridge_status`, and refuses `refresh` while calls are in flight (`components/mcp-bridge/main.go:249-272`, `components/mcp-bridge/operations.go:397-413`)
-- FIX: append "If the refresh cannot be persisted the bridge fails closed in a *retiring* state instead of crash-looping: `mcp_servers` shows the error and the server needs `mcp_refresh` (after active calls finish) or `mcp_edit` to recover."
+- MANUAL: MANUAL: 340 `NIF_MCP_PROBE_TIMEOUT_MS` "overrides the 30s default and the call's own `timeoutMs` when higher"
+- CODE: any positive value wins unconditionally — `if raw != "" { … timeout = ms }` after the `timeoutMs` branch (`components/mcp/main.go:465-472`), same in the bridge's own probe (`components/mcp-bridge/main.go:437-443`)
+- FIX: "timeout for one real-connect probe in `mcp_add`/`mcp_edit`; when set (positive) it wins over both the 30 s default and the server's own `timeoutMs`".
 
 ## A426 (doc-edit)
 source: `components/mcp.md`
@@ -39,13 +32,6 @@ source: `components/mcp.md`
 - MANUAL: MANUAL: 1099-1105 Shape says the bridge is one supervised process per server
 - CODE: the bridge itself re-reads the store record at boot, returns **0** immediately when `enabled: false`, and exits 1 on identity mismatch or unreadable record (`components/mcp-bridge/main.go:483-506`; `enabled()` at `:60`)
 - FIX: add one sentence — "The bridge carries no config on its argv: it re-reads the `mcp` record named by `--server` at startup (so the record is the single source of truth) and exits immediately if that record is disabled."
-
-## A429 (doc-edit)
-source: `components/mcp.md`
-
-- MANUAL: MANUAL: 1233-1240 Registry bullet describes `mcp_search` behavior but not its failure modes
-- CODE: 10 s HTTP timeout, 4 MiB response cap, non-200 ⇒ `registry returned status N`, unreachable ⇒ `registry unreachable: …` (`components/mcp/main.go:296-320`)
-- FIX: append "Failures are reported verbatim (`registry unreachable: …`, `registry returned status N`, `bad registry payload`); browsing never mutates anything — nothing installs until the returned args are passed to `mcp_add`."
 
 ## A430 (doc-edit)
 source: `components/mcp.md`

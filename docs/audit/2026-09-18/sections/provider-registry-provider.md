@@ -33,31 +33,31 @@ source: `mechanisms-full.md`
 - CODE: `components/provider/models.go:28` (`modelsCacheTTL = 5 * time.Minute`), `:68-74` (`refresh` bypasses) ✔
 - FIX: none.
 
-## A466 (doc-edit)
-source: `components/provider.md`
+## A387 (doc-edit)
+source: `components/llm.md`
 
-- MANUAL: MANUAL:807 says `provider_add` "add an API-key provider"; it is an **upsert** whose response may report an update and whose first-provider auto-activation also applies to OAuth logins.
-- CODE: main.go:395-437 (existing rev → op `update`), main.go:417-421; oauth.go:682-687.
-- FIX: update → "add or overwrite an API-key provider (upsert by nickname; response redacted); the first provider — API-key or OAuth — becomes active automatically unless `active: false`."
+- MANUAL: - MANUAL: `:286` `NIF_LLM_PROVIDERS` "`{nickname: {baseUrl, apiKey, model, context, catalog}}`"
+- CODE: `main.go:62-74`, `:292-295`
+- FIX: document the full provider object: `protocol` (default `openai-chat`; also `anthropic`, `openai-codex`), `authType` (default `api_key`), `accountId`, and `stripPrefix` — the latter rewrites `alibaba/glm-5.2` to `glm-5.2` for gateways that route on the canonical id (`main.go:508-511`, `:629-634`). Note that a malformed `NIF_LLM_PROVIDERS` JSON and a missing `apiKey` both fail the call explicitly.
 
-## A473 (doc-edit)
-source: `components/provider.md`
+## A389 (doc-edit)
+source: `components/llm.md`
 
-- MANUAL: MANUAL:819 "if it was active, another one takes over" hides the **deterministic rule**.
-- CODE: alphabetically first remaining nickname, else environment (`main.go:1019-1035`).
-- FIX: append "(the alphabetically first remaining provider, else the `NIF_OPENAI_*` fallback)".
+- MANUAL: - MANUAL: absent (grep `finish_reason` = 0 hits; only `context-overflow` is described at `:620-629`)
+- CODE: `main.go:726-750`, `:998-1020`
+- FIX: add: the result carries `finish_reason` (`length` warns "truncated at the output cap"; unknown reasons pass through), and DeepSeek's `aborted` / `insufficient_system_resource` — HTTP 200 with an interrupted generation — are returned as a transient `stream error: …` so the retry policy sees them instead of recording a successful turn. Anthropic `max_tokens`/`end_turn`/`tool_use` and Codex `max_output_tokens`/`response.incomplete` are canonicalized onto the same vocabulary (`main.go:751-767`, `anthropic.go:161-167`, `codex.go:139-145`).
 
-## A474 (doc-edit)
-source: `components/provider.md`
+## A806 (doc-edit)
+source: `components/infra-and-examples.md`
 
-- MANUAL: MANUAL:881 calls `provider:active` "a plain store doc — remove or overwrite it"; shape and self-healing are unstated.
-- CODE: `{nickname, updatedAt}` (main.go:203-206), written with `expectRev` 0 (main.go:990); an empty/dangling marker is auto-deleted when read (main.go:964-967).
-- FIX: append "{nickname, updatedAt}; a dangling or empty marker is cleaned up automatically on the next read, so `provider_remove`/`provider_use_environment` need no manual repair."
+- MANUAL: MANUAL:1164-1168 `How a stream ended is reported in `finish_reason`: `length` means the output cap cut the reply short (`llm` logs a truncation warning), `tool_calls` means the model stopped to call tools`
+- CODE: `components/llm-openai/main.go:155-190` — the result map carries `content`/`model`/`context`/`usage`/`tool_calls` but **never** `finish_reason`; the response struct does not even decode it (`:118-140`), so with this adapter core's `length` detection (`core/conversation.nim:2315-2325`) can never fire and a truncated reply is accepted as a normal answer
+- FIX: add (one clause, or fix in code) — "An adapter that does not report `finish_reason` (the `llm-openai` example) disables this detection entirely: a reply cut at the cap is accepted as the final answer." (Better: decode `choices[0].finish_reason` in `components/llm-openai/main.go` and return it — `code-bug?`.)
 
-## A478 (doc-edit)
-source: `components/provider.md`
+## A807 (doc-edit)
+source: `components/infra-and-examples.md`
 
-- MANUAL: MANUAL:817 "live-updates the LLM backend" can be read as a push; MANUAL:866-868 correctly says per-call resolution.
-- CODE: `llm/main.go:377-380` (re-read each chat call).
-- FIX: reword 817 → "make another stored provider active; the next chat call (and `llm_resolve`) uses it immediately." (No restart needed, no push involved.)
+- MANUAL: MANUAL:1161-1163 `Niffler's default spelling is `max_completion_tokens`; DeepSeek honors only `max_tokens`, so a cap sent the default way is ignored and the server's own default (8K/64K/128K, by model) applies — send `max_tokens` for DeepSeek endpoints.`
+- CODE: `components/llm-openai/main.go:84-91` (sends `max_tokens: 32768` — the example is on the correct side of this warning, worth naming as the reference)
+- FIX: none — verified accurate; optionally cite the example next to it.
 

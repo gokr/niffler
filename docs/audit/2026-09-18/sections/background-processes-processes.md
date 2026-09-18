@@ -52,13 +52,15 @@ source: `components/processes.md`
 
 - MANUAL: **[missing number] Kill grace.** `process_kill` = SIGTERM → 300 ms → SIGKILL → 100 ms, hardcoded (`main.nim:183-193`); MANUAL:1044 says only "Terminate the whole process group". → add "(SIGTERM, 300 ms grace, then SIGKILL)".
 
-## A454 (doc-edit)
+## A453 (doc-edit)
 source: `components/processes.md`
 
-- MANUAL: **[wrong scope] An LLM-invoked `process_start` is anonymous.** The tool schema has no `x-harness.sessionId` (`main.nim:500`), and only bash passes `session` (`components/bash/main.nim:139`); so `process_start` reached via `discover`/`invoke` never gets an exit notice. MANUAL:1069-1071 lists "a direct `process_start`, e.g. from `cli`" — → widen to "started by anything other than `bash run_in_background` (the model's own `invoke`, `cli`, a script)".
+- MANUAL: **[missing number] What truncation keeps.** `truncateSpool` keeps `min(SPOOL_KEEP = 2 MiB, cap div 2)` bytes (`main.nim:39, 199-217`) and the truncating poll appends `[spool truncated to its tail — the cap was reached]` (`main.nim:404`). MANUAL:1051-1052 says only "truncated to its tail". → state "keeps the last 2 MiB (or half the cap, whichever is smaller)".
 
-## A455 (doc-edit)
-source: `components/processes.md`
+## A572 (doc-edit)
+source: `components/cli.md`
 
-- MANUAL: **[imprecise] "Processes die with the harness" (MANUAL:1077).** True for a graceful stop (`onDrain` → `killEntry` on every entry, `main.nim:484-488`, fired on SIGTERM/SIGINT/`ev.sys.drain`, `sdk/niffler/sdk.nim:33, 393-397`), but a SIGKILLed component leaves them running until the **next component start** sweeps them (`main.nim:115-143`). → "die when the `processes` component stops; if it is killed, the next start sweeps the orphans".
+- MANUAL: MANUAL: "the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` (e.g. from `cli`) is gated"
+- CODE: components/cli/main.nim:112-114 (target `svc.processes.call`), core/dispatch.nim:1630-1633 (gate location), components/processes/main.nim:498-521 (schemas only, no gate)
+- FIX: update to "the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` issued by a core-mediated caller (the model, or a tool reached through `svc.core.call`) is gated. A bus client like `cli` addresses `svc.processes.call` directly and is not gated at all — verified: with `NIF_AUTO_APPROVE` unset, `cli call bash '{\"command\": \"echo x\"}'` executes while the same harness denies a core-mediated `spawn`" [wrong]
 

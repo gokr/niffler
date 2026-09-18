@@ -1,6 +1,6 @@
 # Worklist slice: component: lsp
 
-From `worklist.tsv` (14 rows). `class` is one of
+From `worklist.tsv` (13 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -20,19 +20,19 @@ source: `components/lsp.md`
 
 - MANUAL: Nothing else: `OPERATIONS` and the tool surface are language-independent (`main.nim:48-50`, `:1063-1080`); `tests/t_lsp.nim:1-13` asserts exactly this ("a new language with zero code changes, live on the next call"). This is the AGENTS.md rule, stated in the component header (`main.nim:9-12`) and the manifest comment (`manifest.yaml:149-150`).
 
-## A406 (doc-edit)
-source: `components/lsp.md`
-
-- MANUAL: MANUAL: `docs/MANUAL.md:950` "`lsp_registry {action: add|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name"
-- CODE: `components/lsp/main.nim:970-992`, `:1017-1019`
-- FIX: update — "`add` takes `{name (lowercase letters/digits/hyphens), command, extensions: {".ext": "languageId"}, initializationOptions?}`, overrides a built-in of the same name, and refuses an extension already mapped to another server with `E_LSP_CONFLICT` (remove that mapping first). `remove` deletes user entries only."
-
 ## A407 (doc-edit)
 source: `components/lsp.md`
 
 - MANUAL: MANUAL: `docs/MANUAL.md:955-956` "structured `[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`, `E_LSP_SCOPE`, `E_NOT_FOUND`)"
 - CODE: `main.nim:290`, `:377`, `:403` (E_LSP_PROTOCOL); `:109`, `:134`, `:997` (E_LSP_REGISTRY); `:990` (E_LSP_CONFLICT); `:864` (E_NOT_TEXT); `:811-837` (E_BAD_SHAPE)
 - FIX: add the missing codes to the list — `E_LSP_PROTOCOL` (server crash/bad frame), `E_LSP_REGISTRY` (invalid registry JSON/entry), `E_LSP_CONFLICT` (extension already mapped), `E_NOT_TEXT` (binary file), `E_BAD_SHAPE` (missing/invalid argument).
+
+## A408 (code-bug?)
+source: `components/lsp.md`
+
+- MANUAL: MANUAL: `docs/MANUAL.md:302` "`NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (tilde-expanded)"
+- CODE: `components/lsp/roots.nim:77-82` (splits on `PathSep`, no tilde expansion — a `~/x` entry never matches)
+- FIX: either drop "(tilde-expanded)" for "colon-separated **absolute** directories", or add `expandTilde` in `fallbackBinDirs`; the doc-side fix is cheaper and the current claim is wrong.
 
 ## A409 (doc-edit)
 source: `components/lsp.md`
@@ -68,13 +68,6 @@ source: `components/lsp.md`
 - MANUAL: MANUAL: absent — the `didSave` echo
 - CODE: `main.nim:902-909`, capability `:271-273`
 - FIX: one sentence in `### How the model uses it` — "After `didOpen` the component echoes the current bytes as `didSave`, because the nimsuggest-based Nim servers publish diagnostics only on save (it is a no-op for open-push servers such as pyright, clangd and bash-language-server)."
-
-## A414 (doc-edit)
-source: `components/lsp.md`
-
-- MANUAL: MANUAL: `docs/MANUAL.md:981-987` "runs a bounded extension census (stops at 5 000 files or a 2 s budget) and pre-starts servers for the most prevalent languages"
-- CODE: `main.nim:741-744`, `:1049-1054`
-- FIX: add "(at most two servers; `node_modules`, `vendor`, `dist`, `build`, `target` and other junk dirs are skipped) and publishes `ev.lsp.warm` with `{workspace, warmed, skipped}` so UIs can show which servers came up."
 
 ## A415 (doc-edit)
 source: `components/lsp.md`

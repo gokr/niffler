@@ -1,6 +1,6 @@
 # Worklist slice: Skills
 
-From `worklist.tsv` (26 rows). `class` is one of
+From `worklist.tsv` (25 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -63,13 +63,6 @@ source: `components/skills.md`
 source: `components/skills.md`
 
 - MANUAL: Compile-time fallback: `bakedSkillFiles` `staticRead`s all four files (`main.nim:156-170`) and `bakedSkills()` serves any name no disk tree provided, with `source: "bundled"`, `dir: "(baked)"`, no resources (`main.nim:171-183`, `main.nim:236-237`, `main.nim:325-329`).
-
-## A499 (doc-edit)
-source: `components/skills.md`
-
-- MANUAL: **D1 — MANUAL:250 precedence is wrong.** `project skills shadow home skills shadow bundled skills`
-- CODE: `main.nim:205-213` puts `bundled` third, before all four `home` dirs (and MANUAL:737-741 says the same)
-- FIX: `project > bundled > home > config`.
 
 ## A500 (doc-edit)
 source: `components/skills.md`

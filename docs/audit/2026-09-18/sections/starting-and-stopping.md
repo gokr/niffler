@@ -1,6 +1,6 @@
 # Worklist slice: Starting and stopping
 
-From `worklist.tsv` (13 rows). `class` is one of
+From `worklist.tsv` (14 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -54,13 +54,6 @@ source: `mechanisms-sessions.md`
 - CODE: `core/supervisor.nim:33-49,200-212`
 - FIX: scope it: only components whose policy is `on-failure` loop; `never` components (session runners, any manifest entry declaring `restart: never`) stay down after a crash and are reported once.
 
-## A197 (doc-edit)
-source: `mechanisms-sessions.md`
-
-- MANUAL: MANUAL: absent (the `ui` core tool, the registry, its ops)
-- CODE: `core/catalog.nim:213-224` (hidden core tool `ui`, ops `register|renew|release|claim|release_session|owner`), `core/uireg.nim:1-124`
-- FIX: add "Clients and the UI registry": interactive frontends announce a client-supplied UUID, receive a display number ("Niffler 1", "Niffler 2", …) and a 20 s lease they must renew; `claim` gives one live UI a conversation, `release_session`/`release` give it back, `owner` reports the holder; expired entries are swept lazily on every registry decision, so no timer thread exists (`uireg.nim:52-59,65-77`); numbers are monotonic per harness lifetime and never reused (`uireg.nim:11-12,84-88`); a claim by a non-owner answers `{ok: false, owner, number}` (`uireg.nim:97-102`) and a `renew` for an expired id answers `{ok: false}`, forcing re-register + re-claim (`uireg.nim:89-95`). Say plainly that this is coordination between cooperating UIs, **not** authentication (`uireg.nim:10-13`).
-
 ## A198 (doc-edit)
 source: `mechanisms-sessions.md`
 
@@ -95,4 +88,18 @@ source: `mechanisms-sessions.md`
 - MANUAL: MANUAL: absent (what the interactive clients actually call)
 - CODE: `ui/frontend/src/views/Chat.svelte:439` (`send("core","session",{sessionId, content, model, profile}, 600000)` — a 10-minute timeout), `ui/frontend/src/App.svelte:206` (`core`/`session` status/controls with a 30 s timeout), `ui/frontend/src/views/Sessions.svelte:27,58` (sidebar reads `store.list` directly)
 - FIX: add one sentence to §Clients: "The web UI and the TUI are ordinary bus clients: they call `svc.core.call` with the `session` tool (10-minute timeout for a turn, 30 s for status/control calls) and read the transcript with `store.list` — nothing about a conversation is UI-private."
+
+## A585 (doc-edit)
+source: `components/console.md`
+
+- MANUAL: MANUAL: "they probe for a live bus (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222), connect and register `client: true`"
+- CODE: sdk/subjects.nim:19-32 (Nim: `NIF_NATS_URL` → `<NIF_ROOT or own clone>/var/nats-url` → default, no cwd leg), components/console/main.nim:58-62, components/cli/main.nim:28-32, components/dialog/dialog.sh:24-31 (cwd-relative only); ~/git/niffler-tui/tui/main.go:3057-3072 (the four-leg chain the sentence describes)
+- FIX: update to "the chain is per client: the TUI probes `NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` → 127.0.0.1:4222; the Nim clients (`cli`, `console`) use `NIF_NATS_URL` → `<NIF_ROOT or their own clone>/var/nats-url` → 127.0.0.1:4222 (never the cwd); the bash `dialog` uses `NIF_NATS_URL` → `./var/nats-url` (cwd only) → 127.0.0.1:4222" [wrong]
+
+## A586 (doc-edit)
+source: `components/console.md`
+
+- MANUAL: MANUAL: "Interactive frontends register `"client": true` (the SDK's `interactive()` / `Component.Client` marker)."
+- CODE: components/console/main.nim:72-74 (registers as an ordinary zero-tool component, no `client` field); core/catalog.nim `clientCount`
+- FIX: add "`console` and `dialog` are not interactive frontends by this definition: they register without `client: true`, so an autostarted core can exit under them (they reconnect when a new harness appears)." [doc-edit]
 

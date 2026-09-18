@@ -1,6 +1,6 @@
 # Worklist slice: component: git
 
-From `worklist.tsv` (14 rows). `class` is one of
+From `worklist.tsv` (11 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -30,25 +30,10 @@ source: `components/git.md`
 
 - MANUAL: **No MANUAL chapter.** Params, caps, timeouts, refusals and exit codes exist only in the component's doc comments (`main.nim:1-19`, `:188-345`); MANUAL coverage is one table row (MANUAL:67) plus one shipped-policy bullet (MANUAL:1471-1472). Fix per §4.
 
-## A374 (doc-edit)
-source: `components/git.md`
-
-- MANUAL: **Receipt format/semantics undocumented**: `schema_id: "niffler.review-receipt/v1"`, `id` (`rr-<unix>-<fp8>`), `created_at`, `diff_fingerprint` (lowercase SHA-256 hex), `model`, `findings`, `note` (`main.nim:387-395`, fingerprint `:352-362`); check semantics exit 0/1 with both fingerprints (`:426-434`). MANUAL:67 says only "write/check pair".
-
 ## A375 (doc-edit)
 source: `components/git.md`
 
 - MANUAL: **Output bounds undocumented**: the 40 000-byte head+tail cap plus the five per-tool line caps and their hints (`main.nim:99`, `:130-134`, `:213`, `:251`, `:288`, `:317`, `:345`; `sdk/niffler/procutil.nim:153-178`) — e.g. a 300-file `git_status` silently stops at 200 lines.
-
-## A376 (doc-edit)
-source: `components/git.md`
-
-- MANUAL: **Failure/refusal semantics undocumented**: exit 2 refusals with the `(exit 2 — refused)` prefix, 124 `[timed out]`, 128 `[no git repository at the target directory]`, everything else raw git stderr (`main.nim:119-138`); empty-result markers `[no changes since HEAD]` (`:249-250`) and `[no commits matched]` (`:286-287`).
-
-## A377 (doc-edit)
-source: `components/git.md`
-
-- MANUAL: **Detached HEAD and incomplete index get no special handling** — `git_status` shows git's `## HEAD (no branch)` and an index error is raw text + exit 128 with no flag (`main.nim:119-134`; nothing in the file special-cases either). If the new chapter covers failure modes, state this rather than implying coverage.
 
 ## A378 (doc-edit)
 source: `components/git.md`

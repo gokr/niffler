@@ -1,6 +1,6 @@
 # Worklist slice: Self-extension and component lifecycle
 
-From `worklist.tsv` (9 rows). `class` is one of
+From `worklist.tsv` (10 rows). `class` is one of
 verified/doc-edit/wrong/missing/trim/delta/code-bug?. The `MANUAL`
 text is the report's quote; its line numbers are the OLD (2324-line)
 revision and are hints only.
@@ -65,4 +65,11 @@ source: `mechanisms-sessions.md`
 - MANUAL: MANUAL: absent (restart policies never described in prose)
 - CODE: `core/supervisor.nim:14-16,33-49`; `core/niffler.nim:513-514` (per-manifest-entry `restart`, unknown → `on-failure`); `core/niffler.nim:600-620` (restore path re-reads the persisted `policy`)
 - FIX: add: "Each supervised child carries a restart policy — `never` or `on-failure` (the default; 0.5 s→8 s exponential backoff, `supervisor.nim:33-39`). The manifest sets it per component, `core.spawn` always uses `on-failure`, and session runners are always `never`."
+
+## A800 (doc-edit)
+source: `components/infra-and-examples.md`
+
+- MANUAL: MANUAL:928-931 `**Persistence of shape**: spawned components are recorded in the store (kind `component`) and restored on normal boot.` (and MANUAL:896-897 `kill {name}` stops every replica temporarily (restored on next boot); `remove {name}` stops the group and deletes its persisted record.)
+- CODE: `core/niffler.nim:600-604` — the restore loop **skips** a stored record whose name is already in the manifest (`# shipped manifest definition wins`), with no warning; `remove` leaves no tombstone, so a manifest component always returns at boot regardless of `kill`/`remove`
+- FIX: update — append: "A stored record whose name is also declared in `manifest.yaml` is skipped on restore (the shipped definition wins, silently), so replacing a shipped component means editing the manifest — `kill`+`spawn` under the same name only holds for the current boot."
 
