@@ -1,11 +1,18 @@
 # Audit — `components/grep/` (Nim, `main.nim`, 131 lines, component v0.1.0)
 
 Scope: `components/grep/main.nim` (the only file in the dir — no README, no
-`niffler.json`), `manifest.yaml:116-123`, `sdk/niffler/procutil.nim:70-187`,
-`tests/t_grep.nim`, and the current `docs/MANUAL.md` (2850 lines) — coverage
-checked with `grep -n 'grep\|ripgrep'` (rows 76, 722, 1907, 1912, 2795).
-Read-only audit: no builds, no source or MANUAL edits. Facts about rg's own
-output were re-verified by running the exact argv the component builds.
+`niffler.json`), `manifest.yaml:116-124`, `sdk/niffler/procutil.nim:70-187`,
+`tests/t_grep.nim`, `Makefile:524` (`test-grep`), and `docs/MANUAL.md` —
+coverage checked with `grep -n 'grep\|ripgrep'` (rows 76, 793, 1907-ish shipped
+policy, 2795-ish PATH note). Read-only audit: no builds, no source or MANUAL
+edits; the rg behaviour claims were re-verified by running the exact argv the
+component builds.
+
+> **Line-number drift:** the numbers below are `docs/MANUAL.md` as it stood
+> while this report was written (2850 lines); the concurrent consolidation pass
+> kept editing it (3072 lines by the end). The quotes are the durable anchor —
+> every row's quote was re-verified against the file — so re-resolve a number by
+> searching its quote, never by trusting the digit.
 
 ## 1. What it offers
 
@@ -15,31 +22,29 @@ output were re-verified by running the exact argv the component builds.
   `grep 0.1.0` (`main.nim:16`).
 - No shell anywhere: the pattern is one argv element after a `--` separator, and
   `runArgv` `quoteShell`s every element (`main.nim:32`, `:74-96`;
-  `sdk/niffler/procutil.nim:136-144`), so quotes/backslashes/spaces need no
+  `sdk/niffler/procutil.nim:135-144`), so quotes/backslashes/spaces need no
   escaping by the model. This is the component's stated reliability win over
   `bash grep -rn` (`main.nim:7-10`).
 - Ignore semantics: `--no-require-git` (works outside a repo), `.gitignore`
-  still applies, hidden/binary skipped by default (`-I` skips binary files),
-  `hidden: true` adds `--hidden` (`main.nim:74-77`, `:104-110`). A positive `-g`
+  still applies, hidden files skipped by default, `-I` skips binary files,
+  `hidden: true` adds `--hidden` (`main.nim:74-77`, `:104-119`). A positive `-g`
   glob is paired with `-g '!.*'` because rg's gitignore-style glob matching
-  would otherwise let `*.nim` match `.hidden.nim` (`main.nim:80-86`, `:110-117`)
-  — verified by reading rg's behaviour, not just the comment.
+  would otherwise let `*.nim` match `.hidden.nim` (`main.nim:80-86`, `:115-119`).
 - Glob semantics: the component chdirs into the search root and passes the root
   absolutely, so a slash-glob (`dir/file.py`) is matched relative to `path`
-  instead of rg's cwd, and results stay absolute
-  (`main.nim:88-96`, `:118-124`; regression-tested at `tests/t_grep.nim:76-90`).
-  I re-ran the exact argv: with an absolute root rg prints absolute
-  `path:line:match` / `path` lines.
+  instead of rg's cwd, and results stay absolute (`main.nim:88-96`, `:120-124`;
+  regression-tested at `tests/t_grep.nim:76-90`). Re-running the exact argv
+  confirms absolute `path:line:match` lines.
 - Two output bounders, both with narrowing hints: `capLines` (per-tool line cap
-  derived from `max_results`) and `capBytes` (32 KB head+tail,
-  `main.nim:18-22`, `:45-50`; `sdk/niffler/procutil.nim:153-187`).
+  derived from `max_results`) and `capBytes` (32 KB head+tail, `main.nim:18-22`,
+  `:45-50`; `sdk/niffler/procutil.nim:153-187`).
 - `--max-columns 300`: a single line longer than 300 columns is printed by rg as
-  `path:line:[Omitted long matching line]` (verified by running the argv) — a
+  `path:line:[Omitted long matching line]` (reproduced by running the argv) — a
   third, silent truncation the MANUAL never mentions.
-- Stateless queue-group replicas: `replicas: 4` with the rationale in the
-  manifest comment (`manifest.yaml:116-123`); nothing in `main.nim` holds
-  process-local state (`grep -c 'var ' components/grep/main.nim` → the only
-  mutable state is the per-call locals inside the two handlers).
+- Stateless queue-group replicas: `replicas: 4` (`manifest.yaml:124`) with the
+  rationale in the manifest comment; nothing in `main.nim` holds process-local
+  state (every `var` in the file is a local of `finish` at `main.nim:37`, `:42`
+  or of one of the two handlers at `:74`, `:113`).
 - Missing rg is a first-class, non-fatal outcome: exit 127 with an apt install
   hint and a `bash` fallback suggestion (`main.nim:26-31`, `:43-44`).
 
@@ -47,251 +52,171 @@ output were re-verified by running the exact argv the component builds.
 
 | Tool | Registered at | Purpose (doc-comment text) | `x-harness` flags verbatim | Exposure |
 |---|---|---|---|---|
-| `grep` | `main.nim:52-98` | "Search file contents with ripgrep (path:line:match). Prefer it over bash grep: the pattern is an argument (no shell escaping), it skips gitignored/hidden/binary files, and globs narrow without un-hiding. Rust regex, no lookarounds (use bash grep -P for those). Narrow with path/glob — broad patterns are capped (max_results lines, 32KB)." (`main.nim:59-63`) | `{"timeoutMs": 60000, "parallel": true, "workspace": {"pathFields": ["path"], "defaultPathFields": ["path"]}}` (`main.nim:52-54`) — **no** `approval`, **no** `onDemand`, **no** `hidden`, **no** `effect` | **direct** (frozen toolset; MANUAL:1907) |
-| `files` | `main.nim:100-125` | "List repo files sorted, one path per line — survey before searching or editing. Respects .gitignore; hidden only with hidden: true." (`main.nim:105-107`) | `{"timeoutMs": 60000, "onDemand": true, "workspace": {"pathFields": ["path"], "defaultPathFields": ["path"]}}` (`main.nim:100-102`) — **no** `approval`, **no** `hidden`, **no** `parallel`, **no** `effect` | discover-only (`discover` + `invoke`) |
+| `grep` | `main.nim:52-98` | "Search file contents with ripgrep (path:line:match). Prefer it over bash grep: the pattern is an argument (no shell escaping), it skips gitignored/hidden/binary files, and globs narrow without un-hiding. Rust regex, no lookarounds (use bash grep -P for those). Narrow with path/glob — broad patterns are capped (max_results lines, 32KB)." (`main.nim:59-63`) | `{"timeoutMs": 60000, "parallel": true, "workspace": {"pathFields": ["path"], "defaultPathFields": ["path"]}}` (`main.nim:52-54`) — **no** `approval`, **no** `onDemand`, **no** `hidden`, **no** `effect` | **direct** (frozen toolset) |
+| `files` | `main.nim:100-129` | "List repo files sorted, one path per line — survey before searching or editing. Respects .gitignore; hidden only with hidden: true." (`main.nim:105-107`) | `{"timeoutMs": 60000, "onDemand": true, "workspace": {"pathFields": ["path"], "defaultPathFields": ["path"]}}` (`main.nim:100-102`) — **no** `approval`, **no** `hidden`, **no** `parallel`, **no** `effect` | discover-only (`discover` + `invoke`) |
 
-Parameters, defaults and clamps (all from the code, not the prose):
+Parameters, defaults and clamps (from the code, not the prose):
 
 - `grep {pattern, path=".", glob="", context=0, case_insensitive=false, hidden=false, max_results=200, timeoutMs=30000}`
   (`main.nim:55-58`). `path` empty/`.` is rewritten by core to the conversation
   workspace (`defaultPathFields`, `core/dispatch.nim:1482-1489`); a *relative*
   non-empty `path` is resolved against the workspace too
-  (`core/dispatch.nim:1476-1481`). Direct (non-session) calls use the component
-  cwd, which is `NIF_ROOT` (`core/supervisor.nim` sets `workingDir`).
+  (`core/dispatch.nim:1476-1481`). A direct (non-session) call uses the component
+  cwd, which is `NIF_ROOT` (`core/supervisor.nim:160`).
 - `context` clamped to ≤50 (`main.nim:78-79`); `max_results` clamped to
-  1..10 000 (`main.nim:98`) although the parameter doc says "default 200, max
-  10000" (`main.nim:72`).
-- `timeoutMs` is clamped to 1 000..120 000 (`main.nim:96`) while the tool's
-  schema declares `"timeoutMs": 60000` (`main.nim:52`). Core enforces the
-  schema value as the call deadline (`core/dispatch.nim:1638-1645`), so any
-  `timeoutMs` above 60 000 is unreachable in practice — a code-side
-  inconsistency (see delta 6).
-- `files {path=".", glob="", hidden=false, max_results=500, timeoutMs=30000}` —
-  `max_results` clamped 1..10 000 (`main.nim:103-104`, `:125`); doc says "Cap
-  (default 500, max 10000)" (`main.nim:109`).
+  1..10 000 (`main.nim:98`, `:129`) although the parameter docs say "default 200,
+  max 10000" (`main.nim:72`) and "default 500, max 10000" (`main.nim:111`).
+- `timeoutMs` is clamped to 1 000..120 000 (`main.nim:96`, `:125`) while the
+  tool's schema declares `"timeoutMs": 60000` (`main.nim:52`, `:100`). Core
+  enforces the schema value as the call deadline
+  (`core/dispatch.nim:1638-1645`), so any `timeoutMs` above 60 000 is
+  unreachable in practice.
 - Result shape (both tools): `{"exit_code": int, "text": string}`; `text` starts
   with `(exit N)`, `(exit 124 — timed out)` or `(exit 127 — ripgrep not
   installed)` and then the capped output, which is `[no matches]` for an empty
   exit-1 result (`main.nim:34-50`) and `[no files]` for an empty exit-0 `files`
-  result (`main.nim:119-120`).
+  result (`main.nim:127-128`).
 - Exit-code contract: 0 match, 1 none, 2 rg error (e.g. bad regex — asserted at
   `tests/t_grep.nim:105-108`), 124 timeout, 127 rg missing.
 
 ## 3. Configuration
 
 **Env vars: none — the component reads no `NIF_*` variable.** The only
-environment it depends on is `PATH`, through `findExe("rg")`
-(`main.nim:26`); the harness root/workspace is applied *to* the arguments by
-core's `x-harness.workspace` rewriting, the component itself never reads
-`NIF_ROOT` (no `getEnv` call at all: `grep -c getEnv components/grep/main.nim` → 0).
-So no MANUAL environment-table row is owed, and the table is correct in not
-having one.
+environment it depends on is `PATH`, through `findExe("rg")` (`main.nim:26`); the
+harness root/workspace is applied *to* the arguments by core's
+`x-harness.workspace` rewriting, and the component itself calls no `getEnv` at
+all (`grep -c getEnv components/grep/main.nim` → 0). So no MANUAL
+environment-table row is owed, and the table is correct in not having one.
 
-Manifest entry (`manifest.yaml:116-123`): `build {lang: nim, src:
+Manifest entry (`manifest.yaml:116-124`): `build {lang: nim, src:
 components/grep/main.nim}`, `binary: var/bin/grep`, `autostart: true`,
 `required: false`, `restart: on-failure`, `replicas: 4` — the manifest's own
-comment is the only statement of *why* (`"Stateless: queue-group replicas let
+comment is the only statement of *why* ("Stateless: queue-group replicas let
 parallel grep/files calls execute concurrently while every SDK process remains
-simple and serial."`).
+simple and serial").
 
 Host dependency: ripgrep must be on `PATH`; `make setup`/`make doctor` are the
-documented places that check it (see `docs/MANUAL.md` Troubleshooting).
+scripted places that check it.
 
 ## 4. How `docs/MANUAL.md` covers it today
 
-There is **no `## Grep` chapter** — no section heading in MANUAL mentions this
-component (`grep -n '^#.*[Gg]rep' docs/MANUAL.md` → nothing). Coverage is four
-scattered mentions:
+There is **no `## Grep` chapter** — no heading in MANUAL mentions this component
+(`grep -n '^#.*[Gg]rep' docs/MANUAL.md` → nothing). Coverage is four scattered
+mentions, quoted with the line numbers they had while this report was written
+(the quotes themselves are the anchor and were re-verified):
 
-1. Shipped-components table, MANUAL:76 (exact quote):
+- **MANUAL:76** — the shipped-components row:
+  > `| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |`
 
-   > `| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |`
+  Accurate as far as it goes: `grep` is direct, `files` is on demand,
+  `.gitignore` is respected, no shell quoting is needed, and the replica count
+  matches `manifest.yaml:124`. It names no parameter, cap or exit code.
+- **MANUAL:722** (workspace bullet, `## Context window`):
+  > `at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
+  > resolve relative paths there, and git tools scope at the workspace repo.`
 
-   Accurate as far as it goes: `grep` is direct, `files` is on demand,
-   `.gitignore` is respected, no shell quoting is needed, and the replica count
-   matches `manifest.yaml:123`. It does not name the params, caps or exit codes.
-2. MANUAL:722 (workspace bullet, exact quote):
+  Correct: `grep`/`files` declare `pathFields` + `defaultPathFields`
+  (`main.nim:52-54`, `:100-102`; `core/dispatch.nim:1476-1489`).
+- **MANUAL:1905-1908** (shipped policy, `## Progressive tool discovery`):
+  > `- Routine work: `bash`, `grep`, and the file tools
+  >   `read`/`edit`/`write` (the `edit` component).`
 
-   > `at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read
-   > resolve relative paths there, and git tools scope at the workspace repo.`
+  Correct (7 direct tools; `grep` is one).
+- **MANUAL:1911-1912** (same section):
+  > `- Search and inspection: `files` (sorted listing), the git
+  >   tools, `undo_last_edit`, `repo_map` (the ranked workspace map the model
+  >   asks for explicitly), and the observe/logfile diagnostics.`
 
-   Correct: `grep`/`files` declare `pathFields` + `defaultPathFields`
-   (`main.nim:52-54`, `:100-102`; `core/dispatch.nim:1476-1489`).
-3. MANUAL:1905-1908 (shipped policy, exact quote):
-
-   > `- Routine work: `bash`, `grep`, and the file tools
-   >   `read`/`edit`/`write` (the `edit` component).`
-
-   Correct (7 direct tools; `grep` is one).
-4. MANUAL:1911-1912 (shipped policy, exact quote):
-
-   > `- Search and inspection: `files` (sorted listing), the git
-   >   tools, `undo_last_edit`, `repo_map` ...`
-
-   Correct.
+  Correct; it is also the only place that says `files` is discover-only.
 
 Undocumented in MANUAL (explicit list): the `grep`/`files` parameters and their
 defaults/clamps; the 32 KB byte cap and the line-cap marker text; the
 `--max-columns 300` per-line omission; the exit-code table (0/1/2/124/127) and
-the `[no matches]` / `[no files]` markers; the rg-missing hint; the
-`timeoutMs` 60 s schema ceiling vs 120 s parameter clamp; that results are
-absolute paths; that `files` is not `parallel`; and — the one place MANUAL has a
-standing convention — that neither tool declares `x-harness.effect`, so the
-fabric batch host classifies both as **writes** (stated for `bash` at MANUAL:129
-and for `fetch` at MANUAL:1222, absent here). `docs/WIRE.md` never mentions this
+the `[no matches]` / `[no files]` markers; the rg-missing hint; the `timeoutMs`
+60 s schema ceiling vs 120 s parameter clamp; that results are absolute paths;
+that `files` is not `parallel`; and — the one place MANUAL has a standing
+convention — that neither tool declares `x-harness.effect`, so the fabric batch
+host classifies both as **writes** (stated for `bash` at MANUAL:129 and for
+`fetch` at MANUAL:1222, absent here). `docs/WIRE.md` never mentions this
 component (`grep -rn grep docs/WIRE.md` → nothing).
 
 Proposed home: a new `## Search (``grep``)` chapter directly **before**
-`## Language servers (``lsp``)` (currently MANUAL:1225, i.e. after `## Fetch`,
-which ends at MANUAL:1224), plus a `Contents` bullet. It should mirror the
-`git` chapter's shape: "The tools" (the §2 table), "Bounds and exit codes",
-"Ignore and glob semantics", "Not a shell". Suggested new chapter text:
+`## Language servers (``lsp``)` (MANUAL:1225 in the revision read), i.e. after
+`## Fetch`, plus a `Contents` bullet. Suggested chapter text (the FIX wording in
+§5 refers back to this):
 
-> `## Search (`grep`)`
->
-> `ripgrep-backed search, two tools. `grep` is direct (it is the routine search
-> path alongside `bash`); `files` is on demand. Both run rg as a fixed argv —
-> the pattern is an argument after `--`, never interpolated into a shell — so
-> quotes, backslashes and spaces need no escaping. rg resolves via `PATH`; when
-> it is missing both tools return exit 127 with an install hint`.gitignore` and
+> `ripgrep-backed search, two tools. `grep` is direct (the routine search path
+> alongside `bash`); `files` is on demand. Both run rg as a fixed argv — the
+> pattern is an argument after `--`, never interpolated into a shell — so quotes,
+> backslashes and spaces need no escaping. rg resolves via `PATH`; when it is
+> missing both tools return exit 127 with an install hint. `.gitignore` and
 > hidden/binary files are skipped by default; `hidden: true` adds hidden files
 > while `.gitignore` still applies, and a `glob` narrows without un-hiding.
 > `path` is workspace-relative at dispatch (`.` = the conversation workspace,
 > else the harness root). `grep {pattern, path?, glob?, context? ≤50,
-> case_insensitive?, hidden?, max_results? 200 (max 10000), timeoutMs?}`
-> returns `path:line:match` lines; `files {path?, glob?, hidden?,
-> max_results? 500 (max 10000)}` returns sorted paths. Both cap output at
-> `max_results` lines (marker `[... N more result lines — raise max_results or
-> narrow pattern/path/glob ...]`) and at 32 KB head+tail, and rg truncates any
-> single line longer than 300 columns to `[Omitted long matching line]`.
-> `exit_code` is the contract: 0 match, 1 none (`[no matches]`/`[no files]`),
-> 2 bad regex, 124 timeout, 127 rg missing. Neither tool declares
-> `x-harness.effect`, so the fabric batch host schedules both as writes; `grep`
-> declares `parallel: true`, `files` does not. Both are read-only and carry no
-> approval gate. Four stateless manifest replicas serve them through one queue
-> group, so concurrent searches overlap.`
+> case_insensitive?, hidden?, max_results? 200 (max 10000), timeoutMs?}` returns
+> `path:line:match` lines; `files {path?, glob?, hidden?, max_results? 500 (max
+> 10000)}` returns sorted paths. Both cap output at `max_results` lines (marker
+> `[... N more result lines — raise max_results or narrow pattern/path/glob ...]`)
+> and at 32 KB head+tail, and rg truncates any single line longer than 300
+> columns to `[Omitted long matching line]`. `exit_code` is the contract: 0 match,
+> 1 none (`[no matches]`/`[no files]`), 2 bad regex, 124 timeout, 127 rg missing.
+> Neither tool declares `x-harness.effect`, so the fabric batch host schedules
+> both as writes; `grep` declares `parallel: true`, `files` does not. Both are
+> read-only and carry no approval gate. Four stateless manifest replicas serve
+> them through one queue group, so concurrent searches overlap.`
 
-## 5. DELTA list (classed)
+## 5. DELTA list
 
-Findings against the current tree; each is expanded into the machine-parsed row
-list in §6.
+Rows below are the findings in the audit's machine-parsed shape, grouped by the
+current MANUAL section they land in (`[class]` marks the ledger class; `FIX`
+starts with the verb). Evidence and the proposed wording are in the row itself;
+§1–§4 hold the long-form reasoning.
 
-1. **[missing] No chapter for the two tools.** Params, caps, markers, exit codes
-   and the rg dependency live only in doc comments (`main.nim:1-11`, `:34-50`,
-   `:59-73`, `:105-113`); MANUAL coverage is one table row (76) plus three
-   passing mentions (722, 1907, 1912). Fix: the chapter proposed in §4.
-2. **[missing] Output bounds.** `maxOutputBytes = 32_000` head+tail
-   (`main.nim:18`, `:45-50`; `sdk/niffler/procutil.nim:153-165`), the per-tool
-   line cap with its exact marker (`sdk/niffler/procutil.nim:167-187`, asserted
-   at `tests/t_grep.nim:113-116`), and rg's `--max-columns 300`
-   (`main.nim:75`, verified live: `path:line:[Omitted long matching line]`).
-   MANUAL:76 says only "output capped".
-3. **[missing] Exit-code contract and empty-result markers.** 0/1/2/124/127
-   (`main.nim:35-36`, `:42-44`), `[no matches]` (`:40-41`), `[no files]`
-   (`:119-120`), `(exit 124 — timed out)`, `(exit 127 — ripgrep not installed)`;
-   the 127 path also prints the "ripgrep is not installed … or fall back to
-   bash: grep -rn" hint (`main.nim:26-31`). Nothing in the MANUAL.
-4. **[missing] Parameter clamps and defaults.** `context` ≤50 (`main.nim:79`),
-   `max_results` 200/500 defaults and the 10 000 ceiling (`main.nim:57`, `:98`,
-   `:104`, `:125`), `timeoutMs` (`main.nim:96`). MANUAL names no parameter.
-5. **[missing] Absolute result paths.** When `path` is a directory the component
-   chdirs into it and passes it absolutely, so output lines are absolute
-   (`main.nim:88-96`; re-verified by running the argv). Only the doc comment's
-   glob note mentions it (`main.nim:91-92`).
-6. **[code-bug?] `timeoutMs` parameter can exceed the tool's own deadline.**
-   The schema declares `"timeoutMs": 60000` (`main.nim:52`, `:100`) and core
-   enforces it as the call deadline (`core/dispatch.nim:1638-1645`), yet the
-   `grep` parameter is clamped up to 120 000 (`main.nim:96`) and documented as
-   "Kill after this many ms (default 30000)" (`main.nim:73`). Either clamp the
-   parameter at 60 000 or raise the schema value; the MANUAL should state the
-   effective ceiling.
-7. **[delta] `files` declares no `parallel`.** `grep` has `"parallel": true`
-   (`main.nim:52`) but `files` (`main.nim:100`) does not, so batching an
-   `invoke` of `files` with other parallel tools serializes it. Worth one clause
-   in the chapter (the MANUAL documents parallel scheduling for lsp/plugins at
-   MANUAL:845).
-8. **[delta] Neither tool declares `x-harness.effect`.** Fabric classifies
-   anything undeclared as `"write"` and schedules it exclusively
-   (`components/fabric/fabric.nim:226-228`, `:309`, `:327`) even though both are
-   read-only. The MANUAL states this consequence for `bash` (129) and `fetch`
-   (1222) but not for grep. Either add `"effect": "read"` (code) or one sentence
-   (doc) — the MANUAL row below proposes the sentence, matching house style.
-9. **[missing] rg is a host dependency.** `findExe("rg")` + the 127 path
-   (`main.nim:26-31`). Troubleshooting/MANUAL never mentions installing
-   ripgrep; `make setup`/`make doctor` cover it only as script behaviour.
-10. **[doc-edit] `binary: var/bin/grep` is not on `PATH`.** MANUAL:2795 explains
-    that `make install` never puts component binaries on `PATH` "so PATH cannot
-    shadow grep/git/..." — the sentence reads as if `grep` were a system binary
-    name collision; it is the component binary that is withheld. Not a defect,
-    but the pairing (component `grep` vs host `grep`/`rg`) deserves one clause
-    in the new chapter ("the tool is `var/bin/grep`; it shells out to `rg`,
-    never to `grep`").
-11. **[verified] MANUAL:76 is factually right.** Direct `grep`, on-demand
-    `files`, `.gitignore`-aware, no shell quoting, 4 replicas — all re-checked
-    against `main.nim:52`, `:100` and `manifest.yaml:123`. The row needs
-    *extension*, not correction.
-12. **[verified] MANUAL leaves grep out of the approval list.** Neither schema
-    carries `x-harness.approval` (`main.nim:52-54`, `:100-102`) — matching the
-    approvals chapter's list, which names no grep tool.
-13. **[missing] Tests.** `tests/t_grep.nim` (149 lines) and `make test-grep`
-    (`Makefile:524`) exist; the MANUAL Verification subsections name only
-    `t_observe`/`t_logfile` (2441, 2447) and the Testing section keeps a
-    hand-written target list. One clause in the new chapter's Verification note
-    is enough.
+## Layout of a running system
 
-## 6. Machine-parsed rows
+- MANUAL: "| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |" | CODE: components/grep/main.nim:52,100; manifest.yaml:116-124 | FIX: update — [doc-edit] append "; params, caps, exit codes and the effect classification are in [Search (``grep``)](#search-grep)". The row is otherwise verified correct (direct `grep`, on-demand `files`, .gitignore-aware, 4 replicas), but it must gain the two facts a reader cannot derive from it: `grep` is the *direct* tool while `files` is discover-only, and neither declares `x-harness.effect`, so the fabric batch host schedules both as writes (`components/fabric/fabric.nim:226-228`, `:309`, `:327`) exactly as the MANUAL already warns for `bash` and `fetch`.
+- MANUAL: absent | CODE: components/grep/main.nim:1-131; manifest.yaml:116-124 | FIX: add — [missing] a new chapter titled `Search (grep)` before the `Language servers (lsp)` chapter, with the text proposed in §4 of this report, plus a Contents bullet. It is the only place that can explain what `ripgrep-backed search` really costs: Nothing in the MANUAL documents the parameters and clamps (`main.nim:55-58`, `:96`, `:98`, `:103-104`, `:125`), the 32 KB head+tail byte cap (`main.nim:18`, `:45-50`; `sdk/niffler/procutil.nim:153-165`), the line-cap marker (`sdk/niffler/procutil.nim:167-187`; asserted at `tests/t_grep.nim:113-116`), rg's `--max-columns 300` omission (`main.nim:75`), the exit-code contract and empty-result markers (`main.nim:34-50`, `:127-128`), absolute result paths (`main.nim:88-96`) or the ignore/glob rules (`main.nim:80-86`, `:115-119`).
+- MANUAL: absent | CODE: components/grep/main.nim:26-31,43-44 | FIX: add — [missing] one sentence in the `ripgrep-backed search` component row (or the new chapter): "rg resolves through `PATH`; when it is missing both tools answer exit 127 with an install hint and suggest falling back to `bash grep -rn`" — the component returns exactly that text (`main.nim:28-30`) and only `make setup`/`make doctor` install ripgrep today.
 
-### Shipped components
+## Contents
 
-- MANUAL: "| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |" | CODE: components/grep/main.nim:52,100; manifest.yaml:116-123 | FIX: update — append "; params, caps, exit codes and the effect classification are in [Search (`grep`)](#search-grep). Neither tool declares `x-harness.effect`, so the fabric batch host schedules both as writes"
-- MANUAL: "| `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |" | CODE: components/grep/main.nim:26-31,35-44,119-120 | FIX: add a sentence naming the ripgrep host dependency: "rg resolves through PATH; when it is missing both tools return exit 127 with an install hint"
+- MANUAL: "- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Background processes (`processes`)](#background-processes-processes)" | CODE: docs/MANUAL.md:20 | FIX: add — [doc-edit] a bullet "- [Search (`grep`)](#search-grep)" directly after the `Fetch` bullet on the preceding contents line, so the new chapter is reachable from the table of contents like `Fetch` and `Language servers` are.
 
-### Layout of a running system
+## Context window
 
-- MANUAL: absent | CODE: components/grep/main.nim:1-131 | FIX: add a `## Search (\`grep\`)` chapter before `## Language servers (\`lsp\`)` (MANUAL:1225) with the text proposed in §4 of this report (tools table, parameter clamps, 32 KB/line caps, `--max-columns 300`, exit-code contract, ignore/glob semantics, absolute paths, effect/parallel flags, 4 replicas)
-- MANUAL: "- [Language servers (`lsp`)](#language-servers-lsp) · [Repository inspection (`git`)](#repository-inspection-git) · [Background processes (`processes`)](#background-processes-processes)" | CODE: docs/MANUAL.md:20 | FIX: add a Contents bullet "- [Search (`grep`)](#search-grep)" directly after the `Fetch` bullet on the previous line
+- MANUAL: "at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read" | CODE: components/grep/main.nim:52-54,100-102; core/dispatch.nim:1476-1489 | FIX: none — [verified] `grep`/`files` declare `workspace {pathFields: ["path"], defaultPathFields: ["path"]}`, so `.`/empty/relative `path` resolves at the conversation workspace exactly as the bullet says; the only nuance is that core's substitution happens for session-driven calls, while a direct `cli call grep grep` resolves against the component cwd (`core/supervisor.nim:160`), which the new chapter can state.
 
-### Context window
+## Environment variables
 
-- MANUAL: "at dispatch: bash runs with `cwd` set to the workspace, edit/grep/read\n  resolve relative paths there, and git tools scope at the workspace repo." | CODE: components/grep/main.nim:52-54,100-102; core/dispatch.nim:1476-1489 | FIX: none — verified: `grep`/`files` declare `workspace {pathFields: ["path"], defaultPathFields: ["path"]}`, so `.`/empty/relative `path` resolves at the conversation workspace
+- MANUAL: "All components load `.env` (from the harness root and cwd, existing shell" | CODE: components/grep/main.nim (no `getEnv`; only a `findExe("rg")` call at :26) | FIX: none — [verified] the master table owes this component no row: the component reads no NIF_* variable at all, so the `.env` resolution this sentence describes applies to it unchanged, and its only host dependency (PATH to rg) belongs in the new chapter rather than the table.
 
-### Environment variables
+## Progressive tool discovery
 
-- MANUAL: absent | CODE: components/grep/main.nim (no `getEnv`; only `findExe("rg")` at :26) | FIX: none — verified: no `NIF_*` variable is read, so the table owes no row
+- MANUAL: "- Routine work: `bash`, `grep`, and the file tools" | CODE: components/grep/main.nim:52 (no `onDemand`) | FIX: none — [verified] `grep` is a direct tool, so the bullet is right as written.
+- MANUAL: "- Search and inspection: `files` (sorted listing), the git" | CODE: components/grep/main.nim:100 (`onDemand: true`) | FIX: none — [verified] `files` is discover-only; this bullet is the MANUAL's only statement of that fact.
+- MANUAL: "- Search and inspection: `files` (sorted listing), the git" | CODE: components/grep/main.nim:52 (`parallel: true`), :100 (absent) | FIX: add — [delta] one clause next to `the observe/logfile diagnostics` bullet (or in the new chapter): "`grep` declares `parallel: true`, so a batched `grep` may run alongside other parallel tools; `files` does not, so an `invoke`d `files` serializes against them" (`core/dispatch.nim:1631-1654` is the runner-side gate).
 
-### Progressive tool discovery (`discover`/`invoke`)
+## Approvals
 
-- MANUAL: "- Routine work: `bash`, `grep`, and the file tools\n  `read`/`edit`/`write` (the `edit` component)." | CODE: components/grep/main.nim:52 (no onDemand) | FIX: none — verified: `grep` is a direct tool
-- MANUAL: "- Search and inspection: `files` (sorted listing), the git\n  tools, `undo_last_edit`, `repo_map` (the ranked workspace map the model\n  asks for explicitly), and the observe/logfile diagnostics." | CODE: components/grep/main.nim:100 (`onDemand: true`) | FIX: none — verified: `files` is discover-only
-- MANUAL: "server-side choice is independent of the runner-facing `x-harness.parallel`\nhint." | CODE: components/grep/main.nim:52 (`parallel: true`), :100 (absent) | FIX: add one clause to the new Search chapter: "`grep` declares `parallel: true`; `files` does not, so a batched `files` call serializes against other parallel tools"
+- MANUAL: absent (no grep tool in the approval list) | CODE: components/grep/main.nim:52-54,100-102 | FIX: none — [verified] neither schema carries `x-harness.approval` and both tools are read-only, so the approvals chapter's list is correct to omit them; the shipped row should keep saying "approval-free" if it is ever expanded.
 
-### Approvals
+## Common tasks
 
-- MANUAL: absent (no grep tool in the approval list) | CODE: components/grep/main.nim:52-54,100-102 | FIX: none — verified: neither tool declares `x-harness.approval`, and both are read-only
+- MANUAL: "                    # binaries, so PATH cannot shadow grep/git/...)" | CODE: manifest.yaml:117-118 (`binary: var/bin/grep`); components/grep/main.nim:26-32 | FIX: add — [doc-edit] one clause in the new chapter: "the tool binary is `var/bin/grep`; it shells out to `rg`, never to the host `grep`", because this MANUAL line reads as if a system `grep` binary were the thing being kept off `PATH`.
 
-### Common tasks
+## Testing
 
-- MANUAL: "                    # binaries, so PATH cannot shadow grep/git/...)" | CODE: manifest.yaml:117-118 (`binary: var/bin/grep`), components/grep/main.nim:26-32 | FIX: add a clause in the new Search chapter: "the tool binary is `var/bin/grep`; it shells out to `rg`, never to the host `grep`"
+- MANUAL: "`/doctor deep` additionally fans out to each component's own self test over" | CODE: tests/t_grep.nim:1-149; Makefile:524 (`test-grep`); `grep -c selftest components/grep/main.nim` → 0 | FIX: add — [missing] a Verification note in the new chapter: "`tests/t_grep.nim` (`make test-grep`) covers matches, gitignore/hidden handling, globs, case folding, bad-regex exit 2, result caps and the `files` tool; the component registers no `selftest`, so `/doctor deep` reports it as not implementing one."
 
-### Testing
+Finding count for this component: 12 rows — 3 `doc-edit`, 3 `missing`, 1 `delta`, 5 `verified` (the component has no prose chapter at all, so the chapter row plus the four verified rows are what a consolidation pass should treat as the same finding: extend the row, write the chapter, leave the rest alone).
 
-- MANUAL: "`/doctor deep` additionally fans out to each component's own self test over\nthe bus (`comp.selfTest`): `bash`, for example, really execs a command through\nits process-group path and then proves the timeout kill at a 1 s budget,\nexpecting exit 124." | CODE: tests/t_grep.nim:1-149, Makefile:524 (`test-grep`); `grep -c selftest components/grep/main.nim` → 0 | FIX: add to the new chapter's Verification note: "`tests/t_grep.nim` (`make test-grep`) covers matches, gitignore/hidden handling, globs, case folding, bad-regex exit 2, result caps and `files`; the component registers no `selftest`, so `/doctor deep` reports it as not implementing one"
-
-### Observation and logs
-
-- MANUAL: "All bounds are validated at startup; invalid configuration exits non-zero\nrather than silently substituting a default." | CODE: components/grep/main.nim (no config at all) | FIX: none — verified: no `NIF_*` bound exists for this component, so the sentence neither covers nor contradicts it
-
-## 7. Not user-facing
+## 6. Not user-facing
 
 - `runRg`/`finish` (private helpers `main.nim:24-50`) and the `capLines`/`capBytes`
-  markers' exact byte arithmetic are SDK detail; only the marker *text* is
-  user-visible.
+  byte arithmetic are SDK detail; only the marker *text* is user-visible.
 - The fixed flag prefix (`--color never -n -I --with-filename --no-require-git
   --max-columns 300`) belongs in one sentence, not a table.
-- `hookEnvFor`-style env mapping, `atomicWrite` and other SDK internals do not
-  exist here.
-- `clamp`ed parameter arithmetic (`max(1000, min(timeoutMs, 120_000))`) is
-  implementation detail *except* for the dead 60–120 s range (delta 6).
-
-**Finding count: 13** (1 code-vs-schema inconsistency to fix or document, 8
-MANUAL gaps, 1 table-row extension, 3 verified-correct claims).
+- The parameter clamp arithmetic (`max(1000, min(timeoutMs, 120_000))`) is
+  implementation detail *except* for the dead 60–120 s range, which the chapter
+  should name once.
