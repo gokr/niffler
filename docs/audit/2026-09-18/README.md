@@ -49,6 +49,22 @@ Line numbers inside the reports refer to the 2324-line revision; `docs/MANUAL.md
 has since grown (2373 lines and counting), so quotes — not line numbers — anchor
 a finding. Re-verify every claim against the current tree before applying it.
 
+## Second wave (same day, later)
+
+Six more children covered the components the first pass did not reach, one
+report each: `builder`, `cli`, `console`, `dialog`, `compaction`, `recall`,
+`grep`, `hooks`, `logfile`, `observe`, `store` (the three store directories in
+one report — the Nim front door, sqlite and tidb engines) and
+`infra-and-examples` (`nats`, `ctxtest`, `systemprompt`, `llm-openai`,
+`mcp-bridge`). `normalize.py` lists all of their paths, so re-running the
+pipeline folds them into the same ledger and `partition.py` re-slices.
+
+In parallel, six children finished the **open** rows of the first wave — the
+batches that were cut before writing: `edits/batch-open-1..6.json`, one per
+section group, each decided against the current MANUAL and code. `status.py
+--open` is the work list; `apply_edits.py` applies those sets exactly like
+`batch-N.json` (all-or-nothing, `old_string` must occur exactly once).
+
 ## Applying a batch
 
 A consolidation subagent writes `edits/batch-N.json`: for each row it re-reads

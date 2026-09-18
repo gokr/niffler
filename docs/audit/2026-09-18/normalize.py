@@ -41,6 +41,21 @@ REPORTS = [
     "components/provider.md",
     "components/repomap.md",
     "components/skills.md",
+    # Second wave: the components the first pass did not reach. Listed now so the
+    # fold is one command once the children have written them (a missing report
+    # is reported on stderr and skipped).
+    "components/builder.md",
+    "components/cli.md",
+    "components/console.md",
+    "components/dialog.md",
+    "components/compaction.md",
+    "components/recall.md",
+    "components/grep.md",
+    "components/hooks.md",
+    "components/logfile.md",
+    "components/observe.md",
+    "components/store.md",
+    "components/infra-and-examples.md",
 ]
 
 ROW = re.compile(r"^- (MANUAL|CODE|FIX|FILE|DOC):?\s*(.*)$")
