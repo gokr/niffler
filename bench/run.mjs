@@ -224,7 +224,15 @@ function resetWorkdir(workdir) {
 
 function prepareRepo(taskId, dest) {
   const src = path.join(TASK_ROOT, taskId, "repo");
-  fs.cpSync(src, dest, { recursive: true });
+  // verbatimSymlinks: Node's cpSync default resolves symlink *targets*, so a
+  // task repo's relative links (terraform ships ten: testdata roundtrip
+  // states, the plugin-protocol .proto files) landed as absolute paths into
+  // this checkout. The cell's base commit keeps the original relative links,
+  // so `git diff base` then recorded every one of them as a change the agent
+  // never made — patch noise at best, and a run marked `invalid` (tests
+  // passed, protected files touched) whenever such a link sits under a test
+  // path.
+  fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true });
   // Test runs litter the repo with derived artifacts (Python __pycache__,
   // compiled test binaries). Ignore them so a model's normal `git add -A`
   // doesn't stage test-run byproducts into the diff.

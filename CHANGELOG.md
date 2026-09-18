@@ -43,6 +43,16 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and only from 2+ matching files), and `NIF_LSP_WARM_TOTAL` (4) ceilings
   pre-started processes per workspace. Before this, a repo full of `.sh` files
   routinely spent one of the two slots on bash-language-server.
+- **bench: cell checkouts no longer rewrite the task repos' symlinks.**
+  `prepareRepo` used Node's `cpSync(..., {recursive: true})`, whose default
+  resolves symlink *targets*: terraform's ten relative links (testdata
+  roundtrip states, the plugin-protocol `.proto` files) landed in the cell as
+  absolute paths, and since the cell's `base` commit holds the originals,
+  `git diff base` recorded every one of them as a change the agent never made.
+  That is patch noise at best and a spurious `invalid` verdict (tests passed,
+  protected files touched) whenever such a link sits under a test path; it hit
+  8 cells across the Multilingual runs (terraform 10 hunks, jekyll 8, plus
+  axum/php-cs-fixer/jq). `verbatimSymlinks: true` keeps the original links.
 - **bench: three tooling bugs that each silently invalidated or killed a run.**
   The SWE-bench importer wrote a hardcoded column list, dropping
   `eval_script`/`eval_type`/`image`/`log_parser` — and `verify.mjs` routes on
