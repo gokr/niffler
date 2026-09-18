@@ -64,6 +64,15 @@ for (const r of rows) {
       PASS_TO_PASS: r.PASS_TO_PASS,
       environment_setup_commit: r.environment_setup_commit,
       difficulty: r.difficulty,
+      // Multilingual-style rows carry their eval specs inline (eval_script,
+      // image, log_parser). They must survive into the card: verify.mjs
+      // routes on eval_script (5.x venv vs the classic 4.x path) and
+      // prepare_images pulls by image, so dropping them leaves the row
+      // ungradeable. Absent on Verified, so only pass them through when set.
+      ...(r.eval_script ? { eval_script: r.eval_script } : {}),
+      ...(r.eval_type ? { eval_type: r.eval_type } : {}),
+      ...(r.image ? { image: r.image } : {}),
+      ...(r.log_parser ? { log_parser: r.log_parser } : {}),
     }) + "\n",
   );
 }

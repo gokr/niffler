@@ -14,6 +14,23 @@
 //
 // Keyed by bench model key, with API model ids as aliases.
 export const PRICING = {
+  // Direct first-party endpoint (config model key `deepseek-v4-flash` →
+  // https://api.deepseek.com/v1, model id `deepseek-v4-flash`). Here the
+  // provider rates ARE the official list rates, so both bases carry the
+  // same numbers — unlike the hosted-gateway entries below. Peak tier;
+  // DeepSeek off-peak is half. Cache-populating tokens bill as ordinary
+  // input there (no separate write SKU), hence cacheWrite = input.
+  "deepseek-v4-flash": {
+    label: "DeepSeek V4.1 Flash (direct api.deepseek.com)",
+    provider: {
+      name: "DeepSeek API (first party)",
+      input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3,
+    },
+    official: {
+      name: "DeepSeek peak list",
+      input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3,
+    },
+  },
   "syn-deepseek-v41": {
     label: "DeepSeek V4.1 Flash",
     provider: {

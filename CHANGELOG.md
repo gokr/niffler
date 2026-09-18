@@ -8,6 +8,25 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **bench: three tooling bugs that each silently invalidated or killed a run.**
+  The SWE-bench importer wrote a hardcoded column list, dropping
+  `eval_script`/`eval_type`/`image`/`log_parser` — and `verify.mjs` routes on
+  `eval_script` to pick the 5.x harness venv, so imported SWE-bench Multilingual
+  cards graded under the classic 4.x path instead. `--pull-images` invoked
+  swebench's `prepare_images`, a *builder*: pointed at Multilingual rows it
+  built base/env images from Dockerfiles (base images are not published) and
+  died on a dead `mvnd` download for the Java rows. It now pulls the card's
+  `image` ref — exactly what `run_evaluation` does at grading time — and falls
+  back to the builder only for cards without one (SWE-bench Verified). The
+  niffler adapter also inherited `NIF_AUTOSTART=1` from the caller, so driving
+  the bench from inside a Niffler session made the private harness treat itself
+  as UI-autostarted and exit after the 60s boot grace, stranding the run's
+  `cli call session` children on a dead bus; the adapter now pins it off.
+- **bench: the private bus was capped at the NATS default 1 MiB payload.**
+  Core warns about this at boot and it bites exactly where it hurts — a long
+  SWE transcript whose tool output exceeds 1 MiB cannot be published and the
+  turn dies. The adapter now spawns its `nats-server` with
+  `--max_payload 8388608`, matching what core spawns for its own bus.
 - **DeepSeek turns can no longer be silently length-capped or silently
   interrupted.** DeepSeek's Chat Completions reference documents only
   `max_tokens`; the llm adapter sent `max_completion_tokens`, which is ignored
@@ -45,6 +64,9 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **bench: pricing for the direct DeepSeek endpoint** (`deepseek-v4-flash` →
+  `api.deepseek.com/v1`), where provider rates are the first-party list rates,
+  so reports carry cost columns instead of blanks.
 - **bench: repomap append-gate evidence — the Multi10 low A/B rerun and the
   full30 gate verification.** The first low A/B was invalid twice over (lane B
   DNS-dead, lanes on different trees); rerun on a matched tree with

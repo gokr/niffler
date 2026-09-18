@@ -127,7 +127,10 @@ export class NifflerHarness {
       : "nats-server";
     this.natsProc = spawn(
       natsBin,
-      ["-a", "127.0.0.1", "-p", String(this.natsPort), "-m", "-1"],
+      // --max_payload matches what core spawns for its own bus (8 MiB): the
+      // default 1 MiB caps publishes, and a long SWE transcript with big tool
+      // output fails to publish against it (core warns, then the turn dies).
+      ["-a", "127.0.0.1", "-p", String(this.natsPort), "-m", "-1", "--max_payload", "8388608"],
       {
         cwd: this.runRoot,
         stdio: ["ignore", "ignore", "pipe"],
@@ -159,6 +162,13 @@ export class NifflerHarness {
       // This is the documented automation bypass; it only affects this
       // private bench harness (isolated NIF_ROOT + bus), never the dev's.
       NIF_AUTO_APPROVE: "1",
+      // The bench harness is never UI-autostarted. When the bench itself is
+      // driven from inside a Niffler session — the natural way to run it —
+      // the caller's environment carries NIF_AUTOSTART=1, and the private
+      // core then shuts itself down after the boot grace (60s) because no
+      // interactive client registers: the run dies mid-cell with the cli
+      // calls left waiting on a dead bus. Pin it off explicitly.
+      NIF_AUTOSTART: "0",
       // Agentic bench tasks need more than the default 20 LLM rounds per
       // turn; interactive use keeps the default (env only raises it here).
       NIF_MAX_TURN_ROUNDS: String(this.maxTurnRounds),

@@ -138,24 +138,39 @@ for (const row of rows) {
 }
 
 if (pullImages) {
-  const python = path.join(ROOT, "var/bench/swe/.venv/bin/python");
-  if (!fs.existsSync(python)) throw new Error("run bench/swe/setup.sh before --pull-images");
-  console.log(`preparing ${rows.length} official instance images…`);
-  const imageRoot = path.join(ROOT, "var/bench/swe/images");
-  fs.mkdirSync(imageRoot, { recursive: true });
-  run(python, [
-    "-m", "swebench.harness.prepare_images",
-    "--dataset_name", input,
-    "--split", "test",
-    "--instance_ids", ...rows.map((row) => row.instance_id),
-    "--max_workers", workers,
-    "--namespace", "swebench",
-    // swebench 4.1.0's CLI passes None tags into make_test_spec, which asserts
-    // non-None; run_evaluation defaults these to "latest" internally.
-    "--tag", "latest",
-    "--env_image_tag", "latest",
-    "--force_rebuild", "false",
-  ], { cwd: imageRoot });
+  // Cards that name their published evaluator image (SWE-bench Multilingual
+  // et al, `image`) are pulled by ref — exactly what run_evaluation does at
+  // grading time (client.images.pull(test_spec.image)), so this is a warm
+  // cache, not a build. swebench's own prepare_images is a *builder*: pointed
+  // at multilingual rows it constructs base/env images from Dockerfiles (base
+  // images are not published) and the Java base currently dies on a dead mvnd
+  // download. Only rows without an `image` (SWE-bench Verified) go through it.
+  const withImage = rows.filter((row) => row.image);
+  const withoutImage = rows.filter((row) => !row.image);
+  for (const row of withImage) {
+    console.log(`pulling ${row.image}…`);
+    run("docker", ["pull", row.image]);
+  }
+  if (withoutImage.length) {
+    const python = path.join(ROOT, "var/bench/swe/.venv/bin/python");
+    if (!fs.existsSync(python)) throw new Error("run bench/swe/setup.sh before --pull-images");
+    console.log(`building ${withoutImage.length} official instance images (card carries no image ref)…`);
+    const imageRoot = path.join(ROOT, "var/bench/swe/images");
+    fs.mkdirSync(imageRoot, { recursive: true });
+    run(python, [
+      "-m", "swebench.harness.prepare_images",
+      "--dataset_name", input,
+      "--split", "test",
+      "--instance_ids", ...withoutImage.map((row) => row.instance_id),
+      "--max_workers", workers,
+      "--namespace", "swebench",
+      // swebench 4.1.0's CLI passes None tags into make_test_spec, which asserts
+      // non-None; run_evaluation defaults these to "latest" internally.
+      "--tag", "latest",
+      "--env_image_tag", "latest",
+      "--force_rebuild", "false",
+    ], { cwd: imageRoot });
+  }
 }
 
 console.log(`ready: ${rows.length} tasks in ${path.relative(ROOT, out)}`);
