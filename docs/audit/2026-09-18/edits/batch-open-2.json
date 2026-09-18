@@ -3,16 +3,16 @@
   "id": "A035",
   "slice": "Context window",
   "status": "apply",
-  "reason": "the MANUAL names two fields that exist nowhere in the code: the status event carries a nested cumulative `cache {prompt, read, hitRate}`, and the conversation header keeps `cachePrompt`/`cacheRead`/`cacheHitRate`",
+  "reason": "the MANUAL names two fields that exist nowhere in the code: the status event carries a nested cumulative `cache {prompt, read, hitRate}`, and the conversation header keeps `cachePrompt`/`cacheRead`/`cacheHitRate` | UI parenthetical corrected with A112's evidence (web UI: numbers, not a percentage). | Record corrected: the applied text drops this row's process note and re-wraps the parenthetical (the note was drafting apparatus, not MANUAL prose).",
   "evidence": "docs/MANUAL.md:733-738 vs core/conversation.nim:2240-2242 (statusEv[\"cache\"] = {prompt, read, hitRate}) and :467-472 (header cachePrompt/cacheRead/cacheHitRate); `grep -rn cacheHitTokens core/ components/ ui/` → only components/hooks/README.md:35 (wrong too)",
   "old_string": "  When the provider reports cached input (`prompt_tokens_details.cached_tokens`),\n  the status event also carries `cacheHitTokens` and `cacheHitRatio` — with\n  the frozen prompt prefix most prompt tokens should be cached after the\n  first request, so a low ratio is a signal worth noticing (the web UI shows\n  `⚡ NN% cached` per message; the TUI status line shows a `⚡ NN% cached`\n  chip).",
-  "new_string": "  When the provider reports cached input (`prompt_tokens_details.cached_tokens`),\n  the status event also carries the conversation's cumulative cache split as\n  `cache {prompt, read, hitRate}` (summed prompt and cached tokens, ratio in\n  percent); the conversation header keeps the same numbers as `cachePrompt`,\n  `cacheRead` and `cacheHitRate`. With the frozen prompt prefix most prompt\n  tokens should be cached after the first request, so a low ratio is a signal\n  worth noticing (the web UI shows `⚡ NN% cached` per message; the TUI status\n  line shows a `⚡ NN% cached` chip)."
+  "new_string": "  When the provider reports cached input (`prompt_tokens_details.cached_tokens`),\n  the status event also carries the conversation's cumulative cache split as\n  `cache {prompt, read, hitRate}` (summed prompt and cached tokens, ratio in\n  percent); the conversation header keeps the same numbers as `cachePrompt`,\n  `cacheRead` and `cacheHitRate`. With the frozen prompt prefix most prompt\n  tokens should be cached after the first request, so a low ratio is a signal\n  worth noticing (the web UI shows `⚡ <cached>/<prompt> cached` per message and\n  the cumulative split in `/info`; the TUI shows a `cache NN%` chip in its\n  header and the same split in `/status`)."
  },
  {
   "id": "A036",
   "slice": "Context window",
   "status": "already",
-  "reason": "the claim survives re-verification: only the four `reset:*` reasons rebuild the prompt prefix. The extra reasons the row lists either do not rebuild it (`warn:threshold` at core/conversation.nim:913, `compact:failed|declined|invalid|stale` at :1575-1629) or are not `ev.session.context` events at all — `context-overflow` is published on `ev.session.retry` (:2114 via onEvent(\"retry\", …) → `ev.session.retry`, core/conversation.nim:2913-2915), so the row's proposed sentence would introduce a new error",
+  "reason": "the MANUAL is right today: it claims only that the four `reset:*` reasons are the intentional prompt-prefix rebuilds, and that holds. The extra reasons the row lists either do not rebuild the prefix (`warn:threshold` core/conversation.nim:913, `compact:failed|declined|invalid|stale` :1575-1629) or are not `ev.session.context` events at all — `context-overflow` is published on `ev.session.retry` (:2114 via onEvent(\"retry\", …), subject built at core/conversation.nim:2913-2915), so the sentence the row proposes would introduce a new error",
   "evidence": "docs/MANUAL.md:787-790; core/conversation.nim:840/856 (reset:prune/trim), 1337 (reset:tools), 1722 (reset:compact), 913 (warn:threshold), 1575-1629 (compact:*), 2114 (reason context-overflow on the *retry* event)",
   "old_string": "",
   "new_string": ""
@@ -21,7 +21,7 @@
   "id": "A037",
   "slice": "Context window",
   "status": "already",
-  "reason": "x-harness.runner is documented now — the exposure table is followed by 'A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist …'",
+  "reason": "already fixed by an earlier pass (present in the current MANUAL, §Progressive tool discovery / §Model): the exposure table is followed by \"A hidden tool that also carries `x-harness.runner: true` is exempt from a subagent's frozen tool allowlist — how replaceable runner machinery (compaction, recall) reaches a child whose toolset was frozen before it existed\"",
   "evidence": "docs/MANUAL.md:1729; code unchanged: core/dispatch.nim:1455-1473",
   "old_string": "",
   "new_string": ""
@@ -30,7 +30,7 @@
   "id": "A039",
   "slice": "Context window",
   "status": "already",
-  "reason": "accurate as written: `context_recall` resolves exactly canonical/spill/checkpoint refs and its `mode: search` greps the whole canonical history",
+  "reason": "verified in §Context window (the canonical/projection bullet): accurate as written — `context_recall` resolves exactly canonical/spill/checkpoint refs and its `mode: search` greps the whole canonical history",
   "evidence": "components/recall/main.nim:6-15,137-217,253; docs/MANUAL.md:782-789",
   "old_string": "",
   "new_string": ""
@@ -39,7 +39,7 @@
   "id": "A040",
   "slice": "Context window",
   "status": "already",
-  "reason": "verified: the effective window is resolved by hidden `llm_resolve` before each turn",
+  "reason": "verified in §Context window (first bullet): the effective window really is resolved by hidden `llm_resolve` before each turn",
   "evidence": "core/conversation.nim:985 (dispatchToolCall(\"llm_resolve\", …, 10_000)); docs/MANUAL.md:683-690",
   "old_string": "",
   "new_string": ""
@@ -48,7 +48,7 @@
   "id": "A041",
   "slice": "Context window",
   "status": "already",
-  "reason": "verified: maxCalls is clamped 1-500 on the first call and every dispatch attempt increments the counter before dispatch",
+  "reason": "verified in §Context window (per-session controls bullet): maxCalls is clamped 1-500 on the first call and every dispatch attempt increments the counter before dispatch",
   "evidence": "core/conversation.nim:2657-2663 (mc >= 1 and mc <= 500), :2403, :2426 and :2450 (`inc toolCallsMade  # every dispatch attempt counts`); docs/MANUAL.md:712-715",
   "old_string": "",
   "new_string": ""
@@ -75,7 +75,7 @@
   "id": "A157",
   "slice": "Context window",
   "status": "already",
-  "reason": "delta row, re-verified against code: the prune → compactor → trim ladder, the calibration offset, the reserved headroom and `trimThrough` all match, and the output reserve is derived per turn rather than fixed",
+  "reason": "delta row, re-verified in §Context window: the prune → compactor → trim ladder, the per-turn calibration offset, the derived output reserve and `trimThrough` all match the code, so there is no delta to write",
   "evidence": "core/conversation.nim:595-612 (ctxWarnRatio 0.75, ctxTrimRatio 0.9, ctxOutputReserve 16384, NIF_CTX_RESERVE), :685-695 (trimThreshold = min(0.9·window, window−reserve)), :812-821 (contextTarget), docs/MANUAL.md:743-772, 800-808",
   "old_string": "",
   "new_string": ""
@@ -131,8 +131,8 @@
   "status": "apply",
   "reason": "the idle/boot-grace numbers are right, but the count is a registration, not a lease: nothing in the catalog ages a client out (only reg.depart, a supervisor loss or remove drops it), so a SIGKILLed client pins an autostarted core — and core's approval gate, which denies when clientCount()==0",
   "evidence": "core/catalog.nim:795-799 (clientCount counts components with client:true), :607/787/818/823 (only depart/lost/removed drop a registration — no liveness sweep); core/approval.nim:197-212 (clientCount()==0 → deny); core/niffler.nim:659-691; docs/MANUAL.md:2777-2784",
-  "old_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker). An **autostarted** core counts them: when the",
-  "new_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker). An **autostarted** core counts them: when the That mark is a registration, not a lease: a\nclient killed without `reg.depart` keeps an autostarted core up — and keeps\ncore believing a human is reachable for approvals — until the catalog drops\nit (the `ui` registry's 20 s lease is a separate clock, see\n[Clients and the UI registry](#clients-and-the-ui-registry))."
+  "old_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker). An **autostarted** core counts them: when the\nlast one departs it shuts down after `NIF_AUTOSTART_IDLE_S` (default 10s —",
+  "new_string": "Interactive frontends register `\"client\": true` (the SDK's `interactive()`\n/ `Component.Client` marker). That mark is a registration, not a lease: a\nclient killed without `reg.depart` keeps an autostarted core up — and keeps\ncore believing a human is reachable for approvals — until the catalog drops\nit (the `ui` registry's 20 s lease is a separate clock, see\n[Clients and the UI registry](#clients-and-the-ui-registry)). An\n**autostarted** core counts them: when the last one departs it shuts down\nafter `NIF_AUTOSTART_IDLE_S` (default 10s —"
  },
  {
   "id": "A192",
@@ -157,9 +157,9 @@
   "slice": "Starting and stopping",
   "status": "apply",
   "reason": "the kernel-level child cleanup is documented only indirectly (the Troubleshooting row for an orphaned nats-server); state it where lifecycle is explained, including that core itself is the deliberate exception",
-  "evidence": "core/supervisor.nim:141-152 (setpriv --pdeathsig TERM when findExe(\"setpriv\") finds it), components/nats/main.go:15-18 + components/nats/pdeathsig_linux.go:17 (PR_SET_PDEATHSIG in nats-server main), sdk/go/pdeathsig_linux.go:17, sdk/niffler/sdk.nim:566, sdk/go/harness.go:158 (core: Setsid only); docs/MANUAL.md:2782-2783",
-  "old_string": "`NIF_AUTOSTART_BOOT_S` (default 60s). Closing a UI that attached to a\n*manually* started core changes nothing — the core stays up.",
-  "new_string": "`NIF_AUTOSTART_BOOT_S` (default 60s). Closing a UI that attached to a\n*manually* started core changes nothing — the core stays up.\n\nKernel-level cleanup backs that up. Core itself deliberately has no\nparent-death signal — an autostarted core must outlive the UI that spawned\nit — but every child it starts does: supervised children (components,\nsession runners) are wrapped in `setpriv --pdeathsig TERM` when util-linux's\n`setpriv` is on `PATH`, the SDKs set `PR_SET_PDEATHSIG` in the components\nthey spawn, and the bundled `nats-server` sets it in its own `main`. Nothing\nsurvives its harness, even on SIGKILL; off Linux (or without `setpriv`) both\nmechanisms are absent, which is how an orphaned bus happens (see\nTroubleshooting)."
+  "evidence": "core/supervisor.nim:141-152 (setpriv --pdeathsig TERM when findExe(\"setpriv\") finds it), components/nats/main.go:15-18 + components/nats/pdeathsig_linux.go:17 (PR_SET_PDEATHSIG in nats-server main), sdk/go/pdeathsig_linux.go:17, sdk/niffler/sdk.nim:566, sdk/go/harness.go:158 (core: Setsid only, no PDEATHSIG); docs/MANUAL.md:2782-2784 (the paragraph this belongs to) — anchor is the `## Common tasks` heading (docs/MANUAL.md:2786, unique)",
+  "old_string": "## Common tasks\n",
+  "new_string": "At the kernel level the same rule holds with one deliberate exception: core\nitself has no parent-death signal — an autostarted core must outlive the UI\nthat spawned it — while every child it starts does. Supervised children\n(components, session runners) are wrapped in `setpriv --pdeathsig TERM` when\nutil-linux's `setpriv` is on `PATH`, the SDKs set `PR_SET_PDEATHSIG` in the\ncomponents they spawn, and the bundled `nats-server` sets it in its own\n`main`, so nothing survives its harness even on SIGKILL. Off Linux (or\nwithout `setpriv`) both mechanisms are absent, which is how an orphaned bus\nhappens (see Troubleshooting).\n\n## Common tasks\n"
  },
  {
   "id": "A196",
@@ -176,8 +176,8 @@
   "status": "apply",
   "reason": "the registry is documented now (added by the batch-2 A149 pass); the remaining deltas are the `owner` op, the lazy sweep and the name collision between the hidden core tool `ui` and the Wails-bridge component `ui` — the last one is an easy reader trap",
   "evidence": "core/uireg.nim:1-20,65-124 (op set register|renew|release|claim|release_session|owner, sweep() on every op, no timer), core/catalog.nim:213-224 (hidden core tool named `ui`), core/tty.nim — and ui/bridge.go:25-26 (sdk.New(\"ui\", \"0.1.0\")); docs/MANUAL.md:218-221",
-  "old_string": "Every frontend registers on the bus as a zero-tool component and keeps a\nlease alive: core's `ui` tool — `register`, `renew`, `release`, plus\n`claim`/`release_session` for per-conversation ownership — tracks which\nwindow owns which conversation. A lease lasts 20 s; display numbers",
-  "new_string": "Every interactive frontend registers on the bus as a zero-tool component and\nkeeps a lease alive: core's hidden `ui` tool — `register`, `renew`,\n`release`, `owner`, plus `claim`/`release_session` for per-conversation\nownership — tracks which window owns which conversation (the component named\n`ui` is the desktop bridge, not this tool). Expired leases are swept lazily\non each request, so no timer thread exists."
+  "old_string": "Every frontend registers on the bus as a zero-tool component and keeps a\nlease alive: core's `ui` tool — `register`, `renew`, `release`, plus\n`claim`/`release_session` for per-conversation ownership — tracks which\nwindow owns which conversation. A lease lasts 20 s; display numbers\n(\"Niffler 1\", \"Niffler 2\") are monotonic for the harness's lifetime. This is",
+  "new_string": "Every interactive frontend registers on the bus as a zero-tool component and\nkeeps a lease alive: core's hidden `ui` tool — `register`, `renew`,\n`release`, `owner`, plus `claim`/`release_session` for per-conversation\nownership — tracks which window owns which conversation (the component named\n`ui` is the desktop bridge, not this tool). A lease lasts 20 s, and expired\nleases are swept lazily on each request — no timer thread exists. Display\nnumbers (\"Niffler 1\", \"Niffler 2\") are monotonic for the harness's lifetime.\nThis is"
  },
  {
   "id": "A198",

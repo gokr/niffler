@@ -15,7 +15,7 @@
   "reason": "The prefix is the component's main cost model, but the section never says how big it may get. Name the 80 % fill ratio, the 8 000-token observation reserve and the llm_resolve sizing at the phrase that introduces the prefix.",
   "evidence": "components/expert/main.nim:72 (PrefixFillRatio = 0.80) and :76 (PrefixObsReserveTokens = 8_000); :386-410 (buildKnowledge asks llm.llm_resolve for the judge model's context) with :411-413 (prefixBudgetTokens = int(ctx * PrefixFillRatio) - PrefixObsReserveTokens)",
   "old_string": "cache-stable knowledge prefix + one ephemeral observation, no tools) whether",
-  "new_string": "cache-stable knowledge prefix — sized from `llm.llm_resolve` to 80 % of the\njudge's context window minus an 8 000-token reserve for the observation and the\nverdict, and cached per follow — plus one ephemeral observation, no tools)\nwhether"
+  "new_string": "cache-stable knowledge prefix — sized from `llm.llm_resolve` to 80 % of the\njudge's window minus an 8 000-token reserve for the observation and the verdict,\nand cached per follow — plus one ephemeral observation, no tools) whether"
  },
  {
   "id": "A316",
@@ -42,7 +42,7 @@
   "reason": "The row documents the per-follow override but not what the judge runs on when it is omitted. One clause fixes it and states the cost intent.",
   "evidence": "components/expert/main.nim:538-548 (model/provider are added to chatArgs only when set, so the judge otherwise uses llm's default backend); :800-828 (expert_follow stores the per-follow model/provider); components/llm/main.go:374-382 (activeStoredProvider, re-read per chat call); components/provider/main.go:118-137 (environmentProvider)",
   "old_string": "`model`/`provider` override the judgment calls for that follow. Approval-gated. |",
-  "new_string": "`model`/`provider` override the judgment calls for that follow; without them the\njudge runs on `llm`'s default backend (the active provider), which keeps judge\ncost off the worker's model. Approval-gated. |"
+  "new_string": "`model`/`provider` override the judgment calls for that follow; without them the judge runs on `llm`'s default backend (the active provider), which keeps judge cost off the worker's model. Approval-gated. |"
  },
  {
   "id": "A319",
@@ -114,7 +114,7 @@
   "reason": "All four tools are discover-only, so the model cannot call them directly; the section never says how the operator arms the component, nor that it stays inert otherwise. One parenthetical gives both paths.",
   "evidence": "components/expert/main.nim:37 (\"This component is inert until expert_follow names a target session\") and :831-832/851/871/925 (onDemand on all four tools); the cli spelling matches the MANUAL's own examples (docs/MANUAL.md:2149)",
   "old_string": "sessions concurrently — armed explicitly with `expert_follow {session_id}`\n(approval-gated, off by default) — watches each followed session's",
-  "new_string": "sessions concurrently — armed explicitly with `expert_follow {session_id}`\n(approval-gated, off by default, and on demand, so the operator arms it with\n`discover` + `invoke` or\n`./var/bin/cli call expert_follow '{\"session_id\": \"conv-…\"}'`; the component is\ninert until then) — watches each followed session's"
+  "new_string": "sessions concurrently — armed explicitly with `expert_follow {session_id}`\n(approval-gated, off by default, and on demand: arm it with `discover` +\n`invoke`, or from a shell with `./var/bin/cli call expert_follow\n'{\"session_id\": \"conv-…\"}'`; the component is inert until then) — watches\neach followed session's"
  },
  {
   "id": "A327",
@@ -238,9 +238,9 @@
   "slice": "component: provider",
   "status": "apply",
   "reason": "The protocols section lists the three wire protocols without saying that the API-key path can only use two of them. `provider_add` refuses `openai-codex` with an API key, so a reader who tries it gets an error the section never predicts. One sentence after the protocol list fixes it. (The related asymmetry — provider_update's schema still offers `openai-codex` and skips the stored-provider revalidation — is a code bug, flagged here, not edited.)",
-  "evidence": "components/provider/main.go:375 (provider_add: \"protocol must be openai-chat or anthropic for API-key providers\"), :197-206 (validStoredProvider: authAPIKey && protocol != codex); the provider_add schema enum at :334 already offers only those two, while provider_update's enum at :445 still offers openai-codex and its handler (:528-540) never re-runs validStoredProvider",
-  "old_string": "  blocks (consecutive tool results merge into one user message).",
-  "new_string": "  blocks (consecutive tool results merge into one user message).\n\nAn API-key provider may use `openai-chat` or `anthropic` only: `openai-codex`\nrequires a ChatGPT subscription login (`provider_oauth_start`), and\n`provider_add` refuses the combination."
+  "evidence": "components/provider/main.go:375 (provider_add: \"protocol must be openai-chat or anthropic for API-key providers\"), :197-206 (validStoredProvider: authAPIKey && protocol != codex); the provider_add schema enum at :334 already offers only those two, while provider_update's enum at :445 still offers openai-codex and its handler (:528-540) never re-runs validStoredProvider (the anchor is the `### Output caps` heading rather than the anthropic bullet's last line, which batch-open-2's A393 also rewrites)",
+  "old_string": "### Output caps and `finish_reason`",
+  "new_string": "An API-key provider may use `openai-chat` or `anthropic` only: `openai-codex`\nrequires a ChatGPT subscription login (`provider_oauth_start`), and\n`provider_add` refuses the combination.\n\n### Output caps and `finish_reason`"
  },
  {
   "id": "A480",

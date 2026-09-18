@@ -50,7 +50,20 @@ work (`6bc4f6d lsp/edit/core: asynchronous diagnostics, and work outside the
 workspace`, committed minutes before this pass). They are worth a look before
 the next `make test` gate.
 
-## Build-system gap worth fixing
+## Surfaced by the open-row consolidation (NOT applied — decisions for the code owner)
+
+The 145 open rows were decided row by row against the code; these four findings
+belong in code, not prose. The documentation side of each is applied (row id in
+parentheses).
+
+| # | where | what is wrong | suggested fix |
+|---|---|---|---|
+| B1 | `components/processes/main.nim:34` | `KEEP_FINISHED = 50` is declared and never referenced, and `gProcs` has no eviction path: finished entries accumulate for the component's lifetime (`/processes` and the badge keep seeing them) | implement the cap (evict the oldest finished entries beyond 50) or delete the constant — the intent is currently a comment, not behaviour (A451) |
+| B2 | `components/hooks/README.md:35` | advertises `cacheHitTokens`/`cacheHitRatio`, the field names that exist nowhere; `ev.session.status` nests them as `cache {prompt, read, hitRate}` (`core/conversation.nim:2240-2242`) | use the real field names (A035 fixed the MANUAL's copy of this error) |
+| B3 | `core/catalog.nim` (`clientCount`) | no liveness sweep: only `reg.depart`, a supervisor loss or `remove` drops a registration, so a SIGKILLed UI pins an autostarted core *and* makes core believe a human is reachable (`core/approval.nim:197-212` waits instead of denying) | age out client registrations, or let the UI registry's 20 s lease feed the count (A191 documents the shipped behaviour) |
+| B4 | `components/repomap/main.nim` | the `No map: …` message names only `.nim/.nims/.go/.py/.ts`, while the C/C++/Rust/Ruby/PHP tiers landed in `aba88b8` | name the full tier list (A485/A486 document the tiers) |
+
+## Build-system gap (**fixed** in `f0c60dd`)
 
 `Makefile:152` — `var/bin/lsp: components/lsp/main.nim $(SDK_NIM) $(NIM_CONF)`:
 the lsp component's other sources (`roots.nim`, `diagformat`-style helpers) are

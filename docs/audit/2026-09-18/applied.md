@@ -127,3 +127,49 @@ typecheck` 0 errors; `npm test` 38/38. `make test-lsp` fails 2 checks that are
 
 None of these rows required a code change; all were documentation drift. The
 code-bug list is maintained in the batch summaries (`edits/batch-N.summary.md`).
+
+## Open-row consolidation — `batch-open-1..6` (applied)
+
+The 145 rows `status.py --open` still listed were split by section across six
+children. Each re-verified its rows against the then-current MANUAL (2850 lines)
+and the code, and wrote `edits/batch-open-<N>.json`. Applied in one pass by
+`apply_edits.py` (all-or-nothing, id order):
+
+| | |
+|---|---:|
+| apply | 71 |
+| already | 60 |
+| skip | 20 |
+
+`docs/MANUAL.md` 2850 → 3072 lines. The ledger is now **applied 256 / decided
+105 / skip 145 / code 9 — no open rows**.
+
+| set | sections | rows |
+|---|---|---:|
+| batch-open-1 | component: expert, component: provider | 28 |
+| batch-open-2 | Starting and stopping, Context window | 25 |
+| batch-open-3 | component: llm, Background processes, observations and logs | 28 |
+| batch-open-4 | Fabric and subagents, component: processes, The bus in one screen | 23 |
+| batch-open-5 | Layout, Shipped components (×2), component: repomap | 24 |
+| batch-open-6 | false-claim slices, State/configuration, System prompt, Common tasks, Contents | 23 |
+
+**Cross-batch overlap.** Two rows turned out to be duplicate fixes of paragraphs
+another set had already rewritten. Found by simulating the whole pass in id
+order *before* applying — a check no single child could make, since each proved
+its anchors against a MANUAL no sibling had edited:
+
+- `A112` ⊂ `A035` — both fix the status-event paragraph (the fields are
+  `cache {prompt, read, hitRate}`, not `cacheHitTokens`/`cacheHitRatio`). A035's
+  draft also claimed the web UI shows a percentage; A112's evidence says
+  otherwise, so A035's parenthetical was corrected with it (web UI: `⚡
+  <cached>/<prompt>` numbers per message plus the split in `/info`; TUI chip:
+  `cache NN%`). A112 is `already`/superseded.
+- `A208` ⊂ `A191` — both state that the autostarted core counts `reg.publish`
+  `client` registrations, not the 20 s `ui` lease, and that a SIGKILLed client
+  pins the core (and core's approval reachability) until the catalog drops it.
+  A191 says it in the same paragraph; A208 is `already`/superseded.
+
+Both supersessions carry their reasoning in the row's `status`/`reason`, so the
+record shows why an `apply` row did not land. One manual repair followed the
+apply: A035's patch had leaked a process note into the prose and one paragraph
+ran long — both fixed by hand in `docs/MANUAL.md` and in the source row.

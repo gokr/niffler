@@ -1,0 +1,75 @@
+# applied batch-open-1+batch-open-2+batch-open-3+batch-open-4+batch-open-5+batch-open-6
+
+rows applied: 71 of 151 in the set(s)
+
+A006 Shipped components  +105 bytes  The table row lists the four store tools without flags, which reads as if the mo
+A007 Shipped components  +113 bytes  The row names two of the component's nine tools; it now names all nine (the new 
+A012 Observation and logs  +239 bytes  The Layout table introduces components/ as 'one directory per component', but tw
+A018 Layout of a running system  -107 bytes  Trim applied with its replacement pointer: the four-invocation walkthrough becom
+A030 The bus in one screen  -7 bytes  the `#` markers are stray: every other continuation line in the block is indente
+A035 Context window  +353 bytes  the MANUAL names two fields that exist nowhere in the code: the status event car
+A165 Fabric and subagents  +335 bytes  `modelTier?` is missing from both driver signatures: both schemas take it (compo
+A166 Fabric and subagents  +110 bytes  `descendants` recurses the whole tree (the walk loops a frontier down the parent
+A167 Fabric and subagents  +520 bytes  `agent_ask` is implemented (approval-gated, 900 s dispatch budget) and named in 
+A189 Starting and stopping  +291 bytes  accurate but thin: add the numbers a debugger needs — attach probes for ~10 s at
+A190 Starting and stopping  +194 bytes  the TUI's probe order is longer than documented ($NIF_ROOT-relative and cwd-rela
+A191 Starting and stopping  +318 bytes  the idle/boot-grace numbers are right, but the count is a registration, not a le
+A192 Starting and stopping  +215 bytes  accurate; add the two facts an operator needs — NIF_AUTOSTART=1 forces service m
+A193 Starting and stopping  +286 bytes  an explicit NIF_NATS_URL short-circuits ensureHarness in both SDKs (nothing is p
+A194 Starting and stopping  +628 bytes  the kernel-level child cleanup is documented only indirectly (the Troubleshootin
+A197 Starting and stopping  +170 bytes  the registry is documented now (added by the batch-2 A149 pass); the remaining d
+A236 Observation and logs  +496 bytes  The Boundary section states the positive half (observe the bus, not component in
+A238 Observation and logs  +64 bytes  The observe table marks observe_dump/observe_send/observe_request as approval-ga
+A241 Observation and logs  +210 bytes  The hooks section had no verification line at all, and tests/t_hooks.nim is name
+A248 The bus in one screen  +532 bytes  five live event families were absent from the subject block: ev.log.<component> 
+A257 Layout of a running system  +204 bytes  Applied as a pointer sentence rather than a longer block: the fenced list stays 
+A285 Background processes (processes)  +138 bytes  'no timeout applies' reads as if the whole bash call is unbounded. It is not: ba
+A314 component: expert  +355 bytes  The section documents the frame/judgment economics (MaxJudgmentsPerTurn, EvalCoo
+A315 component: expert  +154 bytes  The prefix is the component's main cost model, but the section never says how bi
+A316 component: expert  +519 bytes  The section says "knowledge prefix" without saying what is in it, which is the c
+A317 component: expert  +183 bytes  A reader looks for an `expert` row in the environment table and finds none; say 
+A318 component: expert  +125 bytes  The row documents the per-follow override but not what the judge runs on when it
+A319 component: expert  +134 bytes  The section names only two of the runner's seven rejection reasons. Add the one-
+A320 component: expert  +465 bytes  "high-confidence steers naming live, non-hidden tools" hides half the gates. The
+A321 component: expert  +261 bytes  The section never says that nothing about a follow is durable. One clause in the
+A322 component: expert  +231 bytes  The section says the component watches `ev.session.*` without naming what actual
+A323 component: expert  +165 bytes  The audit trail is the operator's only way to answer "why was it silent?". One s
+A324 component: expert  +191 bytes  The row lists the counters but not the rest of the payload the tool returns. Ext
+A325 component: expert  -2 bytes  `expert_follow` is the only name in the on-demand orchestration bullet, but all 
+A326 component: expert  +169 bytes  All four tools are discover-only, so the model cannot call them directly; the se
+A329 component: expert  +80 bytes  The runner publishes `reason` on the advice event (the judge's one-line justific
+A340 Fabric and subagents  +105 bytes  the executor's environment is built from scratch: PATH, FABRIC_CACHE_DIR, HOME a
+A341 Fabric and subagents  +69 bytes  an identical program is cached, but the cache is not unbounded: 64 entries / 128
+A383 component: llm  +276 bytes  The shipped-components row named only the hidden `chat` tool. The component regi
+A384 component: llm  +194 bytes  llm_resolve reports more than the sentence claimed: output/outputSource, protoco
+A385 component: llm  +432 bytes  The output window was documented nowhere (grep outputSource: no hits). Added a b
+A388 component: llm  +275 bytes  The max_completion_tokens/DeepSeek half is already in the MANUAL (applied as A17
+A390 component: llm  +191 bytes  The value set and the header round-trip were already documented; missing was tha
+A391 component: llm  +411 bytes  The cancellation sentence named only llm.cancel.<sessionId>. Added the two preco
+A392 component: llm  +79 bytes  The row's core claim is documented (A392's MANUAL half is right), but the paragr
+A393 Context window  +319 bytes  the MANUAL documents `prompt_tokens_details.cached_tokens` as if every protocol 
+A395 component: llm  +384 bytes  History repair (sanitizeMessages/repairToolArgs) was undocumented. Added a parag
+A396 component: llm  +341 bytes  The live-source paragraph described the plugin accurately but never named the to
+A399 component: llm  +238 bytes  `accountId` was listed in the provider object but never explained. Gave it one c
+A451 component: processes  +224 bytes  the claim is false: KEEP_FINISHED = 50 is declared and never referenced, and gPr
+A452 Background processes (processes)  +38 bytes  The process_kill row said only 'terminate the whole process group'; the escalati
+A454 Background processes (processes)  +176 bytes  The owner-less case was described as 'a direct process_start, e.g. from cli'. On
+A455 Background processes (processes)  +78 bytes  'Processes die with the harness' overstates the crash case: a graceful stop kill
+A456 component: processes  +214 bytes  the four tool schemas declare per-tool dispatch budgets (start 20 s, poll 30 s, 
+A457 component: processes  +370 bytes  'default: workspace' holds only for calls that go through core dispatch: applyWo
+A458 component: processes  +141 bytes  the two knobs are not validated alike: NIF_PROCESSES_POLL_CHUNK is clamped to [1
+A459 component: processes  +256 bytes  the component's caller-visible error codes are undocumented: E_LIMIT at the 32-l
+A460 State and configuration  +116 bytes  Half a line the state table was missing: where a background process's output act
+A462 component: processes  +66 bytes  the example reads as if core rendered it: the badge comes from the niffler-tui p
+A465 component: provider  +183 bytes  Both credential-writing rows omit `stripPrefix`, which the components' own schem
+A468 component: provider  +460 bytes  The switch row and the resolution bullet describe the backend move but not what 
+A469 component: provider  +453 bytes  The MANUAL has no `/provider` documentation at all, though it documents `/model`
+A470 component: provider  +97 bytes  The row documents the behavior but not that the two argument shapes are alternat
+A471 component: provider  +172 bytes  The bullet reads as if `plugin` were wired up. It is stored and summarized metad
+A475 component: provider  +76 bytes  The Shipped policy hidden list names five provider tools but not the three OAuth
+A476 component: provider  +179 bytes  The troubleshooting row sends every 401/403 to `NIF_OPENAI_API_KEY`, but with a 
+A477 component: provider  +89 bytes  The bullet describes the change event but not its `op` values, and a client that
+A479 component: provider  +187 bytes  The protocols section lists the three wire protocols without saying that the API
+A480 component: provider  +408 bytes  Nothing in the section says what an omitted field becomes, though the defaults d
+A485 component: repomap  +113 bytes  Resolved: the row gains the pointer the fix asks for, and the detail it wants st
+A486 component: repomap  +1913 bytes  Resolved by giving the component the detail section the fix asks for, in the MAN

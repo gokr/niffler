@@ -35,7 +35,7 @@ reference chapters for the shipped components. Design rationale lives in
 | Path | What it is |
 |---|---|
 | `core/` | the control plane: system harness (`niffler.nim`: bus bootstrap, supervisor, catalog, dispatch) + the session runner (`session.nim`) and the turn loop it drives (`conversation.nim` — the largest module — plus `compaction.nim`, `approval.nim`, `retry.nim`, `uireg.nim`, `tty.nim`) |
-| `components/` | shipped component sources — one directory per component (Nim, Go, TypeScript and one bash demo); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current |
+| `components/` | shipped component sources — one directory per component (Nim, Go, TypeScript and one bash demo); the inventory is the [Shipped components](#shipped-components) table below, which is the part that has to stay current. Two directories are not bus citizens: `components/nats` builds the `var/bin/nats-server` core spawns when a bus has to be started, and `components/ctxtest` is a fixture the nested-call tests (`t_fabric`, `t_agent`) compile for themselves |
 | `sdk/` | Nim SDK (`sdk/niffler`) + `sdk/go` (Go) + `sdk/ts` (TypeScript/Node.js, npm package `niffler-sdk`); the envelope in `sdk/envelope.nim` is the artifact |
 | `docs/` | this manual, the wire spec (`WIRE.md`), the settings design (`research/SETTINGS.md`), the core-boundary rationale (`ARCHITECTURE.md`), the fabric user guide (`FABRIC_GUIDE.md`), open work (`research/PLAN.md`) and `research/` (design history) |
 | `manifest.yaml` | bootstrap manifest: which components core spawns, restart policy, and optional stateless `replicas` count; `--minimal` filters it to `store`, `bash`, and `llm` |
@@ -56,12 +56,12 @@ reference chapters for the shipped components. Design rationale lives in
 
 | Component | Language | Manifest | What it does |
 |---|---|---|---|
-| `store` | Nim/Go | required | document store over the bus (`put/get/list/del`, rev-based concurrency). Engines register under the same name with identical tools: `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
+| `store` | Nim/Go | required | document store over the bus (`put/get/list/del`, rev-based concurrency). All four tools are on-demand, and `del` is additionally hidden — core deletes records, the model cannot. Engines register under the same name with identical tools: `store-sqlite` (Go, SQLite + goose migrations, `var/store.db`) is the **default**; `barrel` (`var/bin/store`) and `tidb` remain selectable with `NIF_STORE_BACKEND` — see [Store engines](#store-engines) |
 | `bash` | Nim | required | the classic tool: shell commands with timeout + output cap. Commands run as the leader of their own process group, so a timeout or a cancelled turn kills the whole tree (exit 124 / 130) — no orphaned children. Results carry `text` (an `(exit N)` status line — non-zero = failure; 124 = timeout, 130 = cancelled, 126 = cwd not enterable (the tool also uses 126 for found-but-not-executable), 127 = `bash` not on `PATH`, 128 + signal when the command killed itself (139 = SIGSEGV, 143 = SIGTERM) — followed by combined stdout/stderr; this is what the LLM transcript shows) plus machine fields `exit_code`, `cancelled`, and `spill {path, bytes, lines}` when oversized output spills to a file under `var/toolout/` (the absolute path is in `spill.path`; pageable with `read`, swept after 1 h). `run_in_background: true` hands a long-running command (server, watcher) to the `processes` component instead of blocking — see [Background processes](#background-processes-processes) |
-| `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect — the model asks, nothing is injected. The workspace-open auto-append (one append-only entry on `ev.workspace.opened`; the component publishes it, the runner appends it) is **off by default**: set `NIF_REPOMAP_AUTOAPPEND=1` to opt in. It ships off because the A/B did not clear the bar (full30: ~40% more tokens, no accuracy gain; Multi10 high 8/10 vs 9/10 with it on, though the low rerun inverted that and the original high run partly measured stub maps — see `bench/reports/repomap-ab-*.md`) and onDemand tools never activate themselves. Opted in, the append is also **gated** (`docs/research/REPOMAP-GATES.md`): a workspace below the census floor is never built and a stub map (byte/symbol/file thresholds) is never injected — withheld maps are logged as `repo map withheld`. With the append off this is simply a component the model can discover when it wants orientation. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes |
+| `repomap` | Nim | optional | ranked workspace map (docs/research/REPOMAP.md): the load-bearing files and their key definitions in ~1KB, built from a tree-sitter + native-Nim tags graph with personalized PageRank (the aider repomap port). `repo_map {workspace?, focus?, mentionedIdents?, budget?}` is onDemand and read-effect — the model asks, nothing is injected. The workspace-open auto-append (one append-only entry on `ev.workspace.opened`; the component publishes it, the runner appends it) is **off by default**: set `NIF_REPOMAP_AUTOAPPEND=1` to opt in. It ships off because the A/B did not clear the bar (full30: ~40% more tokens, no accuracy gain; Multi10 high 8/10 vs 9/10 with it on, though the low rerun inverted that and the original high run partly measured stub maps — see `bench/reports/repomap-ab-*.md`) and onDemand tools never activate themselves. Opted in, the append is also **gated** (`docs/research/REPOMAP-GATES.md`): a workspace below the census floor is never built and a stub map (byte/symbol/file thresholds) is never injected — withheld maps are logged as `repo map withheld`. With the append off this is simply a component the model can discover when it wants orientation. Cache: `var/repomap-tags/` (mtime-keyed). Optional component — absent means no map, nothing else changes. Parameters, budget default and cap, tag tiers and the append payload: [`repomap` in detail](#repomap-in-detail) |
 | `processes` | Nim | optional | long-running commands with an owner: `process_start` (detached, own process group, returns an id at once), `process_poll` (drains incremental output), `process_kill` (stops the group), `process_list` — see [Background processes](#background-processes-processes) |
 | `builder` | Nim | required | compiles agent-written Nim/Go/TypeScript source into binaries: `build {lang, name, source, files?, defines?}` (approval-gated, on demand) and `info` (on demand: the per-language source skeleton and SDK locations) |
-| `llm` | Go | required | streaming chat adapter (hidden `chat` tool; `ev.llm.token` deltas; cancellation) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
+| `llm` | Go | required | streaming chat adapter — three hidden tools, none of them in a conversation's direct set: `chat` (one inference, `ev.llm.token` deltas, cancellation; `runner`-exempt, timeout `NIF_LLM_TIMEOUT_MS`), `llm_resolve` (the credential-free resolution probe clients call) and `llm_models_source` (the `x-models-source` v1 live-id source the `models` catalog calls) — protocols: OpenAI-compatible Chat Completions, OpenAI Codex (ChatGPT OAuth) Responses and Anthropic Messages; `llm-openai` in `components/llm-openai` is the minimal non-streaming example, swap it in via `manifest.yaml` |
 | `models` | Go | optional | models.dev provider/model catalog, atomic cache, strict resolution, and plugin correction/discovery layers (see [Model catalog](#model-catalog-models)) |
 | `provider` | Go | optional | store-backed LLM provider registry: `provider_add`/`list`/`switch`/`active`/`remove`/`export`/`import`, subscription OAuth login (`provider_oauth_start`/`complete`/`cancel`), `ev.provider.switch` notifications |
 | `plugins` | Nim | optional | ecosystem front door: topic search + install/update/remove of packages |
@@ -70,7 +70,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump), `edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool — all matched against the *original* file, checked for overlap and no-change, then written in one atomic rename; the guarded fallback cascade is trailing whitespace → indentation drift → unicode punctuation → block anchors by Levenshtein similarity ≥ 0.65 → double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate), `write` (atomic whole-file: creates parent directories, follows symlinks, preserves the target's permissions, caps the payload at `NIF_WRITE_MAX_BYTES` = 900000), `undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover`, `warmup` — plus `lsp_servers` (list the merged registry) and `lsp_registry` (`add`/`remove` an entry, approval-gated) — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
-| `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices — see [Fabric and subagents](#fabric-and-subagents)) |
+| `agent` | Nim | optional | subagent sessions, nine tools: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices) plus `agent_status`/`agent_wait`/`agent_stop`/`agent_steer`/`agent_ask`/`agent_notices`/`agent_list` — see [Fabric and subagents](#fabric-and-subagents) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
@@ -128,6 +128,42 @@ timeout, 130 cancelled, 126 cwd not enterable, 127 no `bash` on `PATH`,
 128 + signal for a command that killed itself. `bash` declares no
 `x-harness.effect`, so the fabric batch host classifies it as a **write** and
 runs it exclusively, never inside the read concurrency cap.
+
+### `repomap` in detail
+
+The `repomap` row above is the summary. The `repo_map` tool is discover-only
+— absent from a conversation's frozen direct set, reachable through
+`discover` + `invoke` — carries `x-harness.effect: read` and needs no
+approval, so the model asks and nothing is injected; `budget` is in tokens,
+1024 by default and 4096 at most.
+
+`focus` ranks the graph around the files the conversation is working on — and
+omits their own definitions, since it already has them — while
+`mentionedIdents` boosts files whose path or definitions match the symbols the
+task names.
+
+Tag coverage is two tiers: tree-sitter for Go, Python, TypeScript,
+JavaScript, C, C++, Rust and Ruby (grammars vendored under
+`components/repomap/csrc/`, per-language queries under
+`components/repomap/queries/`), and a native Nim tagger for `.nim`/`.nims`,
+because the Nim grammar's generated parser is 40 MB. An extension outside
+those tiers contributes no symbols, so a map of an untaggable language is
+empty rather than wrong.
+
+The census that feeds the graph walks the workspace once, skipping hidden
+directories, `docs/`, `var/`, `logs/`, `vendor/`, `node_modules/`, the build
+outputs (`dist/`, `build/`, `target/`, `nimcache/`, …) and the other junk
+directories, and stops after 5000 files or 5 s. A docs-only or otherwise tiny
+workspace therefore maps to nothing — the append path logs
+`repo map withheld`, and the tool answers `No map: …`.
+
+**What the append injects.** One user-role message per conversation: a
+bracketed preamble naming the workspace and warning that it is a snapshot
+taken when the conversation started, then the map. It goes into ordinary
+append-only history — the runner folds it in before the conversation's next
+LLM request, never into the frozen prefix — so a later compaction may trim it
+away and `repo_map` re-creates it on demand. Observers see
+`ev.session.map {sessionId, workspace, bytes}`.
 
 ### Minimal boot profile (`--minimal`)
 
@@ -215,11 +251,14 @@ and the web UI; scripting goes through the `cli` component.
 
 ### Clients and the UI registry
 
-Every frontend registers on the bus as a zero-tool component and keeps a
-lease alive: core's `ui` tool — `register`, `renew`, `release`, plus
-`claim`/`release_session` for per-conversation ownership — tracks which
-window owns which conversation. A lease lasts 20 s; display numbers
-("Niffler 1", "Niffler 2") are monotonic for the harness's lifetime. This is
+Every interactive frontend registers on the bus as a zero-tool component and
+keeps a lease alive: core's hidden `ui` tool — `register`, `renew`,
+`release`, `owner`, plus `claim`/`release_session` for per-conversation
+ownership — tracks which window owns which conversation (the component named
+`ui` is the desktop bridge, not this tool). A lease lasts 20 s, and expired
+leases are swept lazily on each request — no timer thread exists. Display
+numbers ("Niffler 1", "Niffler 2") are monotonic for the harness's lifetime.
+This is
 coordination, not authentication: it decides which window renders a
 conversation and nothing more. After `/restart` the successor adopts its
 predecessor's ui id from a handoff record (TTL 120 s, keyed by bus +
@@ -297,20 +336,16 @@ core: or keep using the old engine: NIF_STORE_BACKEND=barrel
 private NATS server and store processes, so no harness needs to be booted,
 and it never edits the source data. It reads every document from the source
 engine over the bus contract (so any engine pair works, including TiDB),
-replays each into the fresh target, then verifies per-kind counts:
-
-```bash
-niffler-store-migrate --root ~/git/myharness      # migrate that root
-niffler-store-migrate --root ~/git/myharness --dry-run
-niffler-store-migrate --scan ~/git                # list un-migrated roots
-niffler-store-migrate --all ~/git                 # migrate all of them
-```
+replays each into the fresh target, then verifies per-kind counts. The flags
+(`--root`, `--to <engine>`, `--dry-run`, `--scan [<top>]`, `--all [<top>]`)
+are described by the tool's own `--help`; the design behind each stage is
+[research/STORE_V2.md](research/STORE_V2.md) "Moving data between engines".
 
 `--scan` finds the top directory, sibling clones, and benchmark trees
 (`var/bench/**/niffler-root`). Migration refuses to overlay an existing
 target database; rollback is simply `NIF_STORE_BACKEND=barrel`, since the
 barrel file is untouched. The same export/replay path moves data in either
-direction (docs/research/STORE_V2.md "Moving data between engines").
+direction.
 
 ## State and configuration
 
@@ -327,7 +362,7 @@ the browser, and everything derived is `var/` (regenerable — delete it and
 | **Conversation header** (`conversation` kind) | per-conversation choice: model, modelOverride, thinking, profile, title, budgets/token meters — set through the `session` call (`/model`, `/effort` in UIs) and echoed in turn results | per conversation |
 | **Home / project files** | skills trees (project `.agents|.claude|.opencode/skills` > bundled `skills/` > home `~/.niffler/skills` + agent-standard dirs > `~/.config/opencode/skills`, then the tree compiled into the binary as the last resort); LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |
 | **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json` (else `~/.config/niffler-edit/undo.json`): last pre-edit bytes per file plus per-conversation seen-state digests. One record per edited file, no size cap and no eviction — it grows with the number of distinct files edited, and is safe to delete at any time (deleting it loses only undo history and unchanged-read stubs, never file content) | durable, user-editable |
-| **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL + child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools, `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the store engine's file — exactly one owner) | runtime, regenerable |
+| **`var/`** (gitignored) | `bin/` built binaries, `logs/` bus JSONL + child logs, `models/` catalog cache, `nats-url`/`nats-pid` bus claiming, `processes/` spools (`pN.out`/`pN.err` per start, wiped at boot; ids continue from the persisted counter instead of restarting at `p1`), `repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached), `fetch/`, `captures/`, `store.db` (the store engine's file — exactly one owner) | runtime, regenerable |
 | **Browser localStorage** | display only: reasoning/tool-card detail levels, locale (`niffler-think`, `niffler-tools`) | per browser |
 | **Repo files** | `manifest.yaml` (shipped component registry), `skills/` (bundled skills), build files (`config.nims`, `*.nimble`, `Makefile`) | versioned |
 
@@ -373,7 +408,7 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_AGENT_DEFAULT_TIER` | tier ceiling used when the parent's exact model is not present in the configured ladder (`weak`, `medium`, or `strong`) | `strong` |
 | `NIF_AGENT_WAKES` | consecutive autonomous wake turns a conversation may run after a background subagent settles while it is idle (docs/WIRE.md "Autonomous wake"); the human's next message resets the budget, `0` disables waking (the notice then waits for the next turn's pull drain) | `3` |
 | `NIF_AGENT_NOTICE_HOLD` | `0` lets a turn close even when a settlement notice arrived during its final step (the notice waits for the next turn's drain); by default the turn is held open one extra step so it cannot close over a child that just finished (docs/WIRE.md "Busy-parent inbox") | `1` |
-| `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog, protocol?, authType?, accountId?, stripPrefix?}}` the `chat` tool's `provider` arg resolves. `protocol` is `openai-chat` (default), `anthropic` or `openai-codex`; `authType` defaults to `api_key`; `stripPrefix` rewrites a namespaced id (`alibaba/glm-5.2` → `glm-5.2`) for gateways that route on the canonical id. Malformed JSON and a missing `apiKey` each fail the call explicitly. The provider registry (`provider` component) supersedes the default when active | `{}` |
+| `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog, protocol?, authType?, accountId?, stripPrefix?}}` the `chat` tool's `provider` arg resolves. `protocol` is `openai-chat` (default), `anthropic` or `openai-codex`; `authType` defaults to `api_key`; `stripPrefix` rewrites a namespaced id (`alibaba/glm-5.2` → `glm-5.2`) for gateways that route on the canonical id; `accountId` is the ChatGPT account id the Codex lane's headers carry, derived from the OAuth token when the record does not hold one (with neither, the call fails with `OpenAI Codex OAuth token has no ChatGPT account id; sign in again`). Malformed JSON and a missing `apiKey` each fail the call explicitly. The provider registry (`provider` component) supersedes the default when active | `{}` |
 | `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
 | `NIF_MODELS_PATH` | pinned local baseline catalog: while set, this file *is* the baseline — the component never downloads `NIF_MODELS_URL` (not even with `models_refresh {force: true}`) and picks up changes to the file on the next refresh. Plugin sources and `NIF_MODELS_OVERRIDE` still apply | unset |
 | `NIF_MODELS_OVERRIDE` | local JSON Merge Patch applied after every plugin source | unset |
@@ -386,8 +421,8 @@ env always wins — see below) and inherit core's environment. `NIF_BIN_DIR`, `N
 | `NIF_SKILLS_BUNDLED_DIR` | explicit location of the `skills` component's bundled tree, replacing `<repo>/skills` and its `$NIF_ROOT/skills` fallback. A path that does not exist makes discovery serve the compiled-in copies (dir `(baked)`) | `<repo>/skills` |
 | `NIF_MCP_DIRECT_THRESHOLD` | number of cached tools a configured `expose: direct` MCP server may publish directly; larger servers are deferred to progressive discovery | `10` |
 | `NIF_MCP_BRIDGE_BIN` | explicit path of the mcp-bridge binary | `<root>/var/bin/mcp-bridge` |
-| `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll | `33554432` |
-| `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split) | `65536` |
+| `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll — the kept tail is `min(2 MiB, cap div 2)` and the value is not validated, so a cap at or below zero empties a spool | `33554432` |
+| `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split; clamped to 1 KiB-1 MiB) | `65536` |
 | `NIF_LSP_REGISTRY` | absolute path of the language-server user registry (`servers.json`) | `$XDG_CONFIG_HOME/niffler-lsp/servers.json` |
 | `NIF_LSP_WARM_MAX` | heavy (index-holding) language servers pre-started per workspace on `ev.workspace.opened` | `2` |
 | `NIF_LSP_WARM_CHEAP` | cheap (non-indexing) servers pre-started, from their own budget — they never displace a heavy pick | `1` |
@@ -479,7 +514,10 @@ operation); the table is authoritative.
 ## The bus in one screen
 
 Core speaks exactly one protocol: JSON envelopes over NATS (details in
-[WIRE.md](WIRE.md)). Subjects:
+[WIRE.md](WIRE.md)). Subjects — the backbone you meet while operating, not
+the complete inventory (every component also publishes its own event
+families: `ev.log.<component>` from the SDKs, `ev.lsp.warm`, `ev.agent.*`,
+`ev.fabric.*`):
 
 ```
 reg.publish            component announces itself: {name, version, pid, tools:[{name, schema}]}
@@ -496,7 +534,8 @@ ev.session.assistant   {sessionId, turnId?, content, provider?, model?, context?
 ev.session.status      {sessionId, turnId?, provider?, model?, context?, usedTokens?}
 ev.session.token       {sessionId, turnId?, content, reasoning}  (live token deltas)
 ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error, durationMs?}
-ev.session.advice      {sessionId, turnId?, source, content} an advisory was folded in
+ev.session.advice      {sessionId, turnId?, source, content, reason} an advisory was
+                       folded in (`reason` is the judge's one-line justification)
 ev.session.notice      {sessionId, turnId?, kind?, content?, jobId?, child?,
                        status?} runtime machinery was folded in (subagent
                        settlement, background process exit, autonomous wake);
@@ -511,11 +550,18 @@ ev.provider.switch     provider component → bus: {nickname, previous, source, 
 ev.provider.changed    redacted provider registry invalidation event
 ev.llm.token           llm adapter → core: {sessionId, content, reasoning} deltas
 ev.sys.drain           core → components: stop taking calls, finish, exit
-svc.approval.<name>.request # directed approval to the component driving the
-                           # turn (derived from the call envelope's `caller`);
-                           # driver acks {id, ack: true}, then answers {id, ok}
+ev.log.<component>     structured SDK logs: {component, level, msg, ctx?, at}
+ev.lsp.warm            lsp → bus when a workspace warmup settles: {workspace, warmed, skipped}
+ev.agent.started|done|notice  agent: a background job started, a job became
+                       terminal, a settlement was folded into the turn
+ev.fabric.started|phase|log|call.started|call.done|done
+                       one fabric program's lifecycle, correlated by `runId`
+llm.cancel.<sessionId> abort an in-flight streaming call (see Streaming below)
+svc.approval.<name>.request  directed approval to the component driving the
+                           turn (derived from the call envelope's `caller`);
+                           driver acks {id, ack: true}, then answers {id, ok}
 ev.approval.request    core → UI: {id, tool, args, caller?, fallback?} —
-                       # human gate, broadcast (see Approvals below)
+                       human gate, broadcast (see Approvals below)
 ev.approval.reply      UI → core: {id, ack?} | {id, ok}
 ev.approval.resolved   core → UIs: {id, ok} — gate verdict; dismiss stale modals
 cancel.<component>     cancellation side-channel: a runner publishes it when a
@@ -527,15 +573,28 @@ cancel.<component>     cancellation side-channel: a runner publishes it when a
 `ev.llm.token` deltas (content + reasoning) → core forwards them for the
 active turn as `ev.session.token` → the UI appends them to the live
 assistant bubble. A delta frame is published only for a call that carries a
-non-empty `sessionId` **and** leaves `emitTokens` on — auxiliary callers (the
-compactor, hooks, the expert peer) pass `emitTokens: false` so their partial
-output can never be mistaken for assistant text — and one frame is emitted per
-stream chunk that has content or reasoning. The `purpose` argument those
+non-empty `sessionId` **and** leaves `emitTokens` on — auxiliary callers
+stream internally for cancellation but keep their partial output out of the
+conversation (compaction passes `emitTokens: false`; the expert judge's call is
+not even streamed, so nothing is emitted either way) — and one frame is emitted
+per stream chunk that has content or reasoning. The `purpose` argument those
 callers send is telemetry only (provider, model, effort, ttft and tok/s are
 logged with it) and never changes provider behavior. The final
 `ev.session.assistant` event always carries
 the complete content, so a missed last frame heals itself. Abort an
-in-flight call by publishing to `llm.cancel.<sessionId>`.
+in-flight call by publishing to `llm.cancel.<sessionId>` — or, when the caller
+passed a `cancelId`, to `llm.cancel.<cancelId>`: the subscription is armed
+only for a streamed call (`stream: true`, which core always sets) and uses
+`cancelId` with the session id as its default. Auxiliary callers depend on
+that separation — compaction cancels
+`llm.cancel.compaction.<sessionId>.<attemptId>` — so a user's turn stop can
+neither kill nor be killed by a summarization call.
+
+History is replayed to the provider verbatim, which is why the adapter
+repairs it on the way out: an assistant `tool_calls` payload left unterminated
+by a dropped stream (or a buggy writer) has its strings and containers closed,
+and an unsalvageable payload becomes `{}` — a strict backend rejects the whole
+request otherwise. The repair reads text only and never executes anything.
 
 `nats sub '>'` attached to the bus shows the harness thinking in real time.
 Or better: **the console component** (`./var/bin/console`, not in the
@@ -685,8 +744,17 @@ reports:
   before inference. Per-provider `context` and `NIF_OPENAI_CONTEXT` override
   the models catalog; a small built-in table and conservative 128K remain as
   fallback if `models` is removed. The result includes secret-free provider,
-  model, catalog and context provenance for interactive clients. See
-  [Model catalog](#model-catalog-models).
+  model, catalog, context and output provenance plus the provider's `protocol`,
+  `authType` and `hasKey` for interactive clients; it still needs a resolvable
+  provider, so with no stored and no environment credential it fails instead of
+  reporting a window. See [Model catalog](#model-catalog-models).
+
+- The **output** window is resolved alongside the context window and comes
+  back as `output`/`outputSource`: the catalog's `model.limit.output`, else a
+  deliberate 32768 default — without an explicit cap the provider applies its
+  own server-side cap and truncates long answers mid-stream. A per-call
+  `maxTokens` only ever lowers the resolved value (the expert judge's tiny
+  verdicts), and the Codex lane ignores it entirely.
 
 - `session {sessionId, content?, model?, thinking?, title?, cwd?, profile?, discovery?, tools?, maxRounds?, maxCalls?, maxTokens?}` accepts a
   conversation-scoped model override. A model-only call persists and resolves
@@ -697,8 +765,11 @@ reports:
   `thinking` is the reasoning effort, one of `""`, `low`, `medium`, `high`,
   `max`; `""` is the provider default (UIs show it as "auto") and is the only
   value that clears an earlier choice. It is forwarded to the provider as
-  `reasoning_effort` (the `llm` adapter maps it to each protocol's own field)
-  and carried on the conversation header.
+  `reasoning_effort` — and only when non-empty, so a provider that does not
+  support the field never sees one; the `llm` adapter maps the value onto each
+  protocol's own form (Codex `reasoning {effort, summary}`, Anthropic
+  `thinking` plus `output_config.effort`) — and carried on the conversation
+  header.
   `discovery {…}` is an explicit client discovery: it runs `discover`,
   records the schemas in the durable discovery summary and appends them as
   a user message — no LLM turn, no promotion into the direct toolset.
@@ -731,11 +802,14 @@ reports:
 - Core emits `ev.session.status` with the resolved provider/model/context and
   current `usedTokens`; clients render `usedTokens / context` directly.
   When the provider reports cached input (`prompt_tokens_details.cached_tokens`),
-  the status event also carries `cacheHitTokens` and `cacheHitRatio` — with
-  the frozen prompt prefix most prompt tokens should be cached after the
-  first request, so a low ratio is a signal worth noticing (the web UI shows
-  `⚡ NN% cached` per message; the TUI status line shows a `⚡ NN% cached`
-  chip).
+  the status event also carries the conversation's cumulative cache split as
+  `cache {prompt, read, hitRate}` (summed prompt and cached tokens, ratio in
+  percent); the conversation header keeps the same numbers as `cachePrompt`,
+  `cacheRead` and `cacheHitRate`. With the frozen prompt prefix most prompt
+  tokens should be cached after the first request, so a low ratio is a signal
+  worth noticing (the web UI shows `⚡ <cached>/<prompt> cached` per message and
+  the cumulative split in `/info`; the TUI shows a `cache NN%` chip in its
+  header and the same split in `/status`).
 - Persisted messages carry audit metadata that never reaches the LLM:
   `createdAt` on every message, `turnId` everywhere, and `startedAt` /
   `durationMs` on assistant, tool and error records (an `error` record is
@@ -1025,8 +1099,8 @@ OAuth tools are `x-harness.hidden` (clients only — `invoke` refuses them).
 
 | Tool | What it does |
 |---|---|
-| `provider_add {nickname, apiKey, protocol?, baseUrl?, model?, catalog?, context?, plugin?, active?}` | add or overwrite an API-key provider (upsert by nickname; `protocol`: `openai-chat` default or `anthropic`); the first provider — API-key or OAuth — becomes active automatically unless `active: false`; response is redacted |
-| `provider_update {nickname, apiKey?, protocol?, baseUrl?, model?, catalog?, context?, plugin?}` | hidden client API for partial updates; omitted API key is preserved |
+| `provider_add {nickname, apiKey, protocol?, baseUrl?, model?, catalog?, context?, plugin?, stripPrefix?, active?}` | add or overwrite an API-key provider (upsert by nickname; `protocol`: `openai-chat` default or `anthropic`); the first provider — API-key or OAuth — becomes active automatically unless `active: false`; `stripPrefix` sends a namespaced model id without its `vendor/` prefix for gateways that route on the canonical id (e.g. `glm-5.2` for `alibaba/glm-5.2`); response is redacted |
+| `provider_update {nickname, apiKey?, protocol?, baseUrl?, model?, catalog?, context?, plugin?, stripPrefix?}` | hidden client API for partial updates; omitted API key is preserved |
 | `provider_oauth_start {protocol, method?, nickname?, model?, active?}` | hidden, start a subscription login: `protocol` `openai-codex` (ChatGPT Plus/Pro) or `anthropic` (Claude Pro/Max); `method` `browser` (local callback) or `device` (headless, OpenAI only). Returns `{flowId, url, userCode?, callbackAvailable, expiresAt}` |
 | `provider_oauth_complete {flowId, code?}` | hidden, poll/finish a login; returns `{pending, retryAfterMs?}` until the callback (or pasted `code`) lands, then stores the provider and reports it redacted |
 | `provider_oauth_cancel {flowId}` | hidden, cancel a pending login and close its callback listener |
@@ -1034,7 +1108,7 @@ OAuth tools are `x-harness.hidden` (clients only — `invoke` refuses them).
 | `provider_status` | hidden, redacted effective provider including environment fallback and `hasKey` |
 | `provider_active` | hidden internal read of the effective provider's full config, credential included |
 | `provider_get {nickname}` | hidden internal full-config read used to pin an explicit stored provider across a turn |
-| `provider_models {nickname?\|baseUrl?, apiKey?, refresh?}` | model ids the provider's `/models` endpoint currently serves — a stored provider by nickname, or an explicit endpoint+key (the connect form, before the credential is saved). Disk-cached 5 min per endpoint (stale cache served when the probe fails); errors are returned to the caller so clients can fall back to the catalog |
+| `provider_models {nickname?\|baseUrl?, apiKey?, refresh?}` | model ids the provider's `/models` endpoint currently serves — a stored provider by nickname, or an explicit endpoint+key (the connect form, before the credential is saved); the two shapes are alternatives (`nickname` wins if both are given) and one of them is required. Disk-cached 5 min per endpoint (stale cache served when the probe fails); errors are returned to the caller so clients can fall back to the catalog |
 | `provider_switch {nickname}` | make another stored provider active; the next chat call (and `llm_resolve`) uses it immediately, with no restart |
 | `provider_use_environment` | hidden client API that clears the stored marker and returns to `NIF_OPENAI_*` |
 | `provider_remove {nickname}` | delete a provider; if it was active, the alphabetically first remaining provider takes over, else the `NIF_OPENAI_*` fallback resumes |
@@ -1048,6 +1122,13 @@ calls them; the model never sees them), while `provider_add`, `provider_update`,
 **on-demand** — the model reaches them through `discover` + `invoke`. The four
 credential-moving tools carry `x-harness.approval: "always"` (below), and
 `provider_models` runs under a 20 s timeout.
+
+Omitted fields take protocol defaults: `openai-codex` infers the ChatGPT backend
+URL and `anthropic` the Anthropic one (under `openai-chat` a `deepseek` or
+`openai` nickname implies its own base URL), the model defaults to
+`deepseek-chat` (`openai-chat`), `gpt-5.4` (`openai-codex`) or
+`claude-sonnet-4-6` (`anthropic`), and the two OAuth protocols infer their
+models.dev catalog id (`openai`/`anthropic`).
 
 ### Wire protocols
 
@@ -1064,7 +1145,16 @@ Each provider carries a `protocol` that `llm` routes on:
 - `anthropic` — the Anthropic Messages endpoint; OAuth logins send Claude
   Code identity headers and betas, system prompts lead with the Claude Code
   preamble, and tool calls/results are translated to `tool_use`/`tool_result`
-  blocks (consecutive tool results merge into one user message).
+  blocks (consecutive tool results merge into one user message); its usage is
+  normalized for core's counters — `prompt_tokens` is input + cache reads +
+  cache writes, while only cache **reads** count as cached tokens (cache
+  writes are billed at write rates). Across all three protocols a `usage`
+  object accompanies the result only when the provider reported non-zero
+  tokens.
+
+An API-key provider may use `openai-chat` or `anthropic` only: `openai-codex`
+requires a ChatGPT subscription login (`provider_oauth_start`), and
+`provider_add` refuses the combination.
 
 ### Output caps and `finish_reason`
 
@@ -1072,12 +1162,16 @@ Output caps are spelled per protocol, and a mis-spelled cap fails silently.
 Niffler's default spelling is `max_completion_tokens`; DeepSeek honors only
 `max_tokens`, so a cap sent the default way is ignored and the server's own
 default (8K/64K/128K, by model) applies — send `max_tokens` for DeepSeek
-endpoints. How a stream ended is reported in `finish_reason`: `length` means the
-output cap cut the reply short (`llm` logs a truncation warning), `tool_calls`
-means the model stopped to call tools, and Anthropic's `max_tokens` stop maps
-onto `length` (its `tool_use` stop maps onto `tool_calls`). Two OpenAI-compatible
-error finishes, `aborted` and `insufficient_system_resource`, arrive with HTTP
-200 and are surfaced as a retryable stream error, not as a reply.
+endpoints. The Anthropic lane always receives the resolved window as
+`max_tokens`; the Codex lane is told no cap at all. How a stream ended is
+reported in `finish_reason`: `length` means the output cap cut the reply short
+(`llm` logs a truncation warning), `tool_calls` means the model stopped to call
+tools, and Anthropic's `max_tokens` stop maps onto `length` (its `tool_use` stop
+maps onto `tool_calls`); Codex's `max_output_tokens` finish and its
+`response.incomplete` event map onto `length` as well, while an unrecognized
+reason passes through unchanged for the log. Two OpenAI-compatible error
+finishes, `aborted` and `insufficient_system_resource`, arrive with HTTP 200 and
+are surfaced as a retryable stream error, not as a reply.
 
 ### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)
 
@@ -1110,6 +1204,13 @@ environment`), with `NIF_OPENAI_BASE_URL` defaulting to
 `provider_use_environment` clears the active marker, it does not delete stored
 providers.
 
+Interactive clients expose the same moves as slash commands: `/provider
+<nickname>` (alias `/providers`) switches the global backend, `/provider
+environment` (alias `/provider env`) comes back here, and `/provider strip
+[off]` toggles vendor-prefix stripping on the active provider; the UI's provider
+manager wraps the same tools (`provider_add`/`provider_update`/`provider_remove`
+and the OAuth start/complete/cancel flow) behind the approval prompt.
+
 - `provider_add`/`provider_update`/`provider_import`/`provider_export` carry
   `x-harness.approval: "always"` — they move credentials or mutate connection
   settings. Interactive clients call the hidden update/status tools directly
@@ -1123,16 +1224,25 @@ providers.
   across its turn without switching the global default.
 - A stored provider's explicit `context` (tokens) wins over the models
   catalog; its `catalog` id names the models.dev provider for the context
-  lookup, and `plugin` may name a component that hooks provider-specific
-  tools. On every switch the component publishes
+  lookup, and `plugin` is informational metadata naming the component that owns
+  this provider's extra tools — `provider` neither starts nor validates it, so
+  the named component must be spawned separately and can only react on
+  `ev.provider.switch`. On every switch the component publishes
   `ev.provider.switch {nickname, previous, source, at}` so such plugins can
   enable or hide their tools. Every registry mutation also publishes the
-  secret-free `ev.provider.changed {op, nickname, active, source, at}` for
-  interactive clients to invalidate their provider/model views.
+  secret-free `ev.provider.changed {op, nickname, active, source, at}` — `op` is
+  one of `add`, `update`, `switch`, `remove`, `import`, `login` or `refresh` —
+  for interactive clients to invalidate their provider/model views.
 - The `active` marker is a plain store doc (`{nickname, updatedAt}`) — written
   with `expectRev` 0 — and a dangling or empty marker is deleted automatically
   on the next read, so `provider_remove`/`provider_use_environment` need no
   manual repair; `store` tools remain there for manual surgery if you want it.
+- A switch changes the backend, not the conversation: a conversation's pinned
+  `modelOverride` still belongs to the provider it was chosen under and may not
+  exist on the new one. Interactive clients therefore clear the pin when a
+  switch actually moves the backend (the web UI and the TUI do); a bare
+  `provider_switch` call leaves it in place, so a stale pin can fail the next
+  turn until the conversation's model is reset (`/model default` in the UI).
 
 ## Hooks
 
@@ -1169,6 +1279,10 @@ run.
 Hook stdout and stderr go to the component's own log, `var/logs/hooks.log`
 (the supervisor redirects child output there) — never into logfile's JSONL,
 which persists bus traffic only.
+
+`make test-hooks` (`tests/t_hooks.nim`) is the smoke test: it boots the
+component with `NIF_HOOKS_EV_SESSION_TURN`, publishes an `ev.session.turn`
+and checks that the decoded payload reached the hook's stdin.
 
 ## Fetch
 
@@ -1457,7 +1571,7 @@ different contract: start once, poll incremental output, kill explicitly.
 |---|---|
 | `process_start {command, label?, workdir?}` | Spawn the command detached (own process group, stdin from /dev/null, stdout/stderr appended to spool files under `var/processes/`) and return its id immediately. Approval-gated. A background start through the `bash` tool's `run_in_background` is approved once, on the `bash` call itself — the internal `process_start` goes straight over NATS and never passes core's approval gate, while a direct `process_start` (e.g. from `cli`) is gated |
 | `process_poll {id, waitMs?, filter?, tail?}` | Drain output appended since the last poll — incremental, never re-injects old bytes; `waitMs` blocks until new output or exit (25 s cap); `filter` is a regex over the new lines (the drain cursor still advances past all of them); any non-empty `tail` re-reads the last ~64 KB of raw output. Read-effect |
-| `process_kill {id}` | Terminate the whole process group. Approval-gated |
+| `process_kill {id}` | Terminate the whole process group — SIGTERM, 300 ms grace, then SIGKILL. Approval-gated |
 | `process_list {}` | Show the registry — running and recently finished entries with exit codes. Read-effect |
 
 Details:
@@ -1470,8 +1584,15 @@ Details:
   truncating poll appends `[spool truncated to its tail — the cap was reached]`;
   one poll returns at most `NIF_PROCESSES_POLL_CHUNK` new bytes per stream
   (default 64 KiB).
-- Cap: 32 concurrent processes; the 50 most recent finished entries stay
-  in the registry.
+- Each tool carries its own dispatch budget `x-harness.timeoutMs` —
+  `process_start` 20 s, `process_poll` 30 s, `process_kill` 15 s,
+  `process_list` 10 s — separate from the `waitMs` cap inside
+  `process_poll`.
+- Cap: 32 concurrent processes. Finished entries are never evicted: every
+  process of this component's lifetime stays in the registry — only
+  *running* ones are written to `registry.json` — so `process_list`
+  keeps reporting a finished child as `exited(code N)` or
+  `killed(signal N)` until the component exits.
 - **A finished process tells its conversation.** When you start one through
   the `bash` tool's `run_in_background` flag, bash hands the owning
   conversation to the registry; when that child exits, `processes` publishes
@@ -1484,20 +1605,37 @@ Details:
   This is why a background job no longer goes unnoticed: the component reaps
   its children on a periodic tick (the SDK's `onIdle`), not only when someone
   polls — which also means `process_list` shows `exited(code N)` promptly
-  instead of `running` until asked. A process started without an owner
-  session (a direct `process_start`, e.g. from `cli`), or one whose
-  conversation runner has already retired, is announced to nobody — poll it.
+  instead of `running` until asked. Only `bash run_in_background` hands the
+  owning conversation over (it is the one caller that passes `session`), so a
+  `process_start` reached any other way — the model's own `discover` +
+  `invoke`, `cli`, a script — is started without an owner session; a process
+  whose conversation runner has already retired is announced to nobody too.
+  Poll those.
+- Tool errors carry stable codes: `E_BAD_SHAPE` (empty `command`, a
+  missing `workdir`, an invalid `filter` regex), `E_NOT_FOUND` (unknown
+  id — `process_list` shows the registry) and `E_LIMIT` (32 live
+  processes, or a child that could not be forked).
 - `process_list` entries carry `started_at` (epoch seconds), so a client can
-  show how long something has been running (`bg 1 (7m)`).
+  show how long something has been running — the `bg 1 (7m)` badge is the
+  `niffler-tui` plugin's status line, not core's.
+- `workdir` defaults to the conversation workspace: core substitutes it for
+  an empty or `.` value and resolves a relative path against the
+  workspace (`x-harness.workspace`), and a path that does not exist
+  fails with `E_BAD_SHAPE`. A bare bus call (`cli call process_start`)
+  skips that substitution, so the child inherits the component's own
+  cwd (`$NIF_ROOT`).
 - Crash-safe: children are process-group leaders, so a SIGKILLed component
   leaves them running — `registry.json` (pid + /proc starttime, defeating
   pid reuse) drives a boot sweep that kills orphans from a previous life
-  before serving. Processes die with the harness.
+  before serving. They die when the `processes` component stops; if it is
+  killed instead, the next start sweeps what is left.
 
 All four tools are on-demand (`discover`/`invoke`). The bash tool's
 `run_in_background` flag is a thin producer over this component: the call
-returns the id at once (no timeout applies) and the transcript line points
-at `process_poll`/`process_kill`. If the component is not running, bash
+returns the id at once — no timeout applies to the *job*, but the `bash`
+call that starts it is still bounded (its dispatch budget, and the 15 s
+`process_start` request behind it) — and the transcript line points at
+`process_poll`/`process_kill`. If the component is not running, bash
 answers `[E_BACKGROUND]` and suggests running the command synchronously.
 
 ## External MCP servers (`mcp`)
@@ -1915,7 +2053,7 @@ The long tail is on demand:
 - State and introspection: store `get`/`list`, `session_info`, and the
   skill entry points `skill_list`/`skill_load` (a workflow guide is
   loaded only when one fits the task).
-- Orchestration: `fabric`, the `agent_*` tools, `expert_follow`.
+- Orchestration: `fabric`, the `agent_*` and `expert_*` tools.
 - Core lifecycle/status/catalog, builder, plugins, and fetch.
 - Models and provider administration.
 - Skill resources, online search, install, and remove.
@@ -1924,7 +2062,8 @@ Internal tools remain hidden: core `session`/`session_prepare`, store
 `del`, LLM `chat`/`llm_resolve`, the systemprompt prompt, and the
 credential-bearing provider tools (`provider_update`,
 `provider_use_environment`, `provider_status`, `provider_active`,
-`provider_get`). Store `put` is on demand (it carries
+`provider_get`, `provider_oauth_start`, `provider_oauth_complete`,
+`provider_oauth_cancel`). Store `put` is on demand (it carries
 `x-harness.sessionId` for the frozen-toolset snapshot).
 
 Absent `onDemand` metadata remains direct for third-party compatibility. A
@@ -2055,11 +2194,15 @@ Live sources: models.dev is the metadata authority (limits, pricing), but the
 ids a provider actually serves come from the provider itself. Two
 complementary surfaces exist — the `provider` component's `provider_models`
 tool probes an endpoint on demand with a stored or explicit credential (the
-connect form), and the `llm` component registers an `x-models-source` plugin
-(priority 150) whose patch adds the ids each provider was observed serving
-(probed in the background after chats, 10-minute TTL) so the whole catalog
-converges on what endpoints really list. Both are best-effort: failures never
-affect chat or the catalog baseline.
+connect form), and the `llm` component's hidden `llm_models_source` tool
+registers as an `x-models-source` plugin (priority 150) whose patch adds the
+ids each provider was observed serving. The probe behind it is one background
+`GET {baseUrl}/models` per catalog-provider + base-URL key every 10 minutes
+(8 s timeout; the ids live in memory only, so a restart forgets them until the
+next chat, and the tool answers `no live model data yet` until a probe has
+succeeded; the Codex lane is excluded because the ChatGPT backend exposes no
+such route) so the whole catalog converges on what endpoints really list. Both
+are best-effort: failures never affect chat or the catalog baseline.
 
 `llm` asks `models_get` for the selected model's context window. Explicit
 provider `context` and `NIF_OPENAI_CONTEXT` still win, and the existing small
@@ -2233,6 +2376,14 @@ arguments, model output, approvals, and data from every session. Niffler's
 current trust model is a single trusted user/admin; do not expose the observe
 service or capture directories to untrusted bus clients.
 
+**Not an audit trail.** None of these components is a durable record of
+decisions: `observe` keeps a bounded in-memory ring that dies with the
+component, `logfile` is best-effort (at-most-once, `ev.log.>` by default),
+`console` prints and forgets, and `hooks` record nothing. The only durable
+artefacts of the approval gate are the client-written grant record (store
+kind `approval`) and the program source core writes to
+`var/approval-sources/<digest>.nim` — no request/verdict history exists.
+
 ### `observe`: bounded live inspection
 
 `observe` has one raw `>` subscription. It preserves the original JSON node,
@@ -2257,7 +2408,7 @@ their memory.
 | `observe_events` | Query a probe or the global ring, newest first, with time/kind/component/subject/regex filters |
 | `observe_logs` | Query recent `ev.log.*` events in memory |
 | `observe_dump` | Approval-gated export of one probe beneath `NIF_OBSERVE_CAPTURE_DIR`; arbitrary output paths are not accepted |
-| `observe_monitor` | Read nats-server connection/subscription counts and most-subscribed patterns |
+| `observe_monitor` | Read nats-server connection/subscription counts and most-subscribed patterns; approval-gated — it borrows the operator's monitoring endpoint |
 | `observe_send` | Publish an event to a concrete `ev.*` or `llm.cancel.*` subject; approval-gated |
 | `observe_request` | Diagnostic request/reply to a concrete `svc.*.call`; approval-gated and limited to 30 seconds |
 
@@ -2462,15 +2613,16 @@ guide with nudge phrasing and worked examples:
 
 | Tool | What it does |
 |---|---|
-| `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. Budgets: `maxCalls` defaults to 200 (max 1000) and `timeoutMs` to 240 s (hard cap 300 s, also clamped to the caller's remaining session deadline); every nested call inherits the run's remaining time, and oversized `finish()` values spill to `var/fabric-artifacts/<run>.json` ([FABRIC_GUIDE.md](FABRIC_GUIDE.md), "Budgets and limits"). |
+| `fabric {code | name, tools?, strings?, timeoutMs?, maxCalls?}` | Run one LLM-written Nim program: `var/bin/fabric-exec` compiles it into a private process (no embedded VM; an identical program is cached in `var/fabric-cache`, self-bounded at 64 entries / 128 MB, evicting least-recently-stored). `code` is inline program source; `name` runs a stored program from the model-curated `fabricprog` library instead. With `tools`, selected schemas are pinned and generate compile-time-checked `tools.<name>(...)` wrappers; allowlisted `callTool` remains the fallback. Only `finish(value)` reaches the conversation. Approved native code is bash-class trust, not a sandbox. Budgets: `maxCalls` defaults to 200 (max 1000) and `timeoutMs` to 240 s (hard cap 300 s, also clamped to the caller's remaining session deadline); every nested call inherits the run's remaining time, and oversized `finish()` values spill to `var/fabric-artifacts/<run>.json` ([FABRIC_GUIDE.md](FABRIC_GUIDE.md), "Budgets and limits"). |
 | `fabric_help {topic?}` | Read the Fabric guest reference and worked-example sources from inside the component; an empty `topic` returns the reference plus the example index, a topic returns that program. Discover-only: reach it through `discover` + `invoke` when you are about to write a program, so you never have to locate component files. |
-| `agent_run {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop). With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1–`NIF_MAX_TURN_ROUNDS`), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
-| `agent_spawn {task, session?, close?, fork?, model?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
+| `agent_run {task, session?, close?, fork?, model?, modelTier?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Run a task in a subagent session and return its final reply. Without `session` it starts a **fresh** child (own runner, own loop): its `model`/`modelTier`/`thinking`/`tools`/budgets come from this call and freeze at its first turn, exactly as a continuation's were. With `session` (a previously returned `sessionId`) it gives that **existing child another turn** — its conversation, model, thinking, tools and budgets are frozen at its first turn, so the caller's model/thinking/tools/budget arguments are ignored and the result reports the child's `effective` controls; the child must belong to this conversation, must not be closed, and must not be mid-turn (that refuses with `code: "busy"` — use `agent_spawn` to queue instead). Optional per-job budgets on fresh runs: `maxRounds` (tool rounds per turn, 1–`NIF_MAX_TURN_ROUNDS`), `maxCalls` (total tool dispatches, 1-500), `maxTokens` (cumulative tokens) — exhaustion ends the turn as a budget-exhausted failure. `model` is an exact id, while `modelTier` (`weak`/`medium`/`strong`) resolves through `NIF_AGENT_MODEL_*` and is clamped to the parent's tier — the two are mutually exclusive. `close: true` retires the child after this turn (nothing is deleted; later continuations refuse). |
+| `agent_spawn {task, session?, close?, fork?, model?, modelTier?, thinking?, tools?, maxRounds?, maxCalls?, maxTokens?, timeoutMs?}` | Start the same kind of task in the background; returns `{jobId, sessionId}` immediately. Without `session` it starts a fresh child; with `session` it **queues** another turn for an existing child (same frozen-controls rules as `agent_run`, but a mid-turn child is fine — the turn runs next; only the lineage parent may continue). `close: true` retires the child after the queued/background turn settles. `timeoutMs` is the job budget: once exceeded the job is cancelled (agent_stop semantics) the next time it is observed. |
 | `agent_status {jobId}` | Non-blocking durable job lookup (running/done/failed/stopped + reply or error). |
 | `agent_wait {jobId, timeoutMs?}` | Block until a background job is terminal; late waits read the durable record. |
 | `agent_stop {jobId}` | Cancel a running job for real: the child's LLM request is aborted, its turn ends promptly, and an in-flight bash command is killed (whole process tree). The terminal record says "stopped". |
 | `agent_steer {session_id, message}` | Inject a message into a running background job's turn (drained between LLM rounds). |
-| `agent_list {scope?}` | The caller's subagent roster, derived from the durable lineage: one row per child with its `sessionId`, `jobId`, `task`, and a residency-based `status` — `running` (working now), `idle` (resident between turns), `ready` (storage only; **resumable, not finished**). `scope: "descendants"` walks the whole tree (depth 1 today). You are told when a child settles, so this is for orientation, not polling. |
+| `agent_ask {session, question, timeoutMs?}` | Ask a child a question and get its answer. An idle child answers directly — this is an ordinary continuation (`timeoutMs` bounds the wait, default 300 s) — while a **mid-turn** child cannot start a second turn, so the question is queued as parent mail and arrives with its next continuation (the result says `queued: true`, `deliveredVia: "next-turn"`). The same lineage authorization as `agent_run` applies: unknown, foreign and closed children refuse. Approval-gated. |
+| `agent_list {scope?}` | The caller's subagent roster, derived from the durable lineage: one row per child with its `sessionId`, `jobId`, `task`, and a residency-based `status` — `running` (working now), `idle` (resident between turns), `ready` (storage only; **resumable, not finished**). `scope: "descendants"` walks the whole tree below you, while the default `children` is the depth-1 view; real nesting exists once `NIF_AGENT_MAX_DEPTH` is raised above 1. You are told when a child settles, so this is for orientation, not polling. |
 | `agent_notices {session?, peek?}` | Drain this conversation's pending subagent **settlement notices** — one entry per background child that finished, was stopped, or failed. Notices are delivered automatically (see below); this is for notices that arrived while the conversation was idle, and `peek` looks without consuming. |
 
 ### Settlement notices
@@ -2569,7 +2721,9 @@ told about it. The result and `session_info` carry the provenance
   approves the program once (`x-harness.approval: always`). Every nested call
   crosses the session nested-call proxy (`svc.session.<id>.tool`), re-entering
   the single dispatch gate (approval, complete schema validation, deadline).
-  The executor child holds no NATS connection and no credentials.
+  The executor child holds no NATS connection, no credentials and no
+  inherited `NIF_*` environment: it sees only `PATH`, a scratch
+  `HOME`/`TMPDIR` and the cache path.
 - **Approval manifests**: program approvals show a source digest, the full
   program under `var/approval-sources/<digest>.nim` (mode 0600), the selected
   tools, and the declared budgets. Persisted auto-approve is keyed by
@@ -2602,36 +2756,75 @@ The `expert` component is a non-interactive advisory peer (design:
 [research/EXPERT.md](research/EXPERT.md) — §2 knowledge prefix, §4 scheduling,
 §5 judgment contract, §6 turn-bound advice, §8 cost and observability). It follows one or more working
 sessions concurrently — armed explicitly with `expert_follow {session_id}`
-(approval-gated, off by default) — watches each followed session's
-`ev.session.*` events into a bounded per-session in-memory current-turn
-frame, and asks an LLM judge (a stateless hidden-`chat` call: fixed
-cache-stable knowledge prefix + one ephemeral observation, no tools) whether
+(approval-gated, off by default, and on demand: arm it with `discover` +
+`invoke`, or from a shell with `./var/bin/cli call expert_follow
+'{"session_id": "conv-…"}'`; the component is inert until then) — watches
+each followed session's
+`ev.session.*` events (toolcall start/done — the judgment trigger — turn
+start/done, assistant text, the reasoning tail of token deltas, and a
+context-pressure trip at 80 % of the window) into a bounded per-session
+in-memory current-turn frame that is cleared at turn done, so no evidence ever
+crosses a turn, and asks an LLM judge (a stateless hidden-`chat` call: fixed
+cache-stable knowledge prefix — sized from `llm.llm_resolve` to 80 % of the
+judge's window minus an 8 000-token reserve for the observation and the verdict,
+and cached per follow — plus one ephemeral observation, no tools) whether
 the evidence warrants a steer. Only high-confidence steers naming live,
-non-hidden tools are delivered, through the turn-bound
+non-hidden tools are delivered, and only if the gates hold: the steer carries a
+non-empty `tools` list and a non-empty message within the `MaxMessage` cap, each
+name is normalized (backticks stripped, `component.tool` reduced to the tool),
+must be visible to that session, must appear in the message text, and at least
+one of them must be a tool the worker is not already using in this turn — a
+steer naming only tools already in the frame is read as silence, not as a change
+of tool. Delivery is through the turn-bound
 `svc.session.<id>.advise` request/reply surface: the runner accepts advice
 only while that exact turn is still running — late advice is rejected
-(`stale-turn`/`no-active-turn`), never queued into the next turn. Accepted
+(`stale-turn`/`no-active-turn`, plus `wrong-session`, `empty` and `duplicate`
+for an exact repeat of the last advice, and `advisory-limit` once the turn has
+one), never queued into the next turn. Accepted
 advice is folded as a marked user message (`[Niffler advisor: expert] ...`),
 persisted, and announced on `ev.session.advice`. The judge lane itself stays
 global: one judgment in flight, shared cooldown, per-session latest-state
-coalescing. The published numbers: at most 2 judgments per turn
+coalescing. Every parsed judgment — silence included — is published as an
+`ev.log.expert` line (action, reason, message), which is how an operator answers
+"why was it silent?". The published numbers: at most 2 judgments per turn
 (`MaxJudgmentsPerTurn`) with at least 8 s between them (`EvalCooldownMs`); the
 frame keeps 8 recent tool activities (`MaxActivities`), clips each field at
 400 chars (`MaxField`), keeps a 2 000-char reasoning tail (`MaxReasoningTail`)
-and caps an advisory message at 1 200 chars (`MaxMessage`).
+and caps an advisory message at 1 200 chars (`MaxMessage`). The judge call
+itself is capped at 1 536 output tokens (`JudgeMaxOutputTokens`), asks for
+`reasoning_effort: "low"` (`JudgeReasoningEffort`) and times out after 120 s
+(`ChatTimeoutMs`) — all three are compile-time constants, so changing one means
+editing `components/expert/main.nim` and rebuilding. The token cap is
+best-effort: a gateway may ignore it.
 
 | Tool | What it does |
 |---|---|
-| `expert_follow {session_id, model?, provider?}` | Follow a session (multi-target: each followed session keeps its own frame, knowledge prefix, judgment budget and per-follow metrics); re-following resets its frame. `model`/`provider` override the judgment calls for that follow. Approval-gated. |
+| `expert_follow {session_id, model?, provider?}` | Follow a session (multi-target: each followed session keeps its own frame, knowledge prefix, judgment budget and per-follow metrics); re-following resets its frame. `model`/`provider` override the judgment calls for that follow; without them the judge runs on `llm`'s default backend (the active provider), which keeps judge cost off the worker's model. Approval-gated. |
 | `expert_unfollow {session_id?}` | With `session_id`: drop that follow. Without: drop all follows and discard their frames. |
 | `expert_reload` | Rebuild the knowledge prefix of every followed session from the live catalog (new cache epoch). |
-| `expert_status {session_id?}` | With `session_id`: that follow's frame, knowledge version, and per-session counters (judgments, silences, steers, accepted, rejected, staleDrops, errors). Without: followed targets plus lifetime diagnostics. |
+| `expert_status {session_id?}` | With `session_id`: that follow's frame, knowledge version, per-session counters (judgments, silences, steers, accepted, rejected, staleDrops, errors), the prefix diagnostics (`liveTools`, `skills`, `prefixChars`, `prefixBudgetTokens`) and judge token totals (`tokens {prompt, cached, completion}`). Without: followed targets plus lifetime diagnostics (the same counters and token totals, lifetime). |
+
+The component has no configuration of its own: no `NIF_*` variable changes how
+it follows or judges (`NIF_LOG_LEVEL` only decides whether its own
+`ev.log.expert` lines are visible).
 
 Design invariants: the working session never waits for the expert
 (best-effort, cooldown, latest-state coalescing); no growing expert
-transcript (every judgment is stateless); fail closed (any parse/validation/
+transcript (every judgment is stateless) and nothing durable in the component
+itself — frames, prefixes and counters live in the process, so a restart drops
+every follow and re-arming is explicit; the only stored artifact of an accepted
+steer is the folded message record in the followed conversation); fail closed
+(any parse/validation/
 transport error is silence); the expert never acts — it only suggests, and
 approval-gated work stays with the working session's human gate.
+
+The prefix holds the component's own policy, the three reviewed bundled skills
+(`niffler-tools`, `niffler-fabric`, `niffler-harness` — a project or home skill
+that shadows a bundled name is refused, so that allowlist is the trust
+boundary), then the observed session's own tool view: its frozen direct
+exposure and tool allowlist (read from `core.prompt_preview`) plus the on-demand
+tools it could `discover`. Never the global LLM toolset — that would overstate
+what an older or allowlisted session can actually call.
 
 ## Recovery
 
@@ -2765,23 +2958,52 @@ There is no launcher script — the binaries own the lifecycle:
   answers, spawn `var/bin/niffler` detached with `NIF_AUTOSTART=1`. The
   repo root is baked in at `make ui` time (ldflags), so the installed icon
   works as well as the in-tree binary.
+  The probes are patient: attaching retries for ~10 s at 200 ms, and a spawned
+  core must answer within 20 s or `ensureHarness` fails with `spawned core did
+  not answer within 20s — check <root>` (the Nim SDK first reaps a core it
+  spawned earlier in the same session, if it has exited).
 - **Interactive plugins** (e.g. `niffler-tui`) — they do **not** call
   `ensureHarness` and never spawn a harness: they probe for a live bus
-  (`NIF_NATS_URL` → `var/nats-url` → 127.0.0.1:4222), connect and register
-  `client: true` (so an autostarted core stays up while they run). Start the
-  harness first — desktop UI or `./var/bin/niffler`.
+  (`NIF_NATS_URL` → `$NIF_ROOT/var/nats-url` → `./var/nats-url` →
+  127.0.0.1:4222), connect and register `client: true` (so an autostarted
+  core stays up while they run). Unlike `ensureHarness` they do **not** check
+  which root the answering core serves, so a TUI can join a foreign harness's
+  bus that the desktop UI would refuse. Start the harness first — desktop UI
+  or `./var/bin/niffler`.
 - **Terminal admin shell** — `./var/bin/niffler` directly, or
   `./var/bin/niffler --minimal` for the three-component boot profile. A
   manually started core never self-terminates; stop it with Ctrl-C / SIGTERM.
+  `NIF_AUTOSTART=1` in the environment overrides the shell — that core is
+  service mode even on a tty — and while it sits at the prompt it keeps
+  serving `svc.core.call`, so a UI can attach to a tty-started core.
 
 Interactive frontends register `"client": true` (the SDK's `interactive()`
-/ `Component.Client` marker). An **autostarted** core counts them: when the
-last one departs it shuts down after `NIF_AUTOSTART_IDLE_S` (default 10s —
+/ `Component.Client` marker). That mark is a registration, not a lease: a
+client killed without `reg.depart` keeps an autostarted core up — and keeps
+core believing a human is reachable for approvals — until the catalog drops
+it (the `ui` registry's 20 s lease is a separate clock, see
+[Clients and the UI registry](#clients-and-the-ui-registry)). An
+**autostarted** core counts them: when the last one departs it shuts down
+after `NIF_AUTOSTART_IDLE_S` (default 10s —
 a restarting UI re-registers inside that window), taking its components and
 spawned bus with it; if none ever arrives it gives up after
 `NIF_AUTOSTART_BOOT_S` (default 60s). Closing a UI that attached to a
 *manually* started core changes nothing — the core stays up.
 `NIF_ENSURE_ATTACH=0` makes `ensureHarness` spawn unconditionally (tests).
+An explicit `NIF_NATS_URL` short-circuits the other way: the client attaches
+to exactly that bus and nothing is probed or spawned. (`NIF_NATS_SPAWN=1` is
+the core-side twin — an isolated core-owned bus on a random port, never
+4222; see [Environment variables](#environment-variables).)
+
+At the kernel level the same rule holds with one deliberate exception: core
+itself has no parent-death signal — an autostarted core must outlive the UI
+that spawned it — while every child it starts does. Supervised children
+(components, session runners) are wrapped in `setpriv --pdeathsig TERM` when
+util-linux's `setpriv` is on `PATH`, the SDKs set `PR_SET_PDEATHSIG` in the
+components they spawn, and the bundled `nats-server` sets it in its own
+`main`, so nothing survives its harness even on SIGKILL. Off Linux (or
+without `setpriv`) both mechanisms are absent, which is how an orphaned bus
+happens (see Troubleshooting).
 
 ## Common tasks
 
@@ -2840,7 +3062,7 @@ make clean          # remove all build artifacts (var/, nimcache/, UI build)
 | UI shows "Running in a browser" inside the desktop app | `nats.ts` binding mismatch — `window.go.main.Bridge` must match the Go struct name (ui/README.md) |
 | UI banner: bus unreachable | core autostart still in progress or failed — start `./var/bin/niffler` in a terminal to see boot errors |
 | `core: WARNING missing binary for <name>` on boot | run `make build` |
-| llm error HTTP 401/403 | `NIF_OPENAI_API_KEY` missing or wrong — check `.env` and shell env |
+| llm error HTTP 401/403 | check the active provider's key or token first (`provider_status` for a redacted view of what is in effect, `provider_list` for `expiresAt`); only with no stored provider active does `NIF_OPENAI_API_KEY` in `.env` or the shell environment decide |
 | "approval denied" in headless mode | expected: no human reachable. Attach the UI, use `make run`, or set `NIF_AUTO_APPROVE=1` knowingly |
 | two stores fight over the same data file (`var/store.db` or `var/barrel-db`) | single-writer rule — only one core per root; experiment in a temp `NIF_ROOT` copy |
 | boot refuses: "this harness has conversation history in var/barrel-db" | the default engine changed to SQLite and your history is still in barrel — run `niffler-store-migrate --root <path>` (the error prints it), or set `NIF_STORE_BACKEND=barrel` to keep the old engine |
