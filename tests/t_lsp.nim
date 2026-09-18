@@ -129,8 +129,46 @@ proc main() =
         escape{"error"}.getStr("").contains("E_LSP_SCOPE"), $escape)
   let outside = lspCall(%*{"operation": "hover", "path": "/etc/hostname",
                            "line": 1, "character": 1})
-  check("absolute paths outside the workspace refused", outside.hasKey("error") and
-        outside{"error"}.getStr("").contains("E_LSP_SCOPE"), $outside)
+  check("a path outside the workspace is no longer refused for being outside",
+        outside.hasKey("error") and
+        outside{"error"}.getStr("").contains("E_LSP_UNAVAILABLE") and
+        outside{"error"}.getStr("").contains("no file extension"), $outside)
+
+  # --- a file outside the conversation workspace is still checked ----------
+  # An agent works in several checkouts, worktrees and plain directories at
+  # once; refusing to look outside the workspace meant "no diagnostics for
+  # those edits", and the edit tool swallows the refusal as "no server
+  # configured", so the model cannot tell it happened. The file now gets its
+  # OWN marker-derived root (here: its directory), and the reply names it — the
+  # relative paths in the answer would otherwise be ambiguous.
+  let other = tempRoot("lsp-other")
+  defer: removeDir(other)
+  writeFile(other / "outside.nx", "let wobble = 1\nfn main() {}\n")
+  let cross = lspCall(%*{"operation": "diagnostics", "path": other / "outside.nx"})
+  check("a file outside the workspace is checked under its own root",
+        cross{"ok"}.getBool(false) and
+        cross{"workspaceRoot"}.getStr("") == other, $cross)
+
+  # --- a declared workspace set decides the tree (core injects __workspace) ---
+  # Core hands every workspace-declaring tool the conversation's trees: the
+  # primary, its git worktrees, same-origin sibling checkouts (core/workspace).
+  # A file inside a declared root is indexed as *that* tree — its own server
+  # instance — which is how work in another checkout is checked at all. It is
+  # private per-call data: nothing here touches a prompt or a schema, so a
+  # worktree appearing mid-conversation cannot change the request prefix.
+  writeFile(other / "declared.nx", "let wobble = 1\nfn main() {}\n")
+  let declared = lspCall(%*{"operation": "diagnostics",
+                            "path": other / "declared.nx",
+                            "__workspace": {"root": tmp,
+                                            "roots": [tmp, other]}})
+  check("a declared workspace root is used for the file's tree",
+        declared{"ok"}.getBool(false) and
+        declared{"workspaceRoot"}.getStr("") == other, $declared)
+  let undeclared = lspCall(%*{"operation": "diagnostics",
+                              "path": other / "declared.nx"})
+  check("without a declared set the same file still works (derived root)",
+        undeclared{"ok"}.getBool(false) and
+        undeclared{"workspaceRoot"}.getStr("") == other, $undeclared)
 
   # --- registry-driven unavailability ------------------------------------
   writeFile(tmp / "mystery.zzz", "what am i\n")
@@ -416,6 +454,40 @@ proc main() =
     echo "  (pyright not installed — warm-tier checks skipped)"
   check("registry cleanup after the cost-class checks",
         regCall(%*{"action": "remove", "name": "fakereq"}){"ok"}.getBool(false))
+
+  # --- async (edit-triggered) diagnostics: acknowledged at once, delivered
+  # later on the conversation's .diag subject, where core's runner appends it
+  # as history. This replaced the blocking 25s edit push (39 useless waits in
+  # one ten-cell bench run). ------------------------------------------------
+  let asyncSession = "t-lsp-async"
+  var diagSub: ptr natsSubscription
+  let dsub = natsConnection_SubscribeSync(addr diagSub, nc.conn,
+    ("svc.session." & asyncSession & ".diag").cstring)
+  check("async diagnostics: subscribed to the conversation lane",
+        checkStatus(dsub), "svc.session.<id>.diag")
+  writeFile(tmp / "async.nx", "let wobble = 1\nfn main() {}\n")
+  let aresp = lspCall(%*{"operation": "diagnostics", "path": "async.nx",
+                         "async": true, "session": asyncSession,
+                         "first": 2, "last": 2})
+  check("async diagnostics are queued, not awaited",
+        aresp{"ok"}.getBool(false) and aresp{"pending"}.getBool(false), $aresp)
+  var delivered: JsonNode
+  for _ in 0 ..< 40:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, diagSub, 1000)
+    if st == NATS_TIMEOUT or not checkStatus(st): continue
+    let env = decode($natsMsg_GetData(msg))
+    natsMsg_Destroy(msg)
+    if env.kind == ekEvent and env.payload != nil and
+        env.payload{"path"}.getStr("") == "async.nx":
+      delivered = env.payload
+      break
+  check("the check ran in the idle seam and was delivered",
+        delivered != nil,
+        "nothing on svc.session." & asyncSession & ".diag")
+  check("delivered diagnostics name the edited file",
+        delivered != nil and "async.nx" in delivered{"text"}.getStr(""),
+        $delivered)
 
   report("LSP TEST")
 

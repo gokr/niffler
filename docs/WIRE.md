@@ -704,7 +704,17 @@ keys:
   schedules items (reads fill the concurrency cap together, writes run
   exclusively).
 - `workspace`: path-shaped arguments are resolved against the conversation
-  workspace at dispatch.
+  workspace at dispatch. Such tools also receive core-owned private context
+  `__workspace = {root, roots}` — the conversation's **workspace set**: the
+  primary workspace plus its linked git worktrees (`git worktree list`) and
+  sibling checkouts of the same `remote.origin.url` (core/workspace.nim;
+  bounded by `maxWorkspaceRoots`, currently 8). It exists
+  so a component can recognize work in another tree of the same project
+  instead of treating it as "outside the workspace" — `lsp` indexes a file in
+  a declared root as *that* tree. Like `__session`, it is injected after the
+  model's message is written and never rendered into the frozen system prompt
+  or a tool schema: worktree awareness must not cost a cache miss, and a
+  worktree appearing mid-conversation is picked up on the next dispatch.
 - `noSpawn`: a subagent (a session with a parent lineage record) may not call
   this tool (depth guard enforced at dispatch).
 - `parallel`: `true` marks the tool safe to dispatch **concurrently** with

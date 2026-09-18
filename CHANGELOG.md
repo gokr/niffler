@@ -8,6 +8,65 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **lsp: scope is a bound, not an equality — work outside the workspace is no
+  longer refused.** `hLsp` refused any path outside the conversation workspace
+  (`E_LSP_SCOPE`), which an agent hits constantly: sibling checkouts, git
+  worktrees, a second repo. Worse, the edit tool's diagnostics push swallowed
+  that refusal as "no server configured for this extension" — a whole session of
+  edits in a sibling clone (`~/git/niffler` from a conversation whose workspace
+  is `~/git/nifflerprod`) produced zero diagnostics and zero signal. A file
+  inside the workspace keeps the workspace root (warm servers reused); a file
+  outside it is indexed under its own marker-derived root
+  (`deriveRootUnbounded` — a worktree roots at its own top, where `.git` is a
+  *file*), and the reply names it in `workspaceRoot`. `E_LSP_SCOPE` survives for
+  the two cases that matter: a `..` component, and a marker walk that reaches
+  `/` or `$HOME`. The edit tool now also reports the out-of-scope refusal when
+  it does happen, instead of going silent.
+- **config.nims declares the local SDK path.** The Makefile and nimble tasks
+  pass `--path:sdk`, but `config.nims` is what everything *else* reads — a bare
+  `nim check components/x/main.nim` and every language server driving
+  nimsuggest. Without it `import niffler/sdk` failed and the fallout was ~100
+  phantom "undeclared identifier" errors: querying
+  `components/recall/main.nim` in-workspace returned 110 diagnostics / 103
+  errors, all cascading from `cannot open file: niffler/sdk`. Attached to an
+  edit, that is worse than no diagnostics — the model would chase errors that
+  do not exist. `nim check` with no flags is now clean.
+- **core: an empty provider reply no longer ends a turn as if it were an
+  answer.** A round that returns HTTP 200 with no content *and* no tool calls
+  was accepted as the final reply, so the turn ended with `""` and the caller
+  saw a silent no-op — in the Multilingual-10 bench one cell (vuejs/core-11739)
+  burned 29 minutes that way and surfaced only as `candidate patch is empty`,
+  indistinguishable from a bad patch. Two shapes now diverge by
+  `finish_reason`: `length` (the provider cut the reply at the output cap
+  before any content — a thinking model can spend the whole budget on
+  reasoning) ends the turn with an explicit error; anything else is re-asked up
+  to `NIF_EMPTY_REPLY_RETRIES` (default 2) times *invisibly* — nothing is
+  appended, so the frozen prefix and its cache are untouched, and the model is
+  never told (a provider hiccup is not its mistake). Exhausting the retries
+  ends the turn as `turnError` and persists a `role: error` record with
+  `error: "empty-reply"`, so drivers and the bench see an infrastructure
+  outcome instead of a capability failure.
+- **bash: the 60s ceiling is gone.** The tool's schema pinned
+  `x-harness.timeoutMs` to 60_000 while every other tool gets the harness's
+  120_000 — so a slow build was killed by *core* (which discards the output
+  captured so far) and no `timeoutMs` above 60s could take effect. The call
+  wait is now 600_000, the command budget defaults to 120_000 and is capped at
+  570_000, i.e. the component's own timer always fires first and reports
+  `exit 124` *with the output so far*; both messages name the two real options
+  (`timeoutMs`, `run_in_background`). The description also stops implying that
+  `cd`-ing to the workspace is the way to work there: the shell already starts
+  in it.
+- **recall: `context_recall` is on-demand, not hidden.** It was registered
+  with `x-harness.hidden: true` while every prune/trim notice tells the model
+  to call it with the ref verbatim — and a hidden tool is invisible to exactly
+  that caller (`discover` never lists it, `invoke` refuses it: "tool is not
+  available through invoke"). Dropped history was reachable only by reading
+  the store directly. It is now `onDemand` + `sessionId` (the runner injects
+  the conversation), which keeps the two properties that matter — out of the
+  frozen direct set, behind an explicit discover+invoke — and makes the
+  notices' advice actionable. Covered by a new `tests/t_recall.nim`, which
+  asserts the registered flags (this shipped broken because the component had
+  no test at all).
 - **bench: a cell can no longer fetch the upstream fix unnoticed.** The first
   rerun on the new stack had carbon-3005 (PHP) flip fail→pass by fetching
   `https://github.com/briannesbitt/Carbon/pull/3005.diff` — a SWE-bench
@@ -108,6 +167,50 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   started that can only die, and no warm slot is spent on it.
 
 ### Added
+
+- **Workspace set: a conversation knows the trees that belong to its project.**
+  `core/workspace.nim` answers the question every path-scoping component was
+  answering on its own: primary workspace, plus its linked git worktrees
+  (`git worktree list --porcelain`) and sibling checkouts of the same
+  `remote.origin.url` — including a sibling cloned from a local path, whose
+  origin *is* that path. Mostly best-effort: no repo, no git, a weird remote →
+  just the primary. Injected for tools that declare the workspace policy as
+  core-owned private context `__workspace = {root, roots}`, cached on the
+  nested state (a ref, so it survives `CoreTools`' by-value copies) and
+  **never** rendered into the frozen prompt or a tool schema — worktree
+  awareness is data for dispatch and components, so a worktree appearing
+  mid-conversation widens what components accept without invalidating a
+  conversation's cache. First consumer: `lsp`, which indexes a file inside a
+  declared root as that tree (its own server instance) instead of deriving a
+  root or refusing. Tested hermetically against real repositories
+  (`tests/t_workspaces.nim`).
+
+- **edit→lsp diagnostics are asynchronous (`svc.session.<id>.diag`).** An edit
+  no longer waits for a language server: it asks the `lsp` component with
+  `{async: true, session, first, last}` (fire-and-forget, acknowledged
+  `pending`) and the check runs in the component's idle seam — a cold
+  rust-analyzer/jdtls legitimately needs minutes. The rendered result is
+  published on the conversation's `.diag` subject when the server answers (or a
+  one-line note when it cannot), and the runner drains it (`pumpDiag`) and
+  appends it as append-only history, exactly like the repo-map `.map` lane:
+  never the frozen prefix, newest text per path wins so five edits to one file
+  cost one message. The Multilingual-10 run paid **39 blocking 25s waits (~16
+  minutes) that all answered "server busy or still indexing"** — repeated cost
+  for no information, because "ready" meant the process had started, not that
+  it had indexed. Range scoping moved into the lsp component with it
+  (structured, off the parsed diagnostics instead of re-parsed text), and
+  `components/edit/diagformat.nim` plus its unit test are gone with the inline
+  renderer.
+- **`context_recall {mode: "search"}` — grep the conversation's whole history.**
+  A ref answers "give me *that* document"; nothing answered "which messages
+  mentioned X?" once a trim had dropped them from the projection (a trim names
+  only an id range). The new mode scans the canonical `message` documents,
+  including trimmed/compacted-away ones, and returns bounded one-line hits
+  (`{id, role, seq, snippet}`, default 20, `role` filter, case-insensitive and
+  matching the whole record so a hit inside tool-call arguments is found) whose
+  `id` is then a valid `canonical` ref for `mode: "full"` — hit list first,
+  bodies only for what matters, since pulling a dropped span back wholesale
+  would re-inflate the window that was just trimmed.
 
 - **The manual in Chinese.** `docs/MANUAL.zh.md` and `docs/MANUAL.zh-TW.md`
   are complete translations of `docs/MANUAL.md` (identical section headings,

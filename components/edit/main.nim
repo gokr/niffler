@@ -42,9 +42,10 @@ const
   MAX_READ_BYTES = 256 * 1024
   MAX_READ_LINE_BYTES = 2 * 1024  # minified lines must not flood context
   MIN_STUB_BYTES = 512      # unchanged re-reads below this just re-dump
-  DIAG_PUSH_TIMEOUT_MS = 25_000  # lsp diagnostics push (server cold starts)
-  DIAG_CONTEXT_LINES = 3    # diagnostics just outside the diff still matter
-  DIAG_PUSH_MAX_LINES = 8   # cap on in-range diagnostics per edit response
+  DIAG_PUSH_TIMEOUT_MS = 10_000  # async diagnostics request: an enqueue round trip,
+                                 # not the check itself (that runs in the lsp
+                                 # component's idle seam and comes back on the
+                                 # conversation's .diag subject)
   OUTLINE_MIN_LINES = 1000  # whole-reads above this get an lsp outline (NIF_READ_OUTLINE_LINES)
   OUTLINE_TIMEOUT_MS = 8_000  # the outline is opportunistic — never stall a read
   OUTLINE_MAX_PER_CALL = 2  # per batch call: 2 × timeout stays inside the read budget
@@ -654,7 +655,6 @@ proc resolveSpans(content, path: string, lines: seq[string], starts: seq[int],
     "unicode punctuation, block anchors, escaped text) all failed. Read " &
     "the file and copy the text verbatim.")
 
-import diagformat
 
 var gOutlineBudget = 0
   ## Whole-read outline attempts left in the current read call; reset per
@@ -692,31 +692,41 @@ proc outlineSection(c: Component, target, path: string, total: int): string =
     "\n\n[Outline instead of the full text. Read windows with offset/limit " &
     "(up to 12 ranges per call), or offset=1 to read the whole file anyway.]"
 
-proc lspDiagnosticsSection(c: Component, target: string,
+proc lspDiagnosticsSection(c: Component, session, target: string,
                            first, last: int): string =
-  ## After a successful edit, query the lsp component (only useful when a
-  ## language server is configured for the edited file's type) and attach
-  ## diagnostics scoped to the changed range (renderDiagSection in
-  ## diagformat.nim). Every failure mode is silent or a one-line note — a
-  ## missing, slow or crashed language server must never fail or
-  ## meaningfully stall an edit that already succeeded.
+  ## After a successful edit, ask the lsp component for diagnostics WITHOUT
+  ## waiting for them. The check runs in the lsp component's idle seam and the
+  ## rendered result is delivered on the conversation's .diag subject; core's
+  ## runner drains it (pumpDiag) and appends it as history.
+  ##
+  ## This used to block the edit: every cold server cost 25s and answered
+  ## "server busy or still indexing" (39 times in one ten-cell bench run, ~16
+  ## minutes, no information). An edit that already succeeded must not wait for
+  ## a language server — and, as before, a missing/crashed server never
+  ## affects it: every failure mode here is silent.
+  if session.len == 0: return ""     # no conversation to report back to
   var resp: JsonNode
   try:
     resp = c.request("lsp", "lsp",
-      %*{"operation": "diagnostics", "path": target}, DIAG_PUSH_TIMEOUT_MS)
+      %*{"operation": "diagnostics", "path": target, "async": true,
+         "session": session, "first": first, "last": last},
+      DIAG_PUSH_TIMEOUT_MS)
   except CatchableError as e:
-    # Both the component's own budget (E_LSP_TIMEOUT envelope) and the
-    # SDK transport timeout on a slow settle (big repo still indexing)
-    # mean the same thing: retry later, don't fail the edit. The second
-    # form used to be swallowed silently — it is why gopls on large Go
-    # repos looked like "no server configured".
-    if "E_LSP_TIMEOUT" in e.msg or "timed out after" in e.msg:
-      return "\n\n[LSP diagnostics: server busy or still indexing — the lsp tool can retry.]"
+    # One refusal is worth saying out loud: a file outside the conversation's
+    # workspace is a fact about where the agent is working, and the lsp
+    # component answers [E_LSP_SCOPE] for it — silently, that looks identical
+    # to "no server for this file type" and a whole session can go by with no
+    # diagnostics and no signal. Everything else (no server configured, the
+    # component down, a cold-server timeout) stays silent: ordinary states, and
+    # a note per edit would be noise.
+    if "E_LSP_SCOPE" in e.msg:
+      return "\n\n[lsp: not checked — " & target & " is outside this " &
+             "conversation's workspace; language-server diagnostics only " &
+             "cover files inside it.]"
     return ""  # no server for this extension / lsp down: fully silent
-  if resp{"ok"}.getBool(false):
-    return renderDiagSection(resp{"text"}.getStr(""),
-                             resp{"count"}.getInt(0), first, last)
-  return "\n\n[LSP diagnostics: server busy or still indexing — the lsp tool can retry.]"
+  if not resp{"ok"}.getBool(false):
+    return ""  # E_LSP_UNAVAILABLE and friends: nothing to say, nothing failed
+  return ""    # queued: the diagnostics arrive as their own message
 
 proc hEdit(c: Component, args: JsonNode): JsonNode =
   if args == nil or args.kind != JObject:
@@ -845,7 +855,7 @@ proc hEdit(c: Component, args: JsonNode): JsonNode =
             file.bom & restoreEnding(applied, file.ending), prevFull,
             persist = true)
   let d = compactDiff(content, applied)
-  let diagNote = lspDiagnosticsSection(c, file.absPath, d.firstLine, d.lastLine)
+  let diagNote = lspDiagnosticsSection(c, session, file.absPath, d.firstLine, d.lastLine)
   let noun = if planned.len == 1: "edit" else: "edits"
   let lineSummary = if addedTotal > 0 or removedTotal > 0:
     " Added " & $addedTotal & " line(s), removed " & $removedTotal & " line(s)."

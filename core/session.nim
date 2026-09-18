@@ -49,6 +49,7 @@ proc main() =
                      steerStream: new(SteerStream),
                      adviseStream: new(AdviseStream),
                      mapStream: new(MapStream),
+                     diagStream: new(DiagStream),
                      activeTurn: new(ActiveTurn),
                      sessionAllowlist: new(seq[string]))
   # Persisted per-conversation auto-approve (see niffler.nim): the gate
@@ -101,6 +102,20 @@ proc main() =
                      getErrorString(mst))
     quit(1)
   ct.mapStream.sub = mapSub
+  # Async LSP-diagnostics channel: the edit tool asks the lsp component for
+  # diagnostics without waiting; the component publishes each edited file's
+  # rendered result here when its server answers (a cold rust-analyzer/jdtls
+  # needs minutes), pumpDiag drains it and drainDiagnostics appends it as
+  # append-only history.
+  let diagSubjectStr = diagSubject(sessionId)
+  var diagSub: ptr natsSubscription
+  let dst = natsConnection_SubscribeSync(addr diagSub, nc.conn,
+                                         diagSubjectStr.cstring)
+  if not checkStatus(dst):
+    stderr.writeLine("session: subscribe " & diagSubjectStr & ": " &
+                     getErrorString(dst))
+    quit(1)
+  ct.diagStream.sub = diagSub
   # Advisory channel: sync subscribe to svc.session.<id>.advise (docs/research/EXPERT.md).
   # pumpAdvise answers each turn-bound advisory request — accepted only while
   # that turn is live — from dispatch's idle slot during a turn and from the
@@ -164,6 +179,7 @@ proc main() =
       # wait for a turn that may never come.
       pumpAdvise(ct)
       pumpMap(ct)
+      pumpDiag(ct)
       if epochTime() - lastActivity > idleLimitSecs:
         echo "session: retiring after " & $idleLimitSecs.int & "s idle"
         break

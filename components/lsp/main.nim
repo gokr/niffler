@@ -35,6 +35,7 @@ import std/syncio
 import natsnim
 import niffler/sdk
 import roots
+import subjects   # sanitizeSessionId: the async diagnostics lane is per conversation
 
 const
   MAX_LOCATIONS = 100          # rendered locations before an omission marker
@@ -243,6 +244,37 @@ type Instance = ref object
 var gInstances = initOrderedTable[string, Instance]()
 
 proc instKey(server, root: string): string = server & "\x1f" & root
+
+# ---------------------------------------------------------------------------
+# Async diagnostics service (triggered by the edit tool)
+#
+# An edit must never wait for a language server: a cold rust-analyzer/jdtls
+# needs minutes to index, and making each edit wait produced 39 useless 25s
+# stalls in one ten-cell bench run — every one of them answered "server busy or
+# still indexing", i.e. nothing. Instead the request is queued, acknowledged at
+# once, and the rendered result is published to the conversation's
+# svc.session.<id>.diag subject when the server finally answers. Core's runner
+# drains it (pumpDiag) and appends it as append-only history — the same lane
+# the repomap uses for svc.session.<id>.map.
+type DiagJob = object
+  session, path, rel, uri, languageId, text: string
+  conf: ServerConf
+  root: string
+  first, last: int      # the edit's changed lines (0 = whole file)
+  gen: int              # supersession counter for (session, path)
+  t0: float             # queued at (TTL guard against ancient jobs)
+
+const
+  DIAG_IDLE_MS = 250            # idle tick: one job per tick, pump stays responsive
+  DIAG_ASYNC_BUDGET_MS = 8_000  # per job: enough for a warm server, not a cold one
+  DIAG_JOB_TTL_SECS = 600.0     # a conversation that moved on is not waited for
+  DIAG_CONTEXT_LINES = 3        # diagnostics just outside the edit still matter
+  DIAG_ASYNC_MAX_LINES = 8      # cap on in-range diagnostics delivered per edit
+
+var gDiagJobs: seq[DiagJob] = @[]
+var gDiagGen = initTable[string, int]()
+
+proc diagKey(session, path: string): string = session & "\x1f" & path
 
 proc dispose(h: Instance) =
   ## Kill the server process; safe to call twice.
@@ -591,9 +623,16 @@ proc capText(s: string): string =
 # operations
 
 proc opDiagnostics(h: Instance, uri, rel: string,
-                   timeoutMs = QUERY_TIMEOUT_MS): JsonNode =
+                   timeoutMs = QUERY_TIMEOUT_MS,
+                   first = 0, last = 0): JsonNode =
   ## Wait for the first publishDiagnostics push, then a short quiet period
   ## for updates; no pull-diagnostics fallback in MVP.
+  ##
+  ## first/last (> 0) scope the delivered text to an edit's changed lines
+  ## (± DIAG_CONTEXT_LINES, errors/warnings only, capped): the file may carry
+  ## hundreds of pre-existing warnings, and the model only needs to know what
+  ## its change broke. This is the same scoping edit used to render inline,
+  ## now done on the structured diagnostics instead of re-parsing text.
   var latest: JsonNode = nil
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
   while true:
@@ -614,12 +653,14 @@ proc opDiagnostics(h: Instance, uri, rel: string,
     return %*{"ok": true, "text": rel & ": no diagnostics — clean.", "count": 0}
   let sev = {1: "error", 2: "warning", 3: "info", 4: "hint"}.toTable
   var lines: seq[string]
+  var inRange: seq[string]
   var errors = 0
   for d in diags:
     if d.kind != JObject: continue
     let s = d{"severity"}.getInt(3)
     if s == 1: inc errors
-    var ln = rel & ":" & $(d{"range"}{"start"}{"line"}.getInt(0) + 1) & ":" &
+    let line0 = d{"range"}{"start"}{"line"}.getInt(0) + 1
+    var ln = rel & ":" & $line0 & ":" &
              $(d{"range"}{"start"}{"character"}.getInt(0) + 1) & "  " &
              sev.getOrDefault(s, "info") & "  " & d{"message"}.getStr("")
     if d{"source"} != nil and d{"source"}.kind == JString:
@@ -629,6 +670,28 @@ proc opDiagnostics(h: Instance, uri, rel: string,
                  else: $d{"code"}.getInt()
       ln.add(" [" & code & "]")
     lines.add(ln)
+    if first > 0 and s in {1, 2} and
+        line0 >= first - DIAG_CONTEXT_LINES and
+        line0 <= last + DIAG_CONTEXT_LINES and
+        inRange.len < DIAG_ASYNC_MAX_LINES:
+      inRange.add(ln)
+  if first > 0:
+    # Scoped (the async edit push): report what the change broke, not the
+    # file's whole backlog.
+    if inRange.len == 0:
+      return %*{"ok": true, "count": 0, "errors": errors,
+                "text": rel & ": " & $diags.len & " diagnostics (" & $errors &
+                        " errors), none in the changed range — the lsp tool " &
+                        "lists them all."}
+    var scoped = rel & ": " & $inRange.len &
+                 " diagnostics in the changed range"
+    if diags.len > inRange.len:
+      scoped.add(" (" & $diags.len & " in the file)")
+    scoped.add("\n" & inRange.join("\n"))
+    if inRange.len >= DIAG_ASYNC_MAX_LINES:
+      scoped.add("\n  ... (capped — lsp diagnostics lists all)")
+    return %*{"ok": true, "count": inRange.len, "errors": errors,
+              "text": scoped}
   let outText = capText(rel & ": " & $diags.len & " diagnostics (" &
                         $errors & " errors)\n" & lines.join("\n"))
   %*{"ok": true, "text": outText, "count": diags.len, "errors": errors}
@@ -927,8 +990,52 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   for part in path.split({'/', '\\'}):
     if part == "..":
       fail("E_LSP_SCOPE", "path must not contain '..' components: " & pathN.getStr())
+  # The declared workspace set (core injects __workspace for tools that declare
+  # the workspace policy): the trees this conversation considers its own — the
+  # workspace, its git worktrees, same-origin sibling checkouts. A file living
+  # in one of them is indexed as *that* tree, which is what gives a sibling
+  # checkout its own root and its own server instance instead of "outside the
+  # workspace". This is private per-call data: nothing here renders into a
+  # prompt or a tool schema, so a worktree appearing mid-conversation costs no
+  # cache miss.
+  var declaredRoots: seq[string]
+  let decl = args{"__workspace"}{"roots"}
+  if decl != nil and decl.kind == JArray:
+    for r in decl:
+      let s = normalizeRoot(r.getStr(""))
+      if s.len > 0: declaredRoots.add(s)
+  if not explicitRoot:
+    for r in declaredRoots:
+      if r != workspaceRoot and inside(r, path):
+        workspaceRoot = r            # the tree this file actually belongs to
+        break
+
+  # Scope is a *bound*, not an equality. An agent works in several checkouts,
+  # git worktrees and plain directories at once (this harness's own bench
+  # edits whole worktree copies), and refusing to look at a file because it
+  # lives outside the conversation's workspace means no diagnostics for that
+  # edit — a refusal the edit tool swallows as "no server configured", so the
+  # model cannot even tell it happened. A file inside the workspace (or inside
+  # a declared root) keeps that root, so its warm servers are reused; a file
+  # outside every known tree is indexed under its OWN marker-derived root, the
+  # rule nested repos inside the workspace already used. What remains is the
+  # guard that matters — never hand a server an unbounded tree — so the
+  # filesystem root and the home directory are refused with a message naming
+  # the fix.
+  let conversationWorkspace = rootDir()
+  let outsideWorkspace = not inside(conversationWorkspace, path)
   if not inside(workspaceRoot, path):
-    fail("E_LSP_SCOPE", "path is outside the workspace root (" & workspaceRoot & "): " & path)
+    let derived = deriveRootUnbounded(path,
+      rootMarkersForExt(splitFile(path).ext.toLowerAscii()))
+    var derivedRoot = if derived.len == 0: "/" else: derived
+    var home = getHomeDir()
+    while home.len > 1 and home[^1] == '/': home = home[0 .. ^2]
+    if derivedRoot == "/" or derivedRoot == home:
+      fail("E_LSP_SCOPE", "refusing to index " & derivedRoot & " for " &
+           pathN.getStr() & " — the file carries no project marker, so the " &
+           "root would be the whole filesystem (or your home); pass " &
+           "\"workspaceRoot\" naming the project root")
+    workspaceRoot = derivedRoot
   if not fileExists(path):
     fail("E_NOT_FOUND", "File not found: " & pathN.getStr())
   var text: string
@@ -939,15 +1046,48 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
     fail("E_NOT_TEXT", pathN.getStr() & " looks binary — language servers are for text")
 
   let ext = splitFile(path).ext.toLowerAscii()
-  if not explicitRoot:
+  if not explicitRoot and not outsideWorkspace:
     # No root asked for: derive the nearest module root from the file
     # instead of handing the server the whole harness clone (which makes
-    # gopls index every nested Go module before it answers).
+    # gopls index every nested Go module before it answers). An
+    # out-of-workspace file already got its own root above — deriveRoot never
+    # leaves the workspace, so re-deriving here would undo it.
     workspaceRoot = deriveRoot(path, workspaceRoot, rootMarkersForExt(ext))
   let conf = serverFor(loadRegistry(), ext)
   if conf.name.len == 0:
-    fail("E_LSP_UNAVAILABLE", "no language server configured for '" & ext &
-         "' — add one with the lsp_registry tool (or edit " & registryPath() & ")")
+    fail("E_LSP_UNAVAILABLE",
+         "no language server configured for " &
+         (if ext.len == 0: pathN.getStr() & " (no file extension)"
+          else: "'" & ext & "'") &
+         " — add one with the lsp_registry tool (or edit " & registryPath() & ")")
+
+  # Async mode (the edit tool's trigger): answer now, work later. Nothing is
+  # started or waited for here — the idle seam below does the waiting, so a
+  # cold server cannot delay the edit that asked.
+  if op == "diagnostics" and args{"async"}.getBool(false):
+    let sessionId = args{"session"}.getStr("")
+    if sessionId.len == 0:
+      fail("E_BAD_SHAPE", "async diagnostics need \"session\" (the " &
+           "conversation id) — the result is delivered back on " &
+           "svc.session.<id>.diag")
+    let key = diagKey(sessionId, path)
+    let gen = gDiagGen.getOrDefault(key, 0) + 1
+    gDiagGen[key] = gen
+    var kept: seq[DiagJob]
+    for j in gDiagJobs:
+      if diagKey(j.session, j.path) != key: kept.add(j)
+    kept.add(DiagJob(session: sessionId, conf: conf, root: workspaceRoot,
+                     path: path, rel: relPath(path, workspaceRoot),
+                     uri: pathToUri(path),
+                     languageId: conf.extensions[ext], text: text,
+                     first: args{"first"}.getInt(0),
+                     last: args{"last"}.getInt(0),
+                     gen: gen, t0: epochTime()))
+    gDiagJobs = kept
+    return %*{"ok": true, "pending": true, "count": 0,
+              "text": relPath(path, workspaceRoot) &
+                ": diagnostics requested — they arrive as a message when " &
+                "the language server answers."}
 
   let h = getInstance(conf, workspaceRoot)
   if not openCloseOk(h.caps):
@@ -997,6 +1137,11 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
       reply = opLocations(h, op, uri, args{"line"}.getInt() - 1,
                           args{"character"}.getInt() - 1, workspaceRoot)
     h.notify("textDocument/didClose", %*{"textDocument": {"uri": uri}})
+    if outsideWorkspace and reply != nil and reply.kind == JObject:
+      # Name the tree the answer came from: the caller is working outside the
+      # conversation workspace, so its relative paths would otherwise be
+      # ambiguous (which checkout is src/x.go in?).
+      reply["workspaceRoot"] = %workspaceRoot
     return reply
   except LspFailure:
     h.dispose()
@@ -1519,6 +1664,55 @@ proc hLspSelfTest(c: Component, args: JsonNode): JsonNode =
             "summary": $reg.len & " server(s) configured, " & probedWord &
               (if allOk: " — all green" else: " — failures above"),
             "checks": checks}
+
+proc publishDiag(c: Component, job: DiagJob, text: string) =
+  ## Hand a finished check back to the conversation that asked for it.
+  ## Fire-and-forget: a conversation that has since ended has no subscriber,
+  ## and a diagnostic nobody reads must never fail anything.
+  let subject = "svc.session." & sanitizeSessionId(job.session) & ".diag"
+  try:
+    publish(c.nc, subject, Envelope(v: 1, id: newId(), kind: ekEvent,
+      payload: %*{"conversationId": job.session, "path": job.rel,
+                  "text": text}).encode())
+  except CatchableError:
+    discard
+
+# The wait a synchronous edit used to pay happens here instead: in the SDK's
+# idle seam, on the main thread, serialized like a handler — which is why this
+# needs no thread and no lock. One job per tick keeps the pump responsive.
+discard comp.onIdle(DIAG_IDLE_MS) do (c: Component):
+  if gDiagJobs.len == 0: return
+  let job = gDiagJobs[0]
+  gDiagJobs.delete(0)
+  if epochTime() - job.t0 > DIAG_JOB_TTL_SECS: return
+  if job.gen != gDiagGen.getOrDefault(diagKey(job.session, job.path), 0):
+    return                       # superseded: a newer edit re-queued this file
+  var text: string
+  let k = instKey(job.conf.name, job.root)
+  try:
+    let h = getInstance(job.conf, job.root)   # normally already warm (warmup)
+    if not openCloseOk(h.caps):
+      text = job.rel & ": '" & job.conf.name &
+             "' cannot answer diagnostics (no transient didOpen support)."
+    else:
+      h.notify("textDocument/didOpen", %*{"textDocument": {
+        "uri": job.uri, "languageId": job.languageId, "version": 1,
+        "text": job.text}})
+      h.notify("textDocument/didSave", %*{"textDocument": {"uri": job.uri},
+                                          "text": job.text})
+      let r = opDiagnostics(h, job.uri, job.rel, DIAG_ASYNC_BUDGET_MS,
+                            job.first, job.last)
+      text = r{"text"}.getStr("")
+      h.notify("textDocument/didClose", %*{"textDocument": {"uri": job.uri}})
+  except LspFailure as e:
+    if gInstances.hasKey(k):   # poisoned frame buffer: never reuse the instance
+      gInstances[k].dispose()
+      gInstances.del(k)
+    text = job.rel & ": " & e.msg &
+           " — the lsp tool can retry once the server has finished indexing."
+  except CatchableError as e:
+    text = job.rel & ": " & e.msg
+  if text.len > 0: publishDiag(c, job, text)
 
 discard comp.selfTest(hLspSelfTest)
 

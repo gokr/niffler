@@ -16,6 +16,7 @@ import catalog
 import schema_validation
 import supervisor
 import uireg
+import workspace
 
 type
   CoreTools* = object
@@ -43,6 +44,10 @@ type
                                        ## components/repoMap publishes on
                                        ## svc.session.<id>.map, pumpMap drains,
                                        ## runTurn appends once — docs/research/REPOMAP.md)
+    diagStream*: DiagStream            ## async LSP-diagnostics channel (runners only;
+                                       ## the lsp component publishes on
+                                       ## svc.session.<id>.diag, pumpDiag drains,
+                                       ## runTurn appends — see DiagStream)
     adviseStream*: AdviseStream        ## turn-bound advisory queue (runners only)
     activeTurn*: ActiveTurn            ## live turn identity (set by runTurn)
     sessionAllowlist*: ref seq[string] ## frozen per-session tool allowlist
@@ -90,6 +95,17 @@ type
     sub*: ptr natsSubscription
     queue*: seq[tuple[workspace, map: string]]
     appended*: bool          # one map per conversation
+  # Asynchronous LSP-diagnostics channel (svc.session.<id>.diag): the edit
+  # tool asks the lsp component for diagnostics WITHOUT waiting (a cold
+  # rust-analyzer/jdtls needs minutes, and every edit used to pay a 25s
+  # timeout to learn nothing — 39 of those waits in the Multilingual-10 run).
+  # The component publishes the rendered result here when the server finally
+  # answers, or a one-line note when it gives up; pumpDiag drains the
+  # subscription and drainDiagnostics appends it as history — append-only,
+  # never the frozen prefix.
+  DiagStream* = ref object
+    sub*: ptr natsSubscription
+    queue*: seq[tuple[path, text: string]]
   # Raised from a dispatch's idle slot when a turn cancellation arrives
   # while that dispatch is in flight: the caller stops waiting for the
   # reply immediately. The callee keeps running (NATS request/reply has no
@@ -120,6 +136,12 @@ type
     sub*: ptr natsSubscription
     session*: string         ## active conversation ("" = no live turn)
     workspace*: string       ## absolute per-conversation workspace, root by default
+    workspaceRoots*: seq[string]
+      ## The conversation's workspace set (core/workspace.nim): the primary
+      ## plus its git worktrees and same-origin sibling checkouts, computed
+      ## once and cached here (a ref, so the cache survives CoreTools' by-value
+      ## copies). Injected as private __workspace context for tools that
+      ## declare the workspace policy — never the prompt, never a schema.
     leases*: Table[string, NestedLease]
     ## Active session-context leases, KEYED BY LEASE ID (P2.5 B). One lease
     ## per in-flight session-context dispatch: each entry carries its own
@@ -1109,6 +1131,26 @@ proc pumpMap*(ct: CoreTools) =
     if ws.len > 0 and map.len > 0:
       ct.mapStream.queue.add((ws, map))
 
+proc pumpDiag*(ct: CoreTools) =
+  ## Drain svc.session.<id>.diag — the lsp component's asynchronous
+  ## diagnostics publications (one per edited file, delivered when the server
+  ## answered instead of making the edit wait). Queue for drainDiagnostics;
+  ## runTurn appends it as append-only history.
+  if ct.diagStream == nil or ct.diagStream.sub == nil: return
+  while true:
+    var msg: ptr natsMsg
+    let st = natsSubscription_NextMsg(addr msg, ct.diagStream.sub, 1)
+    if st == NATS_TIMEOUT: break
+    if not checkStatus(st): break
+    let data = $natsMsg_GetData(msg)
+    natsMsg_Destroy(msg)
+    let env = decode(data)
+    if env.kind != ekEvent or env.payload == nil: continue
+    let path = env.payload{"path"}.getStr("")
+    let text = env.payload{"text"}.getStr("")
+    if path.len == 0 or text.len == 0: continue
+    ct.diagStream.queue.add((path, text))
+
 proc pumpAdvise*(ct: CoreTools) =
   ## Drain svc.session.<id>.advise — turn-bound advisory requests from the
   ## expert peer. Each request is answered immediately: accepted only while
@@ -1348,6 +1390,7 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
     pumpSteer(ct)
     pumpBusyCall(ct)
     pumpMap(ct)
+    pumpDiag(ct)
     # Turn cancellation while THIS dispatch is in flight: stop waiting for
     # the reply (TurnCancelled). Only during a live turn, and only for a
     # fresh cancel — non-turn dispatches (model selection, session_prepare)
@@ -1379,6 +1422,37 @@ proc dispatchSubjectCall*(ct: CoreTools, subject: string, tool: string,
                                  timeoutError)
   if partial != nil: return partial
   raise newException(IOError, timeoutError)
+
+proc workspaceRootsFor*(ct: CoreTools): seq[string] =
+  ## The conversation's workspace set, cached for the runner's lifetime: the
+  ## primary workspace plus the trees that belong to the same project
+  ## (core/workspace.nim). Recomputed only when the primary changes, so the git
+  ## calls happen once instead of on every tool call.
+  let primary = if ct.nested != nil: ct.nested.workspace else: ""
+  if primary.len == 0: return @[]
+  if ct.nested.workspaceRoots.len == 0 or
+      ct.nested.workspaceRoots[0] != normalizeRoot(primary):
+    ct.nested.workspaceRoots = computeWorkspaceRoots(primary)
+  ct.nested.workspaceRoots
+
+proc injectWorkspaceContext*(ct: CoreTools, schema, callArgs: JsonNode) =
+  ## Private per-call context for tools that declare the workspace policy
+  ## (x-harness.workspace): the trees this conversation considers its own.
+  ##
+  ## It is invisible to the provider — injected after the model's message is
+  ## written, and never rendered into the frozen system prompt or a tool schema
+  ## — so a worktree that appears mid-conversation widens what components accept
+  ## without changing one byte of the request prefix (AGENTS.md, prompt-cache
+  ## discipline). Components that do not care ignore the field; one that does
+  ## (lsp) indexes a sibling checkout as the tree it actually is instead of
+  ## refusing it as "outside the workspace".
+  if schema == nil or callArgs == nil or callArgs.kind != JObject: return
+  if schema{"x-harness"}{"workspace"} == nil: return
+  let roots = workspaceRootsFor(ct)
+  if roots.len == 0: return
+  var arr = newJArray()
+  for r in roots: arr.add(%r)
+  callArgs["__workspace"] = %*{"root": roots[0], "roots": arr}
 
 proc applyWorkspace(schema, args: JsonNode, workspace: string) =
   ## Resolve schema-declared path arguments against the active conversation's
@@ -1581,6 +1655,13 @@ proc dispatchToolCall*(ct: CoreTools, tool: string, args: JsonNode,
     callArgs["__session"] = %*{"session":
       (if ct.nested != nil: ct.nested.session else: "")}
 
+  # Workspace-declaring tools (x-harness.workspace) also learn the
+  # conversation's workspace *set*: the primary plus its git worktrees and
+  # same-origin sibling checkouts. Private context, injected after the model's
+  # message exists — it never enters the request prefix, so worktree awareness
+  # costs no cache miss (core/workspace.nim).
+  injectWorkspaceContext(ct, schema, callArgs)
+
   # Session-context tools (fabric, agent): inject the calling session plus a
   # lease for the nested-call proxy. Leases are KEYED (P2.5 B): each dispatch
   # registers its own lease with its own deadline and removes exactly that
@@ -1711,6 +1792,7 @@ proc dispatchToolCalls*(ct: CoreTools,
     if schema != nil and schema{"x-harness"}{"sessionId"}.getBool(false):
       callArgs{"__session"} = %*{"session":
         (if ct.nested != nil: ct.nested.session else: "")}
+    injectWorkspaceContext(ct, schema, callArgs)
     let env = callEnvelope(call.tool, callArgs)
     let data = env.encode()
     let inbox = "_INBOX." & newId()
@@ -1787,6 +1869,7 @@ proc dispatchToolCalls*(ct: CoreTools,
     pumpSteer(ct)
     pumpBusyCall(ct)
     pumpMap(ct)
+    pumpDiag(ct)
     pumpAdvise(ct)
     pumpNested(ct)
   for i in 0 ..< calls.len:

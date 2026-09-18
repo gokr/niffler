@@ -69,6 +69,37 @@ proc deriveRoot*(file, workspace: string, markers: seq[string]): string =
     dir = up
   ws
 
+proc normalizeRoot*(path: string): string =
+  ## One spelling per root — absolute, symlink-resolved where possible, no
+  ## trailing separator — so a root core hands us and a root we derived compare
+  ## equal. (core/workspace.nim keeps the same helper for core's side of the
+  ## conversation; a component cannot import core.)
+  if path.len == 0: return ""
+  var p = path
+  try: p = expandFilename(absolutePath(p))
+  except CatchableError:
+    try: p = absolutePath(p)
+    except CatchableError: discard
+  while p.len > 1 and p[^1] == '/': p.setLen(p.len - 1)
+  p
+
+proc deriveRootUnbounded*(file: string, markers: seq[string]): string =
+  ## The root for a file that lives *outside* the conversation workspace: walk
+  ## up from the file to the nearest marker with no ceiling, because the tree
+  ## that should be indexed is the one the file belongs to — a sibling
+  ## checkout, a linked git worktree (`.git` is a *file* there, and hasMarker
+  ## accepts either), or a plain directory with its own project file. Falls
+  ## back to the file's directory so a loose file still gets a bounded root;
+  ## the caller refuses "/" and the home directory.
+  if file.len == 0 or not file.isAbsolute(): return ""
+  var dir = file.parentDir()
+  while dir.len > 0:
+    if hasMarker(dir, markers): return dir
+    let up = dir.parentDir()
+    if up == dir: break
+    dir = up
+  file.parentDir()
+
 # ---------------------------------------------------------------------------
 # per-user install directories (PATH fallback)
 

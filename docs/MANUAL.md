@@ -993,6 +993,19 @@ capped (100 locations / 16 KB) with truncation metadata; structured
 timeout and protocol errors append the server's last stderr line, which
 names the actual failure (missing binary, crash, indexing).
 
+**Scope is a bound, not an equality.** A file inside the conversation
+workspace is indexed under the workspace root (its warm servers are reused); a
+file *outside* it — a sibling checkout, a git worktree, any other directory an
+agent is working in — is indexed under its own marker-derived root, and the
+reply carries `workspaceRoot` naming it, because the relative paths in an
+answer would otherwise be ambiguous. `E_LSP_SCOPE` remains only for the two
+cases that would hand a server an unbounded tree: a `..` component in the path,
+and a file whose marker walk reaches the filesystem root or `$HOME` (the
+message asks for an explicit `workspaceRoot`). Refusing an out-of-workspace
+file outright was tried and was actively harmful: the edit tool's diagnostics
+push swallowed the refusal as "no server configured", so an agent working in
+another checkout got no diagnostics and no signal that it had none.
+
 All three tools are **on-demand** (`discover`/`invoke` — see [Progressive tool
 discovery](#progressive-tool-discovery)), keeping the frozen
 toolset small; the tool description is the model's when-to-use guide. The

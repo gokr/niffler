@@ -1052,7 +1052,36 @@ proc drainMap(ct: CoreTools, p: var Persister,
       onEvent("map", %*{"sessionId": p.convId, "workspace": ws,
                         "bytes": map.len})
     break
-  ct.mapStream.queue.setLen(0)
+  ct.diagStream.queue.setLen(0)
+
+proc drainDiagnostics(ct: CoreTools, p: var Persister,
+                      messages: var seq[JsonNode],
+                      onEvent: proc(kind: string, data: JsonNode) {.closure.}) =
+  ## Append LSP diagnostics that arrived asynchronously for files edited this
+  ## turn. The edit tool no longer waits for a cold server (the Multilingual-10
+  ## run paid 39 such waits, ~16 minutes, for no information); the lsp
+  ## component publishes the rendered result on svc.session.<id>.diag when the
+  ## server answers and the runner folds it in here. Append-only history,
+  ## never the frozen prefix — the drainMap doctrine. Newest text per path
+  ## wins, so five edits to one file cost one message instead of five.
+  if ct.diagStream == nil or ct.diagStream.queue.len == 0: return
+  var latest: seq[tuple[path, text: string]]
+  for (path, text) in ct.diagStream.queue:
+    var replaced = false
+    for i in 0 ..< latest.len:
+      if latest[i].path == path:
+        latest[i] = (path, text)
+        replaced = true
+        break
+    if not replaced: latest.add((path, text))
+  ct.diagStream.queue.setLen(0)
+  for (path, text) in latest:
+    ctxAppend(p, messages, %*{"role": "user",
+      "content": "[lsp diagnostics for " & path & " — asynchronously " &
+                 "delivered after your edit, when the server answered]\n" & text})
+    if onEvent != nil:
+      onEvent("diagnostics", %*{"sessionId": p.convId, "path": path,
+                                "bytes": text.len})
 
 proc drainAdvisories(ct: CoreTools, p: var Persister,
                      messages: var seq[JsonNode],
@@ -1929,6 +1958,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     # it must measure the whole candidate request, steering included (§6.1).
     discard drainSteer(ct, p, messages, onEvent, turnId)
     drainMap(ct, p, messages, onEvent)
+    drainDiagnostics(ct, p, messages, onEvent)
     discard drainAdvisories(ct, p, messages, onEvent, turnId)
     discard drainNotices(ct, p, messages, onEvent, turnId)
     # A conversation's direct schemas are immutable. New live capabilities
@@ -1959,6 +1989,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
         # complete candidate before either trim or provider dispatch (§6.1).
         discard drainSteer(ct, p, messages, onEvent, turnId)
         drainMap(ct, p, messages, onEvent)
+        drainDiagnostics(ct, p, messages, onEvent)
         discard drainAdvisories(ct, p, messages, onEvent, turnId)
         verdict = checkContext(p, messages, onEvent, turnId, toolTokens)
       if verdict.startsWith("pressure:"):
@@ -2056,6 +2087,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
                                         onEvent, turnId, "overflow", ccfg)
               discard drainSteer(ct, p, messages, onEvent, turnId)
               drainMap(ct, p, messages, onEvent)
+              drainDiagnostics(ct, p, messages, onEvent)
               discard drainAdvisories(ct, p, messages, onEvent, turnId)
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
@@ -3091,6 +3123,14 @@ func mapSubject*(sessionId: string): string =
   ## ev.workspace.opened; the runner drains it (pumpMap) and runTurn
   ## appends it once as history.
   "svc.session." & sanitizeSessionId(sessionId) & ".map"
+
+func diagSubject*(sessionId: string): string =
+  ## The asynchronous LSP-diagnostics channel: the lsp component publishes the
+  ## rendered diagnostics for an edited file here once its server answers (or a
+  ## one-line note when it is still indexing), so no edit path waits on a cold
+  ## server. The runner drains it (pumpDiag) and runTurn appends it as history
+  ## — append-only, never the frozen prefix.
+  "svc.session." & sanitizeSessionId(sessionId) & ".diag"
 
 func adviseSubject*(sessionId: string): string =
   ## Turn-bound advisory requests from the expert peer (docs/research/EXPERT.md): answered
