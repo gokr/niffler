@@ -39,6 +39,16 @@ CORE_NIM := $(wildcard core/*.nim)
 SDK_GO   := $(filter-out %_test.go,$(wildcard sdk/go/*.go)) sdk/go/go.mod sdk/go/go.sum
 NIM_CONF := config.nims niffler.nimble
 
+# Multi-file component source sets. Wildcards, not hand-written lists: a
+# prerequisite list that misses one file ships the PREVIOUS binary while the
+# tree and the tests look current (it happened — components/lsp/roots.nim was
+# absent from var/bin/lsp, so `make test-lsp` ran a build without the change,
+# and `make` called the target up to date). `_test.*` is filtered out: only
+# `go build`/`nim c` of the test target compiles it, so a test-only edit must
+# not rebuild the component.
+NIM_SRCS = $(filter-out %_test.nim,$(wildcard components/$(1)/*.nim))
+GO_SRCS  = $(filter-out %_test.go,$(wildcard components/$(1)/*.go)) components/$(1)/go.mod components/$(1)/go.sum
+
 # Build mode: `make build` compiles debug (fast, runtime checks on) — right
 # for development and CI. `make release` rebuilds into var/bin with
 # -d:release (optimized) for benching and production; `make build` swaps
@@ -149,7 +159,7 @@ var/bin/edit: components/edit/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 
 # Language-server seam (docs/OCTOFRIEND-STEAL.md): one `lsp` tool over any
 # configured stdio server; the registry is data, languages are never code.
-var/bin/lsp: components/lsp/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/lsp: $(call NIM_SRCS,lsp) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/lsp/main.nim
 
 # Repomap (docs/research/REPOMAP.md): ranked workspace map; the C in csrc/
@@ -191,6 +201,10 @@ var/bin/test_t_repomap: tests/t_repomap.nim components/repomap/main.nim \
     $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/t_repomap.nim
 
+# A test that imports a component's source (here: the pure root/marker seam)
+# must rebuild when that source changes, exactly like the component itself.
+var/bin/test_t_lsp: $(call NIM_SRCS,lsp)
+
 # Background processes with an owner: start once, poll incremental output,
 # kill explicitly (docs/OCTOFRIEND-STEAL.md, "Steal 5 follow-up").
 var/bin/processes: components/processes/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -211,7 +225,7 @@ var/bin/mcp-bridge: $(wildcard components/mcp-bridge/*.go) components/mcp-bridge
 var/bin/builder: components/builder/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/builder/main.nim
 
-var/bin/plugins: components/plugins/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
+var/bin/plugins: $(call NIM_SRCS,plugins) $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ components/plugins/main.nim
 
 var/bin/skills: components/skills/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
@@ -251,13 +265,13 @@ var/bin/llm-openai: components/llm-openai/main.go components/llm-openai/go.mod c
 var/bin/nats-server: $(wildcard components/nats/*.go) components/nats/go.mod components/nats/go.sum | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/nats && go build -o ../../var/bin/nats-server .'
 
-var/bin/models: components/models/main.go components/models/catalog.go components/models/seed.json components/models/go.mod components/models/go.sum $(SDK_GO) | var/bin
+var/bin/models: $(call GO_SRCS,models) components/models/seed.json $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/models && go build -o ../../var/bin/models .'
 
-var/bin/provider: components/provider/main.go components/provider/oauth.go components/provider/go.mod components/provider/go.sum $(SDK_GO) | var/bin
+var/bin/provider: $(call GO_SRCS,provider) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/provider && go build -o ../../var/bin/provider .'
 
-var/bin/llm: components/llm/main.go components/llm/codex.go components/llm/anthropic.go components/llm/go.mod components/llm/go.sum $(SDK_GO) | var/bin
+var/bin/llm: $(call GO_SRCS,llm) $(SDK_GO) | var/bin
 	$(BUILD_WRAP) bash -c 'cd components/llm && go build -o ../../var/bin/llm .'
 
 var/bin/agent: components/agent/main.nim $(SDK_NIM) $(NIM_CONF) | var/bin
