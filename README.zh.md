@@ -3,6 +3,8 @@
 [English](README.md) · 简体中文 · [繁體中文](README.zh-TW.md) ·
 [网站](https://gokr.github.io/niffler/) · [Discord](https://discord.gg/ThJFEAJUAk)
 
+> 🤖 AI 自动翻译，可能滞后于英文版；以 [English](README.md) 为准。
+
 Niffler 是一个极简、可自我扩展的 agent harness。核心和每项能力都作为独立
 进程运行，通过 NATS 上的 JSON 信封通信。Agent 可以在对话进行期间编译并启动
 新的组件。项目应从自己的 clone 中运行，该 clone 是实例的 home。

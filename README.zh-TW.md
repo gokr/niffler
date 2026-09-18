@@ -3,6 +3,8 @@
 [English](README.md) · [简体中文](README.zh.md) · 繁體中文 ·
 [網站](https://gokr.github.io/niffler/) · [Discord](https://discord.gg/ThJFEAJUAk)
 
+> 🤖 AI 自動翻譯，可能落後於英文版；以 [English](README.md) 為準。
+
 Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能力都是獨立
 程序，透過 NATS 上的 JSON 信封通訊。Agent 可以在對話進行期間編譯並啟動
 新的元件。專案應從自己的 clone 執行，該 clone 是實例的 home。
@@ -17,7 +19,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
   顧問）、`git`、`mcp`、`lsp`、`repomap`（Aider 的 tree-sitter + PageRank
   移植）、`skills`、`plugins`、`processes`、`observe`/`logfile`——其他 harness
   通常交給第三方外掛的功能。見[內建元件](docs/MANUAL.md#shipped-components)。
-- **開放模型，所有 Provider。** 任何 OpenAI 相容端點——本地、開放權重或
+- **開放模型，所有 Provider。** 任何 OpenAI 相容端點——本機、開放權重或
   託管——透過 `.env` 或 store 持久化的 Provider 註冊表接入；也支援
   ChatGPT/Claude 訂閱 OAuth 和 models.dev 模型目錄。見
   [Provider](docs/MANUAL.md#provider-registry-provider) 和
@@ -37,7 +39,7 @@ Niffler 是一個極簡、可自我擴充的 agent harness。核心與每項能�
 - **為長時間執行而設計。** 凍結的提示詞/工具前綴讓 provider 快取持續命中；
   持久化壓縮和有界溢位復原讓對話不中斷；軟性 `/limit` 預算之外還有硬性失控
   保護。見[上下文視窗](docs/MANUAL.md#context-window)。
-- **本地優先，clone 即實例。** 對話和元件狀態保存在 `var/`（預設 SQLite），
+- **本機優先，clone 即實例。** 對話和元件狀態保存在 `var/`（預設 SQLite），
   harness 自行執行 NATS 匯流排，不依賴中心服務。見
   [佈局](docs/MANUAL.md#layout-of-a-running-system)。
 
@@ -102,7 +104,7 @@ Nim、Go 和 TypeScript 元件使用 `sdk/` 中的 SDK。正常擴充流程是�
 `build`，再呼叫 `spawn`。修改架構前請閱讀
 [AGENTS.md](AGENTS.md)、[元件生命週期](docs/MANUAL.md#self-extension-and-component-lifecycle)
 和 [WIRE.md](docs/WIRE.md)。社群元件透過 `plugins` 安裝，詳見
-[手冊中的插件章節](docs/MANUAL.md#component-ecosystem-plugins)。
+[手冊中的外掛章節](docs/MANUAL.md#component-ecosystem-plugins)。
 
 ## 專案理念
 
