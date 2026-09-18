@@ -726,6 +726,13 @@ frontmatter), the same convention Claude Code, opencode and Cursor use. It is
 read/load only over the bus: no tool adds skills to the prompt, loading is
 progressive disclosure through the tool result.
 
+All eight tools are **on-demand** (`x-harness.onDemand`): none sits in a
+conversation's frozen direct toolset, so the first reach for one is a
+`discover` + `invoke` hop (see [Progressive tool
+discovery](#progressive-tool-discovery)). Loading a skill appends its text
+to history — nothing here rewrites the frozen prompt prefix, so a
+`skill_load` costs a cache read, not a cache miss.
+
 Discovery covers the bundled skills shipped in the repo plus the standard
 agent directories (first match per skill name wins — project beats bundled
 beats home beats config):
@@ -736,6 +743,16 @@ beats home beats config):
 | bundled | `<repo>/skills` (shipped with Niffler; `$NIF_ROOT/skills` as fallback, `NIF_SKILLS_BUNDLED_DIR` overrides both) — never removable |
 | home | `~/.agents/skills`, `~/.claude/skills`, `~/.opencode/skills`, `~/.niffler/skills` |
 | config | `~/.config/opencode/skills` (where `npx skills add -g -a opencode` installs) |
+
+Within a source the directories are tried in the order listed, so
+`~/.agents/skills/nats` is served over `~/.claude/skills/nats`. Discovery is
+a **fresh walk on every call** — no cached registry, no refresh op — so a
+`skill_install` or another agent's `npx skills add` is visible immediately.
+The walk does not descend into **symlinked directories**: a skill that only
+reaches a scanned directory through a symlink is not discovered, and
+`skill_audit` does not list it either (a symlink farm such as
+`~/.claude/skills → ~/.agents/skills` is therefore invisible — harmless when
+the link target is scanned anyway, silent when it is not).
 
 Bundled skills (`todo-markdown` — keep todo state in a repo TODO.md,
 not in tool state; `niffler-tools` — which tool fits which job;
@@ -755,10 +772,10 @@ wins by name, so a checkout is unaffected by the fallback.
 |---|---|
 | `skill_list {query?, source?}` | available skills (name, description, version, tags, source, dir); filter by substring or source; compiled-in fallback entries report dir `(baked)` |
 | `skill_search {query, owner?}` | online search of the skills.sh registry (the `npx skills find` backend): name, repo source, install count; the `source`+`name` pair feeds `skill_install` directly |
-| `skill_load {name}` | full SKILL.md instructions + resource list into the conversation (the load mechanism) |
+| `skill_load {name}` | full SKILL.md instructions + resource list into the conversation (the load mechanism); a body over 200 000 bytes is truncated with `truncated: true` |
 | `skill_resources {name}` | the skill's `references/`, `scripts/`, `assets/` files |
 | `skill_resource {name, path}` | read one resource on demand |
-| `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk — plus names served only by the compiled-in fallback (dir `(baked)`): marks the active winner per name and every shadowed/invalid copy (discoveries merge in `skill_list`; shadowing is only visible here) |
+| `skill_audit` | read-only, unmerged inventory of every SKILL.md on disk — plus names served only by the compiled-in fallback (dir `(baked)`): marks the active winner per name and every shadowed/invalid copy (invalid = unreadable SKILL.md, unparseable frontmatter, or no `name`; discoveries merge in `skill_list`, so shadowing is only visible here) |
 | `skill_install {repo, skill?, global?}` | clone a git repo, copy the chosen SKILL.md tree into `~/.niffler/skills` (default) or `$NIF_ROOT/.opencode/skills` |
 | `skill_remove {name}` | delete a skill from a Niffler-managed directory only |
 
