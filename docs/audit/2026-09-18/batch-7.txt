@@ -1,0 +1,6 @@
+proposed-top-level-outline-for-manual-as-a-reference-manual	16
+progressive-tool-discovery	13
+the-store	12
+language-servers-lsp	7
+hooks	6
+recovery	4

@@ -1,0 +1,6 @@
+component-git	14
+component-lsp	14
+external-mcp-servers-mcp	12
+self-extension-and-component-lifecycle	9
+expert-advisory-peer-expert	5
+session-runners	4

@@ -1,0 +1,254 @@
+[
+ {
+  "id": "A047",
+  "slice": "provider-registry-provider",
+  "status": "apply",
+  "reason": "The provider tool table (888-904) still marks hidden rows only in per-row prose and never states which rows are on-demand or which carry a timeout. A literal flags column would reformat all 17 rows (and collide with A466/A473/A474/A478, which edit rows of the same table), so the same information is added once as a legend line under the table.",
+  "evidence": "docs/MANUAL.md:888-904",
+  "old_string": "| `provider_export` / `provider_import` | JSON backup/migration round-trip, credentials included; import merges, validates records and can restore the active marker |\n\n### Wire protocols",
+  "new_string": "| `provider_export` / `provider_import` | JSON backup/migration round-trip, credentials included; import merges, validates records and can restore the active marker |\n\nExposure flags, so the per-row prose need not be parsed: the `provider_oauth_*`,\n`provider_status`, `provider_active`, `provider_get` and\n`provider_use_environment` rows are **hidden** client API (a UI or an operator\ncalls them; the model never sees them), while `provider_add`, `provider_update`,\n`provider_list`, `provider_switch`, `provider_export` and `provider_import` are\n**on-demand** — the model reaches them through `discover` + `invoke`. The four\ncredential-moving tools carry `x-harness.approval: \"always\"` (below), and\n`provider_models` runs under a 20 s timeout.\n\n### Wire protocols"
+ },
+ {
+  "id": "A048",
+  "slice": "provider-registry-provider",
+  "status": "skip",
+  "reason": "verified by the auditor — the token-refresh paragraph (5-minute refresh-ahead, rotated credential persisted, `llm` never sees the refresh token) matches the OAuth implementation; no change.",
+  "evidence": "docs/MANUAL.md:936-941",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A049",
+  "slice": "provider-registry-provider",
+  "status": "skip",
+  "reason": "verified by the auditor — the fixed callback ports (1455/53692) are stated correctly; no change.",
+  "evidence": "docs/MANUAL.md:924-925",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A050",
+  "slice": "provider-registry-provider",
+  "status": "skip",
+  "reason": "verified by the auditor — the `provider_models` row's 5-minute disk cache and stale-cache-on-failure behaviour are correct; no change.",
+  "evidence": "docs/MANUAL.md:899",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A175",
+  "slice": "y-missing-capability",
+  "status": "already",
+  "reason": "Already covered: the `session` tool bullet in 'Model, thinking and the context window' documents `thinking` as one of `\"\"`, `low`, `medium`, `high`, `max`, that `\"\"` is the provider default (UIs show 'auto') and the only clearing value, that it is forwarded as `reasoning_effort` and carried on the conversation header. No `none` state is claimed — the subsection the row asks for exists as this bullet.",
+  "evidence": "docs/MANUAL.md:601-605",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A176",
+  "slice": "y-missing-capability",
+  "status": "apply",
+  "reason": "Confirmed missing: no mention of the DeepSeek `max_tokens` spelling or of `finish_reason` anywhere in the manual. Added as a subsection of the provider section's wire-protocol material, right after the three protocol bullets — the natural home for per-protocol field quirks.",
+  "evidence": "docs/MANUAL.md:906-921 (wire protocols); grep -n finish_reason/max_completion_tokens docs/MANUAL.md → no hits",
+  "old_string": "  blocks (consecutive tool results merge into one user message).\n\n### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)",
+  "new_string": "  blocks (consecutive tool results merge into one user message).\n\n### Output caps and `finish_reason`\n\nOutput caps are spelled per protocol, and a mis-spelled cap fails silently.\nNiffler's default spelling is `max_completion_tokens`; DeepSeek honors only\n`max_tokens`, so a cap sent the default way is ignored and the server's own\ndefault (8K/64K/128K, by model) applies — send `max_tokens` for DeepSeek\nendpoints. How a stream ended is reported in `finish_reason`: `length` means the\noutput cap cut the reply short (`llm` logs a truncation warning), `tool_calls`\nmeans the model stopped to call tools, and Anthropic's `max_tokens` stop maps\nonto `length` (its `tool_use` stop maps onto `tool_calls`). Two OpenAI-compatible\nerror finishes, `aborted` and `insufficient_system_resource`, arrive with HTTP\n200 and are surfaced as a retryable stream error, not as a reply.\n\n### Subscription OAuth (ChatGPT Plus/Pro, Claude Pro/Max)"
+ },
+ {
+  "id": "A177",
+  "slice": "y-missing-capability",
+  "status": "code",
+  "reason": "Code row: core's own `thinking` enum is wrong — core/catalog.nim:198-200 declares `[\"low\",\"medium\",\"high\"]` while its description and the runtime accept `\"\"|low|medium|high|max`; add `\"max\"` to the enum (the manual already states the real five values). Not re-verified against the tree in this pass: source reading was out of this batch's budget, so the parent should confirm the line before fixing.",
+  "evidence": "core/catalog.nim:198-200 (row's evidence, not re-read); docs/MANUAL.md:601-604",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A251",
+  "slice": "wrong-claims-summary",
+  "status": "already",
+  "reason": "The approval list has since been completed: all ten tools the report named as missing are present (process_start, process_kill, lsp_registry, mcp_add/mcp_edit/mcp_remove, agent_ask, expert_follow), and the list has grown further (plugin_*, skill_*, provider_*, observe_*). The report's optional closing clause ('and any plugin tool that sets it, so the list is not closed') is still absent, but the false completeness claim the row targets no longer holds.",
+  "evidence": "docs/MANUAL.md:504-517",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A252",
+  "slice": "wrong-claims-summary",
+  "status": "apply",
+  "reason": "Confirmed still open in the current manual: the driver-ack window is called 'a short window' (523-526) and the no-client-registered case is not mentioned. Applying the auditor's FIX: name 1.5 s and state that the rebroadcast is skipped when no interactive client is registered.",
+  "evidence": "docs/MANUAL.md:523-525",
+  "old_string": "- **Driver gone / not interactive**: if the driver does not ack within a\n  short window, the request is rebroadcast on `ev.approval.request` with\n  `fallback: true` so any interactive client can step in.",
+  "new_string": "- **Driver gone / not interactive**: if the driver does not ack within 1.5 s\n  (`ackTimeoutSecs`), the request is rebroadcast on `ev.approval.request` with\n  `fallback: true` so any interactive client can step in; with no interactive\n  client registered the rebroadcast is skipped and the call is denied at once."
+ },
+ {
+  "id": "A253",
+  "slice": "wrong-claims-summary",
+  "status": "apply",
+  "reason": "Confirmed: line 531 still makes the 5-minute timeout universal. The FIX names the tool-approval timeout and gives the `/limit` keep-going question its own 120 s window (both log the same 'timed out after Ns — denying').",
+  "evidence": "docs/MANUAL.md:531",
+  "old_string": "- Unanswered UI requests time out after 5 minutes and are denied.",
+  "new_string": "- An unanswered tool approval times out after 5 minutes (300 s) and is denied;\n  the `/limit` keep-going question has its own shorter window (120 s). Both log\n  `… timed out after Ns — denying`."
+ },
+ {
+  "id": "A254",
+  "slice": "wrong-claims-summary",
+  "status": "apply",
+  "reason": "Confirmed at 861: `skill_audit` still says a copy is invalid when its frontmatter has 'no `name`', while a missing `name:` falls back to the directory name and is accepted. Narrowing the invalid criterion is the FIX.",
+  "evidence": "docs/MANUAL.md:861",
+  "old_string": "(invalid = unreadable SKILL.md, unparseable frontmatter, or no `name`;",
+  "new_string": "(invalid = unreadable SKILL.md, unparseable frontmatter, or a blank `name` — a missing `name:` falls back to the directory name and is accepted;"
+ },
+ {
+  "id": "A255",
+  "slice": "wrong-claims-summary",
+  "status": "apply",
+  "reason": "Half-fixed: the list now writes core's bare names (`spawn`, `kill`, `remove`, plus `conversation_delete`), so the naming half is done. Still missing is the auditor's point that core gates its own tools by name inside `handleCoreTool`, not through a schema — added as a bullet after the auto-approve one.",
+  "evidence": "docs/MANUAL.md:504-507, 532",
+  "old_string": "- `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).",
+  "new_string": "- `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).\n- Core's own destructive tools are named `spawn`, `kill`, `remove` and\n  `conversation_delete`; they are gated by name inside `handleCoreTool`, not\n  through a schema, so `x-harness.approval` appears on component tools only."
+ },
+ {
+  "id": "A259",
+  "slice": "wrong-claims-summary",
+  "status": "code",
+  "reason": "Not a manual claim: the header comment at components/hooks/main.nim:2 still cites `docs/HOOKS.md`, which does not exist (verified: `ls docs/HOOKS.md` → no such file). Fix in code: repoint the comment at the MANUAL's Hooks section (or the hooks design notes under docs/research/), e.g. 'docs/MANUAL.md §Hooks, docs/research/CODEWHALE.md'.",
+  "evidence": "components/hooks/main.nim:2; ls docs/HOOKS.md → missing",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A333",
+  "slice": "component-fabric",
+  "status": "already",
+  "reason": "delta row: it only records where the fabric tool's arguments are enumerated (the tool table). No fix proposed; the row is still accurate in the current manual.",
+  "evidence": "docs/MANUAL.md:2059",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A334",
+  "slice": "component-fabric",
+  "status": "skip",
+  "reason": "Duplicate of A337: the same structural finding (the fabric bullets sit inside '### Fork' with no heading of their own). A337 supplies the single edit; nothing separate to apply here.",
+  "evidence": "docs/MANUAL.md:2150, 2159-2183, 2185",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A335",
+  "slice": "component-fabric",
+  "status": "already",
+  "reason": "delta row: it recorded where fabric is already mentioned (component table, store kinds, approval/on-demand lists, skills list). All those mentions still exist; no fix proposed.",
+  "evidence": "grep -n 'fabric' docs/MANUAL.md:75, 493, 822, 1297, 2267",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A336",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "The tool table (2057-2067) still lists only fabric/agent_*; fabric_help is documented only in passing inside the Guest API bullet (2179). The FIX is to give it its own table row, inserted before the agent_run row.",
+  "evidence": "docs/MANUAL.md:2057-2067, 2179",
+  "old_string": "| `agent_run {task, session?, close?, fork?,",
+  "new_string": "| `fabric_help {topic?}` | Read the Fabric guest reference and worked-example sources from inside the component; an empty `topic` returns the reference plus the example index, a topic returns that program. Discover-only: reach it through `discover` + `invoke` when you are about to write a program, so you never have to locate component files. |\n| `agent_run {task, session?, close?, fork?,"
+ },
+ {
+  "id": "A337",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "Confirmed: '### Fork (a child that has read the discussion)' (2150) ends at the fabric bullets, which then run into '## Expert advisory peer' (2185) with no heading of their own. Inserting the heading before the Governance bullet makes the fabric material addressable.",
+  "evidence": "docs/MANUAL.md:2150, 2158-2159, 2185",
+  "old_string": "- **Governance, not sandbox**",
+  "new_string": "### Fabric (programmable tool calling)\n\n- **Governance, not sandbox**"
+ },
+ {
+  "id": "A338",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "The fabric table row still enumerates arguments but states no budgets. Appending one sentence to that row (and linking the guide rather than copying its limits table) is the FIX.",
+  "evidence": "docs/MANUAL.md:2059",
+  "old_string": "Approved native code is bash-class trust, not a sandbox. |",
+  "new_string": "Approved native code is bash-class trust, not a sandbox. Budgets: `maxCalls` defaults to 200 (max 1000) and `timeoutMs` to 240 s (hard cap 300 s, also clamped to the caller's remaining session deadline); every nested call inherits the run's remaining time, and oversized `finish()` values spill to `var/fabric-artifacts/<run>.json` ([FABRIC_GUIDE.md](FABRIC_GUIDE.md), \"Budgets and limits\"). |"
+ },
+ {
+  "id": "A339",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "The Guards bullet (2168-2171) documents the lease, maxCalls and noSpawn but nothing about effect-aware batching; `x-harness.effect` is explained only for MCP servers (1297). Adding one bullet after Guards states the concurrency cap and the read/write classification.",
+  "evidence": "docs/MANUAL.md:2168-2171, 1297",
+  "old_string": "`x-harness.noSpawn` denies subagent spawns from subagents at dispatch time.",
+  "new_string": "`x-harness.noSpawn` denies subagent spawns from subagents at dispatch time.\n- **Effect-aware batching**: `batch()` keeps at most 4 calls on the bus at once. Each tool is classified by `x-harness.effect` (anything undeclared counts as a write); reads may fill the cap together, writes are globally exclusive, not per target."
+ },
+ {
+  "id": "A342",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "The Guards bullet still says only that the per-turn lease expires stale requests; the typed-mode fingerprint pin (catalog-changed on drift) is unstated. Extending the clause in place is the FIX.",
+  "evidence": "docs/MANUAL.md:2169-2171",
+  "old_string": "per-turn lease expires stale requests; `maxCalls` budgets calls;",
+  "new_string": "per-turn lease expires stale requests; in typed mode each call is checked\n  against the pinned component fingerprint, so a component replaced mid-run\n  fails with `catalog-changed` instead of calling a drifted tool; `maxCalls`\n  budgets calls;"
+ },
+ {
+  "id": "A343",
+  "slice": "component-fabric",
+  "status": "apply",
+  "reason": "The Self-extension lifecycle list (714-727) gives builder+spawn as the only graduation route and now also covers runner kill. Adding the one cross-ref line between step 4 and the `replicas` paragraph is the FIX (re-anchored on the current text, which gained the runner sentence since the report).",
+  "evidence": "docs/MANUAL.md:722-729",
+  "old_string": "   the next session call, not on the next boot\n\n`replicas` is optional (1–16, default 1)",
+  "new_string": "   the next session call, not on the next boot\n\nA fabric program that stabilizes takes the same route: `fabricprog` is the\nscratchpad, `builder.build` + `core.spawn` is graduation (see\n[FABRIC_GUIDE.md](FABRIC_GUIDE.md)).\n\n`replicas` is optional (1–16, default 1)"
+ },
+ {
+  "id": "A344",
+  "slice": "component-fabric",
+  "status": "skip",
+  "reason": "The `make test-bash` example list (2284-2288) is illustrative ('or just one') and already omits test-grep, test-edit, test-mcp, test-agent* and test-autostart-less targets; adding only test-fabric would keep it non-exhaustive while looking complete. The FIX itself says it is worth doing only if the list is kept exhaustive, so no edit.",
+  "evidence": "docs/MANUAL.md:2284-2288",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A345",
+  "slice": "component-fabric",
+  "status": "skip",
+  "reason": "verified by the auditor — the `fabricprog` store row ('program name | the model-curated fabric program library (`fabric {name}` runs one)') matches the fabric table row; no change.",
+  "evidence": "docs/MANUAL.md:2267, 2059",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A466",
+  "slice": "provider-registry-provider",
+  "status": "apply",
+  "reason": "The `provider_add` row (890) still says only 'add an API-key provider' and 'the first one becomes active automatically'; it is an upsert whose response can report an update, and first-provider auto-activation applies to OAuth logins too.",
+  "evidence": "docs/MANUAL.md:890",
+  "old_string": "add an API-key provider (`protocol`: `openai-chat` default or `anthropic`); the first one becomes active automatically; response is redacted",
+  "new_string": "add or overwrite an API-key provider (upsert by nickname; `protocol`: `openai-chat` default or `anthropic`); the first provider — API-key or OAuth — becomes active automatically unless `active: false`; response is redacted"
+ },
+ {
+  "id": "A473",
+  "slice": "provider-registry-provider",
+  "status": "apply",
+  "reason": "The `provider_remove` row (902) says only 'another one takes over or environment fallback resumes', hiding the deterministic rule. Naming it in the same sentence is the FIX.",
+  "evidence": "docs/MANUAL.md:902",
+  "old_string": "delete a provider; if it was active, another one takes over or environment fallback resumes",
+  "new_string": "delete a provider; if it was active, the alphabetically first remaining provider takes over, else the `NIF_OPENAI_*` fallback resumes"
+ },
+ {
+  "id": "A474",
+  "slice": "provider-registry-provider",
+  "status": "apply",
+  "reason": "The `provider:active` bullet (966-967) still calls the marker 'a plain store doc' and gives neither its shape nor its self-healing. Appending both to that bullet is the FIX.",
+  "evidence": "docs/MANUAL.md:966-967",
+  "old_string": "- The `active` marker is a plain store doc — remove or overwrite it with\n  `store` tools if you need manual surgery.",
+  "new_string": "- The `active` marker is a plain store doc (`{nickname, updatedAt}`) — written\n  with `expectRev` 0 — and a dangling or empty marker is deleted automatically\n  on the next read, so `provider_remove`/`provider_use_environment` need no\n  manual repair; `store` tools remain there for manual surgery if you want it."
+ },
+ {
+  "id": "A478",
+  "slice": "provider-registry-provider",
+  "status": "apply",
+  "reason": "The `provider_switch` row (900) says 'live-updates the LLM backend', which reads as a push; the manual's own resolution prose (952-953) says `llm` re-reads the active provider on every chat call. Rewording the row removes the contradiction.",
+  "evidence": "docs/MANUAL.md:900, 951-953",
+  "old_string": "make another stored provider active; live-updates the LLM backend",
+  "new_string": "make another stored provider active; the next chat call (and `llm_resolve`) uses it immediately, with no restart"
+ }
+]

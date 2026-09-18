@@ -1,0 +1,524 @@
+[
+ {
+  "id": "A063",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "the \u2264100-servers cap exists nowhere in code (manager reads up to 1000 records); drop the claim",
+  "evidence": "docs/MANUAL.md:1218",
+  "old_string": "(\u226432 chars, `bridge` reserved; \u2264100\n  servers per harness); tool names are sanitized to the same alphabet and\n  capped at 64 chars.",
+  "new_string": "(\u226432 chars, `bridge` reserved); tool names are sanitized to the same\n  alphabet and capped at 64 chars."
+ },
+ {
+  "id": "A064",
+  "slice": "external-mcp-servers-mcp",
+  "status": "skip",
+  "reason": "verified by the auditor (timeout 0 \u21d2 120 s, idle 300000, both clamped 24 h \u2014 components/mcp/main.go:92-93,440)",
+  "evidence": "docs/MANUAL.md:1225-1226",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A065",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "mcp_search (components/mcp/main.go:148) missing from the tools table; add it plus the per-server-tools timing note",
+  "evidence": "docs/MANUAL.md:1313",
+  "old_string": "| `mcp_refresh` | force a bridge to drop its session, reconnect and re-list now |\n",
+  "new_string": "| `mcp_refresh` | force a bridge to drop its session, reconnect and re-list now |\n| `mcp_search` | query the official MCP Registry for servers by keyword (read-only); returns ready `mcp_add` arguments for installable npm/PyPI entries |\n\nA server's own tools appear in the catalog only once its bridge has spawned \u2014\nright after `mcp_add`, or on boot from the restored component record.\n"
+ },
+ {
+  "id": "A066",
+  "slice": "external-mcp-servers-mcp",
+  "status": "skip",
+  "reason": "verified by the auditor (three write gates in components/mcp/main.go:98,123,134 plus core's spawn gate)",
+  "evidence": "docs/MANUAL.md:1310-1312",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A067",
+  "slice": "external-mcp-servers-mcp",
+  "status": "skip",
+  "reason": "verified by the auditor (inlineLimit 64 KiB, var/mcp-results spill \u2014 components/mcp-bridge/operations.go:19,152,180)",
+  "evidence": "docs/MANUAL.md:1240-1243",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A068",
+  "slice": "external-mcp-servers-mcp",
+  "status": "skip",
+  "reason": "verified by the auditor (threshold, expose enum, \u226432 prompts/\u226416 args)",
+  "evidence": "components/mcp-bridge/operations.go:322-333",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A418",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "mcp_refresh declares only onDemand (no approval) in components/mcp/main.go:145; mcp_servers/mcp_search are reads \u2014 NOTE the Approvals chapter list (MANUAL.md:495) still names mcp_refresh as gated and is wrong (separate row)",
+  "evidence": "docs/MANUAL.md:1305",
+  "old_string": "All on the `mcp` component, all on-demand; writes are approval-gated:",
+  "new_string": "All on the `mcp` component, all on-demand. `mcp_add`, `mcp_edit` and\n`mcp_remove` are approval-gated (as is the `core.spawn`/`core.remove` they\nissue); `mcp_refresh`, `mcp_servers` and `mcp_search` are not \u2014 refreshing\nonly re-lists an already-approved server."
+ },
+ {
+  "id": "A422",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "deferDirectTools sends the whole server back to on-demand above NIF_MCP_DIRECT_THRESHOLD (default 10)",
+  "evidence": "docs/MANUAL.md:1225",
+  "old_string": "`\"expose\": \"direct\"` opts a server's tools into every new conversation's\n  snapshot.",
+  "new_string": "`\"expose\": \"direct\"` opts a server's tools into every new conversation's\n  snapshot \u2014 unless the server publishes more than `NIF_MCP_DIRECT_THRESHOLD`\n  tools (default 10), in which case the bridge defers the entire server to\n  on-demand. The threshold is read by the bridge process when it announces\n  its tools, so it is fixed for that child's lifetime (change it and\n  respawn the bridge)."
+ },
+ {
+  "id": "A424",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "two hidden names exist: generic mcp_<server>_prompt and per-prompt mcp_<server>_prompt_<name> (the slash command's Tool)",
+  "evidence": "docs/MANUAL.md:1321",
+  "old_string": "- **Prompts become slash commands.** Each server prompt is registered as a\n  hidden catalog tool `mcp_<server>_prompt` (invisible to the LLM,\n  `x-harness.hidden`) plus a slash command `mcp-<server>-<promptname>` whose\n  named parameters mirror the prompt's arguments (\u226432 prompts per server,\n  \u226416 arguments each).",
+  "new_string": "- **Prompts become slash commands.** Each server prompt is registered as a\n  hidden catalog tool `mcp_<server>_prompt_<promptname>` (invisible to the\n  LLM, `x-harness.hidden`) plus a slash command `mcp-<server>-<promptname>`\n  whose named parameters mirror the prompt's arguments (\u226432 prompts per\n  server, \u226416 arguments each); a second hidden generic tool\n  `mcp_<server>_prompt` renders any prompt by name for clients."
+ },
+ {
+  "id": "A425",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "the resources op enum is list|templates|read (components/mcp-bridge/operations.go:310-317,378)",
+  "evidence": "docs/MANUAL.md:1333",
+  "old_string": "  (`x-harness.effect: \"read\"`): `{op: \"list\"}` or `{op: \"read\", uri: ...}`.",
+  "new_string": "  (`x-harness.effect: \"read\"`): `{op: \"list\"}`, `{op: \"templates\"}` (URI\n  templates) or `{op: \"read\", uri: ...}`."
+ },
+ {
+  "id": "A427",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "bridge path is NIF_MCP_BRIDGE_BIN else <root>/var/bin/mcp-bridge (components/mcp/main.go:57-61)",
+  "evidence": "docs/MANUAL.md:1213",
+  "old_string": "```\n\n- **Naming**: tools are prefixed",
+  "new_string": "```\n\nThe bridge is only ever started this way (or by the probe with `--probe`); its\npath is `NIF_MCP_BRIDGE_BIN`, default `<root>/var/bin/mcp-bridge`, and the\nmanager re-spawns the child after a crash or drift.\n\n- **Naming**: tools are prefixed"
+ },
+ {
+  "id": "A433",
+  "slice": "external-mcp-servers-mcp",
+  "status": "apply",
+  "reason": "mcp_edit and mcp_remove each trip two gates (edit/respawn, remove/core.remove)",
+  "evidence": "docs/MANUAL.md:1315",
+  "old_string": "Adding an MCP server therefore asks for approval twice by design: once for\nthe `mcp_add` itself, once for the `core.spawn` it triggers \u2014 the human gate\non changing the harness shape (docs/ARCHITECTURE.md).",
+  "new_string": "Adding an MCP server therefore asks for approval twice by design: once for\nthe `mcp_add` itself, once for the `core.spawn` it triggers \u2014 the human gate\non changing the harness shape (docs/ARCHITECTURE.md). `mcp_edit` likewise\nasks twice (the edit, then the respawn) and `mcp_remove` twice (the removal,\nthen `core.remove`)."
+ },
+ {
+  "id": "A401",
+  "slice": "component-lsp",
+  "status": "already",
+  "reason": "the add-a-language path is documented (three routes in ### Registry: adding a language + fallback dirs and make install-lsp in the same section)",
+  "evidence": "docs/MANUAL.md:1092-1102",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A402",
+  "slice": "component-lsp",
+  "status": "already",
+  "reason": "lsp_registry add, the niffler-tui /lsp picker and the hand-written servers.json are all named as routes",
+  "evidence": "docs/MANUAL.md:1077",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A403",
+  "slice": "component-lsp",
+  "status": "already",
+  "reason": "language-independence is stated ('Adding a language is a config entry, never code', AGENTS.md invariant)",
+  "evidence": "docs/MANUAL.md:1007",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A406",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "row missing the add shape, optional keys, override and E_LSP_CONFLICT refusal; remove is user-entries-only",
+  "evidence": "docs/MANUAL.md:1016",
+  "old_string": "| `lsp_registry {action: add\\|remove, name, command, extensions?}` | Mutate the user registry (approval-gated write); `add` also overrides a built-in of the same name |",
+  "new_string": "| `lsp_registry {action: add\\|remove, name, command, extensions?, initializationOptions?, requires?, cheap?}` | Mutate the user registry (approval-gated write). `add` takes `{name (lowercase letters/digits/hyphens), command, extensions: {\".ext\": \"languageId\"}}`, overrides a built-in of the same name, and refuses an extension already mapped to another server with `E_LSP_CONFLICT` (remove that mapping first); `remove` deletes user entries only |"
+ },
+ {
+  "id": "A407",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "five codes missing from the list: E_LSP_PROTOCOL, E_LSP_REGISTRY, E_LSP_CONFLICT, E_NOT_TEXT, E_BAD_SHAPE",
+  "evidence": "docs/MANUAL.md:1021",
+  "old_string": "`[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,\n`E_LSP_SCOPE`, `E_NOT_FOUND`) let callers route on codes, not prose \u2014",
+  "new_string": "`[E_LSP_*]` errors (`E_LSP_UNAVAILABLE`, `E_LSP_UNSUPPORTED`, `E_LSP_TIMEOUT`,\n`E_LSP_SCOPE`, `E_LSP_PROTOCOL`, `E_LSP_REGISTRY`, `E_LSP_CONFLICT`,\n`E_NOT_FOUND`, `E_NOT_TEXT`, `E_BAD_SHAPE`) let callers route on codes, not\nprose \u2014"
+ },
+ {
+  "id": "A409",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "~/bin is also a fallback bin dir (components/lsp/roots.nim:114)",
+  "evidence": "docs/MANUAL.md:1107",
+  "old_string": "(`~/go/bin`, `~/.nimble/bin`, `~/.local/bin`, `~/.dotnet/tools`);",
+  "new_string": "(`~/go/bin`, `~/.nimble/bin`, `~/.local/bin`, `~/.dotnet/tools`, `~/bin`);"
+ },
+ {
+  "id": "A410",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "limits/timeouts never stated: 8 live instances (LRU), 60 s query budget, 30 s initialize, 1.5 s diagnostics settle inside the 90 s tool cap",
+  "evidence": "docs/MANUAL.md:1058",
+  "old_string": "One server process is\nkept per (server, workspace) and reused across queries; a timeout or protocol\nerror tears that instance down so the next query starts fresh.",
+  "new_string": "One server process is\nkept per (server, workspace) and reused across queries; a timeout or protocol\nerror tears that instance down so the next query starts fresh, and at most\neight live instances are kept (LRU-evicted). Each query runs on a 60 s budget\nand the `initialize` handshake gets 30 s, inside the tool's 90 s envelope;\ndiagnostics wait 1.5 s after the first push before settling."
+ },
+ {
+  "id": "A411",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "stale 'paths are confined to the workspace' sentence (commit 6bc4f6d allows out-of-workspace files) and no root/marker story",
+  "evidence": "docs/MANUAL.md:1060",
+  "old_string": "Paths are\nconfined to the conversation workspace (relative `path` arguments are\nresolved against it; `..` and absolute escapes are refused).",
+  "new_string": "A relative `path`\nresolves against the conversation workspace; without an explicit\n`workspaceRoot` the server root is derived from the file's nearest module\nmarker for its language (`go.mod`/`go.work`, `Cargo.toml`,\n`tsconfig.json`/`package.json`, `pyproject.toml`, `*.nimble`/`config.nims`,\n`compile_commands.json`/`CMakeLists.txt`), then `.git`, then the workspace \u2014\nthe walk never climbs above the workspace, and markers are built in per\nextension, so a language added purely as a registry entry keeps the\n`.git`/workspace fallback. Only a `..` component or a marker walk that would\nreach the filesystem root or `$HOME` is refused (`E_LSP_SCOPE`, asking for an\nexplicit `workspaceRoot`)."
+ },
+ {
+  "id": "A412",
+  "slice": "component-lsp",
+  "status": "skip",
+  "reason": "manual half (state the fallback) folded into A411's edit; the optional per-entry rootMarkers field is a code/config idea, not a manual fix",
+  "evidence": "docs/MANUAL.md:1055-1057",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A413",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "the didSave echo is undocumented (nimsuggest-based Nim servers publish diagnostics only on save)",
+  "evidence": "docs/MANUAL.md:1056",
+  "old_string": "Queries open the document transiently (`didOpen` with the current bytes \u2192\nrequest \u2192 `didClose`), so every query sees the file as it is on disk right\nnow \u2014 including the agent's own just-written edits.",
+  "new_string": "Queries open the document transiently (`didOpen` with the current bytes \u2192\nrequest \u2192 `didClose`), so every query sees the file as it is on disk right\nnow \u2014 including the agent's own just-written edits \u2014 and the opened bytes are\nechoed as a `didSave` as well, because the nimsuggest-based Nim servers\npublish diagnostics only on save (a no-op for open-push servers such as\npyright, clangd and bash-language-server)."
+ },
+ {
+  "id": "A414",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "census skips hidden/junk dirs and the warmup publishes ev.lsp.warm; neither is in the manual (the warm-budget numbers already are)",
+  "evidence": "docs/MANUAL.md:1066",
+  "old_string": "census (stops at 5 000 files or a 2 s budget) and pre-starts servers for\nthe most prevalent languages, so the first real query does not pay server\nstartup.",
+  "new_string": "census (stops at 5 000 files or a 2 s budget; hidden files and junk\ndirectories such as `node_modules`, `vendor`, `dist`, `build` and `target`\nare skipped) and pre-starts servers for the most prevalent languages, so the\nfirst real query does not pay server startup. It then publishes\n`ev.lsp.warm {workspace, warmed, skipped}` so a UI can show which servers came\nup and which were skipped."
+ },
+ {
+  "id": "A415",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "a malformed registry file or entry is skipped with a stderr warning, not fatal \u2014 worth a clause after the re-read sentence",
+  "evidence": "docs/MANUAL.md:1117",
+  "old_string": "Override one by adding an entry with the same name. The registry is\nre-read on every call, so edits take effect immediately.",
+  "new_string": "Override one by adding an entry with the same name. The registry is\nre-read on every call, so edits take effect immediately; a malformed file or\nentry is skipped with a warning on stderr (visible in `var/logs/lsp.log`)\ninstead of failing the query."
+ },
+ {
+  "id": "A416",
+  "slice": "component-lsp",
+  "status": "apply",
+  "reason": "name the ALL=1 invocation plus the non-TTY skip, sudo-free install and named-runtime-failure behavior",
+  "evidence": "docs/MANUAL.md:1108",
+  "old_string": "`make install-lsp` installs them idempotently (Go, Nim and TS are mandatory \u2014\nNiffler is built from those \u2014 the rest are y/n prompts, `--all` for\nunattended installs;",
+  "new_string": "`make install-lsp` installs them idempotently (Go, Nim and TS are mandatory \u2014\nNiffler is built from those \u2014 the rest are y/n prompts, `make install-lsp\nALL=1` (`--all`) for unattended installs, and a non-TTY run skips the optional\nlanguages; nothing is installed with `sudo` \u2014 only under `$HOME` \u2014 and a\nmissing runtime (JDK, .NET SDK, rustup) is reported with the exact command\ninstead of being auto-installed; the same script installs the user-local JDK\nbelow. A failure is non-fatal per language: the lsp tool just skips it with\n`E_LSP_UNAVAILABLE`;"
+ },
+ {
+  "id": "A417",
+  "slice": "component-lsp",
+  "status": "skip",
+  "reason": "already covered: the manual names nimtortoise among the built-in defaults and documents override-by-name (the extra nimlangserver/nimlsp note is optional and adds nothing the override rule does not imply)",
+  "evidence": "docs/MANUAL.md:1104-1117",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A042",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "apply",
+  "reason": "build also takes the optional files? (extra Go sources) and defines? fields (components/builder/main.nim:50-51)",
+  "evidence": "docs/MANUAL.md:706",
+  "old_string": "2. `build {lang, name, source}` (the `builder` component) compiles it into\n   `var/bin/`",
+  "new_string": "2. `build {lang, name, source, files?, defines?}` (the `builder` component)\n   compiles it into `var/bin/` (`files` adds further Go sources, `defines`\n   passes compiler defines)"
+ },
+ {
+  "id": "A158",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "skip",
+  "reason": "duplicate of A042 (same anchor, same fix); applying A042 covers it",
+  "evidence": "docs/MANUAL.md:701-702",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A043",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "already",
+  "reason": "the lifecycle already uses the registered flat names spawn/kill/remove (docs/MANUAL.md:703-707); no core- prefix left to rename",
+  "evidence": "docs/MANUAL.md:703-707",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A044",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "skip",
+  "reason": "verified by the auditor (replicas 1-16, queue group, ToolConcurrent/ConcurrentLimit)",
+  "evidence": "docs/MANUAL.md:709-724",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A045",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "skip",
+  "reason": "duplicate of A188 (same restart-policy paragraph, same source report); applying A188 covers it",
+  "evidence": "docs/MANUAL.md:726-730",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A159",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "skip",
+  "reason": "delta row with no delta \u2014 auditor confirmed the replicas/parallel text is correct",
+  "evidence": "docs/MANUAL.md:709-724",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A160",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "skip",
+  "reason": "delta row with no delta \u2014 spawned components are recorded in the store (kind component) and the manual says so",
+  "evidence": "docs/MANUAL.md:726-727",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A187",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "apply",
+  "reason": "session runners are killed the same way but come back on the next session call, not on the next boot",
+  "evidence": "docs/MANUAL.md:711",
+  "old_string": "4. `kill {name}` stops every replica temporarily (restored on next boot);\n   `remove {name}` stops the group and deletes its persisted record",
+  "new_string": "4. `kill {name}` stops every replica temporarily (restored on next boot);\n   `remove {name}` stops the group and deletes its persisted record. A runner\n   is killed the same way (`kill {name: \"session-<id>\"}`) but comes back on\n   the next session call, not on the next boot"
+ },
+ {
+  "id": "A188",
+  "slice": "self-extension-and-component-lifecycle",
+  "status": "apply",
+  "reason": "restart policy is never described in prose; backoff is 1 s doubling to 8 s (core/supervisor.nim:38-44 \u2014 the report's 0.5 s was wrong)",
+  "evidence": "docs/MANUAL.md:731",
+  "old_string": "**Persistence of shape**: spawned components are recorded in the store\n(kind `component`) and restored on normal boot. `--minimal` leaves those\nrecords untouched but does not restore them.",
+  "new_string": "**Restart policy**: every supervised child carries one \u2014 `never` or\n`on-failure` (the default; a restarted child is tried after 1 s, doubling per\nconsecutive crash, capped at 8 s). The manifest sets it per component\n(`manifest.yaml`), `spawn` always uses `on-failure`, and session runners are\nalways `never`.\n\n**Persistence of shape**: spawned components are recorded in the store\n(kind `component`) and restored on normal boot. `--minimal` leaves those\nrecords untouched but does not restore them."
+ },
+ {
+  "id": "A366",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "delta row without a fix \u2014 the shipped-components row (docs/MANUAL.md:72) already names the five tools, the review-receipt pair and on-demand exposure",
+  "evidence": "docs/MANUAL.md:72",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A367",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "delta row without a fix \u2014 the shipped-policy bullet (docs/MANUAL.md:1570-1571) already lists the git tools as the on-demand long tail",
+  "evidence": "docs/MANUAL.md:1573",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A369",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter, whose receipts paragraph states that review_receipt writes under var/review-receipts/ without an approval gate",
+  "evidence": "docs/MANUAL.md:495",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A370",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "already resolved elsewhere: the var/ layout table lists `var/review-receipts/` (docs/MANUAL.md:49)",
+  "evidence": "docs/MANUAL.md:49",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A371",
+  "slice": "component-git",
+  "status": "apply",
+  "reason": "no MANUAL chapter for git; add one (tools, params/caps, failure semantics, receipts, binary resolution) before the processes chapter, per the report's \u00a74",
+  "evidence": "docs/MANUAL.md:1137",
+  "old_string": "## Background processes (`processes`)",
+  "new_string": "## Repository inspection (`git`)\n\nStatus: **implemented** (Nim component; `tests/t_git.nim`).\n\nThe read-only half of a git workflow, as first-class tools; the write half\n(add/commit/push/checkout/restore) stays in `bash`, which is approval-gated.\nEvery subcommand runs as a fixed argv (`--no-optional-locks -c color.ui=false\n-c core.quotepath=false --no-pager`), never through a shell, scoped with\n`-C <repo>` \u2014 flags, refs and paths travel byte-for-byte.\n\n| Tool | What it does |\n|---|---|\n| `git_status {repo?, path?}` | current branch plus one porcelain line per changed file; untracked files appear here, never in `git_diff` |\n| `git_diff {repo?, path?, unified?=3, stat?=false}` | everything changed since HEAD, staged **and** unstaged (`unified` clamped 0..50; `stat: true` is a one-line-per-file summary) |\n| `git_log {repo?, path?, max_count?=20, author?}` | recent history, one line per commit (`max_count` clamped 1..200; `author` is a substring) |\n| `git_show {repo?, rev, path?}` | one commit in full: metadata, message, complete diff (`rev` required) |\n| `git_blame {repo?, path, start_line?=1, max_lines?=200}` | line-by-line attribution; uncommitted lines read `Not Committed Yet` |\n| `review_receipt {op?=\"write\", findings?, model?}` | the local review receipt write/check pair (below) |\n\nAll six are **on-demand** (`discover`/`invoke`), and the five read tools carry\n`parallel: true` and a 45 s envelope. An empty or relative `repo` resolves\nagainst the conversation workspace when core injects the call (session turns);\na direct bus call resolves it against the component's cwd, the harness root.\n`path` is never rewritten \u2014 it travels as `-- <path>` and resolves against\n`repo`.\n\n**Failure and refusal semantics.** Argument refusals never start git: they\ncome back as exit 2 with an `(exit 2 \u2014 refused)` prefix (non-existent or `..`\n`repo`; absolute or `..` `path`; option-looking, whitespace-bearing or\noversized `rev`; a `-`-prefixed or oversized `author`). Real runs return git's\nexit code with git's own output; `124` is prefixed `[timed out]` and `128` with\n\"not a git repository\" is prefixed `[no git repository at the target\ndirectory]`. Empty results get friendly markers (`[no changes since HEAD]`,\n`[no commits matched]`); everything else is raw git stderr, so a **detached\nHEAD** is just git's `## HEAD (no branch)` and a broken index is git's fatal\ntext with exit 128 \u2014 neither is special-cased. Output is bounded twice: 40 000\nbytes kept head+tail (with a `truncated N of M bytes` marker) and a per-tool\nline cap \u2014 `git_status` 200 lines, `git_diff` 10 000 (500 with `stat`),\n`git_show` 10 000, `git_log` and `git_blame` at their count plus one \u2014 each\nwith a \"narrow the scope\" hint.\n\n**Review receipts.** `review_receipt` is the one write-side tool here and the\none git tool with no approval gate: it only ever writes a file under\n`var/review-receipts/`. `op: \"write\"` records a SHA-256 fingerprint of the\nworking-tree diff (plus optional `findings` and `model`) as\n`rr-<unix>-<fp8>.json` (`schema_id: \"niffler.review-receipt/v1\"`, `id`,\n`created_at`, `diff_fingerprint`, `note`); `op: \"check\"` compares the current\ndiff with the newest receipt \u2014 exit 0 plus the receipt id when they match,\nexit 1 with `receipt_fingerprint` and `current_fingerprint` when the diff\nmoved, and exit 1 with a `detail` when there are no receipts, none parse, or\nthe diff is empty. It never calls a model.\n\n**The git binary.** `git` must resolve on `PATH`, and a `PATH` hit that is the\ncomponent's own `var/bin/git` is skipped (that would recurse); unresolved git\nreturns exit 127 with an install hint.\n\n## Background processes (`processes`)"
+ },
+ {
+  "id": "A374",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (receipt schema_id/id/diff_fingerprint and the exit 0/1 check semantics)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A375",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (40 000-byte head+tail cap plus the per-tool line caps and their hints)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A376",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (exit 2 refusals, 124/128 prefixes, empty-result markers)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A377",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (detached HEAD and a broken index are raw git output, not special-cased)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A378",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (workspace when core-injected, component cwd = harness root for a direct call)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A379",
+  "slice": "component-git",
+  "status": "code",
+  "reason": "the five read tools declare onDemand/parallel but no x-harness.effect, so fabric's classifier (default write) schedules git_status/git_diff exclusively: add \\\"effect\\\": \\\"read\\\" to components/git/main.nim:185,215,253,290,319",
+  "evidence": "docs/MANUAL.md:72",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A380",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter (the five read tools carry parallel: true and a 45 s envelope; review_receipt is not parallel)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A381",
+  "slice": "component-git",
+  "status": "skip",
+  "reason": "folded into A371's new chapter ('The git binary': PATH resolution, self-binary skip, exit 127 hint)",
+  "evidence": "docs/MANUAL.md:1128",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A382",
+  "slice": "component-git",
+  "status": "code",
+  "reason": "the review_receipt doc comment points at docs/RECEIPTS.md, which does not exist (components/git/main.nim:367), and the component registers no selftest, so /doctor lists it as not implementing \u2014 drop the doc reference or add the file/self-test",
+  "evidence": "docs/MANUAL.md:2403",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A179",
+  "slice": "session-runners",
+  "status": "apply",
+  "reason": "say what restart policy never means for a runner: no restart, re-ensured by the next session call, corpse reaped mid-wait",
+  "evidence": "docs/MANUAL.md:139-140",
+  "old_string": "The runner is a supervised\nchild (restart policy `never`); it announces itself as component",
+  "new_string": "The runner is a supervised\nchild (restart policy `never`), and that is literal: a runner that dies is not\nrestarted \u2014 the next session call re-ensures it from the store, and a corpse\nis reaped mid-wait so the replacement is spawned immediately. It announces\nitself as component"
+ },
+ {
+  "id": "A180",
+  "slice": "session-runners",
+  "status": "apply",
+  "reason": "the idle-retirement mechanism behind NIF_RUNNER_IDLE_S is never explained (env table only states the timeout)",
+  "evidence": "docs/MANUAL.md:144-145",
+  "old_string": "Sessions are ephemeral: history lives\nin the store, so a fresh runner resumes the conversation on the next call.",
+  "new_string": "Sessions are ephemeral: history lives\nin the store, so a fresh runner resumes the conversation on the next call. A\nrunner with no session call for `NIF_RUNNER_IDLE_S` (default 600 s) retires\ngracefully and is re-created on the next call; the idle clock is stamped when\na turn finishes, so a long turn counts as activity, not idleness."
+ },
+ {
+  "id": "A182",
+  "slice": "session-runners",
+  "status": "apply",
+  "reason": "no Troubleshooting row for the missing session-runner binary",
+  "evidence": "docs/MANUAL.md:2403",
+  "old_string": "| agent-modified sources | `git restore components/ core/ sdk/` then `make build` (see Recovery) |",
+  "new_string": "| agent-modified sources | `git restore components/ core/ sdk/` then `make build` (see Recovery) |\n| session call fails: \"session runner binary missing\" | `var/bin/session` was never built \u2014 `make build` |"
+ },
+ {
+  "id": "A183",
+  "slice": "session-runners",
+  "status": "apply",
+  "reason": "the runner's other per-conversation subjects are undocumented elsewhere; the set is now five (.steer, .advise, .map, .diag, .tool)",
+  "evidence": "docs/MANUAL.md:146",
+  "old_string": "Killing a runner kills only that conversation \u2014 the process is the unit of\nisolation. Turns never nest either way.",
+  "new_string": "Killing a runner kills only that conversation \u2014 the process is the unit of\nisolation. Turns never nest either way. Beyond `.call` a runner serves five\nper-conversation subjects, each carrying the same session id: `.steer`\n(mid-turn steering), `.advise` (expert advice, answered from the idle slot),\n`.map` (repo-map auto-append), `.diag` (asynchronous diagnostics pushed by\n`edit`) and `.tool` (the nested session-call proxy used by fabric and\nsubagents)."
+ },
+ {
+  "id": "A087",
+  "slice": "expert-advisory-peer-expert",
+  "status": "skip",
+  "reason": "verified by the auditor (expert_follow arming, live-tool gate, stale-turn/no-active-turn rejections)",
+  "evidence": "docs/MANUAL.md:2185-2194",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A088",
+  "slice": "expert-advisory-peer-expert",
+  "status": "skip",
+  "reason": "verified by the auditor (exactly four tools, all on-demand)",
+  "evidence": "docs/MANUAL.md:2200-2205",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A089",
+  "slice": "expert-advisory-peer-expert",
+  "status": "skip",
+  "reason": "verified by the auditor (advice folded as a marked user message and announced on ev.session.advice)",
+  "evidence": "docs/MANUAL.md:2194-2196",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A313",
+  "slice": "expert-advisory-peer-expert",
+  "status": "apply",
+  "reason": "the judge's economics are stated only qualitatively; publish the constants (components/expert/main.nim:44-54)",
+  "evidence": "docs/MANUAL.md:2202",
+  "old_string": "global: one judgment in flight, shared cooldown, per-session latest-state\ncoalescing.",
+  "new_string": "global: one judgment in flight, shared cooldown, per-session latest-state\ncoalescing. The published numbers: at most 2 judgments per turn\n(`MaxJudgmentsPerTurn`) with at least 8 s between them (`EvalCooldownMs`); the\nframe keeps 8 recent tool activities (`MaxActivities`), clips each field at\n400 chars (`MaxField`), keeps a 2 000-char reasoning tail (`MaxReasoningTail`)\nand caps an advisory message at 1 200 chars (`MaxMessage`)."
+ },
+ {
+  "id": "A330",
+  "slice": "expert-advisory-peer-expert",
+  "status": "apply",
+  "reason": "the research pointer is wholesale; name the sections so the MANUAL is not read as the spec",
+  "evidence": "docs/MANUAL.md:2188",
+  "old_string": "The `expert` component is a non-interactive advisory peer (design:\n[research/EXPERT.md](research/EXPERT.md)).",
+  "new_string": "The `expert` component is a non-interactive advisory peer (design:\n[research/EXPERT.md](research/EXPERT.md) \u2014 \u00a72 knowledge prefix, \u00a74 scheduling,\n\u00a75 judgment contract, \u00a76 turn-bound advice, \u00a78 cost and observability)."
+ }
+]

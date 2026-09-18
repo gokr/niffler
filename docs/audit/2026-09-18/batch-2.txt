@@ -1,0 +1,7 @@
+component-bash	22
+y-capabilities-missing-from-manual	13
+component-mcp	9
+testing	7
+troubleshooting	5
+minimal-boot-profile	2
+contents	1

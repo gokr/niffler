@@ -1,0 +1,487 @@
+[
+ {
+  "id": "A481",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "added the two missing subjects to the bus block (svc.session.<id>.map for the repomap append, ev.workspace.opened for workspace pre-warm)",
+  "evidence": "docs/MANUAL.md:428-431",
+  "old_string": "svc.session.<id>.advise  turn-bound advisory request/reply (the expert peer):\n                         accepted only while the named turnId is live\n",
+  "new_string": "svc.session.<id>.advise  turn-bound advisory request/reply (the expert peer):\n                         accepted only while the named turnId is live\nsvc.session.<id>.map     repomap → runner: the workspace map to append once\nev.workspace.opened    core → components: {workspace, conversationId} — a\n                       conversation's workspace, for pre-warm and the repo-map append\n"
+ },
+ {
+  "id": "A482",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "each of the four NIF_REPOMAP_MIN_* rows now states that the gates are append-only and that repo_map itself is never gated",
+  "evidence": "docs/MANUAL.md:378-381",
+  "old_string": "| `NIF_REPOMAP_MIN_CENSUS` | census-file floor for the append: a workspace with fewer covered source files is never mapped (docs/research/REPOMAP-GATES.md) | `50` |\n| `NIF_REPOMAP_MIN_BYTES` | append content gate: a rendered map below this many bytes is a stub and is withheld | `800` |\n| `NIF_REPOMAP_MIN_SYMBOLS` | append content gate: rendered symbol-row minimum | `25` |\n| `NIF_REPOMAP_MIN_FILES` | append content gate: symbol-bearing file minimum | `5` |\n",
+  "new_string": "| `NIF_REPOMAP_MIN_CENSUS` | census-file floor for the append: a workspace with fewer covered source files is never mapped (docs/research/REPOMAP-GATES.md). The gates are append-only — `repo_map` is never gated, a small map is a fine answer to an explicit question | `50` |\n| `NIF_REPOMAP_MIN_BYTES` | append content gate: a rendered map below this many bytes is a stub and is withheld. The gates are append-only — `repo_map` is never gated | `800` |\n| `NIF_REPOMAP_MIN_SYMBOLS` | append content gate: rendered symbol-row minimum. The gates are append-only — `repo_map` is never gated | `25` |\n| `NIF_REPOMAP_MIN_FILES` | append content gate: symbol-bearing file minimum. The gates are append-only — `repo_map` is never gated | `5` |\n"
+ },
+ {
+  "id": "A483",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "the var/ table now says what var/repomap-tags/ actually holds (a per-file tags cache, not rendered maps)",
+  "evidence": "docs/MANUAL.md:272",
+  "old_string": "`repomap-tags/` map cache",
+  "new_string": "`repomap-tags/` per-file tags cache (`{mtime, tags}` JSON keyed by the sha1 of the absolute path; empty results are never cached)"
+ },
+ {
+  "id": "A484",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "markers are now attributed to lsp only; repomap is described as listing marker files as bare map entries",
+  "evidence": "docs/MANUAL.md:281-285",
+  "old_string": "home skills shadow bundled skills. The `lsp` and `repomap` components\nadditionally treat build files (`go.mod`/`go.work`, `tsconfig.json`/\n`package.json`, `*.nimble`/`config.nims`, `Cargo.toml`) as repo *markers* —\nwhere to walk from, not configuration they parse; `skills` uses fixed\ndirectories only.\n",
+  "new_string": "home skills shadow bundled skills. The `lsp` component\nadditionally treats build files (`go.mod`/`go.work`, `tsconfig.json`/\n`package.json`, `*.nimble`/`config.nims`, `Cargo.toml`) as repo *markers* —\nwhere to walk from, not configuration it parses, while `repomap` lists such\nmarker files as bare entries in its map; `skills` uses fixed directories\nonly.\n"
+ },
+ {
+  "id": "A485",
+  "slice": "component-repomap",
+  "status": "unclear",
+  "reason": "the fix needs the proposed 'Repository map (repomap)' section, which does not exist in the current MANUAL (searched `repo_map`, `repomap`, `repository map`: only the shipped-table row at docs/MANUAL.md:61, the env rows and the var/ table); the row already carries budget-ish ('~1KB'), onDemand and read-effect detail, so what is left (default/max token budget, the pointer) has no home yet — a trim, the parent's lane",
+  "evidence": "docs/MANUAL.md:61"
+ },
+ {
+  "id": "A486",
+  "slice": "component-repomap",
+  "status": "unclear",
+  "reason": "no language-coverage statement exists to correct and the fix names the proposed repomap section (searched `tree-sitter` and `repomap`: only docs/MANUAL.md:61 mentions 'tree-sitter + native-Nim', with no tier list)",
+  "evidence": "docs/MANUAL.md:61"
+ },
+ {
+  "id": "A487",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "the lsp 'config entry, never code' promise now names repomap as the current exception, in the section that makes the promise",
+  "evidence": "docs/MANUAL.md:1037-1038",
+  "old_string": "with sane defaults built in. Adding a language is a config entry, never code\n(AGENTS.md invariant: language-agnostic core).\n",
+  "new_string": "with sane defaults built in. Adding a language is a config entry, never code\n(AGENTS.md invariant: language-agnostic core). The `repomap` component is the\ncurrent exception: a map language needs its grammar vendored under\n`components/repomap/csrc/`, a `{.compile.}` entry in `ts.nim`, a\n`queries/<lang>-tags.scm` and its extensions in `tags.nim` — that tier list is\nthe seam's present limit, not a policy.\n"
+ },
+ {
+  "id": "A488",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "repo_map added to the on-demand search/inspection bullet",
+  "evidence": "docs/MANUAL.md:1707-1708",
+  "old_string": "  tools, `undo_last_edit`, and the observe/logfile diagnostics.\n",
+  "new_string": "  tools, `undo_last_edit`, `repo_map` (the ranked workspace map the model\n  asks for explicitly), and the observe/logfile diagnostics.\n"
+ },
+ {
+  "id": "A489",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "the doctor deep-probe clause now names the repomap check",
+  "evidence": "docs/MANUAL.md:1556",
+  "old_string": "hover answers, broken file → errors), the store runs a full",
+  "new_string": "hover answers, broken file → errors), the repomap check maps a throwaway\nworkspace and asserts both append gates fire, the store runs a full"
+ },
+ {
+  "id": "A490",
+  "slice": "component-repomap",
+  "status": "apply",
+  "reason": "test-repomap added to the make test target list",
+  "evidence": "docs/MANUAL.md:2446",
+  "old_string": "                 # test-autostart, test-smoke",
+  "new_string": "                 # test-repomap, test-autostart, test-smoke"
+ },
+ {
+  "id": "A491",
+  "slice": "component-repomap",
+  "status": "skip",
+  "reason": "code fix, filed separately (either .env.example gains the four NIF_REPOMAP_MIN_* lines, or MANUAL:401's '.env.example … is the reference copy' wording changes — both outside this batch's doc-edit lane; note the manual already softens it with 'it is not exhaustive in either direction')",
+  "evidence": "docs/MANUAL.md:401-405"
+ },
+ {
+  "id": "A492",
+  "slice": "component-repomap",
+  "status": "unclear",
+  "reason": "the fix's home is the proposed repomap section; nothing documents the appended entry anywhere today (searched `repo map`, `auto-append`, `.map`: docs/MANUAL.md:61, :156, :377 only, none describing the message shape or `ev.session.map`)",
+  "evidence": "docs/MANUAL.md:61"
+ },
+ {
+  "id": "A493",
+  "slice": "component-repomap",
+  "status": "unclear",
+  "reason": "focus/mentionedIdents semantics have no home: the proposed repomap section does not exist and the only mention of the parameters is the schema line inside docs/MANUAL.md:61",
+  "evidence": "docs/MANUAL.md:61"
+ },
+ {
+  "id": "A494",
+  "slice": "component-repomap",
+  "status": "unclear",
+  "reason": "the census exclusions/caps statement has no home (proposed repomap section absent); the manual only says 'a workspace below the census floor is never built' in docs/MANUAL.md:61",
+  "evidence": "docs/MANUAL.md:61"
+ },
+ {
+  "id": "A495",
+  "slice": "component-repomap",
+  "status": "skip",
+  "reason": "code fix, filed separately (dead BUILD_TIMEOUT_MS constant)",
+  "evidence": "components/repomap/main.nim:38"
+ },
+ {
+  "id": "A496",
+  "slice": "component-repomap",
+  "status": "skip",
+  "reason": "code fix, filed separately (stale tier list in the component's own strings)",
+  "evidence": "components/repomap/main.nim:113"
+ },
+ {
+  "id": "A031",
+  "slice": "approvals",
+  "status": "skip",
+  "reason": "duplicate of A210 (same finding, same gated-tool sentence); its edit is carried there so the two do not collide — A210 already lists agent_ask/expert_follow/lsp_registry/mcp_*/process_* in the current manual, so what remains is the closed-set wording",
+  "evidence": "docs/MANUAL.md:502-513"
+ },
+ {
+  "id": "A032",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the /limit bullet now says only seconds is checked before every dispatch; rounds/tokens at round boundaries",
+  "evidence": "docs/MANUAL.md:550-552",
+  "old_string": "rounds, cumulative tokens, and wall-clock seconds (checked before every tool\ndispatch, not only between rounds). When one is reached the turn does not die:\n",
+  "new_string": "rounds, cumulative tokens, and wall-clock seconds. Seconds is checked before\nevery tool dispatch (one `bash` call can outlast a whole round); rounds and\ntokens are checked before the next LLM round. When one is reached the turn\ndoes not die:\n"
+ },
+ {
+  "id": "A033",
+  "slice": "approvals",
+  "status": "already",
+  "reason": "the grant/deny text the auditor called 'exact' is still there verbatim ('a *yes* extends that limit by one more step', '`limit-<dimension>` record', '`/limit clear` removes all three'); the only suggestion was optional word-smithery (naming the pseudo-tool `turn-limit`)",
+  "evidence": "docs/MANUAL.md:553-558"
+ },
+ {
+  "id": "A034",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the 32-name allowlist cap is now documented; the missing arguments in the `session` schema are the code fix the row asks to file separately and are not claimed here",
+  "evidence": "docs/MANUAL.md:611-612",
+  "old_string": "  header: `tools` (a tool allowlist the child may dispatch), `maxRounds`\n",
+  "new_string": "  header: `tools` (a tool allowlist the child may dispatch; at most 32 names\n  are honoured, and the accepted arguments are not declared in the `session`\n  tool schema), `maxRounds`\n"
+ },
+ {
+  "id": "A148",
+  "slice": "approvals",
+  "status": "skip",
+  "reason": "same sentence as A210/A031 (the gated-tool list); folded into the A210 edit, which also carries this row's extra piece — that the list is not closed (MCP-bridge tools of an `approval: always` server, hidden tools called directly)",
+  "evidence": "docs/MANUAL.md:502-513"
+ },
+ {
+  "id": "A210",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the gated-tool list is now stated as open, with the MCP-bridge case and the still-gating hidden entries named",
+  "evidence": "docs/MANUAL.md:510-513",
+  "old_string": "`observe_request`, `observe_dump`, `observe_monitor` — are gated on a human\nbefore they execute (core's unregistered `conversation_delete` surface is\ngated the same way):\n",
+  "new_string": "`observe_request`, `observe_dump`, `observe_monitor` — are gated on a human\nbefore they execute; every tool of an MCP-bridge server configured\n`approval: always` is gated the same way, and hidden entries such as\n`provider_update`/`provider_use_environment` still gate when called directly,\nso the list is not closed (core's unregistered `conversation_delete` surface\nincluded):\n"
+ },
+ {
+  "id": "A213",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "split the 5-minute tool-approval timeout from the /limit keep-going window (120 s) and named the log line",
+  "evidence": "docs/MANUAL.md:531",
+  "old_string": "- Unanswered UI requests time out after 5 minutes and are denied.\n",
+  "new_string": "- A tool approval that no client answers times out after 5 minutes\n  (`timeoutMs`, 300 s) and is denied (the log says `timed out after Ns —\n  denying`); a `/limit` keep-going question has its own shorter window (120 s).\n"
+ },
+ {
+  "id": "A214",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the deny bullet now quotes the error text the model actually sees, as the row asks",
+  "evidence": "docs/MANUAL.md:527-528",
+  "old_string": "  with a clear error — never silently approved.\n",
+  "new_string": "  with a clear error — the caller sees `approval denied for tool '<name>'`\n  (core's own tools: `approval denied for <name>`) as a normal tool error, the\n  turn continues and nothing is retried silently — never a silent approval.\n"
+ },
+ {
+  "id": "A215",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "added the program-shaped approval paragraph (content digest, source file path, 0600 mode) to §Approvals",
+  "evidence": "docs/MANUAL.md:536",
+  "old_string": "- `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).\n",
+  "new_string": "- `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).\n\nA program-shaped call (`fabric`, or `agent_run`/`agent_spawn` with `code`) is\napproved by *content*, not by tool name: core hashes the source plus the\nselected `tools` and `maxCalls` into a digest, writes the full source to\n`var/approval-sources/<digest>.nim` (mode 0600) and shows that path in the\nprompt, so the approver reads everything instead of a truncated excerpt\n(`tests/t_approval_manifest.nim`).\n"
+ },
+ {
+  "id": "A216",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "named the durable record and its key, including the `tool:<digest>` form, at the 'don't ask again' sentence",
+  "evidence": "docs/MANUAL.md:548-549",
+  "old_string": "decided to trust end to end; the per-tool \"don't ask again\" record is still\navailable for narrower trust.\n",
+  "new_string": "decided to trust end to end; the per-tool \"don't ask again\" record is still\navailable for narrower trust. A client's auto-approve action writes a durable\nrecord (store kind `approval`, id `<sessionId>:<key>` — clients write it, not\ncore); for program-shaped calls the key is `<tool>:<digest>`, so a blanket\n\"always approve fabric\" never covers newly written source. When such a record\nmatches, the gate never flashes a dialog.\n"
+ },
+ {
+  "id": "A217",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the env row now says NIF_AUTO_APPROVE implies NIF_AUTO_CONTINUE",
+  "evidence": "docs/MANUAL.md:366",
+  "old_string": "| `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking. For headless automation only | unset |",
+  "new_string": "| `NIF_AUTO_CONTINUE` | `1` → a turn that reaches one of the conversation's soft limits (`/limit`) keeps going without asking (`NIF_AUTO_APPROVE=1` implies it). For headless automation only | unset |"
+ },
+ {
+  "id": "A218",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "corrected the log-line quote and noted the setting's persistence in the conversation header",
+  "evidence": "docs/MANUAL.md:543-546",
+  "old_string": "(`core: approval auto-granted for <tool>`), because a silent grant is exactly\nwhat the gate exists to prevent.",
+  "new_string": "(`core: approval auto-granted for <tool> (this conversation is in approval\nmode: auto)`), because a silent grant is exactly what the gate exists to\nprevent. The setting is persisted in the conversation header (`approvals`), so\na resumed conversation in a session runner logs the same line."
+ },
+ {
+  "id": "A472",
+  "slice": "approvals",
+  "status": "apply",
+  "reason": "the environment-fallback nickname and the two defaults are now stated next to NIF_OAUTH_CALLBACK_HOST",
+  "evidence": "docs/MANUAL.md:942-944",
+  "old_string": "Environment knobs: `NIF_OAUTH_CALLBACK_HOST` (default `127.0.0.1`) moves the\nlocal callback listener (ports stay fixed at 1455/53692 like the reference\nclients). Exports contain live refresh tokens — treat `provider_export`\noutput as a secret.\n",
+  "new_string": "Environment knobs: `NIF_OAUTH_CALLBACK_HOST` (default `127.0.0.1`) moves the\nlocal callback listener (ports stay fixed at 1455/53692 like the reference\nclients). Exports contain live refresh tokens — treat `provider_export`\noutput as a secret.\n\nThe fallback backend presents itself as nickname `default` (`source:\nenvironment`), with `NIF_OPENAI_BASE_URL` defaulting to\n`https://api.openai.com/v1` and `NIF_OPENAI_MODEL` to `deepseek-chat`;\n`provider_use_environment` clears the active marker, it does not delete stored\nproviders.\n"
+ },
+ {
+  "id": "A078",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: merge order (ascending priority, larger priority wins) confirmed against the code",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A079",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: refresh/cache/retry/drain prose confirmed against the code",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A080",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: the llm x-models-source plugin (priority 150, 10-minute TTL) confirmed",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A081",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: all six models tools confirmed, all onDemand",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A082",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: status default, result trimming and recursive redaction confirmed",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A450",
+  "slice": "model-catalog-models",
+  "status": "skip",
+  "reason": "verified by the auditor — do not re-audit: the llm models_get context-window sentence and the status/trimming/redaction claims confirmed",
+  "evidence": "docs/MANUAL.md:1760-1830"
+ },
+ {
+  "id": "A436",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "added the models_resolve return-shape paragraph (matches/suggestions, literal bare-id fallback, success fields)",
+  "evidence": "docs/MANUAL.md:1805-1807",
+  "old_string": "`models_list {status: \"active\"}` also matches models whose status field is\n",
+  "new_string": "`models_resolve` never guesses: a bare id that exists under several providers\ncomes back `found: false` with `matches`, and an unknown reference comes back\n`found: false` with up to ten `suggestions`; a `provider/model` string whose\nprefix is not a known provider id is looked up as a literal bare id, so a\ntypo'd provider looks like a missing model. On success the answer carries the\nselected `provider`, `model`, `reference`, `configured` and the catalog\n`updatedAt`.\n\n`models_list {status: \"active\"}` also matches models whose status field is\n"
+ },
+ {
+  "id": "A443",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "the refresh trigger sentence now names catalog changes and NIF_MODELS_REFRESH_INTERVAL (0 disables)",
+  "evidence": "docs/MANUAL.md:1785",
+  "old_string": "The component refreshes at startup and hourly. A models.dev download is\n",
+  "new_string": "The component refreshes at startup, whenever the component catalog changes (a\nregistration or a departure), and then on `NIF_MODELS_REFRESH_INTERVAL`\n(default one hour; `0` disables the periodic tick). A models.dev download is\n"
+ },
+ {
+  "id": "A444",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "the source-plugin contract (version == 1, priority default 100, 30 s deadline, missing patch = failure) is now stated before the example",
+  "evidence": "docs/MANUAL.md:1850-1852",
+  "old_string": "`models` discovers marked tools from `reg.publish` and from core's full catalog\nsnapshot, so component boot order does not matter. It calls the tool with\n`{\"version\": 1}`. The result is a JSON Merge Patch (RFC 7396):\n",
+  "new_string": "The contract: the `x-harness.hidden` flag is convention, the `x-models-source`\nextension is what registers the tool; `version` must be exactly 1 or the tool\nis skipped; `priority` defaults to 100 and equal priorities are ordered by\n`component/tool`. `models` discovers marked tools from `reg.publish` and from\ncore's full catalog snapshot, so component boot order does not matter. It calls\nthe tool with `{\"version\": 1}` and a 30 s deadline; a result without a `patch`\nobject counts as a failure that keeps the last-known-good patch. The result is\na JSON Merge Patch (RFC 7396):\n"
+ },
+ {
+  "id": "A445",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "last-known-good patch files are now named, with the unsafe-char rewrite and the departure cleanup",
+  "evidence": "docs/MANUAL.md:1790-1792",
+  "old_string": "last-known-good patch under `var/models/sources/`; that patch is used when the\nsource temporarily fails, but only while the source component remains\nregistered. The local override keeps its previous patch when the file is\n",
+  "new_string": "last-known-good patch named `<component>--<tool>.json` under\n`var/models/sources/` (anything outside `A-Za-z0-9-_.` becomes `_`); that patch\nis used when the source temporarily fails, but only while the source component\nremains registered — removing the component drops its registration, status and\ncached patch in one step, so a departed source cannot keep influencing the\ncatalog. The local override keeps its previous patch when the file is\n"
+ },
+ {
+  "id": "A446",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "the embedded seed is now described concretely (DeepSeek only, two models)",
+  "evidence": "docs/MANUAL.md:1765",
+  "old_string": "- A small embedded seed makes a first offline boot useful.\n",
+  "new_string": "- A small embedded seed makes a first offline boot useful: deliberately tiny —\n  the shipped `deepseek` provider with `deepseek-chat` and `deepseek-reasoner`\n  only, so the configured default keeps working offline. Everything else\n  appears once the baseline is fetched or a source/override supplies it.\n"
+ },
+ {
+  "id": "A447",
+  "slice": "model-catalog-models",
+  "status": "apply",
+  "reason": "the download limits are now quantified (16 MiB, 12 s, three attempts with 200/400 ms backoff, fail fast)",
+  "evidence": "docs/MANUAL.md:1786-1788",
+  "old_string": "skipped while its cache is younger than five minutes. HTTP fetches are bounded,\nretried, validated (a catalog with no usable model entries is rejected, so a\nmalformed response cannot replace the last-known-good cache), and atomically\n",
+  "new_string": "skipped while its cache is younger than five minutes. HTTP fetches are bounded\n(16 MiB, 12 s per request), retried up to three times with 200/400 ms backoff,\nfailing fast on client errors, validated (a catalog with no usable model\nentries is rejected, so a malformed response cannot replace the last-known-good\ncache), and atomically\n"
+ },
+ {
+  "id": "A434",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "added the onDemand sentence after the six-tool table (absent from the frozen direct set, reachable via discover/invoke, not hidden)",
+  "evidence": "docs/MANUAL.md:1807",
+  "old_string": "| `models_sources` | provenance, freshness, stale fallback, and error diagnostics |\n",
+  "new_string": "| `models_sources` | provenance, freshness, stale fallback, and error diagnostics |\n\nAll six tools are `onDemand`: they are absent from a conversation's frozen\ndirect toolset, so the model reaches them through `discover` + `invoke`.\nComponents and `cli call` address them directly by name. Nothing here is\n`hidden`, so `/discover tool=models_sources` lists them.\n"
+ },
+ {
+  "id": "A435",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "argument shapes and defaults added at the end of the table's explanatory paragraph (the result-shape/oversized-descriptor half was already there)",
+  "evidence": "docs/MANUAL.md:1815",
+  "old_string": "provider or model level.\n",
+  "new_string": "provider or model level. Argument shapes: `models_list` takes `status`,\n`provider`, `query` and `limit` (default 50, max 500); `models_get` requires\n`provider` + `model`; `models_providers`/`models_sources` take no arguments.\nList-style results are `{models|providers, count, total}` and are trimmed with\n`truncated: true` when they would exceed the bus payload limit, while one\noversized `models_get` descriptor errors instead of timing out.\n"
+ },
+ {
+  "id": "A437",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "the models_refresh row now says it returns the current report immediately and that the work is asynchronous/coalesced",
+  "evidence": "docs/MANUAL.md:1806",
+  "old_string": "| `models_refresh` | queue a refresh of models.dev and every live extension source |\n",
+  "new_string": "| `models_refresh` | queue a refresh of models.dev and every live extension source: it returns immediately with the *current* provenance report plus `queued` and `force`, the work happens asynchronously (registration bursts are coalesced over 150 ms), so read `models_sources` again — or wait for `ev.models.updated` — to see the outcome; `force: true` bypasses the cache TTL |\n"
+ },
+ {
+  "id": "A438",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "added a 'Local corrections' paragraph with the override file's shape, path, restart rule, merge position, `null` delete and the `stale` report",
+  "evidence": "docs/MANUAL.md:1873-1874",
+  "old_string": "Configuration variables (`NIF_MODELS_*`) are listed in the master\n[Environment variables](#environment-variables) table above.\n",
+  "new_string": "Configuration variables (`NIF_MODELS_*`) are listed in the master\n[Environment variables](#environment-variables) table above.\n\nThe cheapest way to fix or add metadata is a JSON Merge Patch file:\n\n```json\n{ \"deepseek\": { \"models\": { \"deepseek-chat\": { \"limit\": { \"context\": 131072 } } } } }\n```\n\npointed at by `NIF_MODELS_OVERRIDE=/abs/path/override.json` (environment only,\nso changing it means `core.kill` + `core.spawn`). It is re-read on every\nrebuild, merges after all plugin patches, and `null` deletes a key. A file that\nis unreadable mid-rewrite keeps the previous patch and is reported as `stale`\nby `models_sources`. The plugin path above remains the durable, shareable\noption.\n"
+ },
+ {
+  "id": "A439",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "the configured-means paragraph now spells out the three ways a provider counts as configured and says the flag is per-call",
+  "evidence": "docs/MANUAL.md:1878-1879",
+  "old_string": "and whether one is set. It never returns credential values.",
+  "new_string": "and whether one is set, computed at call time and attached to provider and\nmodel results. *Configured* means: one of the provider's `env` names is set, or\nthe id appears as a nickname in `NIF_LLM_PROVIDERS`, or — for the shipped\n`deepseek` entry — `NIF_OPENAI_API_KEY` is set. It never returns credential\nvalues."
+ },
+ {
+  "id": "A448",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "the merge-layer paragraph now says what a patch may touch, that `null` deletes a key, and that `id`/`name` are synthesized from the map key",
+  "evidence": "docs/MANUAL.md:1781-1783",
+  "old_string": "Plugin and local layers are JSON Merge Patches (RFC 7396): objects merge,\narrays and scalar values replace, and `null` deletes a key. The full\nmodels.dev shape is preserved, including fields Niffler does not yet use.\n",
+  "new_string": "Plugin and local layers are JSON Merge Patches (RFC 7396): objects merge,\narrays and scalar values replace, and `null` deletes a key. The full\nmodels.dev shape is preserved, including fields Niffler does not yet use — so a\npatch may add a whole provider, add models under an existing one, or change any\nfield. A provider or model that omits `id`/`name` has them filled from its map\nkey, and non-object entries are dropped during normalization.\n"
+ },
+ {
+  "id": "A449",
+  "slice": "component-models",
+  "status": "apply",
+  "reason": "added a Verification block at the end of the model-catalog section",
+  "evidence": "docs/MANUAL.md:1882",
+  "old_string": "installed as plugins independently of this catalog.\n",
+  "new_string": "installed as plugins independently of this catalog.\n\n#### Verification\n\n`make test-models` boots a private harness with a local fixture catalog and\nproves registration, strict resolution, and that a built source plugin's patch\nappears on spawn and disappears on removal. Against a live harness,\n`./var/bin/cli call models_sources '{}'` prints provenance and\n`./var/bin/cli call models_get '{\"provider\":\"deepseek\",\"model\":\"deepseek-chat\"}'`\none descriptor.\n"
+ },
+ {
+  "id": "A046",
+  "slice": "component-ecosystem-plugins",
+  "status": "apply",
+  "reason": "added the third reference shape (the SDK-less bash component) at the end of the plugin section's bullet list",
+  "evidence": "docs/MANUAL.md:801-802",
+  "old_string": "  discovers it automatically and applies its JSON Merge Patch while that\n  component is present. See [Source plugins](#source-plugins).\n",
+  "new_string": "  discovers it automatically and applies its JSON Merge Patch while that\n  component is present. See [Source plugins](#source-plugins).\n- Three reference shapes exist in-tree: the `gokr/niffler-weather` package\n  (Nim), the MCP bridge (a spawned Go component), and\n  `components/dialog/dialog.sh` — a whole bash component with no SDK at all.\n"
+ },
+ {
+  "id": "A219",
+  "slice": "component-ecosystem-plugins",
+  "status": "apply",
+  "reason": "the manifest contract is now spelled out as a small schema right where 'a niffler.json manifest at the root' is introduced",
+  "evidence": "docs/MANUAL.md:760-761",
+  "old_string": "packages are plain GitHub repos with a `niffler.json` manifest at the root\n(one repo = one package = N components). Repos tagged with the GitHub\n",
+  "new_string": "packages are plain GitHub repos with a `niffler.json` manifest at the root\n(one repo = one package = N components). The manifest itself is small:\n`niffler.json` = `{name, components: [{name, lang: \"nim\"|\"go\"|\"ts\", main,\nsources?, env?, defines?, interactive?}]}` — `lang` must be one of the three\nSDKs, `main` must exist and not be a symlink, and a manifest that declares no\ncomponents is rejected. Repos tagged with the GitHub\n"
+ },
+ {
+  "id": "A220",
+  "slice": "component-ecosystem-plugins",
+  "status": "apply",
+  "reason": "added the defines/env bullet (validated per component, forwarded to the builder and to the spawn)",
+  "evidence": "docs/MANUAL.md:784",
+  "old_string": "  updating its package.\n",
+  "new_string": "  updating its package.\n- A manifest entry may carry `defines` (an array of `-d:`-style prepends) and\n  `env` (an array of `NAME=value` strings). Both are passed through — `defines`\n  to the builder, `env` to the spawn — so a package can carry its own\n  configuration without editing the manifest.\n"
+ },
+ {
+  "id": "A221",
+  "slice": "component-ecosystem-plugins",
+  "status": "apply",
+  "reason": "the plugin_install row now says a re-install is refused and that the clone is shallow with a generated go.work",
+  "evidence": "docs/MANUAL.md:768",
+  "old_string": "| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via the builder's `build` tool, then `spawn` each service component (approved) |",
+  "new_string": "| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via the builder's `build` tool, then `spawn` each service component (approved). Installing a package that already has a record is an error, not a re-install — use `plugin_update`, or `plugin_remove` first; the clone is shallow (`--depth 1`) and carries an untracked `go.work` for a Go package that expects a sibling SDK checkout |"
+ },
+ {
+  "id": "A222",
+  "slice": "component-ecosystem-plugins",
+  "status": "apply",
+  "reason": "the plugin_search row now mentions the winning query and the fewer-words retry",
+  "evidence": "docs/MANUAL.md:766",
+  "old_string": "| `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |",
+  "new_string": "| `plugin_search {query?}` | GitHub topic search; returns repo, description, stars, plus the winning `query` and per-attempt diagnostics — GitHub ANDs the words, so a zero-hit query is retried with fewer of them |"
+ },
+ {
+  "id": "A223",
+  "slice": "component-ecosystem-plugins",
+  "status": "skip",
+  "reason": "verified by the auditor (no token or Authorization header anywhere in the component; the 60 req/h/IP warning is the honest limit)",
+  "evidence": "docs/MANUAL.md:793"
+ },
+ {
+  "id": "A171",
+  "slice": "expert-model-catalog-background-processes-mcp-spot-checks",
+  "status": "already",
+  "reason": "an `mcp_search` row is already in the MCP tools table (plus the prose mention the row cited)",
+  "evidence": "docs/MANUAL.md:1437"
+ },
+ {
+  "id": "A172",
+  "slice": "expert-model-catalog-background-processes-mcp-spot-checks",
+  "status": "skip",
+  "reason": "verified by the auditor — the Processes table matches the four registered tools (the approval-list part is A210's edit)",
+  "evidence": "docs/MANUAL.md:1427"
+ },
+ {
+  "id": "A173",
+  "slice": "expert-model-catalog-background-processes-mcp-spot-checks",
+  "status": "skip",
+  "reason": "verified by the auditor — the six model-catalog tools match the code, all onDemand",
+  "evidence": "docs/MANUAL.md:1805-1811"
+ },
+ {
+  "id": "A174",
+  "slice": "expert-model-catalog-background-processes-mcp-spot-checks",
+  "status": "skip",
+  "reason": "verified by the auditor — LSP (3 tools incl. warmup), fetch (1), skills (all eight tools) and hooks (env-driven, no tools) all match",
+  "evidence": "docs/MANUAL.md:2040-2100"
+ },
+ {
+  "id": "A154",
+  "slice": "z-sections-to-trim-to-a-pointer-other-docs-own-them",
+  "status": "skip",
+  "reason": "trim row — the parent does trims separately: the SDK API + `onIdle` prose is owned by docs/WIRE.md ('Idle work' / SDK contract) and restated in AGENTS.md; shrink docs/MANUAL.md:2056-2160 to the three-SDK table + a pointer to docs/WIRE.md",
+  "evidence": "docs/MANUAL.md:2056-2160; docs/WIRE.md (Idle work / SDK contract); AGENTS.md"
+ }
+]

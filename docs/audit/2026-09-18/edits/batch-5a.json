@@ -1,0 +1,281 @@
+[
+ {
+  "id": "A294",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Delta row: the report entry is a bare pointer to the shipped-components `edit` row with no stated fix; the row's read/edit/write/undo_last_edit inventory is accurate.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A295",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Delta row (approval-gated list) with no stated fix; the list still names `edit`, `write`, `undo_last_edit` and matches the tools' schemas.",
+  "evidence": "docs/MANUAL.md:504",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A296",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Delta row: a cross-reference list (replication caveat, shipped tool-profile policy, state table, the two env rows) with no stated fix; all cited passages are present and accurate.",
+  "evidence": "docs/MANUAL.md:717 (replication caveat), 504, 70",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A298",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "`E_STALE` staleness gate missing from the `edit` row. The quoted clause is still the row's tail.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "double-escaped text, and every tier must still match exactly once)",
+  "new_string": "double-escaped text, and every tier must still match exactly once; a staleness gate sits *before* matching — when the conversation's last-observed digest of the file differs from disk (an external edit, or a `bash` mutation since the read/write), `edit` refuses with `E_STALE` instead of matching text the model has never seen: re-read and redo. Session-less callers (`cli`, other components) are not tracked and skip the gate)"
+ },
+ {
+  "id": "A299",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "State table has no row for the edit undo store; added after the Home / project files row (this record also carries A311's retention sentence — see A311).",
+  "evidence": "docs/MANUAL.md:271",
+  "old_string": "LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |",
+  "new_string": "LSP registry `~/.config/niffler-lsp/servers.json` (`NIF_LSP_REGISTRY`) | durable, user-editable |\n| **Home files (edit undo store)** | `$XDG_CONFIG_HOME/niffler-edit/undo.json` (else `~/.config/niffler-edit/undo.json`): last pre-edit bytes per file plus per-conversation seen-state digests. One record per edited file, no size cap and no eviction — it grows with the number of distinct files edited, and is safe to delete at any time (deleting it loses only undo history and unchanged-read stubs, never file content) | durable, user-editable |"
+ },
+ {
+  "id": "A300",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "Undo semantics undocumented; appended to the `undo_last_edit` clause of the edit row.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "`undo_last_edit` (approval-gated mutations)",
+  "new_string": "`undo_last_edit` (single-level per file — the previous edit only, not a stack — persisted across restarts and keyed by absolute path, reverting content, BOM and line endings exactly; refused with `E_UNDO_STALE` when the file was modified or deleted after the edit, in which case the stale record is *discarded* (re-read and edit forward); the undo record is written before the file, so a store failure refuses the edit with `E_UNDO_UNAVAILABLE` rather than losing the ability to revert; approval-gated mutations)"
+ },
+ {
+  "id": "A301",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "Unchanged-read stub missing from the read description; appended after the outline sentence.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "`NIF_READ_OUTLINE_LINES` tunes/disables)",
+  "new_string": "`NIF_READ_OUTLINE_LINES` tunes/disables — a whole re-read of a file ≥512 bytes that this conversation already read in full and that is byte-identical returns `[unchanged] <path>: N bytes, M lines, digest <sha1>` instead of the text; `force: true` (or any offset/limit window) forces the re-dump, and windowed reads and small files always re-dump)"
+ },
+ {
+  "id": "A302",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "Read caps incomplete (only 'up to 12' was stated); the per-item and aggregate caps were missing.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar",
+  "new_string": "canonical `reads` array — up to 12 files/ranges in one call (per item 2000 lines, 256 KB, 2 KB per line — a longer line becomes a `bash: sed -n …` notice; 512000 bytes aggregate per call, the remainder reported as a per-item error that does not fail the batch), pageable, single-file `path` sugar"
+ },
+ {
+  "id": "A303",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "Lazy project-instruction loading documented nowhere; added as a bullet to the systemprompt assembly list, right after the worktree shadow rule (the static ancestor walk it complements).",
+  "evidence": "docs/MANUAL.md:1932-1934",
+  "old_string": "   - worktree shadow rule: when the harness root is a `git worktree` under\n     the main repo, the main repo root's context file is skipped — the\n     ancestor walk would otherwise apply the same logical repo scope twice.",
+  "new_string": "   - worktree shadow rule: when the harness root is a `git worktree` under\n     the main repo, the main repo root's context file is skipped — the\n     ancestor walk would otherwise apply the same logical repo scope twice;\n   - lazy loading: a `read` that enters a directory *below* the harness\n     root appends any newly discovered `AGENTS.override.md`/`AGENTS.md`/\n     `AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` (+ `AGENTS.local.md`) for the\n     directories on the path, each wrapped in `<lazy_project_instructions\n     path=\"…\">`, once per session — a monorepo subtree stays out of the\n     frozen head until the model actually enters it."
+ },
+ {
+  "id": "A306",
+  "slice": "sections/component-edit.md",
+  "status": "apply",
+  "reason": "The edit/write distinction (edit never creates) was implied only by the error text; added to the edit clause.",
+  "evidence": "docs/MANUAL.md:70",
+  "old_string": "`edit` (an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool",
+  "new_string": "`edit` (only ever changes *existing* text files — a missing path is `E_NOT_FOUND`, an empty file `E_EMPTY`, both pointing at `write` as the way to create content; takes an `edits[]` array of `{old_string, new_string, replace_all?}` pairs — there is no separate multi-edit tool"
+ },
+ {
+  "id": "A307",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Verified by the auditor: the shipped tool-profile policy (read/edit/write direct, undo_last_edit on demand) matches the schemas — no change.",
+  "evidence": "docs/MANUAL.md:1708",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A308",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Verified by the auditor: the approval list names edit/write/undo_last_edit (and deliberately not read) — accurate, no change.",
+  "evidence": "docs/MANUAL.md:504",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A309",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Verified by the auditor: the NIF_READ_OUTLINE_LINES / NIF_WRITE_MAX_BYTES rows are accurate. The report's add-on ('these two are the only edit knobs') is a section-level note, not a row fix; the env table already lists no other edit variable.",
+  "evidence": "docs/MANUAL.md:372 (fresh numbering — see env-table rows)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A310",
+  "slice": "sections/component-edit.md",
+  "status": "code",
+  "reason": "Fix belongs in code: the `write` tool's schema description is hardcoded \"Cap 900KB\" (components/edit/main.nim:1333 in this tree), so with NIF_WRITE_MAX_BYTES set the description the LLM sees is wrong. Change the doc comment to \"Cap 900KB by default (`NIF_WRITE_MAX_BYTES` overrides)\". Not re-verified beyond a locating grep (docs-only pass).",
+  "evidence": "components/edit/main.nim:1333 (grep: line reads `...Cap 900KB.\"`), main.nim:1216",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A311",
+  "slice": "sections/component-edit.md",
+  "status": "skip",
+  "reason": "Folded into A299: the undo store's retention sentence lives in the state-table row A299 inserts (same site — a second edit at the same anchor would be ambiguous at apply time). No separate edit.",
+  "evidence": "docs/MANUAL.md:271",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A312",
+  "slice": "sections/component-edit.md",
+  "status": "code",
+  "reason": "Fix belongs in code/design: `read` declares `parallel: true` but no `\"effect\": \"read\"`, so the fabric batch host classifies it as a write (unclassified => write) and serializes it — the schema advertises parallelism the scheduler will not grant. Either add `\"effect\": \"read\"` to `read`'s schema (accepting that a correcting read persists seen-state) or state the serialization in the fabric section (docs/MANUAL.md:1974-1996 in the old revision). Not re-verified beyond the report (docs-only pass).",
+  "evidence": "components/edit/main.nim:1274-1280 and components/fabric/fabric.nim:226-228 (per report, not re-read)",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A024",
+  "slice": "sections/environment-variables.md",
+  "status": "skip",
+  "reason": "Verified by the auditor: the env table is accurate (every documented name exists in code) and is the best section in the file — no change.",
+  "evidence": "docs/MANUAL.md:296-390",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A025",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "The script/Makefile-only knobs were undocumented; added as a short note after the env table so a reader can tell them from the runtime set. NIF_LSP_BIN is already in the runtime table and NIF_LSP_BIN_DIRS is a different runtime variable, so both are only cross-referenced.",
+  "evidence": "docs/MANUAL.md:388-390",
+  "old_string": "Every Niffler variable carries the `NIF_` prefix, so the harness never",
+  "new_string": "**Build and script knobs** — read by the scripts around the harness, never by components: `NIF_BIN_DIR` (bin directory `scripts/install.sh` links the PATH entries into), `NIF_BUILD_LOCK` (lock file `scripts/with-build-lock.sh` flocks — exclusive for builds, shared for test runs), `NIF_NATS_CLI` (the nats CLI `components/dialog/dialog.sh` drives), `NIF_CONF_KEEP`, plus the test helpers `NIF_STORE_BIN` and `NIF_REPO_ROOT`. `NIF_LSP_BIN` and `NIF_LSP_BIN_DIRS` are runtime variables and stay in the table above.\n\nEvery Niffler variable carries the `NIF_` prefix, so the harness never"
+ },
+ {
+  "id": "A026",
+  "slice": "sections/environment-variables.md",
+  "status": "already",
+  "reason": "Already fixed in this tree: the sentence after the example no longer claims `.env.example` is exhaustive — it says the file 'is not exhaustive in either direction (a few entries of the table above are missing from it, and it carries test/tooling variables the harness does not read in normal operation); the table is authoritative'. No edit needed here (the .env.example half is a repo-file fix outside this flow).",
+  "evidence": "docs/MANUAL.md:401-408 (grep 'is the reference copy')",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A262",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "NIF_AUTO_APPROVE also answers every `/limit` keep-going question (core's askContinue returns true for either variable). This record fixes the env row; the prose site is docs/MANUAL.md:571 ('`NIF_AUTO_CONTINUE=1` answers every keep-going question with yes') and needs the same '(or `NIF_AUTO_APPROVE=1`)' addition — the two sites are ~200 lines apart, so they cannot share one old_string.",
+  "evidence": "docs/MANUAL.md:365, 571",
+  "old_string": "| `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed. For headless automation only; never set it in a session you care about | unset |",
+  "new_string": "| `NIF_AUTO_APPROVE` | `1` → the approval gate (below) is bypassed, and every `/limit` keep-going question is answered with yes (it implies `NIF_AUTO_CONTINUE`). For headless automation only; never set it in a session you care about | unset |"
+ },
+ {
+  "id": "A386",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "Row's default cell stated the wrong resolution order; replaced with the real chain (stored provider `context`, then this, then the catalog, then llm's code-resident table, then 128000).",
+  "evidence": "docs/MANUAL.md:312",
+  "old_string": "| `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard | `models` catalog, then `llm` fallback |",
+  "new_string": "| `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard. Resolution order: stored provider `context` → this → `models` catalog → `llm`'s built-in table (`deepseek-chat`/`deepseek-reasoner` 1M, `syn:large:text` 524288, `zai-org/glm-5.3-flash` 524288 — code-resident, so a new model needs a source change) → 128000 | `models` catalog, then the built-in table, then `128000` |"
+ },
+ {
+  "id": "A387",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "The provider object's other fields (`protocol`, `authType`, `accountId`, `stripPrefix`) and the explicit failure of malformed JSON / missing apiKey were undocumented.",
+  "evidence": "docs/MANUAL.md:317",
+  "old_string": "| `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog}}` the `chat` tool's `provider` arg resolves; the provider registry (`provider` component) supersedes the default when active | `{}` |",
+  "new_string": "| `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog, protocol?, authType?, accountId?, stripPrefix?}}` the `chat` tool's `provider` arg resolves. `protocol` is `openai-chat` (default), `anthropic` or `openai-codex`; `authType` defaults to `api_key`; `stripPrefix` rewrites a namespaced id (`alibaba/glm-5.2` → `glm-5.2`) for gateways that route on the canonical id. Malformed JSON and a missing `apiKey` each fail the call explicitly. The provider registry (`provider` component) supersedes the default when active | `{}` |"
+ },
+ {
+  "id": "A394",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "Row named the cap but not the mechanism; the retry-after parsing and the `; retry-after-ms:` annotation on the provider error are now stated.",
+  "evidence": "docs/MANUAL.md:343",
+  "old_string": "| `NIF_LLM_RETRY_AFTER_CAP_MS` | upper bound honored from a server `retry-after` hint; a hinted wait longer than this is clamped | `3600000` |",
+  "new_string": "| `NIF_LLM_RETRY_AFTER_CAP_MS` | upper bound honored from a server `retry-after` hint: `llm` wraps the HTTP client, parses `Retry-After` (seconds or an HTTP date) and appends `; retry-after-ms: <n>` to the provider's error so core can honor the wait without every adapter depending on the same client library; a hinted wait longer than this cap is clamped, and an invalid or absent header leaves the error untouched | `3600000` |"
+ },
+ {
+  "id": "A398",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "Kept the row, made the failure explicit (no key at all refuses before any HTTP request, distinct from a key that exists but is rejected).",
+  "evidence": "docs/MANUAL.md:308",
+  "old_string": "| `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn | — |",
+  "new_string": "| `NIF_OPENAI_API_KEY` | API key for the LLM adapter (`llm`). Required for any conversation turn; with no key at all the adapter refuses before any HTTP request (`provider \"default\": no API key (set NIF_OPENAI_API_KEY or NIF_LLM_PROVIDERS apiKey)`), which is a different symptom from a key that exists but is rejected (HTTP 401/403) | — |"
+ },
+ {
+  "id": "A408",
+  "slice": "sections/environment-variables.md",
+  "status": "already",
+  "reason": "Already fixed in this tree: the row now reads 'colon-separated, used verbatim — `~` is **not** expanded here; use absolute paths', so the false '(tilde-expanded)' claim is gone. No edit needed.",
+  "evidence": "docs/MANUAL.md:337",
+  "old_string": "",
+  "new_string": ""
+ },
+ {
+  "id": "A421",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "The old wording ('when higher') was wrong: any positive value wins unconditionally in both the manager and the bridge probe.",
+  "evidence": "docs/MANUAL.md:375",
+  "old_string": "| `NIF_MCP_PROBE_TIMEOUT_MS` | timeout for one real-connect probe in `mcp_add` (overrides the 30s default and the call's own `timeoutMs` when higher) | `30000` |",
+  "new_string": "| `NIF_MCP_PROBE_TIMEOUT_MS` | timeout for one real-connect probe in `mcp_add`/`mcp_edit`: when set (positive) it wins over both the 30 s default and the server's own `timeoutMs` | `30000` |"
+ },
+ {
+  "id": "A440",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "Offline mode only stops the models.dev download; the cached/seed baseline, plugin sources and their tools still run.",
+  "evidence": "docs/MANUAL.md:321",
+  "old_string": "| `NIF_MODELS_OFFLINE` | `1` disables remote catalog refresh | unset |",
+  "new_string": "| `NIF_MODELS_OFFLINE` | `1` stops the component downloading models.dev; the cached/seed baseline and every plugin source are still used and source tools are still called. Combine with `NIF_MODELS_REFRESH_INTERVAL=0` for a fully static catalog | unset |"
+ },
+ {
+  "id": "A441",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "While NIF_MODELS_PATH is set it *is* the baseline: no models.dev download even on a forced refresh.",
+  "evidence": "docs/MANUAL.md:319",
+  "old_string": "| `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |",
+  "new_string": "| `NIF_MODELS_PATH` | pinned local baseline catalog: while set, this file *is* the baseline — the component never downloads `NIF_MODELS_URL` (not even with `models_refresh {force: true}`) and picks up changes to the file on the next refresh. Plugin sources and `NIF_MODELS_OVERRIDE` still apply | unset |"
+ },
+ {
+  "id": "A442",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "A `0` TTL disables the cache window (every refresh refetches) — worth stating for a variable whose value is a duration.",
+  "evidence": "docs/MANUAL.md:323",
+  "old_string": "| `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline | `5m` |",
+  "new_string": "| `NIF_MODELS_CACHE_TTL` | minimum age before refetching the baseline; `0` disables the cache window, so every refresh refetches it | `5m` |"
+ },
+ {
+  "id": "A453",
+  "slice": "sections/environment-variables.md",
+  "status": "apply",
+  "reason": "Truncation keeps a bounded tail, not 'its tail': min(2 MiB, cap div 2), and the truncating poll appends a notice. Fixed in the processes prose (the env row's shorter phrasing stays).",
+  "evidence": "docs/MANUAL.md:1267-1269",
+  "old_string": "  `NIF_PROCESSES_SPOOL_CAP`) is truncated to its tail on the next poll;",
+  "new_string": "  `NIF_PROCESSES_SPOOL_CAP`) is truncated to its tail on the next poll — it\n  keeps the last 2 MiB, or half the cap when that is smaller, and the\n  truncating poll appends `[spool truncated to its tail — the cap was reached]`;"
+ },
+ {
+  "id": "A028",
+  "slice": "sections/the-env-file.md",
+  "status": "already",
+  "reason": "Already fixed in this tree — the paragraph was rewritten from the report's quote: it now states the per-binary order ('the SDKs load the current directory's `.env` first and the harness root's second, first definition of a key wins') and names the desktop UI bridge as the exception ('loads them in the opposite order (harness root, then cwd — `ui/bridge.go`), so there the root file wins'). Nothing to apply.",
+  "evidence": "docs/MANUAL.md:402-406",
+  "old_string": "",
+  "new_string": ""
+ }
+]

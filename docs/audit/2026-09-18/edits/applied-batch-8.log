@@ -1,0 +1,31 @@
+# applied batch-8
+
+rows applied: 27 of 58 in the set(s)
+
+A042 self-extension-and-component-lifecycle  +90 bytes  build also takes the optional files? (extra Go sources) and defines? fields (com
+A063 external-mcp-servers-mcp  -28 bytes  the ≤100-servers cap exists nowhere in code (manager reads up to 1000 records); 
+A065 external-mcp-servers-mcp  +303 bytes  mcp_search (components/mcp/main.go:148) missing from the tools table; add it plu
+A179 session-runners  +186 bytes  say what restart policy never means for a runner: no restart, re-ensured by the 
+A180 session-runners  +222 bytes  the idle-retirement mechanism behind NIF_RUNNER_IDLE_S is never explained (env t
+A182 session-runners  +107 bytes  no Troubleshooting row for the missing session-runner binary
+A183 session-runners  +341 bytes  the runner's other per-conversation subjects are undocumented elsewhere; the set
+A187 self-extension-and-component-lifecycle  +133 bytes  session runners are killed the same way but come back on the next session call, 
+A188 self-extension-and-component-lifecycle  +310 bytes  restart policy is never described in prose; backoff is 1 s doubling to 8 s (core
+A313 expert-advisory-peer-expert  +346 bytes  the judge's economics are stated only qualitatively; publish the constants (comp
+A330 expert-advisory-peer-expert  +108 bytes  the research pointer is wholesale; name the sections so the MANUAL is not read a
+A371 component-git  +3616 bytes  no MANUAL chapter for git; add one (tools, params/caps, failure semantics, recei
+A406 component-lsp  +279 bytes  row missing the add shape, optional keys, override and E_LSP_CONFLICT refusal; r
+A407 component-lsp  +83 bytes  five codes missing from the list: E_LSP_PROTOCOL, E_LSP_REGISTRY, E_LSP_CONFLICT
+A409 component-lsp  +9 bytes  ~/bin is also a fallback bin dir (components/lsp/roots.nim:114)
+A410 component-lsp  +226 bytes  limits/timeouts never stated: 8 live instances (LRU), 60 s query budget, 30 s in
+A411 component-lsp  +550 bytes  stale 'paths are confined to the workspace' sentence (commit 6bc4f6d allows out-
+A413 component-lsp  +213 bytes  the didSave echo is undocumented (nimsuggest-based Nim servers publish diagnosti
+A414 component-lsp  +234 bytes  census skips hidden/junk dirs and the warmup publishes ev.lsp.warm; neither is i
+A415 component-lsp  +124 bytes  a malformed registry file or entry is skipped with a stderr warning, not fatal —
+A416 component-lsp  +386 bytes  name the ALL=1 invocation plus the non-TTY skip, sudo-free install and named-run
+A418 external-mcp-servers-mcp  +191 bytes  mcp_refresh declares only onDemand (no approval) in components/mcp/main.go:145; 
+A422 external-mcp-servers-mcp  +308 bytes  deferDirectTools sends the whole server back to on-demand above NIF_MCP_DIRECT_T
+A424 external-mcp-servers-mcp  +106 bytes  two hidden names exist: generic mcp_<server>_prompt and per-prompt mcp_<server>_
+A425 external-mcp-servers-mcp  +39 bytes  the resources op enum is list|templates|read (components/mcp-bridge/operations.g
+A427 external-mcp-servers-mcp  +207 bytes  bridge path is NIF_MCP_BRIDGE_BIN else <root>/var/bin/mcp-bridge (components/mcp
+A433 external-mcp-servers-mcp  +118 bytes  mcp_edit and mcp_remove each trip two gates (edit/respawn, remove/core.remove)

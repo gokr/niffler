@@ -1,0 +1,19 @@
+# applied batch-7
+
+rows applied: 15 of 58 in the set(s)
+
+A056 language-servers-lsp  +13 bytes  the cap is 16 000 characters, not 16 KiB (MAX_RESULT_CHARS = 16000)
+A069 progressive-tool-discovery  +81 bytes  the 7-tool claim holds; the row's own caveat is worth adding but not as written 
+A091 recovery  +274 bytes  the flock symptom and the make clean rule live in AGENTS.md only; `make down` ki
+A092 the-store  +1217 bytes  superset of A244/A245/A258: the current table omits the six core kinds and the `
+A093 the-store  +366 bytes  the write rule and the hidden `del` are still absent from The store (core's stor
+A094 the-store  +133 bytes  the backend sentence still names only two of the three engines; tidb is selected
+A111 recovery  +53 bytes  the recipe omits `manifest.yaml`/`Makefile`, the two tracked roots whose edits b
+A230 hooks  +103 bytes  the 256 KB payload cap + truncation marker and the temp-file hand-off are undocu
+A231 hooks  +37 bytes  the clamp floor (100 ms) and the exit-124 kill are missing from the env row (hig
+A232 hooks  +196 bytes  first-match-wins matching and the silent drop of specs with no command env var a
+A233 hooks  +186 bytes  'off by default' is autostart-only (manifest autostart: false) while `make build
+A234 hooks  +185 bytes  where hook failures land was undocumented; the supervisor writes child stdout+st
+A243 the-store  +224 bytes  The store still never mentions paging; add the cross-link plus the storeListAll 
+A247 the-store  +106 bytes  trim row: the store tool docstrings still advertise a stale three-kind list, so 
+A405 language-servers-lsp  +24 bytes  the row's signature is still the old one; the registered schema is operation, pa
