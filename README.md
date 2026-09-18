@@ -96,7 +96,8 @@ runs the Go tests, vet and race checks.
 ## Documentation
 
 - [Manual](docs/MANUAL.md) — installation details, configuration, tools,
-  providers, UIs, recovery, testing and troubleshooting.
+  providers, UIs, recovery, testing and troubleshooting (also
+  [简体中文](docs/MANUAL.zh.md) · [繁體中文](docs/MANUAL.zh-TW.md)).
 - [Wire protocol](docs/WIRE.md) — JSON envelopes, subjects, errors,
   cancellation and session context.
 - [Architecture](docs/ARCHITECTURE.md) — why core, components and NATS are

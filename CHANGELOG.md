@@ -109,6 +109,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The manual in Chinese.** `docs/MANUAL.zh.md` and `docs/MANUAL.zh-TW.md`
+  are complete translations of `docs/MANUAL.md` (identical section headings,
+  links and table shape; the translation banner says AI-autotranslated). The
+  READMEs link them, and they link back to English/Simplified/Traditional, so
+  the whole manual is now reachable in all three languages.
 - **Manual compaction: `/compact`.** Runs the conversation's replaceable
   compactor on demand — a verified checkpoint replaces older history, with
   no LLM turn and no user message — instead of waiting for the automatic

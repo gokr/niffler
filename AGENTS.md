@@ -10,6 +10,12 @@ wire spec: [docs/WIRE.md](docs/WIRE.md). Why core is core:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Read these before changing
 anything structural.
 
+Localized docs (`README.zh.md`, `README.zh-TW.md`, `docs/MANUAL.zh.md`,
+`docs/MANUAL.zh-TW.md`) are **AI autotranslations** of the English source and
+carry a banner saying so. Change the English first, then refresh the
+translations; section headings stay in English so cross-document anchors keep
+working in every language.
+
 ## What this is (architecture invariants)
 
 - Core speaks exactly one protocol: JSON envelopes over NATS. Core never imports

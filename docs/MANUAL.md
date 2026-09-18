@@ -1,5 +1,7 @@
 # Niffler Manual
 
+[English](MANUAL.md) · [简体中文](MANUAL.zh.md) · [繁體中文](MANUAL.zh-TW.md)
+
 Everything you need to operate, configure and recover a Niffler harness, plus
 reference chapters for the shipped components. Design rationale lives in
 [research/REBOOT.md](research/REBOOT.md); the wire protocol is

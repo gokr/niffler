@@ -89,7 +89,8 @@ make install-ui         # 建置 Wails UI，複製到 ~/.local/bin，並安裝
 
 ## 文件
 
-- [操作手冊](docs/MANUAL.md) — 安裝、設定、工具、Provider、UI、復原、測試和排錯。
+- [操作手冊](docs/MANUAL.md) — 安裝、設定、工具、Provider、UI、復原、測試和排錯（也有
+  [English](docs/MANUAL.md) · [简体中文](docs/MANUAL.zh.md)）。
 - [Wire 協議](docs/WIRE.md) — JSON 信封、subject、錯誤、取消和 session context。
 - [架構](docs/ARCHITECTURE.md) — core、元件和 NATS 的邊界及貢獻者須遵守的約束。
 - [目前計畫](docs/research/PLAN.md) — 尚未完成的工作。
