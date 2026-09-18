@@ -1795,6 +1795,10 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   if ct.steerStream != nil:
     ct.steerStream.cancelRequested = false
   var rounds = 0
+  var emptyRounds = 0
+    ## Consecutive rounds whose reply carried neither content nor tool calls
+    ## (the guard at the end of the round loop below): re-asked a bounded
+    ## number of times, then reported as a turn error.
   var toolCallsMade = 0
     ## Dispatches this turn, across all rounds: a per-turn call budget is
     ## distinct from the round budget because one LLM round may emit several
@@ -1810,6 +1814,12 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
   let envMaxRounds = configuredMaxTurnRounds()
   let effMaxRounds = if maxRounds > 0: min(maxRounds, envMaxRounds)
                       else: envMaxRounds
+  # An empty completion (no content, no tool calls) is not an answer — it is
+  # re-asked this many times before the turn fails as an explicit error.
+  # NIF_EMPTY_REPLY_RETRIES=0 disables the re-ask (fail immediately).
+  let emptyReplyRetries = block:
+    try: parseInt(getEnv("NIF_EMPTY_REPLY_RETRIES", "2"))
+    except CatchableError: 2
   # ---- conversation controls: the human's soft turn limits (/limit) --------
   # A soft limit is different in kind from the budgets above: reaching it asks
   # the human over the approval transport (tool "turn-limit", purpose
@@ -2203,6 +2213,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
     let hasToolCalls = toolCalls != nil and toolCalls.kind == JArray and
                        toolCalls.len > 0
     if content.len > 0 or hasToolCalls:
+      emptyRounds = 0   # a real round: the empty-reply streak is broken
       let assistantMsg = %*{"role": "assistant",
                             "content": (if content.len > 0: %content else: newJNull())}
       if reasoning.len > 0: assistantMsg["reasoning"] = %reasoning
@@ -2254,6 +2265,57 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           drainAdvisories(ct, p, messages, onEvent, turnId) +
           noticesFolded > 0:
         continue
+      # An empty completion is not an answer, and accepting one as the final
+      # reply ends the turn silently — a real bench cell (vuejs/core-11739)
+      # spent 29 minutes and then reported "candidate patch is empty", as if
+      # the model had patched badly. Two shapes reach here:
+      #   * the provider cut the reply at its output cap before producing any
+      #     content (finish_reason "length" — a thinking model can spend the
+      #     whole budget on reasoning): re-asking repeats it, so the turn ends
+      #     with an explicit error instead;
+      #   * a 200 whose generation produced nothing (DeepSeek's "aborted" and
+      #     "insufficient_system_resource" already arrive as transient stream
+      #     errors from the llm component, but a bare empty stop exists too):
+      #     re-ask the same request.
+      # The re-ask appends nothing — the frozen prefix and its cache are
+      # untouched — and nothing is said to the model: a provider hiccup is not
+      # the model's mistake.
+      let emptyFinish = resp{"finish_reason"}.getStr("")
+      if content.len == 0 and emptyFinish == "length":
+        let msg = "the provider cut the reply at the output cap before any " &
+                  "content (finish_reason=length)"
+        p.persistMsg(%*{"role": "error", "content": msg,
+                        "error": "empty-reply", "turnId": turnId},
+                     %*{"startedAt": llmStartedAt,
+                        "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
+        turnError = msg
+        if onEvent != nil:
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": msg})
+        emitTurnDone(msg)
+        return ""
+      if content.len == 0 and emptyRounds < emptyReplyRetries:
+        inc emptyRounds
+        if onEvent != nil:
+          onEvent("status", %*{"sessionId": sessionId, "turnId": turnId,
+                               "emptyReply": emptyRounds,
+                               "finishReason": emptyFinish})
+        continue
+      if content.len == 0:
+        let msg = "the provider returned " & $(emptyRounds + 1) &
+                  " empty responses in a row (no content, no tool calls" &
+                  (if emptyFinish.len > 0: ", finish_reason=" & emptyFinish
+                   else: "") & ")"
+        p.persistMsg(%*{"role": "error", "content": msg,
+                        "error": "empty-reply", "turnId": turnId},
+                     %*{"startedAt": llmStartedAt,
+                        "durationMs": (getMonoTime() - llmStarted).inMilliseconds})
+        turnError = msg
+        if onEvent != nil:
+          onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
+                             "error": msg})
+        emitTurnDone(msg)
+        return ""
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
                            "reply": content})
