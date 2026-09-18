@@ -63,7 +63,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `skills` | Nim | optional | Agent Skills (SKILL.md): discovery, load, resource access, git-based install/remove |
 | `fetch` | Nim | optional | web content retrieval: http/https, HTML→text extraction, size caps with file spill |
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
-| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
+| `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
 | `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
@@ -283,6 +283,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_OPENAI_CONTEXT` | explicit context window (tokens) the llm reports to core's context guard | `models` catalog, then `llm` fallback |
 | `NIF_AGENT_MODEL_WEAK` / `NIF_AGENT_MODEL_MEDIUM` / `NIF_AGENT_MODEL_STRONG` | exact model ids used by a fresh subagent when `modelTier` is requested; a child tier is clamped to the parent's configured tier | unset |
 | `NIF_AGENT_DEFAULT_TIER` | tier ceiling used when the parent's exact model is not present in the configured ladder (`weak`, `medium`, or `strong`) | `strong` |
+| `NIF_AGENT_WAKES` | consecutive autonomous wake turns a conversation may run after a background subagent settles while it is idle (docs/WIRE.md "Autonomous wake"); the human's next message resets the budget, `0` disables waking (the notice then waits for the next turn's pull drain) | `3` |
 | `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog}}` the `chat` tool's `provider` arg resolves; the provider registry (`provider` component) supersedes the default when active | `{}` |
 | `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
 | `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |
@@ -299,6 +300,9 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_PROCESSES_SPOOL_CAP` | `processes` spool size before a background process's output file is truncated to its tail on the next poll | `33554432` |
 | `NIF_PROCESSES_POLL_CHUNK` | maximum new bytes one `process_poll` returns per stream (kept below the spool cap so a burst is always split) | `65536` |
 | `NIF_LSP_REGISTRY` | absolute path of the language-server user registry (`servers.json`) | `$XDG_CONFIG_HOME/niffler-lsp/servers.json` |
+| `NIF_LSP_WARM_MAX` | heavy (index-holding) language servers pre-started per workspace on `ev.workspace.opened` | `2` |
+| `NIF_LSP_WARM_CHEAP` | cheap (non-indexing) servers pre-started, from their own budget — they never displace a heavy pick | `1` |
+| `NIF_LSP_WARM_TOTAL` | ceiling on processes pre-started per workspace | `4` |
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (tilde-expanded) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
@@ -1035,18 +1039,41 @@ Three routes, all writing the same file:
 Every entry: `command` (argv array, or a plain string split on whitespace)
 plus an `extensions` map (leading-dot extension → LSP language id).
 Optional `initializationOptions` passes through to the server's `initialize`.
+Two more optional keys carry what used to be code: `requires` (runtime
+binaries that must resolve, e.g. `["java"]` for jdtls — a server whose
+runtime is missing reports itself instead of spawning and dying) and
+`cheap` (a server that indexes nothing and therefore does not consume a heavy
+warmup slot; bash-language-server is the built-in example).
 Built-in defaults — gopls, nimtortoise, typescript-language-server, pyright,
-rust-analyzer, clangd, bash-language-server, jdtls, csharp-ls — work whenever
-the binary is on `PATH` or in a fallback dir (`~/go/bin`, `~/.nimble/bin`,
-`~/.local/bin`, `~/.dotnet/tools`); `make install-lsp` installs them
-idempotently (Go, Nim and TS are mandatory — Niffler is built from those —
-the rest are y/n prompts, `--all` for unattended installs; a failure is
-non-fatal per language: the lsp tool just skips it with `E_LSP_UNAVAILABLE`).
+rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph,
+csharp-ls — work whenever the binary is on `PATH` or in a fallback dir
+(`~/go/bin`, `~/.nimble/bin`, `~/.local/bin`, `~/.dotnet/tools`);
+`make install-lsp` installs them idempotently (Go, Nim and TS are mandatory —
+Niffler is built from those — the rest are y/n prompts, `--all` for
+unattended installs; a failure is non-fatal per language: the lsp tool just
+skips it with `E_LSP_UNAVAILABLE`). Java is the one language whose *runtime*
+is installed too: a user-local JDK 21 under `~/.local/share/niffler-lsp/jdk`
+(sudo-free, like the server downloads) when no JDK 17+ is on `PATH` — a jdtls
+wrapper without a JRE used to report "ok" and then die mid-query.
 Override one by adding an entry with the same name. The registry is
 re-read on every call, so edits take effect immediately.
 
 Set `NIF_LSP_REGISTRY` to an absolute path to relocate the user registry
 (tests, multi-harness setups).
+
+**Warmup budgets.** Core publishes `ev.workspace.opened` at conversation
+bootstrap; the component censuses the workspace (bounded walk) and pre-starts
+servers so the first real query does not pay a cold start. Heavy servers —
+the ones that index the whole workspace (gopls, rust-analyzer, jdtls,
+clangd, pyright, intelephense, solargraph) — are capped at
+`NIF_LSP_WARM_MAX` (default 2) picks; *cheap* servers, which index nothing,
+get their own budget (`NIF_LSP_WARM_CHEAP`, default 1, and only from 2+
+matching files) and never displace a heavy pick — on a repo full of `.sh`
+files bash-language-server otherwise took one of the two slots from the
+language the task was actually written in. `NIF_LSP_WARM_TOTAL` (default 4)
+ceilings the processes pre-started per workspace. A pick whose `requires`
+runtime is missing is reported in `skipped` ("jdtls (needs 'java')") rather
+than started.
 
 ## Background processes (`processes`)
 

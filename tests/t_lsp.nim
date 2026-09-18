@@ -369,6 +369,54 @@ proc main() =
   else:
     echo "  (pyright not installed — warmup checks skipped)"
 
+  # --- warm cost classes + declared runtimes -------------------------------
+  # Two rules that the live bench exposed. A declared-missing runtime must be
+  # *reported*, never spawned (jdtls without a JRE used to hold a warm slot
+  # and die); and a cheap server must not consume a heavy slot — the stub
+  # heavy entry below outranks .py by file count, so before the cost classes
+  # landed it took one of the picks and pyright never started.
+  let reqAdd = regCall(%*{"action": "add", "name": "fakereq",
+                          "command": ["definitely-no-such-server-xyz"],
+                          "requires": %["no-such-runtime-xyz"],
+                          "extensions": %*{".rq": "rq"}})
+  check("registry accepts a `requires` declaration",
+        reqAdd{"ok"}.getBool(false), $reqAdd)
+  createDir(tmp / "warmreq")
+  writeFile(tmp / "warmreq" / "a.rq", "x\n")
+  writeFile(tmp / "warmreq" / "b.rq", "y\n")
+  let reqWarm = lspCall(%*{"operation": "warmup",
+                           "workspaceRoot": tmp / "warmreq"}, 30000)
+  let reqSkipped = reqWarm{"skipped"}.getElems().mapIt(it.getStr(""))
+  check("a server whose runtime is missing is reported, not spawned",
+        reqSkipped.anyIt(it.contains("no-such-runtime-xyz")), $reqWarm)
+  writeFile(tmp / "q.rq", "x\n")
+  let reqQuery = lspCall(%*{"operation": "diagnostics", "path": "q.rq"}, 30000)
+  check("querying it fails fast with E_LSP_UNAVAILABLE",
+        reqQuery{"error"}.getStr("").contains("E_LSP_UNAVAILABLE"), $reqQuery)
+
+  if findExe("pyright").len > 0:
+    createDir(tmp / "warmtier")
+    for i in 0 ..< 4: writeFile(tmp / "warmtier" / ("h" & $i & ".fk"), "x\n")
+    for i in 0 ..< 3: writeFile(tmp / "warmtier" / ("c" & $i & ".sh"), "echo hi\n")
+    writeFile(tmp / "warmtier" / "p.py", "x = 1\n")
+    let tierAdd = regCall(%*{"action": "add", "name": "faketierheavy",
+                             "command": ["definitely-no-such-server-xyz"],
+                             "extensions": %*{".fk": "fk"}})
+    check("registry accepts a plain entry for the tier check",
+          tierAdd{"ok"}.getBool(false), $tierAdd)
+    let tierWarm = lspCall(%*{"operation": "warmup",
+                              "workspaceRoot": tmp / "warmtier"}, 60000)
+    let tierWarmed = tierWarm{"warmed"}.getElems().mapIt(it.getStr(""))
+    check("a cheap server does not displace a heavy pick",
+          tierWarmed.contains("pyright"), $tierWarm)
+    check("heavy picks stay inside their cap",
+          tierWarmed.len <= 2 + 1, $tierWarmed)
+    discard regCall(%*{"action": "remove", "name": "faketierheavy"})
+  else:
+    echo "  (pyright not installed — warm-tier checks skipped)"
+  check("registry cleanup after the cost-class checks",
+        regCall(%*{"action": "remove", "name": "fakereq"}){"ok"}.getBool(false))
+
   report("LSP TEST")
 
 main()

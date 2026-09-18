@@ -10,7 +10,8 @@
 #   the classic server the language server bridges over).
 # Every other language is a y/n prompt (empty answer = yes): Python
 # (pyright), C/C++ (clangd), Bash (bash-language-server), Rust
-# (rust-analyzer), Java (jdtls), C# (csharp-ls).
+# (rust-analyzer), Java (jdtls + a user-local JRE when none is present),
+# PHP (intelephense), Ruby (solargraph), C# (csharp-ls).
 #   --all    install every optional language unattended (CI)
 #   no TTY   optional languages are skipped with a note
 #
@@ -171,16 +172,49 @@ else
 fi
 fi
 
-# ---- Java: jdtls (optional) ---------------------------------------------------
+# ---- Java: JRE + jdtls (optional) --------------------------------------------
+# The jdtls launcher is a python script that spawns `java`, so a present jdtls
+# wrapper with no JRE on PATH is worse than no jdtls at all: it reported "ok"
+# here (the java check only ran on the download path), every Java query then
+# died with `FileNotFoundError: 'java'`, and because warmup pre-starts a
+# workspace's most prevalent languages the dead server also held a warm slot.
+# Version probe: parse only an actual `version "NN"` field. Grepping the
+# first number out of `java -version` reads the *shell's* error line number
+# ("line 206: java: command not found" → 206 >= 17) and reports a JRE that
+# does not exist — which is how a jdtls with no runtime reported "ok".
+java_major() {
+  java -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -1
+}
+
+ensure_java() {
+  local jver
+  jver=$(java_major)
+  if [ -n "$jver" ] && [ "$jver" -ge 17 ]; then return 0; fi
+  case "$ARCH" in x86_64) A_ARCH=x64;; aarch64) A_ARCH=aarch64;; *) return 1;; esac
+  # Adoptium serves a plain tar.gz, so this stays sudo-free and HOME-local
+  # like every other server install here. ~/.local/bin is already on the
+  # harness's PATH (it is where the other servers live).
+  local url="https://api.adoptium.net/v3/binary/latest/21/ga/linux/$A_ARCH/jdk/hotspot/normal/eclipse"
+  echo "installing a user-local JDK 21 (no sudo; ~/.local/share/niffler-lsp/jdk) ..."
+  if curl -sL -m 900 -o /tmp/nif-jdk.tar.gz "$url" \
+     && mkdir -p "$SHARE/jdk" \
+     && tar -xzf /tmp/nif-jdk.tar.gz -C "$SHARE/jdk" --strip-components=1 \
+     && ln -sf "$SHARE/jdk/bin/java" "$BIN/java" \
+     && ln -sf "$SHARE/jdk/bin/javac" "$BIN/javac" \
+     && java -version >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 if want "Java (jdtls)"; then
-if have jdtls; then ok "jdtls"
+if ! ensure_java; then
+  fail "Java runtime" "no JDK 17+ and the user-local install failed (sudo apt install openjdk-21-jdk-headless / brew install openjdk@21)"
+elif have jdtls; then
+  ok "jdtls (JRE $(java_major))"
+elif ! command -v python3 >/dev/null 2>&1; then
+  fail "jdtls" "the bundled launcher needs python3"
 else
-  jver=$(java -version 2>&1 | head -1 | grep -o '[0-9]\+' | head -1)
-  if [ -z "$jver" ] || [ "$jver" -lt 17 ]; then
-    fail "jdtls" "needs JDK 17+ (sudo apt install openjdk-21-jdk-headless / brew install openjdk@21)"
-  elif ! command -v python3 >/dev/null 2>&1; then
-    fail "jdtls" "the bundled launcher needs python3"
-  else
     # the milestones index is JS-rendered; snapshots/latest.txt is the
     # machine-readable pointer to the newest build
     jtar=$(curl -s -m 30 "https://download.eclipse.org/jdtls/snapshots/latest.txt")
@@ -193,8 +227,30 @@ else
        && ln -sf "$SHARE/jdtls/bin/jdtls" "$BIN/jdtls"; then
       ok "jdtls (${jtar#jdt-language-server-} — launcher derives a per-workspace -data from cwd)"
     else fail "jdtls" "download/extract failed (https://download.eclipse.org/jdtls/snapshots/ or /milestones/)"; fi
-  fi
 fi
+fi
+
+# ---- PHP: intelephense (optional) ---------------------------------------------
+# Node-based, so it needs no PHP runtime on the host.
+if want "PHP (intelephense)"; then
+if have intelephense; then ok "intelephense"
+elif have npm; then npm install -g intelephense >/dev/null 2>&1 \
+  && ok "intelephense" || fail "intelephense" "npm install failed"; \
+else skip "intelephense" "no npm"; fi
+fi
+
+# ---- Ruby: solargraph (optional) -----------------------------------------------
+# The server exists (solargraph) but needs a Ruby runtime we do not ship;
+# when `gem` is missing the failure names the install, like the .NET path.
+if want "Ruby (solargraph)"; then
+if have solargraph; then ok "solargraph"
+elif have gem; then
+  if gem install --user-install solargraph >/dev/null 2>&1; then
+    sgem="$(ruby -e 'print Gem.user_dir' 2>/dev/null)/bin/solargraph"
+    [ -x "$sgem" ] && ln -sf "$sgem" "$BIN/solargraph"
+    ok "solargraph"
+  else fail "solargraph" "gem install failed"; fi
+else fail "solargraph" "needs Ruby (sudo apt install ruby-full / rbenv install 3.3.6), then: gem install --user-install solargraph"; fi
 fi
 
 # ---- C#: csharp-ls (optional) --------------------------------------------------
@@ -225,7 +281,8 @@ fi
 echo "---"
 echo "$installed language server(s) newly installed; total available:"
 for s in gopls pyright typescript-language-server tsserver bash-language-server \
-         rust-analyzer clangd nimtortoise nimlangserver jdtls csharp-ls; do
+         rust-analyzer clangd nimtortoise nimlangserver jdtls csharp-ls \
+         intelephense solargraph; do
   if have "$s"; then
     p=$(command -v "$s" || true)
     [ -z "$p" ] && for d in "$HOME/go/bin" "$HOME/.dotnet/tools" "$BIN"; do

@@ -8,6 +8,41 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **lsp: a configured-but-unrunnable server both reported "ok" and wasted a
+  warm slot.** `install-lsp.sh` only checked for a JRE on the branch where
+  `jdtls` was *missing*, so a present jdtls wrapper with no `java` on `PATH`
+  installed cleanly and then died on every query (`FileNotFoundError:
+  'java'`) — and because warmup pre-starts a workspace's most prevalent
+  languages, the dead server also held one of the two warm slots for the whole
+  conversation. Java now gets a runtime: `install-lsp.sh` verifies JDK 17+
+  whenever jdtls is used and installs a user-local JDK 21 under
+  `~/.local/share/niffler-lsp/jdk` (sudo-free, like the server downloads).
+  The version probe was itself part of the bug: grepping the first number out
+  of `java -version` reads the *shell's* error line ("line 206: java: command
+  not found" → 206 ≥ 17), so a missing runtime parsed as a modern JRE; it now
+  matches a real `version "NN"` field.
+- **lsp: servers can declare the runtime they need (`requires`), so a missing
+  one is reported instead of spawned.** jdtls declares `java`, csharp-ls
+  declares `dotnet`. `warmup` lists them in `skipped` ("jdtls (needs
+  'java')") and a query fails fast with `E_LSP_UNAVAILABLE` — no process is
+  started that can only die, and no warm slot is spent on it.
+
+### Added
+
+- **lsp: Ruby and PHP language servers** — `solargraph` (`.rb`, `.rake`,
+  `.ru`, `.gemspec`) and `intelephense` (`.php`, `.phtml`) are now built-in
+  registry entries, and `install-lsp.sh` installs them (intelephense via npm,
+  which needs no PHP runtime on the host; solargraph via a user-local gem, and
+  when Ruby itself is absent the failure names the install, like the .NET
+  path).
+- **lsp: warmup picks by cost class instead of raw extension count.** A
+  workspace's languages are censused as before, but *cheap* servers (those
+  that index nothing — bash-language-server) no longer compete with the
+  language the task is written in for the heavy-server budget: heavy picks are
+  capped by `NIF_LSP_WARM_MAX` (2), cheap ones by `NIF_LSP_WARM_CHEAP` (1,
+  and only from 2+ matching files), and `NIF_LSP_WARM_TOTAL` (4) ceilings
+  pre-started processes per workspace. Before this, a repo full of `.sh` files
+  routinely spent one of the two slots on bash-language-server.
 - **bench: three tooling bugs that each silently invalidated or killed a run.**
   The SWE-bench importer wrote a hardcoded column list, dropping
   `eval_script`/`eval_type`/`image`/`log_parser` — and `verify.mjs` routes on

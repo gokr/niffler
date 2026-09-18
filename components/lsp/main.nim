@@ -63,6 +63,9 @@ type ServerConf = object
   command: seq[string]
   extensions: Table[string, string]   # ".go" → "go"
   initializationOptions: JsonNode     # nil = none
+  requires: seq[string]               # runtimes that must resolve ("java")
+  cheap: bool                         # trivial to index — does not take a
+                                      # heavy warm slot (see warmWorkspace)
 
 proc defaultServers(): seq[ServerConf] =
   ## Sane defaults; all optional (absent binary → clear E_LSP_UNAVAILABLE).
@@ -89,10 +92,28 @@ proc defaultServers(): seq[ServerConf] =
     ("bash-language-server", @["bash-language-server", "start"],
      {".sh": "shellscript", ".bash": "shellscript"}.toTable),
     ("jdtls", @["jdtls"], {".java": "java"}.toTable),
+    ("intelephense", @["intelephense", "--stdio"],
+     {".php": "php", ".phtml": "php"}.toTable),
+    ("solargraph", @["solargraph", "stdio"],
+     {".rb": "ruby", ".rake": "ruby", ".ru": "ruby",
+      ".gemspec": "ruby"}.toTable),
     ("csharp-ls", @["csharp-ls"], {".cs": "csharp"}.toTable),
   ]
   for (name, cmd, exts) in defs:
     result.add(ServerConf(name: name, command: cmd, extensions: exts))
+  # Runtime dependencies and warm-cost class are *data*, like the rest of the
+  # registry. `requires` is what makes a configured-but-unrunnable server
+  # (jdtls with no JRE on PATH — seen live: "FileNotFoundError: 'java'")
+  # report itself instead of being spawned, dying and wasting a warm slot.
+  # `cheap` marks servers that index nothing: bash-language-server warms in
+  # milliseconds, so it must not compete with the language the task is
+  # written in for the (small) heavy-server budget.
+  for conf in result.mitems:
+    case conf.name
+    of "jdtls": conf.requires = @["java"]
+    of "csharp-ls": conf.requires = @["dotnet"]
+    of "bash-language-server": conf.cheap = true
+    else: discard
 
 proc registryPath(): string =
   ## Where the user registry lives. NIF_LSP_REGISTRY overrides (tests,
@@ -132,8 +153,16 @@ proc parseConf(name: string, node: JsonNode): ServerConf =
       exts[k.toLowerAscii] = v.getStr()
   if exts.len == 0:
     fail("E_LSP_REGISTRY", "server '" & name & "' needs a non-empty \"extensions\" map")
+  let cheapN = node{"cheap"}
+  let cheap = cheapN != nil and cheapN.kind == JBool and cheapN.getBool(false)
+  var requires: seq[string]
+  let reqN = node{"requires"}
+  if reqN != nil and reqN.kind == JArray:
+    for t in reqN:
+      if t.kind == JString and t.getStr("").len > 0: requires.add(t.getStr(""))
   result = ServerConf(name: name, command: cmd, extensions: exts,
-                      initializationOptions: node{"initializationOptions"})
+                      initializationOptions: node{"initializationOptions"},
+                      requires: requires, cheap: cheap)
 
 proc loadRegistry(): Table[string, ServerConf] =
   ## Defaults, then the user file replaces entries by name. Re-read on every
@@ -427,6 +456,19 @@ proc openCloseOk(caps: JsonNode): bool =
     return oc != nil and oc.kind == JBool and oc.getBool()
   return false
 
+proc missingRuntime(conf: ServerConf): string =
+  ## The first declared runtime dependency that does not resolve, or "".
+  ## Declared as `requires` data so a configured-but-unrunnable server is
+  ## reported instead of spawned and left to die on its own (jdtls with no
+  ## JRE): the caller turns this into a clear error, and warmup does not
+  ## spend a slot on it.
+  for dep in conf.requires:
+    if findExe(dep).len > 0: continue
+    if resolveBinIn(dep, fallbackBinDirs(getHomeDir(), getEnv("NIF_LSP_BIN_DIRS"))).len > 0:
+      continue
+    return dep
+  ""
+
 proc getInstance(conf: ServerConf, root: string): Instance =
   var conf = conf                     # local: command[0] may be repathed below
   let k = instKey(conf.name, root)
@@ -436,6 +478,11 @@ proc getInstance(conf: ServerConf, root: string): Instance =
       return h
     h.dispose()                      # died since last use — drop and respawn
     gInstances.del(k)
+  let missing = missingRuntime(conf)
+  if missing.len > 0:
+    fail("E_LSP_UNAVAILABLE", "language server '" & conf.name & "' needs '" &
+         missing & "' on PATH — install it, or change the registry (" &
+         registryPath() & ")")
   if not conf.command[0].contains('/'):
     # PATH first, then the per-user install dirs (fix: gopls lives in
     # ~/go/bin, which a UI-autostarted harness's PATH routinely omits).
@@ -740,10 +787,19 @@ proc opWorkspaceSymbol(h: Instance, root: string, query: string): JsonNode =
 const
   WARM_MAX_FILES = 5000        # census stops counting past this
   WARM_BUDGET_SECS = 2.0       # census wall-clock budget
-  WARM_MAX_SERVERS = 2         # servers pre-started per workspace
+  WARM_MAX_SERVERS = 2         # heavy servers pre-started per workspace
+  WARM_MAX_CHEAP = 1           # cheap (non-indexing) servers, own budget
+  WARM_MAX_TOTAL = 4           # ceiling on pre-started processes
+  WARM_CHEAP_MIN_FILES = 2     # a lone .sh is not worth a process
   WARM_SKIP_DIRS = ["node_modules", "vendor", "dist", "build", "target",
                     "__pycache__", ".venv", "venv", "nimcache", "obj",
                     ".gradle", ".next", ".cache", ".tox", "site-packages"]
+
+proc intEnv(name: string, dflt: int): int =
+  let v = getEnv(name, "")
+  if v.len == 0: return dflt
+  try: result = parseInt(v)
+  except CatchableError: result = dflt
 
 
 proc census(root: string): seq[tuple[ext: string, count: int]] =
@@ -782,16 +838,35 @@ proc warmWorkspace(wsRoot: string): JsonNode =
   ## warmed at session start has had the whole conversation since.
   let reg = loadRegistry()
   let langs = census(wsRoot)
-  var picked: seq[tuple[conf: ServerConf, count: int]]
+  # Two cost classes. A *heavy* server indexes the whole workspace (gopls,
+  # rust-analyzer, jdtls, clangd, pyright), so they stay capped at a couple
+  # per workspace. A *cheap* one costs nothing to have running
+  # (bash-language-server), and on a repo full of .sh files it used to take
+  # one of those two slots away from the language the task is written in —
+  # it now gets its own (smaller) budget and never displaces a heavy pick.
+  let heavyMax = intEnv("NIF_LSP_WARM_MAX", WARM_MAX_SERVERS)
+  let cheapMax = intEnv("NIF_LSP_WARM_CHEAP", WARM_MAX_CHEAP)
+  let totalMax = intEnv("NIF_LSP_WARM_TOTAL", WARM_MAX_TOTAL)
+  var heavy, cheap: seq[tuple[conf: ServerConf, count: int]]
   var seenNames: seq[string]
   for (ext, count) in langs:
     let conf = serverFor(reg, ext)
     if conf.name.len == 0 or conf.name in seenNames: continue
     seenNames.add(conf.name)
-    picked.add((conf, count))
-    if picked.len >= WARM_MAX_SERVERS: break
+    if conf.cheap:
+      if count >= WARM_CHEAP_MIN_FILES: cheap.add((conf, count))
+    elif heavy.len < heavyMax:
+      heavy.add((conf, count))
+  # Heavy picks first: they need the head start. Cheap picks fill whatever is
+  # left of the total process budget.
+  let cheapRoom = max(0, min(cheapMax, totalMax - heavy.len))
+  let picked = heavy & cheap[0 ..< min(cheap.len, cheapRoom)]
   var warmed, skipped: seq[string]
   for p in picked:
+    let miss = missingRuntime(p.conf)
+    if miss.len > 0:
+      skipped.add(p.conf.name & " (needs '" & miss & "')")
+      continue
     try:
       discard getInstance(p.conf, wsRoot)  # reuses a live instance if any
       warmed.add(p.conf.name)
@@ -999,6 +1074,13 @@ proc hLspRegistry(c: Component, args: JsonNode): JsonNode =
     user[name] = %*{"command": cmd, "extensions": extN}
     if args{"initializationOptions"} != nil:
       user[name]["initializationOptions"] = args{"initializationOptions"}
+    # Runtime dependency and warm-cost class ride along, so an agent adding a
+    # server can state what it needs and whether it indexes anything — the
+    # same data the built-in defaults carry (see defaultServers).
+    if args{"requires"} != nil:
+      user[name]["requires"] = args{"requires"}
+    if args{"cheap"} != nil:
+      user[name]["cheap"] = args{"cheap"}
     atomicWrite(path, user.pretty() & "\n")
     okResult(%*{"added": name, "path": path,
                 "note": "takes effect on the next lsp call"})
@@ -1091,7 +1173,11 @@ discard comp.tool("lsp_registry", toolSchema(%*{
   "command": {"description": "Server launch command (add): string (split on whitespace) or argv array, e.g. [\"gopls\"] or \"typescript-language-server --stdio\""},
   "extensions": {"type": "object",
                  "description": "Extension → LSP language id map (add), e.g. {\".go\": \"go\"}"},
-  "initializationOptions": {"description": "Optional initialize options passed to the server (add)"}
+  "initializationOptions": {"description": "Optional initialize options passed to the server (add)"},
+  "requires": {"type": "array", "items": {"type": "string"},
+               "description": "Optional runtime binaries the server needs (add), e.g. [\"java\"] — when one is missing the server is reported as skipped instead of being spawned"},
+  "cheap": {"type": "boolean",
+            "description": "Optional: the server indexes nothing (add), so warmup gives it its own budget instead of a heavy-server slot"}
 }, @[],
   "Mutate the language-server registry: which server binary handles which file extension. add takes {name, command (string or argv array), extensions: {\".ext\": \"languageId\"}} and overrides a built-in of the same name; remove deletes a user entry. Takes effect on the next lsp call. Use when a file's extension has no language server configured — if the binary exists on PATH, adding it here is all that's needed. Writing the registry (approval-gated); list with lsp_servers."),
   hLspRegistry,
