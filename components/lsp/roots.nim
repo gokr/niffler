@@ -105,11 +105,12 @@ proc deriveRootUnbounded*(file: string, markers: seq[string]): string =
 
 proc fallbackBinDirs*(home: string, extra = ""): seq[string] =
   ## Directories searched when a configured server command is not on PATH:
-  ## NIF_LSP_BIN_DIRS first (colon-separated — tests and custom toolchains),
-  ## then the usual per-user install locations under `home`.
+  ## NIF_LSP_BIN_DIRS first (colon-separated — tests and custom toolchains;
+  ## a leading `~` means the user's home), then the usual per-user install
+  ## locations under `home`.
   if extra.len > 0:
     for part in extra.split(PathSep):
-      if part.len > 0: result.add(part)
+      if part.len > 0: result.add(expandTilde(part))
   if home.len > 0:
     for rel in ["go/bin", ".nimble/bin", ".local/bin", ".dotnet/tools", "bin"]:
       result.add(home / rel)

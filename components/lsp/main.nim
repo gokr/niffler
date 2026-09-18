@@ -986,7 +986,17 @@ proc hLsp(c: Component, args: JsonNode): JsonNode =
   if workspaceRoot.len == 0: workspaceRoot = rootDir()
   if not dirExists(workspaceRoot):
     fail("E_BAD_SHAPE", "workspace root does not exist: " & workspaceRoot)
-  let path = resolvePath(pathN.getStr(), workspaceRoot)
+  # Refuse '..' in the argument as given: `resolvePath` joins with `/`, and
+  # Nim's path join *normalizes* — `"../hidden.nx"` becomes `<root>/hidden.nx`
+  # before this loop could see it, so checking the resolved path answered
+  # E_NOT_FOUND for a path the caller was never allowed to name. Absolute
+  # paths outside the workspace stay allowed (scope is a bound, not an
+  # equality — see the root derivation below); only '..' is a shape refusal.
+  let rawPath = pathN.getStr()
+  for part in rawPath.split({'/', '\\'}):
+    if part == "..":
+      fail("E_LSP_SCOPE", "path must not contain '..' components: " & rawPath)
+  let path = resolvePath(rawPath, workspaceRoot)
   for part in path.split({'/', '\\'}):
     if part == "..":
       fail("E_LSP_SCOPE", "path must not contain '..' components: " & pathN.getStr())
