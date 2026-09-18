@@ -1282,6 +1282,13 @@ discard comp.tool("read", toolSchema(%*{
 }, @[],
   "Read files for editing. Canonical: \"reads\": [{path, offset?, limit?}, ...] — 1..12 files/ranges in one call, per-item errors, several items under a \"### path\" heading, 512KB cap; one \"reads\" item (or the sugar \"path\") returns plain content. A whole read of a large file (>1000 lines) with a language server for its type returns the symbol outline instead — read windows with offset/limit (batch them), or offset=1 to read the whole file anyway. Batch known-relevant reads (grep hits, imports) instead of one per turn. Lines are verbatim — copy into edit's old_string; unchanged full re-reads return [unchanged]."), hReadTool,
   %*{"timeoutMs": 60000, "parallel": true, "sessionId": true,
+     # `effect: read` is deliberate: fabric's batch host would otherwise
+     # classify `read` as a write and serialize every batch read. The tool is
+     # workspace-read-only; the only writes it can make are (a) the rare
+     # correction to its per-file seen-state (the doc comment in observe()
+     # spells out why losing one is a hint loss, never a correctness loss) and
+     # (b) the undo store that `edit`/`write` own anyway.
+     "effect": "read",
      "workspace": {"pathFields": ["path"],
                    "pathArrayFields": ["paths"],
                    "pathObjectArrayFields": [{"field": "reads",
@@ -1330,7 +1337,8 @@ discard comp.tool("write", toolSchema(%*{
   "content": {"type": "string",
               "description": "Full new content (\"\" truncates)"}
 }, @["path", "content"],
-  "Create or replace a whole file atomically (parent dirs created). Cap 900KB."), hWrite,
+  "Create or replace a whole file atomically (parent dirs created). Cap " &
+  $maxWriteBytes() & " bytes (NIF_WRITE_MAX_BYTES)."), hWrite,
   %*{"approval": "always", "timeoutMs": 60000, "sessionId": true,
      "workspace": {"pathFields": ["path"]}})
 

@@ -55,14 +55,16 @@
   async function removeSession(s: SessionInfo) {
     confirmId = null;
     try {
-      const resp = await send("store", "list", { kind: "message", idPrefix: s.id + ":" });
-      for (const item of resp.items ?? []) {
-        await send("store", "del", { kind: "message", id: item.id });
-      }
-      await send("store", "del", { kind: "session", id: s.id + ":tools" });
-      await send("store", "del", { kind: "conversation", id: s.id });
+      // Delete through core, not by hand-trimming the store: conversation_delete
+      // stops the runner first (a live turn would resurrect records) and then
+      // removes the header, messages, the frozen toolset, subagent lineage and
+      // the durable agent jobs. Deleting the raw records from here left the
+      // lineage/job rows behind and could not stop a runner. It is
+      // approval-gated: a broadcast request this tab already answers in
+      // App.svelte.
+      await send("core", "conversation_delete", { sessionId: s.id }, 60000);
     } catch {
-      /* store unreachable — drop the row anyway */
+      /* store/core unreachable — drop the row anyway */
     }
     sessions = sessions.filter((x) => x.id !== s.id);
     onDelete(s.id);

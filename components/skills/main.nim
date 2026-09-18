@@ -313,7 +313,7 @@ comp.tool(%*{"onDemand": true}):
           inc invalid
           entries.add(%*{"dir": path.parentDir, "source": source,
                           "status": "invalid",
-                          "detail": "SKILL.md exists but is unreadable or missing name/description"})
+                          "detail": "SKILL.md exists but is unreadable or has no usable name"})
           continue
         let active = not winners.hasKey(s.get.name) or
                      findSkill(s.get.name).get.rootDir == s.get.rootDir

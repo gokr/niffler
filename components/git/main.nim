@@ -183,6 +183,7 @@ proc validAuthor(author: string): bool =
     not author.contains('\n') and not author.contains('\r')
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "effect": "read",
               "workspace": {"cwdField": "repo"}}):
   proc git_status(repo: string = "", path: string = ""): JsonNode =
     ## Cheap repo state check — run it whenever you are unsure what
@@ -213,6 +214,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
     return finish(code, output, 200)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "effect": "read",
               "workspace": {"cwdField": "repo"}}):
   proc git_diff(repo: string = "", path: string = "", unified: int = 3,
                 stat: bool = false): JsonNode =
@@ -251,6 +253,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
     return finish(code, output, if stat: 500 else: 10_000)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "effect": "read",
               "workspace": {"cwdField": "repo"}}):
   proc git_log(repo: string = "", path: string = "", max_count: int = 20,
                author: string = ""): JsonNode =
@@ -288,6 +291,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
     return finish(code, output, min(max(max_count, 1), 200) + 1)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "effect": "read",
               "workspace": {"cwdField": "repo"}}):
   proc git_show(repo: string = "", rev: string, path: string = ""): JsonNode =
     ## Show one commit in full: metadata, message, and the complete diff
@@ -317,6 +321,7 @@ comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
     return finish(code, output)
 
 comp.tool(%*{"timeoutMs": 45000, "parallel": true, "onDemand": true,
+              "effect": "read",
               "workspace": {"cwdField": "repo"}}):
   proc git_blame(repo: string = "", path: string, start_line: int = 1,
                  max_lines: int = 200): JsonNode =
@@ -364,7 +369,8 @@ proc diffFingerprint(): tuple[fp, diffText: string, empty: bool] =
 comp.tool(%*{"timeoutMs": 45000, "onDemand": true}):
   proc review_receipt(op: string = "write", findings: string = "", model: string = ""): JsonNode =
     ## Local review receipt for pre-push handoff (CodeWhale borrow,
-    ## docs/research/CODEWHALE.md docs/RECEIPTS.md): records WHAT was
+    ## docs/research/CODEWHALE.md; user-facing docs: docs/MANUAL.md,
+    ## "Repository inspection (`git`)"): records WHAT was
     ## reviewed (SHA-256 fingerprint of the working-tree diff) and what the
     ## review reported, never the diff body itself. op="write" stores a
     ## receipt under var/review-receipts/ and returns it; op="check"

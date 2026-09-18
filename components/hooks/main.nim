@@ -1,6 +1,7 @@
 ## hooks component — run shell commands when selected bus events fire
-## (CodeWhale borrow, docs/research/CODEWHALE.md → docs/HOOKS.md, observe-
-## only subset). A hook is a plain process: the event payload arrives as
+## (CodeWhale borrow, docs/research/CODEWHALE.md; user-facing docs:
+## docs/MANUAL.md, "Hooks" — observe-only subset). A hook is a plain
+## process: the event payload arrives as
 ## JSON on stdin, timeout enforced, failures logged to stderr and never
 ## fatal — hooks must never break the harness.
 ##
