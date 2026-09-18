@@ -28,7 +28,11 @@ installed=0
 ALL=0
 [ "${1:-}" = "--all" ] && ALL=1
 
-ok()   { echo "ok   $1"; installed=$((installed+1)); }
+# ok = verified present (already there or configured); new = installed by this
+# run. The distinction matters: every already-present branch reports ok, so
+# counting ok made a fully provisioned host claim "11 newly installed".
+ok()  { echo "ok   $1"; }
+new() { echo "ok   $1"; installed=$((installed+1)); }
 skip() { echo "skip $1 — $2"; }
 fail() { echo "FAIL $1 — $2"; }
 
@@ -50,7 +54,7 @@ want() {
 
 # ---- Go: gopls (mandatory) --------------------------------------------------
 if have gopls; then ok "gopls"
-elif have go;   then go install golang.org/x/tools/gopls@latest && ok "gopls" \
+elif have go;   then go install golang.org/x/tools/gopls@latest && new "gopls" \
   || fail "gopls" "go install failed"; \
 else fail "gopls" "no go toolchain (make install-go)"; fi
 
@@ -59,6 +63,9 @@ if have typescript-language-server && have tsserver; then
   ok "typescript-language-server"
 else
   if have npm; then
+    # Remember which of the pair was already present so the summary counts
+    # only what this run installs.
+    had_tls=0; have typescript-language-server && had_tls=1
     npm install -g typescript-language-server >/dev/null 2>&1 \
       || fail "typescript-language-server" "npm install failed"
     # TS7 dropped the classic tsserver; the language server bridges over it,
@@ -67,7 +74,7 @@ else
       mkdir -p "$HOME/.local/ts5"
       npm install --prefix "$HOME/.local/ts5" typescript@5 >/dev/null 2>&1 \
         && ln -sf "$HOME/.local/ts5/node_modules/.bin/tsserver" "$BIN/tsserver" \
-        && ok "tsserver (classic TS5 bridge)" \
+        && new "tsserver (classic TS5 bridge)" \
         || fail "tsserver" "npm install failed"
       # Pin the classic tsserver into the user registry: the language server
       # resolves typescript from the workspace, then tsserver.path, then the
@@ -96,7 +103,10 @@ json.dump(doc, open(p, "w"), indent=2)
 PYEOF
       fi
     else ok "tsserver"; fi
-    have typescript-language-server && ok "typescript-language-server"
+    if have typescript-language-server; then
+      [ "$had_tls" = 1 ] && ok "typescript-language-server" \
+        || new "typescript-language-server"
+    fi
   else fail "typescript-language-server" "no npm"; fi
 fi
 
@@ -111,11 +121,11 @@ elif have nimble; then
   if [ -d "$SHARE/nimtortoise/langserver" ] \
      && (cd "$SHARE/nimtortoise/langserver" && nimble build -y >/dev/null 2>&1) \
      && ln -sf "$SHARE/nimtortoise/langserver/bin/nimtortoise" "$BIN/nimtortoise"; then
-    ok "nimtortoise (built from source)"
+    new "nimtortoise (built from source)"
   else
     fail "nimtortoise" "build failed — falling back to nimlangserver"
     if nimble install nimlangserver -y >/dev/null 2>&1; then
-      ok "nimlangserver (fallback — select via servers.json / lsp_registry)"
+      new "nimlangserver (fallback — select via servers.json / lsp_registry)"
     else fail "nimlangserver" "nimble install failed"; fi
   fi
 else fail "nimtortoise" "no nimble (make install-nim)"; fi
@@ -123,7 +133,7 @@ else fail "nimtortoise" "no nimble (make install-nim)"; fi
 # ---- Python: pyright (optional) ---------------------------------------------
 if want "Python (pyright)"; then
 if have pyright; then ok "pyright"
-elif have npm;   then npm install -g pyright >/dev/null 2>&1 && ok "pyright" \
+elif have npm;   then npm install -g pyright >/dev/null 2>&1 && new "pyright" \
   || fail "pyright" "npm install failed"; \
 else skip "pyright" "no npm"; fi
 fi
@@ -141,7 +151,7 @@ else
      && mkdir -p "$HOME/.local/lib" \
      && cp -r /tmp/clangd-x/clangd_*/lib "$HOME/.local/" \
      && chmod +x "$BIN/clangd"; then
-    ok "clangd (resource dir in ~/.local/lib/clang)"
+    new "clangd (resource dir in ~/.local/lib/clang)"
   else fail "clangd" "release download failed (or sudo apt-get install clangd)"; fi
 fi
 fi
@@ -150,7 +160,7 @@ fi
 if want "Bash (bash-language-server)"; then
 if have bash-language-server; then ok "bash-language-server"
 elif have npm; then npm install -g bash-language-server >/dev/null 2>&1 \
-  && ok "bash-language-server" || fail "bash-language-server" "npm install failed"; \
+  && new "bash-language-server" || fail "bash-language-server" "npm install failed"; \
 else skip "bash-language-server" "no npm"; fi
 fi
 
@@ -166,7 +176,7 @@ else
     if [ -n "$url" ] && curl -sL -m 300 -o /tmp/ra.gz "$url" \
        && gunzip -f /tmp/ra.gz && mv /tmp/ra "$BIN/rust-analyzer" \
        && chmod +x "$BIN/rust-analyzer"; then
-      ok "rust-analyzer (standalone — full diagnostics need cargo: install rustup)"
+      new "rust-analyzer (standalone — full diagnostics need cargo: install rustup)"
     else fail "rust-analyzer" "release download failed"; fi
   fi
 fi
@@ -225,7 +235,7 @@ else
        && tar -xzf /tmp/jdtls.tgz -C "$SHARE/jdtls" \
        && chmod +x "$SHARE/jdtls/bin/jdtls" \
        && ln -sf "$SHARE/jdtls/bin/jdtls" "$BIN/jdtls"; then
-      ok "jdtls (${jtar#jdt-language-server-} — launcher derives a per-workspace -data from cwd)"
+      new "jdtls (${jtar#jdt-language-server-} — launcher derives a per-workspace -data from cwd)"
     else fail "jdtls" "download/extract failed (https://download.eclipse.org/jdtls/snapshots/ or /milestones/)"; fi
 fi
 fi
@@ -235,7 +245,7 @@ fi
 if want "PHP (intelephense)"; then
 if have intelephense; then ok "intelephense"
 elif have npm; then npm install -g intelephense >/dev/null 2>&1 \
-  && ok "intelephense" || fail "intelephense" "npm install failed"; \
+  && new "intelephense" || fail "intelephense" "npm install failed"; \
 else skip "intelephense" "no npm"; fi
 fi
 
@@ -248,7 +258,7 @@ elif have gem; then
   if gem install --user-install solargraph >/dev/null 2>&1; then
     sgem="$(ruby -e 'print Gem.user_dir' 2>/dev/null)/bin/solargraph"
     [ -x "$sgem" ] && ln -sf "$sgem" "$BIN/solargraph"
-    ok "solargraph"
+    new "solargraph"
   else fail "solargraph" "gem install failed"; fi
 else fail "solargraph" "needs Ruby (sudo apt install ruby-full / rbenv install 3.3.6), then: gem install --user-install solargraph"; fi
 fi
@@ -269,7 +279,7 @@ elif have dotnet || [ -x "$HOME/.dotnet/dotnet" ]; then
   esac
   err=$($dotnet_bin tool install --global csharp-ls ${pin:+--version "$pin"} 2>&1 >/dev/null)
   if [ $? -eq 0 ]; then
-    ok "csharp-ls ${pin:+v$pin }(~/.dotnet/tools — covered by the lsp fallback dirs)"
+    new "csharp-ls ${pin:+v$pin }(~/.dotnet/tools — covered by the lsp fallback dirs)"
   else
     fail "csharp-ls" "dotnet tool install failed: $(echo "$err" | tail -1)"
   fi
@@ -278,17 +288,21 @@ else
 fi
 fi
 
-echo "---"
-echo "$installed language server(s) newly installed; total available:"
+available=0
+listing=""
 for s in gopls pyright typescript-language-server tsserver bash-language-server \
          rust-analyzer clangd nimtortoise nimlangserver jdtls csharp-ls \
          intelephense solargraph; do
   if have "$s"; then
+    available=$((available+1))
     p=$(command -v "$s" || true)
     [ -z "$p" ] && for d in "$HOME/go/bin" "$HOME/.dotnet/tools" "$BIN"; do
       [ -x "$d/$s" ] && p="$d/$s" && break
     done
-    echo "  $s: $p"
+    listing+="  $s: $p"$'\n'
   fi
 done
+echo "---"
+echo "$installed language server(s) newly installed; $available available:"
+printf '%s' "$listing"
 exit 0
