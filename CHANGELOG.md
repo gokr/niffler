@@ -8,6 +8,68 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **ctx: the admission reserve is the model's declared output cap, and the
+  llm adapter clamps the completion at dispatch — the provider-side overflow
+  both layers had to agree on.** Providers count the requested `max_tokens`
+  against the window at admission, but core held back a fixed 16K while the
+  catalog declared DeepSeek's output as 384K: a 736,803-token prompt plus
+  the 384,000-token completion overflowed the provider's 1,048,576 limit
+  while the prompt alone fit the harness's 1M window — and overflow recovery
+  re-admitted the candidate against the same wrong target, so the retry was
+  byte-identical and refused again. Core now carries the resolved
+  `limit.output` (`llm_resolve` already returned it): `outputReserve(p)`
+  uses it, the admission target becomes `window − declared output` (floored
+  at half the window), and the 75% warning tracks that effective line;
+  `NIF_CTX_RESERVE` still overrides and 16K remains the unknown-model
+  default. `llm`'s `fitOutput` independently clamps the requested output to
+  the headroom the serialized prompt leaves (messages plus frozen tool
+  schemas), so neither layer's estimate can push a fitting prompt over the
+  provider limit (`448a6e9`; `t_ctx_accounting`, `components/llm/main_test.go`).
+- **retry: failure budgets are split by kind, and a timed-out tool keeps its
+  partial output.** A hinted 429 is safe to wait out indefinitely, but a
+  stream timeout may already have billed output and a refused local connect
+  is cheap: `RetryPolicy` gains `maxStreamRetries`/`maxConnectRetries`/
+  `retryAfterCapMs` (defaults 2/2/1h, tunable per budget with
+  `NIF_LLM_MAX_STREAM_RETRIES`, `NIF_LLM_MAX_CONNECT_RETRIES`,
+  `NIF_LLM_RETRY_AFTER_CAP_MS`) and `RetryKind` classifies each failure. The
+  partial tool output a timeout produced is preserved in the error record
+  instead of discarded (`060b5d1`, `9bbe3e8`; `t_retry_unit`).
+- **core: session calls are forwarded asynchronously, so one slow turn no
+  longer blocks another conversation's call.** A session call used to block
+  core's `svc.core.call` pump for the whole turn; concurrent requests (a
+  second UI saving its model) were stashed in `ct.pending` until the first
+  turn ended and timed out behind it. Each call now routes on a private
+  inbox and completes from the pump's idle slot — different runners make
+  progress concurrently while a runner still serializes its own
+  conversation (`17ed5b3`; regression in `t_core`).
+- **agent: queued turn events are applied before the busy cache is read.**
+  The SDK drains the call binding before the `ev.session.turn` tap, so a
+  tool call arriving just as a child turn finished could read the child as
+  still busy — `agent_ask` queued an answer that was already available, and
+  a steer could be published into a subscription that no longer existed and
+  silently lost. The taps are now pumped (bounded) before `liveTurns` is
+  read, the pattern `requestChildTurn` already used (`5f40e71`).
+- **web UI: a conversation's model pin is dropped when the provider moves.**
+  The pin was chosen under one provider, so a switch that moves the backend
+  clears it and the newly active provider's default applies — the pinned id
+  may not exist there. Re-selecting the already active provider keeps the
+  pin. Mirrors the TUI behavior (`0f98251`).
+- **plugins: refless installs update from their clone's branch, and a
+  branch-pinned install is never repointed at a release tag.**
+  `plugin_update` refused with "no tracked branch ref to pull" for
+  `file://` installs made without an explicit ref; it now reads the
+  checked-out branch from the clone and records it. Separately, a package
+  installed at a branch (the user asked to track main) was removed and
+  reinstalled at the newest tag on first update whenever main was ahead —
+  a silent downgrade; the tag move now requires the recorded ref to
+  actually name a tag (`2488938`, `28fcb07`).
+- **install-lsp: the summary counts only servers this run actually
+  installed.** `ok()` bumped the "newly installed" counter on the
+  already-present branches too, so a fully provisioned host re-reported
+  "11 newly installed" while having installed nothing. `ok` now means
+  verified and `new` means installed now, and the line also reports the
+  available count the listing finds (`727212c`).
+
 - **lsp: a configured-but-unrunnable server both reported "ok" and wasted a
   warm slot.** `install-lsp.sh` only checked for a JRE on the branch where
   `jdtls` was *missing*, so a present jdtls wrapper with no `java` on `PATH`
@@ -28,6 +90,84 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   started that can only die, and no warm slot is spent on it.
 
 ### Added
+
+- **Manual compaction: `/compact`.** Runs the conversation's replaceable
+  compactor on demand — a verified checkpoint replaces older history, with
+  no LLM turn and no user message — instead of waiting for the automatic
+  pressure ladder. The core control is a content-less session call
+  (`{sessionId, compact: true}`, trigger `"manual"`) answering
+  `{compacted, beforeTokens, afterTokens, generation}` or an explicit
+  decline (no compactor configured / compactor declined / no permitted
+  cut); a decline never silently falls back to lossy trim. The web UI
+  exposes it as a builtin slash command; the TUI ships its own `/compact`
+  in niffler-tui (`448a6e9`; `t_compaction`, `t_controls`).
+- **agent: subagents v2 continues — the autonomous wake, delegation depth,
+  keyed leases, durable mail and `agent_ask`.** Follow-ups to the
+  settlement-notice entry above:
+  - **Autonomous wake (`fc770e3`)** — a background child settling while its
+    parent was idle left an `agentnotice` nobody read until the human
+    spoke again. The agent component now publishes a fire-and-forget
+    `session {wake: true}`; `ensureRunner` spawns the parent's runner on
+    demand and the runner admits the wake only when `NIF_AGENT_WAKES`
+    (default 3) consecutive wakes are unspent, pending notices exist, and
+    wakes are enabled. The budget is derived from the stored wake-marked
+    messages, so it survives runner restarts; the human's next message
+    resets it. An admitted wake appends a notice-marked user message,
+    drains the notices and runs one normal turn — the parent conversation
+    moves on its own and the request prefix stays append-only. A declined
+    wake persists nothing and the notice stays pending for the pull lane.
+  - **Delegation depth cap + keyed nested leases (`f1ef4c2`)** — recursion
+    is bounded by a depth cap, and the nested-call proxy's leases are keyed
+    so an outer program's tool lease survives an inner `agent_run`.
+  - **`agent_ask` and durable parent mail (`34e8433`)** — `agent_ask
+    {session, question}` returns a continuation's answer (idle child:
+    directly, activation ledgered; mid-turn: queued as durable mail and
+    delivered at the child's next turn top). `agent_steer` to an
+    idle/retired child used to vanish into a subscription nobody drained;
+    between turns it now queues on the same mail lane. Mode-sensitive task
+    wording (fresh/fork/continuation) and the delegation-scope statement
+    (approvals belong to the parent's human, budgets are fixed at start, a
+    denial is a reported limitation, never retried) land in both tools'
+    schemas, first turn only.
+- **web UI: the SPA joins the UI lease registry.** The browser UI now
+  registers with core's UI registry alongside the TUIs (one identity per
+  tab, minted by the bridge and kept in `sessionStorage`), so mixed TUI/web
+  setups coordinate instead of silently sharing a conversation. The header
+  shows the registry's display number; opening a held conversation reports
+  the holder by number and offers a fresh conversation instead; the ~20s
+  lease renews every 5s, a claim lost while frozen moves the tab to a new
+  conversation, `beforeunload` releases best-effort, and registry outages
+  degrade to the legacy broadcast approval path (`794f062`;
+  `uiRegistry.test.mjs`).
+- **core: `/export`** — `session {sessionId, export: true}` returns the
+  exact provider request the next turn would send (messages, tool schemas,
+  model, provider, `reasoning_effort`) with no user message, LLM call or
+  store write; built in lockstep with the `llmArgs` construction so the
+  dump is faithful for reproducing a request (`87b14bf`).
+- **read: a whole read of a large file returns the lsp outline.** A whole
+  read (no explicit `offset`/`limit`) of a file above
+  `NIF_READ_OUTLINE_LINES` (default 1000, 0 disables) asks the lsp
+  component for `documentSymbol` and returns the outline — every symbol
+  with kind, name and one-based position — plus window pointers (12 ranges
+  per call) and the `offset=1` dump-anyway escape hatch. Language-agnostic
+  (the registry is data; every failure falls back byte-identically to the
+  normal content read), the outline delivers no bytes so the conversation's
+  seen-state is preserved, and a per-call budget of 2 outlines bounds
+  batch latency. Live: a 1277-line file costs 4.1KB instead of ~45KB of
+  content (`0e3e070`).
+- **plugins: the component registers a slash surface.** `/plugins`,
+  `/plugins-search`, `/plugins-install`, `/plugins-update` and
+  `/plugins-remove` are registered (namespaced by component name, bound to
+  their tools), so UIs can list and manage packages through the normal
+  approval path instead of hand-calling the tools (`111b971`).
+- **systemprompt: deterministic prompt slots (`prompt_hint`).** Components
+  and plugins can register prompt fragments into named slots
+  (`efficient_tools`, `after_instructions`, …) through a hidden
+  `prompt_hint` tool; contributions sort by source/key and a repeated
+  key replaces its own contribution, so the same registrations always
+  compose the same prompt. Registration affects only prompts composed
+  afterwards — frozen conversations are never rewritten (`a506618`;
+  `t_systemprompt`).
 
 - **lsp: Ruby and PHP language servers** — `solargraph` (`.rb`, `.rake`,
   `.ru`, `.gemspec`) and `intelephense` (`.php`, `.phtml`) are now built-in
@@ -96,6 +236,14 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   use the meta block.
 
 ### Changed
+
+- **edit: the read batching nudge is gone.** The hint taught the
+  windows-era shape; under the canonical reads shape the full30 run showed
+  0/17 post-nudge conversions while every batch was spontaneous pre-nudge,
+  and the tool description already teaches batching. The bench's
+  transcript-shape metrics now count canonical read arrays with more than
+  one item (the run's batches had been invisible: recorded 0, re-scored
+  readSingle=74 / readBatch=4) (`2e2d3dc`).
 
 - **Prompts: change-scope discipline, and the SWE task prompt no longer
   forbids running tests.** Three graded cells (terraform-35543 twice, fmt-1683)
