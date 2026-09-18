@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -153,6 +156,56 @@ func (b *Bridge) Send(component, tool, args string, timeoutMs int) string {
 		return errJson(err.Error())
 	}
 	return string(res)
+}
+
+// SendAs is Send with an explicit self-declared caller name. The web UI
+// stamps each browser tab's registry identity (Bridge.NewUiId) as the caller
+// of its session turns, so core routes directed approvals to
+// svc.approval.<caller>.request and only that tab acts on them. Caller names
+// are self-declared routing hints, not authentication (docs/WIRE.md).
+func (b *Bridge) SendAs(caller, component, tool, args string, timeoutMs int) string {
+	if b.comp == nil || !b.comp.Connected() {
+		return errJson("bus not connected")
+	}
+	var raw any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return errJson("bad args JSON: " + err.Error())
+	}
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	rawArgs, err := json.Marshal(raw)
+	if err != nil {
+		return errJson(err.Error())
+	}
+	env := sdk.Envelope{V: 1, ID: sdk.NewID(), Kind: sdk.KindCall,
+		Tool: tool, Args: rawArgs, Caller: caller}
+	res, err := b.comp.RequestEnvelope("svc."+component+".call", env, timeout)
+	if err != nil {
+		return errJson(err.Error())
+	}
+	if res.Kind == sdk.KindError {
+		if res.Error != nil {
+			return errJson(res.Error.Message)
+		}
+		return errJson("component error")
+	}
+	return string(res.Args)
+}
+
+// NewUiId mints a fresh per-tab identity for core's UI registry
+// (core/uireg.nim). The SPA persists it in sessionStorage so a reload keeps
+// the assigned display number, and uses the same string as the tab's
+// session-turn caller (see SendAs) so directed approvals stay per tab.
+func (b *Bridge) NewUiId() string {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand does not fail on Linux/macOS; the time fallback keeps
+		// startup going even if it somehow did.
+		return fmt.Sprintf("ui-%x", time.Now().UnixNano())
+	}
+	return "ui-" + hex.EncodeToString(buf)
 }
 
 // Emit publishes a fire-and-forget event.

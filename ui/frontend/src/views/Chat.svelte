@@ -1,7 +1,7 @@
 <script lang="ts">
   import { currentProfile, selectProfile, componentsText } from '../lib/toolProfiles';
   import { onMount, tick } from "svelte";
-  import { send, on, emit } from "../nats";
+  import { send, sendAs, on, emit } from "../nats";
   import { renderMarkdown } from "$lib/markdown";
   import ToolRun from "./ToolRun.svelte";
   import Thinking from "../components/Thinking.svelte";
@@ -43,7 +43,7 @@
     usage?: Usage;
   }
 
-  let { sessionId = $bindable(null), onCommand = () => {} }: { sessionId: string | null; onCommand?: (cmd: string) => void } = $props();
+  let { sessionId = $bindable(null), onCommand = () => {}, uiCaller = "ui" }: { sessionId: string | null; onCommand?: (cmd: string) => void; uiCaller?: string } = $props();
 
   // Per-session live state, keyed by the session the EVENT carries (not by
   // the prop — events self-route, so a turn that keeps streaming after a
@@ -436,7 +436,9 @@
     live.liveIdx = live.messages.length - 1;
 
     try {
-      await send("core", "session", { sessionId: sid, content: text, model: sessionModel, profile: currentProfile() }, 600000);
+      // The turn rides this tab's registry identity as the caller, so core
+      // routes any approval it raises back to this tab alone.
+      await sendAs(uiCaller, "core", "session", { sessionId: sid, content: text, model: sessionModel, profile: currentProfile() }, 600000);
       if (createdHere === sid) {
         createdHere = null;
         await titleSession(sid, createdTitle);

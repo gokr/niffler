@@ -231,6 +231,16 @@ ev.approval.resolved   # core → UIs: {id, ok} gate verdict; clients dismiss
                        #   stale modals for id
 ```
 
+The `ui` tool (hidden) is the interactive-client registry: `register` /
+`renew` / `release` / `claim` / `release_session` / `owner`. Core assigns
+monotonic display numbers ("Niffler 1", …) and brokers conversation
+ownership between cooperating UIs; an ~20s lease is the liveness signal. A
+caller name is self-declared, so this is coordination, not authentication.
+The TUIs register unique `tui-<hex>` component names (their approval caller);
+the web UI mints one identity per browser tab (`ui-<hex>`) and stamps it as
+the `caller` of that tab's session turns, so directed approvals stay per tab
+(ui/README.md).
+
 `svc.core.call` is core's own service surface, served by core itself
 (queue "core"): tools `session` (hidden from the LLM), `spawn`, `catalog`,
 `kill`, `remove`. `catalog` ops: `list` (the name-sorted *direct*
