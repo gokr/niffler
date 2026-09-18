@@ -93,12 +93,13 @@ make install-ui         # 构建 Wails UI，复制到 ~/.local/bin，并安装
 - [当前计划](docs/research/PLAN.md) — 尚未完成的工作。
 - [研究索引](docs/research/README.md) — 设计历史和先例研究，不是操作手册。
 - [Fabric 指南](docs/FABRIC_GUIDE.md) — 可编程编排和 subagent。
+- [模型源插件](docs/MODEL_SOURCES.md) — 修正模型目录的组件示例。
 - [设置设计](docs/research/SETTINGS.md) — 尚未发布的设置方案。
 
 ## 开发组件
 
 Nim、Go 和 TypeScript 组件使用 `sdk/` 中的 SDK。正常扩展流程是：写源码，调用
-`builder.build`，再调用 `core.spawn`。修改架构前请阅读
+`build`，再调用 `spawn`。修改架构前请阅读
 [AGENTS.md](AGENTS.md)、[组件生命周期](docs/MANUAL.md#self-extension-and-component-lifecycle)
 和 [WIRE.md](docs/WIRE.md)。社区组件通过 `plugins` 安装，详见
 [手册中的插件章节](docs/MANUAL.md#component-ecosystem-plugins)。

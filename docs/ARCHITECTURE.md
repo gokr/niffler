@@ -110,7 +110,7 @@ The mechanisms that *are* components, and the capability they carry:
 | `store` | state/persistence | single-writer KV; the mind's state lives here, not in core |
 | `models` | provider/model metadata | models.dev baseline plus replaceable plugin correction and discovery layers |
 | `llm` | LLM access | hidden `chat` tool; streaming with live `ev.llm.token` deltas, reasoning tokens, per-call cancellation |
-| `builder` | compilation | agent-written Nim/Go → binary |
+| `builder` | compilation | agent-written Nim/Go/TypeScript → binary |
 | `bash` | execution | general-purpose machine access |
 | `plugins` | ecosystem | discovery + install of third-party component packages (topic search, `niffler.json` manifest, source builds) |
 | `edit` | file tools | `read` (one `path` or a batched `reads` array — up to 12 files/ranges, pageable) / `edit` (exact old_string/new_string, uniqueness enforced, guarded fallback cascade, `replace_all`) / `write` (atomic whole-file) / `undo_last_edit`; anchored block moves live in the niffler-hashline plugin |

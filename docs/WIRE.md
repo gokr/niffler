@@ -51,13 +51,18 @@ svc.<component>.call   # queue-grouped request/reply (one replica handles each c
 svc.session.<id>.call  # session runner for conversation <id> (queue "session"):
                        #   tool "session" {sessionId, content?, model?, thinking?,
                        #   title?, cwd?, profile?, discovery?, tools?, maxRounds?,
-                       #   maxCalls?, maxTokens?};
+                       #   maxCalls?, maxTokens?, approvals?, limits?, compact?,
+                       #   export?, wake?};
                        #   content runs a turn; model-only calls persist/resolve
                        #   selection without inference; model present + empty clears
-                       #   the conversation override. thinking (low|medium|high,
+                       #   the conversation override. thinking (low|medium|high|max,
                        #   empty clears) persists a per-conversation thinking-effort
                        #   selection forwarded to the LLM as reasoning_effort
                        #   (provider-dependent; providers without support never see it).
+                       #   approvals?/limits? are the human's mutable conversation
+                       #   controls; compact? runs the compactor now (no turn);
+                       #   export? returns the exact provider request (no turn);
+                       #   wake? runs a notice-only turn — see "Autonomous wake".
                        #   profile names a stored tool profile resolved into the
                        #   direct toolset once, at the first call (unknown names
                        #   fail the call; resumes ignore the argument — the
@@ -193,14 +198,12 @@ ev.session.toolcall    # {sessionId, turnId?, callId?, phase: start|done,
 ev.session.steer       # {sessionId, turnId?, content} a steer message was folded in
 ev.session.advice      # {sessionId, turnId?, source, content, reason?} an
                        #   advisory message (svc.session.<id>.advise) was folded in
-ev.session.notice      # {sessionId, turnId?, jobId, child, status} a subagent
-                       #   settlement notice was folded in (the durable
-                       #   agentnotice record is what carries the summary and
-                       #   the recourse to the full reply; see "Settlement
-                       #   notices" below)
-ev.session.context     # {sessionId, turnId?, promptTokens, usedTokens, context,
-                       #   warning?|trimmed?}; context-window pressure
-                       #   (75% warn, 90% trim)
+ev.session.notice      # {sessionId, turnId?, kind?, content?, jobId?, child?,
+                       #   status?} a settlement notice, background process exit,
+                       #   or the opening of an autonomous wake turn was folded in;
+                       #   `content` is the rendered text UIs show (the durable
+                       #   `agentnotice` record carries the summary and the recourse
+                       #   to the full reply; see "Settlement notices")
 ev.session.done        # {sessionId, turnId?, reply} or {sessionId, turnId?, error}
 ```
 
@@ -329,7 +332,7 @@ No transport-native cancellation in NATS. Two implemented cancel paths:
   work is not stopped. A generic `ev.cancel.<call-id>` subject remains a
   possible future addition.
 
-## Settlement notices (subagents → parent)
+## Settlement notices
 
 A background subagent (`agent_spawn`) that reaches a terminal state writes a
 durable `agentnotice` record and delivers it to its **parent conversation** —

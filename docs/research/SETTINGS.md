@@ -12,7 +12,8 @@
 
 ## 0. The problem, measured
 
-109 `NIF_*` variables exist; ~86 are production, 19 test/bench-only. They
+109 `NIF_*` variables existed at the baseline; ~86 production, 19
+test/bench-only. They
 work, and MANUAL.md documents them — but they have three real costs:
 
 1. **Discovery**: you must know a var exists to set it. Nothing lists what is

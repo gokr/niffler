@@ -150,7 +150,7 @@ remaining deferred strategies are recorded in
 
 Oversized bash output spills to a pageable file and returns a read hint; the
 same pointer convention is used by other bounded-output tools. See the
-[manual](../MANUAL.md#bash) for caps and paths.
+[manual](../MANUAL.md#shipped-components) for caps and paths.
 
 ### A5. Grep early-kill + line truncation
 - **What:** in `components/grep/main.nim`, kill rg as soon as `max_results` is

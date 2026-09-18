@@ -106,12 +106,14 @@ runs the Go tests, vet and race checks.
   studies; research notes are not operating instructions.
 - [Fabric guide](docs/FABRIC_GUIDE.md) — programmable orchestration and
   subagents.
+- [Model source plugins](docs/MODEL_SOURCES.md) — worked example of a
+  catalog-correcting component.
 - [Settings design](docs/research/SETTINGS.md) — settings work that is not yet shipped.
 
 ## Developing components
 
 Nim, Go and TypeScript components use the SDKs in `sdk/`. The normal extension
-path is: write source, call `builder.build`, then call `core.spawn`. Read the
+path is: write source, call `build`, then call `spawn`. Read the
 [component lifecycle](docs/MANUAL.md#self-extension-and-component-lifecycle),
 the [wire contract](docs/WIRE.md), and [AGENTS.md](AGENTS.md) before changing
 architecture or adding a component.

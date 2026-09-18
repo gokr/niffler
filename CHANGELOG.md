@@ -116,6 +116,11 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     drains the notices and runs one normal turn — the parent conversation
     moves on its own and the request prefix stays append-only. A declined
     wake persists nothing and the notice stays pending for the pull lane.
+    A notice that lands during a live turn holds that turn open one more
+    step so it cannot close over a child that just finished (a burst folds
+    in one drain; `NIF_AGENT_NOTICE_HOLD=0` restores the previous timing),
+    and niffler-tui renders folded notices and wake prompts as dim
+    machinery rows instead of dropping the event.
   - **Delegation depth cap + keyed nested leases (`f1ef4c2`)** — recursion
     is bounded by a depth cap, and the nested-call proxy's leases are keyed
     so an outer program's tool lease survives an inner `agent_run`.

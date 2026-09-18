@@ -11,7 +11,7 @@ reference chapters for the shipped components. Design rationale lives in
 
 - [Layout of a running system](#layout-of-a-running-system)
 - [Store engines](#store-engines)
-- [State and configuration](#state-and-configuration-where-everything-lives) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
+- [State and configuration](#state-and-configuration) · [Environment variables](#environment-variables) · [The `.env` file](#the-env-file)
 - [The bus in one screen](#the-bus-in-one-screen) · [Approvals](#approvals)
 - [Context window](#context-window) · [Self-extension and component lifecycle](#self-extension-and-component-lifecycle)
 - [Component ecosystem (`plugins`)](#component-ecosystem-plugins) · [Skills](#skills)
@@ -25,7 +25,7 @@ reference chapters for the shipped components. Design rationale lives in
 - [Hooks](#hooks)
 - [Fabric and subagents](#fabric-and-subagents)
 - [Expert advisory peer (`expert`)](#expert-advisory-peer-expert)
-- [Recovery](#recovery--recover) · [The store](#the-store) · [Testing](#testing)
+- [Recovery](#recovery) · [The store](#the-store) · [Testing](#testing)
 - [Starting and stopping](#starting-and-stopping) · [Common tasks](#common-tasks) · [Troubleshooting](#troubleshooting)
 
 ## Layout of a running system
@@ -65,7 +65,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `edit` | Nim | optional | the file tools: `read` (canonical `reads` array — up to 12 files/ranges in one call, pageable, single-file `path` sugar; a whole read of a >1000-line file with a language server for its type returns the lsp symbol outline instead — window with offset/limit, or `offset: 1` to read whole anyway, `NIF_READ_OUTLINE_LINES` tunes/disables), `edit` (unique `old_string`, guarded fallback cascade, `replace_all`), `write` (atomic whole-file), `undo_last_edit` (approval-gated mutations); anchored block moves live in the [niffler-hashline](https://github.com/gokr/niffler-hashline) plugin |
 | `lsp` | Nim | optional | language-server seam: one `lsp` tool — `diagnostics` (compiler/lint errors without a test run), `documentSymbol` (file outline: every symbol with kind, name and one-based position), `workspaceSymbol` (repo-wide symbol search on the server's index — fuzzy `query`, cross-file results), `goToDefinition`, `findReferences`, `goToImplementation`, `hover` — over any configured stdio language server (gopls, nimtortoise, typescript-language-server, pyright, rust-analyzer, clangd, bash-language-server, jdtls, intelephense, solargraph, csharp-ls by default). The registry is data (`$XDG_CONFIG_HOME/niffler-lsp/servers.json`): adding a language is a config entry or an `lsp_registry add` the agent can make itself — never code (AGENTS.md: language-agnostic core). On-demand tools |
 | `git` | Nim | optional | read-only repo inspection: `git_status`/`git_diff`/`git_log`/`git_show`/`git_blame` over fixed argv (approval-free; mutations stay in bash) plus `review_receipt` — a local diff-fingerprint write/check pair under `var/review-receipts/` for pre-push review handoff (never calls a model; check fails when the diff changed since the receipt). On-demand tools — the worker reaches them via `discover` + `invoke`, keeping the direct toolset small |
-| `agent` | Nim | optional | subagent sessions: `agent_run` — fresh context, own loop, summary returned (see [Fabric and subagents](#fabric-and-subagents)) |
+| `agent` | Nim | optional | subagent sessions: `agent_run`/`agent_spawn` (fresh or continued children, background jobs, durable settlement notices — see [Fabric and subagents](#fabric-and-subagents)) |
 | `expert` | Nim | optional | advisory peer: follows one or more sessions concurrently, LLM-judged, turn-bound steer (see [Expert advisory peer](#expert-advisory-peer-expert)) |
 | `fabric` | Nim | optional | programmable tool calling: the model writes a Nim program that orchestrates tools; only its `finish()` value enters the conversation (see [Fabric and subagents](#fabric-and-subagents)) |
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
@@ -78,7 +78,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `logfile` | Nim | optional | rotating JSONL sink and bounded persisted-log search (see [Observation and logs](#observation-and-logs)) |
 | `hooks` | Nim | off by default | runs operator shell commands when selected bus events fire (observe-only; JSON on stdin, env-configured; see [Hooks](#hooks)) |
 | `mcp` | Go | optional | external MCP servers (Model Context Protocol): store-backed registry (`mcp_servers`/`mcp_add`/`mcp_edit`/`mcp_remove`/`mcp_refresh`), one supervised bridge per server; tools become ordinary catalog tools reachable through `discover` + `invoke` (see [External MCP servers](#external-mcp-servers-mcp)) |
-| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `core.spawn {name: "dialog", binary: ".../var/bin/dialog"}`. Prereqs: natscli, jq, zenity — `make setup` installs all three |
+| `dialog` | bash | — | demo component written entirely in bash — nats CLI + jq, no SDK, no compile step: `dialog_show` pops a desktop dialog (zenity, notify-send or log fallback), `dialog_ask` asks the user a yes/no question and returns the answer. Ships in `var/bin/dialog` (`make build`) but is **not autostarted**; spawn it with `spawn {name: "dialog", binary: ".../var/bin/dialog"}` (core's tool). Prereqs: natscli, jq, zenity — `make setup` installs all three |
 ### Minimal boot profile (`--minimal`)
 
 The normal manifest is the full, self-extending harness. For the smallest
@@ -227,7 +227,7 @@ target database; rollback is simply `NIF_STORE_BACKEND=barrel`, since the
 barrel file is untouched. The same export/replay path moves data in either
 direction (docs/research/STORE_V2.md "Moving data between engines").
 
-## State and configuration — where everything lives
+## State and configuration
 
 Niffler has no single config file. State is spread across five places,
 chosen by lifetime: boot decisions are environment, identity/selection is
@@ -304,6 +304,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LSP_WARM_MAX` | heavy (index-holding) language servers pre-started per workspace on `ev.workspace.opened` | `2` |
 | `NIF_LSP_WARM_CHEAP` | cheap (non-indexing) servers pre-started, from their own budget — they never displace a heavy pick | `1` |
 | `NIF_LSP_WARM_TOTAL` | ceiling on processes pre-started per workspace | `4` |
+| `NIF_LSP_BIN` | install directory used by `make install-lsp` (server wrappers and the user-local JDK); also resolved as a default fallback bin dir | `~/.local/bin` |
 | `NIF_LSP_BIN_DIRS` | extra directories searched for server binaries beyond PATH (tilde-expanded) | — |
 | `NIF_TRAFILATURA` | Trafilatura executable path/name; `off` disables external extraction | auto-detect `trafilatura` on `PATH` |
 | `NIF_LOG_LEVEL` | SDK structured-log publication threshold (`debug`, `info`, `warn`, `error`) | `info` |
@@ -397,6 +398,10 @@ ev.session.status      {sessionId, turnId?, provider?, model?, context?, usedTok
 ev.session.token       {sessionId, turnId?, content, reasoning}  (live token deltas)
 ev.session.toolcall    {sessionId, turnId?, callId?, phase: start|done, tool, args, result|error, durationMs?}
 ev.session.advice      {sessionId, turnId?, source, content} an advisory was folded in
+ev.session.notice      {sessionId, turnId?, kind?, content?, jobId?, child?,
+                       status?} runtime machinery was folded in (subagent
+                       settlement, background process exit, autonomous wake);
+                       `content` is the rendered text UIs show
 ev.session.done        {sessionId, turnId?, reply} | {sessionId, turnId?, error}
 ev.session.context     {sessionId, turnId?, promptTokens, usedTokens, context, warning?|trimmed?}
 ev.catalog.updated     direct (prompt-facing) tool projection after any
@@ -460,14 +465,16 @@ process with the same name.
 ## Approvals
 
 Tools whose schema carries `x-harness.approval: "always"` — currently
-`bash`, `builder.build`, `core.spawn`, `core.kill`, `core.remove`,
-`edit`, `write`, `undo_last_edit`, `fabric`, `agent_run`, `agent_spawn`,
-`expert_follow`, `plugin_install`, `plugin_update`, `plugin_remove`,
-`skill_install`, `skill_remove`, `provider_add`, `provider_update`,
-`provider_export`, `provider_import`, `provider_use_environment`,
-`observe_send`, `observe_request`, `observe_dump`, `observe_monitor` —
-are gated on a human before they execute (core also gates its own
-`conversation_delete` surface the same way):
+`bash`, `build` (the `builder` component), core's `spawn`, `kill` and
+`remove`, `edit`, `write`, `undo_last_edit`, `fabric`, `agent_run`,
+`agent_spawn`, `agent_ask`, `expert_follow`, `lsp_registry`, `mcp_add`,
+`mcp_edit`, `mcp_remove`, `mcp_refresh`, `plugin_install`, `plugin_update`,
+`plugin_remove`, `process_start`, `process_kill`, `skill_install`,
+`skill_remove`, `provider_add`, `provider_update`, `provider_export`,
+`provider_import`, `provider_use_environment`, `observe_send`,
+`observe_request`, `observe_dump`, `observe_monitor` — are gated on a human
+before they execute (core's unregistered `conversation_delete` surface is
+gated the same way):
 
 - **Terminal harness** (`make run`): a `[approval]` prompt with the tool
   name and arguments; answer `y`/`n` (falls back to the tty prompt only
@@ -663,13 +670,15 @@ reports:
 The agent adds capabilities at runtime, mid-conversation:
 
 1. writes a component source (Nim: `import niffler/sdk`, typed tool
-   pattern; Go: `import sdk "niffler.dev/sdk"` — see the system prompt)
-2. `builder.build {lang, name, source}` compiles it into `var/bin/`
-3. `core.spawn {name, binary, replicas?}` starts it; it registers itself; new
-   conversations expose its tools directly (when not on demand), existing
+   pattern; Go: `import sdk "niffler.dev/sdk"`; TypeScript: the `sdk/ts`
+   package — see the system prompt)
+2. `build {lang, name, source}` (the `builder` component) compiles it into
+   `var/bin/`
+3. `spawn {name, binary, replicas?}` (core) starts it; it registers itself;
+   new conversations expose its tools directly (when not on demand), existing
    ones reach them via `discover` + `invoke` (see [Progressive tool discovery](#progressive-tool-discovery))
-4. `core.kill {name}` stops every replica temporarily (restored on next boot);
-   `core.remove {name}` stops the group and deletes its persisted record
+4. `kill {name}` stops every replica temporarily (restored on next boot);
+   `remove {name}` stops the group and deletes its persisted record
 
 `replicas` is optional (1–16, default 1) and is persisted. Use it only for
 stateless or externally coordinated components: all replicas share the same
@@ -705,7 +714,7 @@ topic `niffler-component` are discoverable without any registry:
 |---|---|
 | `plugin_search {query?}` | GitHub topic search; returns repo, description, stars |
 | `plugin_installed` | the packages installed on this harness |
-| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via `builder.build`, then `core.spawn` each service component (approved) |
+| `plugin_install {repo, version?}` | clone `var/plugins/<pkg>@<ref>/`, build each component from source via the builder's `build` tool, then `spawn` each service component (approved) |
 | `plugin_update {package}` | to the latest release tag: remove, reinstall at the new ref; a package with no releases (tracking a branch) is pulled in place (`git pull --ff-only` of the existing clone) and rebuilt only when the pull moved HEAD |
 | `plugin_remove {package}` | `core.remove` every supervised component, delete the clone, drop the record |
 
@@ -956,8 +965,8 @@ The `fetch` component is the web access tool (a port of the old niffler
 
 ## Language servers (`lsp`)
 
-Status: **implemented** (Nim component; deterministic fixture-tested; TUI
-picker in niffler-tui ≥ the /lsp commit).
+Status: **implemented** (Nim component; deterministic fixture tests; the
+niffler-tui client adds a `/lsp` registry picker).
 
 One generic seam over any stdio language server. The component knows no
 languages: which server handles which file extension is **data** — a registry
@@ -981,12 +990,12 @@ timeout and protocol errors append the server's last stderr line, which
 names the actual failure (missing binary, crash, indexing).
 
 All three tools are **on-demand** (`discover`/`invoke` — see [Progressive tool
-discovery](#progressive-tool-discovery-discoverinvoke)), keeping the frozen
+discovery](#progressive-tool-discovery)), keeping the frozen
 toolset small; the tool description is the model's when-to-use guide. The
 `lsp` tool is read-only and approval-free; `lsp_registry` writes the registry
 file and is approval-gated.
 
-### How the model uses it
+### Model usage
 
 Typical turns:
 
@@ -1016,7 +1025,7 @@ a missing binary) returns `E_LSP_UNAVAILABLE` with the fix in the message —
 "add one with the lsp_registry tool (or edit <registry path>)". The model
 falls back to grep/read on its own.
 
-### How the user adds a language
+### Registry: adding a language
 
 Three routes, all writing the same file:
 
@@ -1052,7 +1061,9 @@ csharp-ls — work whenever the binary is on `PATH` or in a fallback dir
 `make install-lsp` installs them idempotently (Go, Nim and TS are mandatory —
 Niffler is built from those — the rest are y/n prompts, `--all` for
 unattended installs; a failure is non-fatal per language: the lsp tool just
-skips it with `E_LSP_UNAVAILABLE`). Java is the one language whose *runtime*
+skips it with `E_LSP_UNAVAILABLE`; `NIF_LSP_BIN` overrides the install
+directory, default `~/.local/bin`, which is also a default fallback bin
+dir). Java is the one language whose *runtime*
 is installed too: a user-local JDK 21 under `~/.local/share/niffler-lsp/jdk`
 (sudo-free, like the server downloads) when no JDK 17+ is on `PATH` — a jdtls
 wrapper without a JRE used to report "ok" and then die mid-query.
@@ -1145,7 +1156,7 @@ official Go SDK (`github.com/modelcontextprotocol/go-sdk`).
 store kind "mcp" (one record per server)
         │ owned by the mcp manager (components/mcp)
         ▼
-core.spawn {name: "mcp-<server>", binary: var/bin/mcp-bridge, args: ["--server", <server>]}
+spawn {name: "mcp-<server>", binary: var/bin/mcp-bridge, args: ["--server", <server>]}
         │ one supervised process per server (survives reboots via the
         │ component record; supervisor restarts it on failure)
         ▼
@@ -1306,7 +1317,7 @@ SDK's frozen-registration gate (`Announce` panics on late registration;
 post-ready calls fail with `not-ready`), name/contract validation, registry
 shape parsing, transport credential/redirect rules, and cancellation plumbing.
 
-## Progressive tool discovery (`discover`/`invoke`)
+## Progressive tool discovery
 
 Status: **implemented**.
 
@@ -1656,7 +1667,7 @@ tool carries this registration extension:
 
 `models` discovers marked tools from `reg.publish` and from core's full catalog
 snapshot, so component boot order does not matter. It calls the tool with
-`{"version": 1}`. The result is:
+`{"version": 1}`. The result is a JSON Merge Patch (RFC 7396):
 
 ```json
 {
@@ -1671,42 +1682,10 @@ snapshot, so component boot order does not matter. It calls the tool with
 }
 ```
 
-Minimal Nim source component:
+A complete worked source component — marker, tool, package layout and
+verification — is in [MODEL_SOURCES.md](MODEL_SOURCES.md).
 
-```nim
-import niffler/sdk
-
-let comp = newComponent("my-models", "0.1.0")
-comp.tool(%*{"hidden": true}):
-  proc my_models_source(version: int = 1): JsonNode =
-    ## Add or correct model catalog data for My Provider.
-    ## - version: models source protocol version
-    %*{"patch": {
-      "my-provider": {
-        "id": "my-provider",
-        "name": "My Provider",
-        "env": ["MY_PROVIDER_API_KEY"],
-        "npm": "@ai-sdk/openai-compatible",
-        "api": "https://api.example.com/v1",
-        "models": {
-          "my-model": {
-            "id": "my-model",
-            "name": "My Model",
-            "reasoning": true,
-            "tool_call": true,
-            "modalities": {"input": ["text"], "output": ["text"]},
-            "limit": {"context": 200000, "output": 32000},
-            "cost": {"input": 1.0, "output": 5.0}
-          }
-        }
-      }
-    }}
-
-comp.tools[^1].schema["x-models-source"] = %*{"version": 1, "priority": 200}
-comp.run()
-```
-
-Put that component in a normal `niffler.json` package. Installation, update,
+Put the source in a normal `niffler.json` package. Installation, update,
 removal, process isolation, and persistence are already handled by the existing
 `plugins` and core lifecycle. Removing the source component immediately removes
 its patch from the effective catalog. No model-specific extension mechanism is
@@ -1736,8 +1715,8 @@ instruction set every conversation starts under. It lives in a component,
 not in core: core keeps only a minimal structural fallback, and a session
 runner fetches the real constitution from `svc.systemprompt.call` once per
 conversation. Replacing the constitution is a normal Niffler operation:
-write a component that answers on the same subject, `builder.build`,
-`core.kill` the old one, `core.spawn` yours. The agent can do this to
+write a component that answers on the same subject, `build` it,
+`kill` the old one, `spawn` yours. The agent can do this to
 itself.
 
 ### How it works
@@ -1785,7 +1764,7 @@ itself.
 The tool is `x-harness.hidden` — it never appears in an LLM toolset; it is
 infrastructure, reachable only by core and by components.
 
-## Observation and logs (`observe`, `logfile`)
+## Observation and logs
 
 Status: **implemented** by the `observe` and `logfile` components.
 
@@ -2048,9 +2027,16 @@ is a durable `agentnotice` record written before any delivery is attempted,
 and it is a *pointer*, not the reply:
 
 - while the parent's turn is running, the notice is folded in immediately
-  (steer lane) as a structurally marked user message;
-- otherwise it waits, and the parent's next turn pulls every pending notice
-  at the top of the turn (pull lane) — so the model never has to poll;
+  (steer lane) as a structurally marked user message; the would-stop point
+  drains notices too, so a turn cannot close over a child that finished
+  during its last step (`NIF_AGENT_NOTICE_HOLD=0` disables only that hold);
+- otherwise the parent is **woken**: the agent component starts a turn whose
+  only job is folding the pending notices in, so the settlement is visible
+  without the human asking. Wakes are bounded by `NIF_AGENT_WAKES` (default 3
+  consecutive wake turns; the human's next message resets the budget, `0`
+  disables waking). A declined wake persists nothing, and the parent's next
+  turn pulls every pending notice at the top of the turn (pull lane) — so the
+  model never has to poll;
 - either way the notice carries a bounded `summary`, `replyBytes` (the
   untruncated length) and `fullReplyIn: "agent_status"`, because the full
   reply is already durable in the `agentjob` record and one call away.
@@ -2182,7 +2168,7 @@ transcript (every judgment is stateless); fail closed (any parse/validation/
 transport error is silence); the expert never acts — it only suggests, and
 approval-gated work stays with the working session's human gate.
 
-## Recovery — `--recover`
+## Recovery
 
 The repo is the snapshot; `var/` is disposable build output. If the agent
 (or a bug) breaks a shipped component — overwrote a binary in `var/bin`,
@@ -2226,7 +2212,7 @@ Kinds in use by core:
 | `component` | `<name>` | `{name, binary, policy, addedAt}` — persisted shape restored on boot |
 | `plugin` | `<pkg name>` | `{name, repo, ref, dir, version, components, addedAt}` — install record of the `plugins` component |
 | `provider` | nickname (plus the `active` marker doc) | redacted-at-rest LLM provider registry of the `provider` component |
-| `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discoverydiscoverinvoke)) |
+| `session` | `<sessionId>:tools` | the conversation's frozen direct toolset snapshot (see [Progressive tool discovery](#progressive-tool-discovery)) |
 | `slash` | `slash` | the merged slash-command table UIs render (see [WIRE.md](WIRE.md)) |
 | `agentjob` | `<jobId>` | durable background `agent_spawn` job records (continuations stamp `continued`, `activation`, and queue `close`) |
 | `agentnotice` | `<parentSession>:<seq>` | subagent settlement notices (summary + recourse to the full reply; `deliveredAt`/`deliveredVia` mark delivery) |

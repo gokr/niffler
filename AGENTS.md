@@ -56,7 +56,9 @@ anything structural.
   deliberately unused.
 - Naming: components lowercase-hyphens (`logfile`), tools lowercase
   underscores. Tool names are globally unique — core rejects duplicates at
-  registration.
+  registration. Prose here writes `component.tool` for readability
+  (`builder.build`, `core.spawn`); the callable names are flat (`build`,
+  `spawn`), and only the `invoke` gateway tolerates dotted spellings.
 - **Language-agnostic core; support for language X is always a plugin or
   config.** General components (edit, grep, bash, git, ...) must not encode
   knowledge of specific languages — no hardcoded language lists, grammars,
@@ -87,7 +89,11 @@ anything structural.
   `__session` with the live session + a lease for the nested-call proxy),
   `x-harness.noSpawn` (subagents cannot spawn subagents, checked at dispatch
   time), `x-harness.workspace` (path-shaped arguments resolved against the
-  conversation workspace).
+  conversation workspace), `x-harness.parallel` (`true` = safe to dispatch
+  concurrently with other `parallel` tools in the same message), and
+  `x-harness.runner` (`true` on a hidden tool = exempt from a subagent's
+  frozen tool allowlist, for replaceable runner machinery — compaction,
+  recall; docs/WIRE.md "x-harness schema extensions").
 - Tool doc comments are the LLM's only window into a tool: all prose lines of
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM

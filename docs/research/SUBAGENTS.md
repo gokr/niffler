@@ -202,7 +202,7 @@ with a dangling `tool_call_id` — exactly the invariant `trimContext` protects.
 ## 5. Steal 3 — the settlement notice — shipped
 
 The design below is the pre-implementation reasoning. The landed record and
-current delivery rules are in [WIRE.md](../WIRE.md#settlement-notices-subagents)
+current delivery rules are in [WIRE.md](../WIRE.md#settlement-notices)
 and the manual.
 
 This is not in DSH-STEAL.md and is the cheapest of the three.
