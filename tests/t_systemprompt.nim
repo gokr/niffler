@@ -143,6 +143,14 @@ proc main() =
   check("systemprompt answers direct calls",
         directPrompt.contains("self-extending") and
         directPrompt.contains("agent harness"), $direct)
+  # Change-scope discipline rides in the base prompt: fix the behavior at
+  # hand, leave the rest alone, cover every path that produces it. Graded
+  # cells (terraform ×2, fmt-1683) lost on exactly this, so the line is
+  # pinned here rather than left to drift. Fragments avoid the line wraps.
+  check("base prompt carries the change-scope discipline",
+        directPrompt.contains("changes scoped") and
+        directPrompt.contains("cover every path that produces the behavior"),
+        $direct)
 
   let hintA = call(nc, "systemprompt", "prompt_hint", %*{
     "slot": "efficient_tools", "source": "z-plugin", "key": "z",

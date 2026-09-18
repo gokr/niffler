@@ -112,18 +112,23 @@ for (const row of rows) {
     `Work in the repository at {{REPO}}. Resolve this GitHub issue:\n\n${row.problem_statement.trim()}\n\n` +
       `Work exactly like this:\n` +
       `1. Read/grep the repository to locate the code involved in the issue.\n` +
-      `2. Implement the minimal correct fix by editing the repository files.\n` +
-      `3. Re-read your edits to check syntax and logic.\n` +
+      `2. Implement the fix for the behavior the issue describes, keeping the ` +
+      `change scoped: leave every other behavior exactly as it was — ` +
+      `including behavior on other code paths that share the code you touch. ` +
+      `If the same behavior is produced by more than one path, update all of ` +
+      `them.\n` +
+      `3. Check your work as far as this checkout allows — compiling, or ` +
+      `building a small repro and exercising it, is encouraged — then re-read ` +
+      `your edits.\n` +
       `4. Reply with a one-paragraph summary of the change.\n\n` +
       `Hard rules:\n` +
-      `- Never run the project's tests and never install dependencies; the ` +
-      `hidden verification environment is separate and grades your diff ` +
-      `afterwards. There is nothing to set up.\n` +
-      `- Do not fetch anything from the network; implement from the issue text ` +
-      `and the repository code.\n` +
+      `- The graded tests are hidden and run in a separate environment ` +
+      `afterwards. Do not try to find, recreate or guess them, and never modify ` +
+      `tests: your diff is graded as production code only.\n` +
+      `- Do not add or vendor dependencies — the grading environment has its ` +
+      `own, and everything your patch needs must already be in the repository.\n` +
       `- Stay inside {{REPO}}: never read other checkouts, caches, task ` +
-      `metadata, or anything else on this machine.\n` +
-      `- Production code only; never modify tests.\n`,
+      `metadata, or anything else on this machine.\n`,
   );
   const wrapper = `#!/usr/bin/env bash\nset -euo pipefail\n` +
     `root=$(cd "$(dirname "\${BASH_SOURCE[0]}")/../../../../.." && pwd)\n` +

@@ -97,6 +97,27 @@ aims for [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Prompts: change-scope discipline, and the SWE task prompt no longer
+  forbids running tests.** Three graded cells (terraform-35543 twice, fmt-1683)
+  lost on the same thing: a fix for the issue at hand that altered behavior on
+  a neighbouring path, or that left one of the paths producing that behavior
+  untouched. Two places now say so. The base prompt gains one clause — "Keep
+  changes scoped: leave behavior you were not asked to change exactly as it
+  was, and cover every path that produces the behavior you do change —
+  regressions hide on shared code paths" (+187 bytes, ~47 tokens; pinned by
+  `tests/t_systemprompt.nim`) — and the generated SWE task prompt states the
+  same rule as step 2 instead of asking for "the minimal correct fix", which
+  was the wrong lever: terraform's failing patch was a third the size of the
+  gold one (+108/−11 across 4 files vs 377 lines across 8).
+  The task prompt also stops forbidding test runs, because that rule was
+  unenforceable prose — the agent's own `go build` fetched Terraform's
+  dependencies mid-turn (module zips stamped inside the cell's window) — and
+  the graded tests are hidden regardless. It now says why they are hidden (do
+  not try to find, recreate or guess them; never modify tests), permits
+  compiling or exercising a small repro, and keeps the rule that is actually
+  checkable: no added or vendored dependencies. Self-testing stays
+  machine-dependent until deps are provisioned per task; the task prompt's
+  instruction block grows 701 → 1005 chars (~76 tokens).
 - **Session round guard default raised from 50 to 1000.** The hard
   `NIF_MAX_TURN_ROUNDS` runaway guard remains configurable and separate from
   the soft `/limit` controls.
