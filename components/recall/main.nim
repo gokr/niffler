@@ -1,5 +1,5 @@
-## context_recall — hidden tool resolving the replaced-content reference
-## space (docs/research/COMPACTION.md §5.3).
+## context_recall — tool resolving the replaced-content reference space
+## (docs/research/COMPACTION.md §5.3).
 ##
 ## Content leaves the model's context in two ways — execution-time spills
 ## and compaction-time prunes/checkpoints — and both must stay retrievable.
@@ -8,6 +8,13 @@
 ##   {"source": "canonical",  "id": "conv-…:000090"}  → store message body
 ##   {"source": "spill",      "id": "conv-…:000090"}  → full original capture
 ##   {"source": "checkpoint", "id": "conv-…#ck3"}     → projection checkpoint
+##
+## mode:search answers the question a ref cannot: "which messages mentioned
+## X?" — it greps the conversation's whole canonical history, including the
+## span a trim or compaction removed from the projection, and returns bounded
+## one-line hits whose ids are then fetchable as refs. That is the only way
+## back into history that no notice points at (a trim drops 845 messages and
+## names just the range).
 ##
 ## Failure is never worse than the status quo: an unresolvable ref returns a
 ## clear error naming what is unavailable — and the runner only ever prunes
@@ -21,6 +28,7 @@ const
   recallMaxBytes = 262_144     ## hard byte ceiling per recalled document
   recallDefaultLines = 2000    ## mirrors read's default line cap
   matchDefaultLines = 50
+  searchDefaultMatches = 20    ## one-line hits per search; the body is a ref away
 
 proc paged(s: string, offset, limit: int): tuple[text: string, totalLines: int,
                                                  truncated: bool] =
@@ -54,6 +62,66 @@ proc matchLines(s, query: string, limit: int): string =
         result.add("[context_recall: match list capped at " & $limit &
                    " lines — narrow the query]\n")
         break
+
+proc searchSnippet(m: JsonNode, query: string, maxBytes: int): string =
+  ## One line that shows why a message matched: the first content line holding
+  ## the query, else a window into the raw record (a hit inside tool_call
+  ## arguments — the command a message ran — has no content line of its own).
+  let needle = query.toLowerAscii()
+  let content = m{"content"}.getStr("")
+  if content.toLowerAscii().contains(needle):
+    for line in content.split('\n'):
+      if line.toLowerAscii().contains(needle):
+        var s = line.strip()
+        if s.len > maxBytes: s = s[0 ..< maxBytes] & " …"
+        return s
+  let raw = $m
+  let at = raw.toLowerAscii().find(needle)
+  if at < 0: return ""
+  let startAt = max(at - 60, 0)
+  let endAt = min(at + maxBytes, raw.len)
+  (if startAt > 0: "…" else: "") & raw[startAt ..< endAt] &
+    (if endAt < raw.len: "…" else: "")
+
+proc searchConversation(c: Component, conv, query, roleFilter: string,
+                        limit: int): JsonNode =
+  ## Grep the conversation's canonical history — including every message a
+  ## trim or compaction removed from the projection, which no ref points at.
+  ## Matches are bounded one-liners: recognize the hit here, then fetch the
+  ## body by ref (mode:full) only if it matters.
+  if conv.len == 0:
+    raise newException(ValueError,
+      "search needs a conversation: pass \"session\" (the runner injects " &
+      "it for session calls; a direct bus call must name one)")
+  if query.len == 0:
+    raise newException(ValueError,
+      "search needs \"query\" (case-insensitive substring)")
+  let needle = query.toLowerAscii()
+  var matches = newJArray()
+  var scanned = 0
+  var capped = false
+  for item in c.storeListAll("message", conv & ":"):
+    let m = item.value
+    if m == nil or m.kind != JObject: continue
+    let role = m{"role"}.getStr("")
+    if roleFilter.len > 0 and role != roleFilter: continue
+    inc scanned
+    if not ($m).toLowerAscii().contains(needle): continue
+    let seqNo = block:
+      let colon = item.id.rfind(':')
+      var n = -1
+      if colon >= 0:
+        try: n = parseInt(item.id[colon + 1 .. ^1])
+        except CatchableError: discard
+      n
+    matches.add(%*{"id": item.id, "role": role, "seq": seqNo,
+                   "snippet": searchSnippet(m, query, 200)})
+    if matches.len >= limit:
+      capped = true
+      break
+  %*{"conversation": conv, "query": query, "mode": "search",
+     "scanned": scanned, "count": matches.len, "matches": matches,
+     "capped": capped}
 
 proc convOf(id: string): string =
   ## "conv-…:000090" / "conv-…#ck3" → the conversation id part.
@@ -152,29 +220,49 @@ proc main() =
   let comp = newComponent("recall", "0.1.0")
 
   let schema = toolSchema(%*{
-    "ref": {"description": "One reference ({source, id}) or an array of them — every notice in the conversation names its ref verbatim",
+    "ref": {"description": "One reference ({source, id}) or an array of them — every notice in the conversation names its ref verbatim; mode:search instead returns ids you can pass here as {source: \"canonical\", id: <hit id>}",
             "oneOf": [{"type": "object"}, {"type": "array", "items": {"type": "object"}}]},
-    "mode": {"type": "string", "enum": ["full", "match"],
-             "description": "full (default) returns the paged document; match greps it"},
+    "mode": {"type": "string", "enum": ["full", "match", "search"],
+             "description": "full (default) returns the paged document for a ref; match greps ONE document's lines; search greps the whole conversation history for messages mentioning something"},
     "query": {"type": "string",
-              "description": "mode:match — return only the lines containing this"},
+              "description": "match: return only the lines containing this. search: the substring to find, case-insensitive, across every message — including messages a trim or compaction removed from your context"},
+    "session": {"type": "string",
+                "description": "search: which conversation to search (defaults to this one)"},
+    "role": {"type": "string",
+             "description": "search: only messages with this role (user, assistant, tool, system, error)"},
     "offset": {"type": "integer", "minimum": 1,
                "description": "full mode: start line (default 1)"},
     "limit": {"type": "integer", "minimum": 1,
-              "description": "full mode: max lines (default 2000, read's cap); match mode: max matching lines (default 50)"}
-  }, description = "Retrieve original content that was replaced in this conversation's context (pruned tool results, spilled command output, compaction checkpoints). Every notice naming replaced content carries its ref verbatim — pass it back here unchanged. Use it when exact wording or the full body of a large result matters; mode:match greps a large document for specific lines without paging it all into context.")
-  schema["x-harness"] = %*{"hidden": true, "runner": true,
+              "description": "full mode: max lines (default 2000, read's cap); match/search mode: max results (default 50 / 20)"}
+  }, description = "Retrieve original content that was replaced in this conversation's context (pruned tool results, spilled command output, compaction checkpoints). Every notice naming replaced content carries its ref verbatim — pass it back here unchanged. mode:search greps the conversation's ENTIRE history — including the span a trim or compaction dropped, where no notice names individual refs — for messages mentioning a phrase, and returns bounded one-line hits you can then read in full by ref. Reach for it when exact wording or the full body of a large result matters and the ref is unknown (which messages discussed X?), or when a summary lost a detail you need back.")
+  schema["x-harness"] = %*{"onDemand": true, "runner": true, "sessionId": true,
                            "timeoutMs": 15_000, "effect": "read"}
 
   discard comp.tool("context_recall", schema,
     proc(c: Component, args: JsonNode): JsonNode =
       let mode = args{"mode"}.getStr("full")
-      if mode notin ["full", "match"]:
-        return errResult("mode must be \"full\" or \"match\"", "bad-request")
+      if mode notin ["full", "match", "search"]:
+        return errResult("mode must be \"full\", \"match\" or \"search\"", "bad-request")
       let query = args{"query"}.getStr("")
       let offset = args{"offset"}.getInt(1)
-      let limit = args{"limit"}.getInt(if mode == "match": matchDefaultLines
-                                       else: recallDefaultLines)
+      let limit = args{"limit"}.getInt(
+        if mode == "match": matchDefaultLines
+        elif mode == "search": searchDefaultMatches
+        else: recallDefaultLines)
+      if mode == "search":
+        # The conversation's whole canonical history, projection or not. The
+        # runner injects __session for session calls (x-harness.sessionId); an
+        # explicit "session" is how a test — or a look at a child's history —
+        # names another conversation.
+        let conv = block:
+          let explicit = args{"session"}.getStr("")
+          if explicit.len > 0: explicit
+          else: args{"__session"}{"session"}.getStr("")
+        try:
+          return okResult(searchConversation(c, conv, query,
+                                            args{"role"}.getStr(""), limit))
+        except CatchableError as e:
+          return errResult("context_recall: " & e.msg, "bad-request")
       let refArg = args{"ref"}
       if refArg == nil:
         return errResult("context_recall needs ref", "bad-request")

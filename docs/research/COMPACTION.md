@@ -500,10 +500,18 @@ runner itself can prune:
   `message` docs. This is what makes it safe: a prune can be "undone" by
   reloading from canonical, and a wrongly-pruned result costs one recall call.
 
-### 5.3 `context_recall` (hidden tool)
+### 5.3 `context_recall` (on-demand tool)
+
+Reachable the way every other rarely-needed capability is: `discover` lists it,
+`invoke` calls it (`x-harness.onDemand`, plus `sessionId` so a runner injects
+the conversation). It is deliberately **not** hidden: every prune/trim notice
+names it and tells the model to pass the ref back verbatim, and a hidden tool
+is invisible to exactly that caller — discover never lists it, `invoke` refuses
+it — which leaves raw store access as the only way back into dropped history.
 
 ```
-context_recall {ref, mode?: "full" | "match", query?: string, limit?: number}
+context_recall {ref, mode?: "full" | "match" | "search", query?: string,
+                session?: string, role?: string, offset?: number, limit?: number}
 ```
 
 - `ref` accepts any of the three reference shapes above, or an array of refs.
@@ -516,6 +524,17 @@ context_recall {ref, mode?: "full" | "match", query?: string, limit?: number}
 - `mode: "match"` with `query` returns only matching lines/ranges (a cheap
   grep over the recalled document) — useful for "which of the 400 error lines
   was the timeout one".
+- `mode: "search"` with `query` answers the question a ref cannot: *which
+  messages mentioned X?* It scans the conversation's canonical `message`
+  documents — **including every message a trim or compaction removed from the
+  projection**, which no notice points at — and returns bounded one-line hits
+  (`{id, role, seq, snippet}`, `limit` default 20) whose `id` is then a valid
+  `canonical` ref for `mode: "full"`. `role` narrows the scan (`tool` finds the
+  command that produced a result, `user` the request that started it). Matching
+  is case-insensitive and covers the whole record, so a hit inside tool-call
+  arguments is found even though it has no `content` line of its own. Two-step
+  by design: hit list first, bodies only for what matters — pulling a dropped
+  span back wholesale would re-inflate the window that was just trimmed.
 - **Failure is never worse than the status quo.** If the reference cannot be
   resolved (store down, projection superseded, spill document missing), the
   tool returns a clear error naming what is unavailable, and the **spill/prune

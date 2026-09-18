@@ -73,7 +73,7 @@ reference chapters for the shipped components. Design rationale lives in
 | `grep` | Nim | optional (4 replicas) | ripgrep-backed search: `grep` (contents, path:line:match, direct, output capped) and `files` (sorted listing, on demand); .gitignore-aware, no shell quoting needed; stateless queue-group replicas overlap same-component searches |
 | `systemprompt` | Nim | optional | the conversation constitution: session runners fetch the system prompt from `svc.systemprompt.call` once per conversation (see [System prompt (`systemprompt`)](#system-prompt-systemprompt)) |
 | `compaction` | Nim | optional | default replaceable `compaction_propose` implementation: verifies runner-owned paged snapshots, chooses a permitted cut, and returns a structured checkpoint candidate; the runner alone validates and commits projections |
-| `recall` | Nim | optional | hidden `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint |
+| `recall` | Nim | optional | on-demand `context_recall` resolver for canonical messages, full spill documents, and the current durable checkpoint — plus `mode: search`, a grep over the conversation's whole canonical history (trimmed/compacted-away messages included) |
 | `cli` | Nim | — | on-demand bus driver for scripts/CI (`catalog`/`wait`/`call`/`install`) |
 | `console` | Nim | — | on-demand bus viewer (renders every envelope on stdout) |
 | `observe` | Nim | optional | bounded live bus ring, listen/trace probes, safe capture export, and NATS monitoring (see [Observation and logs](#observation-and-logs)) |
@@ -646,7 +646,9 @@ reports:
 - Canonical `message` documents are immutable and append-only. Prune and
   compaction change only the provider projection; a restarted runner validates
   and reloads the durable checkpoint plus retained canonical tail, while
-  `context_recall` resolves canonical/spill/current-checkpoint refs. Missing or
+  `context_recall` resolves canonical/spill/current-checkpoint refs, and its
+  `mode: search` greps the whole canonical history — including the span a trim
+  dropped, where no notice names individual refs. Missing or
   corrupt projection refs fail explicitly instead of silently replaying an
   oversized span.
 - A provider-reported `context-overflow` gets exactly one receipt-backed
