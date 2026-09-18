@@ -22,6 +22,16 @@ if dirExists(pkgsDir):
         if base.startsWith("natsnim-") and dirExists(path / "src"):
           switch("path", path / "src")
 
+# The local SDK (sdk/niffler/*, sdk/subjects.nim). The Makefile and nimble tasks
+# pass --path:sdk explicitly, but config.nims is what *everything else* reads:
+# a plain `nim check components/x/main.nim` and every language server driving
+# nimsuggest. Without it an SDK import fails ("cannot open file: niffler/sdk")
+# and the fallout is a hundred phantom "undeclared identifier" errors — which is
+# exactly what an edit's LSP diagnostics reported for this repo.
+let sdkDir = thisDir() / "sdk"
+if dirExists(sdkDir):
+  switch("path", sdkDir)
+
 # HTTPS for std/httpclient in every build (shipped components, builder-built
 # tools, plugins, smoke, probes). Needs libssl-dev (Ubuntu) / Xcode CLT
 # (macOS) — `make setup` installs it.
