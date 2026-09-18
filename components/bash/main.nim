@@ -105,18 +105,30 @@ proc wasCancelled(sessionId: string): bool =
 # Low-level registration (not the `comp.tool:` macro): the handler needs the
 # raw args — x-harness "sessionId" makes the runner inject
 # {__session: {session}} as private context so cancels can be matched.
+# Budgets, in one place. Three different clocks are in play: the component's
+# own kill timer (timeoutMs, reported as exit 124 with the output captured so
+# far), the caller's parameter, and core's wait for this call
+# (x-harness.timeoutMs). They must not race: the inner timer is capped below
+# core's wait so a slow command reports itself instead of core giving up on it
+# (a core-side timeout throws the captured output away).
+const
+  BASH_DEFAULT_TIMEOUT_MS = 120_000  # a plain `make`/`cargo build` must fit
+  BASH_MAX_TIMEOUT_MS = 570_000      # inner cap: 30s under core's wait below
+  BASH_CALL_TIMEOUT_MS = 600_000     # core waits this long for a bash call
+
 let bashSchema = toolSchema(%*{
   "command": {"type": "string",
               "description": "The command line to run"},
   "timeoutMs": {"type": "integer",
-                "description": "Kill after this many ms (default 30000)"},
+                "description": "Kill after this many ms (default 120000, max 570000). Raise it for a slow build instead of splitting the command; exit 124 with the output so far means it hit this."},
   "run_in_background": {"type": "boolean",
     "description": "Start as a background process instead of blocking: returns an id immediately (no timeout applies). Long-running commands — servers, watchers, databases. Poll incremental output with process_poll (drain semantics: each poll returns only what was appended since the last one; filter regex supported, tail re-reads raw), stop with process_kill."},
   "cwd": {"type": "string",
           "description": "Working directory (default: workspace)"}
 }, required = @["command"],
-  description = "Run a shell command (bash -c). Fresh shell per call: cd does not persist; pass cwd or use absolute paths. Set run_in_background for long-running commands (servers, watchers): the call returns an id at once and the process keeps running across turns — collect its incremental output with process_poll and stop it with process_kill.")
-bashSchema["x-harness"] = %*{"approval": "always", "timeoutMs": 60_000,
+  description = "Run a shell command (bash -c). The shell starts in the conversation's workspace (the repository root), so paths can be relative and `cd` to it is unnecessary; each call gets a fresh shell, so a `cd` never persists — use cwd or an absolute path to work elsewhere. One call has a budget (default 120s, up to 570s); a slower command is killed with exit 124, and anything that should outlive the call (servers, watchers, long builds) belongs in run_in_background — it returns an id at once and keeps running across turns, polled with process_poll and stopped with process_kill.")
+bashSchema["x-harness"] = %*{"approval": "always",
+                             "timeoutMs": BASH_CALL_TIMEOUT_MS,
                              "sessionId": true,
                              "workspace": %*{"cwdField": "cwd"}}
 discard comp.tool("bash", bashSchema,
@@ -126,7 +138,11 @@ discard comp.tool("bash", bashSchema,
       return %*{"text": "(exit 130 — cancelled by request)",
                 "exit_code": 130, "cancelled": true}
     let command = toolArgs{"command"}.getStr("")
-    let timeoutMs = toolArgs{"timeoutMs"}.getInt(30_000)
+    # The caller's budget, clamped: an absurd value must not outlive core's
+    # wait for this call (the component's exit-124 report carries the output;
+    # a core-side timeout would not).
+    let timeoutMs = min(max(toolArgs{"timeoutMs"}.getInt(BASH_DEFAULT_TIMEOUT_MS), 1000),
+                        BASH_MAX_TIMEOUT_MS)
     let cwd = toolArgs{"cwd"}.getStr("")
     if toolArgs{"run_in_background"}.getBool(false):
       # thin producer: the processes component spawns, owns, drains and
@@ -162,7 +178,8 @@ discard comp.tool("bash", bashSchema,
         "re-run a narrower command (grep/head/tail/wc) for the missing part")
     var payload = %*{"exit_code": code, "cancelled": code == 130}
     var status = "(exit " & $code
-    if code == 124: status.add(" — timed out after " & $timeoutMs & "ms")
+    if code == 124: status.add(" — timed out after " & $timeoutMs &
+      "ms; raise timeoutMs for a slow build, or use run_in_background for work that outlives a call")
     elif code == 130: status.add(" — cancelled by request")
     elif code == 126: status.add(" — found but not executable; run it via an interpreter, e.g. bash ./script.sh")
     status.add(")")
