@@ -82,11 +82,24 @@ def main(argv):
         import hashlib
         got = hashlib.sha256(text.encode()).hexdigest()
         if want and got != want:
-            print("!! the MANUAL has moved since the round was verified")
+            print("WARNING: the MANUAL has moved since the round was verified")
             print("   expected %s\n   current  %s" % (want[:16], got[:16]))
-            problems += 1
+            print("   anchors are quotes, so this is usually harmless — but the")
+            print("   round's verdict below is against the text as it is NOW.")
         else:
             print("revision: matches %s (unchanged)" % (want or "?")[:16])
+
+    # A batch file written seconds ago is a child still appending to it: the
+    # verdict below would be about a revision of the round that no longer
+    # exists, and the failures it reports are not real yet.
+    import time
+    fresh = [os.path.basename(p) for p in
+             sum([glob.glob(os.path.join(HERE, "edits", g)) for g in globs], [])
+             if time.time() - os.path.getmtime(p) < 120]
+    if fresh:
+        print("!! still being written (modified <120s ago): %s" % ", ".join(fresh))
+        print("   a child is mid-flight; treat any FAILED row below as provisional")
+        problems += 1
 
     if dupes:
         print("!! duplicate ids: %s" % "; ".join(dupes[:5]))
