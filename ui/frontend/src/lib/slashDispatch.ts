@@ -54,18 +54,24 @@ export interface SlashContext {
 
 export type SlashHandler = (ctx: SlashContext) => Promise<void> | void;
 
-// ---- conversation controls (/approvals, /limit) ------------------------------
+// ---- conversation controls (/approvals, /limit, /compact) --------------------
 //
-// Both ride the existing session tool as control calls: args {sessionId,
-// approvals?} or {sessionId, limits?} with NO content — core runs no inference
-// and answers with the conversation's status (its `approvals` + `limits`
-// readback). A control call that arrives while a turn is running is refused
-// fast by the runner (error code "busy") instead of hanging until a client
-// deadline; that surfaces here like any other error, with no blind retry.
+// All ride the existing session tool as control calls: args {sessionId,
+// approvals?}, {sessionId, limits?} or {sessionId, compact: true} with NO
+// content — core runs no inference (compact runs the replaceable compactor,
+// never an LLM turn) and answers with the conversation's status or the
+// compaction result. A control call that arrives while a turn is running is
+// refused fast by the runner (error code "busy") instead of hanging until a
+// client deadline; that surfaces here like any other error, with no blind
+// retry.
 
 /** How long a conversation-control call may take. Generous on purpose: a
  * conversation whose runner is not up yet spawns one first. */
 const CONTROL_TIMEOUT = 60000;
+
+/** /compact runs the compactor's LLM calls inside its 90s budget, so it
+ * needs a far larger deadline than the instant controls. */
+const COMPACT_TIMEOUT = 150000;
 
 /** The declared soft-limit dimensions, in display order. */
 const LIMIT_DIMENSIONS = ["rounds", "tokens", "seconds"] as const;
@@ -74,8 +80,8 @@ const LIMIT_DIMENSIONS = ["rounds", "tokens", "seconds"] as const;
 async function sessionControls(ctx: SlashContext, sid: string): Promise<any> {
   // A session call with no content runs no inference, but core accepts one
   // only when it carries content or one of model/thinking/title/cwd/profile/
-  // discovery/export/approvals/limits. `profile` is the one of those that
-  // writes nothing (core ignores it on resume) — the same companion key
+  // discovery/export/approvals/limits/compact. `profile` is the one of those
+  // that writes nothing (core ignores it on resume) — the same companion key
   // /discover already sends on a content-less call — so a status readback is
   // {sessionId, profile} and never a value mutation.
   return ctx.send("core", "session", { sessionId: sid, profile: ctx.profile() }, CONTROL_TIMEOUT);
@@ -218,6 +224,21 @@ export const slashHandlers: Record<string, SlashHandler> = {
     const reply = await ctx.send("core", "session", { sessionId: sid, limits: {} }, CONTROL_TIMEOUT);
     if (reply?.error) return void ctx.error(String(reply.error));
     ctx.meta(ctx.t("limits.cleared"));
+  },
+  compact: async (ctx) => {
+    const sid = controlSession(ctx);
+    if (!sid) return;
+    if (ctx.busy()) {
+      return void ctx.error("Wait for the current turn to finish before compacting.");
+    }
+    const reply = await ctx.send("core", "session", { sessionId: sid, compact: true }, COMPACT_TIMEOUT);
+    if (reply?.error) return void ctx.error(String(reply.error));
+    if (!reply?.compacted) {
+      return void ctx.meta(String(reply?.reason ?? "nothing to compact"));
+    }
+    const before = Number(reply?.beforeTokens ?? 0);
+    const after = Number(reply?.afterTokens ?? 0);
+    ctx.meta(`compacted: ~${before.toLocaleString()} → ~${after.toLocaleString()} tokens (generation ${reply?.generation ?? "?"})`);
   },
   connect: (ctx) => ctx.command("connect"),
   status: async (ctx) => ctx.meta(await ctx.statusText()),

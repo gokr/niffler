@@ -500,6 +500,13 @@ func chatHandler(c *sdk.Component, raw json.RawMessage) (any, error) {
 	if args.MaxTokens > 0 && (output <= 0 || args.MaxTokens < output) {
 		output = args.MaxTokens
 	}
+	// Providers count the requested output budget against the context window
+	// when validating the request: prompt 664659 + max_tokens 384000 =
+	// 1048659 > 1048576 refuses even though the prompt alone fits the harness
+	// window. Clamp the cap to the headroom the estimated prompt leaves so a
+	// full catalog output budget can never push a fitting prompt over the
+	// provider limit.
+	output = fitOutput(output, resolved.Context, args)
 	// Best-effort live model discovery (option B): remember this provider's
 	// endpoint and, when its id cache is stale, probe /models in the
 	// background so the models component can publish served ids catalog-wide.
@@ -622,6 +629,39 @@ func classifyProviderError(err error, contextSize int) error {
 		}
 	}
 	return err
+}
+
+// fitOutput clamps an output cap to the window headroom the estimated prompt
+// leaves. OpenAI-compatible providers sum prompt + max_tokens against their
+// context limit at admission, so a large catalog output budget (e.g. deepseek
+// limit.output 384000) overflows even when the prompt alone fits the harness
+// window. The estimate is the same chars/4 proxy core uses, over messages AND
+// tool schemas (the frozen direct toolset is part of every prompt); the margin
+// absorbs estimation error. A small floor keeps a short-but-possible answer
+// instead of a 0-token cap (the provider's refusal error names the true limit
+// if the estimate is ever badly wrong — core's recovery handles that path).
+func fitOutput(output, contextSize int, args chatArgs) int {
+	if output <= 0 || contextSize <= 0 {
+		return output
+	}
+	serialized, err := json.Marshal(struct {
+		Messages []chatMessage `json:"messages"`
+		Tools    []openai.Tool `json:"tools,omitempty"`
+	}{Messages: args.Messages, Tools: args.Tools})
+	if err != nil {
+		return output
+	}
+	promptEst := len(serialized) / 4
+	margin := contextSize/128 + 512 // ~0.8% + flat safety, scales with window
+	budget := contextSize - promptEst - margin
+	const floor = 512
+	if budget < floor {
+		budget = floor
+	}
+	if budget < output {
+		return budget
+	}
+	return output
 }
 
 // stripModelPrefix returns the model id after the last "/" — the canonical

@@ -189,6 +189,46 @@ proc main() =
       if item{"value"}{"content"}.getStr("").contains(oldMarker): found = true
     found)
 
+  # Manual compaction (docs/WIRE.md "Conversation controls"): a content-less
+  # control call runs the same compactor with no LLM turn and no user message,
+  # so a conversation can be compacted on demand rather than only at pressure.
+  # A fresh conversation with the same seeded bulk proves the manual trigger
+  # alone drives the commit (nothing here is near the window).
+  block manualCompact:
+    let manualConv = "conv-compaction-manual-" & $int(epochTime())
+    putDoc(nc, "conversation", manualConv,
+      %*{"createdAt": epochTime(), "systemPrompt": "Small frozen system prompt",
+         "title": "manual compact fixture"})
+    discard seedMessages(nc, manualConv, 1, 8, 2200, markFirst = false)
+    let manual = call(nc, "core", "session",
+      %*{"sessionId": manualConv, "compact": true}, 180_000)
+    check("manual compact commits without an LLM turn",
+          manual{"ok"}.getBool(false) and
+          manual{"compacted"}.getBool(false) and
+          manual{"beforeTokens"}.getInt(0) > manual{"afterTokens"}.getInt(0),
+          $manual)
+    let manualProjection = getDoc(nc, "context_projection", manualConv)
+    check("manual compact installs a checkpoint projection",
+          manualProjection != nil and
+          manualProjection{"generation"}.getInt(0) == 1 and
+          manualProjection{"renderer"}.getStr("") == "checkpoint-v1" and
+          manualProjection{"provenance"}{"tool"}.getStr("") == "compaction_propose",
+          (if manualProjection == nil: "projection missing"
+           else: $manualProjection))
+    check("manual compact records the manual trigger",
+          manualProjection != nil and
+          manualProjection{"provenance"}{"trigger"}.getStr("") == "manual",
+          (if manualProjection == nil: "projection missing"
+           else: $manualProjection{"provenance"}))
+    check("manual compact appends no user message",
+          listDocs(nc, "message", manualConv & ":").len == 16,
+          $listDocs(nc, "message", manualConv & ":").len)
+    check("manual compact ran no main-call chat", block:
+      var mainCalls = 0
+      for row in requestLog(logPath):
+        if row{"sessionId"}.getStr("") == manualConv: inc mainCalls
+      mainCalls == 0)
+
   # Append new canonical history behind the committed high-water mark, then
   # kill the entire harness. The restarted session runner must rebuild from
   # projection1 + retained canonical + these >canonicalHigh appends, never

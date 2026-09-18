@@ -553,7 +553,8 @@ Run before **every** provider request, not just at user-turn entry — a single
 turn with 40 tool rounds must be compacted mid-turn.
 
 Admission computes the whole candidate request: frozen system + frozen tools +
-projection nodes + output reserve. A proposal is accepted only if:
+projection nodes + output reserve (the resolved catalog output cap; a fixed
+16K fallback when the catalog says nothing). A proposal is accepted only if:
 
 - version/types/limits valid, attempt id and `snapshotDigest` match, generation
   unchanged;

@@ -163,6 +163,14 @@ type
     promptTokens*: int   ## model-reported prompt tokens of the last chat request
     contextUsed*: int    ## best post-response occupancy (total tokens when available)
     ctxSize*: int        ## catalog model context window
+    ctxOutput*: int      ## catalog model output cap (0 = unknown): what the
+                         ## next request asks the provider to reserve. Held
+                         ## back from the window by admission and trim because
+                         ## providers count max_tokens against the window at
+                         ## admission (deepseek declared 384000 over a
+                         ## 736803-token prompt and overflowed its 1048576
+                         ## limit while the prompt alone fit the 1000000
+                         ## harness window)
     calib*: int          ## provider-vs-estimate calibration (tokens): each
                          ## successful response re-measures it as the
                          ## reported prompt_tokens minus the local chars/4
@@ -584,7 +592,7 @@ proc recordDiscovery(ct: CoreTools, sessionId: string,
 # ---------------------------------------------------------------------------
 
 const
-  ctxWarnRatio = 0.75  ## warn once when this fraction of the window is used
+  ctxWarnRatio = 0.75  ## warn once this far along the way to the trim rung
   ctxTrimRatio = 0.9   ## trim whole turns from the front at this fraction
   minKeepTurns* = 2    ## never trim below this many user turns
   pruneThreshold = 8192   ## chars — tool results over this get pruned (§5.2)
@@ -594,16 +602,21 @@ const
                              ## (pi compacts at window − reserve); env
                              ## NIF_CTX_RESERVE overrides, 0 disables
 
-proc outputReserve*(): int =
-  ## Tokens held back for the model's next reply (NIF_CTX_RESERVE override,
-  ## 0 disables). Exported for tests.
+proc outputReserve*(p: Persister): int =
+  ## Tokens held back for the model's next reply: the model's declared output
+  ## cap when the catalog resolved one (the provider counts the requested
+  ## max_tokens against its window at admission — reserving the fixed 16K
+  ## while asking for 384K let a 736,803-token prompt overflow a 1,048,576
+  ## limit the prompt alone fit), else the fixed default. NIF_CTX_RESERVE
+  ## overrides either; 0 disables. Exported for tests.
   let v = getEnv("NIF_CTX_RESERVE", "").strip()
-  if v.len == 0: return ctxOutputReserve
-  try:
-    let n = parseInt(v)
-    return max(n, 0)
-  except CatchableError:
-    return ctxOutputReserve
+  if v.len > 0:
+    try:
+      return max(parseInt(v), 0)
+    except CatchableError:
+      discard
+  if p.ctxOutput > 0: return p.ctxOutput
+  return ctxOutputReserve
 
 proc estimateTokens*(messages: seq[JsonNode]): int =
   ## Rough token proxy used until the model reports real usage (chars/4).
@@ -628,7 +641,7 @@ proc trimThreshold*(p: Persister): int =
   let ratioBound = int(p.ctxSize.float * ctxTrimRatio)
   # window − reserve, but never below half the window: a tiny context
   # (window < reserve) would otherwise go negative and never trim
-  let reserved = max(p.ctxSize - outputReserve(), p.ctxSize div 2)
+  let reserved = max(p.ctxSize - outputReserve(p), p.ctxSize div 2)
   return min(ratioBound, reserved)
 
 proc reindexNodes(p: var Persister) =
@@ -748,14 +761,16 @@ proc trimTurns*(p: var Persister, messages: var seq[JsonNode],
                          projectionIndex: dropStart), dropStart)
   p.reindexNodes()
 
-proc contextTarget(p: Persister): int =
+proc contextTarget*(p: Persister): int =
   ## The hard admission line (§6.1): the whole candidate request plus the
   ## output reserve must fit the window. 0 when capacity is unknown —
   ## admission then stands down and overflow recovery owns the failure.
   if p.ctxSize <= 0: return 0
-  let target = p.ctxSize - outputReserve()
-  if target <= 0: return 0
-  target
+  # Floor at half the window (mirrors trimThreshold): a declared output cap
+  # past half the window must not drive the retained context to nothing —
+  # dispatch's fitOutput clamps the completion to the headroom the prompt
+  # actually leaves.
+  max(p.ctxSize - outputReserve(p), p.ctxSize div 2)
 
 proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
                         toolTokens: int,
@@ -788,7 +803,7 @@ proc runFallbackLadder*(p: var Persister, messages: var seq[JsonNode],
                             "promptTokens": p.promptTokens,
                             "usedTokens": used, "context": p.ctxSize,
                             "trimAt": trimThreshold(p),
-                            "reserveTokens": outputReserve(),
+                            "reserveTokens": outputReserve(p),
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
@@ -833,10 +848,15 @@ proc checkContext*(p: var Persister, messages: var seq[JsonNode],
   let used0 = measured(toolTokens)
   let pct = int(used0.float * 100.0 / p.ctxSize.float)
   let trimAt = trimThreshold(p)
-  if pct >= int(ctxWarnRatio * 100) and not p.ctxWarned:
+  # The warning tracks the EFFECTIVE rung, not the bare ratio bound: a large
+  # declared output cap lowers the trim line (deepseek: 384000 output against
+  # a 1M window compacts at 62%), so a fixed 75%-of-window check would fire
+  # after compaction or, when the cap pushes the line below it, never.
+  let warnAt = int(trimAt.float * ctxWarnRatio)
+  if used0 >= warnAt and not p.ctxWarned:
     p.ctxWarned = true
     echo "core: WARNING context at " & $pct & "% — will compact/trim at " &
-         $(int(ctxTrimRatio * 100)) & "%"
+         $(int(trimAt.float * 100.0 / p.ctxSize.float)) & "%"
     if onEvent != nil:
       onEvent("context", %*{"sessionId": p.convId, "turnId": turnId,
                             "promptTokens": p.promptTokens,
@@ -872,7 +892,7 @@ proc runTrimRung*(p: var Persister, messages: var seq[JsonNode],
                             "promptTokens": p.promptTokens,
                             "usedTokens": used, "context": p.ctxSize,
                             "trimAt": trimThreshold(p),
-                            "reserveTokens": outputReserve(),
+                            "reserveTokens": outputReserve(p),
                             "trimmed": dropped,
                             "reason": "reset:trim",
                             "note": "history reset — the next request rebuilds the provider prompt cache from the remaining prefix"})
@@ -920,6 +940,12 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
   if resolvedContext > 0 and resolvedContext != p.ctxSize:
     p.ctxSize = resolvedContext
     p.ctxWarned = false
+  # The declared output cap is the admission reserve (outputReserve): the
+  # provider counts the requested max_tokens against the window, so it must
+  # be known before the first checkContext of the turn (this runs first).
+  let resolvedOutput = resolved{"output"}.getInt(0)
+  if resolvedOutput > 0:
+    p.ctxOutput = resolvedOutput
   # The calibration offset is model-specific: switching models (or their
   # provider) changes the tokenizer — drop the stale offset and re-learn
   # from the next response.
@@ -935,6 +961,8 @@ proc resolveTurnConfig(ct: CoreTools, p: var Persister,
     "catalog": resolved{"catalog"}.getStr(""),
     "context": p.ctxSize,
     "contextSource": resolved{"contextSource"}.getStr(""),
+    "output": p.ctxOutput,
+    "outputSource": resolved{"outputSource"}.getStr(""),
     "promptTokens": p.promptTokens,
     "usedTokens": p.contextUsed
   }
@@ -1933,6 +1961,7 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
           overflowRecovered = true
           writeContextReceipt(p, requestId, "context-overflow", "attempted",
                               e.msg)
+          let beforeOverflow = estimateTokens(messages) + toolTokens
           if p.ctxSize <= 0:
             let window = windowFromOverflow(e.msg)
             if window > 0:
@@ -1973,19 +2002,33 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
               overflowVerdict =
                 checkContext(p, messages, onEvent, turnId, toolTokens)
           if overflowVerdict.len == 0:
-            if onEvent != nil:
-              onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
-                                 "reason": "context-overflow",
-                                 "error": e.msg})
-            # the projection changed under the snapshot — rebuild the body
-            llmArgs["messages"] = %messages
-            llmArgs["tools"] = promptToolsJson.formatToolsForLlm()
-            continue
-          writeContextReceipt(p, requestId, "context-overflow", "terminal",
-                              e.msg)
-          failMsg = "context-recovery-required: provider refused the request (" &
-                    e.msg & ") and the fallback ladder could not reduce it " &
-                    "below the window"
+            if failMsg.len == 0 and
+                estimateTokens(messages) + toolTokens >= beforeOverflow:
+              # The candidate fits the known window yet the provider refused
+              # it: the refusal cannot come from the message size alone (a
+              # counted completion budget, a stricter real limit than the
+              # declared window). Never resend what was refused unchanged —
+              # the retry would be byte-identical and refuse again.
+              writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                                  e.msg)
+              failMsg = "context-recovery-required: provider refused the request (" &
+                        e.msg & ") and the candidate could not be reduced " &
+                        "below the window"
+            elif failMsg.len == 0:
+              if onEvent != nil:
+                onEvent("retry", %*{"sessionId": sessionId, "turnId": turnId,
+                                   "reason": "context-overflow",
+                                   "error": e.msg})
+              # the projection changed under the snapshot — rebuild the body
+              llmArgs["messages"] = %messages
+              llmArgs["tools"] = promptToolsJson.formatToolsForLlm()
+              continue
+          if failMsg.len == 0:
+            writeContextReceipt(p, requestId, "context-overflow", "terminal",
+                                e.msg)
+            failMsg = "context-recovery-required: provider refused the request (" &
+                      e.msg & ") and the fallback ladder could not reduce it " &
+                      "below the window"
         elif klass == lfcTransient and canRetry(retryPolicy, e.msg, attempt):
           # Retry budgets are independent: hinted rate limits wait exactly as
           # requested (up to the local cap), while stream timeouts and refused
@@ -2347,6 +2390,11 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   # content (a control call runs no inference).
   let hasApprovals = args.kind == JObject and args.hasKey("approvals")
   let hasLimits = args.kind == JObject and args.hasKey("limits")
+  # Manual compaction (/compact): the human's explicit request for the same
+  # replaceable-compactor rung the automatic ladder runs at pressure. Rides a
+  # content-less control call like the other conversation controls.
+  let hasCompact = args.kind == JObject and args.hasKey("compact") and
+                   args{"compact"}.getBool(false)
   # A call carrying only a sessionId is the read-only status readback — how a
   # UI shows a conversation's model/thinking/approvals/limits without running
   # a turn. Anything else without content needs one of the keys above.
@@ -2715,6 +2763,39 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     return %*{"ok": true, "sessionId": sessionId, "discovery": found}
 
   if content.len == 0:
+    if hasCompact:
+      # Manual compaction: run the §6.3 replaceable-compactor rung now, with
+      # no LLM turn and no user message. The attempt installs a checkpoint
+      # projection and emits the same reset:compact context event the
+      # automatic path does; a decline is reported, never silently degraded
+      # to a lossy trim (automatic admission still owns that rung).
+      let ccfg = compactionConfigFromEnv()
+      if ccfg.tool.len == 0 or ct.cat.toolSchema(ccfg.tool) == nil:
+        sessions[sessionId] = entry
+        return %*{"ok": true, "sessionId": sessionId, "compacted": false,
+                  "reason": "no compaction component available (" &
+                            "NIF_COMPACTION_TOOL=" & ccfg.tool & ")"}
+      var promptToolsJson = entry.exposure.promptTools()
+      if entry.allowlist.len > 0:
+        var filtered = newJArray()
+        for tool in promptToolsJson:
+          if tool{"name"}.getStr("") in entry.allowlist:
+            filtered.add(tool)
+        promptToolsJson = filtered
+      let beforeTokens = estimateTokens(entry.messages)
+      let compacted = attemptCompaction(ct, entry.persister, entry.messages,
+                                        promptToolsJson, onEvent, "", "manual",
+                                        ccfg)
+      let afterTokens = estimateTokens(entry.messages)
+      sessions[sessionId] = entry
+      if compacted:
+        return %*{"ok": true, "sessionId": sessionId, "compacted": true,
+                  "beforeTokens": beforeTokens, "afterTokens": afterTokens,
+                  "generation": entry.persister.generation}
+      return %*{"ok": true, "sessionId": sessionId, "compacted": false,
+                "reason": "nothing to compact: the compactor declined or no " &
+                          "permitted cut exists yet",
+                "beforeTokens": beforeTokens}
     if hasExport:
       # Export the exact provider request assembled from the current context.
       # This is deliberately read-only: no user message, LLM call, or store

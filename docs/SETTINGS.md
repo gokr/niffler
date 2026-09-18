@@ -59,7 +59,7 @@ already semantically per-conversation or per-new-conversation:
 | default max rounds | `NIF_MAX_TURN_ROUNDS` | `maxRounds` | per turn, when the conversation has no explicit maxRounds (read inside `runTurn` today) |
 | thinking effort default | (provider default) | `thinking` | new conversations |
 | model default | `NIF_OPENAI_MODEL` | `model` | new conversations, only when no active provider |
-| context reserve | `NIF_CTX_RESERVE` | `ctxReserve` | admission, read per turn (`outputReserve()`) |
+| context reserve | `NIF_CTX_RESERVE` | `ctxReserve` | admission, read per turn (`outputReserve(p)`; the resolved catalog output cap when the env override is unset) |
 | repomap auto-append | `NIF_REPOMAP_AUTOAPPEND` | `repomapAutoAppend` | per `ev.workspace.opened` (already read per event) |
 | read outline threshold | `NIF_READ_OUTLINE_LINES` | `readOutlineLines` | read per call |
 | write cap | `NIF_WRITE_MAX_BYTES` | `writeMaxBytes` | read per call |

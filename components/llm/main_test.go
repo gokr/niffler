@@ -592,3 +592,47 @@ func TestMaybeProbeLiveModelsSkipsCodexAndCaches(t *testing.T) {
 		t.Fatalf("codex probed: %d cache entries", count)
 	}
 }
+
+func TestFitOutputClampsToWindowHeadroom(t *testing.T) {
+	// The prod failure: prompt 664659 + declared output 384000 = 1048659,
+	// over the provider's 1048576 limit, while the harness window is 1M.
+	// Serialize 664659*4 chars of messages (~664.6K est) and check the cap
+	// leaves prompt+cap inside the 1M window with margin.
+	big := strings.Repeat("x", 664659*4)
+	args := chatArgs{Messages: []chatMessage{{Role: "user", Content: big}}}
+	got := fitOutput(384000, 1000000, args)
+	if got <= 0 || got >= 384000 {
+		t.Fatalf("fitOutput = %d, want clamped below 384000", got)
+	}
+	if est := len(big) / 4; est+got >= 1000000 {
+		t.Fatalf("prompt est %d + cap %d = %d exceeds window", est, got, est+got)
+	}
+	// Small prompt: the declared output passes through untouched.
+	small := chatArgs{Messages: []chatMessage{{Role: "user", Content: "hi"}}}
+	if got := fitOutput(384000, 1000000, small); got != 384000 {
+		t.Fatalf("small prompt fitOutput = %d, want 384000", got)
+	}
+	// Tool schemas count against the same window: a big frozen toolset must
+	// clamp the cap even when the messages alone are small.
+	tooled := chatArgs{
+		Messages: []chatMessage{{Role: "user", Content: "hi"}},
+		Tools: []openai.Tool{{Type: "function", Function: &openai.FunctionDefinition{
+			Name: "bash", Description: strings.Repeat("x", 700000*4),
+		}}},
+	}
+	if got := fitOutput(384000, 1000000, tooled); got >= 384000 {
+		t.Fatalf("tool-heavy fitOutput = %d, want clamped below 384000", got)
+	}
+	// Degenerate guards: no output cap, no window, empty messages.
+	if got := fitOutput(0, 1000000, small); got != 0 {
+		t.Fatalf("zero output = %d, want 0", got)
+	}
+	if got := fitOutput(384000, 0, small); got != 384000 {
+		t.Fatalf("zero window = %d, want pass-through", got)
+	}
+	// A prompt that already fills the window still gets the floor, not 0.
+	full := chatArgs{Messages: []chatMessage{{Role: "user", Content: strings.Repeat("x", 1000000*4)}}}
+	if got := fitOutput(384000, 1000000, full); got <= 0 {
+		t.Fatalf("full prompt fitOutput = %d, want positive floor", got)
+	}
+}
