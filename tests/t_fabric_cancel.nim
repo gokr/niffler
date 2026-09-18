@@ -137,6 +137,8 @@ proc main() =
     fabProc.close()
   check("fabric registered", waitComponent(nc, "fabric"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
+                                 extra = [("NIF_AGENT_WAKES", "0"),
+                                          ("NIF_AGENT_NOTICE_HOLD", "0")],
                                  logFile = root / "var" / "test-logs" / "agent.log")
   defer:
     if agentProc.running():

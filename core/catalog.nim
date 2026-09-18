@@ -197,7 +197,8 @@ proc newCatalog*(nc: NatsConnection): Catalog =
         "thinking": {"type": "string", "enum": ["low", "medium", "high"],
                      "description": "Per-conversation thinking effort forwarded to the LLM as reasoning_effort; empty clears it (provider default). Values: low, medium, high, max (deepest)"},
         "cwd": {"type": "string", "description": "Conversation workspace inside NIF_ROOT; immutable after creation"},
-        "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"}
+        "profile": {"type": "string", "description": "Named tool profile resolved into the direct toolset when the conversation is first built; ignored on resume (the snapshot is byte-stable)"},
+        "wake": {"type": "boolean", "description": "Wake a dormant conversation: run a turn that folds pending background-settlement notices in, so a parent learns its subagents finished without the human asking. Declined (no turn) when wakes are disabled via NIF_AGENT_WAKES=0, when the consecutive-wake budget (NIF_AGENT_WAKES, default 3) is spent, or when nothing is pending. Used by the agent component, not UIs."}
       },
       "required": ["sessionId"],
       "x-harness": {"hidden": true}

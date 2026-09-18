@@ -618,6 +618,54 @@ proc outputReserve*(p: Persister): int =
   if p.ctxOutput > 0: return p.ctxOutput
   return ctxOutputReserve
 
+proc wakeBudget*(): int =
+  ## Consecutive autonomous wake turns a conversation may run before a real
+  ## user message must reset the budget (dsh's maxConsecutiveWakes). A wake
+  ## turn is a session call with `wake: true` that exists only to fold
+  ## pending background-settlement notices into an idle conversation. 0
+  ## disables wakes entirely. Exported for tests.
+  try: result = max(0, getEnv("NIF_AGENT_WAKES", "3").parseInt())
+  except CatchableError: result = 3
+
+proc noticeHoldEnabled*(): bool =
+  ## Whether a settlement that lands during a live turn holds that turn open
+  ## for one more step (docs/WIRE.md "Busy-parent inbox"): the would-stop
+  ## point drains notices exactly as it drains steer and advisories, so the
+  ## turn cannot close over a child that just finished. On by default;
+  ## `NIF_AGENT_NOTICE_HOLD=0` restores the plain next-turn pull (the
+  ## scripted bus-contract suites pin it off for deterministic round counts).
+  ## Exported for tests.
+  case getEnv("NIF_AGENT_NOTICE_HOLD", "1").strip()
+  of "0", "false", "no": false
+  else: true
+
+proc consecutiveWakeTurns*(messages: seq[JsonNode]): int =
+  ## How many wake-marked user messages trail the last real user input.
+  ## Machinery (subagent/process notices, mails) is skipped; the first
+  ## user message without a notice marker resets the count. Derived from
+  ## history rather than stored state, so it survives runner restarts and
+  ## needs no counter to lose. Exported for tests.
+  for i in countdown(messages.high, 0):
+    let m = messages[i]
+    if m{"role"}.getStr("") != "user": continue
+    if m{"notice"} == nil: return result
+    if m{"notice"}{"kind"}.getStr("") == "wake": inc result
+
+proc consecutiveWakeTurnsFromStore(ct: CoreTools, sessionId: string): int =
+  ## The wake budget derived from the STORED records: the in-memory
+  ## projection goes through providerMessage(), which strips storage-only
+  ## markers exactly so strict backends never see them — so it cannot be
+  ## asked whether a message was a wake. One bounded store page is enough
+  ## for the trailing run; an overflowing page only ever undercounts
+  ## (conservative: at worst one extra wake is admitted).
+  try:
+    var records: seq[JsonNode] = @[]
+    for item in ct.storeListItems("message", sessionId & ":", 1000, 10_000):
+      records.add(item{"value"})
+    result = consecutiveWakeTurns(records)
+  except CatchableError:
+    result = 0
+
 proc estimateTokens*(messages: seq[JsonNode]): int =
   ## Rough token proxy used until the model reports real usage (chars/4).
   ## Counts everything the next request will carry: text content, reasoning,
@@ -1092,6 +1140,7 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                      "mail": {"kind": "parent-mail", "from": mailFrom}}
       eventId["kind"] = %"mail"
       eventId["from"] = %mailFrom
+      eventId["content"] = %content
     elif n{"kind"}.getStr("") == "process-exited":
       # A background process this conversation owns (components/processes)
       # reached a terminal state. Pointer, not payload: the id, the status and
@@ -1116,6 +1165,7 @@ proc drainNotices(ct: CoreTools, p: var Persister,
       eventId["kind"] = %"process"
       eventId["processId"] = %pid
       eventId["status"] = %pstatus
+      eventId["content"] = %content
     else:
       let status = n{"status"}.getStr("")
       if status.len == 0: continue
@@ -1134,9 +1184,11 @@ proc drainNotices(ct: CoreTools, p: var Persister,
                      "notice": {"kind": "subagent-settled",
                                 "jobId": jobId, "child": child,
                                 "status": status}}
+      eventId["kind"] = %"subagent-settled"
       eventId["jobId"] = %jobId
       eventId["child"] = %child
       eventId["status"] = %status
+      eventId["content"] = %content
     # ctxAppend, not a bare messages.add: compaction's node ledger must stay
     # 1:1 with the projection, and notices are runtime machinery it may
     # compact away like any other appended history (docs/research/COMPACTION.md §4.2)
@@ -2189,8 +2241,18 @@ proc runTurn*(ct: CoreTools, p: var Persister, messages: var seq[JsonNode],
       # No tool calls: the model wants to stop. But if the client injected a
       # steering message while this response was in flight, fold it in and keep
       # going rather than ending the turn early (Pi's continuation-on-nudge).
+      # Settlement notices do the same by default (dsh's inbox semantics): a
+      # child that finished during this step is folded as the turn's next step
+      # — the turn cannot close over it — and every notice waiting in the two
+      # lanes folds in ONE drain, so a burst of settlements costs one extra
+      # step, not one per child. NIF_AGENT_NOTICE_HOLD=0 disables only this
+      # hold; the notices stay pending for the next turn's opening drain.
+      var noticesFolded = 0
+      if noticeHoldEnabled():
+        noticesFolded = drainNotices(ct, p, messages, onEvent, turnId)
       if drainSteer(ct, p, messages, onEvent, turnId) +
-          drainAdvisories(ct, p, messages, onEvent, turnId) > 0:
+          drainAdvisories(ct, p, messages, onEvent, turnId) +
+          noticesFolded > 0:
         continue
       if onEvent != nil:
         onEvent("done", %*{"sessionId": sessionId, "turnId": turnId,
@@ -2376,6 +2438,14 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   ## session; approvals raised by the turn are routed to it.
   let sessionId = args{"sessionId"}.getStr("")
   let content = args{"content"}.getStr("")
+  # Autonomous wake (components/agent settle path): a session call with
+  # `wake: true` runs a turn whose only purpose is folding pending
+  # background-settlement notices into an IDLE conversation — the parent
+  # learns subagents finished without the human having to ask. Admission
+  # happens below once entry.messages is loaded; a declined wake runs no
+  # turn and persists nothing.
+  let isWake = args{"wake"}.getBool(false)
+  var turnContent = content
   let hasModel = args.kind == JObject and args.hasKey("model")
   let hasThinking = args.kind == JObject and args.hasKey("thinking")
   let hasTitle = args.kind == JObject and args.hasKey("title")
@@ -2762,7 +2832,35 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     sessions[sessionId] = entry
     return %*{"ok": true, "sessionId": sessionId, "discovery": found}
 
-  if content.len == 0:
+  # Wake admission: bounded, and a declined wake persists nothing. The
+  # consecutive-wake budget counts trailing wake-marked messages since the
+  # last real user input (derived from history — no counter to lose). A
+  # declined/skipped wake is a normal result, never an error: the notice
+  # stays pending and the parent's next real turn delivers it.
+  if isWake:
+    let budget = wakeBudget()
+    if budget <= 0:
+      return %*{"ok": true, "wake": "declined", "reason": "wakes disabled"}
+    var pendingCount = -1
+    try:
+      let peeked = ct.dispatchToolCall("agent_notices",
+        %*{"session": sessionId, "peek": true}, 5_000)
+      pendingCount = peeked{"count"}.getInt(0)
+    except CatchableError:
+      # Notices unreadable (agent or store down): a wake turn with nothing
+      # to fold is pure noise, and a pending notice is delivered by the
+      # parent's next real turn anyway.
+      return %*{"ok": true, "wake": "declined",
+                "reason": "notices unreachable"}
+    if pendingCount == 0:
+      return %*{"ok": true, "wake": "skipped", "reason": "nothing pending"}
+    if consecutiveWakeTurnsFromStore(ct, sessionId) >= budget:
+      return %*{"ok": true, "wake": "declined", "reason": "budget",
+                "budget": budget}
+    if turnContent.len == 0:
+      turnContent = "[wake] background subagents settled"
+
+  if content.len == 0 and not isWake:
     if hasCompact:
       # Manual compaction: run the §6.3 replaceable-compactor rung now, with
       # no LLM turn and no user message. The attempt installs a checkpoint
@@ -2853,9 +2951,17 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
     status["modelOverride"] = %entry.modelOverride
     return status
 
-  let userMsg = %*{"role": "user", "content": content}
+  let userMsg =
+    if isWake:
+      # Marked as runtime machinery so rendering, trimming and compaction
+      # treat it like the notices it accompanies — never as something the
+      # human typed (the same structural lane as subagent-settled notices).
+      %*{"role": "user", "content": turnContent,
+         "notice": {"kind": "wake"}}
+    else:
+      %*{"role": "user", "content": turnContent}
   ctxAppend(entry.persister, entry.messages, userMsg)
-  if entry.persister.seqNo == 1 and not hasTitle:
+  if entry.persister.seqNo == 1 and not hasTitle and not isWake:
     # first message of a fresh conversation: title it from the message so
     # session lists are descriptive instead of conv-<epoch>. An explicit
     # title on the same call wins; a later rename always overwrites.
@@ -2879,7 +2985,7 @@ proc handleSessionCall*(ct: CoreTools, args: JsonNode,
   var turnError = ""
   let reply = runTurn(ct, entry.persister, entry.messages,
                       entry.modelOverride, entry.exposure, onEvent,
-                      entry.thinkingEffort, content, entry.workspace,
+                      entry.thinkingEffort, turnContent, entry.workspace,
                       entry.maxRounds, entry.maxCalls, entry.maxTokens,
                       entry.limitRounds, entry.limitTokens, entry.limitSeconds,
                       entry.allowlist, turnError)

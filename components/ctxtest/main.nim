@@ -115,6 +115,22 @@ comp.tool(%*{"hidden": true}):
           sleep(8000)
           return %*{"content": "slow-done"}
         return %*{"content": "slow-done"}
+      # wake-budget children (tests/t_agentwake.nim): the delay is a BASH
+      # sleep, so the stub stays free to serve the parent's wake turns while
+      # the children wait — and the per-task seconds stagger settlements so
+      # each wake turn drains exactly one notice before the next lands.
+      if messages != nil and ($messages).contains("WAKE_STAGGER"):
+        if stage == 0:
+          let text = ($messages)
+          let at = text.find("WAKE_STAGGER ")
+          var secs = "2"
+          if at >= 0:
+            let start = at + "WAKE_STAGGER ".len
+            var stop = start
+            while stop < text.len and text[stop] in {'0' .. '9'}: inc stop
+            if stop > start: secs = text[start ..< stop]
+          return toolCall("t1", "bash", %*{"command": "sleep " & secs})
+        return %*{"content": "wake-stagger-done"}
       # slow child whose delay is a TOOL call (bash sleep 30 + a marker
       # touch): the stop must abandon the in-flight dispatch immediately
       # AND the bash side-channel must kill the command's process group —
@@ -430,6 +446,31 @@ comp.tool(%*{"hidden": true}):
       # parent's turn is over, so the notice takes the pull lane.
       # ntc-fail spawns a child whose LLM explodes: a job with NO reply, so
       # its notice must carry no fabricated summary.
+      # ntc-hold (tests/t_agentwake.nim) is deterministic, not a race: the
+      # stub itself injects a notice onto the parent's steer channel DURING
+      # its (final) response, so the would-stop drain must find it and hold
+      # the turn open for one more round — which is this line's stage 1.
+      if sessionId == "ntc-hold":
+        if stage == 0:
+          comp.emit("svc.session.ntc-hold.steer",
+                    %*{"notice": {"kind": "subagent-settled",
+                                   "jobId": "hold-job",
+                                   "child": "hold-child",
+                                   "status": "done",
+                                   "summary": "hold notice"}})
+          sleep(300)          # let the steer publish land before we return
+          return %*{"content": "hold-first"}
+        return %*{"content": "notice-parent-done"}
+      if sessionId == "ntc-budget":
+        # wake-budget parent (tests/t_agentwake.nim): three children whose
+        # settlements are STAGGERED by their own bash sleeps (2s/5s/8s) — the
+        # stub stays free, so each wake turn completes before the next child
+        # settles and the consecutive-wake budget is exercised cleanly.
+        if stage < 3:
+          return toolCall("t" & $stage, "agent_spawn",
+                          %*{"task": "WAKE_STAGGER " & $(2 + stage * 3) &
+                                     " take your time"})
+        return %*{"content": "notice-parent-done"}
       if stage == 0:
         let task = if sessionId == "ntc-fail":
                      "FORCE_LLM_FAILURE then report"

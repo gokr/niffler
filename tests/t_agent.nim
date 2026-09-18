@@ -97,7 +97,12 @@ proc main() =
                                  extra = [("NIF_AGENT_MODEL_WEAK", "mock-weak"),
                                           ("NIF_AGENT_MODEL_MEDIUM", "mock-medium"),
                                           ("NIF_AGENT_MODEL_STRONG", "mock-strong"),
-                                          ("NIF_AGENT_DEFAULT_TIER", "medium")],
+                                          ("NIF_AGENT_DEFAULT_TIER", "medium"),
+                                          # this suite asserts exact turn flows;
+                                          # the wake/hold contracts have their
+                                          # own test (t_agentwake)
+                                          ("NIF_AGENT_WAKES", "0"),
+                                          ("NIF_AGENT_NOTICE_HOLD", "0")],
                                  logFile = root / "var" / "test-logs" / "agent.log")
   defer:
     if agentProc.running():

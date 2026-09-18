@@ -6,7 +6,7 @@ authoritative; this file is the implementation runbook and decision record.
 
 | phase | state |
 |---|---|
-| P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, `tests/t_agentnotice.nim` — 30 checks) |
+| P0.1 settlement notice | **shipped** (`agentnotice` record, two-lane delivery, `agent_notices` tool, core turn drain, **autonomous wake** bounded by `NIF_AGENT_WAKES`, `tests/t_agentnotice.nim` + `tests/t_agentwake.nim` — 51 checks) |
 | P0.2 `agent_list` | **shipped** (derived roster, residency status vocabulary, `agent_list {scope?}`, 9 more checks in `tests/t_agentnotice.nim`) |
 | P1.3 continuation | **shipped** (t_agentcont: 59 checks) |
 | P1.4 fork | **shipped** (t_agentfork: 32 checks) |
@@ -122,11 +122,14 @@ Commit message: `docs: subagent vs DSH study (SUBAGENTS.md) + plan branch seed`.
 ## P0.1 — Settlement notice
 
 **Shipped.** Record (`agentnotice`), two-lane delivery, the `agent_notices`
-drain tool, core's per-turn drain, and `tests/t_agentnotice.nim` (30 checks,
-all green). Files touched: `components/agent/main.nim`,
-`core/conversation.nim`, `core/dispatch.nim` (a `notices` queue on
-`SteerStream`), `components/ctxtest/main.nim` (`ntc-*` script),
-`docs/WIRE.md`, `docs/MANUAL.md`, `AGENTS.md`.
+drain tool, core's per-turn drain (plus the turn-cannot-close-over-it step
+drain), **autonomous wake** (P0.1 sub-step 4, `tests/t_agentwake.nim`), and
+`tests/t_agentnotice.nim` (30 checks, all green). Files touched:
+`components/agent/main.nim`, `core/conversation.nim`, `core/catalog.nim`,
+`sdk/niffler/sdk.nim` (`publishCall`), `components/ctxtest/main.nim`
+(`ntc-*`/`ntc-budget` scripts), `docs/WIRE.md`, `docs/MANUAL.md`,
+`AGENTS.md`; the TUI renders the folded notices (`niffler-tui`:
+`blockNotice` + `ev.session.notice`).
 
 **Why.** `ev.agent.done` currently reaches only interactive UIs (an activity
 line in `ui/frontend/src/App.svelte:316`; nothing in the TUI). The parent
@@ -205,15 +208,38 @@ capability gap.
    payload** so the injected message is structurally marked rather than
    rendered as a human "Steer: …".
 
-4. **A third path for a truly idle parent (opt-in).** A fixed
+4. **A third path for a truly idle parent — SHIPPED as an autonomous wake
+   (default on, bounded).** `components/agent` publishes a fire-and-forget
+   `session {wake: true}` call to core; core ensures the parent's runner and
+   the runner runs one turn whose only purpose is folding pending notices in
+   (`core/conversation.nim` wake admission). The turn persists a user message
+   marked `notice.kind: "wake"`, so the budget is derived from stored
+   history: at most `NIF_AGENT_WAKES` (default 3) trailing wake turns since
+   the last real user message — the human's next message resets it, `0`
+   disables waking. A wake with nothing pending or an exhausted budget is
+   declined and **persists nothing**; the notice then waits for the pull
+   lane. Once a wake turn is running, notices that land during it take the
+   busy-parent inbox (steer lane, folded at the next step; the
+   would-stop point drains notices so a turn cannot close over a settlement).
+
+   *Shipped differently from the sketch below:* the wake is a session call
+   (`publishCall`, dropped reply) rather than a runner idle-loop wait on the
+   steer subscription, and the opt-in per-conversation `subagentNotify`
+   control was not added — the env budget is the knob, and default-on is the
+   product decision the parent-visibility complaint asked for. The planner's
+   "default pull" note is superseded; the dsh comparison defaults to wakeup
+   with the same bounded-consecutive-wakes idea. A per-conversation control
+   (`subagentNotify`) remains a reasonable refinement, not a blocker. Tests:
+   `tests/t_agentwake.nim` (21 checks) plus wake-budget unit checks in
+   `tests/t_ctx_accounting.nim`.
+
+   *Original sketch (superseded; kept for context):* a fixed
    `subagentNotify: "wake" | "pull"` control on the parent conversation. In
    `wake`, `agent` starts the parent's turn after writing the notice
-   (one `svc.session.<parent>.steer` plus a "start a turn" signal — see the
-   implementation note below). **Default `pull`.** An agent that
-   spontaneously writes turns into a human's conversation is a product
-   decision, not an implementation default.
+   (one `svc.session.<parent>.steer` plus a "start a turn" signal).
 
-   *Implementation note:* an idle runner has no active turn and `pumpSteer`
+   *Original implementation note (superseded — no runner idle-loop change
+   was needed):* an idle runner has no active turn and `pumpSteer`
    only drains in-turn, so "wake" needs the runner to treat a notice payload
    as turn-triggering rather than turn-injecting. Concretely: the runner's
    idle loop (the same loop that implements `NIF_RUNNER_IDLE_S` retirement,

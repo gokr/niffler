@@ -371,15 +371,71 @@ before either is attempted:
   `content` string. The runner queues it separately from user steer and
   folds it in as a structurally marked user message — it is runtime
   machinery about a subagent, never something the human typed.
-- **otherwise** (idle, retired, or no runner) → pending; the parent's next
-  turn pulls every pending notice at the top of the turn (alongside steer
-  and advisories) and marks it `deliveredVia: "pull"`.
+- **otherwise** (idle, retired, or no runner) → **the agent component wakes
+  the parent** (below); if that is declined the notice stays pending and the
+  parent's next turn pulls every pending notice at the top of the turn
+  (alongside steer and advisories), marking it `deliveredVia: "pull"`.
 
 Taking the pushed lane first is what prevents double delivery. Notices are
 best-effort throughout: a store or agent-component failure costs a notice,
 never a turn, and a completed job is never turned into a failed call.
 `agent_notices {session?, peek?}` drains manually (on demand) for callers
 that want to look without waiting for a turn.
+
+### Busy-parent inbox (a turn cannot close over a settlement)
+
+A settlement that lands while the parent's turn is live takes the steer lane
+and is folded at the next step — and the would-stop point drains notices the
+same way it drains steer and advisories, so a child that finished during the
+model's final response keeps the turn alive for one more step instead of
+waiting for the human to come back. Every notice waiting in the two lanes
+folds in **one** drain: a burst of N settlements costs one extra step, not
+N. `NIF_AGENT_NOTICE_HOLD=0` disables only this hold — the notices then stay
+pending for the next turn's opening drain (the scripted bus-contract suites
+pin it off for deterministic round counts; `tests/t_agentwake.nim` pins the
+default behavior with a stub that injects the notice mid-answer).
+
+### Autonomous wake
+
+An **idle** parent must not wait for the human to ask. When a child settles
+while its parent has no live turn, the agent component wakes the parent:
+it publishes a `session` call with `{sessionId: <parent>, wake: true,
+content: "[wake] …"}` and a dropped reply (fire-and-forget — a wake turn
+runs as long as any turn, and the component must keep serving tool calls
+while it does). Core ensures the parent's runner exactly as for a UI call.
+
+The runner admits a wake only when all of these hold, and **persists nothing
+on a decline**:
+
+- `NIF_AGENT_WAKES` is non-zero (0 disables wakes);
+- pending notices exist (`agent_notices {peek: true}` count is non-zero) —
+  a wake with nothing to fold is `wake: "skipped"`;
+- the **consecutive-wake budget** has room: at most `NIF_AGENT_WAKES`
+  (default 3) trailing wake turns since the last real user message. The
+  budget is derived from stored history (a wake turn persists a user message
+  marked `notice.kind: "wake"`; machinery messages neither count nor reset
+  it), so it survives runner restarts with no counter to lose. A declined
+  wake returns `{wake: "declined", reason: "budget"|"wakes disabled"|
+  "notices unreachable"}`.
+
+An admitted wake runs a normal turn whose user message is structurally
+marked:
+
+```json
+{ "role": "user", "content": "[wake] background subagent settled…",
+  "notice": { "kind": "wake" } }
+```
+
+so rendering, trimming and compaction treat it as runtime machinery, and the
+request prefix is untouched (append-only history). The turn's opening drain
+folds the pending notices, the model answers, and the conversation has
+visibly moved on — without a human message. A declined or skipped wake
+leaves the notice pending for the next real turn (never lost); the human's
+next message resets the budget.
+
+The process-exited lane has no waker (a process notice is announced on the
+same subject but nothing wakes for it): its fallback remains the next turn's
+pull drain.
 
 ## Subagent continuation (`agent_run`/`agent_spawn {session}`)
 

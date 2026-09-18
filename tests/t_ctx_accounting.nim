@@ -138,6 +138,48 @@ proc main() =
   check("hit rate zero prompt never divides (guard is prompt > 0)",
         round(0.0 * 100.0 / 1.0, 1) == 0.0)
 
+  # --- A4: wake-budget accounting (docs/WIRE.md "Autonomous wake") --------
+  # A wake turn is a user message marked notice.kind == "wake"; the budget
+  # counts the trailing run of those behind the last real user input, and
+  # machinery messages (settlement notices, process exits, mails) neither
+  # count nor reset it.
+  proc um(c: string): JsonNode = %*{"role": "user", "content": c}
+  proc wake(c: string): JsonNode =
+    %*{"role": "user", "content": c, "notice": {"kind": "wake"}}
+  proc notice(c: string): JsonNode =
+    %*{"role": "user", "content": c, "notice": {"kind": "subagent-settled"}}
+  proc am(c: string): JsonNode = %*{"role": "assistant", "content": c}
+
+  check("no history means no wakes spent",
+        consecutiveWakeTurns(@[]) == 0)
+  check("a real user message spends nothing",
+        consecutiveWakeTurns(@[um("hello")]) == 0)
+  check("one wake turn counts as one",
+        consecutiveWakeTurns(@[um("hello"), wake("w1"), am("ok")]) == 1)
+  check("three wake turns count as three",
+        consecutiveWakeTurns(@[um("hello"), wake("w1"), am("ok"),
+                               notice("child done"), wake("w2"), am("ok"),
+                               notice("child done"), wake("w3"), am("ok")]) == 3)
+  check("a later real user message resets the run",
+        consecutiveWakeTurns(@[um("hello"), wake("w1"), am("ok"),
+                               um("real"), wake("w2"), am("ok")]) == 1)
+  check("machinery never counts as a wake",
+        consecutiveWakeTurns(@[um("hello"), notice("a"), notice("b")]) == 0)
+  check("default budget is three", wakeBudget() == 3)
+  putEnv("NIF_AGENT_WAKES", "7")
+  check("budget honors NIF_AGENT_WAKES", wakeBudget() == 7)
+  putEnv("NIF_AGENT_WAKES", "0")
+  check("zero disables wakes", wakeBudget() == 0)
+  putEnv("NIF_AGENT_WAKES", "junk")
+  check("junk falls back to three", wakeBudget() == 3)
+  delEnv("NIF_AGENT_WAKES")
+  check("notice hold is on by default", noticeHoldEnabled())
+  putEnv("NIF_AGENT_NOTICE_HOLD", "0")
+  check("notice hold can be disabled", not noticeHoldEnabled())
+  putEnv("NIF_AGENT_NOTICE_HOLD", "false")
+  check("notice hold accepts a word", not noticeHoldEnabled())
+  delEnv("NIF_AGENT_NOTICE_HOLD")
+
   report("CTX ACCOUNTING")
 
 main()

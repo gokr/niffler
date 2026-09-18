@@ -92,6 +92,16 @@ anything structural.
   the first comment block join into the schema description, `- param: text`
   lines become parameter docs. Write *when-to-use* guidance there — the LLM
   decides tool choice from that text alone.
+- **Subagent settlement is push, not poll** (docs/WIRE.md "Settlement
+  notices"): a background child that settles while its parent is idle
+  **wakes** the parent — the agent component publishes a fire-and-forget
+  `session {wake: true}` call, the runner folds the pending notices and runs
+  one bounded turn. The budget is `NIF_AGENT_WAKES` (default 3) consecutive
+  wake turns, derived from the stored wake-marked messages and reset by the
+  human's next message; a decline persists nothing and the notice waits for
+  the pull lane. A busy parent is injected instead, and a turn cannot close
+  over a settlement (the would-stop drain folds it as one more step;
+  `NIF_AGENT_NOTICE_HOLD=0` disables that hold).
 - **Prompt-cache discipline** (borrowed from CodeWhale, see
   docs/research/CODEWHALE.md): a conversation's request prefix — the frozen
   system prompt (persisted in the conversation header,

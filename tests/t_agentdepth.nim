@@ -91,6 +91,10 @@ proc bootSandbox(tag, maxDepth: string) =
   var agentExtra: seq[tuple[name, value: string]] = @[]
   if maxDepth.len > 0:
     agentExtra.add(("NIF_AGENT_MAX_DEPTH", maxDepth))
+  # this suite asserts exact turn flows; the wake/hold contracts have their
+  # own test (t_agentwake)
+  agentExtra.add(("NIF_AGENT_WAKES", "0"))
+  agentExtra.add(("NIF_AGENT_NOTICE_HOLD", "0"))
   let agentProc = startComponent(sandbox.sandboxBin("agent"), url, root = root,
                                  extra = agentExtra,
                                  logFile = root / "var" / "test-logs" / "agent.log")

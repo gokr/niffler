@@ -284,6 +284,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_AGENT_MODEL_WEAK` / `NIF_AGENT_MODEL_MEDIUM` / `NIF_AGENT_MODEL_STRONG` | exact model ids used by a fresh subagent when `modelTier` is requested; a child tier is clamped to the parent's configured tier | unset |
 | `NIF_AGENT_DEFAULT_TIER` | tier ceiling used when the parent's exact model is not present in the configured ladder (`weak`, `medium`, or `strong`) | `strong` |
 | `NIF_AGENT_WAKES` | consecutive autonomous wake turns a conversation may run after a background subagent settles while it is idle (docs/WIRE.md "Autonomous wake"); the human's next message resets the budget, `0` disables waking (the notice then waits for the next turn's pull drain) | `3` |
+| `NIF_AGENT_NOTICE_HOLD` | `0` lets a turn close even when a settlement notice arrived during its final step (the notice waits for the next turn's drain); by default the turn is held open one extra step so it cannot close over a child that just finished (docs/WIRE.md "Busy-parent inbox") | `1` |
 | `NIF_LLM_PROVIDERS` | JSON object of named providers `{nickname: {baseUrl, apiKey, model, context, catalog}}` the `chat` tool's `provider` arg resolves; the provider registry (`provider` component) supersedes the default when active | `{}` |
 | `NIF_MODELS_URL` | models.dev-compatible catalog base or JSON endpoint | `https://models.dev/api.json` |
 | `NIF_MODELS_PATH` | pinned local baseline catalog; useful for offline/testing | unset |

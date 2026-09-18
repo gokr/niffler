@@ -150,6 +150,54 @@ proc deliverNotice(notice: var JsonNode, immediate: bool) =
   except CatchableError:
     discard  # stays pending; the next turn's drain delivers it
 
+proc wakeEnabled(): bool =
+  ## NIF_AGENT_WAKES=0 disables autonomous wake turns; any positive value
+  ## is the budget, applied authoritatively by the runner (which derives it
+  ## from the parent's own history). This side only needs the on/off bit.
+  try: result = getEnv("NIF_AGENT_WAKES", "3").parseInt() > 0
+  except CatchableError: result = true
+
+proc wakeBudgetExhausted(c: Component, parent: string): bool =
+  ## Best-effort pre-check before paying for a runner spawn: count trailing
+  ## wake-marked user messages in the parent's stored pages. Mirrors the
+  ## runner's consecutiveWakeTurns; a wrong answer only ever defers a wake
+  ## to the parent's next real turn (never loses the notice).
+  var budget = 3
+  try: budget = parseInt(getEnv("NIF_AGENT_WAKES", "3"))
+  except CatchableError: budget = 3
+  if budget <= 0: return true
+  var wakes = 0
+  try:
+    let page = c.storeList("message", parent & ":", 1000, 10_000)
+    for i in countdown(page.high, 0):
+      let m = page[i].value
+      if m{"role"}.getStr("") != "user": continue
+      if m{"notice"} == nil: return false  # a real user message resets
+      if m{"notice"}{"kind"}.getStr("") == "wake":
+        inc wakes
+        if wakes >= budget: return true
+  except CatchableError:
+    return true  # store unreadable: leave it to the runner's admission
+  return false
+
+proc tryWake(c: Component, parent, noticeSummary: string) =
+  ## Wake an idle parent conversation: ask the system to run a turn whose
+  ## only purpose is folding pending settlement notices in.
+  ##
+  ## Fire-and-forget by design: a wake turn runs as long as any turn, and
+  ## this component must keep serving tool calls for every session while it
+  ## does — so the call is published with a dropped reply rather than
+  ## awaited. Admission (nothing pending / wake budget spent / wakes
+  ## disabled) happens in the runner, which persists nothing on a decline;
+  ## the notice then stays pending for the parent's next user-driven turn.
+  var summary = noticeSummary
+  if summary.len > 400: summary = summary[0 ..< 400]
+  let args = %*{"sessionId": parent, "wake": true,
+                "content": "[wake] background subagent settled" &
+                           (if summary.len > 0: "\n" & summary else: "")}
+  let env = callEnvelope("session", args, c.name)
+  c.publishCall("svc.core.call", env)
+
 proc emitNotice(c: Component, jobId, parent, child, status,
                 reply, error: string) =
   ## The single writer of a settlement notice.
@@ -175,9 +223,15 @@ proc emitNotice(c: Component, jobId, parent, child, status,
     let seqNo = nextNoticeSeq(parent)
     let id = parent & ":" & align($seqNo, 6, '0')
     discard c.storePut("agentnotice", id, notice, timeoutMs = 10_000)
-    deliverNotice(notice, parentMidTurn(parent))
+    let midTurn = parentMidTurn(parent)
+    deliverNotice(notice, midTurn)
     if notice{"deliveredAt"} != nil:
       discard c.storePut("agentnotice", id, notice, timeoutMs = 10_000)
+    elif wakeEnabled() and not wakeBudgetExhausted(c, parent):
+      # The parent is idle: wake it so the settlement is visible without
+      # the human asking (never mid-turn — deliverNotice already steered
+      # that case, and turns never nest).
+      tryWake(c, parent, notice{"summary"}.getStr(""))
   except CatchableError as e:
     stderr.writeLine(c.name & ": notice for " & jobId & " failed: " & e.msg)
   c.emit("ev.agent.notice", %*{"jobId": jobId, "parent": parent,

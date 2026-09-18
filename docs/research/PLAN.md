@@ -23,7 +23,9 @@ These were previously tracked here as plans and are now part of `main`:
 - Context ledger, deterministic prune/trim, replaceable compaction, durable
   projections and recall, plus bounded provider-overflow recovery; see
   [research/COMPACTION.md](COMPACTION.md).
-- Continuable and forked subagents, settlement notices and `agent_list`; see
+- Continuable and forked subagents, settlement notices (including the bounded
+  autonomous wake that tells an idle parent its children finished) and
+  `agent_list`; see
   [MANUAL.md](../MANUAL.md#fabric-and-subagents) and the historical runbook
   [research/SUBAGENTS-PLAN.md](SUBAGENTS-PLAN.md).
 - Compiled-Nim Fabric guests, structured APIs, caching, cancellation and

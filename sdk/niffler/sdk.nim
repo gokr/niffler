@@ -426,6 +426,25 @@ proc publishEnvelope*(c: Component, subject: string, env: Envelope) =
   ## Publish any pre-built envelope to any subject (fire-and-forget).
   c.nc.publish(subject, env.encode())
 
+proc publishCall*(c: Component, subject: string, env: Envelope) =
+  ## Publish a CALL envelope and forget it: the reply goes to a private
+  ## drop inbox nobody reads, so a request/reply service that may take
+  ## minutes (e.g. a session turn woken for a background settlement) never
+  ## blocks the caller's serialized pump. For callers that must stay
+  ## responsive — a component serving other tools cannot wait out a turn.
+  ## Raises only when the publish itself fails; the outcome is unknowable
+  ## by design (best-effort wake semantics).
+  let data = env.encode()
+  let inbox = "_INBOX.niffler.drop." & newId()
+  let st = natsConnection_PublishRequest(c.nc.conn, subject.cstring,
+    inbox.cstring, data.cstring, data.len.cint)
+  if not checkStatus(st):
+    raise newException(IOError,
+      "publishCall " & subject & ": " & getErrorString(st))
+  # Flush so the kick-off is on the wire before the handler returns; the
+  # reply is discarded intentionally.
+  discard natsConnection_FlushTimeout(c.nc.conn, 1000)
+
 proc pumpTaps*(c: Component, maxMessages: int): int
   ## Drain queued tap subscriptions. Exported for components that block in
   ## a handler: a polling wait must keep its taps current, or replies that
