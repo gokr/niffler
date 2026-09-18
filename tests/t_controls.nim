@@ -263,6 +263,28 @@ proc main() =
           cleared{"limits"}{"tokens"}.getInt(-1) == 0, $cleared)
 
   # -------------------------------------------------------------------------
+  # 1b. /compact is a content-less control call: accepted, explicitly declined
+  # when no compaction component is configured, and it appends no user message
+  # (a compaction is an action, not a turn).
+  block compactControl:
+    var p = startProbe("compact")
+    defer: p.stopProbe()
+    let nc = p.nc
+    let sid = "compact-" & $int(epochTime())
+    let control = call(nc, "core", "session",
+                       %*{"sessionId": sid, "compact": true}, 60_000)
+    check("compact control is accepted without a compactor",
+          control{"ok"}.getBool(false) and
+          not control{"compacted"}.getBool(true) and
+          control{"reason"}.getStr("").contains("no compaction component"),
+          $control)
+    let msgs = call(nc, "store", "list",
+                    %*{"kind": "message", "idPrefix": sid & ":",
+                       "limit": 200}, 15_000)
+    check("compact control appends no user message",
+          msgs{"items"} == nil or msgs{"items"}.len == 0, $msgs)
+
+  # -------------------------------------------------------------------------
   # 2. approvals auto really grants; ask without a human really denies
   block gate:
     var p = startProbe("gate", @[("NIF_MOCK_ROUNDS", "1"),

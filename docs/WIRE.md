@@ -526,14 +526,15 @@ broadcast immediately. The gate verdict is published on
 `ev.approval.resolved` so other clients dismiss stale modals. Timeout →
 denied. No human reachable → deny. `NIF_AUTO_APPROVE=1` bypasses.
 
-## Conversation controls (`/approvals`, `/limit`)
+## Conversation controls (`/approvals`, `/limit`, `/compact`)
 
-Two per-conversation controls belong to the human, never to the model, and
-ride the ordinary session call (`svc.session.<id>.call`, tool `session`):
+Per-conversation controls belong to the human, never to the model, and ride
+the ordinary session call (`svc.session.<id>.call`, tool `session`):
 
 ```json
 {"sessionId": "conv-…", "approvals": "auto"}
 {"sessionId": "conv-…", "limits": {"rounds": 20, "tokens": 50000, "seconds": 600}}
+{"sessionId": "conv-…", "compact": true}   // run the compactor now, no turn
 {"sessionId": "conv-…"}                    // status readback, runs no turn
 ```
 
@@ -551,6 +552,14 @@ object clears all three. Job-scoped budgets — `maxRounds`/`maxCalls`/
 `maxTokens` (what the `agent` component freezes into a child's header) and
 `NIF_MAX_TURN_ROUNDS` — remain HARD: they end the turn and never ask, because
 a subagent must not be able to negotiate its own budget.
+- **`compact`** runs the same replaceable-compactor rung the automatic ladder
+runs at pressure, explicitly: the compaction component proposes a checkpoint
+over a permitted cut, core validates and installs it atomically, and the
+usual `reset:compact` context event follows — with no LLM turn and no user
+message. The reply is `{ok, compacted: true, beforeTokens, afterTokens,
+generation}` or `{ok, compacted: false, reason}` (no compaction component
+configured / compactor declined / no permitted cut). A decline is explicit —
+it never silently degrades to lossy trim.
 - **Reaching a soft limit asks the human.** The question travels the approval
 transport on the same routing (directed to the driver, then broadcast), with
 `tool: "turn-limit"`, `purpose: "continue"` and
@@ -562,11 +571,11 @@ existing `ev.approval.reply` (with the usual `{id, ack: true}` first):
 record (`error: "limit-<dimension>"`) naming the limit and the command that
 raises it. `NIF_AUTO_CONTINUE=1` (or `NIF_AUTO_APPROVE=1`) answers yes
 without a human, for headless automation.
-- Both controls are persisted in the conversation header (`approvals`,
-`limits`), so a resumed runner re-applies exactly what the human last chose,
-and both are echoed by the status readback and the turn result (`approvals`,
-`limits`) for UIs. Invalid values are refused with a clear error (unknown
-mode, unknown limit key, out-of-range value).
+- The `approvals` and `limits` settings are persisted in the conversation
+header (`approvals`, `limits`), so a resumed runner re-applies exactly what
+the human last chose, and both are echoed by the status readback and the turn
+result (`approvals`, `limits`) for UIs. Invalid values are refused with a
+clear error (unknown mode, unknown limit key, out-of-range value).
 
 ### Session calls during a turn
 

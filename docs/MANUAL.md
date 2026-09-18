@@ -307,7 +307,7 @@ env always wins — see below) and inherit core's environment. The full set:
 | `NIF_LLM_MAX_CONNECT_RETRIES` | additional attempts for connect/dial failures | `2` |
 | `NIF_LLM_RETRY_AFTER_CAP_MS` | upper bound honored from a server `retry-after` hint; a hinted wait longer than this is clamped | `3600000` |
 | `NIF_LLM_TIMEOUT_MS` | ceiling for one `llm` `chat` completion; slow reasoning models (e.g. GLM thinking=max via llmgateway) can exceed the default on a single response | `300000` |
-| `NIF_CTX_RESERVE` | output tokens held back by context admission; `0` disables the reserve | `16384` |
+| `NIF_CTX_RESERVE` | output tokens held back by context admission; defaults to the model's resolved catalog output cap, `16384` when unknown; `0` disables the reserve | catalog output cap |
 | `NIF_COMPACTION_TOOL` | contract-v1 candidate tool selected by the runner; empty disables summarization but not prune/trim/error admission | `compaction_propose` |
 | `NIF_COMPACTION_TIMEOUT_MS` | whole candidate-call deadline (minimum 5000 ms) | `90000` |
 | `NIF_COMPACTION_MAX_LLM_CALLS` | auxiliary summarization call budget granted to one attempt; a candidate reporting more calls than granted is rejected as invalid | `4` |
@@ -484,13 +484,14 @@ are gated on a human before they execute (core also gates its own
 - Unanswered UI requests time out after 5 minutes and are denied.
 - `NIF_AUTO_APPROVE=1` bypasses the gate (headless automation).
 
-### Conversation controls: `/approvals` and `/limit`
+### Conversation controls: `/approvals`, `/limit` and `/compact`
 
-Two controls belong to you (the human), never to the model, and apply to one
-conversation. Both are set through the session call (the web UI exposes them
-as `/approvals` and `/limit`; any bus client can call `session` directly) and
-both are persisted with the conversation, so a resumed conversation keeps
-them.
+Three controls belong to you (the human), never to the model, and apply to one
+conversation. All are set through the session call (the web UI exposes them
+as `/approvals`, `/limit` and `/compact`; any bus client can call `session`
+directly). The `approvals` and `limits` settings are persisted with the
+conversation, so a resumed conversation keeps them; `/compact` is an action,
+not a setting.
 
 - **`/approvals auto`** — this conversation stops asking: every
 gated tool is granted, and core says so loudly in its log
@@ -507,6 +508,14 @@ shows a Continue/Stop prompt naming the limit), and a *yes* extends that limit
 by one more step. A *no*, no answer, or no reachable client ends the turn with
 a distinct `limit-<dimension>` record that names the limit and the command
 that raises it. `/limit clear` removes all three.
+- **`/compact`** — run the compactor *now* instead of waiting for the
+automatic pressure ladder: core asks the configured compaction component for
+a checkpoint over a permitted cut, installs it atomically, and emits the
+usual `ev.session.context {reason: "reset:compact"}`. No LLM turn runs and no
+user message is appended. The reply reports `compacted: true` with
+before/after token counts, or `compacted: false` with the reason (no
+compaction component configured, the compactor declined, or nothing
+compactable yet); a decline never silently falls back to lossy trim.
 
 The distinction that matters: these limits are *yours*, so they negotiate;
 the job-scoped budgets (`maxRounds`/`maxCalls`/`maxTokens`, which the `agent`
@@ -582,12 +591,21 @@ reports:
   persisted when the LLM call itself fails, and replay skips error roles).
 - Admission runs before **every** provider request, including each tool-loop
   round. Before reported usage exists, it prices the whole request (messages
-  plus frozen tool schemas) with a conservative chars/4 estimate. At **75%**
-  core warns once (`ev.session.context {reason: "warn:threshold"}`). At the
-  90% pressure line / hard input target it executes a bounded ladder:
-  deterministic tool-result prune → configured compactor → oldest complete-
-  turn trim → explicit `context-recovery-required`. It never knowingly sends
-  an over-window request.
+  plus frozen tool schemas) with a conservative chars/4 estimate. The
+  reserved headroom is the model's declared output cap from the catalog
+  (`limit.output`, e.g. DeepSeek's 384000) — the provider counts the
+  requested `max_tokens` against its window at admission, so a fixed 16K
+  reserve once let a 736,803-token prompt overflow a 1,048,576 provider limit
+  the prompt alone fit. `NIF_CTX_RESERVE` overrides the derived reserve. Core
+  warns once at 75% of the way to the effective line
+  (`ev.session.context {reason: "warn:threshold"}`); at it — never later
+  than 90% of the window — core executes a bounded ladder: deterministic
+  tool-result prune → configured compactor → oldest complete-turn trim →
+  explicit `context-recovery-required`. On the wire the `llm` component
+  additionally clamps the requested output to the headroom the serialized
+  prompt (messages plus tool schemas) leaves, so estimation drift in either
+  layer cannot push a fitting prompt over the provider's limit. It never
+  knowingly sends an over-window request.
 - The trigger measures in the **provider's scale, not the estimate's**: every
   successful response re-measures a calibration offset (reported
   `prompt_tokens` minus the local estimate of the same request) and

@@ -30,22 +30,40 @@ proc main() =
   check("estimate exceeds content-only accounting",
         estimateTokens(toolCall) > contentOnly)
 
-  # --- output reserve (env) -------------------------------------------------
+  # --- output reserve (env / catalog) ---------------------------------------
   delEnv("NIF_CTX_RESERVE")
-  check("default reserve 16K", outputReserve() == 16_384, $outputReserve())
+  var p = Persister()
+  check("default reserve 16K", outputReserve(p) == 16_384,
+        $outputReserve(p))
+  # A resolved catalog output cap IS the reserve: the provider counts the
+  # requested max_tokens against the window at admission.
+  p = Persister(ctxOutput: 384_000)
+  check("catalog output cap becomes the reserve", outputReserve(p) == 384_000,
+        $outputReserve(p))
   putEnv("NIF_CTX_RESERVE", "1000")
-  check("env override honored", outputReserve() == 1000)
+  check("env override honored", outputReserve(p) == 1000)
   putEnv("NIF_CTX_RESERVE", "junk")
-  check("junk falls back to default", outputReserve() == 16_384)
+  check("junk falls back to catalog/default", outputReserve(p) == 384_000)
   putEnv("NIF_CTX_RESERVE", "0")
-  check("0 disables reserve", outputReserve() == 0)
+  check("0 disables reserve", outputReserve(p) == 0)
   delEnv("NIF_CTX_RESERVE")
 
   # --- trim threshold: min(ratio bound, window − reserve) -------------------
   # 40K window: 90% ratio = 36K; window − 16,384 = 23,616 → reserve binds
-  var p = Persister(ctxSize: 40_000)
+  p = Persister(ctxSize: 40_000)
   check("reserve binds below ratio", trimThreshold(p) == 23_616,
         $trimThreshold(p))
+  # A declared output cap binds well below the ratio: 1M window, deepseek's
+  # 384K output → trim/admission at 616K, the failure this guards.
+  p = Persister(ctxSize: 1_000_000, ctxOutput: 384_000)
+  check("catalog output cap lowers the trim line", trimThreshold(p) == 616_000,
+        $trimThreshold(p))
+  check("admission holds the declared cap back", contextTarget(p) == 616_000,
+        $contextTarget(p))
+  # ...but a cap past half the window floors there instead of standing down
+  p = Persister(ctxSize: 128_000, ctxOutput: 384_000)
+  check("absurd cap floors at half the window", contextTarget(p) == 64_000,
+        $contextTarget(p))
   # large window: ratio binds (reserve never exceeds the 90% line)
   p = Persister(ctxSize: 200_000)
   check("ratio binds for large windows", trimThreshold(p) == 180_000,

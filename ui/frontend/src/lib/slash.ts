@@ -121,6 +121,11 @@ export function builtinSlashCommands(): SlashCommand[] {
         { name: "seconds", kind: "int", description: "wall-clock seconds before the turn asks to continue" },
       ],
     },
+    {
+      name: "compact",
+      description: "compact this conversation now: replace older history with a checkpoint, without running a turn",
+      builtin: true,
+    },
     { name: "connect", description: "open provider setup", builtin: true },
     { name: "status", description: "show provider/model/context details", builtin: true },
     { name: "new", description: "start a new conversation", builtin: true, params: [{ name: "id", kind: "string", description: "optional conversation id" }] },
