@@ -4,7 +4,17 @@ import { currentProfile } from './lib/toolProfiles';
   import { onMount } from "svelte";
   import Sessions from "./views/Sessions.svelte";
   import Chat from "./views/Chat.svelte";
-  import { send, onStatus, isWails, busUrl, on, emit } from "./nats";
+  import { send, newUiId, onStatus, isWails, busUrl, on, emit } from "./nats";
+  import {
+    uiAttach,
+    uiClaim,
+    uiRegister,
+    uiRenew,
+    uiRelease,
+    uiReleaseSession,
+    uiStartupDecision,
+    UI_LEASE_RENEW_MS,
+  } from "./lib/uiRegistry";
   import Components from "./views/Components.svelte";
   import { initTheme, toggleTheme } from "./lib/theme";
   import { t, cycleLocale, locale } from "./lib/i18n.svelte";
@@ -267,14 +277,13 @@ import { currentProfile } from './lib/toolProfiles';
       // The sidebar lists conversations; switching is a sidebar concern.
       // Surfacing it as a no-op keeps /session idempotent here.
     } else if (cmd.startsWith("switch-session:")) {
-      sessionId = cmd.slice("switch-session:".length);
+      void selectSession(cmd.slice("switch-session:".length));
     } else if (cmd.startsWith("new-session:")) {
       const id = cmd.slice("new-session:".length);
-      sessionId = id || null;
-      refreshKey++;
+      if (id) await selectSession(id);
+      else newSession();
     } else if (cmd === "new-session") {
-      sessionId = null;
-      refreshKey++;
+      newSession();
     }
   }
 
@@ -303,36 +312,145 @@ import { currentProfile } from './lib/toolProfiles';
   );
   const ctxPct = $derived(contextPct(headerUsed, headerContext));
 
-  // The UI's own bus identity (see ui/bridge.go: sdk.New("ui", ...)).
-  // Directed approval requests arrive on this component's private subject;
-  // core derives the subject from the call envelope's caller field and
-  // never hardcodes component names.
-  const UI_NAME = "ui";
+  // --- UI lease registry (core/uireg.nim) -----------------------------------
+  //
+  // Identity granularity: one identity per browser tab, minted by the bridge
+  // (NewUiId → "ui-<hex>") and reused across reloads via sessionStorage. The
+  // same string is the `caller` of this tab's session turns (Chat uses
+  // sendAs), so core routes directed approvals to
+  // svc.approval.<caller>.request and only this tab acts on them. Registry
+  // hiccups never block chatting: they degrade to legacy broadcast routing.
+  let uiId = $state("");
+  let uiNumber = $state(0);
+  let held = $state(false);
+  let heldOwner = $state(0);
+  // true = we were moved to a fresh conversation (renew/reconnect); false =
+  // a user-chosen conversation is held by someone else (offer fresh).
+  let heldSwitched = $state(false);
+  const uiCaller = $derived(uiId || "ui");
+  const UI_ID_KEY = "niffler.uiId";
 
-  onMount(() =>
-    on(`svc.approval.${UI_NAME}.request`, (ev) => {
-      const p = ev.payload ?? {};
-      if (!p.id || !p.tool) return;
-      const sid = p.sessionId ?? "";
-      // The turn-limit question (/limit): ack so the runner knows a human is
-      // being asked, then show its own prompt. Deliberately never covered by a
-      // persisted auto-approve — a recorded tool decision must not silently
-      // extend a budget — and never rendered as a tool call.
-      if (isContinueReq(p)) {
-        emit("ev.approval.reply", { id: p.id, ack: true });
-        approvals = [...approvals, approvalEntry(p)];
-        return;
+  async function ensureUiId() {
+    if (uiId) return;
+    let id = "";
+    try {
+      id = sessionStorage.getItem(UI_ID_KEY) ?? "";
+    } catch {
+      /* storage unavailable — mint a per-load id below */
+    }
+    if (!id) {
+      try {
+        id = await newUiId();
+      } catch {
+        // Bridge unavailable (browser dev): a local id still gives the tab a
+        // caller, even though registration will fail and degrade.
+        id = "ui-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
       }
-      if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
-        // Decision alone resolves the gate; no ack needed.
-        emit("ev.approval.reply", { id: p.id, ok: true });
-        return;
+      try {
+        sessionStorage.setItem(UI_ID_KEY, id);
+      } catch {
+        /* best effort */
       }
-      // Ack so the runner knows a human is being asked; then show the modal.
+    }
+    uiId = id;
+  }
+
+  /** Register (keep a warm number) and claim the shown conversation; on a
+   * refused claim start a fresh conversation and report the holder. */
+  async function attachUi() {
+    await ensureUiId();
+    if (!uiId || !connected) return;
+    const res = await uiAttach(send, uiId, sessionId);
+    if (res.number) uiNumber = res.number;
+    const d = uiStartupDecision(res, crypto.randomUUID());
+    if (d.switchTo) {
+      sessionId = d.switchTo;
+      held = true;
+      heldOwner = d.ownerNumber;
+      heldSwitched = true;
+      refreshKey++;
+    }
+  }
+
+  /** Renew the lease and re-claim the shown conversation every few seconds.
+   * A lease that lapsed while frozen (renew refuses) re-registers for a fresh
+   * number and re-claims; if the claim was lost meanwhile, this tab moves to a
+   * fresh conversation instead of silently co-owning the previous one. */
+  async function renewLease() {
+    if (!uiId || !connected) return;
+    try {
+      const renewed = await uiRenew(send, uiId);
+      if (!renewed.ok) {
+        // The lease lapsed (frozen tab, core restart): re-register for a
+        // fresh number, then re-claim below.
+        const reg = await uiRegister(send, uiId);
+        if (reg.number) uiNumber = reg.number;
+      }
+    } catch {
+      return; // registry unreachable — coordination degrades
+    }
+    if (!sessionId) return;
+    let c: { ok: boolean; ownerNumber: number };
+    try {
+      c = await uiClaim(send, uiId, sessionId);
+    } catch {
+      return;
+    }
+    if (c.ok) return;
+    const d = uiStartupDecision(
+      { claimed: false, ownerNumber: c.ownerNumber },
+      crypto.randomUUID()
+    );
+    if (d.switchTo) {
+      sessionId = d.switchTo;
+      held = true;
+      heldOwner = d.ownerNumber;
+      heldSwitched = true;
+      refreshKey++;
+    }
+  }
+
+  /** Directed approval handling: only the addressed tab sees the subject. */
+  function handleDirectedApproval(p: any) {
+    if (!p.id || !p.tool) return;
+    const sid = p.sessionId ?? "";
+    // The turn-limit question (/limit): ack so the runner knows a human is
+    // being asked, then show its own prompt. Deliberately never covered by a
+    // persisted auto-approve — a recorded tool decision must not silently
+    // extend a budget — and never rendered as a tool call.
+    if (isContinueReq(p)) {
       emit("ev.approval.reply", { id: p.id, ack: true });
       approvals = [...approvals, approvalEntry(p)];
-    })
-  );
+      return;
+    }
+    if (isAutoApproved(sid, p.tool, p.manifest?.digest)) {
+      // Decision alone resolves the gate; no ack needed.
+      emit("ev.approval.reply", { id: p.id, ok: true });
+      return;
+    }
+    // Ack so the runner knows a human is being asked; then show the modal.
+    emit("ev.approval.reply", { id: p.id, ack: true });
+    approvals = [...approvals, approvalEntry(p)];
+  }
+
+  // Directed requests arrive on this tab's private subject: core derives it
+  // from the call envelope's caller field (docs/WIRE.md "Approval
+  // subjects") and never hardcodes component names. A per-tab caller is what
+  // keeps a directed request from being fanned to every open tab.
+  $effect(() => {
+    const caller = uiCaller;
+    return on(`svc.approval.${caller}.request`, (ev) =>
+      handleDirectedApproval(ev.payload ?? {})
+    );
+  });
+
+  // Lease renewal: register is idempotent and refreshes the ~20s lease when
+  // the identity already exists (a lapsed one yields a fresh number).
+  $effect(() => {
+    if (!connected || !uiId) return;
+    const t = setInterval(() => void renewLease(), UI_LEASE_RENEW_MS);
+    return () => clearInterval(t);
+  });
 
   onMount(() =>
     on("ev.approval.request", (ev) => {
@@ -411,9 +529,22 @@ import { currentProfile } from './lib/toolProfiles';
         loadProviders();
         loadEffective(sessionModels[sessionId ?? ""] || undefined);
         if (sessionId) loadSessionState(sessionId);
+        void attachUi();
       }
     })
   );
+
+  // Mint/restore this tab's registry identity on load, and release it on tab
+  // close. beforeunload is best-effort — the lease expiry covers a crashed or
+  // force-closed tab.
+  onMount(() => {
+    void ensureUiId();
+    const release = () => {
+      if (uiId) void uiRelease(send, uiId).catch(() => {});
+    };
+    window.addEventListener("beforeunload", release);
+    return () => window.removeEventListener("beforeunload", release);
+  });
 
   // Provider or model-catalog changes from OTHER clients (e.g. the TUI)
   // refresh this UI's header state too.
@@ -511,13 +642,37 @@ import { currentProfile } from './lib/toolProfiles';
     return s.length > 3000 ? s.slice(0, 3000) + "…" : s;
   }
 
-  function selectSession(id: string) {
+  async function selectSession(id: string) {
+    if (id !== sessionId && uiId && connected) {
+      let c: { ok: boolean; ownerNumber: number };
+      try {
+        c = await uiClaim(send, uiId, id);
+      } catch {
+        c = { ok: true, ownerNumber: 0 }; // registry unreachable: switch uncoordinated
+      }
+      if (!c.ok) {
+        // A live UI holds it: stay put and name the holder (same UX rule as
+        // the TUI's /session switch) instead of silently joining its stream.
+        held = true;
+        heldOwner = c.ownerNumber;
+        heldSwitched = false;
+        return;
+      }
+      if (sessionId) void uiReleaseSession(send, uiId, sessionId).catch(() => {});
+    }
     sessionId = id;
+    held = false;
+    heldOwner = 0;
+    heldSwitched = false;
   }
 
   function newSession() {
+    if (uiId && sessionId) void uiReleaseSession(send, uiId, sessionId).catch(() => {});
     sessionId = null;
     refreshKey++;
+    held = false;
+    heldOwner = 0;
+    heldSwitched = false;
   }
 
   function handleDelete(id: string) {
@@ -534,7 +689,7 @@ import { currentProfile } from './lib/toolProfiles';
 <div class="flex h-screen">
   <aside class="w-64 shrink-0 border-r border-ink-700 flex flex-col bg-ink-900">
     <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
-      <span class="font-semibold text-ink-200">Niffler</span>
+      <span class="font-semibold text-ink-200">Niffler{#if uiNumber} {uiNumber}{/if}</span>
       <span
         class="w-2 h-2 rounded-full"
         class:bg-accent={connected === true}
@@ -671,7 +826,38 @@ import { currentProfile } from './lib/toolProfiles';
         <code class="font-mono">NATS_URL={url || "nats://127.0.0.1:4222"} ./var/bin/niffler</code>
       </div>
     {/if}
-    <Chat bind:sessionId={sessionId} bind:this={chatRef} onCommand={handleCommand} />
+    {#if held}
+      <div class="mx-6 mt-3 rounded-lg border border-warn/40 bg-warn/10 px-4 py-2 text-[13px] text-warn flex items-center gap-2">
+        <span class="flex-1">
+          {#if heldSwitched}
+            {heldOwner > 0 ? t("app.conversationHeldSwitched", { n: String(heldOwner) }) : t("app.conversationHeldOtherSwitched")}
+          {:else}
+            {heldOwner > 0 ? t("app.conversationHeld", { n: String(heldOwner) }) : t("app.conversationHeldOther")}
+          {/if}
+        </span>
+        {#if !heldSwitched}
+          <button
+            class="rounded-md border border-warn/40 px-3 py-1 hover:bg-warn/10"
+            onclick={newSession}
+          >
+            {t("app.startFresh")}
+          </button>
+        {/if}
+        <button
+          class="px-1"
+          aria-label={t("app.dismiss")}
+          title={t("app.dismiss")}
+          onclick={() => {
+            held = false;
+            heldOwner = 0;
+            heldSwitched = false;
+          }}
+        >
+          ×
+        </button>
+      </div>
+    {/if}
+    <Chat bind:sessionId={sessionId} bind:this={chatRef} onCommand={handleCommand} uiCaller={uiCaller} />
   </main>
 </div>
 

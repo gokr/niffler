@@ -17,11 +17,43 @@ ev.catalog.*       # tool list changes → rebuild the tools panel
 ev.approval.*      # approval gate (see below)
 ```
 
-**Approvals need no bridge code.** Core publishes `ev.approval.request
-{id, tool, args}` for tools with `x-harness.approval`; the bridge's
-`On(">")` already forwards every event to the SPA, which shows the modal
-(App.svelte) and answers via `emit("ev.approval.reply", {id, ok})`. The
-SPA-only change was the modal — the transport stayed the bus.
+**Approvals need no bespoke bridge tool.** Core publishes a directed request
+on `svc.approval.<caller>.request` (falling back to the broadcast
+`ev.approval.request` after ~1.5s); the bridge's `On(">")` forwards every
+event to the SPA, which shows the modal (App.svelte) and answers via
+`emit("ev.approval.reply", {id, ok})`. The transport stays the bus.
+
+## UI lease registry (numbered clients, conversation ownership)
+
+The web UI participates in core's UI registry (`core/uireg.nim`) alongside
+the TUIs, so mixed TUI/web setups coordinate instead of silently sharing a
+conversation.
+
+**Identity granularity: one identity per browser tab.** The bridge mints it
+(`Bridge.NewUiId()` → `"ui-<12 hex>"`); the SPA persists it in
+`sessionStorage` so a reload keeps the assigned display number. Registry ops
+(register / renew / release / claim / release_session / owner) are proxied to
+core's hidden `ui` tool — the SPA's `lib/uiRegistry.ts` owns the rules, the
+bridge only mints and forwards. The same string is stamped as the `caller` of
+the tab's session turns (`Bridge.SendAs`), so core's directed approvals
+(`svc.approval.ui-<hex>.request`) reach only the tab that drives the turn —
+the per-client privacy the TUI gets from its unique component name.
+
+- The header shows the registry's monotonic display number as **"Niffler
+  N"** (TUI convention).
+- Opening a conversation claims it; a live UI already holding it is reported
+  by number and the SPA offers a fresh conversation instead of joining.
+- A ~20s lease (re-registered every 5s) is the liveness signal. A lease lost
+  while the tab was frozen/suspended re-registers (fresh number) and
+  re-claims; if the claim was lost meanwhile, the tab moves to a fresh
+  conversation with a note. `beforeunload` releases best-effort; expiry
+  covers a crashed tab.
+- Coordination only, not authentication: NATS caller names are self-declared
+  (docs/WIRE.md). Non-participating clients (CLI, scripts) keep legacy
+  behavior and can still open a claimed conversation.
+- Workspace parity is withheld until the SPA exposes workspace selection: the
+  TUI keys its resume state by bus URL + launch directory, and the web UI has
+  no per-tab resume state to key yet.
 
 ## Two kinds of dynamism
 

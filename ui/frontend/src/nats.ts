@@ -4,7 +4,7 @@
 // NATS inside the Wails shell. To run the same SPA against a WebSocket
 // proxy later, swap this file only.
 
-import { Send, Emit, Online, BusUrl } from "../wailsjs/go/main/Bridge";
+import { Send, SendAs, Emit, Online, BusUrl, NewUiId } from "../wailsjs/go/main/Bridge";
 import { BrowserOpenURL, EventsOn } from "../wailsjs/runtime/runtime";
 
 export interface NatEvent {
@@ -39,6 +39,26 @@ export async function send(
   const parsed = JSON.parse(raw);
   if (parsed && parsed.error) throw new Error(parsed.error);
   return parsed;
+}
+
+/** Like send, but with an explicit self-declared caller name (the tab's UI
+ * registry identity), so core routes directed approvals to this tab only. */
+export async function sendAs(
+  caller: string,
+  component: string,
+  tool: string,
+  args: any,
+  timeoutMs = 180000
+): Promise<any> {
+  const raw = await bridge().SendAs(caller, component, tool, JSON.stringify(args), timeoutMs);
+  const parsed = JSON.parse(raw);
+  if (parsed && parsed.error) throw new Error(parsed.error);
+  return parsed;
+}
+
+/** Mint a fresh per-tab UI registry identity ("ui-<hex>"), see uiRegistry.ts. */
+export function newUiId(): Promise<string> {
+  return bridge().NewUiId();
 }
 
 /** Publish a fire-and-forget event. */
