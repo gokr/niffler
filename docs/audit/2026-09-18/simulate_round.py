@@ -118,7 +118,8 @@ def main(argv):
     fails = []
     for r in todo:
         old = r.get("old_string", "") or ""
-        if not old or not r.get("new_string"):
+        new = r.get("new_string", "") or ""
+        if not old or not new:
             fails.append((r.get("id"), r["_file"], "empty anchor"))
             continue
         n = text.count(old)
