@@ -411,13 +411,17 @@ NIF_NATS_URL=nats://127.0.0.1:4222 /tmp/probe; rm -f tests/probe.nim /tmp/probe
   for builds/clean, shared for test runs); `make build` holds one lock
   across the whole generation. Remove build artifacts with `make clean`,
   never a bare `rm -rf var`.
-- **Trust a green test run — don't re-run to see "more" output.** `make`
-  targets print each check as `OK: …` and end with `<NAME> TEST PASSED`,
-  and the exit code reflects the whole suite. If that line prints and the
-  command exits 0, capture the tail once and move on; re-running the same
-  green suite only to see more of the output is wasted work. Rerun *only*
-  when there is a failure to diagnose or you changed code since the last
-  run.
+- **Trust a green test run — don't re-run to see "more" output.** Individual
+  `make test-<component>` targets print each check as `OK: …` and end with
+  `<NAME> TEST PASSED`, and the exit code reflects the whole suite.
+  `make test-server` pools the suite (`scripts/run-tests.sh`): it prints one
+  `ok <time> <name> — <NAME> TEST PASSED` line per test and ends with
+  `run-tests: N passed in …s`, keeping each test's full output in
+  `var/test-logs/<name>.log` (and dumping the tail of any failure
+  immediately). If that summary prints and the command exits 0, capture the
+  tail once and move on; re-running the same green suite only to see more of
+  the output is wasted work. Rerun *only* when there is a failure to diagnose
+  or you changed code since the last run.
 - **A failed/partial run is the only case that needs investigation**: when
   the suite breaks, re-run the *narrowest* target that reproduces it
   (`make test-core`, `make test-bash`, …) with output captured, and fix

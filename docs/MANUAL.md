@@ -3266,6 +3266,15 @@ make test-bash      # ... or just one — `make help` lists every target
                  # bus suite is `make test-server`
 ```
 
+`make test-server` runs the ~60 test binaries through
+`scripts/run-tests.sh` in a bounded pool (one test per core by default):
+tests own private NATS servers and temporary roots, so they overlap safely.
+Each test's output is captured to `var/test-logs/<name>.log`, its wall time
+is printed on completion, and the summary lists the slowest — override with
+`TEST_JOBS=N` (or `NIF_TEST_JOBS=N` for the script directly); `TEST_JOBS=1`
+is the old sequential run, and the logs remain per-test either way.
+`NIF_TEST_VERBOSE=1` interleaves each test's captured output after its line.
+
 Each test boots the real component binaries (Nim, Go *and* TypeScript —
 the envelope is the artifact, so one harness tests every SDK) and drives
 them over a private nats-server each test starts for itself (`NIF_NATS_SPAWN`-style isolation).
@@ -3278,7 +3287,8 @@ server-side work and `make test-ui` for frontend work.
 Core-based tests snapshot their required binaries into a unique temporary
 `NIF_ROOT`; Barrel, plugin clones, generated components, logs, and caches are
 therefore isolated. Individual `make test-*` targets may run concurrently
-with each other and a live development harness. Repository build writes
+with each other and a live development harness — `scripts/run-tests.sh`
+relies on exactly that to pool the suite. Repository build writes
 (`make build`, `make clean`) are serialized by `scripts/with-build-lock.sh`;
 a runtime `builder.build` does not take that lock, so a `make clean` in a
 second terminal deletes `var/bin` and `var/build` under a running build.

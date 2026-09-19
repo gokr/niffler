@@ -431,13 +431,20 @@ TEST_ENV := env -u NIF_OPENAI_API_KEY -u NIF_OPENAI_BASE_URL \
                 -u NIF_OPENAI_MODEL -u NIF_OPENAI_PROTOCOL -u NIF_PROVIDER \
                 "NIF_REPO_ROOT=$(ROOT)" "NIF_ROOT=$(ROOT)"
 
+# Bus-contract suite parallelism: a bounded pool over the isolated test
+# binaries (each owns its NATS server + temp root). Override per run:
+#   make test-server TEST_JOBS=1      # sequential (old behavior)
+#   make test-server TEST_JOBS=6      # deeper pool
+TEST_JOBS ?= $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) | head -1)
+
 var/bin/smoke: tests/smoke.nim $(SDK_NIM) $(NIM_CONF) | var/bin
 	$(BUILD_WRAP) nim c --hints:off $(NIMFLAGS) --path:sdk -o:$@ tests/smoke.nim
 
 # ---------------------------------------------------------------------------
-# tests: one binary per tests/*.nim; `make test` runs the whole suite
-# sequentially. Runtime state and NATS are isolated per test, so individual
-# test targets may run concurrently with each other and a live harness.
+# tests: one binary per tests/*.nim; `make test-server` runs the whole suite
+# through scripts/run-tests.sh in a bounded pool (TEST_JOBS, default one per
+# core). Runtime state and NATS are isolated per test, so individual test
+# targets may run concurrently with each other and a live harness.
 # Individual: make test-bash, test-store, test-store-sqlite, test-store-tidb,
 # test-builder, test-console, test-plugins, test-skills, test-fetch,
 # test-core, test-discover, test-cli, test-systemprompt,
@@ -470,10 +477,8 @@ test: test-ui test-server
 # Everything that needs the node/UI toolchain lives in test-ui, so a
 # server-side change can be verified without it.
 test-server: build $(TEST_BINS) gotest
-	$(TEST_LOCK) bash -c 'for t in $(TEST_BINS); do \
-		echo "== $$t"; \
-		$(TEST_ENV) ./$$t || exit 1; \
-	done'
+	$(TEST_LOCK) $(TEST_ENV) NIF_TEST_JOBS=$(TEST_JOBS) \
+		bash scripts/run-tests.sh -- $(TEST_BINS)
 
 # The frontend. The lib tests import the TypeScript sources directly (node
 # type stripping), so they need no dependencies; the typecheck does, and
